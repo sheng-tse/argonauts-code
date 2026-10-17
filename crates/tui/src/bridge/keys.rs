@@ -58,7 +58,12 @@ impl KeyActions {
             UiAction::OpenTab(name) => {
                 let watch = cx.model.bottom.band.watch.clone();
                 let tab = Tab::showing(*name);
-                cx.out.open(OverviewView::new(tab, watch));
+                let period = match tab {
+                    Tab::Usage => cx.settings.views.usage.period.usage(),
+                    _ => UsagePeriod::OPENS_ON,
+                };
+                cx.out
+                    .open(OverviewView::new(tab, watch).with_period(period));
                 // What the panel asks when its own tab opens, so the tab draws whole and
                 // nothing of it reaches the conversation.
                 let ask = |view| UiCommand::Request { view };
@@ -66,21 +71,12 @@ impl KeyActions {
                     Tab::Status => cx.out.send(ask(ViewRequest::StatusTab)),
                     Tab::Context => cx.out.send(ask(ViewRequest::Context)),
                     _ => {
-                        cx.out.send(ask(ViewRequest::Usage {
-                            period: UsagePeriod::OPENS_ON,
-                        }));
+                        cx.out.send(ask(ViewRequest::Usage { period }));
                         cx.out.send(ask(ViewRequest::ReadPlanUsage));
                     }
                 }
             }
-            UiAction::OpenAgentPanel => {
-                cx.out.open(AgentPanelView::opened_left(cx.state));
-                // Conversations, the CLIs' own sessions, and other repos' runs come from the
-                // controller; the panel shows the last list it sent until this one arrives.
-                cx.out.send(UiCommand::Request {
-                    view: ViewRequest::Crew,
-                });
-            }
+            UiAction::OpenAgentPanel => open_agent_panel(cx),
             // A subagent of the main agent's own CLI has no view of its own: what it does
             // shows in the conversation, in full with the transcript key.
             UiAction::OpenAgent(agent) if of_conversation(agent) => {
@@ -142,6 +138,7 @@ impl KeyActions {
                     },
             }) => open_stats(cx, true),
             UiAction::Command(command) => cx.out.send(command.clone()),
+            UiAction::Replied(reply) => cx.out.replies.push(reply.clone()),
             UiAction::Request(view) => cx.out.send(UiCommand::Request { view: view.clone() }),
             UiAction::Notice(text) => notice(text, cx),
             UiAction::Copy(text) => {
@@ -273,7 +270,7 @@ fn run_keeps_going(cx: &Cx<'_>) -> String {
     format!("The run keeps going · {chord} to stop all agents")
 }
 
-/// `Stop` acts on the run on screen, so for any other run you're told how to get there.
+/// `Stop` stops the run on its row, the one on screen or any other by name.
 fn stop_run(run: &str, cx: &mut Cx<'_>) {
     if run.contains('#') {
         notice(
@@ -283,14 +280,7 @@ fn stop_run(run: &str, cx: &mut Cx<'_>) {
         return;
     }
     match RunId::new(run) {
-        Ok(run) if cx.state.attached.as_ref() == Some(&run) => cx.out.send(UiCommand::Stop),
-        Ok(run) => notice(
-            &format!(
-                "Only the run on screen can be stopped. Resume {} first, then stop it",
-                sanitize_line(run.as_str())
-            ),
-            cx,
-        ),
+        Ok(run) => cx.out.send(crate::views::stop(&run, cx.state)),
         Err(_) => notice(&format!("No run named {}.", sanitize_line(run)), cx),
     }
 }
@@ -356,7 +346,10 @@ pub(super) fn open_tree(cx: &mut Cx<'_>) {
         return;
     }
     match shown_run(cx.state) {
-        Some(run) => open_workflow(run.id.clone(), cx),
+        Some(run) => {
+            let entry = waiting::workflow_entry(cx.state, &run.id);
+            open_workflow(run.id.clone(), entry, cx);
+        }
         None => match conversation.last() {
             Some(workflow) => {
                 let workflow = cli_workflow_run_id(&workflow.id);
@@ -390,6 +383,24 @@ fn open_row(key: &str, cx: &mut Cx<'_>) {
         notice(&format!("No run named {}.", sanitize_line(key)), cx);
         return;
     };
+    // A workflow inside a run opens in the run's view, open and with the cursor on it.
+    let inside = cx
+        .model
+        .bottom
+        .workflows
+        .rows
+        .iter()
+        .any(|row| row.key == key && row.depth > 0);
+    if inside {
+        cx.model.bottom.workflows.opening = Some(key.to_owned());
+        cx.out.send(UiCommand::Request {
+            view: ViewRequest::Workflow {
+                run,
+                workflow: None,
+            },
+        });
+        return;
+    }
     match agent_id {
         Some(workflow) => cx.out.send(UiCommand::Request {
             view: ViewRequest::Workflow {
@@ -397,16 +408,18 @@ fn open_row(key: &str, cx: &mut Cx<'_>) {
                 workflow: Some(workflow),
             },
         }),
-        None => open_workflow(run, cx),
+        None => {
+            let entry = waiting::entry(cx.state, &run);
+            open_workflow(run, entry, cx);
+        }
     }
 }
 
-/// What Enter on a run's row opens, which is always something: the session of a
-/// run whose work is one agent's, the main agent at work while it designs the workflow,
-/// the workflow view once it's declared, or a short view of what the run waits for. A run from
-/// an earlier session comes back on screen first, as `/resume <run>` brings it, with its question
-/// if it waits on you.
-fn open_workflow(run: RunId, cx: &mut Cx<'_>) {
+/// Opens `entry` of a run: the session of a run that is one worker, the workflow view once its
+/// shape is known, or a short view of what the run waits for. A workflow still being written
+/// opens nothing, and a line says so. A run from an earlier session comes back on screen first,
+/// as `/resume <run>` brings it, with its question if it waits on you.
+fn open_workflow(run: RunId, entry: RunEntry, cx: &mut Cx<'_>) {
     let elsewhere = !cx.state.runs.contains_key(&run)
         && cx.state.background.iter().any(|summary| summary.run == run);
     if elsewhere {
@@ -416,9 +429,10 @@ fn open_workflow(run: RunId, cx: &mut Cx<'_>) {
         cx.out.send(UiCommand::Resume { run: Some(run) });
         return;
     }
-    match waiting::entry(cx.state, &run) {
+    match entry {
         RunEntry::Session(session) => cx.out.open(SessionView::for_run(run, session)),
         RunEntry::Waiting => cx.out.open(WaitingView::new(run)),
+        RunEntry::Writing => notice(waiting::BEING_WRITTEN, cx),
         RunEntry::Workflow => cx.out.send(UiCommand::Request {
             view: ViewRequest::Workflow {
                 run,
@@ -562,6 +576,13 @@ pub fn exit_lines(state: &AppState) -> Vec<String> {
     lines
 }
 
+/// The agent panel, as ← on an empty prompt opens it. It asks the controller for its rows as
+/// it opens: conversations, the CLIs' own sessions and other repos' runs, and shows the last
+/// list it was sent until they arrive.
+pub(super) fn open_agent_panel(cx: &mut Cx<'_>) {
+    cx.out.open(AgentPanelView::opened_left(cx.state));
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
@@ -590,6 +611,38 @@ mod tests {
 
     fn run_id() -> RunId {
         RunId::new("run-01").unwrap()
+    }
+
+    /// Enter on a workflow inside a run asks for the run's own view, which opens on it.
+    #[test]
+    fn enter_on_a_workflow_inside_a_run_asks_for_the_runs_view() {
+        use crate::bottom::{WorkflowRow, WorkflowRowState};
+        let key = "run-01#cli-wf_due";
+        let state = AppState::default();
+        let mut model = ViewModel::default();
+        let mut row = WorkflowRow::new(key, "add-due-flag", WorkflowRowState::Running);
+        row.depth = 1;
+        model.bottom.workflows.rows.push(row);
+        let mut out = Effects::default();
+        let settings = UiSettings::default();
+        let mut cx = Cx {
+            model: &mut model,
+            state: &state,
+            settings: &settings,
+            now: Instant::now(),
+            out: &mut out,
+        };
+        assert!(KeyActions::default().on_action(&UiAction::OpenWorkflow(key.into()), &mut cx));
+        assert_eq!(
+            out.commands,
+            [UiCommand::Request {
+                view: ViewRequest::Workflow {
+                    run: run_id(),
+                    workflow: None,
+                },
+            }]
+        );
+        assert_eq!(model.bottom.workflows.opening.as_deref(), Some(key));
     }
 
     #[test]
@@ -923,6 +976,18 @@ mod tests {
             model.bottom.mode.notice.expect("a notice").text,
             "Only the run on screen can be paused. Resume run-02 first, then pause it"
         );
+        // Stop acts on any run's row: the one on screen as Stop, another by name.
+        let (out, _) = act(&state, &UiAction::StopRun(run.as_str().to_owned()));
+        assert_eq!(out.commands, [UiCommand::Stop]);
+        let (out, _) = act(&state, &UiAction::StopRun("run-02".into()));
+        assert_eq!(
+            out.commands,
+            [UiCommand::Slash {
+                command: SlashCommand::Stop {
+                    run: Some(RunId::new("run-02").unwrap()),
+                },
+            }]
+        );
     }
 
     #[test]
@@ -966,6 +1031,7 @@ mod tests {
                 live: false,
                 remind: false,
                 name: None,
+                shape_known: true,
             }],
         });
         let (out, _) = act(&earlier, &UiAction::OpenWorkflow("run-01".into()));
@@ -988,12 +1054,9 @@ mod tests {
 
         let (out, _) = act(&state, &UiAction::OpenAgentPanel);
         assert_eq!(out.views.len(), 1);
-        assert_eq!(
-            out.commands,
-            [UiCommand::Request {
-                view: ViewRequest::Crew
-            }]
-        );
+        // The panel asks for its rows as it opens, as it does however it opens.
+        assert!(out.commands.is_empty());
+        assert_eq!(out.views[0].asks_on_open(), Some(ViewRequest::Crew));
         let (out, _) = act(&state, &UiAction::OpenHelp);
         assert_eq!(out.views.len(), 1);
         let (out, _) = act(&state, &UiAction::EditDraft);
@@ -1026,22 +1089,25 @@ mod tests {
         assert!(commands.is_empty(), "{commands:?}");
         assert!(views[0].starts_with("WaitingView"), "{views:?}");
 
+        // While the main agent designs it, the workflow is being written: nothing opens, and
+        // a line says so, for Enter and for Ctrl+T on the run on screen alike.
+        let writing = |log: &RunLog, action: &UiAction| {
+            let (out, model) = act(&log.state, action);
+            assert!(out.views.is_empty(), "{action:?}");
+            assert!(out.commands.is_empty(), "{action:?}");
+            let notice = model.bottom.mode.notice.map(|notice| notice.text);
+            assert_eq!(
+                notice.as_deref(),
+                Some(crate::views::waiting::BEING_WRITTEN)
+            );
+        };
         log.design("s-001", "main:design");
-        let (views, commands) = opened(&log, &enter);
-        assert!(commands.is_empty(), "{commands:?}");
-        assert!(
-            views[0].starts_with("SessionView") && views[0].contains("s-001"),
-            "{views:?}"
-        );
-        // Ctrl+T opens the same, for the run on screen.
+        writing(&log, &enter);
         log.state.attached = Some(run_id());
-        let (views, _) = opened(&log, &UiAction::OpenTree);
-        assert!(views[0].contains("s-001"), "{views:?}");
-
+        writing(&log, &UiAction::OpenTree);
         log.ended("s-001");
         log.design("s-002", "main:design-2");
-        let (views, _) = opened(&log, &enter);
-        assert!(views[0].contains("s-002"), "the design at work: {views:?}");
+        writing(&log, &enter);
 
         log.ended("s-002");
         log.declare();

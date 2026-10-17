@@ -1,0 +1,49 @@
+ Today at 12:35 AM the row says paused, though you never paused it, and its clock counts the 22 hours Argonauts was   
+ closed                                                                                                               
+                                                                                                                      
+● So far in this run                                                                                                  
+  ⎿  Approval mode set to autopilot                                                                                   
+     Goal approved                                                                                                    
+     Waiting · nobody to fall back to as the task's worker                                                            
+     Resumed as an agent came back                                                                                    
+     Waiting · nobody to fall back to as the task's worker                                                            
+     Resumed as an agent came back                                                                                    
+     Waiting · nobody to fall back to as the task's worker                                                            
+     Resumed as an agent came back                                                                                    
+                                                                                                                      
+▪ The run waits · nobody to fall back to as the task's worker                                                         
+  ⎿  It tries again at 1:14 AM · /resume tries now                                                                    
+                                                                                                                      
+❯ ⏸ make-the-rate-limiter   ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/3 · 22h42m · ↓ 6.6k tokens · paused · ! nobody to fall back to as…
+                                                                                                                      
+                                                                                                                      
+ After the change, Antigravity CLI's nearest model takes propose:p3, one line says so, and your council goes on       
+                                                                                                                      
+⏺ propose:p3 runs on Gemini 3.8 Flash (Low): Antigravity CLI no longer offers Gemini 3.6 Flash (Low)                  
+                                                                                                                      
+⏺ 3 agents started (↓ to manage)                                                                                      
+   ├ propose:p1 · Haiku 5.5 on Claude Code                                                                            
+   ├ propose:p2 · GPT 6 Luna on Codex                                                                                 
+   └ propose:p3 · Gemini 3.8 Flash (Low) on Antigravity CLI                                                           
+                                                                                                                      
+❯ ◯ Per key rate limit      ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/3 · 1m02s · ↓ 31.4k tokens                                        
+                                                                                                                      
+                                                                                                                      
+ If nothing can take the seats a run needs, it stops, fully. Here Codex crashes at every start, Antigravity CLI is    
+ signed out, and you said no to a second proposal from Claude Code, so one proposal is left where a council needs two 
+                                                                                                                      
+✘ The run stopped · a council needs two proposals, and only propose:p1 can make one                                   
+  ⎿  propose:p2 · Codex crashed twice as it started: "Failed to synchronize managed preferences"                      
+     propose:p3 · Antigravity CLI is signed out                                                                       
+     Nothing else can take them: OpenCode has no model set, and you said no to a second proposal from Claude Code     
+     propose:p1's work so far is kept · once Codex or Antigravity CLI works, /resume carries the run on               
+                                                                                                                      
+❯ ✘ Per key rate limit      ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/3 · 41s · ↓ 6.6k tokens · stopped · /resume carries it on         
+                                                                                                                      
+                                                                                                                      
+ Only a run you paused says paused, and nothing wakes it but you                                                      
+                                                                                                                      
+⏸ You paused the run · /resume carries it on                                                                          
+  ⎿  propose:p1, propose:p2 and propose:p3 stopped at a safe point, their work so far kept                            
+                                                                                                                      
+❯ ⏸ Per key rate limit      ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/3 · 1m02s · ↓ 31.4k tokens · paused by you · /resume carries it on

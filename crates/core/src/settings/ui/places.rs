@@ -157,6 +157,16 @@ impl UsagePeriod {
             _ => None,
         }
     }
+
+    /// The span of the numbers the Usage tab shows for it.
+    pub fn usage(self) -> crate::api::UsagePeriod {
+        match self {
+            UsagePeriod::Day => crate::api::UsagePeriod::Today,
+            UsagePeriod::Week => crate::api::UsagePeriod::Week,
+            UsagePeriod::Month => crate::api::UsagePeriod::Month,
+            UsagePeriod::All => crate::api::UsagePeriod::All,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]

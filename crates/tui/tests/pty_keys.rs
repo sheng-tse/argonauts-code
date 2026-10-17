@@ -187,7 +187,7 @@ fn down_focuses_agent_panel() {
         "{listed:?}"
     );
     assert!(
-        listed.visible[rule + 8].starts_with("    ● task-003 "),
+        listed.visible[rule + 8].starts_with(&format!("    {BULLET} task-003 ")),
         "{listed:?}"
     );
     driver.press(Key::Esc);

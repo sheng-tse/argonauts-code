@@ -362,6 +362,16 @@ pub(crate) async fn approval_mode(
         return Ok(Vec::new());
     };
     runs.approval_mode = Some(mode);
+    // Kept for the next start, which `approvals.start_mode = "last"` brings back.
+    if ctx.env.interactive && !ctx.env.agent_session {
+        let approvals = &ctx.settings().approvals;
+        if let Err(err) = super::start_mode::remember(&ctx.env.state_dir, mode, approvals) {
+            ctx.notice(
+                NoteLevel::Warn,
+                format!("Couldn't keep the approval mode for the next start: {err:#}"),
+            );
+        }
+    }
     if let Some(attached) = runs
         .attached
         .as_mut()

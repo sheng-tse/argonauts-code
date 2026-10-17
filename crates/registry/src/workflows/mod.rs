@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use argonauts_core::workflow::Workflow;
 
-pub(crate) use builtin::{DEFAULT_WORKFLOW, builtin};
+pub(crate) use builtin::{BASE_WORKFLOW, DEFAULT_WORKFLOW, builtin};
 pub use check::{MAX_DEPTH, check_workflow};
 pub(crate) use choices::{PHASES_EXTENSIONS, SCRIPT_EXTENSIONS};
 pub use choices::{workflow_choices, workflow_choices_in};

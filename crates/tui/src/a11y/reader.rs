@@ -246,10 +246,10 @@ impl Reader {
                     )
                 }));
             }
-            // What the run's row opens on screen: the main agent's session while it
-            // designs, else the workflow, printed as text.
+            // What `/workflows` opens on screen, printed as text: the workflow once its shape
+            // is known, or a line saying it is still being written.
             SlashCommand::Workflows => match shown_run(&self.state).map(|run| run.id.clone()) {
-                Some(run) => match waiting::entry(&self.state, &run) {
+                Some(run) => match waiting::workflow_entry(&self.state, &run) {
                     RunEntry::Session(session) => said.commands.push(UiCommand::Request {
                         view: ViewRequest::Agent { run, session },
                     }),
@@ -262,6 +262,7 @@ impl Reader {
                     RunEntry::Waiting => said
                         .lines
                         .push(waiting::waiting_for(self.state.runs.get(&run))),
+                    RunEntry::Writing => said.lines.push(waiting::BEING_WRITTEN.to_owned()),
                 },
                 None => said.commands.push(UiCommand::Request {
                     view: ViewRequest::WorkflowLibrary,
@@ -387,6 +388,9 @@ impl Reader {
                     ConversationEvent::TurnFinished { .. } => {
                         Some(Close::Whole { key, ends: true })
                     }
+                    ConversationEvent::ContextLeft { .. }
+                    | ConversationEvent::CommandTyped { .. }
+                    | ConversationEvent::CommandReplied { .. } => None,
                     ConversationEvent::FellBack { .. }
                     | ConversationEvent::Joined { .. }
                     | ConversationEvent::AnswerRetried { .. } => Some(Close::Tail {

@@ -20,8 +20,10 @@ use crate::{approvals, fallback, task};
 /// why the run woke, then applies the cause: `AgentBack` retries the agent or sends one test
 /// task; `AskTimeout` withdraws that fallback approval and falls back to the next valid
 /// candidate within the cost cap, or reopens it when there is none. Sessions that were running
-/// are resumed when their steps are re-entered, never restarted.
-pub async fn recover(host: &Host) -> EngineResult<()> {
+/// are resumed when their steps are re-entered, never restarted. `answers` says a request
+/// queued for this engine answers an approval; a run that waited on one and woke without an
+/// answer, as Shift+Tab or guidance wakes it, woke for you.
+pub async fn recover(host: &Host, answers: bool) -> EngineResult<()> {
     let now = host.now().unix_timestamp();
     let ask_timeout = host
         .settings()
@@ -45,6 +47,13 @@ pub async fn recover(host: &Host) -> EngineResult<()> {
         && host.read(|state| woke_for_you(state.run.waiting.as_ref(), &back, now))
     {
         cause = ResumeCause::Answer;
+    }
+    if cause == ResumeCause::Answer && !answers {
+        cause = ResumeCause::User;
+    }
+    // Nothing it waited for is back and its time hasn't come, so you carried it on.
+    if cause == ResumeCause::AgentBack && back.is_empty() {
+        cause = ResumeCause::User;
     }
     // A crash, whether or not a pause was under way: the log ends before the run waited or
     // finished. A stop committed its sessions' work already.
@@ -103,7 +112,7 @@ pub async fn recover(host: &Host) -> EngineResult<()> {
     )?;
 
     match cause {
-        ResumeCause::AgentBack => {
+        ResumeCause::AgentBack | ResumeCause::Timer => {
             for agent_id in back {
                 fallback::ask::agent_back(host, &agent_id)?;
                 fallback::on_return::agent_back(host, &agent_id).await?;
@@ -153,21 +162,26 @@ pub fn cause(
         })
         .map(|record| (record.opened.id.clone(), record.opened.task.clone()))
         .collect();
-    let cause = match &state.run.waiting {
-        Some(WaitReason::Paused) => ResumeCause::User,
-        Some(WaitReason::Approval) if !timed_out.is_empty() => ResumeCause::AskTimeout,
-        Some(WaitReason::Approval) => ResumeCause::Answer,
-        Some(
-            WaitReason::AllAgentsOut { .. }
-            | WaitReason::WaitingForAgent { .. }
-            | WaitReason::NoFallback { .. },
-        ) => ResumeCause::AgentBack,
-        // Only the run host's `RunStarted`: a new run, nothing to recover.
-        None if state.seq.unwrap_or(0) == 0 => return (None, Vec::new()),
-        // You paused it, and the engine stopped before the run waited.
-        None if state.run.paused || state.run.pause_requested.is_some() => ResumeCause::User,
-        None => ResumeCause::Crash,
-    };
+    let cause =
+        match &state.run.waiting {
+            Some(WaitReason::Paused) => ResumeCause::User,
+            Some(WaitReason::Approval) if !timed_out.is_empty() => ResumeCause::AskTimeout,
+            Some(WaitReason::Approval) => ResumeCause::Answer,
+            // A run that stopped fully wakes for nothing but your `/resume`.
+            Some(WaitReason::NoFallback { .. }) => ResumeCause::User,
+            // An outage you chose to wait out: its time came, or an agent came back.
+            Some(
+                WaitReason::AllAgentsOut { until } | WaitReason::WaitingForAgent { until, .. },
+            ) if until.is_some_and(|until| until.unix_timestamp() <= now) => ResumeCause::Timer,
+            Some(WaitReason::AllAgentsOut { .. } | WaitReason::WaitingForAgent { .. }) => {
+                ResumeCause::AgentBack
+            }
+            // Only the run host's `RunStarted`: a new run, nothing to recover.
+            None if state.seq.unwrap_or(0) == 0 => return (None, Vec::new()),
+            // You paused it, and the engine stopped before the run waited.
+            None if state.run.paused || state.run.pause_requested.is_some() => ResumeCause::User,
+            None => ResumeCause::Crash,
+        };
     (Some(cause), timed_out)
 }
 
@@ -325,6 +339,20 @@ mod tests {
         assert_eq!(cause(&state, 0, None).0, Some(ResumeCause::User));
         state.run.waiting = Some(WaitReason::AllAgentsOut { until: None });
         assert_eq!(cause(&state, 0, None).0, Some(ResumeCause::AgentBack));
+        // Each try records what started it: its time came, or you carried it on.
+        let at = time::OffsetDateTime::from_unix_timestamp(60).unwrap();
+        state.run.waiting = Some(WaitReason::AllAgentsOut { until: Some(at) });
+        assert_eq!(cause(&state, 60, None).0, Some(ResumeCause::Timer));
+        state.run.waiting = Some(WaitReason::NoFallback {
+            detail: "nobody to fall back to as the task's worker".into(),
+            until: Some(at),
+            stop: None,
+        });
+        assert_eq!(
+            cause(&state, 60, None).0,
+            Some(ResumeCause::User),
+            "a run that stopped fully wakes only for you"
+        );
         state.run.waiting = Some(WaitReason::Approval);
         assert_eq!(cause(&state, 0, None).0, Some(ResumeCause::Answer));
 
@@ -363,6 +391,7 @@ mod tests {
                 by: worker("codex/gpt-5.6"),
                 needs: worker("claude-code/opus"),
             }],
+            questions: Vec::new(),
         };
         let mut record = open_approval(2, ApprovalKind::Merge, true);
         record.opened.packet = ApprovalPacket::Merge(MergePacket {

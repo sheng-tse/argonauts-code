@@ -1,8 +1,9 @@
 //! Everything that goes into scrollback other than agent sessions and tasks: the startup
 //! header, conversation turns, milestones, settings changes, notices, recaps, narrator lines, and
-//! the condensed replay of a resumed run. Items print once, whole; only the conversation answer
-//! streams.
+//! a CLI session's turns when it is carried on. Items print once, whole; only the conversation
+//! answer streams.
 
+mod answered;
 #[cfg(test)]
 mod autopilot_picture_tests;
 #[cfg(test)]
@@ -24,6 +25,8 @@ pub(crate) mod own_calls;
 pub(crate) mod picture_check;
 #[cfg(test)]
 mod picture_tests;
+#[cfg(test)]
+mod question_after_tests;
 mod replay;
 #[cfg(test)]
 mod resumed_tests;
@@ -31,9 +34,12 @@ mod shell;
 mod status;
 mod steps;
 #[cfg(test)]
+mod stop_picture_tests;
+#[cfg(test)]
 mod templates_picture_tests;
 #[cfg(test)]
 mod tests;
+mod tries;
 mod workflows;
 #[cfg(test)]
 mod working_line_picture_tests;
@@ -48,7 +54,6 @@ use crate::overview::ContextPrinted;
 use super::Cx;
 
 pub use conversation::ConversationTurns;
-pub use replay::ReplayPrinter;
 pub use status::{NOTHING_RUNNING, status_cells, status_sections};
 
 use items::Items;
@@ -58,7 +63,6 @@ use shell::ShellBlocks;
 #[derive(Debug, Default)]
 pub struct Transcript {
     pub conversation: ConversationTurns,
-    pub replay: ReplayPrinter,
     items: Items,
     milestones: Milestones,
     shell: ShellBlocks,
@@ -83,34 +87,24 @@ impl Transcript {
             | AppEvent::Mode { .. }
             | AppEvent::UiSettings { .. }
             | AppEvent::NarratorStatus { .. } => {}
-            _ => self.items.print_header(cx),
+            AppEvent::Run { .. } => self.items.print_header(cx),
+            _ => {
+                // A run's past held back off scrollback prints before anything else does.
+                self.milestones.print_withheld(cx);
+                self.items.print_header(cx);
+            }
         }
         match event {
             AppEvent::Welcome { .. } => self.items.welcome(event, cx),
             AppEvent::Status { status } => self.items.status(status, cx),
-            AppEvent::Attached { .. }
-            | AppEvent::CondensedReplay { .. }
-            | AppEvent::ReplayDone { .. } => self.replay.on_event(event, cx),
             AppEvent::Run { event } => {
                 self.milestones
                     .on_run_event(event, &mut self.items, clock, cx)
             }
             AppEvent::Conversation { event } => self.conversation.on_conversation(event, clock, cx),
-            AppEvent::ConversationResumed {
-                conversation,
-                title,
-                worker,
-                earlier,
-                turns,
-                ..
-            } => replay::conversation_resumed(
-                conversation,
-                title,
-                worker.as_ref(),
-                earlier,
-                turns,
-                cx,
-            ),
+            AppEvent::ConversationResumed { turns, .. } => {
+                replay::conversation_resumed(turns, cx);
+            }
             AppEvent::Report { title, lines } => items::report(title, lines, cx),
             AppEvent::Switched { text, undo, caveat } => {
                 items::switched(text, undo.as_deref(), caveat.as_deref(), cx);
@@ -149,6 +143,7 @@ impl Transcript {
                 previous,
                 reset,
             } => items::setting_changed(key, value, *scope, previous.as_deref(), *reset, cx),
+            AppEvent::SettingRefused { key, why } => items::setting_refused(key, why, cx),
             AppEvent::Notice { level, text } => self.items.notice(*level, text, cx),
             AppEvent::Narrator { line } => items::narrator(line, cx),
             AppEvent::Shell { event } => self.shell.on_event(event, cx),
@@ -177,10 +172,10 @@ impl Transcript {
     }
 }
 
-/// Finished items go to scrollback. While a resumed run replays its history they only join
-/// the history, where Ctrl+O shows them, and the condensed replay prints in their place.
+/// Finished items go to scrollback. While an attached run replays what this screen drew already,
+/// they only join the history, where Ctrl+O shows them.
 fn emit(cx: &mut Cx<'_>, cell: impl Into<Cell>) {
-    if cx.replaying() {
+    if cx.history_only() {
         cx.model.history.keep(cell);
     } else {
         cx.model.history.push(cell);

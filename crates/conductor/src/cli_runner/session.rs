@@ -7,12 +7,13 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use argonauts_core::create_private_dir_all;
+use argonauts_core::events::failure::after_proxy_refusal;
 use argonauts_core::events::session::{EndReason, LimitEvent, SessionEnd, SessionEvent};
 use argonauts_core::session_runner::{
     RunnerError, SandboxMode, SessionControl, SessionHandle, SessionLimits, SessionRunner,
     SessionSpec,
 };
+use argonauts_core::{ErrorCategory, create_private_dir_all};
 use tokio::sync::mpsc;
 
 use super::context::{Context, Launch};
@@ -29,6 +30,7 @@ pub async fn start(
 ) -> Result<SessionHandle, RunnerError> {
     let (rules, sandbox) = worker.sandbox_for(&spec.role);
     spec.sandbox.mode = effective_mode(spec.sandbox.mode, sandbox.mode())?;
+    spec.limits.spends_unseen = super::request::spends_unseen(&spec);
     let self_test = match spec.sandbox.mode {
         SandboxMode::None => SelfTest {
             ok: true,
@@ -146,9 +148,30 @@ async fn session(
         early,
         started,
     };
-    match ctx.adapter.session_driver() {
+    let proxied = launch.profile.proxy_port.is_some();
+    let mut end = match ctx.adapter.session_driver() {
         Some(driver) => driven::run(running, launch, driver).await,
         None => lines::run(running, launch).await,
+    };
+    if proxied {
+        name_proxy_refusal(&ctx, &mut end, started);
+    }
+    end
+}
+
+/// A session that went out through the sandbox's proxy and failed on the network says first
+/// what the proxy last refused it, as `the sandbox's proxy couldn't reach api.anthropic.com`:
+/// the CLI's own error only says it couldn't connect.
+pub(super) fn name_proxy_refusal(ctx: &Context, end: &mut SessionEnd, started: Instant) {
+    let EndReason::CliError {
+        category: ErrorCategory::Network | ErrorCategory::Timeout,
+        message,
+    } = &mut end.reason
+    else {
+        return;
+    };
+    if let Some(refusal) = ctx.last_proxy_refusal(started) {
+        *message = after_proxy_refusal(&refusal.words(), message);
     }
 }
 
@@ -166,21 +189,17 @@ async fn stopped_while_waiting(
     }
 }
 
-/// `Limit(NativeCap)` where the CLI enforces one, and the CLI session when it's known
-/// before the first event.
+/// `Limit(NativeCap)` where the CLI enforces one, and the CLI session it resumes.
 pub(super) fn announce_start(ctx: &Context, out: &Outbox, obs: &mut Observer, launch: &Launch) {
     if ctx.capabilities.native_limit_cap
         && let Some(usd) = launch.request.spend_cap_usd
     {
         out.session(SessionEvent::Limit(LimitEvent::NativeCap { usd }));
     }
-    // A fork's id is the copy's, which only the CLI knows until it says.
-    let known = launch
-        .request
-        .session_id
-        .clone()
-        .or_else(|| ctx.spec.resume.clone().filter(|_| !ctx.spec.fork));
-    if let Some(id) = known {
+    // A new session counts once the CLI says it started, even with the id Argonauts Code gave
+    // it: one cut off before that saved nothing a resume could find. A fork's id is the
+    // copy's, which only the CLI knows until it says.
+    if let Some(id) = ctx.spec.resume.clone().filter(|_| !ctx.spec.fork) {
         obs.cli_session(id);
     }
     // Only a CLI that isolates keeps your MCP servers and plugins out of a blind role, and the

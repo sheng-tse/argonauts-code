@@ -4,9 +4,13 @@
 //! stands as what its agent decided. Either way one line says so, and the task carries on.
 
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{ApprovalKind, ApprovalPacket, FreeText, QuestionPacket};
+use argonauts_core::events::approval::{
+    ApprovalKind, ApprovalPacket, FreeText, MergeQuestion, QuestionPacket,
+};
 use argonauts_core::events::run::Party;
-use argonauts_core::events::shared::{BlackboardKind, BlackboardMessage, Recipient};
+use argonauts_core::events::shared::{
+    AnsweredForYou, BlackboardEvent, BlackboardKind, BlackboardMessage, Recipient,
+};
 use argonauts_core::events::task::TaskState;
 use argonauts_core::names::{MessageId, ModelRef, RoleName, SessionKey};
 use argonauts_core::policy::EvidenceFacts;
@@ -73,12 +77,81 @@ pub async fn ask(
                 own_call(host, task, &id)?;
             }
         }
+        // A report that finished asks in passing: its task goes on to its reviews, and the
+        // question stays open for the merge question to show.
+        Recipient::User if !blocks => carried(host, task, &id)?,
         Recipient::User => ask_you(host, task, &id).await?,
         _ => {
             delivery::to_running(host, &id)?;
         }
     }
     Ok(())
+}
+
+/// A question in a report that finished, outside autopilot: nothing waits on it. One line says
+/// the task goes on, and the question stays open on the board, where the merge question finds it.
+fn carried(host: &Host, task: &TaskId, id: &MessageId) -> EngineResult<()> {
+    let (question, _) = asked(host, task, id)?;
+    let line = format!(
+        "{} asked, and goes on to its reviews: {} · the merge question shows it",
+        task_label(host, task),
+        one_line(&question.text)
+    );
+    note(host, task, NoteLevel::Info, line)
+}
+
+/// Whether the task's report left a question for you that nothing waits on, so a report that
+/// needs a decision goes on to its reviews with it.
+pub fn carried_for_the_merge(state: &RunState, task: &TaskId) -> bool {
+    let board = &state.blackboard;
+    board.messages.iter().any(|message| {
+        message.kind == BlackboardKind::Question
+            && message.to == Recipient::User
+            && board.posted_from.get(&message.id) == Some(task)
+            && board.settled(&message.id).is_none()
+    }) && state
+        .approvals
+        .open_for(ApprovalKind::Question, Some(task))
+        .is_none()
+}
+
+/// What a task's agent asked you that the merge question shows: each question still open, and
+/// each one answered in your place with its answer. One you answered yourself, or left with
+/// Esc, you have already seen.
+pub fn for_the_merge(state: &RunState, task: &TaskId) -> Vec<MergeQuestion> {
+    let board = &state.blackboard;
+    board
+        .messages
+        .iter()
+        .filter(|message| {
+            message.kind == BlackboardKind::Question
+                && message.to == Recipient::User
+                && board.posted_from.get(&message.id) == Some(task)
+        })
+        .filter_map(|question| {
+            let open = MergeQuestion {
+                text: question.text.clone(),
+                answer: None,
+                answered_by: None,
+            };
+            let Some(answer) = board.settled(&question.id) else {
+                return Some(open);
+            };
+            let (text, by) = match &answer.from {
+                Party::User | Party::Declined => return None,
+                Party::Agent { worker, .. } => (answer.text.clone(), Some(worker.clone())),
+                Party::Judge { model } => (answer.text.clone(), Some(model.clone())),
+                _ if answer.text == OWN_CALL => ("its agent's own call".to_owned(), None),
+                _ if answer.text == OWN_ANSWER => ("its agent's best judgment".to_owned(), None),
+                _ => (answer.text.clone(), None),
+            };
+            Some(MergeQuestion {
+                answer: Some(text),
+                answered_by: by,
+                ..open
+            })
+        })
+        .collect()
 }
 
 /// The earlier record that settles this message, unless it cites evidence the record lacked.
@@ -267,6 +340,36 @@ pub fn answered_meanwhile(host: &Host, task: &TaskId) -> EngineResult<bool> {
     Ok(true)
 }
 
+/// A task still blocked on a question nobody answered, as after something other than the
+/// answer relaunched the run that waited on it: the task waits on the same question again, and
+/// on autopilot the main agent answers it at once. Whether there was one.
+pub async fn wait_again(host: &Host, task: &TaskId) -> EngineResult<bool> {
+    let open = host.read(|state| {
+        if state.tasks.get(task)?.state != TaskState::Blocked {
+            return None;
+        }
+        let record = state
+            .approvals
+            .open_for(ApprovalKind::Question, Some(task))?;
+        let ApprovalPacket::Question(packet) = &record.opened.packet else {
+            return None;
+        };
+        let question = state.blackboard.messages.iter().rev().find(|message| {
+            message.kind == BlackboardKind::Question
+                && message.text == packet.text
+                && state.blackboard.posted_from.get(&message.id) == Some(task)
+                && state.blackboard.settled(&message.id).is_none()
+        })?;
+        Some((record.opened.id.clone(), question.clone()))
+    });
+    let Some((approval, question)) = open else {
+        return Ok(false);
+    };
+    let decided = approvals::wait_again(host, &approval).await?;
+    pass_on(host, task, &question, &decided, true)?;
+    Ok(true)
+}
+
 /// Autopilot, a question that stops the work: the model `approvals.answers` picked answers it,
 /// unless it's of the asker's own provider, else the main agent, or a model of another provider
 /// than the asker's when the main agent is of the asker's own. The answer goes straight to the
@@ -281,13 +384,20 @@ async fn answer_for_you(host: &Host, task: &TaskId, id: &MessageId) -> EngineRes
         // Nothing could answer, so the agent goes on with its own judgment.
         return reply(host, id, &question, OWN_ANSWER.to_owned(), Party::Autopilot);
     };
-    let line = format!(
-        "Decided on autopilot · {} answered the question from {from} ({}): {}",
-        roles::display_name(&answerer),
-        roles::display_name(&asker),
-        one_line(&answer)
-    );
-    note(host, task, NoteLevel::Info, line)?;
+    let answered = AnsweredForYou {
+        question: id.clone(),
+        asker: from.clone(),
+        answer: one_line(&answer),
+        by: Some(answerer.clone()),
+        role: answerer_role(host, &answerer),
+        why: None,
+        finished: false,
+    };
+    host.record(
+        Some(task),
+        None,
+        RunEventKind::Blackboard(BlackboardEvent::AnsweredForYou(answered)),
+    )?;
     let by = Party::Agent {
         session,
         worker: answerer,
@@ -310,8 +420,9 @@ fn own_call(host: &Host, task: &TaskId, id: &MessageId) -> EngineResult<()> {
 }
 
 /// The answer a model gives in your place, with who gave it and in which session: the model
-/// [`answerer_for`] picks, else the main agent when that one couldn't answer, with one line saying
-/// so. `None` when neither could, after a line that says why.
+/// [`answerer_for`] picks, else the tie-breaker, else the main agent though it shares the
+/// asker's provider. Only a session that finished with text answers. Each one that couldn't
+/// gets one line, and `None` means none could, so the agent goes with its own judgment.
 async fn proposed_answer(
     host: &Host,
     task: &TaskId,
@@ -319,41 +430,47 @@ async fn proposed_answer(
     asker: &ModelRef,
     from: &str,
 ) -> EngineResult<Option<(ModelRef, SessionKey, String)>> {
-    let picked = answerer_for(host, asker);
-    let failed =
-        match consultant::session_answer(host, question, &picked, RoleName::TieBreaker).await {
-            Ok((session, text)) => return Ok(Some((picked, session, text))),
+    let mut in_line = vec![answerer_for(host, asker)];
+    for next in [
+        tie_breaker_answerer(host, asker),
+        host.settings().crew.main.clone(),
+    ] {
+        if !in_line.contains(&next) {
+            in_line.push(next);
+        }
+    }
+    for (n, answerer) in in_line.iter().enumerate() {
+        let failed = match consultant::session_answer(
+            host,
+            question,
+            answerer,
+            RoleName::TieBreaker,
+        )
+        .await
+        {
+            Ok((session, text)) => return Ok(Some((answerer.clone(), session, text))),
             Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
             Err(err) => err,
         };
-    let tie_breaker = tie_breaker_answerer(host, asker);
-    let picked_name = roles::display_name(&picked);
-    if tie_breaker == picked {
-        let text = format!(
-            "{picked_name} couldn't answer the question from {from}, so its agent goes with its \
-             best judgment: {failed}"
-        );
+        let name = roles::display_name(answerer);
+        let text = match in_line.get(n + 1) {
+            Some(next) if roles::provider(host, next) == roles::provider(host, asker) => format!(
+                "{name} couldn't answer the question from {from}, so the main agent, {}, answers \
+                 it though it shares the asker's provider: {failed}",
+                roles::display_name(next)
+            ),
+            Some(next) => format!(
+                "{name} couldn't answer the question from {from}, so {} answers it: {failed}",
+                roles::display_name(next)
+            ),
+            None => format!(
+                "{name} couldn't answer the question from {from}, so its agent goes with its \
+                 best judgment: {failed}"
+            ),
+        };
         note(host, task, NoteLevel::Warn, text)?;
-        return Ok(None);
     }
-    let tie_breaker_name = roles::display_name(&tie_breaker);
-    let text = format!(
-        "{picked_name} couldn't answer the question from {from}, so {tie_breaker_name} answers it: \
-         {failed}"
-    );
-    note(host, task, NoteLevel::Warn, text)?;
-    match consultant::session_answer(host, question, &tie_breaker, RoleName::TieBreaker).await {
-        Ok((session, text)) => Ok(Some((tie_breaker, session, text))),
-        Err(EngineError::Interrupted) => Err(EngineError::Interrupted),
-        Err(err) => {
-            let text = format!(
-                "{tie_breaker_name} couldn't answer the question from {from} either, so its agent \
-                 goes with its best judgment: {err}"
-            );
-            note(host, task, NoteLevel::Warn, text)?;
-            Ok(None)
-        }
-    }
+    Ok(None)
 }
 
 /// Posts `text` as the answer to question `id`, and sends it to the agent that asked.
@@ -381,6 +498,16 @@ fn reply(
 fn note(host: &Host, task: &TaskId, level: NoteLevel, text: String) -> EngineResult<()> {
     host.record(Some(task), None, RunEventKind::Note(Note { level, text }))?;
     Ok(())
+}
+
+/// What the model that answered in your place is to the run, when it is more than the model
+/// `approvals.answers` picked.
+fn answerer_role(host: &Host, answerer: &ModelRef) -> Option<RoleName> {
+    if *answerer == host.settings().crew.main {
+        return Some(RoleName::Main);
+    }
+    let tie_breaker = host.read(|state| crate::tie_breaker::tie_breaker(state, host.settings()));
+    (tie_breaker.as_ref() == Some(answerer)).then_some(RoleName::TieBreaker)
 }
 
 /// Who answers an agent's question in your place: the model `approvals.answers` picked,

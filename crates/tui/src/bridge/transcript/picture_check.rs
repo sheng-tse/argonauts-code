@@ -135,13 +135,49 @@ pub fn assert_matches(
     unlike: &[Unlike],
 ) {
     crate::picture_dump::lines(name, lines);
+    let want: Vec<&str> = txt.trim_end_matches('\n').split('\n').collect();
+    rows_match(name, lines, &want, &painted(html), theme, unlike);
+}
+
+/// Asserts the drawn `lines` are the picture's rows `rows`, but for the cells `unlike` names,
+/// counting rows from the first of `rows`. For a picture whose rows the screen draws a part at
+/// a time, with other rows between.
+pub fn assert_rows_match(
+    name: &str,
+    lines: &[Line<'_>],
+    (txt, html): (&str, &str),
+    rows: std::ops::Range<usize>,
+    theme: &Theme,
+    unlike: &[Unlike],
+) {
+    let part = format!("{name}-rows-{}-{}", rows.start, rows.end);
+    crate::picture_dump::lines(&part, lines);
+    let want: Vec<&str> = txt.split('\n').collect();
+    let painted = painted(html);
+    rows_match(
+        &part,
+        lines,
+        &want[rows.clone()],
+        painted.get(rows).unwrap_or_default(),
+        theme,
+        unlike,
+    );
+}
+
+fn rows_match(
+    name: &str,
+    lines: &[Line<'_>],
+    want: &[&str],
+    painted: &[Vec<Painted>],
+    theme: &Theme,
+    unlike: &[Unlike],
+) {
     for u in unlike {
         eprintln!(
             "{name}: row {} cols {}-{} are different: {}",
             u.row, u.cols.0, u.cols.1, u.why
         );
     }
-    let want: Vec<&str> = txt.trim_end_matches('\n').split('\n').collect();
     let drawn = cells(lines);
     let text = |row: &[(char, Style)]| -> String {
         let row: String = row.iter().map(|(ch, _)| ch).collect();
@@ -164,7 +200,6 @@ pub fn assert_matches(
             }
         }
     }
-    let painted = painted(html);
     for (row, cells_painted) in painted.iter().enumerate() {
         for (col, cell) in cells_painted.iter().enumerate() {
             if cell.ch == ' ' || excused(unlike, row, col) {
@@ -176,6 +211,10 @@ pub fn assert_matches(
             let at = format!("{name}: row {row} col {col} ({:?})", cell.ch);
             match cell.color.as_deref() {
                 Some(var) => match roles_of(var) {
+                    // The picture's foreground is the text's own colour or a colour of its own.
+                    [] if var == "var(--term-fg)" => {
+                        assert!(style.fg.is_some() || plain(style.fg, theme), "{at}: {var}")
+                    }
                     [] => assert!(style.fg.is_some(), "{at}: {var} is a color"),
                     roles => assert!(
                         roles.iter().any(|role| theme.style(*role).fg == style.fg),

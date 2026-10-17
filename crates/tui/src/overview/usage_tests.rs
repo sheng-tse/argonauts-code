@@ -447,7 +447,7 @@ fn ctrl_r_reads_again_and_opening_the_tab_does_too() {
         key(&mut view, &state, KeyCode::Char('r')),
         ViewOutcome::Request(ViewRequest::Usage { .. })
     ));
-    let mut other = OverviewView::new(Tab::Status, UsageWatch::default()).at(NOW);
+    let mut other = OverviewView::new(Tab::Config, UsageWatch::default()).at(NOW);
     assert!(matches!(
         key(&mut other, &state, KeyCode::Right),
         ViewOutcome::Request(ViewRequest::ReadPlanUsage)
@@ -499,12 +499,12 @@ fn a_read_that_failed_says_so_and_its_page_says_why() {
     usage.plans[1].last = usage.plans[1].live.take();
     usage.plans[1].windows.clear();
     usage.plans[1].failed =
-        Some("failed to fetch codex rate limits: application network policy is unavailable".into());
+        Some("Codex couldn't be reached (application network policy is unavailable)".into());
     let mut state = AppState::default();
     state.usage = Some(Arc::new(usage));
     let mut view = usage_view();
     let cards = rows(&mut view, &state, 140);
-    let failed = find(&cards, "failed to load usage data: failed to");
+    let failed = find(&cards, "Failed to load usage data: Codex couldn't");
     let kept = find(&cards, "last read today 8:12pm for me@example.com");
     assert!(kept > failed, "{cards:#?}");
 
@@ -513,7 +513,10 @@ fn a_read_that_failed_says_so_and_its_page_says_why() {
     key(&mut view, &state, KeyCode::Right);
     let page = rows(&mut view, &state, 60);
     assert!(page[2].contains("[Codex]"), "{page:#?}");
-    let said = find(&page, " failed to load usage data: failed to fetch codex");
+    let said = find(
+        &page,
+        " Failed to load usage data: Codex couldn't be reached",
+    );
     // Wrapped to the page rather than cut.
     assert!(
         page[said + 1].contains("network policy is unavailable"),

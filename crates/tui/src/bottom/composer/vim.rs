@@ -101,6 +101,26 @@ impl Composer {
         }
     }
 
+    /// `j` and `k` in NORMAL, with no command half typed and nothing selected, as the arrows
+    /// they stand for, so they do all ↓ and ↑ do: walk history, then reach the list under the
+    /// input from a blank prompt, and come back, as Claude Code's do.
+    pub fn vim_arrow(&self, key: &KeyEvent) -> Option<KeyCode> {
+        if self.vim != Some(VimMode::Normal)
+            || !self.vim_pending.is_empty()
+            || self.visual.is_some()
+            || key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return None;
+        }
+        match key.code {
+            KeyCode::Char('j') => Some(KeyCode::Down),
+            KeyCode::Char('k') => Some(KeyCode::Up),
+            _ => None,
+        }
+    }
+
     /// A letter in NORMAL or VISUAL. Returns what the key did, and whether it enters INSERT.
     pub fn vim_normal_key(&mut self, key: KeyEvent) -> (ComposerEvent, bool) {
         let c = match key.code {
@@ -231,8 +251,6 @@ impl Composer {
                 self.draft.cursor = self.draft.prev_stop(self.draft.cursor);
                 return (ComposerEvent::Edited, true);
             }
-            'j' => self.down(),
-            'k' => self.up(),
             'G' => {
                 let last = draft.line_start(draft.text.len());
                 self.move_to(last)

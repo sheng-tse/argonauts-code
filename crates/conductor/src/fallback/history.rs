@@ -4,11 +4,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use argonauts_core::TaskId;
 use argonauts_core::events::agent_status::FallbackEvent;
+use argonauts_core::events::session::{EndReason, SessionEvent};
 use argonauts_core::events::task::{TaskEvent, TaskState, TryCause};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{AgentId, ModelRef};
+use argonauts_core::{ErrorCategory, TaskId};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// What the task's own history says about earlier fallbacks and checks.
@@ -16,6 +17,8 @@ pub struct History {
     pub fallbacks: u32,
     /// Checks ran on the task's latest commit.
     pub checks_ran: bool,
+    /// Its sessions that ended without the answer its format asked for, the stopped one too.
+    pub missed_answers: u32,
 }
 
 impl History {
@@ -27,6 +30,7 @@ impl History {
         let mut tries = BTreeSet::new();
         let mut last_commit = None;
         let mut last_check = None;
+        let mut missed_answers = 0;
         for event in events
             .iter()
             .filter(|event| event.task_id.as_ref() == Some(task))
@@ -46,6 +50,17 @@ impl History {
                     last_commit = Some(event.seq);
                 }
                 RunEventKind::Check(_) => last_check = Some(event.seq),
+                RunEventKind::Session(SessionEvent::Ended(end))
+                    if matches!(
+                        end.reason,
+                        EndReason::CliError {
+                            category: ErrorCategory::AnswerMissed,
+                            ..
+                        }
+                    ) =>
+                {
+                    missed_answers += 1;
+                }
                 _ => {}
             }
         }
@@ -58,6 +73,7 @@ impl History {
             fallbacks,
             checks_ran: last_check
                 .is_some_and(|check| last_commit.is_none_or(|commit| check > commit)),
+            missed_answers,
         }
     }
 }

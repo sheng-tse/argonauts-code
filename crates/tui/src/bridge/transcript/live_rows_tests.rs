@@ -28,6 +28,7 @@ pub(super) struct Screen {
     turn: TurnId,
     /// Rows printed so far, as the terminal's scrollback holds them.
     printed: Vec<Line<'static>>,
+    glyphs: Glyphs,
 }
 
 impl Screen {
@@ -39,6 +40,16 @@ impl Screen {
             transcript: Transcript::with_clock(WallClock::pinned(datetime!(2026-10-09 10:42 UTC))),
             turn: TurnId::numbered(1),
             printed: Vec::new(),
+            glyphs: Glyphs::UNICODE,
+        }
+    }
+
+    /// A screen that draws as on macOS, where items start with Claude Code's `⏺`, as the
+    /// pictures do.
+    pub fn on_macos() -> Self {
+        Self {
+            glyphs: Glyphs::MACOS,
+            ..Self::new()
         }
     }
 
@@ -57,6 +68,12 @@ impl Screen {
             out: &mut out,
         };
         self.transcript.on_event(&event, &mut cx);
+    }
+
+    /// An event the screen's state takes in first, as the app's does, and then prints.
+    pub fn seen(&mut self, event: AppEvent) {
+        self.state.apply(&event);
+        self.app(event);
     }
 
     pub fn ask(&mut self, text: &str) {
@@ -87,7 +104,8 @@ impl Screen {
 
     /// What prints, then the live region under it.
     pub fn lines(&mut self, width: u16) -> Vec<Line<'static>> {
-        let theme = Self::theme();
+        let mut theme = Self::theme();
+        theme.glyphs = self.glyphs.clone();
         let ctx = RenderCtx::new(width, &theme, Clock::still(Instant::now()));
         let printed = self.model.history.drain_printable(&ctx);
         self.printed.extend(printed);

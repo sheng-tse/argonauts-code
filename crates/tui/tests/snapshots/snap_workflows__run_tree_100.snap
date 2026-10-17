@@ -8,8 +8,8 @@ expression: "screen(&mut view, width, height, &state)"
 
  ╭ Phases ────────────┬ Do · 3 agents ──────────────────────────────────────────────────────╮
  │   ✔ Understand 2/2 │  ✔ worker · task-001     Opus · 402k tok · +3 subagents      25m40s │
- │   ✔ Plan       1/1 │  ↷ worker · task-002     GPT 5.6 · 181k tok · for Opus · +2… 10m12s │
- │ ❯ 3 Do         1/3 │  ⏺ worker · task-003     Gemini 3.6 on agy · 77.3k tok · +1 … 7m11s │
+ │   ✔ Plan       1/1 │  ↷ worker · task-002     GPT 5.6 · for Opus · +2 subagents   10m12s │
+ │ ❯ 3 Do         1/3 │  ⏺ worker · task-003     Gemini 3.6 on agy · +1 subagent      7m11s │
  │   4 Check      0/2 │                                                                     │
  │                    │                                                                     │
  │                    │                                                                     │

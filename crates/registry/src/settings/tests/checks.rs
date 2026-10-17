@@ -76,8 +76,8 @@ const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     ("sandbox.agents_commit", Some("true")),
     ("limits", None),
     // The keys the later changes and decisions added.
-    ("workflow", Some("\"council\"")),
-    ("workflow", Some("\"council\"")),
+    // With nothing naming one, Captain runs.
+    ("workflow", Some("\"captain\"")),
     ("crew.main", Some("\"claude-code\"")),
     ("crew", None),
     ("fallback.strategy", Some("\"first\"")),
@@ -110,7 +110,7 @@ const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     ("sessions.rotate_at", Some("0.9")),
     ("workflows.orchestrator_designs", Some("true")),
     ("workflows.allow_composed", Some("true")),
-    ("workflows.max_depth", Some("2")),
+    ("workflows.max_depth", Some("1")),
     ("workflows.adapt_at_phase_ends", Some("true")),
     ("ui.panel.subagents", Some("\"discovered\"")),
     ("ui.panel.agents", Some("false")),
@@ -173,7 +173,7 @@ fn resolved_hash_recorded() {
     repo.local("[ui]\nbell = false\n");
     let local = resolve(&repo.sources()).unwrap();
     assert_ne!(local.sha256, first.sha256);
-    repo.global_workflow("council", "[judging]\nanonymize = false\n");
+    repo.global_workflow("captain", "[judging]\nanonymize = false\n");
     assert_ne!(resolve(&repo.sources()).unwrap().sha256, local.sha256);
 }
 

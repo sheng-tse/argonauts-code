@@ -1200,7 +1200,7 @@ async fn a_check_broken_by_a_moved_main_passes_on_when_the_merger_fails() -> any
         .context("the fix's session")?
         .started
         .label;
-    assert_eq!(label.as_deref(), Some("fix after main-2"));
+    assert_eq!(label.as_deref(), Some("fix after main moved-2"));
     for file in ["store.rs", "while-waiting.txt", "fixed.txt"] {
         assert!(bench.repo.root().join(file).exists(), "{file}");
     }

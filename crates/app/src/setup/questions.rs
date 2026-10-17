@@ -59,6 +59,8 @@ pub(crate) enum Step {
     Telemetry,
     Trust,
     ProjectFolder,
+    /// Whether the guide pages go into this repo's `.argonauts/` too, asked once per repo.
+    Guides,
 }
 
 /// What the questions are built from.
@@ -74,6 +76,8 @@ pub(crate) struct SetupView {
     /// This repo's settings files that exist and aren't trusted yet.
     pub untrusted: Vec<PathBuf>,
     pub project_dir_exists: bool,
+    /// Your answer about the guide pages in this repo, once you gave one.
+    pub guides_answer: Option<bool>,
     /// The keys `/model` lists, one row of "Who does what" each.
     pub role_keys: Vec<String>,
     /// Each agent's models, by its id, its default first.
@@ -255,6 +259,7 @@ pub(crate) fn question(step: &Step, view: &SetupView, answers: &Answers) -> Opti
         Step::Telemetry => Some(telemetry_question(view)),
         Step::Trust => trust_question(view),
         Step::ProjectFolder => folder_question(view),
+        Step::Guides => guides_question(view, answers),
     }
 }
 
@@ -401,29 +406,19 @@ pub(super) fn kept_or_new(current: Option<ModelRef>, picked: &str) -> ModelRef {
         .unwrap_or_else(|| ModelRef::new(picked, None))
 }
 
+/// Orchestrator first and recommended, whatever is ready: with one CLI its main agent
+/// orchestrates. A workflow of your own that the file names comes after the built-in three.
 fn workflow_question(view: &SetupView) -> Question {
-    let recommended = if view.ready().count() >= 2 {
-        COUNCIL
-    } else {
-        CAPTAIN
-    };
-    // A name no workflow has, such as one an older file kept, runs the default, so it isn't
-    // offered back.
-    let first = view
-        .current_str("workflow")
-        .filter(|name| view.workflows.iter().any(|known| known == name))
-        .unwrap_or(recommended)
-        .to_owned();
     let mut answers = vec![
-        described(
-            COUNCIL,
-            "Council",
-            "No single planner: the agents propose, challenge, and review each other.",
-        ),
         described(
             ORCHESTRATOR,
             "Orchestrator",
             "One orchestrator you pick plans and delegates.",
+        ),
+        described(
+            COUNCIL,
+            "Council",
+            "No single planner: the agents propose, challenge, and review each other.",
         ),
         described(
             CAPTAIN,
@@ -431,10 +426,16 @@ fn workflow_question(view: &SetupView) -> Question {
             "The CLI you talk to does the work itself; ask in your own words for a reviewer or a workflow.",
         ),
     ];
-    if !answers.iter().any(|answer| answer.value == first) {
-        answers.push(described(&first, &shown_name(&first), "Your workflow now."));
+    // A name no workflow has, such as one an older file kept, runs the default, so it isn't
+    // offered back.
+    let yours = view
+        .current_str("workflow")
+        .filter(|name| view.workflows.iter().any(|known| known == name))
+        .filter(|name| !answers.iter().any(|answer| answer.value == *name))
+        .map(str::to_owned);
+    if let Some(yours) = yours {
+        answers.push(described(&yours, &shown_name(&yours), "Your workflow now."));
     }
-    answers.sort_by_key(|answer| answer.value != first);
     Question {
         kind: ChoiceKind::Init,
         title: "How the crew works".to_owned(),
@@ -595,6 +596,32 @@ fn folder_question(view: &SetupView) -> Option<Question> {
     })
 }
 
+/// Asked once in each repo that has an `.argonauts/` folder, or gets one now: the pages that say
+/// what goes there are written into it only after a yes.
+fn guides_question(view: &SetupView, answers: &Answers) -> Option<Question> {
+    let has_the_folder = view.project_dir_exists || answers.create_project_dir;
+    if view.guides_answer.is_some() || !has_the_folder {
+        return None;
+    }
+    Some(Question {
+        kind: ChoiceKind::Init,
+        title: "Guide pages in this repo".to_owned(),
+        body: vec![
+            "README pages that say what each file in .argonauts/ does. ~/.argonauts/ has them \
+             either way."
+                .to_owned(),
+        ],
+        options: init_options(&[
+            described("no", "Not here", "Nothing is written into this repo."),
+            described(
+                "yes",
+                "Write them",
+                ".argonauts/README.md, and one each in workflows/, roles/ and mods/.",
+            ),
+        ]),
+    })
+}
+
 /// Records the answer and returns the line the transcript keeps. The caller checked that the
 /// question offered `value`.
 pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut Answers) -> String {
@@ -686,6 +713,14 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
                 "Made .argonauts/ here.".to_owned()
             } else {
                 ".argonauts/ is made when you first save a project setting.".to_owned()
+            }
+        }
+        Step::Guides => {
+            answers.guides = Some(value == "yes");
+            if value == "yes" {
+                "Guide pages: written into .argonauts/ here too.".to_owned()
+            } else {
+                "Guide pages: only in ~/.argonauts/.".to_owned()
             }
         }
     }
@@ -783,14 +818,18 @@ mod tests {
     }
 
     #[test]
-    fn captain_is_recommended_with_fewer_than_two_ready() {
+    fn orchestrator_comes_first_and_is_recommended_whatever_is_ready() {
+        let none = view(Vec::new());
         let one = view(vec![agent("codex", "Codex", AgentStatus::Tested)]);
-        assert_eq!(values(&workflow_question(&one))[0], CAPTAIN);
         let two = view(vec![
             agent("codex", "Codex", AgentStatus::Tested),
             agent("claude-code", "Claude Code", AgentStatus::Tested),
         ]);
-        assert_eq!(values(&workflow_question(&two))[0], COUNCIL);
+        for view in [none, one, two] {
+            let question = workflow_question(&view);
+            assert_eq!(values(&question), [ORCHESTRATOR, COUNCIL, CAPTAIN]);
+            assert!(question.options[0].recommended);
+        }
     }
 
     #[test]
@@ -815,7 +854,7 @@ mod tests {
         let mut one = view(vec![agent("codex", "Codex", AgentStatus::Tested)]);
         one.current = toml::from_str("workflow = \"retired-mode\"\n").unwrap();
         let question = workflow_question(&one);
-        assert_eq!(values(&question), [CAPTAIN, COUNCIL, ORCHESTRATOR]);
+        assert_eq!(values(&question), [ORCHESTRATOR, COUNCIL, CAPTAIN]);
         assert!(question.options[0].recommended);
         assert!(
             question.options[1..]
@@ -830,7 +869,32 @@ mod tests {
         two.current = one.current.clone();
         assert_eq!(
             values(&workflow_question(&two)),
-            [COUNCIL, ORCHESTRATOR, CAPTAIN]
+            [ORCHESTRATOR, COUNCIL, CAPTAIN]
+        );
+    }
+
+    #[test]
+    fn the_crew_question_reads_as_the_picture_draws_it() {
+        use crate::golden::{assert_looks, drawn_rows, picture_rows, still, theme};
+        let question = workflow_question(&view(vec![agent("codex", "Codex", AgentStatus::Tested)]));
+        let choice = crate::choices::app_choice(
+            argonauts_core::names::ChoiceId::numbered(1),
+            question.kind,
+            question.title,
+            question.body,
+            question.options,
+        );
+        let theme = theme();
+        let lines = argonauts_tui::questions::choice_question(1, &choice).lines(&still(&theme));
+        crate::golden::dump("setup_question", &lines);
+        assert_eq!(
+            drawn_rows(&lines),
+            picture_rows(include_str!("../../tests/golden/setup_question.txt"))
+        );
+        assert_looks(
+            &theme,
+            &lines,
+            include_str!("../../tests/golden/setup_question.html"),
         );
     }
 
@@ -839,8 +903,9 @@ mod tests {
         let mut view = view(vec![agent("codex", "Codex", AgentStatus::Tested)]);
         view.current = toml::from_str("workflow = \"best-of-n\"\n").unwrap();
         let question = workflow_question(&view);
-        assert_eq!(values(&question)[0], "best-of-n");
-        assert_eq!(question.options[0].label, "Best-of-n");
+        assert_eq!(values(&question)[3], "best-of-n");
+        assert_eq!(question.options[3].label, "Best-of-n");
+        assert!(question.options[0].recommended);
     }
 
     #[test]
@@ -855,9 +920,9 @@ mod tests {
         }
         view.current = toml::from_str(&file).unwrap();
         assert_eq!(values(&main_agent_question(&view).unwrap())[0], "codex");
+        // The workflow step recommends Orchestrator every time, and keeps yours on offer.
         let workflows = values(&workflow_question(&view));
-        assert_eq!(workflows[0], "best-of-n");
-        assert_eq!(workflows.len(), 4);
+        assert_eq!(workflows, [ORCHESTRATOR, COUNCIL, CAPTAIN, "best-of-n"]);
         assert_eq!(
             values(&approvals_question(&view)),
             vec!["auto_preview", "auto", "autopilot", "supervised"]

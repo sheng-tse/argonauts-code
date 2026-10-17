@@ -18,7 +18,7 @@ use argonauts_core::events::session::SessionEvent;
 use argonauts_core::events::task::{MergeEvent, TaskEvent, TaskState};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::session_runner::Access;
-use argonauts_scenarios::{Scenario, WAIT, past_the_question_guard, scenario_file};
+use argonauts_scenarios::{Scenario, WAIT, as_set_up, past_the_question_guard, scenario_file};
 use argonauts_testkit::{FakeScenario, Key, Pty};
 
 const REQUEST: &str = "add per-key rate limiting to the public API";
@@ -99,7 +99,7 @@ fn crew_scenario() -> anyhow::Result<Scenario> {
     if let Some(dir) = config.parent() {
         fs::create_dir_all(dir)?;
     }
-    fs::write(config, CREW_CONFIG)?;
+    fs::write(config, as_set_up(CREW_CONFIG))?;
     scenario.repo.write(
         "package.json",
         "{ \"name\": \"acme-api\", \"scripts\": { \"test\": \"vitest run\" } }\n",
@@ -637,7 +637,7 @@ fn crew_autopilot_runs_to_merge_without_a_question() -> anyhow::Result<()> {
     }
     // The run's limit goes in the table the hard limits already opened.
     let config = config.replace("[limits]\n", "[limits]\nspend_per_run = 100.0\n");
-    fs::write(scenario.repo.global_config(), config)?;
+    fs::write(scenario.repo.global_config(), as_set_up(&config))?;
     let pty = run(&scenario)?;
     let outcome = wait_for_event(&scenario, STEPS_WAIT * 2, finished)?;
     assert_eq!(outcome, RunOutcome::Merged);

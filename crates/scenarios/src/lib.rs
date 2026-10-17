@@ -14,11 +14,33 @@ mod leftovers;
 
 pub const WAIT: Duration = Duration::from_secs(20);
 
-/// A question that takes the keys by itself works only the arrows for its first 400 ms (the
-/// screen's `QUESTION_GUARD`), so a key meant for something else never answers it. A test waits
-/// that out before working a question, as someone reading it would.
+/// A question works only the arrows for its first moment on screen (the screen's
+/// `QUESTION_GUARD`), so a key meant for something else never answers it. A test waits that out
+/// before working a question, as someone reading it would.
 pub fn past_the_question_guard() {
     std::thread::sleep(Duration::from_millis(500));
+}
+
+/// The workflow line a setup that picked council writes, with its comment.
+const SET_UP_WORKFLOW: &str =
+    "# Set up with council, the crew these scenarios follow.\nworkflow = \"council\"\n";
+
+/// `settings` as a setup leaves them: naming council, the crew these scenarios follow, unless
+/// they name a workflow already. With no setting naming one, Captain would run.
+pub fn as_set_up(settings: &str) -> String {
+    let before_tables = settings
+        .lines()
+        .take_while(|line| !line.trim_start().starts_with('['));
+    let names_one = before_tables.into_iter().any(|line| {
+        line.trim_start()
+            .strip_prefix("workflow")
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    });
+    if names_one {
+        settings.to_owned()
+    } else {
+        format!("{SET_UP_WORKFLOW}{settings}")
+    }
 }
 
 pub const ROWS: u16 = 32;
@@ -125,6 +147,19 @@ pub fn pause_run(pty: &mut Pty) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use argonauts_testkit::FakeScenario;
+
+    #[test]
+    fn settings_as_set_up_name_council_unless_they_name_a_workflow() {
+        assert_eq!(
+            as_set_up("# mine\n[ui]\nkeys = \"vim\"\n"),
+            format!("{SET_UP_WORKFLOW}# mine\n[ui]\nkeys = \"vim\"\n")
+        );
+        let named = "workflow = \"captain\"\n[ui]\n";
+        assert_eq!(as_set_up(named), named);
+        // A key named workflow inside a table is not the workflow setting.
+        assert!(as_set_up("[ui]\nworkflow = \"x\"\n").starts_with(SET_UP_WORKFLOW));
+        assert!(as_set_up("[crew]\nworkflows = 1\n").starts_with(SET_UP_WORKFLOW));
+    }
 
     #[test]
     fn doctor_finds_the_fake_clis() {

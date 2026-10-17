@@ -124,6 +124,7 @@ pub async fn write(host: &Host, writing: &Writing) -> EngineResult<()> {
         label: Some(merger::COMMIT_MESSAGE.to_owned()),
         reviews: false,
         fresh: true,
+        independent_of: Vec::new(),
     };
     if writing.stopped() {
         return Ok(());

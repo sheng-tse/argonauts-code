@@ -9,14 +9,14 @@ expression: "screen(&mut view, width, height, &state)"
  ╭ Build · 7 agents ───────────┬ build:a-terminal-bottom ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ ✔ build:a-terminal-bottom │ ✔ Done · Opus on Claude Code                                                                                                                                   │
  │   ✔ build:b-history-cells   │ 381k tok · 195 tool calls · 6m 2s                                                                                                                              │
- │   ✘ build:d-plain-mode      │                                                                                                                                                                │
- │                             │ Prompt · 14 lines · ⏎ expand                                                                                                                                   │
- │                             │   Build the terminal and the whole bottom region of the UI kit.                                                                                                │
- │                             │   … 13 more lines                                                                                                                                              │
- │                             │ Activity · last 3 of 195 tool calls · ⏎ expand                                                                                                                 │
- │                             │   ⏺ Bash(cargo test -p argonauts-tui composer) · error                                                                                                         │
- │                             │   ⏺ Bash(cargo clippy -p argonauts-tui --all-targets -- -D warnings)                                                                                           │
- │                             │   ◌ Bash(cargo test -p argonauts-tui) · no result                                                                                                              │
+ │   ▾ build:c-demo-tests      │                                                                                                                                                                │
+ │     ✔ Draft   2/2           │ Prompt · 14 lines · ⏎ expand                                                                                                                                   │
+ │       ✔ draft:scenes        │   Build the terminal and the whole bottom region of the UI kit.                                                                                                │
+ │       ✔ draft:snapshots     │   … 13 more lines                                                                                                                                              │
+ │     2 Test    0/2           │ Activity · last 3 of 195 tool calls · ⏎ expand                                                                                                                 │
+ │       ⏺ test:scenes         │   ⏺ Bash(cargo test -p argonauts-tui composer) · error                                                                                                         │
+ │       ⏺ test:snapshots      │   ⏺ Bash(cargo clippy -p argonauts-tui --all-targets -- -D warnings)                                                                                           │
+ │   ✘ build:d-plain-mode      │   ◌ Bash(cargo test -p argonauts-tui) · no result                                                                                                              │
  │                             │ Diff · 4 files · +120 -18 · d open                                                                                                                             │
  │                             │ Subagents · 4 · structure not exposed · ⏎ expand                                                                                                               │
  │                             │   ✔ explorer  done · Found 14 call sites                                                                                                                       │

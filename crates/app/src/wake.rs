@@ -1,5 +1,7 @@
-//! Which waiting runs wake now. A run waiting for `AllAgentsOut`, `WaitingForAgent`, or
-//! `NoFallback` wakes once its `until` has passed or its agent left `Down`; a fallback approval
+//! Which waiting runs wake now. A run waiting for `AllAgentsOut` or `WaitingForAgent`, an
+//! outage you chose to wait out, wakes once its `until` has passed or its agent left `Down`. A
+//! run that stopped fully (`NoFallback`) never wakes on its own: waiting can't bring a model or
+//! a login back, so only `/resume` carries it on. A fallback approval
 //! wakes once its role's `ask_timeout` has passed since it opened; a merge approval whose debt
 //! waits for an original that was out wakes once that original is back, so its `on_return` can
 //! act. The engine records the cause. A wake never approves anything.
@@ -27,6 +29,8 @@ use crate::env::AppEnv;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WakeCause {
     AgentBack,
+    /// The time it waited for passed.
+    Timer,
     AskTimeout,
 }
 
@@ -105,6 +109,21 @@ struct OpenFallback {
 }
 
 impl WaitingRuns {
+    /// The soonest time a run waiting out an outage tries again, after `now`, as its journal
+    /// said when last read, so the app wakes it then rather than up to a check later.
+    pub(crate) fn soonest(&self, now: OffsetDateTime) -> Option<OffsetDateTime> {
+        self.known
+            .values()
+            .filter_map(|known| match &known.wait {
+                Some(Wait::Cli {
+                    until: Some(until), ..
+                }) => Some(*until),
+                _ => None,
+            })
+            .filter(|until| *until > now)
+            .min()
+    }
+
     /// This repo's waiting runs that should wake now. This reads files, so call it off the async
     /// threads.
     pub(crate) fn due(
@@ -170,14 +189,14 @@ impl Wait {
         };
         let events = || journal::read_all(&events_path).ok().map(|back| back.events);
         match reason {
-            // No fallback could take a job: it tries again at its `until`, or once an agent
-            // that went down is back.
-            WaitReason::AllAgentsOut { until } | WaitReason::NoFallback { until, .. } => {
-                Some(Self::Cli {
-                    until,
-                    down_at_wait: agents_down_at_wait(&events()?),
-                })
-            }
+            // Every agent is out: it tries again at its `until`, or once an agent that went
+            // down is back.
+            WaitReason::AllAgentsOut { until } => Some(Self::Cli {
+                until,
+                down_at_wait: agents_down_at_wait(&events()?),
+            }),
+            // Nothing could take a job the run needs, so it stopped until you carry it on.
+            WaitReason::NoFallback { .. } => None,
             WaitReason::WaitingForAgent { agent_id, until } => {
                 let mut down_at_wait = agents_down_at_wait(&events()?);
                 down_at_wait.retain(|down| *down == agent_id);
@@ -239,7 +258,11 @@ fn woke_for_agent(
     let back = down_at_wait
         .iter()
         .any(|agent_id| health.state(agent_id).state != HealthState::Down);
-    (time_passed || back).then_some(WakeCause::AgentBack)
+    if back {
+        Some(WakeCause::AgentBack)
+    } else {
+        time_passed.then_some(WakeCause::Timer)
+    }
 }
 
 /// Agents whose last health event in the run said `Down`.
@@ -488,59 +511,48 @@ mod tests {
             ],
         );
         let due = WaitingRuns::default().due(&env, &Settings::default(), &Board::default(), now);
-        assert_eq!(due, vec![(past, WakeCause::AgentBack)]);
+        assert_eq!(due, vec![(past, WakeCause::Timer)]);
     }
 
     /// A run with no fallback for its jobs tries again at its `until`, with no agent to come
     /// back: an auth error or a usage limit never marks one down.
     #[test]
-    fn a_run_with_no_fallback_wakes_at_its_retry() {
+    fn a_run_that_stopped_fully_never_wakes_on_its_own() {
         let home = TestHome::new();
         let env = home.env(true);
         let now = OffsetDateTime::now_utc();
-        let stalled = |until| WaitReason::NoFallback {
-            detail: "no fallback for the main agent".to_owned(),
+        let stopped = |until| WaitReason::NoFallback {
+            detail: "nobody to fall back to as the task's worker".to_owned(),
             until,
+            stop: None,
         };
-        let due_now = run("0f01");
+        // An older run that said it would try again at a time long past, and one that stopped
+        // with none: only your `/resume` carries either on.
+        let older = run("0f01");
         home.run_with(
             &env,
-            &due_now,
+            &older,
             &[
                 run_started(0, "stalled", None),
                 waiting_run(
                     1,
                     now - time::Duration::minutes(6),
-                    stalled(Some(now - time::Duration::minutes(1))),
+                    stopped(Some(now - time::Duration::minutes(1))),
                     Vec::new(),
                 ),
             ],
         );
-        let later = run("0f02");
+        let stopped_now = run("0f02");
         home.run_with(
             &env,
-            &later,
+            &stopped_now,
             &[
                 run_started(0, "stalled", None),
-                waiting_run(
-                    1,
-                    now,
-                    stalled(Some(now + time::Duration::minutes(5))),
-                    Vec::new(),
-                ),
-            ],
-        );
-        let given_up = run("0f03");
-        home.run_with(
-            &env,
-            &given_up,
-            &[
-                run_started(0, "stalled", None),
-                waiting_run(1, now, stalled(None), Vec::new()),
+                waiting_run(1, now, stopped(None), Vec::new()),
             ],
         );
         let due = WaitingRuns::default().due(&env, &Settings::default(), &Board::default(), now);
-        assert_eq!(due, vec![(due_now, WakeCause::AgentBack)]);
+        assert_eq!(due, Vec::new());
     }
 
     #[test]
@@ -707,6 +719,7 @@ mod tests {
                 by: worker("codex"),
                 needs: worker("claude-code"),
             }],
+            questions: Vec::new(),
         };
         let packet = MergePacket {
             target: Some("main".to_owned()),
@@ -852,7 +865,7 @@ mod tests {
         assert_eq!(waiting_runs.reads, 1, "an unchanged journal is read once");
         assert_eq!(
             waiting_runs.due(&env, &settings, &board, now + time::Duration::hours(2)),
-            vec![(waiting.clone(), WakeCause::AgentBack)],
+            vec![(waiting.clone(), WakeCause::Timer)],
             "what the journal said is checked against the time now"
         );
         assert_eq!(waiting_runs.reads, 1);
@@ -873,7 +886,7 @@ mod tests {
         );
         assert_eq!(
             waiting_runs.due(&env, &settings, &board, now),
-            vec![(later.clone(), WakeCause::AgentBack)]
+            vec![(later.clone(), WakeCause::Timer)]
         );
         assert_eq!(waiting_runs.reads, 2, "only the new journal is read");
         home.run_with(
@@ -884,8 +897,8 @@ mod tests {
         assert_eq!(
             waiting_runs.due(&env, &settings, &board, now),
             vec![
-                (waiting.clone(), WakeCause::AgentBack),
-                (later.clone(), WakeCause::AgentBack)
+                (waiting.clone(), WakeCause::Timer),
+                (later.clone(), WakeCause::Timer)
             ]
         );
         assert_eq!(waiting_runs.reads, 3, "a grown journal is read again");
@@ -893,7 +906,7 @@ mod tests {
         std::fs::remove_dir_all(env.run_dir(&waiting)).unwrap();
         assert_eq!(
             waiting_runs.due(&env, &settings, &board, now),
-            vec![(later, WakeCause::AgentBack)]
+            vec![(later, WakeCause::Timer)]
         );
         assert!(
             !waiting_runs.known.contains_key(&waiting),

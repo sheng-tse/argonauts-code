@@ -5,7 +5,9 @@
 use argonauts_core::NoteLevel;
 use argonauts_core::app::AppEvent;
 use argonauts_core::events::session::{InputPart, InputPartKind};
+use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::settings::ui::OutputStyle;
 
 use super::{ConversationState, direct, request_planned};
 use crate::controller::turn::{self, fast_choice};
@@ -14,82 +16,65 @@ use crate::controller::{Ctx, Effect};
 /// Kept across `/clear`, `/branch`, and `/resume` until the app closes.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct Prefs {
+    /// From `main_session.fast` at start and whenever it is saved; `/fast` changes it for the
+    /// app session.
     pub fast: bool,
+    /// From `ui.output_style` at start and whenever it is saved; `/output-style` changes it
+    /// for the app session.
     pub style: OutputStyle,
     /// Runs from the conversation plan first and wait for you to approve the plan.
     pub plan_first: bool,
 }
 
 impl Prefs {
-    /// What every conversation turn is told after its own prompt.
-    pub(super) fn notes(&self) -> Vec<InputPart> {
-        self.style
-            .instruction()
-            .map(|text| turn::part(InputPartKind::Prompt, "output style", text.to_owned()))
-            .into_iter()
-            .collect()
+    pub(super) fn starting(settings: &Settings) -> Self {
+        Self {
+            fast: settings.main_session.fast,
+            style: settings.ui.output_style,
+            ..Self::default()
+        }
+    }
+
+    /// What every conversation turn is told after its own prompt: the style to write in, and
+    /// the language you set, which Claude Code also takes as a setting of its own.
+    pub(super) fn notes(&self, settings: &Settings) -> Vec<InputPart> {
+        let style = instruction(self.style)
+            .map(|text| turn::part(InputPartKind::Prompt, "output style", text.to_owned()));
+        let language = settings.main_session.language.trim();
+        let language = (!language.is_empty()).then(|| {
+            let text = format!("Write your answer in {language}.");
+            turn::part(InputPartKind::Prompt, "language", text)
+        });
+        style.into_iter().chain(language).collect()
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) enum OutputStyle {
-    #[default]
-    Default,
-    Brief,
-    Explanatory,
-    Learning,
+/// What `/output-style` says each style does.
+fn describe(style: OutputStyle) -> &'static str {
+    match style {
+        OutputStyle::Default => "Answers as the agent writes them",
+        OutputStyle::Brief => "The answer first, in as few words as it takes",
+        OutputStyle::Explanatory => "Says why things work as they do, and what choices trade off",
+        OutputStyle::Learning => "Teaches the ideas behind the answer, with something to try",
+    }
 }
 
-impl OutputStyle {
-    const ALL: [OutputStyle; 4] = [
-        OutputStyle::Default,
-        OutputStyle::Brief,
-        OutputStyle::Explanatory,
-        OutputStyle::Learning,
-    ];
-
-    fn name(self) -> &'static str {
-        match self {
-            OutputStyle::Default => "default",
-            OutputStyle::Brief => "brief",
-            OutputStyle::Explanatory => "explanatory",
-            OutputStyle::Learning => "learning",
-        }
-    }
-
-    fn describe(self) -> &'static str {
-        match self {
-            OutputStyle::Default => "Answers as the agent writes them",
-            OutputStyle::Brief => "The answer first, in as few words as it takes",
-            OutputStyle::Explanatory => {
-                "Says why things work as they do, and what choices trade off"
-            }
-            OutputStyle::Learning => "Teaches the ideas behind the answer, with something to try",
-        }
-    }
-
-    fn instruction(self) -> Option<&'static str> {
-        match self {
-            OutputStyle::Default => None,
-            OutputStyle::Brief => Some(
-                "Write the answer briefly: put it first, in as few words as it takes, with no \
-                 preamble and no summary at the end.",
-            ),
-            OutputStyle::Explanatory => Some(
-                "As you answer, explain why things work the way they do, and point out the \
-                 choices in the code and what each one trades off.",
-            ),
-            OutputStyle::Learning => Some(
-                "Teach as you answer: explain the ideas behind it step by step, as to someone \
-                 learning them, and end with one small thing to try.",
-            ),
-        }
-    }
-
-    fn find(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|style| style.name().eq_ignore_ascii_case(name))
+/// What each turn is told, after its prompt, to write in `style`.
+fn instruction(style: OutputStyle) -> Option<&'static str> {
+    match style {
+        OutputStyle::Default => None,
+        OutputStyle::Brief => Some(
+            "Write the answer briefly: put it first, in as few words as it takes, with no \
+             preamble and no summary at the end.",
+        ),
+        OutputStyle::Explanatory => Some(
+            "As you answer, explain why things work the way they do, and point out the \
+             choices in the code and what each one trades off.",
+        ),
+        OutputStyle::Learning => Some(
+            "Teach as you answer: explain the ideas behind it step by step, as to someone \
+             learning them, and end with one small thing to try.",
+        ),
     }
 }
 
@@ -135,7 +120,7 @@ pub(crate) fn output_style(
                 } else {
                     ""
                 };
-                format!("{} · {}{used}", style.name(), style.describe())
+                format!("{} · {}{used}", style.name(), describe(style))
             })
             .collect();
         lines.push("/output-style <style> picks one.".to_owned());
@@ -145,7 +130,7 @@ pub(crate) fn output_style(
         });
         return Ok(Vec::new());
     };
-    let Some(style) = OutputStyle::find(name.trim()) else {
+    let Some(style) = OutputStyle::find(&name) else {
         let names: Vec<&str> = OutputStyle::ALL
             .into_iter()
             .map(OutputStyle::name)
@@ -162,6 +147,24 @@ pub(crate) fn output_style(
     };
     ctx.notice(NoteLevel::Info, text);
     Ok(Vec::new())
+}
+
+/// A saved `ui.output_style` or `main_session.fast` takes over from what the app session had.
+pub(crate) fn saved(ctx: &Ctx, conversation: &mut ConversationState, keys: &[String]) {
+    let saved = |wanted: &str| {
+        keys.iter().any(|key| {
+            key == wanted
+                || wanted
+                    .strip_prefix(key.as_str())
+                    .is_some_and(|rest| rest.starts_with('.'))
+        })
+    };
+    if saved("ui.output_style") {
+        conversation.prefs.style = ctx.settings().ui.output_style;
+    }
+    if saved("main_session.fast") {
+        conversation.prefs.fast = ctx.settings().main_session.fast;
+    }
 }
 
 /// `/plan <task>` sends the task with its run planned first; `/plan` alone turns planning
@@ -205,13 +208,35 @@ mod tests {
         assert_eq!(OutputStyle::find("Brief"), Some(OutputStyle::Brief));
         assert_eq!(OutputStyle::find("terse"), None);
         let prefs = Prefs::default();
-        assert!(prefs.notes().is_empty());
+        let settings = Settings::default();
+        assert!(prefs.notes(&settings).is_empty());
         let prefs = Prefs {
             style: OutputStyle::Learning,
             ..Prefs::default()
         };
-        let notes = prefs.notes();
+        let notes = prefs.notes(&settings);
         assert_eq!(notes.len(), 1);
         assert!(notes[0].text.starts_with("Teach as you answer"));
+    }
+
+    #[test]
+    fn a_session_starts_in_the_saved_style_and_speed() {
+        let mut settings = Settings::default();
+        settings.ui.output_style = OutputStyle::Explanatory;
+        let prefs = Prefs::starting(&settings);
+        assert_eq!(prefs.style, OutputStyle::Explanatory);
+        assert!(!prefs.fast && !prefs.plan_first);
+        settings.main_session.fast = true;
+        assert!(Prefs::starting(&settings).fast);
+    }
+
+    #[test]
+    fn a_language_you_set_is_told_with_each_answer() {
+        let mut settings = Settings::default();
+        assert!(Prefs::default().notes(&settings).is_empty());
+        settings.main_session.language = " japanese ".into();
+        let notes = Prefs::default().notes(&settings);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].text, "Write your answer in japanese.");
     }
 }

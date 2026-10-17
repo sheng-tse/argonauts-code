@@ -13,7 +13,8 @@ pub struct WorkflowSettings {
     pub orchestrator_designs: OrchestratorDesigns,
     /// The main agent may compose new workflows from the step kinds. Code validates them first.
     pub allow_composed: bool,
-    /// Nesting depth, at most 2.
+    /// How many levels of workflows a run may hold inside its own: 0 for none, 1 by default for
+    /// a workflow inside it, and 2 at most, for one inside that.
     pub max_depth: u32,
     /// At a phase boundary the main agent may propose a change, which goes through the
     /// `change_request` approval.
@@ -24,6 +25,9 @@ pub struct WorkflowSettings {
     /// has the orchestrator write the steps for each request, and `phases` runs the fixed
     /// phases of the workflow's name.
     pub adapt_with: AdaptWith,
+    /// The word `ultracode` in a prompt sends that request through a workflow, and Claude
+    /// Code's own trigger follows this. Off, the word is only a word.
+    pub ultracode_trigger: bool,
 }
 
 /// The journal's and the views' word for whether a goal goes round a run's workflow. Every run
@@ -52,10 +56,11 @@ impl Default for WorkflowSettings {
         Self {
             orchestrator_designs: OrchestratorDesigns::Yours(true),
             allow_composed: true,
-            max_depth: 2,
+            max_depth: 1,
             adapt_at_phase_ends: true,
             final_check: true,
             adapt_with: AdaptWith::default(),
+            ultracode_trigger: true,
         }
     }
 }

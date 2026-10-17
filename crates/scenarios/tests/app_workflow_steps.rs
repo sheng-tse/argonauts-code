@@ -27,6 +27,16 @@ fn wait_merged(run_dir: &std::path::Path) -> anyhow::Result<()> {
     .map(|_| ())
 }
 
+/// Whether the Phases pane's row of `phase` shows `count` after its name.
+fn phase_counts(view: &str, phase: &str, count: &str) -> bool {
+    view.lines()
+        .filter_map(|line| line.split('\u{2502}').nth(1))
+        .any(|row| {
+            let words: Vec<&str> = row.split_whitespace().collect();
+            words.windows(2).any(|pair| pair == [phase, count])
+        })
+}
+
 /// The first row of `screen` that holds `words`, without the blanks at its end.
 fn line_with(screen: &str, words: &str) -> String {
     screen
@@ -164,7 +174,8 @@ fn app_crew_request_runs_the_steps_its_orchestrator_writes() -> anyhow::Result<(
     pty.press(Key::Ctrl('t'))?;
     let view = pty.wait_for(r"esc back · s save", WAIT)?.visible_text();
     let header = line_with(&view, &format!("  {agents}/{agents} agents · "));
-    assert!(header.starts_with(" council workflow · "), "{view}");
+    // A council is the mode itself, named before what the run does.
+    assert!(header.starts_with(" Council · "), "{view}");
     assert!(header.ends_with(" · done"), "{view}");
     let merged = line_with(&view, "Merged onto main · ");
     assert!(
@@ -172,14 +183,9 @@ fn app_crew_request_runs_the_steps_its_orchestrator_writes() -> anyhow::Result<(
         "{view}"
     );
     assert!(merged.ends_with(" · 1 file +1 \u{2212}0"), "{view}");
-    assert!(
-        line_with(&view, " Build ").contains(" Build  1/1 "),
-        "{view}"
-    );
-    assert!(
-        line_with(&view, " Review ").contains(" Review 1/1 "),
-        "{view}"
-    );
+    // A phase's count sits at the Phases pane's edge, however long its name.
+    assert!(phase_counts(&view, "Build", "1/1"), "{view}");
+    assert!(phase_counts(&view, "Review", "1/1"), "{view}");
     let in_phases: u32 = view
         .lines()
         .filter_map(|line| line.split('\u{2502}').nth(1))
@@ -227,8 +233,9 @@ fn app_crew_run_in_a_folder_without_git_says_what_it_wrote() -> anyhow::Result<(
 
     pty.press(Key::Ctrl('t'))?;
     let view = pty.wait_for(r"esc back · s save", WAIT)?.visible_text();
-    let header = line_with(&view, "council workflow · ");
-    assert!(header.starts_with(" council workflow · "), "{view}");
+    let header = line_with(&view, "Council · ");
+    // A council is the mode itself, named before what the run does.
+    assert!(header.starts_with(" Council · "), "{view}");
     assert!(
         header.contains("/2 agents · ") && header.ends_with(" · done"),
         "{view}"
@@ -375,6 +382,7 @@ fn app_workflow_of_your_own_is_made_tried_and_put_in_use() -> anyhow::Result<()>
     )?;
 
     // Only its own key answers it: n, or y to run it.
+    argonauts_scenarios::past_the_question_guard();
     pty.press(Key::Char('n'))?;
     pty.wait_for(
         r"Spec-first preview for 'add due dates' · nothing ran",

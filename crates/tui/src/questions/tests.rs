@@ -215,6 +215,7 @@ fn merge() -> ApprovalOpened {
         checks_passed: true,
         review: Some(ReviewVerdict::Approve),
         debt: Vec::new(),
+        questions: Vec::new(),
     };
     let packet = MergePacket {
         target: Some("main".into()),
@@ -485,17 +486,23 @@ fn scope_choice() -> AppChoice {
 
 #[test]
 fn a_question_asks_over_any_view() {
-    // One a change in a view raised, and one work raised: a view on top would keep the keys.
-    for kind in [
-        ChoiceKind::SettingScope,
-        ChoiceKind::ConfirmSafetySetting,
-        ChoiceKind::StartWork,
-    ] {
+    // One work raised: a view on top would keep the keys.
+    let mut screen = Screen::new();
+    let out = screen.event(AppEvent::Choice {
+        choice: choice(ChoiceKind::StartWork, Vec::new()),
+    });
+    assert!(out.close_views, "it would wait behind the view");
+    // One a change in a view raised closes the views but one that stays up for it, as Config
+    // does for the change it sent.
+    for kind in [ChoiceKind::SettingScope, ChoiceKind::ConfirmSafetySetting] {
         let mut screen = Screen::new();
         let out = screen.event(AppEvent::Choice {
             choice: choice(kind, Vec::new()),
         });
-        assert!(out.close_views, "{kind:?} would wait behind the view");
+        assert!(
+            out.views_make_way && !out.close_views,
+            "{kind:?} would wait behind the view, or close the one it asks for"
+        );
     }
 }
 
@@ -603,10 +610,9 @@ fn a_choice_you_set_off_opens_with_the_keys() {
     let unclear = choice_question(2, &choice(ChoiceKind::StartWork, Vec::new()));
     assert!(unclear.needs_you && !unclear.takes_focus && !unclear.esc_answers);
 
-    // A number answers it, never a letter, and after letters only once a key meant for the
-    // question comes first.
+    // A number answers it, never a letter.
     let question = screen.model.bottom.question.as_mut().unwrap();
-    for c in ['s', 'm', 'p', 'e', '/', '4'] {
+    for c in ['s', 'm', 'p', 'e', '/'] {
         assert_eq!(
             question.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
             QuestionEvent::Unhandled
@@ -810,6 +816,30 @@ fn esc_hands_a_run_question_on() {
     assert!(screen.question().focused && !screen.question().dismissed);
 }
 
+/// Esc's line says the question was left to the agent, so the decision the engine records for
+/// it prints nothing more: the line shows once.
+#[test]
+fn esc_s_line_prints_once() {
+    use argonauts_core::events::approval::LEFT_TO_THE_AGENT;
+
+    let mut screen = Screen::new();
+    let mut opened = merge();
+    opened.kind = ApprovalKind::Question;
+    screen.event(opened_event(opened));
+    screen.keys(&[KeyCode::Esc]);
+    let before = screen.history().len();
+    let mut left = decided(AnswerAction::Answer, Party::Declined);
+    left.text = Some(LEFT_TO_THE_AGENT.to_owned());
+    screen.event(approval(ApprovalEvent::Decided(left)));
+    let history = screen.history();
+    assert_eq!(history.len(), before, "{history:#?}");
+    let lines = history
+        .iter()
+        .filter(|line| line.contains("left to the agent"))
+        .count();
+    assert_eq!(lines, 1, "{history:#?}");
+}
+
 /// What Esc left reads as left, by you, and never quotes what the agent was told.
 #[test]
 fn a_question_you_left_is_recorded_as_left_to_the_agent() {
@@ -875,11 +905,9 @@ fn fallback_remember_toggle_sets_remember() {
     );
     screen.keys(&[KeyCode::Char(number)]);
     assert!(
-        !screen.questions.open[&id].remember,
-        "nor the number after it, until a key meant for the task"
+        screen.questions.open[&id].remember,
+        "its number turns it on"
     );
-    screen.keys(&[KeyCode::Down, KeyCode::Char(number)]);
-    assert!(screen.questions.open[&id].remember);
     assert!(screen.question().options.last().unwrap().on);
     screen.keys(&[KeyCode::Char(number)]);
     assert!(
@@ -1623,6 +1651,21 @@ fn the_merge_table_names_tasks_by_label() {
     assert!(labeled.contains("task-003"), "{labeled}");
     // Without the run, as the screen reader reads it to type ids, the ids stay.
     assert!(table(None).contains("task-002"));
+
+    // A task titled with the label its worker goes by is named once.
+    let mut opened = opened;
+    if let ApprovalPacket::Merge(merge) = &mut opened.packet {
+        "build:writer".clone_into(&mut merge.rows[0].title);
+    }
+    let once = about_item(
+        &opened,
+        Some(&run),
+        UtcOffset::UTC,
+        &DisplayNames::default(),
+    )
+    .map(|item| item.plain(100).join("\n"))
+    .unwrap_or_default();
+    assert_eq!(once.matches("build:writer").count(), 1, "{once}");
 }
 
 /// With no command checks set nothing ran on the latest main, and the question says so rather than
@@ -1668,6 +1711,46 @@ fn a_merge_without_a_suite_says_none_ran() {
     assert!(
         question.contains("suite passed on the latest main"),
         "{question}"
+    );
+}
+
+/// A question a task's agent asked you that nothing waited on is in the merge question beside
+/// its task, and so is one answered in your place, with who answered and what.
+#[test]
+fn the_merge_question_shows_the_questions_its_tasks_asked_you() {
+    use argonauts_core::events::approval::MergeQuestion;
+
+    let mut opened = merge();
+    if let ApprovalPacket::Merge(packet) = &mut opened.packet {
+        packet.rows[0].questions = vec![MergeQuestion {
+            text: "Should the judge's \"not ready\" block the merge,\nor only warn?".into(),
+            answer: None,
+            answered_by: None,
+        }];
+        packet.rows[1].questions = vec![MergeQuestion {
+            text: "Keep the old flag?".into(),
+            answer: Some("Yes, as an alias".into()),
+            answered_by: Some(worker("claude-code/opus")),
+        }];
+    }
+    let item = about_item(&opened, None, UtcOffset::UTC, &DisplayNames::default())
+        .map(|item| item.plain(100))
+        .unwrap_or_default();
+    let at = |text: &str| {
+        item.iter()
+            .position(|line| line.contains(text))
+            .unwrap_or_else(|| panic!("{text:?} in {item:#?}"))
+    };
+    let open =
+        at("task-002 asked you: Should the judge's \"not ready\" block the merge, or only warn?");
+    assert!(
+        item[open + 1]
+            .contains("Nothing waited for your answer, so the task went on to its reviews")
+    );
+    let answered = at("task-003 asked you: Keep the old flag?");
+    assert!(
+        item[answered + 1].contains("answered in your place: Yes, as an alias"),
+        "{item:#?}"
     );
 }
 
@@ -2080,7 +2163,8 @@ fn next_choice_kind(kind: Option<ChoiceKind>) -> Option<ChoiceKind> {
         Some(Setup) => Some(Git),
         Some(Git) => Some(Templates),
         Some(Templates) => Some(NeededUpdate),
-        Some(NeededUpdate) => None,
+        Some(NeededUpdate) => Some(RenamedSettings),
+        Some(RenamedSettings) => None,
     }
 }
 

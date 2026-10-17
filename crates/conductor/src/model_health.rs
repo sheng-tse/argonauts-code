@@ -78,6 +78,8 @@ impl Default for ModelRecord {
 pub fn seen(signal: &HealthSignal) -> Option<Result<(), Seen>> {
     match signal {
         HealthSignal::Success { .. } => Some(Ok(())),
+        // A sign-in retry counts against the account, as sign-in, never as the model's trouble.
+        HealthSignal::Retry { reason, .. } if reason.is_sign_in() => None,
         HealthSignal::Retry { reason, .. } => Some(Err(match reason {
             RetryReason::Network => Seen::Reconnected,
             _ => Seen::Trouble,
@@ -310,6 +312,21 @@ mod tests {
 
     const OVERLOAD: Result<(), Seen> = Err(Seen::Outage(Trouble::Overload));
     const SERVER: Result<(), Seen> = Err(Seen::Outage(Trouble::ServerErrors));
+
+    /// Claude Code retrying a sign-in that failed says nothing of the model.
+    #[test]
+    fn a_sign_in_retry_is_no_trouble_of_the_model() {
+        let retry = |reason: RetryReason| HealthSignal::Retry {
+            agent_id: AgentId("claude-code".to_owned()),
+            model: None,
+            session: argonauts_core::names::SessionKey::numbered(1),
+            reason,
+        };
+        let auth = retry(RetryReason::Other("authentication_failed".into()));
+        assert_eq!(seen(&auth), None);
+        let other = retry(RetryReason::Other("something else".into()));
+        assert_eq!(seen(&other), Some(Err(Seen::Trouble)));
+    }
 
     #[test]
     fn two_overloads_in_a_row_take_the_model_out_until_its_test() {

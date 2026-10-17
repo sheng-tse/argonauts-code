@@ -32,6 +32,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use argonauts_core::cheapest::cheapest_listed;
 use argonauts_core::future::BoxFuture;
 use argonauts_core::limits::{HealthBoard, PlanUsageBoard};
 use argonauts_core::names::RoleName;
@@ -168,7 +169,7 @@ impl CliRunner {
 
 /// So a plan usage probe at app start runs the binary doctor checks: `agents.<id>.binary`, else the
 /// adapter's binary on `PATH`. The probe runs outside the sandbox, so a binary the repo could
-/// plant is refused. It names the model this runner's sessions use, as they do.
+/// plant is refused.
 fn register_plan_usage_prober(adapter: &Arc<dyn Adapter>, worker: &ModelRef, settings: &Settings) {
     let agent = settings.agents.get(&worker.agent);
     // A CLI that bills an API key has no plan, and a probe would read whichever
@@ -177,10 +178,9 @@ fn register_plan_usage_prober(adapter: &Arc<dyn Adapter>, worker: &ModelRef, set
         return;
     }
     let configured = agent.and_then(|agent| agent.binary.as_deref());
-    let model = worker
-        .model
-        .clone()
-        .or_else(|| agent.and_then(|agent| agent.model.clone()));
+    // Only the model you set for the CLI, never one a runner was built for such as a cheap
+    // judge, since the last prober registered wins. With none set the CLI picks its own.
+    let model = agent.and_then(|agent| agent.model.clone());
     match resolve_binary(adapter.as_ref(), configured) {
         Ok(binary) => register_prober(
             &worker.agent_id(),
@@ -254,8 +254,14 @@ impl SessionRunner for CliRunner {
         self.adapter.interactive_resume(cli_session, workdir)
     }
 
+    /// The cheapest model the CLI's own list names, else the adapter's own pick while no list
+    /// is known.
     fn cheapest_model(&self) -> Option<String> {
-        Some(self.adapter.cheapest_model().0.to_owned())
+        self.registry
+            .as_deref()
+            .and_then(|registry| cheapest_listed(registry, self.adapter.id()))
+            .map(|cheapest| cheapest.model)
+            .or_else(|| Some(self.adapter.cheapest_model().0.to_owned()))
     }
 
     fn instruction_files(&self, workdir: &Path, isolated: bool) -> Vec<String> {

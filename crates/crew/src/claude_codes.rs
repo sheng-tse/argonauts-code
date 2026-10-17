@@ -22,7 +22,7 @@ use argonauts_core::events::task::{
 };
 use argonauts_core::events::workflow::{RunNote, WorkflowEvent};
 use argonauts_core::labels;
-use argonauts_core::names::ModelRef;
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::required::{Required, brief, check};
 use argonauts_core::session_runner::{Access, Asking, SessionSpec};
 use argonauts_core::settings::crew::CrewRole;
@@ -70,10 +70,15 @@ const SUBAGENT_MODEL: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
 #[derive(Debug, Clone)]
 struct Reviewed {
     role: CrewRole,
+    label: String,
     change: String,
     accepted: bool,
     /// The answers of the role's models, as the asking agent read them.
     said: String,
+    /// What each model made of it, under the model's name.
+    reviews: Vec<(String, ReviewOutput)>,
+    /// What the asking agent said the change does, which answers the round before it.
+    what: String,
 }
 
 /// One task's asks while its session works.
@@ -89,6 +94,88 @@ struct Asks<'a> {
     reviewed: Mutex<Vec<Reviewed>>,
     /// How many times each label was asked, for its rounds.
     rounds: Mutex<BTreeMap<String, u32>>,
+    /// How many times the session's workflow asked each role, which its rounds cap.
+    asked: Mutex<BTreeMap<CrewRole, u32>>,
+}
+
+/// The asks a task's log holds, as an earlier process kept them while it answered them.
+#[derive(Debug, Default)]
+struct RecordedAsks {
+    reviewed: Vec<Reviewed>,
+    rounds: BTreeMap<String, u32>,
+    asked: BTreeMap<CrewRole, u32>,
+}
+
+/// Every ask recorded for the task: each label's reviews, in the order they came, by the
+/// session that gave them. What each one read of the change isn't recorded, so the final change
+/// is gone through again before it merges.
+fn recorded_asks(state: &crate::state::RunState, task: &TaskId) -> RecordedAsks {
+    let mut recorded = RecordedAsks::default();
+    let Some(record) = state.tasks.get(task) else {
+        return recorded;
+    };
+    let sessions = &state.tasks.progress(task).review_sessions;
+    for (event, key) in record.reviews.iter().zip(sessions) {
+        let (
+            ReviewEvent::Reviewed {
+                reviewer, review, ..
+            },
+            Some(key),
+        ) = (event, key)
+        else {
+            continue;
+        };
+        let Some(session) = state.sessions.get(key) else {
+            continue;
+        };
+        let role = match session.started.role {
+            RoleName::Reviewer => CrewRole::Reviewer,
+            RoleName::Judge => CrewRole::Judge,
+            _ => continue,
+        };
+        let Some(label) = session.started.label.clone() else {
+            continue;
+        };
+        let asked = session
+            .asked
+            .as_ref()
+            .or(session.started.asked.as_ref())
+            .unwrap_or(reviewer);
+        let who = in_place_of(state, key, asked, reviewer);
+        let said = said_by(&who, review);
+        let same_ask = recorded
+            .reviewed
+            .last()
+            .is_some_and(|last| last.label == label && last.role == role);
+        if same_ask && let Some(last) = recorded.reviewed.last_mut() {
+            last.accepted &= review.verdict == ReviewVerdict::Approve;
+            last.said = format!("{}\n\n{said}", last.said);
+            last.reviews.push((who, review.clone()));
+            continue;
+        }
+        let (base, round) = round_in(&label);
+        let rounds = recorded.rounds.entry(base.to_owned()).or_default();
+        *rounds = (*rounds).max(round);
+        *recorded.asked.entry(role).or_default() += 1;
+        recorded.reviewed.push(Reviewed {
+            role,
+            label,
+            change: String::new(),
+            accepted: review.verdict == ReviewVerdict::Approve,
+            said,
+            reviews: vec![(who, review.clone())],
+            what: String::new(),
+        });
+    }
+    recorded
+}
+
+/// A label and the round it names: `review:money · round 2` is round 2 of `review:money`.
+fn round_in(label: &str) -> (&str, u32) {
+    label
+        .rsplit_once(" · round ")
+        .and_then(|(base, round)| Some((base, round.parse().ok()?)))
+        .unwrap_or((label, 1))
 }
 
 /// What the reviewers made of the final change.
@@ -118,6 +205,9 @@ pub async fn run(
     // What its labels carry: "build:add-due-dates", "review:add-due-dates".
     let item = labels::slug(&name, 3);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
+    // A relaunched run carries on the asks its earlier process answered, so the cap, the
+    // rounds and the earlier findings hold across it.
+    let recorded = host.read(|state| recorded_asks(state, &task));
     let asks = Asks {
         host,
         at,
@@ -126,8 +216,9 @@ pub async fn run(
         crew,
         request,
         token: format!("{:032x}", rand::random::<u128>()),
-        reviewed: Mutex::default(),
-        rounds: Mutex::default(),
+        reviewed: Mutex::new(recorded.reviewed),
+        rounds: Mutex::new(recorded.rounds),
+        asked: Mutex::new(recorded.asked),
     };
     note(host, call, format!("{name} · {}", engine_line(crew)))?;
     let required =
@@ -214,7 +305,7 @@ async fn review_rounds(
             return Ok((state, verdict, rounds));
         }
         rounds += 1;
-        let note = fixes_asked(rounds, &verdict.reasons);
+        let note = fixes_asked(rounds, &verdict.reasons, asks.left(CrewRole::Reviewer));
         state = serving(listener, asks, pipeline::revise(host, task, at, &note)).await?;
     }
 }
@@ -231,12 +322,20 @@ async fn serving<T>(
     }
 }
 
-/// What the session reads when its final change goes back: the reviewers' own reasons.
-fn fixes_asked(round: u32, reasons: &[String]) -> String {
+/// What the session reads when its final change goes back: the reviewers' own reasons, and
+/// whether its workflow may still ask them.
+fn fixes_asked(round: u32, reasons: &[String], asks_left: bool) -> String {
+    let then = if asks_left {
+        "Fix what they found, ask them again about the change, and when that is done report \
+         again with argonauts_report."
+    } else {
+        "Fix what they found and report again with argonauts_report. They were asked as many \
+         times as Argonauts Code allows, so don't ask them again: Argonauts Code goes through \
+         the final change itself."
+    };
     format!(
         "Round {round} of fixes: the crew's reviewers didn't accept the final change.\n\n{}\n\n\
-         Fix what they found, ask them again about the change, and when that is done report \
-         again with argonauts_report.",
+         {then}",
         reasons.join("\n\n")
     )
 }
@@ -328,25 +427,39 @@ fn names(models: &[ModelRef]) -> String {
 }
 
 /// The crew with only the models its asks go to: `review.per_task` reviewers and one judge,
-/// chosen as the runner chooses a task's.
+/// chosen as the runner chooses a task's. The judge comes from another provider than the
+/// reviewers where one can sign off, so the sign-off is a second look and not the review again.
 fn asked(host: &Host, crew: &OwnCrew) -> OwnCrew {
     let available = host.services().workers.available();
     let theirs = provider(host, &crew.worker);
     let the_authors = |model: &ModelRef| provider(host, model) == theirs;
     let per_task = host.settings().review.per_task as usize;
+    let reviewer = asked_models(
+        &crew.reviewer,
+        &available,
+        &|model| (the_authors(model), false),
+        per_task,
+    );
+    let reviewers: Vec<String> = reviewer.iter().map(|model| provider(host, model)).collect();
+    let after = |model: &ModelRef| {
+        (
+            the_authors(model),
+            reviewers.contains(&provider(host, model)),
+        )
+    };
     OwnCrew {
-        reviewer: asked_models(&crew.reviewer, &available, &the_authors, per_task),
-        judge: asked_models(&crew.judge, &available, &the_authors, 1),
+        judge: asked_models(&crew.judge, &available, &after, 1),
+        reviewer,
         ..crew.clone()
     }
 }
 
-/// `wanted` of `models`: the agents that can work now, those of another provider than the
-/// work's author first, and the list's own order among the rest.
+/// `wanted` of `models`: the agents that can work now, ordered by `after` (those of another
+/// provider than the work's author first), and the list's own order among the rest.
 fn asked_models(
     models: &[ModelRef],
     available: &[ModelRef],
-    the_authors: &dyn Fn(&ModelRef) -> bool,
+    after: &dyn Fn(&ModelRef) -> (bool, bool),
     wanted: usize,
 ) -> Vec<ModelRef> {
     let mut models = models.to_vec();
@@ -354,7 +467,7 @@ fn asked_models(
         models.retain(|model| available.contains(model));
     }
     // Stable, so the list's order still decides among each kind.
-    models.sort_by_key(|model| the_authors(model));
+    models.sort_by_key(|model| after(model));
     models.truncate(wanted.max(1));
     models
 }
@@ -404,7 +517,7 @@ fn spec_for(
     TaskSpec {
         id: task.clone(),
         title: format!("build:{}", labels::slug(name, 3)),
-        task: instructions(request, crew, required),
+        task: instructions(request, crew, required, asks_allowed(host)),
         kind: TaskKind::Build,
         owned_paths: Vec::new(),
         read_only_paths: Vec::new(),
@@ -423,10 +536,11 @@ fn spec_for(
 /// What the orchestrator's session reads besides the request: run it as a workflow of its own,
 /// with the steps you require and the tasks you fixed, and send each review and the sign-off
 /// to the crew's roles through the tools.
-fn instructions(request: &str, crew: &OwnCrew, required: &Required) -> String {
+fn instructions(request: &str, crew: &OwnCrew, required: &Required, asks: u32) -> String {
     let mut text = format!(
-        "{request}\n\nRun this as a workflow of your own with the Workflow tool: plan its \
-         phases and let its agents do the work."
+        "{request}\n\nRun this as one workflow of your own with the Workflow tool: plan its \
+         phases and let its agents do the work. Start one Workflow call for the whole task, \
+         and no second one for reviews or a sign-off."
     );
     if crew.worker.model.is_some() {
         text.push_str(&format!(
@@ -438,19 +552,24 @@ fn instructions(request: &str, crew: &OwnCrew, required: &Required) -> String {
         text.push_str(&format!("\n\n{}", yours.trim_end()));
     }
     text.push_str(&format!(
-        "\n\nThe crew's reviewers are {}. At each review step, the agent that reviews calls \
-         mcp__argonauts_status__argonauts_ask_reviewer with what the change is meant to do, \
-         instead of reviewing it itself, and what they find is fixed. Before you finish, ask \
-         them once more about the final change: nothing merges that didn't go through them.",
+        "\n\nThe crew's reviewers are {}. At the review step, the agent that reviews calls \
+         mcp__argonauts_status__argonauts_ask_reviewer with its own label and what the change \
+         is meant to do, instead of reviewing it itself, and what they mark blocking is fixed.",
         names(&crew.reviewer)
     ));
     if !crew.judge.is_empty() {
         text.push_str(&format!(
-            " Then ask the judge, {}, to sign off with \
+            " Then the judge, {}, signs off through \
              mcp__argonauts_status__argonauts_ask_judge.",
             names(&crew.judge)
         ));
     }
+    text.push_str(&format!(
+        " Each of them is asked at most {} in this task, and then its last answer stands. \
+         Argonauts Code goes through the final change with them itself before anything merges, \
+         so don't ask them again for that.",
+        times(asks)
+    ));
     text.push_str(
         "\nAn agent that doesn't see one of those tools loads it with ToolSearch, such as \
          select:mcp__argonauts_status__argonauts_ask_reviewer.",
@@ -487,13 +606,15 @@ async fn answer(stream: TcpStream, asks: &Asks<'_>) {
     }
     let reply = match serde_json::from_str::<AskLine>(line.trim()) {
         Ok(asked) if asked.token == asks.token => match asked.ask {
-            Ask::Role { role, what, .. } => match asks.ask(role, &what).await {
-                Ok(text) => AskReply::text(text),
-                Err(err) => AskReply {
-                    text: format!("Argonauts Code couldn't ask them: {err}"),
-                    is_error: true,
-                },
-            },
+            Ask::Role { role, label, what } => {
+                match asks.asked_in_the_session(role, &label, &what).await {
+                    Ok(text) => AskReply::text(text),
+                    Err(err) => AskReply {
+                        text: format!("Argonauts Code couldn't ask them: {err}"),
+                        is_error: true,
+                    },
+                }
+            }
             _ => AskReply {
                 text: "This session can only ask the crew's roles.".to_owned(),
                 is_error: true,
@@ -509,11 +630,70 @@ async fn answer(stream: TcpStream, asks: &Asks<'_>) {
     }
 }
 
+/// How many times the session's workflow may ask each role: one review, and one more for each
+/// round of fixes `review.max_change_rounds` allows.
+fn asks_allowed(host: &Host) -> u32 {
+    host.settings().review.max_change_rounds.saturating_add(1)
+}
+
+/// The answer to an ask past the cap: the last answer stands, and the workflow reports.
+fn report_now(role: CrewRole, allowed: u32) -> String {
+    let who = match role {
+        CrewRole::Judge => "the judge",
+        _ => "the crew's reviewers",
+    };
+    format!(
+        "Argonauts Code has asked {who} {} about this task, as many as it allows, so it doesn't \
+         ask again and their last answer stands. Don't start another review or sign-off: end your \
+         workflow and report with mcp__argonauts_status__argonauts_report. Argonauts Code goes \
+         through the final change itself before anything merges.",
+        times(allowed)
+    )
+}
+
+fn times(n: u32) -> String {
+    match n {
+        1 => "once".to_owned(),
+        2 => "twice".to_owned(),
+        n => format!("{n} times"),
+    }
+}
+
 impl Asks<'_> {
+    /// Whether the session's workflow may still ask `role`.
+    fn left(&self, role: CrewRole) -> bool {
+        lock(&self.asked).get(&role).copied().unwrap_or_default() < asks_allowed(self.host)
+    }
+
+    /// An ask from the session's workflow, answered until the role was asked as many times as
+    /// the task's rounds allow. Past that, the last answer stands and the session is told to
+    /// report.
+    async fn asked_in_the_session(
+        &self,
+        role: CrewRole,
+        label: &str,
+        what: &str,
+    ) -> EngineResult<String> {
+        let allowed = asks_allowed(self.host);
+        let within = {
+            let mut asked = lock(&self.asked);
+            let asked = asked.entry(role).or_default();
+            let within = *asked < allowed;
+            if within {
+                *asked += 1;
+            }
+            within
+        };
+        if !within {
+            return Ok(report_now(role, allowed));
+        }
+        self.ask(role, label, what).await
+    }
+
     /// The checks run on the change as it is now, then the role's models each read it with
-    /// their results, and their answers come back as one text. Each answer is recorded as a
-    /// review of the task, under the reviewer's name.
-    async fn ask(&self, role: CrewRole, what: &str) -> EngineResult<String> {
+    /// their results and the earlier rounds' findings, and their answers come back as one
+    /// text. Each answer is recorded as a review of the task, under the reviewer's name.
+    async fn ask(&self, role: CrewRole, label: &str, what: &str) -> EngineResult<String> {
         let host = self.host;
         let models = match role {
             CrewRole::Judge if !self.crew.judge.is_empty() => &self.crew.judge,
@@ -530,38 +710,48 @@ impl Asks<'_> {
         }
         let tree = worktree::ensure(host, self.task).await?;
         let checks = checks_now(host, self.task).await?;
-        let (label, round) = self.round_of(role);
+        let (label, round) = self.round_of(role, label);
+        let earlier = self.earlier_findings(what);
         let asked = Asked {
             role,
             label: &label,
             round,
             what,
+            earlier: earlier.as_deref(),
             change: &change,
             checks: checks.as_deref(),
         };
         let mut answers = Vec::new();
-        let mut accepted = true;
+        let mut reviews = Vec::new();
         for model in models {
-            let (yes, said) = self.one(model, &asked, &tree.path).await?;
-            accepted &= yes;
-            answers.push(said);
+            let (who, review) = self.one(model, &asked, &tree.path).await?;
+            answers.push(said_by(&who, &review));
+            reviews.push((who, review));
         }
         let said = answers.join("\n\n");
+        let accepted = reviews
+            .iter()
+            .all(|(_, review)| review.verdict == ReviewVerdict::Approve);
         lock(&self.reviewed).push(Reviewed {
             role,
+            label,
             change: sha256_hex(change.as_bytes()),
             accepted,
             said: said.clone(),
+            reviews,
+            what: what.to_owned(),
         });
         Ok(said)
     }
 
-    /// The ask's label, from the role and the task's name whatever the session called it, and
-    /// which round of it this is: "review:add-due-dates", then "review:add-due-dates · round 2".
-    /// So every ask about the task, the session's own and the last one Argonauts Code makes, folds
-    /// into one row per role.
-    fn round_of(&self, role: CrewRole) -> (String, u32) {
-        let label = format!("{}:{}", role_word(role), self.name);
+    /// The ask's label: the one the session's workflow gave it, so its answer fills the row
+    /// that asked, else the role and the task's name ("review:add-due-dates"). And which round
+    /// of that label this is, which the label says from the second on: "review:money · round 2".
+    fn round_of(&self, role: CrewRole, given: &str) -> (String, u32) {
+        let label = match given.trim() {
+            "" => format!("{}:{}", role_word(role), self.name),
+            given => given.to_owned(),
+        };
         let mut rounds = lock(&self.rounds);
         let round = rounds.entry(label.clone()).or_default();
         *round += 1;
@@ -572,12 +762,48 @@ impl Asks<'_> {
         (shown, *round)
     }
 
+    /// What the earlier asks about this task found, oldest first, and how the asking agent
+    /// answered each: what it said of the change when it asked next. `what` is this ask's,
+    /// which answers the latest. `None` on the first ask.
+    fn earlier_findings(&self, what: &str) -> Option<String> {
+        let reviewed = lock(&self.reviewed);
+        if reviewed.is_empty() {
+            return None;
+        }
+        let mut text =
+            "Earlier rounds on this change, oldest first. Judge the change as it is now \
+                        against the request; what an answer settled isn't raised again."
+                .to_owned();
+        for (n, round) in reviewed.iter().enumerate() {
+            text.push_str(&format!("\n\n{}. {}", n + 1, round.label));
+            for (who, review) in &round.reviews {
+                let verdict = if review.verdict == ReviewVerdict::Approve {
+                    "accepted it"
+                } else {
+                    "didn't accept it"
+                };
+                text.push_str(&format!("\n{who} {verdict}: {}", review.summary));
+                for comment in &review.comments {
+                    text.push_str(&format!("\n- {}: {}", weight(comment), comment.text));
+                }
+            }
+            let answered = reviewed.get(n + 1).map_or(what, |next| next.what.as_str());
+            if !answered.trim().is_empty() {
+                text.push_str(&format!("\nAnswered: {}", answered.trim()));
+            }
+        }
+        Some(text)
+    }
+
+    /// One model's review of the ask, and who gave it: the model asked, or its fallback, named
+    /// as one ("Claude Code, in place of Codex (it crashed)"). A fallback never comes from the
+    /// provider of whoever built the work.
     async fn one(
         &self,
         model: &ModelRef,
         asked: &Asked<'_>,
         workdir: &std::path::Path,
-    ) -> EngineResult<(bool, String)> {
+    ) -> EngineResult<(String, ReviewOutput)> {
         let host = self.host;
         let role = asked.role;
         let mut parts = vec![
@@ -592,6 +818,14 @@ impl Asks<'_> {
                 None,
             ));
         }
+        if let Some(earlier) = asked.earlier {
+            parts.push(part(
+                InputPartKind::EarlierFindings,
+                "earlier findings",
+                earlier,
+                None,
+            ));
+        }
         if let Some(checks) = asked.checks {
             parts.push(part(InputPartKind::CheckOutput, "the checks", checks, None));
         }
@@ -601,6 +835,10 @@ impl Asks<'_> {
             asked.change,
             None,
         ));
+        let mut builders = vec![self.crew.orchestrator.clone()];
+        if !builders.contains(&self.crew.worker) {
+            builders.push(self.crew.worker.clone());
+        }
         let plan = SessionPlan {
             at: Some(self.at.clone()),
             role: role.fine_role(),
@@ -616,13 +854,13 @@ impl Asks<'_> {
             label: Some(asked.label.to_owned()),
             reviews: false,
             fresh: false,
+            independent_of: builders,
         };
         let ran = host
             .run_session_in_turn(plan, None, Fallbacks::Allowed, &|_| Ok(()))
             .await?;
         let answer = ran.end.structured.clone().unwrap_or(Value::Null);
         let review = review_of(&answer);
-        let accepted = review.verdict == ReviewVerdict::Approve;
         let event = ReviewEvent::Reviewed {
             reviewer: ran.worker.clone(),
             blind: false,
@@ -630,7 +868,8 @@ impl Asks<'_> {
             review: review.clone(),
         };
         host.record(Some(self.task), Some(&ran.key), RunEventKind::Review(event))?;
-        Ok((accepted, said(&ran.worker, &review)))
+        let who = host.read(|state| in_place_of(state, &ran.key, model, &ran.worker));
+        Ok((who, review))
     }
 }
 
@@ -640,6 +879,7 @@ struct Asked<'a> {
     label: &'a str,
     round: u32,
     what: &'a str,
+    earlier: Option<&'a str>,
     change: &'a str,
     checks: Option<&'a str>,
 }
@@ -710,7 +950,7 @@ async fn gone_through(asks: &Asks<'_>) -> EngineResult<Verdict> {
             .find(|r| read_last(r))
             .cloned();
         if reviewed.is_none() {
-            asks.ask(role, "The final change, before it merges.")
+            asks.ask(role, "", "The final change, before it merges.")
                 .await?;
             reviewed = lock(&asks.reviewed).last().cloned();
         }
@@ -737,87 +977,161 @@ fn role_word(role: CrewRole) -> &'static str {
 pub fn asked_of(role: CrewRole) -> &'static str {
     match role {
         CrewRole::Judge => {
-            "Decide whether the change below is ready to merge for the request. Set accept to \
-             true to sign it off. In findings, list what must change first, if anything."
+            "Decide whether the change below is ready to merge for the request, judged against \
+             the request alone. List each finding once and mark it blocking when the change \
+             can't merge without it (it leaves out part of the request, or breaks something), \
+             else a note. Set accept to true to sign it off when nothing blocking is left."
         }
         _ => {
-            "Review the change below for the request. Set accept to true when it does what \
-             was asked and nothing in it is wrong. In findings, list each thing that must be \
-             fixed, one per item. Summary is one line."
+            "Review the change below for the request, judged against the request alone. List \
+             each finding once and mark it blocking when the change can't merge without it (it \
+             leaves out part of the request, or breaks something), else a note. Set accept to \
+             true when nothing blocking is left. Summary is one line."
         }
     }
 }
 
-/// The answer a reviewer or the judge gives: accept, a one-line summary, and findings.
+/// The answer a reviewer or the judge gives: accept, a one-line summary, and findings, each
+/// blocking or a note.
 pub fn verdict_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
             "accept": {"type": "boolean"},
             "summary": {"type": ["string", "null"]},
-            "findings": {"type": ["array", "null"], "items": {"type": "string"}},
+            "findings": {
+                "type": ["array", "null"],
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "blocking": {"type": "boolean"},
+                    },
+                    "required": ["text", "blocking"],
+                    "additionalProperties": false,
+                },
+            },
         },
         "required": ["accept", "summary", "findings"],
         "additionalProperties": false,
     })
 }
 
-/// The answer as a review, an unreadable one read as not accepted.
+/// The answer as a review: accepted when nothing blocking is left. A finding given as plain
+/// text blocks unless the answer accepts, and an answer that doesn't accept and names nothing
+/// blocks on its summary. An unreadable one reads as not accepted.
 pub fn review_of(answer: &Value) -> ReviewOutput {
-    let accept = answer.get("accept").and_then(Value::as_bool) == Some(true);
-    let findings: Vec<String> = answer
+    let readable = answer.get("accept").and_then(Value::as_bool);
+    let accept = readable == Some(true);
+    let comments: Vec<ReviewComment> = answer
         .get("findings")
         .and_then(Value::as_array)
         .map(|findings| {
             findings
                 .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
+                .filter_map(|finding| finding_of(finding, accept))
                 .collect()
         })
         .unwrap_or_default();
+    let blocking = comments
+        .iter()
+        .any(|comment| comment.severity == Severity::High);
+    let approved = readable.is_some() && !blocking && (accept || !comments.is_empty());
     let summary = answer
         .get("summary")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|summary| !summary.is_empty())
         .map_or_else(
-            || if accept { "Accepted" } else { "Not accepted" }.to_owned(),
+            || if approved { "Accepted" } else { "Not accepted" }.to_owned(),
             str::to_owned,
         );
     ReviewOutput {
-        verdict: if accept {
+        verdict: if approved {
             ReviewVerdict::Approve
         } else {
             ReviewVerdict::RequestChanges
         },
         summary,
-        comments: findings
-            .into_iter()
-            .map(|text| ReviewComment {
-                path: String::new(),
-                line: None,
-                severity: if accept {
-                    Severity::Low
-                } else {
-                    Severity::High
-                },
-                text,
-            })
-            .collect(),
+        comments,
         tamper_suspected: false,
     }
 }
 
+/// One finding: `{"text", "blocking"}`, or plain text, which blocks unless the answer accepts.
+/// A blocking finding is high severity and a note low.
+fn finding_of(finding: &Value, accept: bool) -> Option<ReviewComment> {
+    let (text, blocking) = match finding {
+        Value::String(text) => (text.as_str(), !accept),
+        Value::Object(_) => (
+            finding.get("text").and_then(Value::as_str)?,
+            finding.get("blocking").and_then(Value::as_bool) != Some(false),
+        ),
+        _ => return None,
+    };
+    let text = text.trim();
+    (!text.is_empty()).then(|| ReviewComment {
+        path: String::new(),
+        line: None,
+        severity: if blocking {
+            Severity::High
+        } else {
+            Severity::Low
+        },
+        text: text.to_owned(),
+    })
+}
+
+/// "blocking" or "note", as a finding is marked.
+fn weight(comment: &ReviewComment) -> &'static str {
+    if comment.severity == Severity::High {
+        "blocking"
+    } else {
+        "note"
+    }
+}
+
+/// Who gave a review: the model asked, or its fallback, with why the asked one
+/// couldn't: "Claude Code, in place of Codex (it crashed)".
+fn in_place_of(
+    state: &crate::state::RunState,
+    key: &argonauts_core::names::SessionKey,
+    asked: &ModelRef,
+    worker: &ModelRef,
+) -> String {
+    let who = display_name(worker);
+    if worker == asked {
+        return who;
+    }
+    let since = state
+        .sessions
+        .get(key)
+        .map_or(u64::MAX, |record| record.since);
+    let why = state
+        .sessions
+        .in_order()
+        .into_iter()
+        .rev()
+        .filter(|record| record.since < since && record.started.worker == *asked)
+        .find_map(|record| record.end.as_ref())
+        .map(|end| format!(" ({})", crate::engine::job_fallback::in_words(&end.reason)))
+        .unwrap_or_default();
+    format!("{who}, in place of {}{why}", display_name(asked))
+}
+
 /// The answer as the asking agent reads it.
 pub fn said(reviewer: &ModelRef, review: &ReviewOutput) -> String {
-    let who = display_name(reviewer);
+    said_by(&display_name(reviewer), review)
+}
+
+/// [`said`] under a name already worded, such as a fallback's.
+fn said_by(who: &str, review: &ReviewOutput) -> String {
     let mut text = match review.verdict {
         ReviewVerdict::Approve => format!("{who} accepts it: {}", review.summary),
         _ => format!("{who} asks for changes: {}", review.summary),
     };
     for comment in &review.comments {
-        text.push_str(&format!("\n- {}", comment.text));
+        text.push_str(&format!("\n- {}: {}", weight(comment), comment.text));
     }
     text
 }
@@ -825,6 +1139,132 @@ pub fn said(reviewer: &ModelRef, review: &ReviewOutput) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use argonauts_core::events::session::SessionEvent;
+    use argonauts_core::events::task::TaskEvent;
+
+    use crate::state::RunState;
+    use crate::state::tests::{envelope, session_started};
+    use crate::testutil::task_spec;
+
+    fn review(verdict: ReviewVerdict, summary: &str) -> ReviewOutput {
+        ReviewOutput {
+            verdict,
+            summary: summary.to_owned(),
+            comments: vec![ReviewComment {
+                path: "money.rs".to_owned(),
+                line: None,
+                severity: Severity::High,
+                text: format!("{summary} in full"),
+            }],
+            tamper_suspected: false,
+        }
+    }
+
+    /// A run relaunched midway through its review loop (your answer, Shift+Tab, a crash) starts
+    /// its asks again from the log: each role's count, each label's round and the earlier
+    /// findings go on from where the earlier process left them.
+    #[test]
+    fn a_relaunched_loop_counts_its_asks_from_the_log() {
+        let codex: ModelRef = "codex".parse().unwrap();
+        let flash: ModelRef = "antigravity-cli/flash".parse().unwrap();
+        let task = "task-fix-the-money";
+        let mut events = vec![envelope(
+            1,
+            Some(task),
+            None,
+            RunEventKind::Task(TaskEvent::Created(Box::new(task_spec(task, &[], None)))),
+        )];
+        let asks = [
+            (
+                "s-001",
+                &codex,
+                RoleName::Reviewer,
+                "review:money",
+                ReviewVerdict::RequestChanges,
+            ),
+            (
+                "s-002",
+                &codex,
+                RoleName::Reviewer,
+                "review:money · round 2",
+                ReviewVerdict::RequestChanges,
+            ),
+            (
+                "s-003",
+                &flash,
+                RoleName::Judge,
+                "sign-off:money",
+                ReviewVerdict::Approve,
+            ),
+        ];
+        for (n, (key, worker, role, label, verdict)) in asks.into_iter().enumerate() {
+            let mut started = session_started(worker, role);
+            started.label = Some(label.to_owned());
+            let seq = 2 + 2 * n as u64;
+            events.push(envelope(
+                seq,
+                None,
+                Some(key),
+                RunEventKind::Session(SessionEvent::Started(Box::new(started))),
+            ));
+            let reviewed = ReviewEvent::Reviewed {
+                reviewer: worker.clone(),
+                blind: false,
+                round: 1,
+                review: review(verdict, &format!("finding {n}")),
+            };
+            events.push(envelope(
+                seq + 1,
+                Some(task),
+                Some(key),
+                RunEventKind::Review(reviewed),
+            ));
+        }
+        let state = RunState::fold(&events);
+        let recorded = recorded_asks(&state, &TaskId::new(task).unwrap());
+        assert_eq!(
+            recorded.asked,
+            BTreeMap::from([(CrewRole::Reviewer, 2), (CrewRole::Judge, 1)])
+        );
+        assert_eq!(
+            recorded.rounds,
+            BTreeMap::from([
+                ("review:money".to_owned(), 2),
+                ("sign-off:money".to_owned(), 1)
+            ])
+        );
+        let labels: Vec<&str> = recorded.reviewed.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["review:money", "review:money · round 2", "sign-off:money"]
+        );
+        assert!(!recorded.reviewed[1].accepted);
+        assert!(recorded.reviewed[2].accepted);
+        assert!(
+            recorded.reviewed[0]
+                .said
+                .contains("- blocking: finding 0 in full"),
+            "{}",
+            recorded.reviewed[0].said
+        );
+        assert_eq!(round_in("review:money · round 12"), ("review:money", 12));
+        assert_eq!(round_in("review:money"), ("review:money", 1));
+    }
+
+    /// Once its workflow may not ask the reviewers again, a round of fixes doesn't tell the
+    /// session to ask them.
+    #[test]
+    fn a_round_of_fixes_says_whether_the_reviewers_may_be_asked_again() {
+        let reasons = ["Codex asks for changes: the rounding".to_owned()];
+        assert!(fixes_asked(1, &reasons, true).contains("ask them again about the change"));
+        let spent = fixes_asked(2, &reasons, false);
+        assert!(spent.contains("don't ask them again"), "{spent}");
+        assert!(
+            !spent.contains("ask them again about the change"),
+            "{spent}"
+        );
+    }
 
     fn crew(judge: &[&str]) -> OwnCrew {
         OwnCrew {
@@ -837,7 +1277,12 @@ mod tests {
 
     #[test]
     fn the_orchestrator_is_told_to_send_reviews_through_argonauts() {
-        let text = instructions("add due dates to tasks", &crew(&[]), &Required::default());
+        let text = instructions(
+            "add due dates to tasks",
+            &crew(&[]),
+            &Required::default(),
+            3,
+        );
         assert!(text.starts_with("add due dates to tasks\n\n"));
         assert!(text.contains("Workflow tool"));
         assert!(text.contains("argonauts_ask_reviewer"));
@@ -847,8 +1292,31 @@ mod tests {
             "add due dates",
             &crew(&["claude-code/opus-5-5"]),
             &Required::default(),
+            3,
         );
         assert!(judged.contains("argonauts_ask_judge"));
+    }
+
+    /// One workflow, the ask's own label, and a cap the session knows: nothing tells it to
+    /// ask once more, since Argonauts Code goes through the final change itself.
+    #[test]
+    fn the_orchestrator_is_asked_for_one_workflow_and_told_the_cap() {
+        let text = instructions(
+            "fix the rounding",
+            &crew(&["codex"]),
+            &Required::default(),
+            3,
+        );
+        assert!(
+            text.contains("Start one Workflow call for the whole task"),
+            "{text}"
+        );
+        assert!(text.contains("with its own label"), "{text}");
+        assert!(text.contains("at most 3 times in this task"), "{text}");
+        assert!(!text.contains("once more"), "{text}");
+        assert!(report_now(CrewRole::Judge, 3).starts_with(
+            "Argonauts Code has asked the judge 3 times about this task, as many as it allows"
+        ));
     }
 
     #[test]
@@ -862,7 +1330,7 @@ mod tests {
             }],
             tasks: vec!["migrate the schema".into()],
         };
-        let text = instructions("add due dates", &crew(&[]), &required);
+        let text = instructions("add due dates", &crew(&[]), &required, 3);
         assert!(
             text.contains(
                 "Your workflow must have a phase for each of these steps, by this name, \
@@ -886,7 +1354,7 @@ mod tests {
             .iter()
             .map(|model| model.parse().unwrap())
             .collect();
-        let claude = |model: &ModelRef| model.agent == "claude-code";
+        let claude = |model: &ModelRef| (model.agent == "claude-code", false);
         let picked = asked_models(&models, &[], &claude, 1);
         assert_eq!(picked, [models[1].clone()]);
         let picked = asked_models(&models, &[], &claude, 3);
@@ -897,6 +1365,12 @@ mod tests {
         let picked = asked_models(&models, &[models[0].clone(), models[2].clone()], &claude, 1);
         assert_eq!(picked, [models[2].clone()]);
         assert!(asked_models(&[], &[], &claude, 1).is_empty());
+        // The judge after Codex reviews: neither the author's provider nor the reviewer's.
+        let after_codex = |model: &ModelRef| (model.agent == "claude-code", model.agent == "codex");
+        assert_eq!(
+            asked_models(&models, &[], &after_codex, 1),
+            [models[2].clone()]
+        );
     }
 
     #[test]
@@ -952,10 +1426,42 @@ mod tests {
         assert_eq!(review.verdict, ReviewVerdict::RequestChanges);
         assert_eq!(review.summary, "Not accepted");
         let astra: ModelRef = "astra".parse().unwrap();
-        assert!(said(&astra, &review).ends_with("\n- past dates pass"));
+        assert!(said(&astra, &review).ends_with("\n- blocking: past dates pass"));
         assert_eq!(
             review_of(&Value::Null).verdict,
             ReviewVerdict::RequestChanges
+        );
+        assert_eq!(
+            review_of(&json!({"accept": false, "summary": "Not ready", "findings": null})).verdict,
+            ReviewVerdict::RequestChanges,
+            "a no with nothing named blocks on its summary"
+        );
+    }
+
+    /// Each finding is blocking or a note, and nothing blocking left is an accept, whatever
+    /// the answer's own accept says: a round that took its findings back passes.
+    #[test]
+    fn a_review_accepts_when_nothing_blocking_is_left() {
+        let notes = review_of(&json!({
+            "accept": false,
+            "summary": "Close; nothing must change",
+            "findings": [{"text": "a bare $ parses as zero", "blocking": false}],
+        }));
+        assert_eq!(notes.verdict, ReviewVerdict::Approve);
+        assert_eq!(notes.comments[0].severity, Severity::Low);
+        let blocking = review_of(&json!({
+            "accept": true,
+            "summary": "Fine",
+            "findings": [
+                {"text": "with_tax drops the tax", "blocking": true},
+                {"text": "a docstring is stale", "blocking": false},
+            ],
+        }));
+        assert_eq!(blocking.verdict, ReviewVerdict::RequestChanges);
+        let codex: ModelRef = "codex".parse().unwrap();
+        assert_eq!(
+            said(&codex, &blocking),
+            "Codex asks for changes: Fine\n- blocking: with_tax drops the tax\n- note: a docstring is stale"
         );
     }
 

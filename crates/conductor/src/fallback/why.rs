@@ -67,6 +67,7 @@ pub fn category_words(category: ErrorCategory) -> &'static str {
         ErrorCategory::Server => "server error",
         ErrorCategory::Network => "network error",
         ErrorCategory::ContextFull => "context full",
+        ErrorCategory::SessionLost => "lost the session it resumed",
         ErrorCategory::ModelUnavailable => "model unavailable",
         ErrorCategory::InvalidRequest => "invalid request",
         ErrorCategory::AnswerMissed => "missed the answer format",

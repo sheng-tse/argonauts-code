@@ -476,15 +476,54 @@ impl<'p> Rows<'p> {
         }
     }
 
+    /// A word wider than a row. A path breaks after the last `/` that fits, so a row never ends
+    /// inside a folder's or a file's name where it can help it; anything else breaks between
+    /// graphemes.
     fn push_split(&mut self, token: &Token) {
-        for (text, style) in &token.parts {
-            for grapheme in text.graphemes(true) {
-                let w = str_width(grapheme);
-                if self.used > 0 && self.used + w > self.avail() {
-                    self.break_row(Join::Direct);
+        let graphemes: Vec<(&str, Style, usize)> = token
+            .parts
+            .iter()
+            .flat_map(|(text, style)| {
+                text.graphemes(true)
+                    .map(move |grapheme| (grapheme, *style, str_width(grapheme)))
+            })
+            .collect();
+        let mut at = 0;
+        while at < graphemes.len() {
+            let room = self.avail().saturating_sub(self.used);
+            let mut fit = 0;
+            let mut width = 0;
+            for (_, _, w) in &graphemes[at..] {
+                if width + w > room {
+                    break;
                 }
+                width += w;
+                fit += 1;
+            }
+            if fit == 0 {
+                if self.used > 0 {
+                    self.break_row(Join::Direct);
+                    continue;
+                }
+                // A grapheme wider than the whole row goes on one of its own.
+                fit = 1;
+            }
+            let mut end = at + fit;
+            if end < graphemes.len()
+                && let Some(slash) = graphemes[at..end]
+                    .iter()
+                    .rposition(|(grapheme, _, _)| *grapheme == "/")
+                    .filter(|slash| *slash > 0)
+            {
+                end = at + slash + 1;
+            }
+            for (grapheme, style, w) in &graphemes[at..end] {
                 self.push_text(grapheme, *style);
                 self.used += w;
+            }
+            at = end;
+            if at < graphemes.len() {
+                self.break_row(Join::Direct);
             }
         }
     }
@@ -541,6 +580,19 @@ mod tests {
     #[test]
     fn long_words_split_between_graphemes() {
         assert_eq!(wrap("abcdefghij", 6, "> ", "  "), "> abcd\n  efgh\n  ij");
+    }
+
+    /// A path too long for its row, as a settings file's under a home outside `~`, breaks after
+    /// the last `/` that fits rather than inside a name.
+    #[test]
+    fn a_long_path_breaks_after_the_last_slash_that_fits() {
+        let text = "Saved to /private/var/folders/x1/home/.argonauts/config.toml.";
+        assert_eq!(
+            wrap(text, 30, "", ""),
+            "Saved to\n/private/var/folders/x1/home/\n.argonauts/config.toml."
+        );
+        // A row that holds no slash but the first still breaks between graphemes.
+        assert_eq!(wrap("/abcdefghij", 6, "", ""), "/abcde\nfghij");
     }
 
     #[test]

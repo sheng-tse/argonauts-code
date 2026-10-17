@@ -538,11 +538,16 @@ async fn when_every_agent_fails_the_run_waits_and_says_why() -> anyhow::Result<(
         &[GEMINI],
     )?;
     let outcome = drive(&crew).await?;
-    // Waiting with its own reason, and a time it tries again by itself.
+    // It stops fully: waiting can't fix it, so it never tries again on its own.
     match &outcome.exit {
-        EngineExit::Waiting(WaitReason::NoFallback { detail, until }) => {
+        EngineExit::Waiting(WaitReason::NoFallback {
+            detail,
+            until,
+            stop,
+        }) => {
             assert_eq!(detail, "nobody to fall back to as the main agent");
-            assert!(until.is_some(), "a wake is set");
+            assert!(until.is_none(), "no wake is set");
+            assert!(stop.is_some(), "it says why it stopped");
         }
         other => panic!("{other:?}: {:?}", notes(&outcome.events)),
     }
@@ -553,22 +558,20 @@ async fn when_every_agent_fails_the_run_waits_and_says_why() -> anyhow::Result<(
     );
     // Antigravity's CLI says it's logged out, so it isn't asked again and gets the login line.
     assert_eq!(designs_after_understand(&crew, GEMINI), 1);
-    let said = notes(&outcome.events);
-    let waiting = said
-        .iter()
-        .find(|note| note.starts_with("Nobody to fall back to as the main agent"))
-        .with_context(|| format!("the wait says why: {said:?}"))?;
+    let stopped = stop_lines(&outcome.exit).with_context(|| "the stop says why")?;
     assert!(
-        waiting.contains("says it's logged out: log in again"),
-        "{waiting}"
+        stopped.iter().any(|line| line.contains("is signed out")),
+        "{stopped:?}"
     );
     assert!(
-        !waiting.contains("Codex says"),
-        "Codex's CLI never said it was out: {waiting}"
+        !stopped
+            .iter()
+            .any(|line| line.contains("Codex is signed out")),
+        "Codex's CLI never said it was out: {stopped:?}"
     );
     assert!(
-        waiting.ends_with("It also tries again on its own in 5 minutes."),
-        "it says when it tries again: {waiting}"
+        stopped.iter().all(|line| !line.contains("tries again")),
+        "it never tries again on its own: {stopped:?}"
     );
 
     // Once the agents work again, /resume asks the main agent's own agent first, on the same
@@ -1292,41 +1295,31 @@ async fn two_fallbacks_take_a_task_together_after_the_retry_thats_said() -> anyh
     Ok(())
 }
 
-/// With nobody to take the task, autopilot never asks or waits for good: the task waits for its
-/// agent with a time it tries again, and one line says why, with no login asked of you while
-/// the CLI says it's logged in.
+/// With nobody to take the task, autopilot never asks and never waits on a timer: the run stops
+/// fully, says why, and only `/resume` carries it on, with no login asked of you while the CLI
+/// says it's logged in.
 #[tokio::test]
-async fn nobody_to_take_the_task_waits_and_tries_again_in_autopilot() -> anyhow::Result<()> {
+async fn nobody_to_take_the_task_stops_the_run_in_autopilot() -> anyhow::Result<()> {
     let agents = [(CODEX, Agent::overloaded(StepName::Build, 2))];
     let crew = crew_of(&agents, &Assignment::default())?;
     let outcome = autopilot_with(&crew, RunMode::Captain, true).await?;
     let said = notes(&outcome.events);
-    match &outcome.exit {
-        EngineExit::Waiting(WaitReason::WaitingForAgent { agent_id, until }) => {
-            assert_eq!(agent_id.0, "codex");
-            assert!(until.is_some(), "a wake is set: {said:?}");
-        }
-        other => panic!("{other:?}: {said:?}"),
-    }
-    let waits = said
-        .iter()
-        .find(|note| note.starts_with("Nobody to fall back to"))
-        .with_context(|| format!("one line says why: {said:?}"))?;
-    assert!(
-        waits.contains(
-            "from GPT 5.6 Luna on Codex for \"Add due dates\": its session ended early (an agent error)"
-        ),
-        "{waits}"
+    let EngineExit::Waiting(WaitReason::NoFallback { until, stop, .. }) = &outcome.exit else {
+        panic!("{:?}: {said:?}", outcome.exit);
+    };
+    assert_eq!(*until, None, "it never tries again on its own: {said:?}");
+    let stop = stop.as_ref().context("the stop says why")?;
+    assert_eq!(stop.why, "nothing else can take \"Add due dates\"");
+    assert_eq!(
+        stop.agents,
+        ["\"Add due dates\" · Codex's session ended early (an agent error)"]
     );
-    assert!(
-        waits.ends_with("It tries again on its own in 5 minutes; /resume tries now."),
-        "{waits}"
-    );
+    assert_eq!(stop.waits_for, ["Codex"]);
     assert!(!said.iter().any(|note| note.contains("log in")), "{said:?}");
     assert!(
         !said
             .iter()
-            .any(|note| note.contains("Wait until the reset")),
+            .any(|note| note.contains("tries again on its own")),
         "{said:?}"
     );
     assert!(!asked_you(&outcome.events));
@@ -1599,6 +1592,318 @@ fn crew_with_a_second_claude_model(overloads: usize) -> anyhow::Result<Crew> {
     crew_of(&agents, &assignment)
 }
 
+/// Claude Code's Haiku built the task and Codex, its one reviewer, stays overloaded. Only
+/// Sonnet, from the builder's own provider, is left. On autopilot Sonnet reviews, one line says
+/// so, and the merge is kept for you instead of going ahead.
+#[tokio::test]
+async fn on_autopilot_the_builders_provider_reviews_and_the_merge_waits_for_you()
+-> anyhow::Result<()> {
+    let agents = [
+        (CLAUDE, Agent::default()),
+        (CODEX, Agent::overloaded(StepName::Review, 9)),
+        (SONNET, Agent::default()),
+    ];
+    let assignment = Assignment {
+        worker: CLAUDE,
+        reviewers: vec![CODEX],
+    };
+    let crew = crew_of(&agents, &assignment)?;
+    let outcome = autopilot(&crew, RunMode::Crew).await?;
+    let said = notes(&outcome.events);
+    assert_eq!(reviewers(&outcome.events), [SONNET], "{said:?}");
+    let stood_in: Vec<_> = said
+        .iter()
+        .filter(|note| note.contains("nobody outside the builder's provider is left"))
+        .collect();
+    assert_eq!(stood_in.len(), 1, "{said:?}");
+    assert!(
+        stood_in[0].ends_with(&format!(
+            "so {} takes a reviewer on autopilot · the merge is left to you",
+            display_name(&SONNET.parse()?)
+        )),
+        "{stood_in:?}"
+    );
+    let merges: Vec<_> = outcome
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) => Some(decided),
+            _ => None,
+        })
+        .filter(|decided| decided.by == Party::Autopilot)
+        .collect();
+    assert!(
+        merges.iter().all(|decided| !matches!(
+            decided.action,
+            argonauts_core::events::approval::AnswerAction::Approve
+        )),
+        "{merges:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|note| note.contains("from its builder's own provider")),
+        "{said:?}"
+    );
+    assert_ne!(
+        outcome.exit,
+        EngineExit::Finished(RunOutcome::Merged),
+        "{said:?}"
+    );
+    Ok(())
+}
+
+/// Another Claude Code model, for a list of agents to pick from.
+const OPUS: &str = "claude-code/opus";
+
+/// Claude Code's Haiku builds the task and Codex, its one reviewer, stays overloaded, with
+/// only Claude Code's `others` left to review in its place.
+fn crew_left_to_the_builders_provider(others: &[&str]) -> anyhow::Result<Crew> {
+    let mut agents = vec![
+        (CLAUDE, Agent::default()),
+        (CODEX, Agent::overloaded(StepName::Review, 9)),
+    ];
+    agents.extend(others.iter().map(|model| (*model, Agent::default())));
+    let assignment = Assignment {
+        worker: CLAUDE,
+        reviewers: vec![CODEX],
+    };
+    crew_of(&agents, &assignment)
+}
+
+/// The questions about a job that only its builder's provider could take, oldest first.
+fn builders_provider_questions(
+    events: &[RunEvent],
+) -> Vec<&argonauts_core::events::approval::ApprovalOpened> {
+    use argonauts_core::events::approval::ApprovalPacket;
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) => Some(&**opened),
+            _ => None,
+        })
+        .filter(|opened| {
+            matches!(&opened.packet, ApprovalPacket::AgentDown(down) if down.kept_by.is_none())
+        })
+        .collect()
+}
+
+/// Outside autopilot nobody from the builder's own provider reviews without your say. The
+/// review waits for Codex, one line says why, and the question offers to wait, recommended,
+/// or to let Sonnet review with the merge left to you. Letting it, the run that wakes gives
+/// Sonnet the review and goes on.
+#[tokio::test]
+async fn when_only_the_builders_provider_is_left_the_review_waits_and_asks() -> anyhow::Result<()> {
+    use argonauts_core::events::approval::{AnswerAction, ApprovalKind, ApprovalPacket};
+
+    let crew = crew_left_to_the_builders_provider(&[SONNET])?;
+    let waiting = drive(&crew).await?;
+    let said = notes(&waiting.events);
+    // It waits for Codex, not stopped: Codex coming back, or its time, tries it again.
+    assert!(
+        matches!(
+            &waiting.exit,
+            EngineExit::Waiting(WaitReason::WaitingForAgent { agent_id, until })
+                if agent_id.0 == "codex" && until.is_some()
+        ),
+        "{:?} {said:?}",
+        waiting.exit
+    );
+    assert_eq!(ran(&crew, SONNET, StepName::Review), 0, "{said:?}");
+    let codex = display_name(&CODEX.parse()?);
+    let waits = said
+        .iter()
+        .find(|note| note.starts_with(&format!("A reviewer waits for {codex}: ")))
+        .context("one line says why the review waits")?;
+    let haiku = argonauts_crew::roles::short_name(&CLAUDE.parse()?);
+    assert!(
+        waits.contains(&format!(
+            ", and nobody outside the builder's provider is left to review {haiku}'s work."
+        )),
+        "{waits}"
+    );
+
+    let asked = builders_provider_questions(&waiting.events);
+    let [question] = asked.as_slice() else {
+        anyhow::bail!("one question, not {asked:?}");
+    };
+    assert_eq!(question.kind, ApprovalKind::AgentDown);
+    // Titled by what stopped the review, which may be no outage at all.
+    assert!(
+        question.title.contains(" on Codex")
+            && question.title.ends_with(" · Due dates waits for it"),
+        "{}",
+        question.title
+    );
+    let ApprovalPacket::AgentDown(down) = &question.packet else {
+        anyhow::bail!("{:?}", question.packet);
+    };
+    assert_eq!(down.fits_all, Some(SONNET.parse()?));
+    assert!(
+        down.evidence.ends_with(&format!(
+            ", and nobody outside the builder's provider is left to review {haiku}'s work"
+        )),
+        "{}",
+        down.evidence
+    );
+    let offered: Vec<(&str, Option<&str>, bool)> = question
+        .options
+        .iter()
+        .map(|option| {
+            (
+                option.label.as_str(),
+                option.detail.as_deref(),
+                option.recommended,
+            )
+        })
+        .collect();
+    let sonnet = display_name(&SONNET.parse()?);
+    let let_sonnet = format!("Let {sonnet} review");
+    assert_eq!(
+        offered,
+        [
+            ("Wait for Codex", None, true),
+            (let_sonnet.as_str(), Some("the merge is left to you"), false),
+        ],
+        "one agent left, so nothing else to pick from"
+    );
+
+    let (command, _reply) = support::answer(
+        &waiting.events,
+        ApprovalKind::AgentDown,
+        AnswerAction::Candidate {
+            worker: SONNET.parse()?,
+        },
+        None,
+    )?;
+    let woke = crew.resume(waiting.events.clone(), vec![command]).await?;
+    let outcome = answer_tasks(&crew, woke).await?;
+    let said = notes(&outcome.events);
+    assert_eq!(reviewers(&outcome.events), [SONNET], "{said:?}");
+    assert!(
+        matches!(outcome.exit, EngineExit::Finished(_)),
+        "{:?} {said:?}",
+        outcome.exit
+    );
+    let merged_by: Vec<&Party> = outcome
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) => Some(decided),
+            _ => None,
+        })
+        .filter(|decided| decided.action == AnswerAction::Merge)
+        .map(|decided| &decided.by)
+        .collect();
+    assert_eq!(merged_by, [&Party::User], "the merge is yours: {said:?}");
+    Ok(())
+}
+
+/// Picking an agent lists every one that may review, each of the builder's provider saying
+/// the merge is then yours, beside waiting. The one you pick reviews.
+#[tokio::test]
+async fn picking_an_agent_lists_every_one_that_may_review() -> anyhow::Result<()> {
+    use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
+
+    let crew = crew_left_to_the_builders_provider(&[SONNET, OPUS])?;
+    let waiting = drive(&crew).await?;
+    let said = notes(&waiting.events);
+    let asked = builders_provider_questions(&waiting.events);
+    let [first] = asked.as_slice() else {
+        anyhow::bail!("one question, not {asked:?} {said:?}");
+    };
+    let labels: Vec<&str> = first
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
+    assert_eq!(labels.len(), 3, "{labels:?}");
+    assert_eq!(labels[2], "Pick an agent", "{labels:?}");
+
+    let (command, _reply) = support::answer(
+        &waiting.events,
+        ApprovalKind::AgentDown,
+        AnswerAction::OtherCandidates,
+        None,
+    )?;
+    let woke = crew.resume(waiting.events.clone(), vec![command]).await?;
+    let said = notes(&woke.events);
+    let asked = builders_provider_questions(&woke.events);
+    let pick = asked
+        .last()
+        .filter(|pick| pick.id != first.id)
+        .with_context(|| format!("the list of agents is asked next: {said:?}"))?;
+    assert!(
+        pick.title.starts_with("Pick an agent for "),
+        "{}",
+        pick.title
+    );
+    let mut offered: Vec<(String, Option<&str>)> = pick
+        .options
+        .iter()
+        .map(|option| (option.label.clone(), option.detail.as_deref()))
+        .collect();
+    let mut want = vec![("Wait for Codex".to_owned(), None)];
+    for model in [SONNET, OPUS] {
+        want.push((
+            display_name(&model.parse()?),
+            Some("the merge is left to you"),
+        ));
+    }
+    offered[1..].sort();
+    want[1..].sort();
+    assert_eq!(offered, want);
+
+    let (command, _reply) = support::answer(
+        &woke.events,
+        ApprovalKind::AgentDown,
+        AnswerAction::Candidate {
+            worker: OPUS.parse()?,
+        },
+        None,
+    )?;
+    let woke = crew.resume(woke.events.clone(), vec![command]).await?;
+    let outcome = answer_tasks(&crew, woke).await?;
+    let said = notes(&outcome.events);
+    assert_eq!(reviewers(&outcome.events), [OPUS], "{said:?}");
+    assert_eq!(ran(&crew, SONNET, StepName::Review), 0, "{said:?}");
+    Ok(())
+}
+
+/// Waiting for Codex is your answer while nothing changes: the run that wakes on it tries
+/// Codex again and asks nothing more.
+#[tokio::test]
+async fn waiting_for_the_asked_cli_asks_nothing_more() -> anyhow::Result<()> {
+    use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
+
+    let crew = crew_left_to_the_builders_provider(&[SONNET])?;
+    let waiting = drive(&crew).await?;
+    assert_eq!(builders_provider_questions(&waiting.events).len(), 1);
+    let (command, _reply) = support::answer(
+        &waiting.events,
+        ApprovalKind::AgentDown,
+        AnswerAction::Wait,
+        None,
+    )?;
+    let woke = crew.resume(waiting.events.clone(), vec![command]).await?;
+    let said = notes(&woke.events);
+    assert_eq!(
+        builders_provider_questions(&woke.events).len(),
+        1,
+        "{said:?}"
+    );
+    assert_eq!(ran(&crew, SONNET, StepName::Review), 0, "{said:?}");
+    assert!(
+        matches!(
+            &woke.exit,
+            EngineExit::Waiting(WaitReason::WaitingForAgent { agent_id, .. })
+                if agent_id.0 == "codex"
+        ),
+        "{:?} {said:?}",
+        woke.exit
+    );
+    Ok(())
+}
+
 /// What the run said about a workflow of its own, each with the workflow it is about. The
 /// workflow's view shows the latest under its header.
 fn workflow_notes(events: &[RunEvent]) -> Vec<(Option<&WorkflowId>, &str)> {
@@ -1724,13 +2029,12 @@ async fn with_same_cli_and_no_model_left_the_review_waits_for_its_cli() -> anyho
         "{said:?}"
     );
     assert_eq!(ran(&crew, GEMINI, StepName::Review), 0, "{said:?}");
-    let waits = said
-        .iter()
-        .find(|note| note.starts_with("Nobody to fall back to as a reviewer"))
-        .context("one line says why the review waits")?;
+    let stopped = stop_lines(&outcome.exit).context("the stop says why the review waits")?;
     assert!(
-        waits.contains("fallback.same_cli keeps it on Claude Code"),
-        "{waits}"
+        stopped
+            .iter()
+            .any(|line| line.contains("fallback.same_cli keeps it on Claude Code")),
+        "{stopped:?}"
     );
     Ok(())
 }
@@ -1783,7 +2087,10 @@ async fn a_review_kept_on_a_cli_that_is_down_moves_when_you_say_so() -> anyhow::
                 _ => None,
             });
         let (title, down) = asked.context("the run asks about Claude Code")?;
-        assert_eq!(title, "Claude Code is down · 1 task paused", "{said:?}");
+        assert_eq!(
+            title, "Claude Code is down · 1 task waits for it",
+            "{said:?}"
+        );
         assert_eq!(down.kept_by.as_deref(), Some("same_cli"));
         let roles: Vec<RoleName> = down.paused.iter().map(|paused| paused.role).collect();
         assert_eq!(roles, [RoleName::Reviewer], "{:?}", down.paused);
@@ -2077,19 +2384,20 @@ async fn on_autopilot_a_captain_run_waits_for_a_reviewer_that_wont_start() -> an
     let outcome = autopilot_with(&crew, RunMode::Captain, true).await?;
     let said = notes(&outcome.events);
     match &outcome.exit {
-        EngineExit::Waiting(WaitReason::NoFallback { detail, until }) => {
+        EngineExit::Waiting(WaitReason::NoFallback { detail, until, .. }) => {
             assert_eq!(detail, "nobody to fall back to as a reviewer");
-            assert!(until.is_some(), "a wake is set: {said:?}");
+            assert!(until.is_none(), "it stopped, with no wake set: {said:?}");
         }
         other => panic!("{other:?}: {said:?}"),
     }
+    let stopped = stop_lines(&outcome.exit).unwrap_or_default();
+    assert_eq!(
+        stopped[0], "nothing else can take a reviewer",
+        "{stopped:?}"
+    );
     assert!(
-        said.contains(
-            &"Nobody to fall back to as a reviewer: GPT 5.6 Luna on Codex's session ended early \
-              (it couldn't start), and no other agent can take the role. It tries again on its \
-              own in 5 minutes; /resume tries now."
-        ),
-        "{said:?}"
+        stopped[1].starts_with("a reviewer · Codex couldn't start"),
+        "{stopped:?}"
     );
     assert_eq!(ran(&crew, CLAUDE, StepName::Build), 1, "{said:?}");
     assert_eq!(ran(&crew, GEMINI, StepName::Review), 0, "{said:?}");
@@ -2174,6 +2482,9 @@ async fn on_autopilot_a_task_nobody_else_can_take_is_tried_again_then_deferred()
               you, since no fallback from a provider that hasn't tried the task is left.",
             &"Nothing was merged, since no task passed: \"Due dates\" was deferred (autopilot \
               deferred it).",
+            // The run's end carries the same reason.
+            &"Nothing was merged, since no task passed: \"Due dates\" was deferred (autopilot \
+              deferred it).",
         ],
         "{said:#?}"
     );
@@ -2204,19 +2515,18 @@ async fn on_autopilot_a_council_run_waits_for_a_reviewer_who_isnt_the_author() -
     let outcome = autopilot_with(&crew, RunMode::Crew, true).await?;
     let said = notes(&outcome.events);
     match &outcome.exit {
-        EngineExit::Waiting(WaitReason::NoFallback { detail, until }) => {
+        EngineExit::Waiting(WaitReason::NoFallback { detail, until, .. }) => {
             assert_eq!(detail, "nobody to fall back to as a reviewer");
-            assert!(until.is_some(), "a wake is set: {said:?}");
+            assert!(until.is_none(), "it stopped, with no wake set: {said:?}");
         }
         other => panic!("{other:?}: {said:?}"),
     }
     assert_eq!(ran(&crew, CLAUDE, StepName::Build), 1, "{said:?}");
     assert_eq!(ran(&crew, CLAUDE, StepName::Review), 0, "{said:?}");
-    assert!(
-        said.iter().any(|note| {
-            note.starts_with("Nobody to fall back to as a reviewer: ")
-                && note.ends_with("It tries again on its own in 5 minutes; /resume tries now.")
-        }),
+    let stopped = stop_lines(&outcome.exit).unwrap_or_default();
+    assert_eq!(
+        stopped.first().map(String::as_str),
+        Some("nothing else can take a reviewer"),
         "{said:?}"
     );
     assert!(!asked_you(&outcome.events));
@@ -2343,4 +2653,19 @@ async fn a_proposer_with_only_clis_that_would_refuse_left_has_nobody_to_fall_bac
         "{said:?}"
     );
     Ok(())
+}
+
+/// A run that stopped fully: why, then its item's lines.
+fn stop_lines(exit: &EngineExit) -> Option<Vec<String>> {
+    let EngineExit::Waiting(WaitReason::NoFallback {
+        stop: Some(stop), ..
+    }) = exit
+    else {
+        return None;
+    };
+    Some(
+        std::iter::once(stop.why.clone())
+            .chain(stop.lines())
+            .collect(),
+    )
 }

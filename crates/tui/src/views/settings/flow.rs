@@ -317,6 +317,24 @@ pub fn edit_picker(row: SettingRow) -> Picker {
     picker
 }
 
+/// Where to save `value` for `row`, as a row that changes in place and then asks where opens
+/// it: straight at the question, its value picked already. Esc leaves nothing changed.
+pub fn scope_picker(row: SettingRow, value: String) -> Picker {
+    let mut picker = Picker::new(row.key.clone(), "");
+    picker.flow.command = row.key.clone();
+    let change = Change {
+        key: row.key.clone(),
+        value,
+        layer: row.layer.clone(),
+        workflow_from: row.workflow_from.clone(),
+        kept: Kept::words("Nothing changed"),
+    };
+    let default = row.default_scope;
+    picker.flow.settings = vec![row];
+    scope_question(&mut picker, change, default);
+    picker
+}
+
 /// The model picker for a role, from the controller's `Models` answer.
 pub fn models_picker(command: &str, role: Option<RoleName>, choices: &[ModelChoice]) -> Picker {
     let mut picker = Picker::default();

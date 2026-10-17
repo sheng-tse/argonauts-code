@@ -1,10 +1,11 @@
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::session::SessionEnd;
 use argonauts_core::events::task::TaskEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::SessionKey;
+use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::sanitize::sanitize_for_terminal;
 use argonauts_core::steps::{is_own_tool, last_json_object};
-use argonauts_core::views::{ActivityLine, AgentView, SubagentsSection};
+use argonauts_core::views::{ActivityLine, AgentView, AskedFor, Moved, SubagentsSection};
 use argonauts_core::{DiffStat, RunId};
 use argonauts_tui::bridge::tools::start_call;
 use argonauts_tui::cell::ToolTitle;
@@ -35,13 +36,45 @@ const REPORT_LISTS: &[(&str, &str)] = &[("concerns", "Concerns"), ("questions", 
 
 /// One session's Prompt, Activity, Diff, Subagents, and Outcome. The report tools are how the
 /// agent hands back its result, which the Outcome shows, so Activity leaves them out.
+/// The agent of a task's CLI workflow that handed `session` its job, when one did: a review or
+/// a sign-off asked through Argonauts Code under the label that agent's script gave it.
+fn asked_for(events: &[RunEvent], facts: &RunFacts, session: &SessionFacts) -> Option<AskedFor> {
+    let asked = matches!(session.started.role, RoleName::Reviewer | RoleName::Judge)
+        && session.task.is_none();
+    let label = session.started.label.as_deref().map(str::trim)?;
+    if !asked || label.is_empty() {
+        return None;
+    }
+    super::workflow::cli_workflow_runs(events)
+        .into_iter()
+        .filter(|(host, _)| facts.session(host).is_some_and(|host| host.task.is_some()))
+        .find_map(|(host, workflow)| {
+            let host = facts.session(&host)?;
+            let agent = workflow
+                .agents
+                .iter()
+                .rev()
+                .find(|agent| agent.label.trim() == label)?;
+            let model = agent.model.clone().or_else(|| host.worker.model.clone());
+            Some(AskedFor {
+                cli: host.worker.agent.clone(),
+                label: label.to_owned(),
+                worker: ModelRef::new(host.worker.agent.clone(), model),
+                tokens: agent.tokens,
+                elapsed_ms: agent.duration_ms,
+            })
+        })
+}
+
 pub(crate) fn agent_view(
     events: &[RunEvent],
     run: &RunId,
     session: &SessionKey,
 ) -> Option<AgentView> {
     let facts = RunFacts::of(events);
-    let this = facts.session(session)?;
+    let Some(this) = facts.session(session) else {
+        return left_out_view(events, run, session);
+    };
     let own_calls = this
         .tools
         .iter()
@@ -60,11 +93,16 @@ pub(crate) fn agent_view(
                 tool,
                 summary,
                 ok: call.ok,
+                note: None,
             }
         })
         .collect();
     let row = facts.agent_row(this);
+    let asked_for = asked_for(events, &facts, this);
+    let earlier = facts.verdicts.earlier(&facts, this);
     Some(AgentView {
+        asked_for,
+        earlier,
         run: run.clone(),
         goal: super::goal_feed::goal_of(events, &row),
         row,
@@ -80,6 +118,75 @@ pub(crate) fn agent_view(
         facts: facts.verdicts.facts(this),
         to_fix: facts.verdicts.to_fix(&facts, this),
         review: facts.verdicts.given(this),
+        moved: moved_of(this),
+    })
+}
+
+/// The view of a job no model could take, which its workflow went on without. Nothing ran, so
+/// it has no prompt, calls or outcome: only the model it was meant for, what it was in its
+/// phase, why it was left out and what that means for the run.
+fn left_out_view(events: &[RunEvent], run: &RunId, session: &SessionKey) -> Option<AgentView> {
+    let (row, left) = super::workflow::left_out_job(events, session)?;
+    // A run recorded before the whole words were kept has only the few its row says.
+    let because = if left.said.trim().is_empty() {
+        left.why
+    } else {
+        left.said
+    };
+    let facts = Some(left.acts_as).filter(|acts_as| !acts_as.trim().is_empty());
+    Some(AgentView {
+        run: run.clone(),
+        row,
+        prompt: String::new(),
+        activity: Vec::new(),
+        tool_calls: 0,
+        diff: None,
+        subagents: None,
+        outcome: None,
+        goal: None,
+        plan: None,
+        facts: facts.into_iter().collect(),
+        to_fix: None,
+        review: None,
+        asked_for: None,
+        earlier: None,
+        moved: Some(Moved::LeftOut {
+            because,
+            lines: left.means,
+        }),
+    })
+}
+
+/// Why the session does its job in another model's place, when it does: that model and what
+/// became of it, and on one CLI, that only that model is out.
+fn moved_of(this: &SessionFacts) -> Option<Moved> {
+    let asked = this.fallback_for.clone()?;
+    let why = this
+        .fallback_why
+        .as_deref()
+        .map(str::trim)
+        .filter(|why| !why.is_empty());
+    let which = match why {
+        Some(why @ ("overloaded" | "rate-limited" | "signed out" | "out of credits")) => {
+            format!("was {why}")
+        }
+        Some(why) => why.to_owned(),
+        None => "couldn't take it".to_owned(),
+    };
+    let names = DisplayNames::default();
+    let lines = if asked.agent == this.worker.agent {
+        vec![format!(
+            "only {} is out, so {}'s next model takes it",
+            names.short(&asked),
+            names.cli(&asked.agent)
+        )]
+    } else {
+        Vec::new()
+    };
+    Some(Moved::FallbackFor {
+        asked,
+        which,
+        lines,
     })
 }
 

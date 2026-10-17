@@ -1,11 +1,12 @@
-//! What Enter on a run's panel row opens, which is always something, and the
-//! short view for a run that has nothing to show yet.
+//! What Enter on a run's panel row opens, and Ctrl+T and `/workflows`, and the short view for a
+//! run that has nothing to show yet.
 //!
-//! Before its workflow is declared, a run's work is its main agent designing it, so Enter opens the
-//! main agent's session as it works, the newest one when a design starts over. Once the
-//! workflow is declared, Enter opens the workflow view. A run no agent has started in yet opens
-//! [`WaitingView`], which says what the run waits for. What opens this way follows the run: on to
-//! the main agent once it starts, to its next design, and to the workflow view once it's declared.
+//! Nothing of a workflow opens before its shape is known: while it is being written, by the main
+//! agent's design, a script or a CLI's own workflow, the keys only say so. Once it is known they
+//! open the workflow view, and Enter on the row of a run that is one worker opens that worker's
+//! session. A run no agent has started in yet opens [`WaitingView`], which says what the run
+//! waits for. What opens this way follows the run: on to the worker once it starts, and to the
+//! workflow view once its shape is known.
 
 use argonauts_core::RunId;
 use argonauts_core::app::ViewRequest;
@@ -34,21 +35,43 @@ pub enum RunEntry {
     Workflow,
     /// [`WaitingView`]: no agent has started and no workflow is declared.
     Waiting,
+    /// Nothing: the workflow is still being written, and opens once its phases are known.
+    Writing,
 }
 
-/// A run this screen doesn't hold goes to the controller, which knows it from its log.
+pub use argonauts_core::views::BEING_WRITTEN;
+
+/// What Enter on a run's row opens. A run this screen doesn't hold goes to the controller,
+/// which knows it from its log.
 pub fn entry(state: &AppState, run: &RunId) -> RunEntry {
+    let one_worker = state
+        .runs
+        .get(run)
+        .filter(|held| declared(held) && held.shape_known())
+        .and_then(single_agent);
+    match one_worker {
+        Some(session) => RunEntry::Session(session),
+        None => workflow_entry(state, run),
+    }
+}
+
+/// What Ctrl+T and `/workflows` open: the workflow view once the run's shape is known, never
+/// one agent's session in its place.
+pub fn workflow_entry(state: &AppState, run: &RunId) -> RunEntry {
     let Some(run) = state.runs.get(run) else {
         return RunEntry::Workflow;
     };
-    if let Some(session) = single_agent(run) {
-        return RunEntry::Session(session);
-    }
-    if declared(run) {
+    if declared(run) && run.shape_known() {
         return RunEntry::Workflow;
     }
+    if declared(run) {
+        return RunEntry::Writing;
+    }
+    if designing(run).is_some() {
+        return RunEntry::Writing;
+    }
     // A log from before runs declared their workflows has agents and no design.
-    match designing(run).or_else(|| newest_at_work(run)) {
+    match newest_at_work(run) {
         Some(session) => RunEntry::Session(session),
         None => RunEntry::Waiting,
     }
@@ -77,12 +100,23 @@ fn declared(run: &RunState) -> bool {
     !run.workflows.is_empty()
 }
 
-/// The one agent a run's work is: a Captain run's worker while it's the only one at work in the
-/// run's one workflow, the newest when the run tries again, or the only agent a run started.
-/// A Captain run that moved to the crew has a workflow of its own, which its view shows. The main
-/// agent whose design became the workflow isn't the work, so a declared workflow opens its view
-/// even before its first step starts.
+/// The one agent a run's work is, when it is one worker: a Captain run's worker while it's the
+/// only one at work in the run's one workflow, the newest when the run tries again, or the only
+/// agent a run started. A run with a reviewer, or one whose phases a script or a CLI's own
+/// workflow writes, is a workflow, which its view shows. A Captain run that moved to the crew has
+/// a workflow of its own too. The main agent whose design became the workflow isn't the work, so
+/// a declared workflow opens its view even before its first step starts.
 fn single_agent(run: &RunState) -> Option<SessionKey> {
+    let written = run
+        .workflows
+        .iter()
+        .any(|workflow| run.reported.expected_from(&workflow.id));
+    let workers_only = run
+        .sessions_in_order()
+        .all(|session| session.role == RoleName::Worker && session.workflows.is_empty());
+    if written || !workers_only {
+        return None;
+    }
     if run.mode == Some(RunMode::Captain) && run.workflows.len() <= 1 {
         let workers: Vec<&SessionState> = run
             .sessions_in_order()
@@ -157,7 +191,7 @@ impl WaitingView {
             .unwrap_or_default()
             .to_owned();
         Heading {
-            names: vec![name],
+            name,
             description,
             ..Heading::default()
         }
@@ -176,6 +210,10 @@ impl WaitingView {
             RunEntry::Workflow => (
                 "Its workflow started.".to_owned(),
                 "Enter opens the workflow view.",
+            ),
+            RunEntry::Writing => (
+                "Its workflow is being written.".to_owned(),
+                "Enter opens it once its phases are known.",
             ),
         };
         vec![
@@ -209,13 +247,11 @@ pub(crate) fn waiting_for(run: Option<&RunState>) -> String {
             "Every agent is out, so it waits for one to come back.".to_owned()
         }
         Some(WaitReason::WaitingForAgent { agent_id, .. }) => format!("Waiting for {agent_id}."),
-        Some(WaitReason::NoFallback { detail, until }) => {
-            let next = if until.is_some() {
-                "It tries again on its own; /resume tries now."
-            } else {
-                "/resume tries again."
-            };
-            format!("{}. {next}", argonauts_core::text::sentence_case(detail))
+        Some(WaitReason::NoFallback { detail, stop, .. }) => {
+            let why = stop
+                .as_ref()
+                .map_or(detail.as_str(), |stop| stop.why.as_str());
+            format!("It stopped: {why}. /resume carries it on.")
         }
         None if run.stopping => "Stopping.".to_owned(),
         None if run.pausing => "Pausing at a safe point.".to_owned(),
@@ -268,6 +304,7 @@ impl View for WaitingView {
                     workflow: None,
                 }),
                 RunEntry::Waiting => ViewOutcome::Notice("Nothing has started yet".to_owned()),
+                RunEntry::Writing => ViewOutcome::Notice(BEING_WRITTEN.to_owned()),
             },
             _ => ViewOutcome::Consumed,
         }
@@ -331,8 +368,17 @@ pub(crate) mod fixture {
         }
 
         pub(crate) fn send(&mut self, session: Option<&str>, kind: Value) {
+            self.send_as(session, None, kind);
+        }
+
+        /// The same, an event of the task `task`.
+        pub(crate) fn send_for_task(&mut self, session: Option<&str>, task: &str, kind: Value) {
+            self.send_as(session, Some(task), kind);
+        }
+
+        fn send_as(&mut self, session: Option<&str>, task: Option<&str>, kind: Value) {
             let event = json!({"type": "run", "event": {"seq": self.seq,
-                "ts": "2026-10-04T16:54:13Z", "run_id": RUN, "task_id": null,
+                "ts": "2026-10-04T16:54:13Z", "run_id": RUN, "task_id": task,
                 "session": session, "source": "argonauts-code", "kind": kind}});
             self.seq += 1;
             let event: AppEvent = serde_json::from_value(event).expect("a run event");
@@ -421,6 +467,8 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    use serde_json::{Value, json};
+
     use super::fixture::{RunLog, run_id};
     use super::*;
     use crate::state::AppState;
@@ -429,22 +477,64 @@ mod tests {
         RunEntry::Session(SessionKey::parse(key).unwrap())
     }
 
+    /// While the main agent designs the workflow, nothing of it opens, and never the main
+    /// agent's page in its place: Enter, Ctrl+T and `/workflows` say it is being written.
     #[test]
-    fn enter_opens_the_main_agent_at_work_until_the_workflow_is_declared() {
+    fn nothing_opens_while_the_workflow_is_being_written() {
         let mut log = RunLog::started();
         assert_eq!(entry(&log.state, &run_id()), RunEntry::Waiting);
         log.design("s-001", "main:design");
-        assert_eq!(entry(&log.state, &run_id()), session("s-001"));
+        assert_eq!(entry(&log.state, &run_id()), RunEntry::Writing);
+        assert_eq!(workflow_entry(&log.state, &run_id()), RunEntry::Writing);
         // The first brief didn't hold, so a second design starts over.
         log.ended("s-001");
-        assert_eq!(entry(&log.state, &run_id()), session("s-001"));
         log.design("s-002", "main:design-2");
-        assert_eq!(entry(&log.state, &run_id()), session("s-002"));
+        assert_eq!(entry(&log.state, &run_id()), RunEntry::Writing);
         log.ended("s-002");
         log.declare();
         assert_eq!(entry(&log.state, &run_id()), RunEntry::Workflow);
         log.step_agent("s-003", "read:openai");
         assert_eq!(entry(&log.state, &run_id()), RunEntry::Workflow);
+    }
+
+    /// A workflow a script or a CLI's own workflow writes opens once the first report lists its
+    /// phases. Its one worker at work is no shortcut: the run is a workflow.
+    #[test]
+    fn a_written_workflow_opens_once_its_phases_are_known() {
+        let mut log = RunLog::started();
+        log.send(
+            None,
+            json!({"type": "workflow", "data": {"event": "started", "id": "wf-001",
+            "from": "script", "version": "1", "parent": null,
+            "workflow": {"name": "fix-money-rounding", "description": "",
+                "phases": [
+                    {"name": "Work", "standard": "do", "steps": [{"kind": "script"}]},
+                    {"name": "Merge", "standard": "decide", "steps": [{"kind": "merge"}]}
+                ]}}}),
+        );
+        let started = json!({"type": "session", "data": {"event": "started",
+            "worker": "claude-code/haiku", "agent_id": "claude-code", "provider": "anthropic",
+            "kind": "cli", "role": "worker", "step": "build", "access": "build",
+            "lifetime": "task", "resumed_from": null, "follow_key": 1, "label": "build:fix-money",
+            "workflow_step": {"workflow": "wf-001", "phase": 0, "path": [0]}}});
+        log.send_for_task(Some("s-001"), "task-fix-money", started);
+        assert_eq!(entry(&log.state, &run_id()), RunEntry::Writing);
+        assert_eq!(workflow_entry(&log.state, &run_id()), RunEntry::Writing);
+        let workflow = |phases: Value| {
+            json!({"type": "agent", "data": {"type": "workflow", "workflow": {
+                "id": "wf_1", "name": "fix-money-rounding", "description": "",
+                "phases": phases, "agents": [], "status": "running", "tokens": 0,
+                "tool_calls": 0, "duration_ms": 0}}})
+        };
+        log.send_for_task(Some("s-001"), "task-fix-money", workflow(json!([])));
+        assert_eq!(entry(&log.state, &run_id()), RunEntry::Writing);
+        log.send_for_task(
+            Some("s-001"),
+            "task-fix-money",
+            workflow(json!([{"index": 1, "title": "Build"}, {"index": 2, "title": "Review"}])),
+        );
+        assert_eq!(entry(&log.state, &run_id()), RunEntry::Workflow);
+        assert_eq!(workflow_entry(&log.state, &run_id()), RunEntry::Workflow);
     }
 
     /// A Captain run is its worker's while the worker is the only one at work in its one workflow:
@@ -496,27 +586,18 @@ mod tests {
             .map_or_else(String::new, |next| format!("{next:?}"))
     }
 
-    /// What opens from a run's row moves on with the run: to the main agent once it starts, to the
-    /// session that fixes its brief, and to the workflow view once it's declared.
+    /// What opens from a run's row moves on with the run: nowhere while the workflow is being
+    /// written, and to the workflow view once it's declared.
     #[test]
     fn a_view_from_the_row_follows_the_run() {
         let mut log = RunLog::started();
         let mut waiting = WaitingView::new(run_id());
         assert_eq!(followed(&mut waiting, &log.state), "");
         log.design("s-001", "main:design");
-        let next = followed(&mut waiting, &log.state);
-        assert!(
-            next.contains("SessionView") && next.contains("s-001"),
-            "{next}"
-        );
-
-        let mut main_agent = SessionView::for_run(run_id(), SessionKey::parse("s-001").unwrap());
-        assert_eq!(followed(&mut main_agent, &log.state), "");
+        assert_eq!(followed(&mut waiting, &log.state), "");
         log.ended("s-001");
-        assert_eq!(followed(&mut main_agent, &log.state), "");
         log.design_from("s-002", "main:design", Some("cli-7"));
-        let next = followed(&mut main_agent, &log.state);
-        assert!(next.contains("s-002"), "{next}");
+        assert_eq!(followed(&mut waiting, &log.state), "");
 
         let mut fixing = SessionView::for_run(run_id(), SessionKey::parse("s-002").unwrap());
         log.ended("s-002");
@@ -609,13 +690,17 @@ mod tests {
             "nothing to open yet, said on the notice line"
         );
 
+        // The main agent's design is the workflow being written: nothing opens until it is.
         log.design("s-001", "main:design");
         let shown = text(&mut view, &log.state);
-        assert!(shown.contains("main:design started."), "{shown}");
-        let ViewOutcome::Replace(opened) = press(&mut view, KeyCode::Enter, &log.state) else {
-            panic!("Enter opens the main agent's session");
-        };
-        assert!(format!("{opened:?}").contains("SessionView"), "{opened:?}");
+        assert!(shown.contains("Its workflow is being written."), "{shown}");
+        assert!(
+            matches!(
+                press(&mut view, KeyCode::Enter, &log.state),
+                ViewOutcome::Notice(said) if said == BEING_WRITTEN
+            ),
+            "the main agent's page never opens in the workflow's place"
+        );
 
         log.declare();
         assert!(matches!(

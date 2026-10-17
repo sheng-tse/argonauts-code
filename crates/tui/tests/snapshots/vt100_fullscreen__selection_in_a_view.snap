@@ -3,7 +3,7 @@ source: crates/tui/tests/vt100_fullscreen.rs
 expression: f.marked()
 ---
 Help
-The keys in effect, and every command by category                    67 commands
+The keys in effect, and every command by category                    68 commands
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Keys                                                                         │
@@ -25,4 +25,4 @@ The keys in effect, and every command by category                    67 commands
 │ up                            take queued messages back                      │
 │ tab / up                      answer a waiting question                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ scroll · esc back                                               1-18 of 163 ↓
+↑↓ scroll · esc back                                               1-18 of 166 ↓

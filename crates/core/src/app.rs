@@ -9,14 +9,13 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::agent_panel::AgentPanelRows;
-use crate::agent_sessions::AgentSession;
 use crate::api::{DiffScope, DiffView, RawView, RunSummary, StatusSummary, TakeOverTicket};
 use crate::cli_commands::CliCommandSet;
 use crate::cli_sessions::CliSession;
 use crate::display_names::DisplayNames;
 use crate::events::RunEvent;
 use crate::events::approval::{AnswerAction, AnswerOption, FreeText};
-use crate::events::context::ContextDetail;
+use crate::events::context::{ContextDetail, ContextUsage};
 use crate::events::run::{CaptainOrCrewDecision, CheckedInstruction, Party, RunMode, WaitReason};
 use crate::input::{MentionTarget, SlashCommand, WorkflowAction};
 use crate::limits::CostEstimate;
@@ -269,6 +268,16 @@ pub enum UiCommand {
     },
     /// Closes the screen. Runs keep going.
     Exit,
+    /// A slash command as you typed it, which the conversation's record keeps where you typed
+    /// it. The command itself follows as its own `Slash`, or the screen does it alone.
+    CommandTyped {
+        text: String,
+    },
+    /// A line a command you typed printed back, which the conversation's record keeps after
+    /// the command.
+    CommandReplied {
+        reply: CommandReply,
+    },
     /// Saves the pick recorded for an answered fallback question as a fallback rule for the
     /// question's role and the stopped agent, as `Answer.remember` does at answer time. The app
     /// asks where to save it.
@@ -288,7 +297,8 @@ pub enum AnswerTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "view", rename_all = "snake_case")]
 pub enum ViewRequest {
-    Runs,
+    /// The `/resume` list: earlier conversations and the CLIs' own sessions for this folder.
+    ResumeList,
     /// The resume list again, with the CLIs' sessions of every folder, not this one's alone.
     SessionsEverywhere,
     Status,
@@ -379,11 +389,6 @@ pub enum ViewRequest {
     Learning {
         area: LearningArea,
     },
-    /// The agents' sessions of one run the `/resume` picker listed without them. Answered with
-    /// `AgentSessions`.
-    AgentSessions {
-        run: RunId,
-    },
 }
 
 impl ViewRequest {
@@ -436,9 +441,10 @@ pub enum AppEvent {
         #[serde(default)]
         effort: Option<String>,
     },
-    /// Events for this run follow from `seq` 0, and the TUI rebuilds its state and the Ctrl+O
-    /// history from them. Up to `ReplayDone` it prints none of them. A resumed run's
-    /// scrollback shows the summary as its header, then [`AppEvent::CondensedReplay`].
+    /// Events for this run follow, from its latest snapshot or from `seq` 0, and the TUI
+    /// rebuilds its state and the Ctrl+O history from them. Up to `ReplayDone` it prints none of
+    /// them: what the run did before was drawn already, live or between `PastBegins` and
+    /// `PastDrawn`.
     Attached {
         summary: RunSummary,
         /// A run this app just started. Its history prints as it comes under the prompt that
@@ -559,19 +565,11 @@ pub enum AppEvent {
         #[serde(default)]
         reset: bool,
     },
-    /// What a resumed run prints in place of its history, sent after the replayed events and
-    /// just before `ReplayDone`, and only when there was history. The controller builds it
-    /// from the events at no token cost, unless the main agent phrases the recap from the digest.
-    CondensedReplay {
-        run: RunId,
-        /// The last conversation turns word for word, oldest first.
-        turns: Vec<ReplayTurn>,
-        /// One line per milestone, oldest first, such as "Plan approved · 5 tasks".
-        milestones: Vec<String>,
-        /// The `※ recap` line.
-        recap: String,
-        /// Set when the main agent phrased the recap.
-        recap_model: Option<ModelRef>,
+    /// `/config key=value` left the key as it was, and why: a key that isn't a setting, or a
+    /// value its picker doesn't offer. It prints under the command, as a saved change does.
+    SettingRefused {
+        key: String,
+        why: String,
     },
     /// Every event of an attached run up to `seq` was history. Only later ones ring the bell or
     /// notify.
@@ -579,22 +577,27 @@ pub enum AppEvent {
         run: RunId,
         seq: u64,
     },
-    /// An earlier conversation picked up again, with `/resume` or `argonauts -c`. Its turns are
-    /// read from its journal at no token cost.
+    /// An earlier conversation picked up again, with `/resume` or `argonauts -c`. An Argonauts
+    /// Code conversation's past follows between `PastBegins` and `PastDrawn`; a CLI's own
+    /// session comes with its turns, read from that session at no token cost.
     ConversationResumed {
         conversation: ConversationId,
         title: String,
         /// The agent of its last turn.
         worker: Option<ModelRef>,
-        /// Older turns, folded: they join the Ctrl+O history without printing.
-        earlier: Vec<ReplayTurn>,
-        /// The last turns word for word, oldest first.
+        /// A CLI session's turns word for word, oldest first.
         turns: Vec<ReplayTurn>,
         /// The pages it published with Claude Code's Artifact tool, oldest first, read off its
         /// journal, so `/artifacts` and the key that opens the latest have them again.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         artifacts: Vec<crate::artifacts::Artifact>,
     },
+    /// What follows, up to `PastDrawn`, is a conversation's or a run's record, drawn by the
+    /// printers that drew it live, in order. Nothing in it happens again: no question opens, no
+    /// view, no bell, no notice.
+    PastBegins,
+    /// The past is drawn, and what follows is live.
+    PastDrawn,
     /// `/templates`: the workflows and the prompts, marked.
     Templates {
         list: crate::template_list::TemplateList,
@@ -850,7 +853,7 @@ pub enum ConversationEvent {
     TurnCancelled {
         turn: TurnId,
     },
-    /// A direct turn's agent ran out, and `to` carries on the same request in the same folder.
+    /// A turn's agent ran out, and `to` carries on the same request in the same folder.
     FellBack {
         turn: TurnId,
         from: ModelRef,
@@ -860,6 +863,9 @@ pub enum ConversationEvent {
         /// What `to` was told, such as "your request, the transcript so far, and that
         /// invoice/money.py changed".
         told: String,
+        /// Set when `from`'s CLI turned out to be signed out, as its error said.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signed_out: Option<SignedOut>,
     },
     /// A message of yours that went into the running turn, once the model read it, as Claude
     /// Code's send now shows it.
@@ -872,6 +878,69 @@ pub enum ConversationEvent {
     AnswerRetried {
         turn: TurnId,
     },
+    /// How the turn left its session's context, kept in the record as the turn ends so a
+    /// resumed conversation counts it at once. The screen has it already while the turn runs.
+    ContextLeft {
+        turn: TurnId,
+        /// When the turn ended.
+        #[serde(with = "time::serde::rfc3339")]
+        at: OffsetDateTime,
+        /// In tokens.
+        used: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window: Option<u64>,
+        /// The CLI's own last count of what fills it, where its CLI counts one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<Box<ContextUsage>>,
+    },
+    /// A slash command you typed, kept in the record where you typed it, so the conversation
+    /// drawn again prints it. Live, the screen has printed it already.
+    CommandTyped {
+        text: String,
+        /// When you typed it, so a run's record drawn again goes around it as it printed.
+        /// Older records have none.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "time::serde::rfc3339::option"
+        )]
+        at: Option<OffsetDateTime>,
+    },
+    /// A line a command you typed printed back, kept after the command so the conversation
+    /// drawn again prints it under it. Live, the screen has printed it already.
+    CommandReplied {
+        reply: CommandReply,
+    },
+}
+
+/// One line a command you typed printed back under its echo: `Kept model as Opus 5.5`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandReply {
+    pub text: String,
+    /// Drawn after `text` in the accent color: `Opus 5.5`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Dim words after the value, such as who the change is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// The whole line is dim, as the line a closing panel leaves is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dim: bool,
+    /// The whole line is in the error colour, as a command's refusal is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub error: bool,
+}
+
+/// A CLI whose error said its sign-in is gone, and how to sign it in again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedOut {
+    /// What became of its sign-in, such as "its sign-in was revoked". Empty when its CLI only
+    /// asked to log in again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
+    /// The command that signs it in again, such as `claude /login`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
 }
 
 /// What a conversation turn turned out to be.
@@ -981,6 +1050,11 @@ pub enum ChoiceKind {
     /// its detail, then where the picked one's copy goes: This folder `t` or Every folder
     /// `e`. Esc copies nothing.
     Templates,
+    /// A settings file still uses names that changed: Rename them `r`, which keeps a copy of
+    /// the file, or Leave them `l`, asked again only when the file changes. The body lists each
+    /// old name beside its new one, each row split by tabs into parts, plain then dim in turn.
+    /// Esc leaves them.
+    RenamedSettings,
     /// A CLI the run about to start would use must be updated first: Update it now `u`, Leave
     /// it out of this run `l`, offered where another CLI can take its roles, or Run with it
     /// anyway `r`. Each option's detail is drawn beside it. Esc starts nothing.
@@ -990,30 +1064,16 @@ pub enum ChoiceKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "data", rename_all = "snake_case")]
 pub enum ViewData {
-    /// The `/resume` picker.
-    Runs {
-        /// Newest first.
-        runs: Vec<RunSummary>,
-        /// Earlier conversations with the main agent, newest first. The picker lists them with the
-        /// runs by when each was last used.
+    /// The `/resume` picker. A run is never listed on its own: it comes back with the
+    /// conversation that started it.
+    ResumeList {
+        /// Earlier conversations with the main agent, newest first.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         conversations: Vec<ConversationSummary>,
         /// The sessions of the main agent's CLI for this folder, newest first, listed with the
         /// rest under a Kind column.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         sessions: Vec<CliSession>,
-        /// The sessions of the listed runs' agents, each listed under its run.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        agents: Vec<AgentSession>,
-        /// The runs whose agents `agents` holds, the newest few. An older run's are read when
-        /// you open it in the picker.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        agents_read: Vec<RunId>,
-    },
-    /// One run's agents' sessions, for the `/resume` picker.
-    AgentSessions {
-        run: RunId,
-        agents: Vec<AgentSession>,
     },
     /// A goal run's goal.
     Goal {
@@ -1152,6 +1212,9 @@ pub struct ConversationSummary {
     /// The runs it started or opened, which carrying it on brings back to the agent panel.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub runs: u32,
+    /// One of the runs it started waits on you.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_you: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

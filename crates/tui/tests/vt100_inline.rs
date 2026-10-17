@@ -700,12 +700,9 @@ fn keys_do_what_the_reference_says() {
         "{}",
         dump(&h.rows())
     );
+    // A letter does nothing, and the number after it asks for Enter.
     assert!(h.key(KeyCode::Char('x')).is_empty());
     assert_eq!(h.ui.model().bottom.question.as_ref().unwrap().armed, None);
-    // After a letter, a number waits for a key meant for the question.
-    assert!(h.key(KeyCode::Char('2')).is_empty());
-    assert_eq!(h.ui.model().bottom.question.as_ref().unwrap().armed, None);
-    h.key(KeyCode::Up);
     assert!(h.key(KeyCode::Char('2')).is_empty());
     h.settle();
     assert!(

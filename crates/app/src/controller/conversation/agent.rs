@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use anyhow::{Context as _, bail};
-use argonauts_core::agent_sessions::{AgentSession, AgentSessionRef, Helper, Resume};
+use argonauts_core::agent_sessions::{AgentSessionRef, Helper, Resume};
 use argonauts_core::api::RunSummary;
 use argonauts_core::event::AgentEvent;
 use argonauts_core::events::session::{SessionEvent, SessionStarted, SubagentUpdate};
@@ -25,7 +25,6 @@ use argonauts_core::journal::{self, RunLock};
 use argonauts_core::layout::run_files;
 use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::session_runner::RunnerKind;
-use argonauts_core::steps::StepName;
 use argonauts_core::{RunId, TaskId};
 use time::OffsetDateTime;
 
@@ -34,10 +33,6 @@ use crate::commands::adapters_here;
 use crate::controller::Ctx;
 use crate::conversation_store::ConversationPlace;
 use crate::git;
-
-/// How many of the newest runs `/resume` reads the sessions of up front. An older run's are
-/// read when you open it in the picker, and any session carries on by name.
-const LISTED_RUNS: usize = 20;
 
 /// One session, as its run's journal tells it.
 #[derive(Debug, Clone)]
@@ -49,7 +44,6 @@ pub(super) struct Found {
     kind: RunnerKind,
     pub task: Option<TaskId>,
     pub task_title: Option<String>,
-    step: Option<StepName>,
     /// Its name in the run, such as `build:slugify`, when the run gave it one.
     name: Option<String>,
     /// Where its CLI ran, and so where its CLI finds it again.
@@ -73,7 +67,6 @@ impl Found {
             kind: started.kind,
             task: event.task_id.clone(),
             task_title: None,
-            step: started.step,
             name: started.label.clone(),
             folder: None,
             branch: None,
@@ -83,20 +76,6 @@ impl Found {
             ended: false,
             helpers: Vec::new(),
         }
-    }
-
-    /// Its name in the run, such as `build:slugify`, as the conversation and the panel call it. A
-    /// run from before agents had names gives its task, or its step when it had none, such as
-    /// `task-001` or `judge`.
-    fn label(&self) -> Option<String> {
-        if let Some(name) = &self.name {
-            return Some(name.clone());
-        }
-        if let Some(task) = &self.task {
-            return Some(task.to_string());
-        }
-        let step = serde_json::to_value(self.step?).ok()?;
-        Some(step.as_str()?.replace('_', " "))
     }
 
     /// Who it is in a sentence: `build:slugify in run-01` by its name, or for a run from before
@@ -289,82 +268,6 @@ fn installed(ctx: &Ctx) -> HashSet<String> {
         .collect()
 }
 
-/// The sessions of this repo's newest runs, each run's in the order they started, for
-/// `/resume`, and which runs those are. A journal that can't be read lists none, since the rest
-/// of `/resume` still works.
-pub(crate) async fn list(ctx: &Ctx, runs: &[RunSummary]) -> (Vec<AgentSession>, Vec<RunId>) {
-    let listed: Vec<&RunSummary> = runs.iter().take(LISTED_RUNS).collect();
-    let agents = read(ctx, &listed).await;
-    (agents, listed.iter().map(|run| run.run.clone()).collect())
-}
-
-/// One run's sessions, for a run `/resume` listed without them.
-pub(crate) async fn list_run(ctx: &Ctx, run: &RunId) -> anyhow::Result<Vec<AgentSession>> {
-    let runs = ctx.services.conductor.list().await?;
-    let summary = runs
-        .iter()
-        .find(|summary| &summary.run == run)
-        .with_context(|| format!("There's no run {run} in this repo. /resume lists them."))?;
-    Ok(read(ctx, &[summary]).await)
-}
-
-async fn read(ctx: &Ctx, runs: &[&RunSummary]) -> Vec<AgentSession> {
-    let cache = Arc::clone(&ctx.agent_sessions);
-    let repo = ctx.env.repo_root.clone();
-    let dirs: Vec<(RunId, PathBuf)> = runs
-        .iter()
-        .map(|run| (run.run.clone(), ctx.env.run_dir(&run.run)))
-        .collect();
-    let read = tokio::task::spawn_blocking(move || {
-        let sessions: Vec<Arc<Vec<Found>>> = dirs
-            .iter()
-            .map(|(run, dir)| {
-                cache.sessions(dir, run).unwrap_or_else(|err| {
-                    tracing::warn!("listing the sessions of {run}: {err:#}");
-                    Arc::default()
-                })
-            })
-            .collect();
-        (sessions, branches(&repo))
-    })
-    .await;
-    let (sessions, branches) = match read {
-        Ok(read) => read,
-        Err(err) => {
-            tracing::warn!("listing the runs' sessions: {err}");
-            return Vec::new();
-        }
-    };
-    let checks = Checks {
-        branches,
-        installed: installed(ctx),
-    };
-    let mut agents = Vec::new();
-    for (run, found) in runs.iter().zip(&sessions) {
-        for found in found.iter() {
-            agents.push(AgentSession {
-                run: found.run.clone(),
-                session: found.key.clone(),
-                role: found.role,
-                label: found.label(),
-                worker: found.worker.clone(),
-                last_message: found.last_message.as_deref().map(one_line),
-                updated: found.updated,
-                resume: resume_of(ctx, found, Some(run), &checks),
-                helpers: found
-                    .helpers
-                    .iter()
-                    .map(|helper| Helper {
-                        last_message: helper.last_message.as_deref().map(one_line),
-                        ..helper.clone()
-                    })
-                    .collect(),
-            });
-        }
-    }
-    agents
-}
-
 /// The session `reference` names, and whether it can carry on.
 pub(super) async fn pick(
     ctx: &Ctx,
@@ -549,14 +452,10 @@ pub(super) fn binary(ctx: &Ctx, worker: &str) -> String {
         )
 }
 
-/// Agent text on one line, for a list.
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 #[cfg(test)]
 mod tests {
     use argonauts_core::events::session::{SubagentKind, SubagentStatus};
+    use argonauts_core::steps::StepName;
     use argonauts_testkit::TempRepo;
 
     use super::*;
@@ -576,7 +475,7 @@ mod tests {
         }
     }
 
-    fn worker(task: Option<&str>, step: Option<StepName>, name: Option<&str>) -> Found {
+    fn worker(task: Option<&str>, name: Option<&str>) -> Found {
         Found {
             run: RunId::new("run-01").unwrap(),
             key: SessionKey::numbered(1),
@@ -585,7 +484,6 @@ mod tests {
             kind: RunnerKind::Cli,
             task: task.map(|task| TaskId::new(task).unwrap()),
             task_title: None,
-            step,
             name: name.map(str::to_owned),
             folder: None,
             branch: None,
@@ -599,7 +497,7 @@ mod tests {
 
     #[test]
     fn a_helper_keeps_its_name_as_the_cli_says_more() {
-        let mut found = worker(None, Some(StepName::Judge), None);
+        let mut found = worker(None, None);
         found.helper(&update(
             "toolu_01",
             Some("explorer"),
@@ -609,7 +507,6 @@ mod tests {
         assert_eq!(found.helpers.len(), 1);
         assert_eq!(found.helpers[0].label.as_deref(), Some("explorer"));
         assert_eq!(found.helpers[0].status, SubagentStatus::Done);
-        assert_eq!(found.label().as_deref(), Some("judge"));
         assert_eq!(found.who(), "the worker in run-01");
     }
 
@@ -618,11 +515,9 @@ mod tests {
     /// task.
     #[test]
     fn an_agent_goes_by_the_name_its_run_gave_it() {
-        let named = worker(Some("task-001"), Some(StepName::Build), Some("build:money"));
-        assert_eq!(named.label().as_deref(), Some("build:money"));
+        let named = worker(Some("task-001"), Some("build:money"));
         assert_eq!(named.who(), "build:money in run-01");
-        let unnamed = worker(Some("task-001"), Some(StepName::Build), None);
-        assert_eq!(unnamed.label().as_deref(), Some("task-001"));
+        let unnamed = worker(Some("task-001"), None);
         assert_eq!(unnamed.who(), "the worker of task-001 in run-01");
     }
 
@@ -676,7 +571,7 @@ mod tests {
         std::fs::write(&path, line(started(1))).unwrap();
         let first = cache.sessions(&dir, &run).unwrap();
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].label().as_deref(), Some("build:item-1"));
+        assert_eq!(first[0].who(), "build:item-1 in run-01");
         assert!(Arc::ptr_eq(&first, &cache.sessions(&dir, &run).unwrap()));
 
         let mut file = std::fs::OpenOptions::new()

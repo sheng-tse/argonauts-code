@@ -343,6 +343,7 @@ async fn experiment(
         label: None,
         reviews: false,
         fresh: false,
+        independent_of: Vec::new(),
     };
     // A CLI error has the experiment go again, or to another agent; when nobody can run it, the
     // dispute stays open, as without a report.

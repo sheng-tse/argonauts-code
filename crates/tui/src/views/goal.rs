@@ -4,7 +4,7 @@
 //! decided each. Tab goes back to the workflow, and Esc back to the prompt.
 
 use argonauts_core::RunId;
-use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
+use argonauts_core::app::{ViewData, ViewRequest};
 use argonauts_core::events::goal::{Assumption, CriterionState, Decider, GoalStatus, GoalVerdict};
 use argonauts_core::views::GoalView as GoalData;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -322,7 +322,7 @@ impl View for GoalView {
             .map(|named| (named.name.clone(), named.description.clone()))
             .unwrap_or_else(|| (self.data.run.to_string(), self.data.objective.clone()));
         let heading = Heading {
-            names: vec![name],
+            name,
             description,
             totals: format!("{} of {} met", self.met(), self.data.criteria.len()),
             ..Heading::default()
@@ -359,13 +359,7 @@ impl View for GoalView {
             self.confirm_stop = false;
             match key.code {
                 KeyCode::Char('x') if plain => {
-                    return if ctx.state.attached.as_ref() == Some(&self.data.run) {
-                        ViewOutcome::Send(UiCommand::Stop)
-                    } else {
-                        ViewOutcome::Notice(
-                            "Only the run on screen can be stopped. Resume it first".to_owned(),
-                        )
-                    };
+                    return ViewOutcome::Send(super::stop(&self.data.run, ctx.state));
                 }
                 KeyCode::Esc => return ViewOutcome::Consumed,
                 _ => {}
@@ -431,7 +425,9 @@ mod tests {
     use std::time::Instant;
 
     use argonauts_core::Spend;
+    use argonauts_core::app::UiCommand;
     use argonauts_core::events::goal::{Criterion, Try};
+    use argonauts_core::input::SlashCommand;
     use argonauts_core::views::CriterionRow;
 
     use super::*;
@@ -550,5 +546,38 @@ mod tests {
             alone.handle_key(tab, &ctx),
             ViewOutcome::Request(ViewRequest::Workflow { .. })
         ));
+    }
+
+    /// `x x` stops the goal's run whether it is on screen or runs beside the conversation.
+    #[test]
+    fn stopping_the_goal_stops_its_run_on_screen_or_not() {
+        let theme = Theme::dark();
+        let x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        let beside = AppState::default();
+        let mut shown = AppState::default();
+        shown.attached = Some(data().run);
+        for (state, wanted) in [
+            (
+                beside,
+                UiCommand::Slash {
+                    command: SlashCommand::Stop {
+                        run: Some(data().run),
+                    },
+                },
+            ),
+            (shown, UiCommand::Stop),
+        ] {
+            let ctx = ViewCtx {
+                theme: &theme,
+                state: &state,
+                now: Instant::now(),
+            };
+            let mut view = GoalView::new(data());
+            assert!(matches!(view.handle_key(x, &ctx), ViewOutcome::Consumed));
+            match view.handle_key(x, &ctx) {
+                ViewOutcome::Send(command) => assert_eq!(command, wanted),
+                other => panic!("x x sent nothing: {other:?}"),
+            }
+        }
     }
 }

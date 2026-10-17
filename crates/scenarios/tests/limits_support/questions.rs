@@ -43,11 +43,39 @@ impl Limits {
                     row.trim().strip_prefix("◆ ") == Some(headline)
                 })?;
             }
+            // A long title wraps onto the rows under its own, so it is read across them.
             _ => {
-                pty.wait_for(&regex::escape(&question.title), WAIT)?;
+                wait_for_rows(pty, "the question's title", WAIT, |rows| {
+                    rows.contains(&question.title)
+                })?;
             }
         }
         Ok(question)
+    }
+}
+
+/// Waits until the visible rows, read as one line with each row's own spaces trimmed, pass
+/// `pick`: for text that wraps.
+pub fn wait_for_rows(
+    pty: &Pty,
+    what: &str,
+    timeout: Duration,
+    pick: impl Fn(&str) -> bool,
+) -> anyhow::Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let screen = pty.screen();
+        let read: Vec<&str> = screen.visible.iter().map(|row| row.trim()).collect();
+        if pick(&read.join(" ")) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "no {what} in {timeout:?}; the screen was:\n{}",
+                screen.visible_text()
+            );
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 

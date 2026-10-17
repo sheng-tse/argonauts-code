@@ -53,6 +53,11 @@ fn connect_request(target: &str, auth: &str) -> String {
     format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n{auth}\r\n")
 }
 
+/// Asks for a tunnel to `target` as a session given `url`, and reads the reply's head.
+pub(crate) fn connect_as(proxy: &Proxy, url: &str, target: &str) -> String {
+    send(proxy, &connect_request(target, &auth_header(url))).1
+}
+
 /// Sends `request` and reads the reply's head.
 fn send(proxy: &Proxy, request: &str) -> (TcpStream, String) {
     let mut stream = TcpStream::connect(("127.0.0.1", proxy.port())).unwrap();
@@ -96,6 +101,120 @@ fn an_allowed_host_tunnels() {
     assert_eq!(body(stream), "hello world");
     assert_eq!(contacted.load(Ordering::SeqCst), 1);
     assert!(proxy.refusals().is_empty());
+}
+
+/// A proxy of the network's own that says `status` to every CONNECT, keeping each request
+/// line, and then echoes what comes through the tunnel.
+fn network_proxy(status: &'static str) -> (u16, Arc<Mutex<Vec<String>>>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let kept = asked.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let kept = kept.clone();
+            std::thread::spawn(move || {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                    head.push(byte[0]);
+                }
+                let head = String::from_utf8_lossy(&head).into_owned();
+                lock(&kept).push(head.lines().next().unwrap_or_default().to_owned());
+                let reply = format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n");
+                if stream.write_all(reply.as_bytes()).is_err() || !status.starts_with("200") {
+                    return;
+                }
+                let mut buf = [0u8; 1024];
+                while let Ok(read) = stream.read(&mut buf) {
+                    if read == 0 || stream.write_all(&buf[..read]).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    (port, asked)
+}
+
+fn upstream_at(port: u16, no_proxy: &str) -> Upstream {
+    let url = format!("http://127.0.0.1:{port}");
+    Upstream::from_env(|name| match name {
+        "HTTPS_PROXY" => Some(url.clone()),
+        "NO_PROXY" => Some(no_proxy.to_owned()),
+        _ => None,
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_tunnel_goes_on_through_the_proxy_argonauts_goes_out_by() {
+    let (network, asked) = network_proxy("200 Connection established");
+    let (direct, contacted) = echo_server();
+    let proxy = Proxy::through(
+        to_loopback(direct, Arc::default()),
+        upstream_at(network, "internal.example.test"),
+    )
+    .unwrap();
+    let allow = Allowlist::parse(["api.example.test:443", "internal.example.test:443"]).unwrap();
+    let auth = auth_header(&proxy.session_url(&allow));
+
+    let (mut stream, head) = send(&proxy, &connect_request("api.example.test:443", &auth));
+    assert!(head.starts_with("HTTP/1.1 200 "), "{head}");
+    stream.write_all(b"hello").unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+    assert_eq!(body(stream), "hello");
+    assert_eq!(*lock(&asked), ["CONNECT api.example.test:443 HTTP/1.1"]);
+    assert_eq!(contacted.load(Ordering::SeqCst), 0);
+
+    // NO_PROXY's hosts are dialled straight.
+    let (stream, head) = send(&proxy, &connect_request("internal.example.test:443", &auth));
+    assert!(head.starts_with("HTTP/1.1 200 "), "{head}");
+    drop(stream);
+    assert_eq!(lock(&asked).len(), 1);
+    assert!(proxy.refusals().is_empty());
+}
+
+#[test]
+fn a_host_the_proxy_cant_reach_is_named_among_the_refusals() {
+    let (network, _) = network_proxy("403 Forbidden");
+    let proxy = Proxy::through(to_loopback(1, Arc::default()), upstream_at(network, "")).unwrap();
+    let allow = Allowlist::parse(["api.anthropic.com:443"]).unwrap();
+    let auth = auth_header(&proxy.session_url(&allow));
+
+    let (stream, head) = send(&proxy, &connect_request("api.anthropic.com:443", &auth));
+    assert!(head.starts_with("HTTP/1.1 502 "), "{head}");
+    assert!(body(stream).contains("couldn't reach api.anthropic.com"));
+    let refusals = proxy.refusals();
+    assert_eq!(refusals.len(), 1);
+    assert_eq!(refusals[0].why, Why::Unreachable);
+    assert_eq!(refusals[0].words(), "couldn't reach api.anthropic.com");
+}
+
+/// A session finds what the proxy refused sessions of its own list since it started, and
+/// nothing it refused others or refused before.
+#[test]
+fn a_session_finds_only_its_own_lists_refusals_since_it_started() {
+    let proxy = Proxy::with_resolver(to_loopback(1, Arc::default())).unwrap();
+    let claude = Allowlist::for_cli("claude-code", &[]).unwrap();
+    let codex = Allowlist::for_cli("codex", &[]).unwrap();
+    let (claude_url, codex_url) = (proxy.session_url(&claude), proxy.session_url(&codex));
+
+    assert!(
+        connect_as(&proxy, &claude_url, "before.example.test:443").starts_with("HTTP/1.1 403 ")
+    );
+    let started = Instant::now();
+    assert!(connect_as(&proxy, &codex_url, "other.example.test:443").starts_with("HTTP/1.1 403 "));
+    assert!(connect_as(&proxy, &claude_url, "evil.example.test:443").starts_with("HTTP/1.1 403 "));
+
+    let refused = proxy.refused_since(&claude, started);
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(
+        refused[0].words(),
+        "refused evil.example.test, which isn't on the session's list"
+    );
+    assert_eq!(proxy.refusals().len(), 3);
 }
 
 #[test]

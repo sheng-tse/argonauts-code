@@ -1,6 +1,7 @@
 //! The tasks Claude Code runs in the background: a command send now moved there, a subagent or
-//! a workflow that runs on its own. They outlive the turn, and Claude Code stops them once its
-//! input closes, so the session keeps its input open until each one has ended.
+//! a workflow that runs on its own. They outlive the turn. Once its input closes, Claude Code
+//! gives them a while longer and then stops what still runs, so the session keeps its input
+//! open until each one has ended.
 
 use std::collections::BTreeSet;
 
@@ -41,9 +42,22 @@ impl BackgroundTracker {
             {
                 self.insert(line)
             }
+            // A paused workflow is marked as told and never gets a notification, so it leaves
+            // here, and no turn follows it either.
+            "task_updated"
+                if line.get("patch").and_then(|patch| str_at(patch, "status")) == Some(PAUSED) =>
+            {
+                let paused = str_at(line, "task_id").is_some_and(|task| self.running.remove(task));
+                return paused.then(|| self.event(false));
+            }
             "task_notification" => {
                 let ended = str_at(line, "task_id").is_some_and(|task| self.running.remove(task));
-                return ended.then(|| self.event(true));
+                // Claude Code marks a workflow or an agent it stopped as already told, so no
+                // turn follows it. A command it stops at its deadline or for memory is still
+                // told, in a turn that comes after the session's input closed, and the
+                // session's end takes that turn's result as it comes.
+                let told = str_at(line, "status") != Some(STOPPED);
+                return ended.then(|| self.event(told));
             }
             _ => false,
         };
@@ -69,6 +83,10 @@ fn is_workflow(line: &Value) -> bool {
 }
 
 const WORKFLOW_TASK: &str = "local_workflow";
+/// A task stopped by its session, the user, a spend limit, or Claude Code's own deadline or
+/// memory watch, rather than one that ended.
+const STOPPED: &str = "stopped";
+const PAUSED: &str = "paused";
 
 #[cfg(test)]
 mod tests {
@@ -138,6 +156,49 @@ mod tests {
         assert_eq!(
             running(tracker.observe("task_notification", &notified)),
             (Vec::new(), true)
+        );
+    }
+
+    /// A workflow Claude Code stops, as its spend limit does, is never told to the model, so the
+    /// session waits for no turn after it.
+    #[test]
+    fn a_stopped_workflow_starts_no_turn() {
+        let mut tracker = BackgroundTracker::default();
+        let started = json!({
+            "task_id": "w1",
+            "task_type": "local_workflow",
+            "workflow_name": "fix-money-rounding",
+        });
+        assert_eq!(
+            running(tracker.observe("task_started", &started)),
+            (vec!["w1".to_owned()], false)
+        );
+        let killed = json!({"task_id": "w1", "patch": {"status": "killed", "end_time": 1}});
+        assert_eq!(tracker.observe("task_updated", &killed), None);
+        let notified = json!({"task_id": "w1", "status": "stopped"});
+        assert_eq!(
+            running(tracker.observe("task_notification", &notified)),
+            (Vec::new(), false)
+        );
+    }
+
+    #[test]
+    fn a_paused_workflow_leaves_the_list_and_starts_no_turn() {
+        let mut tracker = BackgroundTracker::default();
+        let started = json!({"task_id": "w1", "task_type": "local_workflow"});
+        assert_eq!(
+            running(tracker.observe("task_started", &started)),
+            (vec!["w1".to_owned()], false)
+        );
+        let paused = json!({"task_id": "w1", "patch": {"status": "paused"}});
+        assert_eq!(
+            running(tracker.observe("task_updated", &paused)),
+            (Vec::new(), false)
+        );
+        // Resumed, it is a workflow started again.
+        assert_eq!(
+            running(tracker.observe("task_started", &started)),
+            (vec!["w1".to_owned()], false)
         );
     }
 }

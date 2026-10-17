@@ -162,7 +162,9 @@ impl Folder {
                 self.tagged.decisions.push((id, message.text.clone()));
                 Some(Audience::Everyone)
             }
-            RunEventKind::Blackboard(BlackboardEvent::Delivered { .. })
+            RunEventKind::Blackboard(
+                BlackboardEvent::Delivered { .. } | BlackboardEvent::AnsweredForYou(_),
+            )
             | RunEventKind::Session(_)
             | RunEventKind::Agent(_)
             | RunEventKind::RunReview(_)
@@ -557,6 +559,16 @@ impl Folder {
             MergeEvent::MainMergedIn { .. } => "main merged into the run branch".to_owned(),
             MergeEvent::FinalCheck { passed: true } => "The final check passed".to_owned(),
             MergeEvent::FinalCheck { passed: false } => "The final check failed".to_owned(),
+            // The commit your branch moved to, so it's never taken for the one a task merged
+            // into the run branch as.
+            MergeEvent::RunMerged {
+                target,
+                sha,
+                fast_forward: true,
+            } => {
+                let short: String = sha.chars().take(8).collect();
+                format!("Merged into {target} as {short}")
+            }
             MergeEvent::RunMerged { target, .. } => format!("Merged into {target}"),
             MergeEvent::WaitingToMerge { target, in_the_way } => format!(
                 "Waiting to merge into {target}: {} in your checkout in the way",
@@ -1047,6 +1059,57 @@ mod tests {
         assert!(covers("tests/hidden/**", "tests/hidden/**"));
         assert!(!covers("tests/hidden/**", "tests/public.rs"));
         assert_eq!(literal_prefix("tests/hidden/**"), "tests/hidden");
+    }
+
+    /// A task's merge into the run branch and the run's onto your branch each say their own
+    /// commit, so a closing answer never gives the task's as the one your branch moved to.
+    #[test]
+    fn a_run_merged_onto_your_branch_says_the_commit_it_moved_to() {
+        let merge = |seq: u64, kind: MergeEvent| RunEvent {
+            seq,
+            ts: OffsetDateTime::UNIX_EPOCH,
+            run_id: RunId::new("run-01").unwrap(),
+            task_id: None,
+            session: None,
+            source: "argonauts-code".to_owned(),
+            kind: RunEventKind::Merge(kind),
+        };
+        let mut folder = Folder::default();
+        folder.push(&merge(
+            1,
+            MergeEvent::Merged {
+                task: TaskId::new("task-001").unwrap(),
+                sha: "e9ae4e0ab7ebe8c577c2e13ab89dc040567712d2".to_owned(),
+            },
+        ));
+        folder.push(&merge(
+            2,
+            MergeEvent::RunMerged {
+                target: "main".to_owned(),
+                sha: "5b826b9acc92769b9ea7681ada95e94b052a1adb".to_owned(),
+                fast_forward: true,
+            },
+        ));
+        let recent = folder.summary(&Viewer::User).recent;
+        assert_eq!(
+            recent,
+            [
+                "task-001 merged into the run branch",
+                "Merged into main as 5b826b9a"
+            ]
+        );
+
+        // Only written into your files, your branch kept its commit.
+        let mut folder = Folder::default();
+        folder.push(&merge(
+            1,
+            MergeEvent::RunMerged {
+                target: "main".to_owned(),
+                sha: "5b826b9acc92769b9ea7681ada95e94b052a1adb".to_owned(),
+                fast_forward: false,
+            },
+        ));
+        assert_eq!(folder.summary(&Viewer::User).recent, ["Merged into main"]);
     }
 
     #[test]

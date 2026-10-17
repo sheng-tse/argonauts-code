@@ -49,5 +49,6 @@ vt100.workspace = true
 
 [dev-dependencies]
 argonauts-testkit.workspace = true
+ratatui.workspace = true
 tempfile.workspace = true
 tracing-subscriber.workspace = true

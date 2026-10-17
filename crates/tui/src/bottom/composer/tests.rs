@@ -461,6 +461,20 @@ fn a_fresh_prompt_offers_the_built_in_example() {
     assert_eq!(composer.placeholder_text(true), None);
 }
 
+/// `ui.suggestions = false` takes the example away, as Claude Code's prompt suggestions setting
+/// does, and leaves a question's placeholder.
+#[test]
+fn without_suggestions_no_example_shows() {
+    let mut composer = Composer::new();
+    composer.examples_off = true;
+    assert_eq!(composer.placeholder_text(true), None);
+    composer.placeholder = Some("↑ to answer the question".into());
+    assert_eq!(
+        composer.placeholder_text(true).as_deref(),
+        Some("↑ to answer the question")
+    );
+}
+
 #[test]
 fn the_example_goes_after_the_first_prompt() {
     let mut composer = Composer::new();
@@ -1040,6 +1054,13 @@ fn the_workflow_word_counts_only_in_a_message() {
             .iter()
             .all(|keyword| keyword.word != argonauts_core::keywords::ULTRACODE.word)
     );
+
+    // With the trigger off the word is only a word: nothing asks, and Opt+W is free.
+    let mut c = Composer::new();
+    c.workflow_word_off = true;
+    type_text(&mut c, "fix the login loop, ultracode");
+    assert!(!c.workflow_requested());
+    assert_eq!(c.toggle_workflow_word(), None);
 }
 
 /// The rule above the input as the picture of names on screen draws it: the workflow named with

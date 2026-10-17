@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Modifier;
@@ -967,43 +967,34 @@ fn a_question_that_needs_you_takes_the_keys_until_set_aside() {
 }
 
 #[test]
-fn letters_typed_at_a_question_never_confirm_it() {
+fn letters_do_nothing_and_a_digit_picks() {
     let mut question = focused(merge_question());
-    // "1 more thing" and Enter: the 1 arms Merge, and the rest must not let Enter confirm it.
-    assert_eq!(
-        question.handle_key(key(KeyCode::Char('1'))),
-        QuestionEvent::Moved
-    );
-    assert_eq!(question.armed, Some(0));
-    for c in " more thing".chars() {
+    for c in "more thing".chars() {
         assert_eq!(
             question.handle_key(key(KeyCode::Char(c))),
             QuestionEvent::Unhandled
         );
     }
-    assert!(question.stray_typing && question.armed.is_none());
-    // Neither the Enter that ends the line nor one pressed again answers.
-    for _ in 0..2 {
-        assert_eq!(
-            question.handle_key(key(KeyCode::Enter)),
-            QuestionEvent::Moved
-        );
-        assert!(question.stray_typing);
-    }
     assert_eq!(question.selected, 0);
-    // Moving the pointer is meant for the question, and the Enter after it answers.
-    question.handle_key(key(KeyCode::Up));
-    assert!(!question.stray_typing);
+    // Merge can't be undone, so its number arms it and Enter confirms.
+    assert_eq!(
+        question.handle_key(key(KeyCode::Char('1'))),
+        QuestionEvent::Moved
+    );
+    assert_eq!(question.armed, Some(0));
     assert_eq!(question.handle_key(key(KeyCode::Enter)), answered(0));
-
-    // A deliberate key after the letters clears them too.
+    // A letter after the number disarms it, so the Enter that ends a line confirms nothing.
     let mut question = focused(merge_question());
+    question.handle_key(key(KeyCode::Char('1')));
     question.handle_key(key(KeyCode::Char('x')));
-    question.handle_key(key(KeyCode::Down));
-    assert_eq!(question.handle_key(key(KeyCode::Enter)), answered(1));
+    assert_eq!(question.armed, None);
+    // Every other option answers at its number.
+    let mut question = focused(merge_question());
+    assert_eq!(question.handle_key(key(KeyCode::Char('2'))), answered(1));
 }
 
-/// The input hides while a question has the keys, so the question's own key line names them.
+/// The input hides while a question has the keys, so the question's own key line names them,
+/// and it never talks about typing.
 #[test]
 fn the_key_line_names_the_keys_while_a_question_has_them() {
     let theme = theme();
@@ -1014,82 +1005,22 @@ fn the_key_line_names_the_keys_while_a_question_has_them() {
     question.handle_key(key(KeyCode::Char('5')));
     assert!(last_row(&question, &ctx).ends_with("· Esc to cancel"));
     question.handle_key(key(KeyCode::Char('y')));
-    assert_eq!(
-        last_row(&question, &ctx),
-        "  Typing waits while the question has the keys · ↑↓ to choose · Esc to carry on without me"
-    );
-    question.esc_hint = "Esc to cancel".into();
-    assert_eq!(
-        last_row(&question, &ctx),
-        "  Typing waits while the question has the keys · ↑↓ to choose · Esc to cancel"
-    );
-    // A deliberate key clears the stray letters, and the line names the question's keys again.
-    question.esc_hint = ESC_HINT.into();
-    question.handle_key(key(KeyCode::Up));
     assert_eq!(last_row(&question, &ctx), first);
 }
 
-/// A question that took the keys by itself, as one work waits on does as it shows.
-fn took_the_keys() -> QuestionPrompt {
+/// A question that took the keys by itself at `now`, as one work waits on does as it shows.
+fn took_the_keys_at(now: Instant) -> QuestionPrompt {
     let mut question = merge_question();
     question.needs_you = true;
-    assert!(question.take_keys(Instant::now()));
+    assert!(question.take_keys(now));
     assert!(!question.engaged);
     question
 }
 
-/// What `text` typed at `question` does, key by key, with vim keys on or off, then Enter.
-fn type_at(question: &mut QuestionPrompt, text: &str, vim: bool) -> Vec<QuestionEvent> {
-    text.chars()
-        .map(KeyCode::Char)
-        .chain([KeyCode::Enter])
-        .map(|code| {
-            let read = question.read_key(key(code), vim);
-            question.handle_key(read)
-        })
-        .collect()
-}
-
-fn answers(events: &[QuestionEvent]) -> bool {
-    events
-        .iter()
-        .any(|event| matches!(event, QuestionEvent::Answered { .. }))
-}
-
 #[test]
-fn a_paste_and_the_enter_after_it_never_answer() {
-    let mut question = took_the_keys();
-    question.pasted_at();
-    assert!(question.stray_typing);
-    assert_eq!(
-        question.handle_key(key(KeyCode::Enter)),
-        QuestionEvent::Moved
-    );
-    assert_eq!(
-        question.handle_key(key(KeyCode::Char('1'))),
-        QuestionEvent::Unhandled
-    );
-    assert!(question.focused && question.armed.is_none());
-    let theme = theme();
-    assert_eq!(
-        last_row(&question, &ctx(120, &theme)),
-        "  Typing waits while the question has the keys · ↑↓ to choose · Esc to carry on without me"
-    );
-}
-
-#[test]
-fn vim_letters_never_answer_a_question_that_took_the_keys_by_itself() {
-    for line in ["let me check", "we will see", "hold on", "glad it works"] {
-        let mut question = took_the_keys();
-        let events = type_at(&mut question, line, true);
-        assert!(!answers(&events), "{line:?} answered: {events:?}");
-        assert!(
-            question.focused && !question.dismissed,
-            "{line:?} set it aside"
-        );
-    }
+fn vim_keys_answer_once_the_question_is_engaged() {
     // Once you've moved with the arrows, `l` answers as Enter does.
-    let mut question = took_the_keys();
+    let mut question = took_the_keys_at(Instant::now());
     question.read_key(key(KeyCode::Down), true);
     question.handle_key(key(KeyCode::Down));
     let read = question.read_key(key(KeyCode::Char('l')), true);
@@ -1102,32 +1033,37 @@ fn vim_letters_never_answer_a_question_that_took_the_keys_by_itself() {
     assert_eq!(question.handle_key(read), answered(1));
 }
 
+/// A line typed as a question shows is dropped whole, each key keeping the guard up, and the
+/// first key after a pause works, as Claude Code's dialogs do.
 #[test]
-fn a_number_after_letters_never_answers() {
-    let mut question = took_the_keys();
-    let events = type_at(&mut question, "also fix 2 more bugs", false);
-    assert!(!answers(&events), "{events:?}");
-    assert!(question.stray_typing && question.armed.is_none());
-    assert_eq!(
-        question.handle_key(key(KeyCode::Char('2'))),
-        QuestionEvent::Unhandled
-    );
+fn a_burst_typed_as_a_question_shows_is_dropped_whole() {
+    let t0 = Instant::now();
+    let mut question = took_the_keys_at(t0);
+    let mut now = t0;
+    let line = "let me check 2".chars().map(KeyCode::Char);
+    for code in line.chain([KeyCode::Enter]) {
+        now += Duration::from_millis(100);
+        assert!(question.held_off(&key(code), now), "{code:?}");
+    }
+    assert!(!question.held_off(&key(KeyCode::Char('2')), now + QUESTION_GUARD));
 }
 
-/// For a moment after a question takes the keys by itself, only the arrows work on it: Enter, Esc,
-/// and Tab meant for what had the keys do nothing, and a letter or a number counts as stray
-/// typing. ↑ hands it the keys with nothing held off.
+/// For a moment after a question shows, only the arrows work on it: Enter, Esc, Tab and the
+/// digits meant for what had the keys do nothing. That holds for a question you set off too.
+/// ↑ hands it the keys with nothing held off.
 #[test]
-fn a_question_that_just_took_the_keys_holds_off_all_but_the_arrows() {
+fn a_question_that_just_showed_holds_off_all_but_the_arrows() {
     let t0 = Instant::now();
     let soon = t0 + QUESTION_GUARD / 2;
-    let mut question = merge_question();
-    question.needs_you = true;
-    assert!(question.take_keys(t0));
-    for code in [KeyCode::Enter, KeyCode::Esc, KeyCode::Tab] {
+    let mut question = took_the_keys_at(t0);
+    for code in [
+        KeyCode::Enter,
+        KeyCode::Esc,
+        KeyCode::Tab,
+        KeyCode::Char('1'),
+    ] {
         assert!(question.held_off(&key(code), soon), "{code:?}");
     }
-    assert!(!question.stray_typing);
     for code in [KeyCode::Up, KeyCode::Down, KeyCode::Home, KeyCode::End] {
         assert!(!question.held_off(&key(code), soon), "{code:?}");
     }
@@ -1136,12 +1072,8 @@ fn a_question_that_just_took_the_keys_holds_off_all_but_the_arrows() {
         !question.held_off(&ctrl_c, soon),
         "the quit keys still work"
     );
-    assert!(question.held_off(&key(KeyCode::Char('1')), soon));
-    assert!(
-        question.stray_typing,
-        "a number then starts a line for the input"
-    );
-    assert!(!question.held_off(&key(KeyCode::Enter), t0 + QUESTION_GUARD));
+    let later = soon + QUESTION_GUARD;
+    assert!(!question.held_off(&key(KeyCode::Enter), later));
 
     question.handle_key(key(KeyCode::Esc));
     assert!(question.dismissed);
@@ -1150,6 +1082,10 @@ fn a_question_that_just_took_the_keys_holds_off_all_but_the_arrows() {
         !question.held_off(&key(KeyCode::Char('2')), soon),
         "↑ hands it over"
     );
+
+    let mut yours = merge_question().yours();
+    assert!(!yours.take_keys(t0), "it has them already");
+    assert!(yours.held_off(&key(KeyCode::Enter), soon));
 }
 
 /// A question an agent asks in its own words, with nothing to pick from.

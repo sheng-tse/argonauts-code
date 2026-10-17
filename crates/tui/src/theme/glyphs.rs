@@ -6,8 +6,7 @@ use argonauts_core::settings::ui::Glyphs as GlyphChoice;
 /// lines, which have no one-cell form, and `ui.ambiguous_width = 2` swaps them out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Glyphs {
-    /// Starts assistant text, tool calls, and notices. Claude Code's `●`, and never its macOS
-    /// `⏺`, which has an emoji form.
+    /// Starts assistant text, tool calls, and notices: Claude Code's `●`, and on macOS its `⏺`.
     pub bullet: &'static str,
     /// Hangs results under a tool call: `  ⎿  `.
     pub result: &'static str,
@@ -145,13 +144,29 @@ impl Glyphs {
         checkbox_on: "[x]",
     };
 
+    /// The Unicode set as Claude Code draws it on macOS, where items start with `⏺`. Its fonts
+    /// have it in text form, one cell wide, as Ghostty draws it from Iosevka.
+    pub const MACOS: Glyphs = Glyphs {
+        bullet: "⏺",
+        ..Self::UNICODE
+    };
+
+    /// The Unicode set for this platform: [`Glyphs::MACOS`] on macOS, as Claude Code chooses.
+    pub fn unicode() -> &'static Glyphs {
+        if cfg!(target_os = "macos") {
+            &Self::MACOS
+        } else {
+            &Self::UNICODE
+        }
+    }
+
     /// The set for `ui.glyphs` and `ui.ambiguous_width`. Where ambiguous glyphs take two cells,
     /// most of the Unicode set (`●`, `◆`, `…`, `○`) would push frames and columns out of line,
     /// and the views pick their row marks by the set in use, so only the ASCII set keeps every
     /// glyph one cell.
     pub fn for_settings(choice: GlyphChoice, ambiguous_width: u8) -> Self {
         match choice {
-            GlyphChoice::Unicode if ambiguous_width != 2 => Self::UNICODE,
+            GlyphChoice::Unicode if ambiguous_width != 2 => Self::unicode().clone(),
             GlyphChoice::Unicode | GlyphChoice::Ascii => Self::ASCII,
         }
     }
@@ -339,10 +354,23 @@ mod tests {
         }
     }
 
+    /// Claude Code's macOS set is the other but for its bullet, which is one cell in its text
+    /// form.
+    #[test]
+    fn the_macos_set_changes_only_the_bullet() {
+        let mut both = Glyphs::MACOS.clone();
+        assert_eq!(
+            both.bullet.chars().map(|c| c.width()).collect::<Vec<_>>(),
+            [Some(1)]
+        );
+        both.bullet = Glyphs::UNICODE.bullet;
+        assert_eq!(both, Glyphs::UNICODE);
+    }
+
     #[test]
     fn two_cell_ambiguous_glyphs_get_the_ascii_set() {
         let unicode = Glyphs::for_settings(GlyphChoice::Unicode, 1);
-        assert_eq!(unicode, Glyphs::UNICODE);
+        assert_eq!(&unicode, Glyphs::unicode());
         assert!(unicode.named().iter().any(|(_, glyph)| is_ambiguous(glyph)));
         for choice in [GlyphChoice::Unicode, GlyphChoice::Ascii] {
             let narrow = Glyphs::for_settings(choice, 2);

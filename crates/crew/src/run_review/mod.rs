@@ -579,7 +579,8 @@ async fn propose(host: &Host, facts: &[facts::TaskFacts], settings: &Settings) -
     let change = match host.ask::<RunReview>(ask).await {
         Ok(answered) => answered.output.change,
         Err(EngineError::Step(StepError::Session(end))) if out_of_time(&end) => {
-            return no_proposal(host, &format!("{agent} took longer than {}", timeout.0));
+            let (ran, why) = host.read(who_ran).unwrap_or((agent, String::new()));
+            return no_proposal(host, &format!("{ran} took longer than {}{why}", timeout.0));
         }
         Err(err) => return Err(err),
     };
@@ -602,6 +603,23 @@ async fn propose(host: &Host, facts: &[facts::TaskFacts], settings: &Settings) -
 }
 
 /// Says in one line why nobody proposed a change, and leaves the rest of the run review to go on.
+/// The run review's newest session, which may have fallen back from the agent asked: who ran
+/// it, and why it gave no reply when its CLI kept losing the network.
+fn who_ran(state: &crate::state::RunState) -> Option<(String, String)> {
+    let session = state
+        .sessions
+        .in_order()
+        .into_iter()
+        .rev()
+        .find(|session| session.started.role == RoleName::RunReview)?;
+    let why = if session.network_retries > 0 {
+        " (no reply: network retries)".to_owned()
+    } else {
+        String::new()
+    };
+    Some((roles::display_name(&session.started.worker), why))
+}
+
 fn no_proposal(host: &Host, why: &str) -> EngineResult<()> {
     let note = Note {
         level: NoteLevel::Info,

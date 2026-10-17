@@ -559,6 +559,55 @@ async fn the_setup_is_said_once_and_again_when_it_changes() {
     driver.exit().await;
 }
 
+/// With the keyword trigger off, a prompt that says `ultracode` is a turn like any other.
+#[tokio::test]
+async fn with_the_trigger_off_the_word_starts_no_workflow() {
+    let mut driver = claude_code("[workflows]\nultracode_trigger = false\n").await;
+    driver.agent.push(FakeSession::completed("Done."));
+    driver
+        .send(UiCommand::Submit {
+            text: "tidy the README, ultracode".to_owned(),
+            workflow_requested: true,
+            pictures: Vec::new(),
+        })
+        .await;
+    driver.until(turn_ended).await;
+    assert!(driver.conductor.starts().is_empty());
+    let spec = spec_number(&driver, 0).await;
+    assert!(
+        spec.prompt
+            .iter()
+            .any(|part| part.text.contains("tidy the README, ultracode"))
+    );
+    assert!(spec.preferences.workflow_word_off, "Claude Code's own too");
+    driver.exit().await;
+}
+
+/// Thinking, fast mode, and the language you set go with each turn of the session you talk to,
+/// for its CLI to take as settings of its own; nothing of them by default.
+#[tokio::test]
+async fn your_thinking_speed_and_language_go_with_each_turn() {
+    let mut driver =
+        claude_code("[main_session]\nthinking = false\nfast = true\nlanguage = \"japanese\"\n")
+            .await;
+    driver.agent.push(FakeSession::completed("Done."));
+    driver.submit(WORK).await;
+    driver.until(turn_ended).await;
+    let spec = spec_number(&driver, 0).await;
+    let preferences = &spec.preferences;
+    assert!(preferences.thinking_off && preferences.fast);
+    assert_eq!(preferences.language.as_deref(), Some("japanese"));
+    assert!(!preferences.workflow_word_off);
+    driver.exit().await;
+
+    let mut driver = claude_code("").await;
+    driver.agent.push(FakeSession::completed("Done."));
+    driver.submit(WORK).await;
+    driver.until(turn_ended).await;
+    assert!(spec_number(&driver, 0).await.preferences.is_default());
+    driver.exit().await;
+}
+
 /// With Captain in use nothing leaves the main session unless you ask: the call alone is refused.
 #[tokio::test]
 async fn in_captain_the_session_s_own_judgment_starts_nothing() {

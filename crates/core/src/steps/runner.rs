@@ -441,6 +441,7 @@ mod tests {
             asking: None,
             cli_workflow: crate::session_runner::CliWorkflow::default(),
             shell: crate::session_runner::SessionShell::None,
+            preferences: Default::default(),
         }
     }
 

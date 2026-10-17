@@ -66,8 +66,9 @@ use workflows::{OrchestratorDesign, WorkflowSettings, WorkflowSize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Settings {
-    /// How the crew is organised: `council` (default), `orchestrator`, `captain`,
-    /// `maker-checker`, `best-of-n`, `draft-and-vote`, an `ablate-*` one, or one of your own.
+    /// How the crew is organised: `orchestrator`, `council`, `captain`, `maker-checker`,
+    /// `best-of-n`, `draft-and-vote`, an `ablate-*` one, or one of your own. With no setting
+    /// naming one, `captain` runs, on these built-in settings, which are `council`'s.
     /// One file holds a workflow: its steps, the settings it carries and the phases a run
     /// starts from. With `workflows.orchestrator_designs` the orchestrator sizes those phases
     /// for the task, and with `"any"` it may pick another workflow or compose one.
@@ -215,6 +216,9 @@ impl Settings {
     /// The ultracode key, which `/effort`'s toggle writes.
     pub const ULTRACODE: &'static str = "ultracode";
 
+    /// Whether the word `ultracode` in a prompt asks for a workflow.
+    pub const ULTRACODE_TRIGGER: &'static str = "workflows.ultracode_trigger";
+
     /// Who may fill one of the five roles, in order of preference.
     pub fn models_for(&self, role: crew::CrewRole) -> Vec<ModelRef> {
         self.crew.models_for(role)
@@ -301,6 +305,47 @@ pub const LAYERS: &[&str] = &[
 /// The layers that are settings files, lowest first. A workflow picked in one sits just below it:
 /// what that file and later layers set wins over the workflow.
 pub const FILE_LAYERS: [&str; 3] = ["global", "project", "project-local"];
+
+/// Whether a change to `key` asks where to save it, as one that changes safety or what the
+/// team shares does: a safety key, the approvals, the sandbox, the limits, the crew and its
+/// prompts. Any other key is yours alone and saves at once to your global file, as Claude
+/// Code's Config saves its rows. The approval mode the app starts in is yours, though under
+/// `approvals`.
+pub fn asks_where(key: &str, safety: bool) -> bool {
+    let section = key.split('.').next().unwrap_or(key);
+    let shared = matches!(
+        section,
+        "approvals" | "sandbox" | "limits" | "crew" | "roles" | "prompts"
+    );
+    safety || (shared && key != "approvals.start_mode")
+}
+
+#[cfg(test)]
+mod asks_where_tests {
+    use super::asks_where;
+
+    #[test]
+    fn your_own_keys_save_at_once_and_shared_ones_ask() {
+        for key in [
+            "ui.tips",
+            "ui.keys",
+            "compaction",
+            "fallback.mode",
+            "approvals.start_mode",
+        ] {
+            assert!(!asks_where(key, false), "{key}");
+        }
+        for key in [
+            "approvals.merge.mode",
+            "crew.reviewer",
+            "limits.spend_per_run",
+            "prompts.writer",
+        ] {
+            assert!(asks_where(key, false), "{key}");
+        }
+        assert!(asks_where("ui.anything", true), "a safety key always asks");
+    }
+}
 
 /// Where a setting you change inside the app is saved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]

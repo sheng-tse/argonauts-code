@@ -1,3 +1,4 @@
+use argonauts_core::app::CommandReply;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
@@ -31,6 +32,23 @@ pub struct Notice {
     pub after: Option<String>,
     /// Dim lines under the text at its own column, with no hook, such as what it can't do.
     pub under: Vec<String>,
+    /// The words are bold in the tone and the bullet takes the text color, for something that
+    /// changed under you, such as a run that ended or a CLI that signed out.
+    pub headline: bool,
+    /// Words right after all the others, as ` · run claude /login` goes on after a headline.
+    pub trailing: Vec<Trailing>,
+    /// The rows under `⎿` read dim through, a command in them too, as one account of what
+    /// happened, such as why a run stopped and how to carry it on.
+    pub dim_details: bool,
+}
+
+/// A piece of the words a notice ends with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Trailing {
+    /// Read dim, as words beside the line's own do.
+    Dim(String),
+    /// A command to type, in the text color so the eye finds it among the dim words.
+    Command(String),
 }
 
 impl Notice {
@@ -46,6 +64,9 @@ impl Notice {
             plain_words: false,
             after: None,
             under: Vec::new(),
+            headline: false,
+            trailing: Vec::new(),
+            dim_details: false,
         }
     }
 
@@ -80,8 +101,35 @@ impl Notice {
         }
     }
 
+    /// `● The run ended · Nothing was merged: …`: the words bold in the tone after a bullet in
+    /// the text color, and why dim after them.
+    pub fn headline(tone: Tone, text: impl Into<String>, why: Option<String>) -> Self {
+        Self {
+            headline: true,
+            decided: why,
+            ..Self::new(tone, text)
+        }
+    }
+
+    pub fn with_trailing(mut self, trailing: impl IntoIterator<Item = Trailing>) -> Self {
+        self.trailing.extend(trailing);
+        self
+    }
+
     pub fn with_glyph(mut self, glyph: impl Into<String>) -> Self {
         self.glyph = Some(glyph.into());
+        self
+    }
+
+    /// Words dim after the text on its own row, as `carries it on` after `/resume`.
+    pub fn with_after(mut self, after: impl Into<String>) -> Self {
+        self.after = Some(after.into());
+        self
+    }
+
+    /// See [`Notice::dim_details`].
+    pub fn with_dim_details(mut self) -> Self {
+        self.dim_details = true;
         self
     }
 
@@ -113,12 +161,18 @@ impl HistoryCell for Notice {
                 .unwrap_or_else(|| theme.glyphs.bullet.to_owned())
         };
         let hang = str_width(&glyph) + 1;
+        let glyph_role = if self.headline {
+            Role::Text
+        } else {
+            self.tone.role()
+        };
         let first = [
-            marks::decorative(glyph, theme.style(self.tone.role())),
+            marks::decorative(glyph, theme.style(glyph_role)),
             Span::raw(" "),
         ];
         let rest = [Span::raw(" ".repeat(hang))];
         let text_style = match self.tone {
+            _ if self.headline => theme.style(self.tone.role()).add_modifier(Modifier::BOLD),
             Tone::Dim | Tone::Warning | Tone::Error if !self.plain_words => {
                 theme.style(self.tone.role())
             }
@@ -155,6 +209,16 @@ impl HistoryCell for Notice {
                 ));
             }
         }
+        for piece in &self.trailing {
+            let (words, role) = match piece {
+                Trailing::Dim(words) => (words, Role::Dim),
+                Trailing::Command(words) => (words, Role::Text),
+            };
+            spans.push(Span::styled(
+                sanitize_line(words).into_owned(),
+                theme.style(role),
+            ));
+        }
         let hidden = !ctx.expanded && self.more.iter().any(|line| !line.trim().is_empty());
         if hidden && spans_width(&first) + spans_width(&spans) + str_width(EXPAND_HINT) <= width {
             spans.push(Span::styled(EXPAND_HINT, theme.style(Role::Dim)));
@@ -184,8 +248,20 @@ impl HistoryCell for Notice {
             // A detail set in under the one before, as /doctor's notes under an agent are, hangs
             // under its own words when it wraps.
             let set_in = detail.len() - detail.trim_start_matches(' ').len();
-            // The same formatter as a tool's results, so `/resume` takes the code color here too.
-            lines.extend(text_rows(detail, Tone::Dim, ctx, first, BODY_COL + set_in));
+            if self.headline || self.dim_details {
+                // Under a headline the rows are its sentence, so a command in them reads dim
+                // with the words around it.
+                let words = [Span::styled(
+                    sanitize(detail).into_owned(),
+                    theme.style(Role::Dim),
+                )];
+                let hang = [indent(BODY_COL + set_in)];
+                lines.extend(wrap_spans(&words, width, &first, &hang));
+            } else {
+                // The same formatter as a tool's results, so `/resume` takes the code color
+                // here too.
+                lines.extend(text_rows(detail, Tone::Dim, ctx, first, BODY_COL + set_in));
+            }
         }
         fit_lines(&mut lines, width);
         lines
@@ -225,6 +301,31 @@ impl ResultLine {
     pub fn with_after(mut self, after: impl Into<String>) -> Self {
         self.after = Some(after.into());
         self
+    }
+
+    /// The line as the conversation's record keeps a command's answer.
+    pub fn reply(&self) -> CommandReply {
+        CommandReply {
+            text: self.text.clone(),
+            value: self.value.clone(),
+            after: self.after.clone(),
+            dim: self.tone == Tone::Dim,
+            error: self.tone == Tone::Error,
+        }
+    }
+
+    /// A command's answer as the record kept it, drawn as it was.
+    pub fn of_reply(reply: &CommandReply) -> Self {
+        let tone = match (reply.error, reply.dim) {
+            (true, _) => Tone::Error,
+            (false, true) => Tone::Dim,
+            (false, false) => Tone::Normal,
+        };
+        Self {
+            value: reply.value.clone(),
+            after: reply.after.clone(),
+            ..Self::new(tone, reply.text.clone())
+        }
     }
 }
 
@@ -438,6 +539,27 @@ mod tests {
         let spans = &lines[0].spans;
         assert_eq!(spans[0].style, marks::decoration(theme.style(Role::Warn)));
         assert_eq!(spans[2].style, theme.style(Role::Text));
+        assert_eq!(spans[3].style, theme.style(Role::Dim));
+    }
+
+    #[test]
+    fn a_headline_is_bold_in_its_tone_after_a_plain_bullet() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+        let lines = Notice::headline(
+            Tone::Error,
+            "The run ended",
+            Some("Nothing was merged".to_owned()),
+        )
+        .lines(&ctx);
+        assert_eq!(plain_text(&lines), "● The run ended · Nothing was merged");
+        let spans = &lines[0].spans;
+        assert_eq!(spans[0].style, marks::decoration(theme.style(Role::Text)));
+        assert_eq!(
+            spans[2].style,
+            theme.style(Role::Danger).add_modifier(Modifier::BOLD)
+        );
         assert_eq!(spans[3].style, theme.style(Role::Dim));
     }
 

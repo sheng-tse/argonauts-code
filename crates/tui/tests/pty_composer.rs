@@ -169,7 +169,12 @@ fn vim_keys_and_mode_indicator() {
     driver.press(Key::Enter);
     driver.wait_command_where("submit", |c| c["text"] == "fresh");
     let sent: Vec<_> = driver.command_types();
-    assert_eq!(sent, ["vim", "submit"], "motions never send anything");
+    // `/vim` as typed goes in the conversation's record before the switch.
+    assert_eq!(
+        sent,
+        ["command_typed", "vim", "submit"],
+        "motions never send anything"
+    );
 }
 
 #[test]

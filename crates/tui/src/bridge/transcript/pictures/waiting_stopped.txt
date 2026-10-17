@@ -1,0 +1,5 @@
+✘ The run stopped · a council needs two proposals, and only propose:p1 can make one
+  ⎿  propose:p2 · Codex crashed twice as it started: "Failed to synchronize managed preferences"
+     propose:p3 · Antigravity CLI is signed out
+     Nothing else can take them: OpenCode has no model set, and you said no to a second proposal from Claude Code
+     propose:p1's work so far is kept · once Codex or Antigravity CLI works, /resume carries the run on

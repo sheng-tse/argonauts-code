@@ -494,6 +494,18 @@ fn the_title_is_written_once_per_change() {
 }
 
 #[test]
+fn the_progress_bar_is_written_once_per_change_and_never_before_work() {
+    let mut term = InlineTerminal::new(Vec::new(), Size::new(WIDTH, 5), Position::new(0, 0));
+    term.set_progress(false).unwrap();
+    term.set_progress(true).unwrap();
+    term.set_progress(true).unwrap();
+    term.set_progress(false).unwrap();
+    term.set_progress(false).unwrap();
+    let out = String::from_utf8(term.writer().clone()).unwrap();
+    assert_eq!(out, "\x1b]9;4;3\x07\x1b]9;4;0\x07");
+}
+
+#[test]
 fn a_cursor_after_text_sends_its_row_to_scrollback_too() {
     let mut term = terminal(4, 3);
     term.writer_mut().process(b"\x1b[4;1Hpartial");

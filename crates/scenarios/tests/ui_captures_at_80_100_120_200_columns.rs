@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 use std::fs;
 
-use argonauts_scenarios::{ROWS, Scenario, WAIT, past_the_question_guard};
+use argonauts_scenarios::{ROWS, Scenario, WAIT, as_set_up, past_the_question_guard};
 use argonauts_testkit::{Key, Pty, PtyCommand, Screen, argonauts_bin};
 use regex::Regex;
 
@@ -50,11 +50,11 @@ fn launch(scenario: &Scenario, look: &Look, cols: u16) -> anyhow::Result<Pty> {
     // request ends with the verdict, which a CLI that takes no tools keeps.
     fs::write(
         &config,
-        format!(
+        as_set_up(&format!(
             "[ui]\ntheme = \"{}\"\n\n[approvals.merge]\nmode = \"supervised\"\n\n\
              [main_session]\ntools = false\n",
             look.theme
-        ),
+        )),
     )?;
     let mut envs: Vec<(String, OsString)> = scenario.envs();
     if look.no_color {

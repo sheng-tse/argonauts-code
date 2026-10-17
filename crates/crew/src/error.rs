@@ -3,7 +3,8 @@
 
 use std::fmt;
 
-use argonauts_core::events::agent_status::JobWait;
+use argonauts_core::events::agent_status::{JobKeeper, JobWait};
+use argonauts_core::events::run::RunStop;
 use argonauts_core::journal::JournalError;
 use argonauts_core::session_runner::RunnerError;
 use argonauts_core::steps::StepError;
@@ -60,7 +61,7 @@ impl EngineError {
     }
 }
 
-/// Why a job had nobody to fall back to, for the run's wait.
+/// Why a job had nobody to fall back to, for the run's stop.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stall {
     /// `nobody to fall back to as the main agent`, for the wait line and the panel.
@@ -74,6 +75,75 @@ pub struct Stall {
     /// The job's wait, when `fallback.same_cli` is all that keeps it from an agent of another
     /// CLI: the question about a CLI that is down then lists it.
     pub kept: Option<Box<JobWait>>,
+    /// The job as the run's stop names it, its asked model, and what its own CLI said, in
+    /// short words for its row (`signed out`) and whole for the stop (`Antigravity CLI is
+    /// signed out`).
+    pub job: StalledJob,
+    /// Why nothing else could take it, one clause each: `OpenCode has no model set`.
+    pub tried: Vec<String>,
+    /// The CLIs at work in the job's step, which a job of the same step never shares.
+    pub in_step: Vec<String>,
+    /// The run's stop as a workflow's step words it, with the agents it left out before.
+    pub stop: Option<Box<RunStop>>,
+    /// Other models of the CLIs at work in the step that could take the job, as
+    /// `fallback.same_step` lets them. `None` where it says never, or none could.
+    pub beside: Option<Beside>,
+}
+
+/// Who could take a stalled job as a second agent of a CLI already at work in its step, best
+/// first, and whether you're asked before one does.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Beside {
+    pub models: Vec<argonauts_core::names::ModelRef>,
+    pub ask: bool,
+}
+
+impl Stall {
+    /// The agent a review or a ruling waits for when only its builder's provider is left to
+    /// take it: the one it was asked of. Its question decides, so the run isn't stopped.
+    pub fn waits_for_its_agent(&self) -> Option<argonauts_core::names::AgentId> {
+        let kept = self.kept.as_ref()?;
+        matches!(kept.kept_by, JobKeeper::BuildersProvider { .. }).then(|| kept.stopped.agent_id())
+    }
+
+    /// The run's stop: the step's own words when it gave them, else this job's.
+    pub fn run_stop(&self) -> RunStop {
+        if let Some(stop) = &self.stop {
+            return (**stop).clone();
+        }
+        let waits_for = self.job.asked.iter().map(|asked| {
+            argonauts_core::display_names::DisplayNames::default().cli(asked.agent.as_str())
+        });
+        RunStop {
+            why: format!("nothing else can take {}", self.job.name),
+            agents: vec![format!("{} · {}", self.job.name, self.job.said)],
+            tried: with_step(&self.tried, &self.in_step),
+            kept: Vec::new(),
+            waits_for: waits_for.collect(),
+        }
+    }
+}
+
+/// What was tried, and last that the CLIs at work in the step already work there.
+pub fn with_step(tried: &[String], in_step: &[String]) -> Vec<String> {
+    let mut tried = tried.to_vec();
+    if !in_step.is_empty() {
+        let works = if in_step.len() == 1 { "works" } else { "work" };
+        let clis = argonauts_core::text::and_list(in_step);
+        tried.push(format!("{clis} already {works} in this step"));
+    }
+    tried
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct StalledJob {
+    /// `the task's worker`, or the call's own label where a workflow gave one.
+    pub name: String,
+    pub asked: Option<argonauts_core::names::ModelRef>,
+    pub short: String,
+    pub said: String,
+    /// Its own CLI said it's signed out, so signing in is what would bring it back.
+    pub signed_out: bool,
 }
 
 impl fmt::Display for Stall {

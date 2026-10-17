@@ -136,6 +136,14 @@ impl Selecting {
         text
     }
 
+    /// What a finished selection holds, to copy by key when letting go copied nothing.
+    pub fn text(&self) -> Option<&str> {
+        self.selection
+            .as_ref()
+            .filter(|selection| !selection.held)
+            .and_then(|selection| selection.copied.as_deref())
+    }
+
     /// Whether a selection shows on screen.
     pub fn is_shown(&self) -> bool {
         self.selection.as_ref().is_some_and(Selection::shows)

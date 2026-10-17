@@ -37,6 +37,8 @@ unicode-segmentation = "1.13.3"
 unicode-width.workspace = true
 
 [dev-dependencies]
+# Its parser reads the recorded Claude Code streams the golden tests replay.
+argonauts-adapter-claude-code.workspace = true
 argonauts-testkit.workspace = true
 insta.workspace = true
 # The hangup tests open their own pty and keep its side from the app.

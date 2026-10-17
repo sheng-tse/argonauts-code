@@ -50,6 +50,7 @@ pub fn from_error(
         | ErrorCategory::Network
         | ErrorCategory::InvalidRequest
         | ErrorCategory::AnswerMissed
+        | ErrorCategory::SessionLost
         | ErrorCategory::Permission
         | ErrorCategory::Timeout
         | ErrorCategory::Interrupted => EndReason::CliError { category, message },

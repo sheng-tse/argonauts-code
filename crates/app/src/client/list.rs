@@ -5,10 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use argonauts_core::api::{ApiError, RunState, RunSummary};
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::agent_status::SpendEvent;
 use argonauts_core::events::approval::{ApprovalEvent, ApprovalKind, ApprovalPacket};
 use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome, RunPhase, WaitReason};
-use argonauts_core::events::session::SessionEvent;
+use argonauts_core::events::session::{CliWorkflowRun, SessionEvent};
 use argonauts_core::events::task::MergeEvent;
 use argonauts_core::events::{RunEvent, RunEventKind, WorkflowEvent};
 use argonauts_core::hidden_git::{self, MergedInto};
@@ -16,8 +17,10 @@ use argonauts_core::journal::{self, RunLock, WrittenBy};
 use argonauts_core::layout::run_files as names;
 use argonauts_core::names::{ApprovalId, SessionKey};
 use argonauts_core::settings::Settings;
-use argonauts_core::{RunId, Spend};
+use argonauts_core::steps::StepName;
+use argonauts_core::{AgentEvent, RunId, Spend};
 use argonauts_registry::resolve;
+use argonauts_tui::format::WallClock;
 use time::OffsetDateTime;
 
 use super::Client;
@@ -97,6 +100,8 @@ pub(crate) fn summarize(run_dir: &Path, settings: &Settings) -> Option<RunSummar
             live,
             remind: false,
             name: None,
+            // Nothing of its workflow has started yet.
+            shape_known: false,
         });
     };
     let recent = journal::read_since_snapshot(&events_path)
@@ -152,6 +157,7 @@ pub(crate) fn summarize(run_dir: &Path, settings: &Settings) -> Option<RunSummar
         waiting,
         live,
         remind,
+        shape_known: tally.shape.known(),
         name: tally.name.filter(|name| !name.trim().is_empty()),
     })
 }
@@ -204,6 +210,7 @@ fn from_another_build(run: RunId, run_dir: &Path, events_path: &Path) -> RunSumm
         live: false,
         remind: false,
         name: None,
+        shape_known: true,
     }
 }
 
@@ -270,6 +277,44 @@ struct Tally {
     waiting_to_merge: Vec<String>,
     /// The run's newest name, such as `fix-slugify-median`.
     name: Option<String>,
+    shape: Shape,
+}
+
+/// What the events say of whether the run's workflow has its shape, so its row is drawn, by
+/// the rule the screen holds the run it streams to: [`argonauts_core::views::shape_known`].
+#[derive(Default)]
+struct Shape {
+    /// Whether the run's own workflow writes its phases as it goes, once it started.
+    own_writes: Option<bool>,
+    /// The first report that names the phases or agents of a workflow the run's own runs, or
+    /// of one a task's session runs in its CLI.
+    first_report: Option<CliWorkflowRun>,
+    /// A session or workflow of the run has started.
+    begun: bool,
+    /// A session of the run designs its workflow.
+    designing: bool,
+    /// The events begin at a snapshot, from a run going a while: what came before it isn't
+    /// here to say, so the shape counts as known.
+    after_snapshot: bool,
+}
+
+impl Shape {
+    fn known(&self) -> bool {
+        if self.after_snapshot {
+            return true;
+        }
+        match self.own_writes {
+            Some(writes) => argonauts_core::views::shape_known(writes, self.first_report.iter()),
+            None => self.begun && !self.designing,
+        }
+    }
+
+    fn report(&mut self, workflow: &CliWorkflowRun) {
+        let shaped = !workflow.phases.is_empty() || !workflow.agents.is_empty();
+        if shaped && self.first_report.is_none() {
+            self.first_report = Some(workflow.clone());
+        }
+    }
 }
 
 impl Tally {
@@ -278,6 +323,7 @@ impl Tally {
         for event in events {
             match &event.kind {
                 RunEventKind::Run(RunLifecycle::Snapshot(snapshot)) => {
+                    tally.shape.after_snapshot = true;
                     tally.running = snapshot.running.iter().cloned().collect();
                     tally.open = snapshot
                         .open_approvals
@@ -329,6 +375,21 @@ impl Tally {
                 RunEventKind::Workflow(WorkflowEvent::PhaseStarted(phase)) => {
                     tally.workflow_phase = Some(phase.name.clone());
                 }
+                RunEventKind::Workflow(WorkflowEvent::Started(started)) => {
+                    tally.shape.begun = true;
+                    if started.parent.is_none() && tally.shape.own_writes.is_none() {
+                        tally.shape.own_writes =
+                            Some(argonauts_core::views::writes_its_phases(&started.workflow));
+                    }
+                }
+                RunEventKind::Workflow(WorkflowEvent::Reported(report)) => {
+                    tally.shape.report(&report.workflow);
+                }
+                RunEventKind::Agent(AgentEvent::Workflow { workflow })
+                    if event.task_id.is_some() =>
+                {
+                    tally.shape.report(workflow);
+                }
                 RunEventKind::Approval(ApprovalEvent::Opened(opened)) => {
                     tally
                         .open
@@ -340,10 +401,12 @@ impl Tally {
                 RunEventKind::Approval(ApprovalEvent::Withdrawn { id, .. }) => {
                     tally.open.remove(id);
                 }
-                RunEventKind::Session(SessionEvent::Started(_)) => {
+                RunEventKind::Session(SessionEvent::Started(started)) => {
                     if let Some(session) = &event.session {
                         tally.running.insert(session.clone());
                     }
+                    tally.shape.begun = true;
+                    tally.shape.designing |= started.step == Some(StepName::DesignWorkflow);
                 }
                 RunEventKind::Session(SessionEvent::Ended(end)) => {
                     if let Some(session) = &event.session {
@@ -499,34 +562,29 @@ fn waiting_words(tally: &Tally, reason: &WaitReason, waiting_on: &[ApprovalId]) 
         },
         WaitReason::Paused => "paused".to_owned(),
         WaitReason::AllAgentsOut { until } => with_until("every agent is out", *until),
-        WaitReason::WaitingForAgent { agent_id, until } => {
-            with_until(&format!("waiting for {agent_id}"), *until)
+        WaitReason::WaitingForAgent { agent_id, until } => with_until(
+            &format!("waiting for {}", DisplayNames::default().cli(&agent_id.0)),
+            *until,
+        ),
+        // It stopped fully: only `/resume` carries it on.
+        WaitReason::NoFallback { detail, stop, .. } => {
+            let why = stop
+                .as_ref()
+                .map_or(detail.as_str(), |stop| stop.why.as_str());
+            format!("stopped · {why}")
         }
-        // It tries again by itself at `until`, when there is one.
-        WaitReason::NoFallback { detail, until } => match until {
-            Some(at) => format!("{detail} · tries again {}", utc_minute(*at)),
-            None => detail.clone(),
-        },
     }
 }
 
+/// `waiting for Codex · tries again at 1:14 AM`, on your own clock, to the minute it comes by.
 fn with_until(what: &str, until: Option<OffsetDateTime>) -> String {
     match until {
-        Some(until) => format!("{what} until {}", utc_minute(until)),
+        Some(until) => format!(
+            "{what} · tries again at {}",
+            WallClock::default().clock_rounded_up(until)
+        ),
         None => what.to_owned(),
     }
-}
-
-/// `2026-10-04 20:30 UTC`.
-fn utc_minute(at: OffsetDateTime) -> String {
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02} UTC",
-        at.year(),
-        u8::from(at.month()),
-        at.day(),
-        at.hour(),
-        at.minute()
-    )
 }
 
 fn kind_words(kind: ApprovalKind) -> &'static str {
@@ -567,6 +625,22 @@ fn first_line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An outage you chose to wait out names the CLI as you know it and when it tries again, on
+    /// your own clock.
+    #[test]
+    fn a_wait_for_a_cli_says_which_and_when_on_your_clock() {
+        let until = time::macros::datetime!(2026-10-15 05:13:20 UTC);
+        let waiting = WaitReason::WaitingForAgent {
+            agent_id: argonauts_core::names::AgentId("codex".to_owned()),
+            until: Some(until),
+        };
+        let at = WallClock::default().clock_rounded_up(until);
+        assert_eq!(
+            waiting_words(&Tally::default(), &waiting, &[]),
+            format!("waiting for Codex · tries again at {at}")
+        );
+    }
 
     /// A run an older Argonauts Code wrote, as it left it: its start record and its journal,
     /// in a run folder of its own.
@@ -736,37 +810,105 @@ mod tests {
         assert!(Tally::of(&[waiting, merged]).waiting_to_merge.is_empty());
     }
 
-    /// A run with no fallback for its jobs says who has none, and when it tries again by
-    /// itself only when it will.
+    /// A run that nothing could carry on says it stopped, and why.
     #[test]
-    fn a_run_with_no_fallback_says_when_it_tries_again() {
-        let waiting = |until| {
+    fn a_run_that_stopped_fully_says_so_and_why() {
+        let waiting = |until, stop| {
             event(
                 1,
                 RunEventKind::Run(RunLifecycle::Waiting {
                     reason: WaitReason::NoFallback {
                         detail: "no fallback for the main agent".to_owned(),
                         until,
+                        stop,
                     },
                     waiting_on: Vec::new(),
                 }),
             )
         };
+        // An older run's time to try again goes unsaid: nothing wakes it but you.
         let at = OffsetDateTime::UNIX_EPOCH + time::Duration::minutes(5);
-        let tally = Tally::of(&[waiting(Some(at))]);
+        let tally = Tally::of(&[waiting(Some(at), None)]);
         assert_eq!(
             state_of(&tally, false),
             (
                 RunState::Waiting,
-                "no fallback for the main agent · tries again 1970-01-01 00:05 UTC".to_owned()
+                "stopped · no fallback for the main agent".to_owned()
             )
         );
-        let tally = Tally::of(&[waiting(None)]);
-        assert_eq!(state_of(&tally, false).1, "no fallback for the main agent");
+        let stop = argonauts_core::events::run::RunStop {
+            why: "nothing else can take the main agent".to_owned(),
+            ..Default::default()
+        };
+        let tally = Tally::of(&[waiting(None, Some(Box::new(stop)))]);
+        assert_eq!(
+            state_of(&tally, false).1,
+            "stopped · nothing else can take the main agent"
+        );
     }
 
     /// A run goes by its newest name, from a `Named` or the engine's snapshot, so the panel
     /// names a run it doesn't hold as the run is named once it's open.
+    /// A recorded run's events, its placeholders filled in as a run on this machine has them.
+    fn recorded(text: &str) -> Vec<RunEvent> {
+        let text = [
+            ("{run}", "run-20261014-054425-0001"),
+            ("{repo}", "/repo"),
+            ("{run_dir}", "/state/run"),
+            ("{worktrees}", "/worktrees"),
+            ("{base_commit}", "eecdf983f2dfa422118f1a999438c399f3d446f8"),
+            ("{branch}", "argonauts/run"),
+            ("{item}", "money"),
+        ]
+        .iter()
+        .fold(text.to_owned(), |text, (from, to)| text.replace(from, to));
+        text.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("a recorded event"))
+            .collect()
+    }
+
+    /// A run's summary says its workflow has its shape by the rule the screen holds the run it
+    /// streams to: Claude Code's own workflow at its first report with phases, the council's
+    /// script at the script's first report, and a run going a while past its snapshot.
+    #[test]
+    fn a_runs_summary_says_when_its_workflow_has_its_shape() {
+        use argonauts_core::events::run::RunSnapshot;
+
+        let captain = recorded(include_str!(
+            "../../../crew/tests/fixtures/runs/captain-review-loop.jsonl"
+        ));
+        let council = recorded(include_str!(
+            "../../../tui/golden/resumed_council/events.jsonl"
+        ));
+        for (name, events, shaped) in [("captain", captain, 232), ("council", council, 87)] {
+            let before: Vec<RunEvent> = events
+                .iter()
+                .filter(|event| event.seq < shaped)
+                .cloned()
+                .collect();
+            assert!(!Tally::of(&before).shape.known(), "{name}");
+            let upto: Vec<RunEvent> = events
+                .iter()
+                .filter(|event| event.seq <= shaped)
+                .cloned()
+                .collect();
+            assert!(Tally::of(&upto).shape.known(), "{name}");
+        }
+        assert!(!Tally::of(&[]).shape.known(), "nothing has started");
+        let snapshot = event(
+            1,
+            RunEventKind::Run(RunLifecycle::Snapshot(Box::new(RunSnapshot {
+                upto: 0,
+                engine: serde_json::json!({"version": 1}),
+                summary: argonauts_core::api::StatusSummary::default(),
+                open_approvals: Vec::new(),
+                running: Vec::new(),
+            }))),
+        );
+        assert!(Tally::of(&[snapshot]).shape.known());
+    }
+
     #[test]
     fn a_run_goes_by_its_newest_name() {
         use argonauts_core::api::StatusSummary;

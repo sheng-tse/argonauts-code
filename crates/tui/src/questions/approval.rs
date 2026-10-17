@@ -87,6 +87,7 @@ pub fn approval_question_local(
         ApprovalPacket::OriginalReturned(back) => {
             original_returned_question(&mut question, back, names)
         }
+        ApprovalPacket::SecondAgent(second) => question.question = Some(second.text.clone()),
         ApprovalPacket::WorkflowPromotion(_) => {}
     }
     // A title that asks the question already needn't ask it again.

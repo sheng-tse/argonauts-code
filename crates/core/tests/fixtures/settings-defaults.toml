@@ -67,6 +67,7 @@ merge_rule = "upgrade_review"
 unknown_tier = "weaker"
 max_fallbacks = 3
 same_cli = false
+same_step = "ask"
 context = "note+transcript"
 
 [fallback.retry]
@@ -233,6 +234,7 @@ security_and_performance = [
 
 [approvals]
 autopilot = false
+start_mode = "last"
 decides = "judge"
 ask_you_about = []
 when_declined = "decide"
@@ -418,10 +420,11 @@ leave_out = []
 [workflows]
 orchestrator_designs = true
 allow_composed = true
-max_depth = 2
+max_depth = 1
 adapt_at_phase_ends = true
 final_check = true
 adapt_with = "script"
+ultracode_trigger = true
 
 [evolution]
 stage = "evolve"
@@ -484,6 +487,14 @@ bell = true
 live_area_max = 0.6
 verbs = "voyage"
 turn_duration = true
+tips = true
+suggestions = true
+progress_bar = true
+copy_on_select = true
+autoscroll = true
+agents_view = false
+output_style = "default"
+pr_footer = true
 recaps = true
 recap_after = "2m"
 theme = "auto"
@@ -501,7 +512,7 @@ agents_in_conversation = "when_done"
 [ui.format]
 tokens = "short"
 plan_usage = "used"
-clock = "12h"
+clock = "auto"
 reset = "clock"
 duration = "compact"
 
@@ -743,6 +754,9 @@ screen_while_working = false
 
 [main_session]
 tools = true
+thinking = true
+fast = false
+language = ""
 
 [telemetry]
 enabled = false

@@ -9,11 +9,12 @@ use argonauts_core::api::DiffScope;
 use argonauts_core::app::{UiCommand, ViewRequest};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::session::{SubagentKind, SubagentStatus, SubagentUpdate};
-use argonauts_core::names::SessionKey;
+use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::settings::ui::CliInternals;
 use argonauts_core::steps::plan::Severity;
 use argonauts_core::views::{
-    AgentRow, AgentView as AgentData, Finding, PhaseRow, RowStatus, StatusLine, WorkflowRow,
+    AgentRow, AgentView as AgentData, AskedFor, Finding, Moved, PhaseRow, RowStatus, StatusLine,
+    WorkflowRow,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
@@ -38,7 +39,8 @@ use super::panes::{self, Footer, Marks};
 use super::session::{SessionView, Tab};
 use super::states;
 use super::structured;
-use super::workflow_rows::{self, Models};
+use super::workflow_outline::{self, AgentOutline, Place};
+use super::workflow_rows::{self, Models, tone_role};
 use super::{View, ViewCtx, ViewOutcome};
 
 /// Lines a section shows until it's expanded.
@@ -76,6 +78,8 @@ pub struct AgentView {
     /// `None` opened on its own, with no left pane.
     phase: Option<(String, String)>,
     siblings: Vec<AgentRow>,
+    /// The phase's outline as its workflow view had it open, when it was opened from one.
+    outline: Option<AgentOutline>,
     selected: usize,
     scroll: usize,
     /// Enter shows every section whole, and folds them again.
@@ -113,6 +117,7 @@ impl AgentView {
             data,
             phase: None,
             siblings,
+            outline: None,
             selected: 0,
             scroll: 0,
             expanded: false,
@@ -157,26 +162,35 @@ impl AgentView {
         ViewOutcome::Open(Box::new(view))
     }
 
-    /// Opened from a workflow's phase: the phase's agents show on the left, ↑↓ switches them.
-    /// A nested workflow's row opens its own view, so it isn't listed, but its agents count.
+    /// Opened from a workflow's phase: the phase's outline shows on the left, each workflow
+    /// inside open while it runs, and ↑↓ switches between its agents.
     pub fn in_phase(data: AgentData, phase: &PhaseRow) -> Self {
-        let siblings: Vec<AgentRow> = phase
-            .rows
-            .iter()
-            .filter_map(|row| match row {
-                WorkflowRow::Agent(agent) => Some(agent.clone()),
-                WorkflowRow::Workflow(_) | WorkflowRow::Command(_) => None,
-            })
-            .collect();
+        let rows: Vec<&WorkflowRow> = phase.rows.iter().collect();
+        let items = workflow_outline::items(&rows, None, &workflow_outline::at_work);
+        let outline = AgentOutline::of(&items, &workflow_outline::at_work);
+        Self::in_outline(data, phase, outline)
+    }
+
+    /// Opened from a workflow's phase, its outline as the workflow view has it open.
+    pub(super) fn in_outline(data: AgentData, phase: &PhaseRow, outline: AgentOutline) -> Self {
         let mut view = Self::new(data);
-        if let Some(index) = siblings.iter().position(|row| row.is(&view.data.row)) {
-            view.siblings = siblings;
+        if let Some(index) = outline.agents.iter().position(|row| row.is(&view.data.row)) {
+            view.siblings = outline.agents.clone();
             // The phase's row can be older than the agent just loaded.
             view.siblings[index] = view.data.row.clone();
             view.selected = index;
+            view.outline = Some(outline);
         }
         view.phase = Some((phase.name.clone(), workflow_rows::phase_size(phase)));
         view
+    }
+
+    /// Where the selected agent sits in its phase's outline.
+    fn place(&self) -> Place {
+        self.outline
+            .as_ref()
+            .and_then(|outline| outline.places.get(self.selected).cloned())
+            .unwrap_or_default()
     }
 
     /// The agent the left pane has selected, which may still be loading.
@@ -237,11 +251,16 @@ impl AgentView {
             .collect();
         let mut frame = dock::split(area, 0, status.len() as u16);
         if self.phase.is_some() {
-            let longest = names
-                .iter()
-                .map(|(label, _)| str_width(label))
-                .max()
-                .unwrap_or(0);
+            let labels: Vec<String> = names.iter().map(|(label, _)| label.clone()).collect();
+            // An outline's lines take their level's cells too.
+            let longest = match &self.outline {
+                Some(outline) => outline.width(0, &labels),
+                None => labels
+                    .iter()
+                    .map(|label| str_width(label))
+                    .max()
+                    .unwrap_or(0),
+            };
             let panes = usize::from(frame.panes.body.width).saturating_sub(BOX_EDGES);
             // Labels that carry their agent's name need more than Claude Code's own do.
             let named = names.iter().any(|(_, repeated)| *repeated);
@@ -258,7 +277,7 @@ impl AgentView {
         }
         dock::draw_rule(buf, &frame, theme);
         dock::draw_heading(buf, &frame, heading, theme);
-        dock::draw_status(buf, &frame, status, theme);
+        dock::draw_status(buf, &frame, status, &[], theme);
         let panes = frame.panes;
         let label = sanitize_line(&self.siblings[self.selected].label)
             .trim()
@@ -309,6 +328,18 @@ impl AgentView {
         } else {
             "⏎ expand"
         };
+        // An agent of a CLI's own workflow is that CLI's to message and stop, from the
+        // worker whose CLI runs it.
+        if let Some(host) = self.place().host.filter(|_| self.data.row.inner.is_some()) {
+            let elsewhere = format!("to message or stop it, select {host}");
+            return Footer::hints(&[
+                ("↑↓ agent", 0),
+                ("j/k scroll", 3),
+                (enter, 2),
+                (panes::ESC_BACK, 0),
+                (&elsewhere, 1),
+            ]);
+        }
         let mut hints = vec![("↑↓ agent", 0), ("j/k scroll", 6), (enter, 7)];
         // With vim keys on, `g` is the top of the list.
         if self.loaded() && self.data.goal.is_some() && !list::vim(ctx.state) {
@@ -338,37 +369,39 @@ impl AgentView {
         let slot = marks.slot();
         let width = usize::from(area.width);
         let accent = theme.style(Role::Question);
+        let line = |i: usize, indent: usize| {
+            let row = &self.siblings[i];
+            let (glyph, role) = workflow_rows::glyph(row.status, row.fallback_for.is_some(), theme);
+            let selected = i == self.selected;
+            // A row at work is dim, with its grey glyph.
+            let label_style = match (selected, row.status, role) {
+                (true, _, _) => accent,
+                (false, RowStatus::Running, Role::Faint) => theme.style(Role::Dim),
+                (false, _, _) => theme.style(Role::Text),
+            };
+            Line::from(vec![
+                if selected {
+                    Span::styled(format!("{} ", marks.selected), accent)
+                } else {
+                    Span::raw("  ")
+                },
+                Span::raw(" ".repeat(indent)),
+                Span::styled(
+                    format!("{} ", panes::pad_glyph(glyph, slot)),
+                    theme.style(role),
+                ),
+                Span::styled(
+                    cut(&names[i].0, width.saturating_sub(LIST_MARGIN + indent)),
+                    label_style,
+                ),
+            ])
+        };
+        if let Some(outline) = &self.outline {
+            return outline.lines(self.selected, usize::from(area.height), theme, &line);
+        }
         let (first, last) =
             workflow_rows::window(self.selected, self.siblings.len(), usize::from(area.height));
-        (first..last)
-            .map(|i| {
-                let row = &self.siblings[i];
-                let (glyph, role) =
-                    workflow_rows::glyph(row.status, row.fallback_for.is_some(), theme);
-                let selected = i == self.selected;
-                // A row at work is dim, with its grey glyph.
-                let label_style = match (selected, row.status, role) {
-                    (true, _, _) => accent,
-                    (false, RowStatus::Running, Role::Faint) => theme.style(Role::Dim),
-                    (false, _, _) => theme.style(Role::Text),
-                };
-                Line::from(vec![
-                    if selected {
-                        Span::styled(format!("{} ", marks.selected), accent)
-                    } else {
-                        Span::raw("  ")
-                    },
-                    Span::styled(
-                        format!("{} ", panes::pad_glyph(glyph, slot)),
-                        theme.style(role),
-                    ),
-                    Span::styled(
-                        cut(&names[i].0, width.saturating_sub(LIST_MARGIN)),
-                        label_style,
-                    ),
-                ])
-            })
-            .collect()
+        (first..last).map(|i| line(i, 0)).collect()
     }
 
     /// Everything in the right pane, top down, before scrolling: the state and who runs it,
@@ -390,7 +423,19 @@ impl AgentView {
             0
         };
         let tool_calls = if loaded { self.data.tool_calls } else { 0 };
-        let mut lines = vec![status_line(row, facts, models, width, ctx)];
+        // Where it sits, for an agent of a workflow inside: first among the facts, and two
+        // levels in, its own line under the state.
+        let (said, levels) = self.place().words();
+        let facts: Vec<String> = said.into_iter().chain(facts.iter().cloned()).collect();
+        // An agent view that says whose place it takes below leaves it off its first line.
+        let said_below = matches!(self.data.moved, Some(Moved::FallbackFor { .. })) && loaded;
+        let mut lines = vec![status_line(row, &facts, said_below, models, width, ctx)];
+        if let Some(levels) = levels {
+            lines.push(Line::from(Span::styled(
+                cut(&levels, usize::from(width)),
+                theme.style(Role::Dim),
+            )));
+        }
         lines.extend(counts_line(row, tool_calls, ticking, width, theme));
         // Where its goal stands, as its row in the workflow says it, and who keeps it.
         if let Some(goal) = self.data.goal.as_deref().filter(|_| loaded) {
@@ -407,22 +452,53 @@ impl AgentView {
             lines.push(Line::from(Span::styled("Loading…", theme.style(Role::Dim))));
             return lines;
         }
+        if let Some(moved) = &self.data.moved {
+            lines.extend(moved_lines(moved, models, width, ctx));
+        }
+        if let Some(asked) = &self.data.asked_for {
+            lines.extend(asked_for_lines(asked, &self.data.row, models, width, ctx));
+        }
+        // Nothing ran for a job left out, so it has no prompt, calls or outcome to show.
+        if self.data.row.left_out {
+            self.drawn.outcome_rows = 0;
+            return lines;
+        }
         let internals = cli_internals(ctx);
         let (outcome, plan_rows) = self.outcome_rows(width, ctx);
         self.drawn.outcome_rows = outcome.as_ref().map_or(0, Vec::len);
         // A plan's table shows whole; the preview is of the words under it.
         self.drawn.outcome_preview = plan_rows + OUTCOME_PREVIEW;
         let open = self.expanded;
+        let inner_cli = self.inner_cli(&ctx.state.names);
         let blocks = [
-            self.prompt(width, open, theme),
+            self.prompt(width, open, inner_cli.as_deref(), theme),
             self.to_fix(width, theme),
-            self.activity(width, open, theme),
+            self.earlier(width, theme),
+            self.activity(width, open, inner_cli.as_deref(), theme),
             self.diff(),
             self.subagents(width, open, internals, theme),
+            self.its_workflow(theme),
             Some(self.outcome(outcome, open, width, theme)),
         ];
+        // A reviewer's outcome reads its verdict in the verdict's colour, as its row does.
+        let verdict = self.data.review.as_ref().map(|review| {
+            let words = sanitize_line(&review.verdict).trim().to_owned();
+            (format!("Outcome · {words}"), words, tone_role(review.tone))
+        });
         for (title, hint, body) in blocks.into_iter().flatten() {
-            lines.push(section_title(&title, hint.as_deref(), theme));
+            let line = match &verdict {
+                Some((outcome, words, role)) if title.starts_with(outcome.as_str()) => {
+                    let rest = format!("{}{}", &title[outcome.len()..], hint_words(hint, theme));
+                    let text = theme.style(Role::Text);
+                    Line::from(vec![
+                        Span::styled("Outcome · ", text),
+                        Span::styled(words.clone(), theme.style(*role)),
+                        Span::styled(rest, text),
+                    ])
+                }
+                _ => section_title(&title, hint.as_deref(), theme),
+            };
+            lines.push(line);
             lines.extend(body);
         }
         lines
@@ -457,17 +533,20 @@ impl AgentView {
     }
 
     /// The prompt's first line with text, and all of it once expanded.
-    fn prompt(&self, width: u16, open: bool, theme: &Theme) -> Option<Block> {
+    /// `cli` is the CLI that runs the agent's workflow itself, for an agent of one: it reports
+    /// the prompt shortened.
+    fn prompt(&self, width: u16, open: bool, cli: Option<&str>, theme: &Theme) -> Option<Block> {
         let text = sanitize(&self.data.prompt);
         let all: Vec<&str> = text.lines().collect();
         let dim = theme.style(Role::Dim);
         let inner = usize::from(width).saturating_sub(2);
         let indent = [Span::raw("  ")];
         let foldable = folds(all.len(), PROMPT_PREVIEW);
-        let title = if foldable {
-            format!("Prompt · {}", panes::count(all.len(), "line"))
-        } else {
-            "Prompt".to_owned()
+        let cli = cli.filter(|_| !text.trim().is_empty());
+        let title = match cli {
+            Some(cli) => format!("Prompt · shortened by {cli}"),
+            None if foldable => format!("Prompt · {}", panes::count(all.len(), "line")),
+            None => "Prompt".to_owned(),
         };
         let mut body = Vec::new();
         if open || !foldable {
@@ -488,10 +567,32 @@ impl AgentView {
             }
             let after = shown.last().map_or(0, |last| last + 1);
             if all.len() > after {
-                body.push(Line::from(Span::styled(more_lines(all.len() - after), dim)));
+                let mut more = more_lines(all.len() - after);
+                let parts = prompt_parts(&all[after..]);
+                if !parts.is_empty() {
+                    more.push_str(&format!(": {}", argonauts_core::text::listed(&parts)));
+                }
+                body.push(Line::from(Span::styled(cut(&more, inner), dim)));
             }
         }
-        Some((title, foldable.then(|| self.enter_word()), body))
+        let hint = (foldable || cli.is_some()).then(|| self.enter_word());
+        Some((title, hint, body))
+    }
+
+    /// The workflow the agent's own CLI runs: its count and tokens, and its phases on one line.
+    fn its_workflow(&self, theme: &Theme) -> Option<Block> {
+        let nested = self.outline.as_ref()?.hosted_by(&self.data.row)?;
+        let (title, body) = workflow_outline::its_workflow(nested, theme);
+        Some((title, None, body))
+    }
+
+    /// The CLI that runs the agent's workflow itself, for an agent of one, by its name.
+    fn inner_cli(&self, ctx_names: &DisplayNames) -> Option<String> {
+        self.data
+            .row
+            .inner
+            .as_ref()
+            .map(|_| sanitize_line(&ctx_names.cli(&self.data.row.worker.agent)).into_owned())
     }
 
     /// What Enter does to the sections now.
@@ -508,10 +609,29 @@ impl AgentView {
             sanitize_line(&findings.from).trim(),
             findings.round
         );
-        Some((title, None, finding_lines(&findings.items, width, theme)))
+        Some((
+            title,
+            None,
+            finding_lines(&findings.items, &[], width, theme),
+        ))
     }
 
-    fn activity(&self, width: u16, open: bool, theme: &Theme) -> Option<Block> {
+    /// For a reviewer, the earlier round's findings it was given, each with its answer.
+    fn earlier(&self, width: u16, theme: &Theme) -> Option<Block> {
+        let earlier = self.data.earlier.as_ref()?;
+        let mut title = format!(
+            "Earlier findings · {}, round {}",
+            sanitize_line(&earlier.from).trim(),
+            earlier.round
+        );
+        if let Some(by) = earlier.answered_by.as_deref().map(str::trim) {
+            title.push_str(&format!(" · answered by {}", sanitize_line(by)));
+        }
+        let body = finding_lines(&earlier.items, &earlier.answers, width, theme);
+        Some((title, None, body))
+    }
+
+    fn activity(&self, width: u16, open: bool, cli: Option<&str>, theme: &Theme) -> Option<Block> {
         let activity = &self.data.activity;
         let calls = self.data.tool_calls.max(activity.len() as u32);
         let dim = theme.style(Role::Dim);
@@ -549,22 +669,38 @@ impl AgentView {
                 panes::count(calls as usize, "tool call")
             )
         };
-        // An agent its CLI runs itself reports its last call alone, and not how it went. It
-        // is drawn as Claude Code draws it, dim and with no mark, and Enter has no more of
-        // them to show.
-        if self.data.row.inner.is_some() {
+        // An agent its CLI runs itself reports its count of calls and its last call alone,
+        // and not how that went, so the title says so and Enter has no more of them to show.
+        if let Some(cli) = cli {
+            let title = if calls > 1 {
+                format!(
+                    "Activity · {} · {cli} names only the last",
+                    panes::count(calls as usize, "tool call")
+                )
+            } else {
+                title
+            };
+            let running = self.data.row.status == RowStatus::Running;
+            let (mark, _) = workflow_rows::glyph(RowStatus::Running, false, theme);
             let body = activity[activity.len() - shown..]
                 .iter()
                 .map(|call| {
                     let tool = sanitize_line(&call.tool).trim().to_owned();
                     let summary = sanitize_line(&call.summary).trim().to_owned();
-                    let room = usize::from(width).saturating_sub(2 + str_width(&tool) + 2);
+                    let room = usize::from(width).saturating_sub(4 + str_width(&tool) + 2 + 10);
                     let text = if summary.is_empty() {
                         tool
                     } else {
                         format!("{tool}({})", cut(&summary, room))
                     };
-                    Line::from(Span::styled(format!("  {text}"), dim))
+                    let mut spans = vec![
+                        Span::styled(format!("  {mark} "), theme.style(Role::Faint)),
+                        Span::styled(text, theme.style(Role::Text)),
+                    ];
+                    if running {
+                        spans.push(Span::styled(" · running", dim));
+                    }
+                    Line::from(spans)
                 })
                 .collect();
             return Some((title, None, body));
@@ -592,7 +728,13 @@ impl AgentView {
                     Role::Danger => theme.style(Role::Danger),
                     _ => dim,
                 };
-                let said = said.map(|said| format!(" · {said}")).unwrap_or_default();
+                let note = call.note.as_deref().map(sanitize_line);
+                let said = said
+                    .into_iter()
+                    .map(str::to_owned)
+                    .chain(note.map(|note| note.trim().to_owned()))
+                    .map(|said| format!(" · {said}"))
+                    .collect::<String>();
                 let tool = sanitize_line(&call.tool).trim().to_owned();
                 let summary = sanitize_line(&call.summary).trim().to_owned();
                 // The call keeps its closing parenthesis when its summary is cut.
@@ -761,10 +903,9 @@ impl AgentView {
         if let Some(review) = &self.data.review {
             let mut title = format!("Outcome · {}", sanitize_line(&review.verdict).trim());
             if !review.findings.is_empty() {
-                let count = panes::count(review.findings.len(), "finding");
-                title.push_str(&format!(" · {count}"));
+                title.push_str(&format!(" · {}", finding_counts(&review.findings)));
             }
-            let mut body = finding_lines(&review.findings, width, theme);
+            let mut body = finding_lines(&review.findings, &[], width, theme);
             if body.is_empty() {
                 body = rendered.unwrap_or_default();
             }
@@ -774,7 +915,9 @@ impl AgentView {
             let said = match self.data.row.status {
                 RowStatus::Running | RowStatus::NeedsYou => "Still running…",
                 RowStatus::Waiting | RowStatus::Queued => "Waiting for an agent slot.",
-                RowStatus::Paused => "Paused, with its work so far kept.",
+                RowStatus::Paused => {
+                    &format!("{}, with its work so far kept.", held(&self.data.row))
+                }
                 RowStatus::Skipped => "Skipped.",
                 RowStatus::Done | RowStatus::Failed => "It ended without a report.",
             };
@@ -854,6 +997,18 @@ fn folds(lines: usize, preview: usize) -> bool {
     lines >= preview + WORTH_FOLDING
 }
 
+/// The parts a prompt's hidden lines hold, from their headings: `## Your request` reads
+/// `your request`.
+fn prompt_parts(lines: &[&str]) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(|line| line.trim_start().strip_prefix('#'))
+        .map(|heading| heading.trim_start_matches('#').trim())
+        .filter(|heading| !heading.is_empty())
+        .map(argonauts_core::text::clause_case)
+        .collect()
+}
+
 /// `  … 3 more lines` under a section's preview.
 fn more_lines(count: usize) -> String {
     format!(
@@ -864,49 +1019,91 @@ fn more_lines(count: usize) -> String {
 
 /// `Prompt · 9 lines · ⏎ expand`, the key last when one acts on the section.
 fn section_title(title: &str, hint: Option<&str>, theme: &Theme) -> Line<'static> {
-    let hint = hint
-        .map(|hint| format!(" · {}", panes::key_names(hint, theme)))
-        .unwrap_or_default();
     Line::from(Span::styled(
-        format!("{title}{hint}"),
+        format!("{title}{}", hint_words(hint.map(str::to_owned), theme)),
         theme.style(Role::Text),
     ))
 }
 
-/// A finding a row: how grave it is in its color, the file and line it is about, and what it
-/// says, each column as wide as its widest cell.
-fn finding_lines(findings: &[Finding], width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    let dim = theme.style(Role::Dim);
-    let word = |severity: Severity| match severity {
-        Severity::High => ("high", Role::Danger),
-        Severity::Medium => ("medium", Role::Warn),
-        Severity::Low => ("low", Role::Dim),
-    };
-    let place = |finding: &Finding| sanitize_line(&finding.place).trim().to_owned();
-    let widest = |cell: &dyn Fn(&Finding) -> usize| findings.iter().map(cell).max().unwrap_or(0);
-    let severity_width = widest(&|finding| str_width(word(finding.severity).0));
-    let place_width = widest(&|finding| str_width(&place(finding)));
-    findings
+/// ` · ⏎ expand` after a section's title, when a key acts on it.
+fn hint_words(hint: Option<String>, theme: &Theme) -> String {
+    hint.map(|hint| format!(" · {}", panes::key_names(&hint, theme)))
+        .unwrap_or_default()
+}
+
+/// What a finding is called: blocking, which the change can't merge with, or a note.
+fn severity_word(severity: Severity) -> (&'static str, Role) {
+    match severity {
+        Severity::High => (BLOCKING, Role::Danger),
+        Severity::Medium | Severity::Low => ("note", Role::Dim),
+    }
+}
+
+const BLOCKING: &str = "blocking";
+
+/// `1 blocking · 2 notes`, or nothing for no findings.
+fn finding_counts(findings: &[Finding]) -> String {
+    let blocking = findings
         .iter()
-        .map(|finding| {
-            let (severity, role) = word(finding.severity);
-            let mut spans = vec![Span::styled(
-                format!("  {} ", left(severity, severity_width)),
-                theme.style(role),
-            )];
-            if place_width > 0 {
-                spans.push(Span::styled(
-                    format!(" {}  ", left(&place(finding), place_width)),
-                    dim,
-                ));
-            }
+        .filter(|finding| finding.severity == Severity::High)
+        .count();
+    let notes = findings.len() - blocking;
+    let mut said = Vec::new();
+    if blocking > 0 {
+        said.push(format!("{blocking} {BLOCKING}"));
+    }
+    if notes > 0 {
+        said.push(panes::count(notes, "note"));
+    }
+    said.join(" · ")
+}
+
+/// A finding a row: blocking or a note, in its color, the file and line it is about, and what
+/// it says, each column as wide as its widest cell. The first column is always as wide as
+/// `blocking`, so every section's findings line up. An answer, when a finding had one, goes
+/// dim under it.
+fn finding_lines(
+    findings: &[Finding],
+    answers: &[String],
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let dim = theme.style(Role::Dim);
+    let place = |finding: &Finding| sanitize_line(&finding.place).trim().to_owned();
+    let severity_width = str_width(BLOCKING);
+    let place_width = findings
+        .iter()
+        .map(|finding| str_width(&place(finding)))
+        .max()
+        .unwrap_or(0);
+    let mut lines = Vec::new();
+    for (at, finding) in findings.iter().enumerate() {
+        let (severity, role) = severity_word(finding.severity);
+        let mut spans = vec![Span::styled(
+            format!("  {} ", left(severity, severity_width)),
+            theme.style(role),
+        )];
+        if place_width > 0 {
             spans.push(Span::styled(
-                sanitize_line(&finding.text).trim().to_owned(),
-                theme.style(Role::Text),
+                format!(" {}  ", left(&place(finding), place_width)),
+                dim,
             ));
-            Line::from(truncate_spans(&spans, usize::from(width)))
-        })
-        .collect()
+        }
+        spans.push(Span::styled(
+            sanitize_line(&finding.text).trim().to_owned(),
+            theme.style(Role::Text),
+        ));
+        lines.push(Line::from(truncate_spans(&spans, usize::from(width))));
+        let answer = answers
+            .get(at)
+            .map(|answer| sanitize_line(answer).trim().to_owned());
+        if let Some(answer) = answer.filter(|answer| !answer.is_empty()) {
+            let indent = " ".repeat(2 + severity_width + 2);
+            let line = Span::styled(format!("{indent}answer: {answer}"), dim);
+            lines.push(Line::from(truncate_spans(&[line], usize::from(width))));
+        }
+    }
+    lines
 }
 
 /// `message > text▏  ⏎ send · esc cancel`, keeping the end of what you type in view. The hints
@@ -1037,7 +1234,7 @@ fn counts_line(
     if tool_calls > 0 {
         counts.push(panes::count(tool_calls as usize, "tool call"));
     }
-    if !matches!(row.status, RowStatus::Waiting | RowStatus::Queued) {
+    if !matches!(row.status, RowStatus::Waiting | RowStatus::Queued) && !row.left_out {
         let elapsed = Duration::from_millis(row.elapsed_ms + ticking);
         counts.push(format::duration(elapsed));
     }
@@ -1052,12 +1249,25 @@ fn counts_line(
     (!text.is_empty()).then(|| Line::from(Span::styled(text, theme.style(Role::Dim))))
 }
 
+/// What a held agent waits on, as its row says it: `Paused` for a pause you asked for, else
+/// what the run waits for, such as `Stopped with the run` or `Waits for Claude Code`.
+fn held(row: &AgentRow) -> String {
+    row.note
+        .as_ref()
+        .and_then(|note| note.text.split(" · ").next())
+        .map(str::trim)
+        .filter(|held| !held.is_empty())
+        .map(argonauts_core::text::sentence_case)
+        .unwrap_or_else(|| "Paused".to_owned())
+}
+
 /// `⏺ Running · Sonnet 5.5 on Claude Code · worker · worktree · round 2 (sent back)`, as
 /// Claude Code heads an open agent: the state, then the model in its own color, its CLI, and
 /// what Argonauts Code knows of the agent. A fallback says whose place it takes.
 fn status_line(
     row: &AgentRow,
     facts: &[String],
+    said_below: bool,
     models: &Models,
     width: u16,
     ctx: &ViewCtx<'_>,
@@ -1065,23 +1275,35 @@ fn status_line(
     let theme = ctx.theme;
     let dim = theme.style(Role::Dim);
     let names = &ctx.state.names;
-    let (glyph, role) = workflow_rows::glyph(row.status, row.fallback_for.is_some(), theme);
+    let (glyph, role) = match row.left_out {
+        true => (
+            workflow_rows::glyph(RowStatus::Failed, false, theme).0,
+            Role::Faint,
+        ),
+        false => workflow_rows::glyph(row.status, row.fallback_for.is_some(), theme),
+    };
     let word = match row.status {
-        RowStatus::Waiting => "Waiting",
-        RowStatus::Queued => "Queued",
-        RowStatus::Skipped => "Skipped",
-        RowStatus::Running => "Running",
-        RowStatus::Paused => "Paused",
-        RowStatus::NeedsYou => "Needs you",
-        RowStatus::Done => "Done",
-        RowStatus::Failed => "Failed",
+        _ if row.left_out => "Left out".to_owned(),
+        RowStatus::Waiting => "Waiting".to_owned(),
+        RowStatus::Queued => "Queued".to_owned(),
+        RowStatus::Skipped => "Skipped".to_owned(),
+        RowStatus::Running => "Running".to_owned(),
+        RowStatus::Paused => held(row),
+        RowStatus::NeedsYou => "Needs you".to_owned(),
+        RowStatus::Done => "Done".to_owned(),
+        RowStatus::Failed => "Failed".to_owned(),
     };
     let mut spans = vec![
         Span::styled(format!("{glyph} "), theme.style(role)),
         Span::styled(format!("{word} · "), theme.style(Role::Text)),
     ];
     let cli = sanitize_line(&names.cli(&row.worker.agent)).into_owned();
-    let model_style = models.style(&row.worker, ctx);
+    // The model a job left out was meant for never ran, so it's dim.
+    let model_style = if row.left_out {
+        dim
+    } else {
+        models.style(&row.worker, ctx)
+    };
     match names.model(&row.worker.agent, row.worker.model.as_deref()) {
         Some(model) => {
             spans.push(Span::styled(
@@ -1098,22 +1320,116 @@ fn status_line(
             spans.push(Span::styled(format!(" · {}", fact.trim()), dim));
         }
     }
-    if let Some(first) = &row.fallback_for {
+    if let Some(first) = row.fallback_for.as_ref().filter(|_| !said_below) {
         spans.push(Span::styled(" · ", dim));
         spans.push(Span::styled(
             format!("for {}", sanitize_line(&names.short(first))),
             theme.style(Role::Warn),
         ));
     }
-    if needs_review(ctx, &row.session) {
-        let mark = Marks::for_theme(theme).debt;
+    if let Some(by) = review_needed_by(ctx, &row.session) {
         spans.push(Span::styled(" · ", dim));
-        spans.push(Span::styled(
-            format!("{mark} needs review"),
-            theme.style(Role::Warn),
-        ));
+        spans.push(review_needed_words(&by, names, theme));
     }
     Line::from(truncate_spans(&spans, usize::from(width)))
+}
+
+/// Why the job came to this model: `Fallback for GPT 5.6 Luna on Codex, which crashed`, the
+/// model it stands in for in that model's colour, or `Left out, because Antigravity CLI is
+/// signed out`, each with what more is known under it.
+fn moved_lines(
+    moved: &Moved,
+    models: &Models,
+    width: u16,
+    ctx: &ViewCtx<'_>,
+) -> Vec<Line<'static>> {
+    let theme = ctx.theme;
+    let names = &ctx.state.names;
+    let text = theme.style(Role::Text);
+    let (first, more) = match moved {
+        Moved::FallbackFor {
+            asked,
+            which,
+            lines,
+        } => {
+            let model = names
+                .model(&asked.agent, asked.model.as_deref())
+                .unwrap_or_else(|| names.cli(&asked.agent));
+            let spans = vec![
+                Span::styled("Fallback for ", text),
+                Span::styled(sanitize_line(&model).into_owned(), models.style(asked, ctx)),
+                Span::styled(
+                    format!(
+                        " on {}, which {}",
+                        sanitize_line(&names.cli(&asked.agent)),
+                        sanitize_line(which).trim()
+                    ),
+                    text,
+                ),
+            ];
+            (spans, lines)
+        }
+        Moved::LeftOut { because, lines } => (
+            vec![Span::styled(
+                format!("Left out, because {}", sanitize_line(because).trim()),
+                text,
+            )],
+            lines,
+        ),
+    };
+    let mut out = vec![Line::from(truncate_spans(&first, usize::from(width)))];
+    for line in more {
+        out.push(Line::from(Span::styled(
+            cut(
+                &format!("  {}", sanitize_line(line).trim()),
+                usize::from(width),
+            ),
+            theme.style(Role::Dim),
+        )));
+    }
+    out
+}
+
+/// `Asked for by Claude Code · its agent review:final, on Haiku 5.5`, and under it what that
+/// agent did with its own tokens and time: a hand-over by design, told once, here.
+fn asked_for_lines(
+    asked: &AskedFor,
+    row: &AgentRow,
+    models: &Models,
+    width: u16,
+    ctx: &ViewCtx<'_>,
+) -> Vec<Line<'static>> {
+    let theme = ctx.theme;
+    let names = &ctx.state.names;
+    let text = theme.style(Role::Text);
+    let by = Line::from(truncate_spans(
+        &[
+            Span::styled(
+                format!(
+                    "Asked for by {} · its agent {}, on ",
+                    sanitize_line(&names.cli(&asked.cli)),
+                    sanitize_line(asked.label.trim()),
+                ),
+                text,
+            ),
+            Span::styled(
+                sanitize_line(&names.short(&asked.worker)).into_owned(),
+                models.style(&asked.worker, ctx),
+            ),
+        ],
+        usize::from(width),
+    ));
+    let what = format!(
+        "  it gave {} the change, waited, and passed the verdict back · {} · {}",
+        sanitize_line(&names.cli(&row.worker.agent)),
+        panes::tokens(asked.tokens),
+        panes::elapsed(asked.elapsed_ms),
+    );
+    let did = Line::from(truncate_spans(
+        &[Span::styled(what, theme.style(Role::Dim))],
+        usize::from(width),
+    ));
+    vec![by, did]
 }
 
 pub(super) fn cli_internals(ctx: &ViewCtx<'_>) -> CliInternals {
@@ -1123,15 +1439,31 @@ pub(super) fn cli_internals(ctx: &ViewCtx<'_>) -> CliInternals {
         .map_or(CliInternals::Discovered, |ui| ui.panel.subagents)
 }
 
-/// Whether the agent's task carries review debt, from the run's folded state.
-pub(super) fn needs_review(ctx: &ViewCtx<'_>, session: &SessionKey) -> bool {
-    ctx.state.runs.values().any(|run| {
-        run.sessions
-            .get(session)
-            .and_then(|session| session.task.as_ref())
-            .and_then(|task| run.tasks.get(task))
-            .is_some_and(|task| !task.debt.is_empty())
+/// Who must still review the work a weaker fallback did on the agent's task: the strongest
+/// model before it. Said once, on the task's newest worker, from the run's folded state.
+pub(super) fn review_needed_by(ctx: &ViewCtx<'_>, session: &SessionKey) -> Option<ModelRef> {
+    ctx.state.runs.values().find_map(|run| {
+        let task = run.sessions.get(session)?.task.as_ref()?;
+        let debt = run.tasks.get(task)?.debt.last()?;
+        let newest = run
+            .sessions
+            .values()
+            .filter(|other| other.task.as_ref() == Some(task) && other.role == RoleName::Worker)
+            .max_by_key(|other| (other.started, other.key.clone()))?;
+        (newest.key == *session).then(|| debt.needs.clone())
     })
+}
+
+/// `needs a review by Opus 5.5`, in the warning colour: a word, with no mark of its own.
+pub(super) fn review_needed_words(
+    by: &ModelRef,
+    names: &DisplayNames,
+    theme: &Theme,
+) -> Span<'static> {
+    Span::styled(
+        format!("needs a review by {}", sanitize_line(&names.short(by))),
+        theme.style(Role::Warn),
+    )
 }
 
 impl View for AgentView {
@@ -1144,7 +1476,7 @@ impl View for AgentView {
             follow.show(Shown::agent(self.data.run.clone(), self.selected_row()));
         }
         let heading = Heading {
-            names: vec![self.data.row.label.clone()],
+            name: self.data.row.label.clone(),
             // The pane names the agent and its run, so the header says what the run is for.
             description: ctx
                 .state
@@ -1364,6 +1696,7 @@ mod tests {
                 tries: Vec::new(),
                 note: None,
                 inner: None,
+                left_out: false,
             },
             prompt: "Build the history cells.".into(),
             activity: Vec::new(),
@@ -1375,6 +1708,9 @@ mod tests {
             plan: None,
             facts: Vec::new(),
             to_fix: None,
+            asked_for: None,
+            earlier: None,
+            moved: None,
             review: None,
         }
     }
@@ -1817,6 +2153,7 @@ mod tests {
             tries: Vec::new(),
             note: None,
             inner: None,
+            left_out: false,
         }
     }
 
@@ -1836,6 +2173,9 @@ mod tests {
             plan: None,
             facts: Vec::new(),
             to_fix: None,
+            asked_for: None,
+            earlier: None,
+            moved: None,
             review: None,
         };
         let siblings = vec![
@@ -1958,6 +2298,7 @@ mod tests {
             tool: "Bash".into(),
             summary: "npm test".into(),
             ok: Some(true),
+            note: None,
         }];
         done.tool_calls = 1;
         let text = draw(&mut AgentView::new(done.clone()), 100);
@@ -1984,6 +2325,8 @@ mod tests {
             elapsed_ms: 0,
             parent: None,
             worker: None,
+            phases: Vec::new(),
+            rows: Vec::new(),
         };
         let rows = vec![
             WorkflowRow::Agent(data.row.clone()),

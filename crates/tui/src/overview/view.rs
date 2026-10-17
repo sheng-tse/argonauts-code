@@ -29,6 +29,7 @@ use time::OffsetDateTime;
 
 use super::UsageWatch;
 use super::cards::{UsageCard, UsageCards, period_words};
+use super::config::{self, ConfigTab};
 use super::context::{self, ContextPane, ContextTab, Section};
 use super::home::{HomeKey, HomeTab};
 use super::limits::{LimitsCards, tasks_of};
@@ -74,6 +75,7 @@ const OVERVIEW_EVERY: Duration = Duration::from_secs(2);
 pub enum Tab {
     Overview,
     Status,
+    Config,
     Usage,
     Context,
     Limits,
@@ -81,31 +83,34 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [
+    pub const ALL: [Tab; 7] = [
         Tab::Overview,
         Tab::Status,
+        Tab::Config,
         Tab::Usage,
         Tab::Context,
         Tab::Limits,
         Tab::Stats,
     ];
 
-    /// Where a mod file names this tab.
-    fn mod_place(self) -> ModPlace {
-        match self {
+    /// Where a mod file names this tab. Config shows no mods.
+    fn mod_place(self) -> Option<ModPlace> {
+        Some(match self {
             Tab::Overview => ModPlace::Overview,
             Tab::Status => ModPlace::Status,
+            Tab::Config => return None,
             Tab::Usage => ModPlace::Usage,
             Tab::Context => ModPlace::Context,
             Tab::Limits => ModPlace::Limits,
             Tab::Stats => ModPlace::Stats,
-        }
+        })
     }
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
             Tab::Status => "Status",
+            Tab::Config => "Config",
             Tab::Usage => "Usage",
             Tab::Context => "Context",
             Tab::Limits => "Limits",
@@ -117,6 +122,7 @@ impl Tab {
         match self {
             Tab::Overview => "Where the crew stands: plan usage, spend and workflows",
             Tab::Status => "What runs here and how it is set up, for every CLI at once",
+            Tab::Config => "Claude Code's settings and Argonauts Code's own",
             Tab::Usage => "Plan usage, spend and tokens across the crew",
             Tab::Context => "What fills each session's context",
             Tab::Limits => "What counts toward the limits you set",
@@ -145,7 +151,7 @@ impl Tab {
 
     /// It draws the usage cards, so the period and the pin keys work on it.
     fn shows_usage(self) -> bool {
-        !matches!(self, Tab::Status | Tab::Context)
+        !matches!(self, Tab::Status | Tab::Config | Tab::Context)
     }
 
     /// The cards it stacks, in order, each in its form.
@@ -154,7 +160,7 @@ impl Tab {
         match self {
             Tab::Usage => &[(PlanUsage, Form::Full)],
             Tab::Limits => &[(Spend, Form::Full), (PlanUsage, Form::Full)],
-            Tab::Overview | Tab::Status | Tab::Context | Tab::Stats => &[],
+            Tab::Overview | Tab::Status | Tab::Config | Tab::Context | Tab::Stats => &[],
         }
     }
 }
@@ -190,8 +196,6 @@ pub struct OverviewView {
     status: Option<StatusSummary>,
     /// What the Status tab draws above the run, as the panel's own read last answered.
     setup: Option<StatusTabView>,
-    /// Enter on the Status tab's settings card lists every key with where it came from.
-    keys_open: bool,
     context: Option<ContextData>,
     /// Where the Context tab is scrolled to, and the block its keys are on.
     pane: ContextPane,
@@ -213,6 +217,8 @@ pub struct OverviewView {
     cli: usize,
     /// How the Overview tab shows every CLI's history.
     home: HomeTab,
+    /// The Config tab's rows, search and changes.
+    config: ConfigTab,
 }
 
 impl OverviewView {
@@ -229,7 +235,6 @@ impl OverviewView {
             follow: None,
             status: None,
             setup: None,
-            keys_open: false,
             context: None,
             pane: ContextPane::default(),
             places: None,
@@ -241,7 +246,15 @@ impl OverviewView {
             stats_period_from_file: false,
             cli: 0,
             home: HomeTab::default(),
+            config: ConfigTab::default(),
         }
+    }
+
+    /// The Config tab as `/config` opens it, with its search box taking the keys.
+    pub fn with_config(mut self, config: ConfigTab) -> Self {
+        self.config = config;
+        self.set_level(Level::Cards);
+        self
     }
 
     /// `/stats` with no period: the tab shows the one `mods/stats.toml` sets, once the
@@ -431,6 +444,8 @@ impl OverviewView {
                 let on_run = self.status_focus(ctx) == Some(ModName::Run);
                 self.focus == 0 && (!on_run || tasks == 0 || self.task == 0)
             }
+            // Config hands ↑ back only from its search box, above its first row.
+            Tab::Config => true,
             Tab::Context => self.pane.on_first(),
             Tab::Stats => self.stats.picked == 0,
             Tab::Overview => self.home.picked == 0,
@@ -483,6 +498,7 @@ impl OverviewView {
             }
             Tab::Stats => self.stats_blocks(kit, ctx, width),
             Tab::Usage => self.plan_usage_blocks(kit, ctx, width),
+            Tab::Config => return Vec::new(),
             // Inside the panel's one-column inset, as every other tab's cards are.
             Tab::Overview => {
                 let (mut blocks, focus) =
@@ -496,8 +512,8 @@ impl OverviewView {
             }
             _ => self.usage_blocks(kit, ctx, width),
         };
-        if let Some(view) = ctx.state.mods.as_ref() {
-            let yours = crate::mods::on_tab(kit, view, self.tab.mod_place(), width);
+        if let (Some(view), Some(place)) = (ctx.state.mods.as_ref(), self.tab.mod_place()) {
+            let yours = crate::mods::on_tab(kit, view, place, width);
             if !yours.lines.is_empty() {
                 blocks.push(yours);
             }
@@ -639,7 +655,7 @@ impl OverviewView {
                     let shades = ModelColors::new(self.ranked(ctx), &ctx.state.names);
                     super::health::card(&view.health, kit, frame, &cards.clock, shades)
                 }
-                SetupPart::Settings => cards.settings(kit, frame, self.keys_open),
+                SetupPart::Settings => cards.settings(kit, frame),
                 SetupPart::Runs => cards.runs(kit, frame),
             };
             if at == self.focus {
@@ -823,8 +839,8 @@ impl OverviewView {
             ranked: self.ranked(ctx),
         };
         let mut sections = tab.sections(kit, width);
-        if let Some(view) = state.mods.as_ref() {
-            let yours = crate::mods::on_tab(kit, view, self.tab.mod_place(), width);
+        if let (Some(view), Some(place)) = (state.mods.as_ref(), self.tab.mod_place()) {
+            let yours = crate::mods::on_tab(kit, view, place, width);
             if !yours.lines.is_empty() {
                 sections.push(Section::of(yours));
             }
@@ -959,21 +975,24 @@ impl OverviewView {
     /// `Overview  Status  [Usage]  Context  Limits  Stats`, and on a usage tab the periods at
     /// the right, as Claude Code's Settings dialog lays its tabs out.
     fn tabs(&self, kit: &Kit<'_>, width: usize) -> Vec<Span<'static>> {
-        // Every tab but the open one in plain text, all alike, so none looks picked.
-        let mut left = vec![Span::raw(" ")];
-        for (at, tab) in Tab::ALL.into_iter().enumerate() {
-            if at > 0 {
-                left.push(Span::raw(TAB_GAP));
-            }
+        // The panel's title in bold, as Claude Code's Settings, then every tab but the open one
+        // in plain text, all alike, so none looks picked.
+        let mut left = vec![Span::styled(" Settings", kit.bold(Role::Text))];
+        for tab in Tab::ALL {
+            left.push(Span::raw(TAB_GAP));
+            // Config's search box and rows belong to its tab, so it stays lit while they
+            // have the keys.
+            let lit = self.level() == Level::Tabs || tab == Tab::Config;
             left.push(if tab == self.tab {
-                chosen(kit, tab.title(), self.level() == Level::Tabs)
+                chosen(kit, tab.title(), lit)
             } else {
                 Span::raw(format!(" {} ", tab.title()))
             });
         }
-        left.push(Span::raw(" "));
         let mut right = Vec::new();
         if self.tab.shows_usage() && self.tab != Tab::Overview {
+            // A cell between the last tab and the periods, however narrow the screen.
+            left.push(Span::raw(" "));
             for (period, word) in periods::PERIODS {
                 right.push(if period == self.period {
                     Span::styled(word, kit.bold(Role::Question))
@@ -1163,10 +1182,7 @@ impl OverviewView {
                 let on_run = self.status_focus(ctx) == Some(ModName::Run);
                 let list: &[&str] = match (in_cards, self.setup_focus()) {
                     (false, _) => &[],
-                    (true, Some(SetupPart::Settings)) if self.keys_open => {
-                        &["↑↓ card", "enter closes the keys"]
-                    }
-                    (true, Some(SetupPart::Settings)) => &["↑↓ card", "enter each key"],
+                    (true, Some(SetupPart::Settings)) => &["↑↓ card", "enter all settings"],
                     (true, Some(SetupPart::Runs)) if has_runs => &["↑↓ card", "enter workflow"],
                     (true, Some(_)) => &["↑↓ card"],
                     (true, None) if on_run && tasks > 0 => &["↑↓ task", "enter agent"],
@@ -1242,6 +1258,7 @@ impl OverviewView {
         self.scroll = 0;
         match tab {
             Tab::Status => ViewOutcome::Request(ViewRequest::StatusTab),
+            Tab::Config => ViewOutcome::Request(ViewRequest::Settings { section: None }),
             Tab::Context => ViewOutcome::Request(ViewRequest::Context),
             Tab::Usage => ViewOutcome::Request(ViewRequest::ReadPlanUsage),
             Tab::Overview => ViewOutcome::Request(self.home.request(None)),
@@ -1285,7 +1302,7 @@ impl OverviewView {
             Tab::Overview => !self.home.asking(),
             Tab::Stats => !self.stats.page_open(),
             Tab::Usage | Tab::Limits => true,
-            Tab::Status | Tab::Context => false,
+            Tab::Status | Tab::Config | Tab::Context => false,
         }
     }
 
@@ -1341,8 +1358,19 @@ impl View for OverviewView {
         true
     }
 
+    /// A change Config sent may ask whether to change a safety setting, which shows under the
+    /// panel, so the tab is still there once it's answered.
+    fn stays_over_question(&self) -> bool {
+        self.tab == Tab::Config && self.config.waits()
+    }
+
     /// The rows its cards take, so a short tab leaves the conversation its room.
     fn dock_height(&mut self, screen: Size, ctx: &ViewCtx<'_>) -> Option<u16> {
+        if self.tab == Tab::Config {
+            // The rule and the tabs, then the tab's own rows.
+            let wanted = 2 + config::body_rows(self.config.wanted(ctx.state));
+            return Some(wanted.min(screen.height.saturating_sub(6)).max(12));
+        }
         self.settle_stats(ctx);
         let kit = Kit::new(ctx.theme);
         let blocks = self.blocks(&kit, ctx, usize::from(screen.width));
@@ -1361,6 +1389,10 @@ impl View for OverviewView {
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
         let head = self.head_rows();
         if area.height < head || area.width == 0 {
+            return;
+        }
+        if self.tab == Tab::Config {
+            self.render_config(area, buf, ctx);
             return;
         }
         self.settle_stats(ctx);
@@ -1425,6 +1457,15 @@ impl View for OverviewView {
         if ctrl && self.tab == Tab::Usage && key.code == KeyCode::Char('r') {
             return ViewOutcome::Request(ViewRequest::ReadPlanUsage);
         }
+        // Config's list moves with ctrl+n and ctrl+p, as Claude Code's Settings list does.
+        let moves = ctrl && matches!(key.code, KeyCode::Char('n' | 'p'));
+        if moves
+            && self.tab == Tab::Config
+            && self.level() != Level::Tabs
+            && let Some(outcome) = self.config.key(key, ctx.state)
+        {
+            return outcome;
+        }
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -1435,10 +1476,16 @@ impl View for OverviewView {
         if self.tab == Tab::Stats && self.stats.page_open() {
             return self.stats_page_key(key, ctx);
         }
+        // Config's search box takes every letter, so vim's keys stay letters there.
+        let in_config = self.tab == Tab::Config && self.level() != Level::Tabs;
+        if in_config && let Some(outcome) = self.config.key(key, ctx.state) {
+            return outcome;
+        }
         let key = panel_key(key, list::vim(ctx.state));
-        // Esc closes the panel at once, from any row, an opened row or a CLI's page included.
+        // Esc closes the panel at once, from any row, an opened row or a CLI's page included,
+        // leaving what Config changed under the command.
         if key.code == KeyCode::Esc {
-            return ViewOutcome::Close;
+            return self.config.close();
         }
         match key.code {
             KeyCode::Tab => return self.step_along(1, ctx),
@@ -1478,6 +1525,11 @@ impl View for OverviewView {
             (Level::Cards, KeyCode::Left | KeyCode::Right) if self.tab != Tab::Overview => {
                 return ViewOutcome::Consumed;
             }
+            (Level::Tabs, KeyCode::Down) if self.tab == Tab::Config => {
+                self.config.enter_from_tabs();
+                self.set_level(Level::Cards);
+                return ViewOutcome::Consumed;
+            }
             (Level::Tabs | Level::SubTabs, KeyCode::Down) => return self.go_down(ctx),
             (Level::SubTabs, KeyCode::Enter) => return self.enter_first_row(ctx),
             (Level::SubTabs, KeyCode::Up) => return self.go_up(ctx),
@@ -1496,6 +1548,15 @@ impl View for OverviewView {
         }
     }
 
+    /// A paste searches Config's rows, as typing does there.
+    fn handle_paste(&mut self, text: &str, _ctx: &ViewCtx<'_>) -> ViewOutcome {
+        if self.tab != Tab::Config || self.level() == Level::Tabs {
+            return ViewOutcome::Ignored;
+        }
+        self.config.paste(text);
+        ViewOutcome::Consumed
+    }
+
     /// Status and Context answers land under their tabs. Usage numbers go on to the screen's
     /// state, where the cards above the input read them too.
     fn accept(&mut self, data: &ViewData) -> bool {
@@ -1507,6 +1568,13 @@ impl View for OverviewView {
             }
             ViewData::Context { view } => self.context = Some(view.clone()),
             ViewData::Overview { overview } => self.home.accept(overview),
+            // Every key, which the Config tab asked for when it opened.
+            ViewData::Settings {
+                rows,
+                command: None,
+                section: None,
+                ..
+            } if self.tab == Tab::Config => self.config.set_rows(rows.clone()),
             _ => return false,
         }
         // It may be the answer to a refresh of the open tab, which is then settled.
@@ -1520,6 +1588,24 @@ impl View for OverviewView {
 }
 
 impl OverviewView {
+    /// The Config tab: a quiet rule, the tabs, and the tab's own rows under them.
+    fn render_config(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
+        let kit = Kit::new(ctx.theme);
+        let width = usize::from(area.width);
+        let rule = ctx.theme.glyphs.rule.repeat(width);
+        let rule = Line::from(Span::styled(rule, ctx.theme.style(Role::Rule)));
+        buf.set_line(area.x, area.y, &rule, area.width);
+        let tabs = Line::from(self.tabs(&kit, width));
+        buf.set_line(area.x, area.y + 1, &tabs, area.width);
+        let body = Rect {
+            y: area.y + 2,
+            height: area.height.saturating_sub(2),
+            ..area
+        };
+        let on_tabs = self.level() == Level::Tabs;
+        config::draw(&mut self.config, body, buf, ctx, on_tabs);
+    }
+
     /// Stats shows every day so far, and the Overview would answer for every day too, but
     /// hasn't yet.
     fn wants_every_day_tokens(&self) -> bool {
@@ -1596,10 +1682,9 @@ impl OverviewView {
                 })
             }
             KeyCode::Enter => match self.setup_focus() {
+                // Every key with where it came from, over the panel, which Esc comes back to.
                 Some(SetupPart::Settings) => {
-                    self.keys_open = !self.keys_open;
-                    self.follow = Some(Follow::Focus);
-                    ViewOutcome::Consumed
+                    ViewOutcome::Request(ViewRequest::Settings { section: None })
                 }
                 Some(SetupPart::Runs) => self.open_newest_run(),
                 Some(SetupPart::Clis | SetupPart::Health) => ViewOutcome::Consumed,

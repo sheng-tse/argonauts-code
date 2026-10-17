@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use argonauts_core::NoteLevel;
 use argonauts_core::Spend;
-use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, TurnReply};
+use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, SignedOut, TurnReply};
 use argonauts_core::event::{AgentEvent, ErrorCategory};
 use argonauts_core::events::run::{CaptainOrCrewDecision, RunMode};
 use argonauts_core::events::session::SessionEvent;
@@ -144,6 +144,7 @@ struct Fallback {
     why: String,
     told: String,
     note: Option<InputPart>,
+    signed_out: Option<SignedOut>,
 }
 
 /// What a turn hears when the user's own words plainly ask for a workflow.
@@ -232,6 +233,7 @@ fn try_turn(
                 to: worker.clone(),
                 why: fallback.why,
                 told: fallback.told,
+                signed_out: fallback.signed_out,
             }
         }
         None => ConversationEvent::TurnStarted {
@@ -321,7 +323,7 @@ fn try_turn(
         notes.extend(goal::brief(ctx, conversation, &step, &worker, &text));
         notes
     } else {
-        conversation.prefs.notes()
+        conversation.prefs.notes(ctx.settings())
     };
     let ran = if step.hears_shell() {
         super::take_shell(conversation)
@@ -404,6 +406,8 @@ fn try_turn(
         ran,
         direct: None,
         live: live::Live::new(control, plain_reply),
+        counted: None,
+        signed_out: None,
     });
     if let (Some(turn), Some(detail)) = (&conversation.turn, conversation.context_watch) {
         turn.live.watch_context(Some(detail));
@@ -428,6 +432,7 @@ fn track_context(conversation: &mut ConversationState, key: SessionKey, worker: 
         estimated: false,
         counts: false,
         categories: Vec::new(),
+        recorded: None,
     });
 }
 
@@ -501,10 +506,14 @@ pub(super) fn on_event(
                     _ => {}
                 }
             }
-            // The count `/context print` waits for is in.
-            let counted = matches!(event, AgentEvent::ContextBreakdown { .. });
-            if counted && !own && conversation.print_wait.is_some() {
-                conversation.print_wait = Some(super::PrintWait::Counted);
+            if let AgentEvent::ContextBreakdown { usage } = &event
+                && !own
+            {
+                turn.counted = Some(usage.clone());
+                // The count `/context print` waits for is in.
+                if conversation.print_wait.is_some() {
+                    conversation.print_wait = Some(super::PrintWait::Counted);
+                }
             }
             let event = turn.live.shown(event);
             emit(
@@ -694,6 +703,9 @@ pub(super) fn on_done(
         };
         remember_session(ctx, conversation, session);
     }
+    if !turn.step.own_session() {
+        keep_context(ctx, conversation, &mut turn);
+    }
     let spend = end.map(|end| end.spend).unwrap_or_default();
     let reading = match &turn.step {
         TurnStep::Estimate { command, .. } => {
@@ -735,6 +747,22 @@ pub(super) fn on_done(
     // A switch made while this turn ran has its summary made now.
     carry::start_if_due(ctx, conversation);
     effects
+}
+
+/// The record keeps how the turn left its session's context, which a resumed conversation
+/// counts from at once. The screen counted it as it came.
+fn keep_context(ctx: &Ctx, conversation: &mut ConversationState, turn: &mut Turn) {
+    let Some(row) = conversation.context.as_ref() else {
+        return;
+    };
+    let left = ConversationEvent::ContextLeft {
+        turn: turn.id.clone(),
+        at: time::OffsetDateTime::now_utc(),
+        used: row.used,
+        window: row.window,
+        usage: turn.counted.take(),
+    };
+    super::record(ctx, conversation, &left);
 }
 
 /// A turn you stopped alone ends when its session does, once what it ran in the background is
@@ -1044,13 +1072,36 @@ fn commanded_decision(
 fn fail(
     ctx: &mut Ctx,
     conversation: &mut ConversationState,
-    turn: Turn,
+    mut turn: Turn,
     err: &StepError,
 ) -> anyhow::Result<Vec<Effect>> {
     if turn.step.writes() {
         return fail_direct(ctx, conversation, turn, err);
     }
-    let error = format!("{} couldn't answer: {}", turn.worker, turn::describe(err));
+    let mut tried = turn.tried.clone();
+    tried.push(turn.worker.clone());
+    let fallback_left = turn::candidates(ctx)
+        .iter()
+        .any(|worker| !tried.contains(worker) && ctx.services.workers.get(worker).is_ok());
+    let worth = turn::worth_a_fallback(err) && fallback_left && !turn.step.main_agent_only();
+    let asks = turn::fallback_mode(ctx.settings(), &turn.worker) == FallbackMode::Ask;
+    let signed_out = turn::signed_out(err, &turn.worker.agent);
+    // A CLI that turned out signed out falls back with one line that says so, as a direct
+    // turn does, rather than failing the turn and asking again from the start.
+    if let Some(out) = &signed_out
+        && worth
+        && !asks
+        && !matches!(turn.step, TurnStep::Review { .. } | TurnStep::Carry { .. })
+        && let Ok((to, _)) = turn::pick(ctx, &tried)
+    {
+        let why = why_signed_out(out);
+        turn.signed_out = signed_out.clone();
+        return fallback(ctx, conversation, turn, tried, why, to);
+    }
+    let error = match &signed_out {
+        Some(out) => turn::signed_out_words(&ctx.names.cli(&turn.worker.agent), out),
+        None => format!("{} couldn't answer: {}", turn.worker, turn::describe(err)),
+    };
     emit(
         ctx,
         conversation,
@@ -1059,13 +1110,8 @@ fn fail(
             error,
         },
     );
-    let mut tried = turn.tried.clone();
-    tried.push(turn.worker.clone());
-    let fallback_left = turn::candidates(ctx)
-        .iter()
-        .any(|worker| !tried.contains(worker) && ctx.services.workers.get(worker).is_ok());
-    if turn::worth_a_fallback(err) && fallback_left && !turn.step.main_agent_only() {
-        if turn::fallback_mode(ctx.settings(), &turn.worker) != FallbackMode::Ask {
+    if worth {
+        if !asks {
             return read_again(ctx, conversation, turn, tried);
         }
         let candidates = direct::shortlist(ctx, &turn.worker, &tried);
@@ -1082,7 +1128,9 @@ fn fail(
             ctx.notice(NoteLevel::Info, PAID_ONLY_ON_AUTOPILOT);
         } else if !candidates.is_empty() {
             let id = turn.id.clone();
-            let why = why_it_stopped(err);
+            let why = signed_out
+                .as_ref()
+                .map_or_else(|| why_it_stopped(err), why_signed_out);
             direct::ask_fallback(ctx, conversation, turn, tried, why, &candidates);
             settle_mode(ctx, &id);
             return Ok(Vec::new());
@@ -1184,6 +1232,16 @@ pub(super) fn answer_on(
     read_again(ctx, conversation, turn, tried)
 }
 
+/// Why a signed-out agent stopped, read after its name: "is signed out (its sign-in was
+/// revoked)".
+fn why_signed_out(out: &SignedOut) -> String {
+    if out.why.is_empty() {
+        "is signed out".to_owned()
+    } else {
+        format!("is signed out ({})", out.why)
+    }
+}
+
 /// Why an agent stopped, read after its name: "hit its usage limit", "stopped: <reason>".
 fn why_it_stopped(err: &StepError) -> String {
     let described = turn::describe(err);
@@ -1200,15 +1258,20 @@ fn why_it_stopped(err: &StepError) -> String {
 fn fail_direct(
     ctx: &mut Ctx,
     conversation: &mut ConversationState,
-    turn: Turn,
+    mut turn: Turn,
     err: &StepError,
 ) -> anyhow::Result<Vec<Effect>> {
     let mut tried = turn.tried.clone();
     tried.push(turn.worker.clone());
     let mode = turn::fallback_mode(ctx.settings(), &turn.worker);
+    let signed_out = turn::signed_out(err, &turn.worker.agent);
     // Another CLI wouldn't know this one's own command.
     if turn::worth_a_fallback(err) && mode != FallbackMode::Wait && !turn.step.main_agent_only() {
-        let why = why_it_stopped(err);
+        let why = signed_out
+            .as_ref()
+            .map_or_else(|| why_it_stopped(err), why_signed_out);
+        // Whoever carries it on says the CLI is signed out, now or once you pick them.
+        turn.signed_out = signed_out.clone();
         let candidates = direct::shortlist(ctx, &turn.worker, &tried);
         let autopilot = direct::approval(conversation) == ApprovalMode::Autopilot;
         let auto = candidates
@@ -1228,7 +1291,10 @@ fn fail_direct(
             return Ok(Vec::new());
         }
     }
-    let error = format!("{} couldn't finish: {}", turn.worker, turn::describe(err));
+    let error = match &signed_out {
+        Some(out) => turn::signed_out_words(&ctx.names.cli(&turn.worker.agent), out),
+        None => format!("{} couldn't finish: {}", turn.worker, turn::describe(err)),
+    };
     Ok(end_direct(ctx, conversation, turn, error))
 }
 
@@ -1248,6 +1314,7 @@ pub(super) fn fallback(
         why,
         told,
         note,
+        signed_out: turn.signed_out.take(),
     };
     let running = turn.direct.take();
     conversation.ran.splice(0..0, std::mem::take(&mut turn.ran));

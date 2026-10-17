@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::registry::LaunchHints;
-use crate::session_runner::SessionShell;
+use crate::session_runner::{SessionPreferences, SessionShell};
 use crate::settings::context::ContextAsk;
 use crate::settings::sessions::{Compaction, NativeFanout};
 use crate::settings::workflows::WorkflowSize;
@@ -153,6 +153,9 @@ pub struct SessionRequest {
     /// See [`SessionSpec::autopilot`](crate::session_runner::SessionSpec::autopilot).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub autopilot: bool,
+    /// See [`SessionSpec::preferences`](crate::session_runner::SessionSpec::preferences).
+    #[serde(default, skip_serializing_if = "SessionPreferences::is_default")]
+    pub preferences: SessionPreferences,
 }
 
 /// A file Argonauts Code writes before spawning the command.

@@ -10,7 +10,7 @@ use argonauts_core::agent_panel::{
 use argonauts_core::events::agent_status::FallbackEvent;
 use argonauts_core::events::approval::{ApprovalEvent, ApprovalPacket};
 use argonauts_core::events::context::ContextCategory;
-use argonauts_core::events::run::RunLifecycle;
+use argonauts_core::events::run::{RunLifecycle, WaitReason};
 use argonauts_core::events::session::{
     EndReason, LimitEvent, SessionEnd, SessionEvent, SessionStarted, SubagentUpdate,
 };
@@ -148,6 +148,9 @@ pub(crate) struct RunFacts {
     rotate_at: RotateAt,
     /// What the run's reviews and checks decided, for the words after a row's counts.
     pub verdicts: Verdicts,
+    /// What the run waits for, while its log ends on a wait. A session the wait cut short ends
+    /// `Paused` whatever the run waits for, so its row says this instead.
+    pub held: Option<WaitReason>,
 }
 
 impl RunFacts {
@@ -159,6 +162,7 @@ impl RunFacts {
         let mut fallbacks: BTreeMap<TaskId, (ModelRef, RoleName, String)> = BTreeMap::new();
         let mut rotate_at = Settings::default().sessions.rotate_at;
         let mut finished_at = None;
+        let mut held = None;
         // Each CLI's model from the run's settings (`agents.<cli>.model`).
         let mut configured: BTreeMap<String, String> = BTreeMap::new();
         // Each task's current try, where its latest report is in the log, and its worker
@@ -210,7 +214,14 @@ impl RunFacts {
                             .collect();
                     }
                 }
-                RunEventKind::Run(RunLifecycle::Finished { .. }) => finished_at = Some(event.ts),
+                RunEventKind::Run(RunLifecycle::Finished { .. }) => {
+                    finished_at = Some(event.ts);
+                    held = None;
+                }
+                RunEventKind::Run(RunLifecycle::Waiting { reason, .. }) => {
+                    held = Some(reason.clone());
+                }
+                RunEventKind::Run(RunLifecycle::Resumed(_)) => held = None,
                 RunEventKind::Approval(ApprovalEvent::Opened(opened)) => {
                     if opened.needs_you {
                         let task = opened.task.clone().or_else(|| match &opened.packet {
@@ -341,6 +352,7 @@ impl RunFacts {
             finished_at,
             rotate_at,
             verdicts: Verdicts::of(events),
+            held,
         }
     }
 
@@ -412,6 +424,7 @@ impl RunFacts {
                 Some(RowNote::new(why, Tone::Warn))
             }),
             inner: None,
+            left_out: false,
         }
     }
 
@@ -578,6 +591,9 @@ impl SessionFacts {
         match kind {
             RunEventKind::Session(SessionEvent::Input(input)) => {
                 self.cwd.get_or_insert_with(|| input.launch.cwd.clone());
+                if self.worker.model.is_none() {
+                    self.worker.model = input.launch.model().map(str::to_owned);
+                }
                 for part in &input.parts {
                     self.prompt.push_str(&part.text);
                 }

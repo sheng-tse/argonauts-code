@@ -288,10 +288,22 @@ pub fn apply_identity(workflow: &mut Workflow, brief: &DesignOutput) {
     workflow.based_on.clone_from(&brief.based_on);
 }
 
+/// Words a name never ends on.
+const SMALL_WORDS: &[&str] = &[
+    "a", "an", "and", "for", "in", "of", "on", "the", "to", "with",
+];
+
 /// A name for a run the main agent didn't name, from the first words of intake's summary or your
 /// request: `add-a-json-flag` from "Add a --json flag to export".
 pub fn name_from(words: &str) -> String {
-    let slug = labels::slug(words, 4);
+    let mut slug = labels::slug(words, 4);
+    // "add-due-dates-to" reads as cut off, so a small word at the end goes.
+    while let Some((kept, last)) = slug.rsplit_once('-') {
+        if !SMALL_WORDS.contains(&last) {
+            break;
+        }
+        slug = kept.to_owned();
+    }
     match slug.split('-').count() {
         0 | 1 if slug.is_empty() => "untitled-run".to_owned(),
         1 => format!("{slug}-run"),
@@ -299,22 +311,39 @@ pub fn name_from(words: &str) -> String {
     }
 }
 
-/// A description that fits its line: the first line, cut with `…`.
+/// A description that fits its line: the first line without its backticks, or its first
+/// sentence when only that fits, or else cut at a word with `…`.
 pub fn fit_description(text: &str) -> String {
     let line = text
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .replace('`', "");
     if line.width() <= DESCRIPTION_CELLS {
-        return line.to_owned();
+        return line;
+    }
+    if let Some(end) = line.find(". ") {
+        let sentence = &line[..=end];
+        if sentence.width() <= DESCRIPTION_CELLS {
+            return sentence.to_owned();
+        }
     }
     let mut out = String::new();
-    for c in line.chars() {
-        if format!("{out}{c}…").width() > DESCRIPTION_CELLS {
+    for word in line.split_inclusive(' ') {
+        if format!("{out}{word}").trim_end().width() + 1 > DESCRIPTION_CELLS {
             break;
         }
-        out.push(c);
+        out.push_str(word);
+    }
+    // A first word too long for the line is cut where it must be.
+    if out.trim().is_empty() {
+        for c in line.chars() {
+            if format!("{out}{c}…").width() > DESCRIPTION_CELLS {
+                break;
+            }
+            out.push(c);
+        }
     }
     format!("{}…", out.trim_end())
 }
@@ -425,6 +454,24 @@ phases:
 
     fn workflow() -> Workflow {
         yaml::parse(FIX).unwrap()
+    }
+
+    /// A description is the request's first line without its backticks, its first sentence
+    /// when only that fits, or else cut at a word.
+    #[test]
+    fn a_description_drops_backticks_and_is_cut_at_a_word() {
+        let said = fit_description(
+            "Fix `round_cents` in `money.py` so the three failing tests in tests/test_money.py pass without changing them",
+        );
+        assert_eq!(
+            said,
+            "Fix round_cents in money.py so the three failing tests in…"
+        );
+        assert_eq!(fit_description("Fix `x`"), "Fix x");
+        let two = fit_description(
+            "Add a due date to each todo. Then show it in the list, sort by it, and warn when one is overdue",
+        );
+        assert_eq!(two, "Add a due date to each todo.");
     }
 
     /// Why Haiku's first brief for a council run on 10-04 was refused: its name. Its checks
@@ -619,6 +666,12 @@ phases:
         assert_eq!(name_from("Add a --json flag to export"), "add-a-json-flag");
         assert_eq!(name_from("refactor"), "refactor-run");
         assert_eq!(name_from("   "), "untitled-run");
+        // A name never ends on a small word, which reads as cut off.
+        assert_eq!(name_from("Add due dates to todos"), "add-due-dates");
+        assert_eq!(
+            name_from("Fix the rounding of the totals"),
+            "fix-the-rounding"
+        );
         // Whatever it's made from, it passes the rule a main agent's name must.
         assert_eq!(name_problem(&name_from("Fix Slugify's Dashes"), &[]), None);
         let long = fit_description(&"word ".repeat(30));

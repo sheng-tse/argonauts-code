@@ -27,7 +27,6 @@ pub fn cut(text: &str, width: usize) -> String {
     out
 }
 
-/// Cuts a path in the middle, keeping its first part and its end: `/…/ui-kit/src/composer.rs`.
 /// Like [`cut`], ending at the last whole word that fits, so a cut never splits one. A first
 /// word too long to fit is cut where it must be.
 pub fn cut_at_word(text: &str, width: usize) -> String {
@@ -47,6 +46,7 @@ pub fn cut_at_word(text: &str, width: usize) -> String {
     }
 }
 
+/// Cuts a path in the middle, keeping its first part and its end: `/…/ui-kit/src/composer.rs`.
 pub fn cut_middle(path: &str, width: usize) -> String {
     if str_width(path) <= width {
         return path.to_owned();

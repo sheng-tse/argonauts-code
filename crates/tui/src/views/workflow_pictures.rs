@@ -66,7 +66,8 @@ impl Picture {
     }
 
     /// Puts `to` where row `row` says `from`, each new cell looking as the first one it
-    /// replaces. The row keeps its width: the next run of blanks takes or gives the difference.
+    /// replaces. The row keeps its width: the widest run of blanks after it takes or gives the
+    /// difference, so the columns between keep their places.
     pub(crate) fn reword(&mut self, row: usize, from: &str, to: &str) {
         let cells = &mut self.rows[row];
         let text: Vec<char> = cells.iter().map(|cell| cell.ch).collect();
@@ -80,9 +81,16 @@ impl Picture {
         let grew = new.len() as isize - from.len() as isize;
         cells.splice(at..at + from.len(), new);
         let after = at + to.chars().count();
-        let gap = (after..cells.len().saturating_sub(1))
-            .find(|&i| cells[i].ch == ' ' && cells[i + 1].ch == ' ');
-        let Some(gap) = gap else {
+        let mut gap: Option<(usize, usize)> = None;
+        let mut i = after;
+        while i < cells.len() {
+            let run = cells[i..].iter().take_while(|cell| cell.ch == ' ').count();
+            if run >= 2 && gap.is_none_or(|(_, widest)| run > widest) {
+                gap = Some((i, run));
+            }
+            i += run.max(1);
+        }
+        let Some((gap, _)) = gap else {
             return;
         };
         if grew > 0 {
@@ -98,6 +106,13 @@ impl Picture {
         }
     }
 
+    /// Puts a token count in the one format every screen writes, Argonauts Code's own (`11k`,
+    /// `171k`, `1M`), where the picture writes Claude Code's (`11.0k`, `1m`). That format
+    /// stands over the pictures'; the row keeps its width as [`Self::reword`] keeps it.
+    pub(crate) fn respell_tokens(&mut self, row: usize, from: &str, to: &str) {
+        self.reword(row, from, to);
+    }
+
     /// Writes `text` over the picture's cells from `column` of `row`, in `colour`.
     pub(crate) fn write(&mut self, row: usize, column: usize, text: &str, colour: Option<Color>) {
         let cells = &mut self.rows[row];
@@ -107,6 +122,28 @@ impl Picture {
                 colour,
                 bold: false,
             };
+        }
+    }
+
+    /// Gives each of `names` in row `row` the colour the picture draws it in on another row,
+    /// as a status line colours the models its rows name.
+    pub(crate) fn colour_as_its_row(&mut self, row: usize, names: &[&str]) {
+        for name in names {
+            let name: Vec<char> = name.chars().collect();
+            let at = |cells: &[Cell]| {
+                cells
+                    .windows(name.len())
+                    .position(|window| window.iter().map(|cell| cell.ch).eq(name.iter().copied()))
+            };
+            let colour = (0..self.rows.len())
+                .filter(|other| *other != row)
+                .find_map(|other| at(&self.rows[other]).map(|x| self.rows[other][x].colour))
+                .unwrap_or_else(|| panic!("{}: no other row names {name:?}", self.name));
+            let x = at(&self.rows[row])
+                .unwrap_or_else(|| panic!("{}: row {row} doesn't name {name:?}", self.name));
+            for cell in &mut self.rows[row][x..x + name.len()] {
+                cell.colour = colour;
+            }
         }
     }
 
@@ -279,6 +316,7 @@ fn colour_of(style: &str, theme: &Theme) -> Option<Color> {
         ("red", Role::Danger),
         ("amb", Role::Warn),
         ("acc", Role::Accent),
+        ("org", Role::AgentOrange),
     ];
     if let Some(name) = value
         .strip_prefix("var(--term-")

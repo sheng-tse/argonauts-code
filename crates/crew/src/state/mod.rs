@@ -293,6 +293,7 @@ pub(crate) mod tests {
             asked: None,
             agent_failures: Vec::new(),
             written: Default::default(),
+            network_retries: 0,
             workflow: None,
         }
     }

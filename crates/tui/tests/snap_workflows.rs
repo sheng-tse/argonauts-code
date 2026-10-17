@@ -77,6 +77,7 @@ fn agent(
         tries: Vec::new(),
         note: None,
         inner: None,
+        left_out: false,
     }
 }
 
@@ -113,6 +114,8 @@ fn nested_row() -> NestedWorkflowRow {
         elapsed_ms: 720_000,
         parent: None,
         worker: None,
+        phases: demo_tests().phases,
+        rows: Vec::new(),
     }
 }
 
@@ -126,7 +129,6 @@ fn ui_kit() -> WorkflowData {
         description: "Build a standalone Rust UI kit prototype that matches Claude Code: inline \
                       conversation, history cells, the bottom region, and the agent panel"
             .into(),
-        breadcrumb: Vec::new(),
         agents_done: 8,
         agents_total: 12,
         elapsed_ms: 9_840_000,
@@ -216,14 +218,13 @@ fn ui_kit() -> WorkflowData {
     }
 }
 
-/// The nested workflow behind the `◇` row, with its breadcrumb.
+/// The workflow inside Build, as its own view would have it.
 fn demo_tests() -> WorkflowData {
     WorkflowData {
         run: run(),
         id: WorkflowId::numbered(2),
         name: "build:c-demo-tests".into(),
         description: "Demo scenes and snapshot tests for every part of the kit".into(),
-        breadcrumb: vec!["argonauts-ui-kit".into()],
         agents_done: 2,
         agents_total: 4,
         elapsed_ms: 720_000,
@@ -308,6 +309,7 @@ fn activity() -> Vec<ActivityLine> {
         tool: tool.into(),
         summary: summary.into(),
         ok,
+        note: None,
     };
     vec![
         call("Read", "crates/tui/src/bottom/mod.rs", Some(true)),
@@ -391,6 +393,9 @@ fn agent_data(row: AgentRow) -> AgentData {
         plan: None,
         facts: Vec::new(),
         to_fix: None,
+        asked_for: None,
+        earlier: None,
+        moved: None,
         review: None,
     }
 }
@@ -587,7 +592,6 @@ fn long_model_names_stay_visible_at_80_columns() {
         id: WorkflowId::numbered(3),
         name: "maker-checker".into(),
         description: "One small change, reviewed by another provider".into(),
-        breadcrumb: Vec::new(),
         agents_done: 0,
         agents_total: 2,
         elapsed_ms: 90_000,
@@ -815,94 +819,48 @@ fn agent_view_sections() {
     assert!(!text.contains("Subagents"), "{text}");
 }
 
+/// A workflow inside is a row of the phase where it started, open while it runs, its phases
+/// headings with their agents two cells further in; ← folds it to its one row, which keeps its
+/// count.
 #[test]
-fn workflow_view_nested_breadcrumb() {
-    let state = AppState::default();
-    for (width, height) in SIZES {
-        let mut view = WorkflowView::new(demo_tests());
-        insta::assert_snapshot!(
-            format!("workflow_view_nested_breadcrumb_{width}"),
-            screen(&mut view, width, height, &state)
-        );
-    }
-}
-
-#[test]
-fn nested_workflow_breadcrumb() {
+fn a_workflow_inside_opens_in_its_phase() {
     let state = AppState::default();
     let mut view = WorkflowView::new(ui_kit());
     let text = screen(&mut view, 100, 32, &state);
-    // The parent phase counts the nested workflow as one row.
+    // The phase counts the agents inside.
     assert!(text.contains("❯ 2 Build    2/4"), "{text}");
     let nested = text
         .lines()
-        .find(|line| line.contains("◇ build:c-demo-tests"))
+        .find(|line| line.contains("▾ build:c-demo-tests"))
         .unwrap_or_else(|| panic!("{text}"));
-    assert!(nested.contains("  workflow · 2/4 steps"), "{text}");
+    assert!(nested.contains("  workflow · 2/4 agents"), "{text}");
     assert!(nested.trim_end().ends_with("12m00s │"), "{text}");
+    assert!(text.contains("    ✔ Draft"), "{text}");
+    let name_row = text.lines().nth(1).unwrap_or_default();
+    assert!(name_row.starts_with(" argonauts-ui-kit"), "{text}");
+    assert!(!name_row.contains('›'), "{text}");
 
     press(&mut view, KeyCode::Right, &state);
     press(&mut view, KeyCode::Down, &state);
     press(&mut view, KeyCode::Down, &state);
-    let outcome = press(&mut view, KeyCode::Enter, &state);
-    assert!(
-        matches!(&outcome, ViewOutcome::Request(ViewRequest::Workflow { workflow: Some(id), run: r }) if *id == WorkflowId::numbered(2) && *r == run()),
-        "{outcome:?}"
-    );
-    assert!(view.accept(&ViewData::Workflow {
-        view: Box::new(demo_tests())
-    }));
-    assert_eq!(view.depth(), 2);
+    assert!(matches!(
+        press(&mut view, KeyCode::Left, &state),
+        ViewOutcome::Consumed
+    ));
     let text = screen(&mut view, 100, 32, &state);
-    assert!(
-        text.lines()
-            .nth(1)
-            .unwrap_or_default()
-            .starts_with(" argonauts-ui-kit › build:c-demo-tests"),
-        "{text}"
-    );
-    assert!(text.contains("Demo scenes and snapshot tests"), "{text}");
-    assert!(text.contains("2/4 agents · 12m00s"), "{text}");
-    assert!(!text.contains("$0.92"), "{text}");
+    let folded = text
+        .lines()
+        .find(|line| line.contains("▸ build:c-demo-tests"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(folded.contains("❯"), "{text}");
+    assert!(folded.contains("workflow · 2/4 agents"), "{text}");
+    assert!(!text.contains("✔ Draft"), "{text}");
     let buf = draw(&mut view, 100, 32, &state);
     let theme = theme();
     assert_eq!(
-        style_at(&buf, "argonauts-ui-kit ›").and_then(|s| s.fg),
-        fg(&theme, Role::Dim)
-    );
-    assert_eq!(
-        style_at(&buf, "build:c-demo-tests").and_then(|s| s.fg),
+        style_at(&buf, "▸").and_then(|s| s.fg),
         fg(&theme, Role::Question)
     );
-
-    // A refresh of a level already open updates it in place.
-    let mut fresher = demo_tests();
-    fresher.agents_done = 3;
-    assert!(view.accept(&ViewData::Workflow {
-        view: Box::new(fresher)
-    }));
-    assert_eq!(view.depth(), 2);
-    assert!(screen(&mut view, 100, 32, &state).contains("3/4 agents"));
-
-    // An agent opened from a nested level shows in the same frame.
-    press(&mut view, KeyCode::Right, &state);
-    let outcome = press(&mut view, KeyCode::Enter, &state);
-    assert!(
-        matches!(outcome, ViewOutcome::Request(ViewRequest::Agent { .. })),
-        "{outcome:?}"
-    );
-
-    // Esc goes back a level at a time: to the phases, then out of the nested workflow.
-    press(&mut view, KeyCode::Esc, &state);
-    assert!(matches!(
-        press(&mut view, KeyCode::Esc, &state),
-        ViewOutcome::Consumed
-    ));
-    assert_eq!(view.depth(), 1);
-    let top = screen(&mut view, 100, 32, &state);
-    let name_row = top.lines().nth(1).unwrap_or_default();
-    assert!(name_row.starts_with(" argonauts-ui-kit"), "{top}");
-    assert!(!name_row.contains('›'), "{top}");
 }
 
 /// A council's run: reading, drafting, workers on tasks, and reviewers waiting.
@@ -943,7 +901,6 @@ fn crew_run() -> WorkflowData {
         id: WorkflowId::numbered(1),
         name: "council".into(),
         description: "Fix the race in the export test and add a regression test".into(),
-        breadcrumb: Vec::new(),
         agents_done: 6,
         agents_total: 11,
         elapsed_ms: 2_760_000,
@@ -1176,6 +1133,7 @@ fn session(
         agent_id: worker.agent.clone(),
         worker,
         model_assumed: false,
+        model_guessed: false,
         role,
         step: None,
         task,
@@ -1205,8 +1163,10 @@ fn session(
         end: None,
         unknown: Vec::new(),
         doing: Doing::Nothing,
+        turn_over: false,
         stalled: false,
         cli_session: None,
+        sent_back: false,
         workflows: Vec::new(),
     }
 }
@@ -1470,7 +1430,8 @@ fn debt_markers_on_rows() {
         "{narrow}"
     );
 
-    // The workflow view marks the same agent's row from the folded state.
+    // The workflow view says who must review it, in words and once, on the task's newest
+    // worker, from the folded state.
     let mut view = WorkflowView::new(crew_run());
     let buf = draw(&mut view, 150, 32, &state);
     assert_frames(&buf);
@@ -1480,12 +1441,31 @@ fn debt_markers_on_rows() {
         .find(|row| row.contains("worker · task-002"))
         .unwrap();
     assert!(row.contains("↷ worker · task-002"), "{text}");
-    assert!(row.contains("◌ needs review"), "{text}");
+    assert!(row.contains("for Opus · needs a review by Opus"), "{text}");
+    assert!(!text.contains('◌'), "{text}");
+    assert_eq!(text.matches("needs a review by").count(), 1, "{text}");
     let theme = theme();
     assert_eq!(
-        style_at(&buf, "◌ needs review").and_then(|s| s.fg),
+        style_at(&buf, "needs a review by").and_then(|s| s.fg),
         fg(&theme, Role::Warn)
     );
+
+    // A newer worker on the task takes the words over, and the older row drops them.
+    let mut newer = state.clone();
+    let run = newer.runs.get_mut(&run()).unwrap();
+    let later = run.sessions[&key("s-105")].started + time::Duration::seconds(30);
+    let next = session(
+        "s-120",
+        "codex/gpt-5.6",
+        RoleName::Worker,
+        Some(TaskId::numbered(2)),
+        SessionStatus::Working,
+        later,
+    );
+    run.sessions.insert(next.key.clone(), next);
+    let buf = draw(&mut view, 150, 32, &newer);
+    let text = trimmed(&buf);
+    assert!(!text.contains("needs a review by"), "{text}");
 }
 
 /// A page an agent published inside the workflow is named on its row, as Claude Code marks
@@ -1615,7 +1595,7 @@ fn state_glyph_word_color() {
         fg(&theme, Role::Faint)
     );
 
-    // The workflow view's rows: green ✔, red ✘, and the nested ◇.
+    // The workflow view's rows: green ✔, red ✘, and the workflow inside, open.
     let mut view = WorkflowView::new(data);
     let buf = draw(&mut view, 100, 32, &state);
     assert_eq!(
@@ -1626,7 +1606,7 @@ fn state_glyph_word_color() {
         style_at(&buf, "✘ build:d").and_then(|s| s.fg),
         fg(&theme, Role::Danger)
     );
-    assert!(style_at(&buf, "◇ build:c").is_some());
+    assert!(style_at(&buf, "▾ build:c").is_some());
 
     // Run rows say their state in words too, in the state's color.
     let mut panel = WorkflowPanel {
@@ -1673,9 +1653,10 @@ fn state_glyph_word_color() {
         last_style(2),
         Some(("failed".into(), theme.style(Role::Danger)))
     );
+    // A pause you asked for reads plain, as its picture draws it.
     assert_eq!(
         last_style(3),
-        Some(("paused".into(), theme.style(Role::Dim)))
+        Some(("paused".into(), theme.style(Role::Text)))
     );
     assert_eq!(lines[0].spans[1].content, "⏸ ");
     assert_eq!(lines[1].spans[1].content, "✔ ");

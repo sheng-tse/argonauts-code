@@ -79,7 +79,13 @@ impl Stats<'_> {
             Opened::Cli(_) => None,
         };
         let inner = frame.inner();
-        let spent = models.iter().fold(Spend::default(), |spent, (_, model)| {
+        // A role's tokens are every model's that spent in it, the ones that did none of its
+        // work too.
+        let spent_in = match role {
+            Some(role) => self.crew.in_role(role),
+            None => models.clone(),
+        };
+        let spent = spent_in.iter().fold(Spend::default(), |spent, (_, model)| {
             let part = match role {
                 Some(role) => model.spent_as.get(&role).copied().unwrap_or_default(),
                 None => model.spent,

@@ -12,6 +12,12 @@ use std::time::Duration;
 use argonauts_testkit::scenario::FakeScenario;
 use argonauts_testkit::{FakeClis, Key, Pty, PtyCommand, TempRepo};
 
+/// A question drops the keys pressed in its first moment, so a test that answers one right away
+/// waits that out first.
+fn past_the_question_guard() {
+    std::thread::sleep(Duration::from_millis(500));
+}
+
 fn argonauts(repo: &TempRepo, dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_argonauts"))
         .args(args)
@@ -237,6 +243,7 @@ fn a_first_start_with_argonauts_home_set_writes_nothing_under_your_home() {
     pty.press(Key::Up).unwrap();
     pty.wait_for(r"Esc to take the recommended answers", wait)
         .unwrap();
+    past_the_question_guard();
     pty.press(Key::Esc).unwrap();
     pty.wait_for(r"/setup \(or argonauts setup\) walks", wait)
         .unwrap();
@@ -284,6 +291,7 @@ fn at_lists_the_repos_files_and_completes_one() {
     pty.press(Key::Up).unwrap();
     pty.wait_for(r"Esc to take the recommended answers", wait)
         .unwrap();
+    past_the_question_guard();
     pty.press(Key::Esc).unwrap();
     pty.wait_for(r"/setup \(or argonauts setup\) walks", wait)
         .unwrap();

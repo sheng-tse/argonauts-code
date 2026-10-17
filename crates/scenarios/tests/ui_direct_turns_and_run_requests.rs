@@ -6,7 +6,7 @@
 
 use std::fs;
 
-use argonauts_scenarios::{Scenario, WAIT};
+use argonauts_scenarios::{Scenario, WAIT, as_set_up, past_the_question_guard};
 use argonauts_testkit::{Key, Pty, Screen};
 
 const SCENARIO: &str = "ui/direct_and_requests.toml";
@@ -21,10 +21,10 @@ fn configure(scenario: &Scenario, extra: &str) -> anyhow::Result<()> {
     fs::write(
         config,
         // These requests end with the verdict, which a CLI that takes no tools keeps.
-        format!(
+        as_set_up(&format!(
             "crew.main = \"claude-code/haiku\"\n\n[ui]\ntheme = \"dark\"\n\n\
              [main_session]\ntools = false\n\n{extra}"
-        ),
+        )),
     )?;
     Ok(())
 }
@@ -92,6 +92,7 @@ fn ui_a_supervised_direct_turn_asks_before_its_edit() -> anyhow::Result<()> {
         assert_eq!(fs::read_to_string(&notes)?, "This is a draft.\n");
         // Yes is the one picked.
         pty.wait_for(r"Enter to choose", WAIT)?;
+        past_the_question_guard();
         pty.press(Key::Enter)?;
         pty.wait_for(TURN_END, WAIT)?;
         let done = settled(&pty)?;

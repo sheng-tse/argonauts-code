@@ -21,6 +21,9 @@ pub struct SessionState {
     pub worker: ModelRef,
     /// Its model is its CLI's default as the catalog has it, which the model it reports replaces.
     pub model_assumed: bool,
+    /// Its run named no model for it, so the one shown is your settings' or the CLI's default
+    /// until its command says which it launched.
+    pub model_guessed: bool,
     /// Adapter or endpoint id, such as `claude-code` or `ollama`.
     pub agent_id: String,
     pub role: RoleName,
@@ -68,10 +71,16 @@ pub struct SessionState {
     pub unknown: Vec<serde_json::Value>,
     /// What its last event says it's doing, for the working line's words.
     pub doing: Doing,
+    /// Its turn ended and nothing of a new one has come yet, as when its CLI waits on what it
+    /// runs in the background.
+    pub turn_over: bool,
     /// Argonauts Code said its stream stalled, and nothing has come from it since.
     pub stalled: bool,
     /// The agent's own session id, for resuming.
     pub cli_session: Option<String>,
+    /// Its latest review sent its task's work back, so as one of the run's own reviewers its
+    /// next round is still to come.
+    pub sent_back: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -154,6 +163,7 @@ impl SessionState {
             follow: None,
             worker,
             model_assumed: false,
+            model_guessed: false,
             agent_id: agent_id.into(),
             role,
             step: None,
@@ -185,8 +195,10 @@ impl SessionState {
             end: None,
             unknown: Vec::new(),
             doing: Doing::Nothing,
+            turn_over: false,
             stalled: false,
             cli_session: None,
+            sent_back: false,
         }
     }
 
@@ -246,6 +258,29 @@ impl SessionState {
         )
     }
 
+    /// The workflows its own CLI runs that haven't ended once its turn is over, which it waits
+    /// for. None while its turn goes on.
+    pub fn waits_for_workflows(&self) -> usize {
+        if !self.turn_over || !self.is_running() {
+            return 0;
+        }
+        self.workflows
+            .iter()
+            .filter(|workflow| !workflow.ended())
+            .count()
+    }
+
+    /// The model its command launched names it from now on, where its run named none. The
+    /// model its CLI reports at its start still says it more exactly, as `haiku`'s full id.
+    pub(super) fn launched(&mut self, model: Option<&str>) {
+        let Some(model) = model.filter(|_| self.model_guessed) else {
+            return;
+        };
+        self.worker.model = Some(model.to_owned());
+        self.model_assumed = true;
+        self.model_guessed = false;
+    }
+
     /// Folds one event from its stream in.
     pub(super) fn apply_agent(&mut self, event: &AgentEvent, at: OffsetDateTime) {
         self.last_event = at;
@@ -258,6 +293,14 @@ impl SessionState {
         );
         if self.status == SessionStatus::Starting {
             self.status = SessionStatus::Working;
+        }
+        // Each turn of the CLI's opens with its init, and then the agent speaks or calls a tool.
+        match event {
+            AgentEvent::Result { .. } => self.turn_over = true,
+            AgentEvent::Init { .. }
+            | AgentEvent::TextDelta { parent: None, .. }
+            | AgentEvent::ToolStarted { parent: None, .. } => self.turn_over = false,
+            _ => {}
         }
         if !matches!(
             event,

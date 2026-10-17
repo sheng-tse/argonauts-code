@@ -263,8 +263,13 @@ fn a_workflow_asked_for_in_captain_reads_as_the_picture_draws_it() {
 
 /// The picture's lines. It draws your message's mark as `>`, where the theme draws `❯` as
 /// Claude Code does; that one cell is the only difference.
+/// The run's slug as the picture spells it, and as the Workflow line now draws it: as words.
+const SLUG: &str = "fix-money-and-add-tax";
+const SLUG_WORDS: &str = "Fix money and add tax";
+
 fn picture_text() -> Vec<String> {
     PICTURE
+        .replace(SLUG, SLUG_WORDS)
         .trim_end()
         .lines()
         .map(|line| match line.strip_prefix("> ") {
@@ -284,7 +289,8 @@ struct Look {
 
 /// The picture's colours, one `Look` per cell of each line, read off its spans.
 fn picture_looks() -> Vec<Vec<(char, Look)>> {
-    let body = COLOURS
+    let colours = COLOURS.replace(SLUG, SLUG_WORDS);
+    let body = colours
         .split_once("<pre")
         .and_then(|(_, rest)| rest.split_once('>'))
         .map(|(_, rest)| rest)

@@ -92,7 +92,7 @@ fn close_everything(driver: &mut TestDriver) {
 }
 
 #[test]
-fn config_view_layers() {
+fn all_settings_view_layers() {
     let rows = vec![
         setting_row("ui.keys", "\"vim\"", "global", &[]),
         setting_row("ui.theme", "\"auto\"", "built-in", &[]),
@@ -102,10 +102,11 @@ fn config_view_layers() {
     ];
     let mut driver = TestDriver::start(pickers(vec![settings_view("config", rows)]));
     driver.wait_visible(MODE_IDLE);
-    driver.send("/config");
+    driver.send("/config all");
     driver.press(Key::Enter);
     let slash = driver.wait_command("slash");
     assert_eq!(slash["command"]["command"], "config");
+    assert_eq!(slash["command"]["key"], "all");
     let view = driver.wait_visible("approvals\\.merge\\.mode");
     for (key, layer) in [
         ("ui.keys", "global"),

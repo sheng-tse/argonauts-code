@@ -25,12 +25,13 @@ use crate::settings::passing_over::{
     PassedOver, Stop, drop_odd_keys, from_a_file, narrowed, refused_alone,
 };
 use crate::settings::plain;
+use crate::settings::renamed;
 use crate::settings::roles::fill_fresh_sessions;
 use crate::settings::set_by::SetBy;
 use crate::settings::validate::{Context, type_error, type_message, validate};
 use crate::settings::workflow_layer::{WorkflowLayer, workflow_layer};
 use crate::workflows::DEFAULT_WORKFLOW;
-use crate::{ResolvedSettings, SettingsError, SettingsSources};
+use crate::{ResolvedSettings, SettingsError, SettingsSources, SettingsWarning, WarningAbout};
 
 pub(crate) use argonauts_core::settings::layer::{
     BUILT_IN, FLAG, GLOBAL, PROJECT, PROJECT_LOCAL, REQUEST, WORKFLOW,
@@ -48,13 +49,36 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
     loop {
         match resolve_once(sources, &passed_over) {
             Ok(mut resolved) => {
-                resolved.warnings.splice(0..0, passed_over.warnings());
+                let passed = passed_over
+                    .noticed()
+                    .iter()
+                    .map(|(key, notice)| match file_renaming(sources, key) {
+                        Some(file) => {
+                            SettingsWarning::new(WarningAbout::Renamed { file }, notice.clone())
+                        }
+                        None => SettingsWarning::other(notice.clone()),
+                    });
+                let passed: Vec<SettingsWarning> = passed.collect();
+                resolved.warnings.splice(0..0, passed);
                 return Ok(resolved);
             }
             Err(stop) if !sources.strict && passed_over.add(&stop) => {}
             Err(stop) => return Err(*stop.error),
         }
     }
+}
+
+/// The settings file whose old value for `key` was left out, such as a workflow named by its
+/// name from before, which the start offers to rename.
+fn file_renaming(sources: &SettingsSources, key: &str) -> Option<PathBuf> {
+    [&sources.global, &sources.project, &sources.project_local]
+        .into_iter()
+        .flatten()
+        .find(|file| {
+            fs::read_to_string(file)
+                .is_ok_and(|text| renamed::renames_in(&text).iter().any(|r| r.from == key))
+        })
+        .cloned()
 }
 
 /// One pass over the layers, leaving out of the files the keys an earlier pass stopped at.
@@ -66,7 +90,9 @@ fn resolve_once(
     let mut merged = defaults.clone();
     let mut set_by = SetBy::default();
     let mut limit_units = LimitUnits::default();
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<SettingsWarning> = Vec::new();
+    // The old names each file still uses, which the start offers to rename.
+    let mut renamed_keys: BTreeMap<String, (String, PathBuf)> = BTreeMap::new();
 
     // Each project file is trusted on its own, so a safety key you saved just for yourself
     // applies even while the shared file waits for your trust.
@@ -84,14 +110,14 @@ fn resolve_once(
     let mut skipped_a_file = false;
     for (layer, path, trusted) in files {
         let Some(path) = path else { continue };
-        let source = shown(path, repo.as_deref());
+        let source = shown(path, repo.as_deref(), sources.home.as_deref());
         let Some(text) = read_text(path)? else {
             continue;
         };
         let parsed = match text.parse::<Table>() {
             Ok(table) => table,
             Err(err) if !sources.strict => {
-                warnings.push(skipped_file(&source, &text, &err));
+                warnings.push(SettingsWarning::other(skipped_file(&source, &text, &err)));
                 skipped_a_file = true;
                 continue;
             }
@@ -102,15 +128,16 @@ fn resolve_once(
                 }));
             }
         };
-        let Some(mut table) = read_file_layer(
+        for (old, new) in renamed::old_keys(&parsed) {
+            renamed_keys.insert(old, (new, path.clone()));
+        }
+        let file = FileLayer {
             layer,
-            parsed,
-            &source,
+            path,
+            source: &source,
             trusted,
-            sources.strict,
-            &mut warnings,
-        )?
-        else {
+        };
+        let Some(mut table) = read_file_layer(&file, parsed, sources.strict, &mut warnings)? else {
             continue;
         };
         passed_over.leave_out(&mut table);
@@ -142,10 +169,14 @@ fn resolve_once(
         sources,
     )?;
     passed_over.leave_out(&mut workflow.table);
-    warnings.extend(workflow_warnings);
+    warnings.extend(workflow_warnings.into_iter().map(SettingsWarning::other));
     // What you set in the file that picks the workflow, or in a later file, is what you meant:
-    // the workflow fills in the rest and sits above only the files before it.
-    if picked_in_a_file(choice.layer) {
+    // the workflow fills in the rest and sits above only the files before it. The default,
+    // which nobody picked, gives way to every file.
+    if choice.layer == BUILT_IN {
+        merged.insert("workflow".to_owned(), Value::String(choice.name.clone()));
+    }
+    if picked_in_a_file(choice.layer) || choice.layer == BUILT_IN {
         for (layer, table) in &file_tables {
             if rank(layer) >= rank(choice.layer) {
                 yield_to(&mut workflow.table, table, "");
@@ -165,7 +196,7 @@ fn resolve_once(
                 limit_units.note(WORKFLOW, &learned_workflow.label, &table)?;
                 merge(&mut merged, table);
             }
-            Err(warning) => warnings.push(warning),
+            Err(warning) => warnings.push(SettingsWarning::other(warning)),
         }
     }
 
@@ -186,7 +217,7 @@ fn resolve_once(
         hidden
             .into_iter()
             .filter(|(key, _)| set_by.layer(key) == Some(WORKFLOW))
-            .map(|(_, warning)| warning),
+            .map(|(_, warning)| SettingsWarning::other(warning)),
     );
 
     crew::follow_what_is_set(&mut merged, &set_by);
@@ -196,7 +227,11 @@ fn resolve_once(
     fill_fresh_sessions(&mut merged);
     // A typo in how the screen looks never stops the app: the value falls back and is named.
     let bad_values = drop_bad_values(&mut merged, &defaults);
-    warnings.extend(bad_values.iter().map(|bad| ui_warning(bad, &set_by)));
+    warnings.extend(
+        bad_values
+            .iter()
+            .map(|bad| SettingsWarning::other(ui_warning(bad, &set_by))),
+    );
 
     let mut settings: Settings =
         Value::Table(merged.clone())
@@ -219,13 +254,13 @@ fn resolve_once(
     if skipped_a_file {
         hold_supervised(&mut settings.approvals);
     }
-    warnings.extend(
-        settings
-            .ui
-            .tidy()
-            .into_iter()
-            .map(|problem| format!("{} (in {})", problem.message, set_by.source(&problem.key))),
-    );
+    warnings.extend(settings.ui.tidy().into_iter().map(|problem| {
+        SettingsWarning::other(format!(
+            "{} (in {})",
+            problem.message,
+            set_by.source(&problem.key)
+        ))
+    }));
 
     let resolved = leaves(&to_table(&settings, "the merged settings")?);
     let cli_ids = declared_clis(sources);
@@ -235,10 +270,11 @@ fn resolve_once(
         set_by: &set_by,
         cli_ids: &cli_ids,
     };
-    warnings.extend(validate(&settings, &context).map_err(|(key, error)| {
+    let problems = validate(&settings, &context).map_err(|(key, error)| {
         let in_a_file = set_by.layer_around(&key).is_some_and(from_a_file);
         Stop::at(&key, in_a_file, error)
-    })?);
+    })?;
+    warnings.extend(problems.into_iter().map(SettingsWarning::other));
 
     // Serde drops keys it doesn't know, so anything a layer set that didn't survive is unknown.
     let known: BTreeSet<&str> = resolved.iter().map(|(key, _)| key.as_str()).collect();
@@ -247,18 +283,30 @@ fn resolve_once(
         set_by
             .keys()
             .filter(|(key, _)| !known.contains(key) && !named.contains(key))
-            .map(|(key, source)| format!("unknown setting {key} in {source}, ignored")),
+            .map(|(key, source)| match renamed_keys.get(key) {
+                Some((new, file)) => SettingsWarning::new(
+                    WarningAbout::Renamed { file: file.clone() },
+                    format!(
+                        "{key} in {source} is a name that changed, now {new}, so it is skipped \
+                         until the file says {new}"
+                    ),
+                ),
+                None => SettingsWarning::new(
+                    WarningAbout::Unknown {
+                        key: key.to_owned(),
+                    },
+                    format!("unknown setting {key} in {source}, ignored"),
+                ),
+            }),
     );
     if settings
         .roles
         .get(&RoleName::Main)
         .is_some_and(|role| !role.models.is_empty())
     {
-        warnings.push(
-            "roles.main.models is ignored: the main agent is crew.main, which /model \
-             sets"
-                .to_owned(),
-        );
+        warnings.push(SettingsWarning::other(
+            "roles.main.models is ignored: the main agent is crew.main, which /model sets",
+        ));
     }
 
     let entries = resolved
@@ -331,16 +379,24 @@ fn to_table(settings: &Settings, layer: &str) -> Result<Table, SettingsError> {
 /// `allow_api_billing`, and what it says work costs are ignored with a warning, so a cloned
 /// repo can't loosen them.
 fn read_file_layer(
-    layer: &str,
+    file: &FileLayer<'_>,
     mut table: Table,
-    source: &str,
-    trusted: bool,
     strict: bool,
-    warnings: &mut Vec<String>,
+    warnings: &mut Vec<SettingsWarning>,
 ) -> Result<Option<Table>, SettingsError> {
+    let FileLayer {
+        layer,
+        path,
+        source,
+        trusted,
+    } = *file;
     crew::spell_out(&mut table);
     if !strict {
-        warnings.extend(drop_odd_keys(&mut table, source));
+        warnings.extend(
+            drop_odd_keys(&mut table, source)
+                .into_iter()
+                .map(SettingsWarning::other),
+        );
     }
     check_plain_keys(&table, source)?;
     let global_only: Vec<String> = leaves(&table)
@@ -362,28 +418,46 @@ fn read_file_layer(
             return Err(SettingsError::Refused(why));
         }
         remove_leaf(&mut table, &key);
-        warnings.push(format!("{why}; it is ignored"));
+        warnings.push(SettingsWarning::other(format!("{why}; it is ignored")));
     }
     if !trusted {
+        let untrusted = |key: &str, text: String| {
+            SettingsWarning::new(
+                WarningAbout::Untrusted {
+                    file: path.to_owned(),
+                    key: key.to_owned(),
+                },
+                text,
+            )
+        };
         for (key, _) in leaves(&table) {
             if is_safety_key(&key) {
                 remove_leaf(&mut table, &key);
-                warnings.push(format!(
-                    "{key} in {source} is a safety setting and is ignored until you trust the \
+                warnings.push(untrusted(
+                    &key,
+                    format!(
+                        "{key} in {source} is a safety setting and is ignored until you trust the \
                      file (/setup, or the trust question when it changes)"
+                    ),
                 ));
             }
         }
         for key in drop_entry_billing(&mut table) {
-            warnings.push(format!(
-                "{key} in {source} is ignored until you trust the file, since only your own \
+            warnings.push(untrusted(
+                &key,
+                format!(
+                    "{key} in {source} is ignored until you trust the file, since only your own \
                  settings let a fallback bill an API without asking"
+                ),
             ));
         }
         for key in drop_cost_claims(&mut table) {
-            warnings.push(format!(
-                "{key} in {source} is ignored until you trust the file, since it changes what \
+            warnings.push(untrusted(
+                &key,
+                format!(
+                    "{key} in {source} is ignored until you trust the file, since it changes what \
                  work is estimated to cost, and so what the dollar limits see"
+                ),
             ));
         }
     }
@@ -412,13 +486,29 @@ fn drop_cost_claims(layer: &mut Table) -> Vec<String> {
     dropped
 }
 
-/// A file by its path from the repo when it's in one, as you'd name it there.
-fn shown(path: &Path, repo: Option<&Path>) -> String {
-    repo.and_then(|repo| path.strip_prefix(repo).ok())
-        .filter(|relative| !relative.as_os_str().is_empty())
-        .unwrap_or(path)
-        .display()
-        .to_string()
+/// One settings file as resolving reads it.
+#[derive(Clone, Copy)]
+struct FileLayer<'a> {
+    layer: &'a str,
+    path: &'a Path,
+    /// The file as a warning names it.
+    source: &'a str,
+    trusted: bool,
+}
+
+/// A file by its path from the repo when it's in one, as you'd name it there, and one under
+/// your home from `~/`.
+fn shown(path: &Path, repo: Option<&Path>, home: Option<&Path>) -> String {
+    let in_repo = repo
+        .and_then(|repo| path.strip_prefix(repo).ok())
+        .filter(|relative| !relative.as_os_str().is_empty());
+    if let Some(relative) = in_repo {
+        return relative.display().to_string();
+    }
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if !rest.as_os_str().is_empty() => format!("~/{}", rest.display()),
+        _ => path.display().to_string(),
+    }
 }
 
 /// A settings file's text, or `None` when there's no such file.
@@ -535,7 +625,11 @@ fn workflow_choice(
         .find_map(|(source, table)| Some((table.get("workflow")?, source.clone())))
     {
         Some((value, source)) => (value, source, FLAG),
-        None => match merged.get("workflow") {
+        // Nothing names a workflow, so the default runs on the built-in settings.
+        None => match merged
+            .get("workflow")
+            .filter(|_| set_by.layer("workflow").is_some())
+        {
             Some(value) => (
                 value,
                 set_by.source("workflow"),
@@ -678,12 +772,11 @@ fn hidden_by_workflow(
             if *set == key && before.get(set) == Some(&value) {
                 continue;
             }
-            let above = if picked_in_a_file(choice.layer) {
-                format!("is picked in {}, a later file", choice.source)
-            } else if choice.layer == FLAG {
+            // The default gives way to every file, so only a pick hides a key.
+            let above = if choice.layer == FLAG {
                 format!("is picked by {}", choice.source)
             } else {
-                "sits above the settings files as the default".to_owned()
+                format!("is picked in {}, a later file", choice.source)
             };
             hidden.push((
                 key.clone(),
@@ -977,12 +1070,27 @@ mod tests {
     }
 
     #[test]
-    fn built_in_defaults_alone_are_council_with_nothing_overridden() {
+    fn with_nothing_set_captain_runs_on_the_built_in_settings() {
         let resolved = resolve(&SettingsSources::default()).unwrap();
-        assert_eq!(resolved.settings, Settings::default());
-        assert!(resolved.overrides.is_empty());
+        let defaults = Settings::default();
+        let captain = Settings {
+            workflow: DEFAULT_WORKFLOW.to_owned(),
+            captain_or_crew: argonauts_core::settings::protocol::CaptainOrCrewSettings {
+                force: Some(argonauts_core::settings::protocol::ForcedMode::Captain),
+                ..defaults.captain_or_crew.clone()
+            },
+            ..defaults
+        };
+        assert_eq!(resolved.settings, captain);
+        let overridden: Vec<&str> = resolved.overrides.iter().map(|o| o.key.as_str()).collect();
+        assert_eq!(overridden, ["captain_or_crew.force"]);
         assert!(resolved.warnings.is_empty());
-        assert!(resolved.entries.iter().all(|entry| entry.layer == BUILT_IN));
+        assert!(
+            resolved
+                .entries
+                .iter()
+                .all(|entry| entry.layer == BUILT_IN || entry.key == "captain_or_crew.force")
+        );
         assert_eq!(resolved.sha256.len(), 64);
         let again = resolve(&SettingsSources::default()).unwrap();
         assert_eq!(again.sha256, resolved.sha256);
@@ -1290,7 +1398,11 @@ mod tests {
         };
         refused(&sources, "config.toml", "my.tool");
 
-        let project = write(&dot, "config.toml", "[ui]\nkeys = \"vim\"\n");
+        let project = write(
+            &dot,
+            "config.toml",
+            "workflow = \"council\"\n[ui]\nkeys = \"vim\"\n",
+        );
         let workflow = write(
             &dot.join("workflows"),
             "council.toml",
@@ -1334,7 +1446,7 @@ mod tests {
         .unwrap();
         assert!(!untrusted.settings.endpoints["openrouter"].local);
         assert!(untrusted.settings.agents["codex"].price.is_none());
-        let warned: Vec<&String> = untrusted
+        let warned: Vec<&SettingsWarning> = untrusted
             .warnings
             .iter()
             .filter(|w| w.contains("dollar limits"))
@@ -1473,8 +1585,15 @@ mod tests {
             .map(|o| (o.key.as_str(), o.value.as_str(), o.from.as_str()))
             .collect();
         // A cleared key the built-ins leave unset matches them, so it's not an override, and
-        // the built-ins set no limit at all.
-        assert_eq!(overridden, [("limits.per_task_tokens", "5000", FLAG)]);
+        // the built-ins set no limit at all. Captain, which runs when nothing names a
+        // workflow, sets its own key.
+        assert_eq!(
+            overridden,
+            [
+                ("captain_or_crew.force", "\"captain\"", WORKFLOW),
+                ("limits.per_task_tokens", "5000", FLAG)
+            ]
+        );
         assert_eq!(resolved.settings.limits.spend.per_task_usd, None);
 
         let global = write(dir.path(), "global.toml", "[limits]\nrun_minutes = 30.0\n");

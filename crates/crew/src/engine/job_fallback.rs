@@ -14,23 +14,26 @@ use std::time::{Duration, Instant};
 use argonauts_core::TaskId;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::agent_status::{JobRef, JobWait};
+use argonauts_core::events::agent_status::{JobKeeper, JobRef, JobWait};
 use argonauts_core::events::run::RunMode;
 use argonauts_core::events::session::{EndReason, loaded_words};
 use argonauts_core::events::workflow::{RunNote, WorkflowEvent};
 use argonauts_core::limits::{AgentHealth, HealthState, ModelState, TEST_TASK_SUCCEEDED, Trouble};
-use argonauts_core::log::{NO_SECOND_TRY, SAME_CLI_IS_ON};
+use argonauts_core::log::{NO_SECOND_TRY, NOBODY_TO_FALL_BACK_TO, SAME_CLI_IS_ON};
 use argonauts_core::names::{AgentId, ModelRef, RoleName, WorkflowId};
+use argonauts_core::registry::listed::{self, nearest_listed, other_models, runs_in_place};
 use argonauts_core::session_runner::RunnerKind;
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::fallback::{AppliedFallback, FallbackMode, Retry};
+use argonauts_core::settings::fallback::{
+    AppliedFallback, FallbackEntry, FallbackMode, Retry, SameStep,
+};
 use argonauts_core::steps::StepName;
 use argonauts_core::{ErrorCategory, Note, NoteLevel};
 use time::OffsetDateTime;
 
 use crate::engine::host::{Host, round_window};
 use crate::engine::shared::lock;
-use crate::error::{EngineError, EngineResult, Stall};
+use crate::error::{Beside, EngineError, EngineResult, Stall, StalledJob};
 use crate::fallback::rules;
 use crate::roles::{self, display_name};
 use crate::state::RunState;
@@ -79,6 +82,11 @@ impl Job {
 struct JobRules {
     applied: AppliedFallback,
     first: Option<ModelRef>,
+    /// Every installed agent may take it, beyond the role's list, as when you pick one.
+    anyone: bool,
+    /// A model of another CLI already at work in the step may take the job, as
+    /// `fallback.same_step` lets once nothing else can.
+    second_in_step: bool,
 }
 
 impl JobRules {
@@ -96,6 +104,8 @@ impl JobRules {
         Self {
             applied,
             first: freed.flatten(),
+            anyone: false,
+            second_in_step: false,
         }
     }
 }
@@ -123,6 +133,12 @@ pub(crate) struct Memory {
     /// The questions about a CLI that is down which this engine already follows. A second
     /// follower would act on the one answer twice.
     followed: BTreeSet<Followed>,
+    /// Models that run in place of one their CLI no longer lists, each with that one.
+    listed: BTreeMap<ModelRef, ModelRef>,
+    /// The agents already told their model runs in place of one no longer listed.
+    said_listed: BTreeSet<String>,
+    /// Each CLI's last crash as it started, with no session of its own yet, by its message.
+    started_crashing: BTreeMap<AgentId, String>,
 }
 
 /// A question someone in this engine waits on the answer of: the one about a CLI that is
@@ -210,14 +226,24 @@ enum Why {
 }
 
 impl Why {
-    /// Whether it's about the one model alone, an overload or server errors, so its CLI's
-    /// other models may still take the job.
+    /// Whether it's about the one model alone, an overload, server errors, or a model its CLI
+    /// refused, so its CLI's other models may still take the job.
     fn model_only(&self) -> bool {
         match self {
-            Self::Ended(reason) | Self::EndedAgain(reason) => is_outage(reason),
+            Self::Ended(reason) | Self::EndedAgain(reason) => {
+                is_outage(reason) || is_refused_model(reason)
+            }
             Self::ModelOut(_) => true,
             Self::LoggedOut(_) | Self::Unusable(_) | Self::KeepsFailing(_) => false,
         }
+    }
+
+    /// Whether its CLI is signed out, which its row and its stop word as `signed out`.
+    fn signed_out(&self) -> bool {
+        matches!(
+            self,
+            Self::LoggedOut(_) | Self::Ended(EndReason::Auth { .. })
+        )
     }
 }
 
@@ -230,6 +256,25 @@ fn is_outage(reason: &EndReason) -> bool {
             ..
         }
     )
+}
+
+/// A model its CLI won't run, which says nothing of the CLI's other models.
+fn is_refused_model(reason: &EndReason) -> bool {
+    matches!(
+        reason,
+        EndReason::ModelUnavailable { .. }
+            | EndReason::CliError {
+                category: ErrorCategory::ModelUnavailable,
+                ..
+            }
+    )
+}
+
+impl Why {
+    /// A model its CLI refused, whose CLI's other models come first.
+    fn refused_model(&self) -> bool {
+        matches!(self, Self::Ended(reason) | Self::EndedAgain(reason) if is_refused_model(reason))
+    }
 }
 
 /// Before a session's first start: the agent that takes the job at once because the asked one
@@ -256,6 +301,62 @@ pub(crate) async fn instead_of(
     fall_back(host, job, asked, asked, &[asked], &why).map(Some)
 }
 
+/// The model a session of `worker` runs: its own, or, when its CLI no longer lists the model
+/// `worker` is pinned to, the nearest one it does list. A run keeps the settings it started
+/// with, so only the CLI's own list can tell a model is gone, and asking for it would only be
+/// refused. The swap is remembered, so the job's first session says it.
+pub(crate) fn listed(host: &Host, worker: &ModelRef) -> ModelRef {
+    let pinned = pinned(host, worker);
+    let Some(nearest) = nearest_listed(host.services().registry.as_ref(), &pinned) else {
+        return worker.clone();
+    };
+    lock(&host.shared().job_fallbacks)
+        .listed
+        .insert(nearest.clone(), pinned);
+    nearest
+}
+
+/// `worker` with the model it runs named: its own, else the one its CLI's settings give it.
+fn pinned(host: &Host, worker: &ModelRef) -> ModelRef {
+    if worker.model.is_some() {
+        return worker.clone();
+    }
+    let set = host.settings().agents.get(&worker.agent);
+    ModelRef::new(
+        worker.agent.clone(),
+        set.and_then(|agent| agent.model.clone()),
+    )
+}
+
+/// Says once, as job `label` first starts on `worker`, that `worker` runs in place of a model
+/// its CLI no longer lists: `propose:p3 runs on Gemini 3.8 Flash (Low): Antigravity CLI no
+/// longer offers Gemini 3.6 Flash (Low)`.
+pub(crate) fn say_listed(
+    host: &Host,
+    label: &str,
+    worker: &ModelRef,
+    task: Option<&TaskId>,
+) -> EngineResult<()> {
+    let gone = {
+        let mut memory = lock(&host.shared().job_fallbacks);
+        let Some(gone) = memory.listed.get(worker).cloned() else {
+            return Ok(());
+        };
+        if !memory.said_listed.insert(label.to_owned()) {
+            return Ok(());
+        }
+        gone
+    };
+    let registry = host.services().registry.as_ref();
+    note(host, task, runs_in_place(registry, label, &gone, worker))
+}
+
+/// The CLI's own name for a model it lists, as agy's `Gemini 3.8 Flash (Low)`, else the name
+/// the catalog knows it by.
+pub(crate) fn model_name(host: &Host, model: &ModelRef) -> Option<String> {
+    listed::model_name(host.services().registry.as_ref(), model)
+}
+
 /// How `worker`'s sessions keep ending, when they crashed twice in a row since the run last
 /// resumed and its agent's health check last passed.
 fn keeps_failing(host: &Host, worker: &ModelRef) -> Option<String> {
@@ -280,6 +381,70 @@ fn remember_failed_start(host: &Host, worker: &ModelRef, reason: &EndReason) {
     lock(&host.shared().job_fallbacks)
         .wont_start
         .insert(worker.agent_id(), failing);
+}
+
+/// How quickly a CLI that crashes as it starts gives up, before it has a session of its own.
+const STARTUP_CRASH: Duration = Duration::from_secs(2);
+
+/// Notes a crash of `worker`'s CLI as it started, with no session of its own, quickly. Two
+/// in a row with the same message take the CLI out for the rest of the run, every model of
+/// it, with one line, since it fails the same way on every start. The next run asks it again.
+fn remember_startup_crash(
+    host: &Host,
+    worker: &ModelRef,
+    record: &SessionRecord,
+) -> EngineResult<()> {
+    let Some(end) = &record.end else {
+        return Ok(());
+    };
+    let EndReason::Crashed { message } = &end.reason else {
+        lock(&host.shared().job_fallbacks)
+            .started_crashing
+            .remove(&worker.agent_id());
+        return Ok(());
+    };
+    let at_start =
+        end.cli_session.is_none() && Duration::from_millis(end.duration_ms) < STARTUP_CRASH;
+    let message = first_line(message).to_owned();
+    let twice = {
+        let mut memory = lock(&host.shared().job_fallbacks);
+        if !at_start {
+            memory.started_crashing.remove(&worker.agent_id());
+            return Ok(());
+        }
+        let before = memory
+            .started_crashing
+            .insert(worker.agent_id(), message.clone());
+        let twice = before.as_deref() == Some(message.as_str());
+        if twice {
+            let words = if message.is_empty() {
+                "crashed twice as it started".to_owned()
+            } else {
+                format!("crashed twice as it started: \"{message}\"")
+            };
+            let failing = Failing {
+                words,
+                after: host.read(|state| state.run.last_resumed).unwrap_or(0),
+                at: host.now(),
+            };
+            memory.wont_start.insert(worker.agent_id(), failing);
+        }
+        twice
+    };
+    if !twice {
+        return Ok(());
+    }
+    let cli = DisplayNames::default().cli(worker.agent.as_str());
+    let how = if message.is_empty() {
+        String::new()
+    } else {
+        format!(": \"{message}\"")
+    };
+    note(
+        host,
+        record.task.as_ref(),
+        format!("{cli} is out for this run: it crashed twice as it started{how}"),
+    )
 }
 
 /// Whether the run already knows `worker` can't take a job now, without asking its CLI: its
@@ -432,6 +597,8 @@ pub(crate) async fn again(host: &Host, record: &SessionRecord) -> EngineResult<O
         return Ok(Some(record.asked_worker().clone()));
     }
     let current = &record.started.worker;
+    // Once for each session's end: `next` asks here first.
+    remember_startup_crash(host, current, record)?;
     if keeps_failing(host, current).is_some() {
         return Ok(None);
     }
@@ -534,7 +701,12 @@ pub(crate) async fn login_check(
     if !reason.is_sign_in_error() {
         return None;
     }
-    let logged_in = logged_in_now(host, worker).await;
+    // A token revoked on the server looks fine to the CLI's own check, so the error's words win.
+    let logged_in = if says_signed_out(reason) {
+        Some(false)
+    } else {
+        logged_in_now(host, worker).await
+    };
     let login = Login {
         at: Instant::now(),
         logged_out: logged_in == Some(false),
@@ -543,6 +715,11 @@ pub(crate) async fn login_check(
         .logins
         .insert(worker.clone(), login);
     logged_in
+}
+
+/// A sign-in error whose own words say the sign-in is gone, as a conversation reads them too.
+pub(crate) fn says_signed_out(reason: &EndReason) -> bool {
+    argonauts_core::sign_in::signed_out(reason, "").is_some()
 }
 
 /// Whether `worker`'s CLI says it's logged out: as it said within the breaker's cool-down, else
@@ -573,6 +750,21 @@ async fn is_logged_out(host: &Host, worker: &ModelRef) -> bool {
 /// Whether `worker`'s newest session in the run ended on a sign-in error.
 fn last_ended_on_sign_in(state: &RunState, worker: &ModelRef) -> bool {
     state.sessions.sign_in_failed.get(worker) == Some(&true)
+}
+
+/// Names a stalled job by `own`, the model it was meant for, as signed out where its newest
+/// session ended on a sign-in error, when the stall names a fallback the job went on to: one
+/// it may have found free only because the step's other jobs were still starting.
+pub(crate) fn named_by_its_own(host: &Host, stall: &mut Stall, own: &ModelRef) {
+    if stall.job.asked.as_ref() == Some(own)
+        || !host.read(|state| last_ended_on_sign_in(state, own))
+    {
+        return;
+    }
+    let (short, said) = failure_words(&Why::LoggedOut(None), own);
+    stall.job.asked = Some(own.clone());
+    stall.job.short = short;
+    stall.job.said = said;
 }
 
 async fn logged_in_now(host: &Host, worker: &ModelRef) -> Option<bool> {
@@ -642,7 +834,7 @@ fn fall_back(
     why: &Why,
 ) -> EngineResult<ModelRef> {
     let rules = JobRules::of(host, job, &from.agent_id());
-    let mut kept = None;
+    let (mut kept, mut beside) = (None, None);
     if rules.applied.mode != FallbackMode::Wait {
         let stop = Stopped {
             from,
@@ -662,6 +854,9 @@ fn fall_back(
                 });
             }
             let anywhere = without_same_cli(host, job, asked, &rules, &stop, &memory);
+            if taker.is_none() {
+                beside = beside_in_step(host, job, asked, &rules, &stop, &memory);
+            }
             (taker, anywhere)
         };
         if let Some(taker) = taker {
@@ -671,11 +866,229 @@ fn fall_back(
                 .map(ModelRef::agent_id)
                 .filter(|first| *first != asked.agent_id());
             say_fallback(host, job, from, &taker, why, kept_off.as_ref())?;
+            return Ok(listed(host, &taker));
+        }
+        if let Some(taker) = builders_provider_on_autopilot(host, job, asked, &rules, &stop) {
+            say_builders_provider(host, job, from, &taker, why)?;
             return Ok(taker);
         }
-        kept = kept_on_its_cli(host, job, asked, anywhere);
+        kept = kept_on_its_cli(host, job, asked, anywhere)
+            .or_else(|| left_to_builders_provider(host, job, asked, &rules, &stop));
     }
-    Err(stalled(host, job, from, failed, why, &rules.applied, kept))
+    let mut stall = stalled(host, job, from, failed, why, &rules.applied, kept);
+    if let EngineError::Stalled(stall) = &mut stall {
+        stall.beside = beside;
+    }
+    Err(stall)
+}
+
+/// Other models of the CLIs at work in `job`'s step that may take it when nothing else can,
+/// as `fallback.same_step` lets: each CLI's models nearest the one it runs there first. `None`
+/// where the setting says never, where `same_cli` keeps the job on its own CLI, or where none
+/// may take it.
+fn beside_in_step(
+    host: &Host,
+    job: &Job,
+    asked: &ModelRef,
+    rules: &JobRules,
+    stop: &Stopped<'_>,
+    memory: &Memory,
+) -> Option<Beside> {
+    let applied = &rules.applied;
+    if applied.same_step == SameStep::Never || applied.same_cli {
+        return None;
+    }
+    let registry = host.services().registry.as_ref();
+    let at_work = host.read(|state| at_work_in_step(state, job, stop.from));
+    let mut pool: Vec<FallbackEntry> = Vec::new();
+    for model in &at_work {
+        for other in other_models(registry, model) {
+            let entry = FallbackEntry::Model(other);
+            if !at_work.contains(entry.model()) && !pool.contains(&entry) {
+                pool.push(entry);
+            }
+        }
+    }
+    let beside = JobRules {
+        applied: AppliedFallback {
+            candidates: pool,
+            same_cli: false,
+            ..applied.clone()
+        },
+        first: None,
+        anyone: false,
+        second_in_step: true,
+    };
+    let models = candidates(host, job, asked, &beside, stop, memory);
+    (!models.is_empty()).then(|| Beside {
+        models,
+        ask: applied.same_step == SameStep::Ask,
+    })
+}
+
+/// On autopilot nobody is at the terminal to ask, so a task's review or ruling that nobody
+/// outside the builder's provider can take goes to that provider after all, claimed like any
+/// other fallback. The merge then waits for you, as
+/// [`crate::approvals::builders_provider_reviewed`] finds from the session it starts. A role's
+/// model the step can do without, such as a second reviewer or a judge of several plans, is
+/// left out instead, so it never gets here.
+fn builders_provider_on_autopilot(
+    host: &Host,
+    job: &Job,
+    asked: &ModelRef,
+    rules: &JobRules,
+    stop: &Stopped<'_>,
+) -> Option<ModelRef> {
+    let on_autopilot = crate::approvals::autopilot::applies_now(
+        host,
+        argonauts_core::events::approval::ApprovalKind::Fallback,
+    );
+    if !on_autopilot {
+        return None;
+    }
+    let open = without_its_builders(host, job, asked)?;
+    let mut memory = lock(&host.shared().job_fallbacks);
+    let taker = candidates(host, &open, asked, rules, stop, &memory)
+        .into_iter()
+        .next()?;
+    memory.taken.push(Taken {
+        job: job.clone(),
+        asked: asked.clone(),
+        by: taker.clone(),
+    });
+    Some(taker)
+}
+
+/// The one line that says the fallback is from the builder's own provider, and that the merge
+/// is yours.
+fn say_builders_provider(
+    host: &Host,
+    job: &Job,
+    from: &ModelRef,
+    taker: &ModelRef,
+    why: &Why,
+) -> EngineResult<()> {
+    let new = lock(&host.shared().job_fallbacks)
+        .said
+        .insert((from.clone(), taker.clone()));
+    if !new {
+        return Ok(());
+    }
+    let stopped = stopped_in_words(&display_name(from), why);
+    let text = format!(
+        "{stopped}, and nobody outside the builder's provider is left, so {} takes {} on \
+         autopilot · the merge is left to you",
+        display_name(taker),
+        job_in_words(job),
+    );
+    note(
+        host,
+        job.task.as_ref(),
+        argonauts_core::text::sentence_case(&text),
+    )
+}
+
+/// `job` as it would be if its builder's provider could take it, where that is the question:
+/// a task's review or ruling, alone in its step. A second reviewer or a judge of several
+/// plans is left out instead.
+fn without_its_builders(host: &Host, job: &Job, asked: &ModelRef) -> Option<Job> {
+    let reviews_a_task =
+        job.task.is_some() && matches!(job.role, RoleName::Reviewer | RoleName::Judge);
+    if job.independent_of.is_empty() || !reviews_a_task {
+        return None;
+    }
+    if !host.read(|state| others_in_step(state, job, asked).is_empty()) {
+        return None;
+    }
+    Some(Job {
+        independent_of: Vec::new(),
+        ..job.clone()
+    })
+}
+
+/// The wait of a task's review or ruling that only its builder's own provider could take
+/// now, for the question that lets you choose: wait for the agent it was asked of, let that
+/// provider take it with the merge left to you, or pick an agent. `elsewhere` lists the role's
+/// own fallbacks first, then every other installed agent that may take it. `None` when the
+/// builder's provider couldn't take it either.
+fn left_to_builders_provider(
+    host: &Host,
+    job: &Job,
+    asked: &ModelRef,
+    rules: &JobRules,
+    stop: &Stopped<'_>,
+) -> Option<JobWait> {
+    let open = without_its_builders(host, job, asked)?;
+    let mut elsewhere = {
+        let memory = lock(&host.shared().job_fallbacks);
+        let by_rules = candidates(host, &open, asked, rules, stop, &memory);
+        if by_rules.is_empty() {
+            return None;
+        }
+        let anyone = JobRules {
+            applied: AppliedFallback {
+                same_cli: false,
+                ..rules.applied.clone()
+            },
+            first: None,
+            anyone: true,
+            second_in_step: false,
+        };
+        let rest = candidates(host, &open, asked, &anyone, stop, &memory);
+        let mut elsewhere = by_rules;
+        elsewhere.extend(rest);
+        elsewhere
+    };
+    let mut seen = BTreeSet::new();
+    elsewhere.retain(|model| seen.insert(model.clone()));
+    let from = display_name(stop.from);
+    let why = match stop.why {
+        Some(why) => stopped_in_words(&from, why),
+        None => format!("{from} stopped"),
+    };
+    Some(JobWait {
+        job: job.named(),
+        stopped: asked.clone(),
+        elsewhere,
+        title: job_title(host, job),
+        kept_by: JobKeeper::BuildersProvider {
+            builders: job.independent_of.clone(),
+            why,
+        },
+    })
+}
+
+/// What a waiting job is called: its task's title, or its role in words.
+fn job_title(host: &Host, job: &Job) -> String {
+    let title = host.read(|state| {
+        let task = job.task.as_ref().and_then(|task| state.tasks.get(task));
+        task.map(|record| record.spec.title.clone())
+    });
+    title.unwrap_or_else(|| argonauts_core::text::sentence_case(&job_in_words(job)))
+}
+
+/// `Haiku 5.5's work`, or `the work of Haiku 5.5 and Sonnet 5.5` for several builders.
+pub(crate) fn work_of(builders: &[ModelRef]) -> String {
+    let names: Vec<String> = builders.iter().map(roles::short_name).collect();
+    let mut unique: Vec<String> = Vec::new();
+    for name in names {
+        if !unique.contains(&name) {
+            unique.push(name);
+        }
+    }
+    match unique.as_slice() {
+        [] => "the builder's work".to_owned(),
+        [one] => format!("{one}'s work"),
+        [rest @ .., last] => format!("the work of {} and {last}", rest.join(", ")),
+    }
+}
+
+/// What a role does to the work it is given, for a line about it: `review` or `judge`.
+pub(crate) fn verb_of(role: RoleName) -> &'static str {
+    match role {
+        RoleName::Judge => "judge",
+        _ => "review",
+    }
 }
 
 /// Who would take `job` if `same_cli` didn't keep it on its own CLI, best first. Nobody
@@ -697,6 +1110,8 @@ fn without_same_cli(
             ..rules.applied.clone()
         },
         first: None,
+        anyone: false,
+        second_in_step: false,
     };
     candidates(host, job, asked, &anywhere, stop, memory)
 }
@@ -716,15 +1131,12 @@ fn kept_on_its_cli(
     if elsewhere.is_empty() {
         return None;
     }
-    let title = host.read(|state| {
-        let task = job.task.as_ref().and_then(|task| state.tasks.get(task));
-        task.map(|record| record.spec.title.clone())
-    });
     Some(JobWait {
         job: job.named(),
         stopped: asked.clone(),
         elsewhere,
-        title: title.unwrap_or_else(|| argonauts_core::text::sentence_case(&job_in_words(job))),
+        title: job_title(host, job),
+        kept_by: JobKeeper::SameCli,
     })
 }
 
@@ -746,7 +1158,8 @@ struct Stopped<'a> {
 /// did (an overload or server errors), one whose CLI couldn't start earlier in the run or would
 /// refuse to now, one that's out, one another CLI serves from the provider
 /// that took the stopped CLI down, one in
-/// another model's job of the same step and round, one of the provider of whoever it must be
+/// another model's job of the same step and round or of another CLI working there (unless
+/// `second_in_step`), one of the provider of whoever it must be
 /// independent of, one that may not judge the task's own work, one whose CLI can't keep your
 /// plugins out of an isolated job, and every one of an agent whose CLI loaded them
 /// anyway. Who was already the fallback for `asked` here may be again, as a main agent's later
@@ -781,17 +1194,19 @@ fn candidates(
         pool.extend(services.workers.available());
         pool.retain(|model| model.agent == asked.agent && !whole_cli);
         pool
-    } else if listed.is_empty() && host.shared().mode == RunMode::Captain {
+    } else if listed.is_empty() && host.shared().mode == RunMode::Captain && !rules.anyone {
         Vec::new()
-    } else if listed.is_empty() {
+    } else if listed.is_empty() || rules.anyone {
         let available = services.workers.available();
-        let mut pool: Vec<ModelRef> = host
-            .settings()
-            .crew
-            .members()
-            .into_iter()
-            .filter(|model| available.contains(model))
-            .collect();
+        // Your list first where anyone may take it, then the crew.
+        let mut pool: Vec<ModelRef> = listed.iter().map(|entry| entry.model().clone()).collect();
+        pool.extend(
+            host.settings()
+                .crew
+                .members()
+                .into_iter()
+                .filter(|model| available.contains(model)),
+        );
         // The rest of what's installed after the crew; a repeat is dropped below.
         pool.extend(available);
         pool.retain(|model| {
@@ -805,8 +1220,18 @@ fn candidates(
     } else {
         listed.iter().map(|entry| entry.model().clone()).collect()
     };
+    // A model its CLI refused leaves the CLI's other models ahead of any other CLI, those of
+    // its line nearest first. Which model a CLI's own default was isn't known, so that one
+    // leaves none.
+    let refused = pinned(host, stop.from);
+    let siblings = match stop.why {
+        Some(why) if why.refused_model() && refused.model.is_some() => {
+            other_models(services.registry.as_ref(), &refused)
+        }
+        _ => Vec::new(),
+    };
     // The agent you gave the job to comes before the lists. A repeat is dropped below.
-    let pool = rules.first.iter().cloned().chain(pool);
+    let pool = rules.first.iter().cloned().chain(siblings).chain(pool);
     let (worker, others) = host.read(|state| {
         let worker = job
             .task
@@ -830,9 +1255,17 @@ fn candidates(
         .filter(|why| why.model_only())
         .filter(|_| services.health.state(&stop.from.agent_id()).state == HealthState::Down)
         .map(|_| provider(stop.from));
+    // The agent you gave the job to may take it whoever built the work: you were told the
+    // merge is then yours.
+    let chosen = |model: &ModelRef| rules.first.as_ref() == Some(model);
     let mut kept = Vec::new();
     for model in pool {
-        let elsewhere = others.contains(&model)
+        // Its own CLI's other models may, but not a CLI another job of the step is on.
+        let in_step = others.contains(&model)
+            || (!rules.second_in_step
+                && model.agent != asked.agent
+                && others.iter().any(|other| other.agent == model.agent));
+        let elsewhere = in_step
             || memory.taken.iter().any(|taken| {
                 taken.by == model && taken.asked != *asked && taken.job.same_place(job)
             });
@@ -841,7 +1274,7 @@ fn candidates(
             && !elsewhere
             && !memory.logged_out(&model)
             && !crashing(&model)
-            && !providers.contains(&provider(&model))
+            && (chosen(&model) || !providers.contains(&provider(&model)))
             && services
                 .workers
                 .get(&model)
@@ -1009,13 +1442,13 @@ pub(crate) fn task_in_the_view(
     )
 }
 
-/// Who stopped and why, in one clause, such as `Opus 5.5 on Claude Code is logged out`.
+/// Who stopped and why, in one clause, such as `Opus 5.5 on Claude Code is signed out`.
 fn stopped_in_words(from_name: &str, why: &Why) -> String {
     match why {
         Why::Ended(reason) | Why::EndedAgain(reason) | Why::LoggedOut(Some(reason)) => {
             format!("{from_name}'s session ended early ({})", in_words(reason))
         }
-        Why::LoggedOut(None) => format!("{from_name} is logged out"),
+        Why::LoggedOut(None) => format!("{from_name} is signed out"),
         Why::Unusable(words) | Why::ModelOut(words) => format!("{from_name} is out ({words})"),
         Why::KeepsFailing(words) => format!("{from_name}'s sessions keep ending ({words})"),
     }
@@ -1055,7 +1488,22 @@ fn stalled(
     let from_name = display_name(from);
     let stopped = stopped_in_words(&from_name, why);
     let cli = DisplayNames::default().cli(from.agent.as_str());
-    let (detail, line) = if mode == FallbackMode::Wait {
+    let builders = match kept.as_ref().map(|wait| &wait.kept_by) {
+        Some(JobKeeper::BuildersProvider { builders, .. }) => Some(builders),
+        _ => None,
+    };
+    let (detail, line) = if let Some(builders) = builders.filter(|_| mode == FallbackMode::Auto) {
+        (
+            format!("{role} waits for {from_name}"),
+            format!(
+                "{} waits for {from_name}: {stopped}, and nobody outside the builder's provider \
+                 is left to {} {}.",
+                argonauts_core::text::sentence_case(&role),
+                verb_of(job.role),
+                work_of(builders),
+            ),
+        )
+    } else if mode == FallbackMode::Wait {
         (
             format!("{role} waits for {from_name}"),
             format!(
@@ -1068,8 +1516,8 @@ fn stalled(
         (
             format!("nobody to fall back to as {role}"),
             format!(
-                "Nobody to fall back to as {role}: {stopped}, and fallback.same_cli keeps it \
-                 on {cli}."
+                "{NOBODY_TO_FALL_BACK_TO} as {role}: {stopped}, and fallback.same_cli keeps \
+                 it on {cli}."
             ),
         )
     } else {
@@ -1080,7 +1528,9 @@ fn stalled(
         };
         (
             format!("nobody to fall back to as {role}"),
-            format!("Nobody to fall back to as {role}: {stopped}, and {other} can take the role."),
+            format!(
+                "{NOBODY_TO_FALL_BACK_TO} as {role}: {stopped}, and {other} can take the role."
+            ),
         )
     };
     let resets_at = match why {
@@ -1092,6 +1542,7 @@ fn stalled(
             .and_then(|reading| reading.resets_at),
         _ => None,
     };
+    let (short, said) = failure_words(why, from);
     EngineError::Stalled(Box::new(Stall {
         detail,
         line,
@@ -1099,7 +1550,176 @@ fn stalled(
         resets_at,
         // A role told to ask or to wait has its own answer already.
         kept: kept.filter(|_| mode == FallbackMode::Auto).map(Box::new),
+        job: StalledJob {
+            name: role,
+            asked: Some(from.clone()),
+            short,
+            said,
+            signed_out: why.signed_out(),
+        },
+        tried: {
+            let mut tried = tried_elsewhere(host, from);
+            if applied.same_cli && mode != FallbackMode::Wait {
+                tried.push(format!("fallback.same_cli keeps it on {cli}"));
+            }
+            tried
+        },
+        in_step: working_in_step(host, job, from),
+        stop: None,
+        // The caller adds who could take it beside the step's other agents.
+        beside: None,
     }))
+}
+
+/// What `from`'s own CLI said, in short words for its row, `signed out`, and whole for the
+/// run's stop, `Antigravity CLI is signed out`.
+fn failure_words(why: &Why, from: &ModelRef) -> (String, String) {
+    let cli = DisplayNames::default().cli(from.agent.as_str());
+    let model = |id: &str| argonauts_core::model_catalog::display_name_from_id(id);
+    match why {
+        Why::LoggedOut(_) | Why::Ended(EndReason::Auth { .. }) => {
+            ("signed out".to_owned(), format!("{cli} is signed out"))
+        }
+        Why::Unusable(words) | Why::ModelOut(words) => {
+            ((*words).to_owned(), format!("{cli} is out: {words}"))
+        }
+        Why::KeepsFailing(words) => {
+            let words = words.strip_prefix("it ").unwrap_or(words);
+            (words.to_owned(), format!("{cli} {words}"))
+        }
+        Why::Ended(reason) | Why::EndedAgain(reason) => match reason {
+            EndReason::ModelUnavailable { model: id } => {
+                let name = model(id);
+                (
+                    format!("can't run {name}"),
+                    format!("{cli} can't run {name}"),
+                )
+            }
+            EndReason::StartFailed { message } => (
+                "couldn't start".to_owned(),
+                format!("{cli} couldn't start: {}", first_line(message)),
+            ),
+            reason => {
+                let words = in_words(reason);
+                (
+                    words.clone(),
+                    format!("{cli}'s session ended early ({words})"),
+                )
+            }
+        },
+    }
+}
+
+/// A task's job as the run's stop names it, when nothing could take the task from `from`: its
+/// title, the model it was asked of, and what its CLI said as its session ended, with why
+/// each other CLI couldn't take it.
+pub(crate) fn stalled_task(
+    host: &Host,
+    title: &str,
+    from: &ModelRef,
+    ended: Option<&EndReason>,
+    logged_out: bool,
+) -> (StalledJob, Vec<String>) {
+    let why = match ended {
+        _ if logged_out => Why::LoggedOut(ended.cloned()),
+        Some(reason) => Why::Ended(reason.clone()),
+        None => Why::Unusable("it stopped"),
+    };
+    let (short, said) = failure_words(&why, from);
+    let job = StalledJob {
+        name: format!("\"{}\"", title.trim()),
+        asked: Some(from.clone()),
+        short,
+        said,
+        signed_out: why.signed_out(),
+    };
+    (job, tried_elsewhere(host, from))
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+}
+
+/// Why each other installed CLI couldn't take the job either, one clause each, as far as the
+/// run knows without asking: `OpenCode has no model set`, `Codex is signed out`.
+fn tried_elsewhere(host: &Host, from: &ModelRef) -> Vec<String> {
+    let names = DisplayNames::default();
+    let memory = lock(&host.shared().job_fallbacks);
+    let mut tried: Vec<String> = Vec::new();
+    let mut seen = BTreeSet::new();
+    for model in host.services().workers.available() {
+        if model.agent == from.agent || !seen.insert(model.agent.clone()) {
+            continue;
+        }
+        let cli = names.cli(model.agent.as_str());
+        let why = if let Some(refusal) = start_refusal(host, &model) {
+            // A refusal says how to fix it after its first clause.
+            first_line(&refusal)
+                .split(", and ")
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('.')
+                .to_owned()
+        } else if memory.logged_out(&model) {
+            format!("{cli} is signed out")
+        } else {
+            continue;
+        };
+        tried.push(why);
+    }
+    tried
+}
+
+/// The CLIs at work in `job`'s step and round beside `from`'s job, by name: two agents of one
+/// step never share a CLI, so the proposals stay independent. A job whose session ended on
+/// its agent's failure isn't at work.
+fn working_in_step(host: &Host, job: &Job, from: &ModelRef) -> Vec<String> {
+    let names = DisplayNames::default();
+    let mut working: Vec<String> = Vec::new();
+    for model in host.read(|state| at_work_in_step(state, job, from)) {
+        let cli = names.cli(model.agent.as_str());
+        if !working.contains(&cli) {
+            working.push(cli);
+        }
+    }
+    working
+}
+
+/// The models at work in `job`'s step and round beside `from`'s job, those of other CLIs, in
+/// the order their sessions started. A job whose session ended on its agent's failure isn't
+/// at work.
+fn at_work_in_step(state: &RunState, job: &Job, from: &ModelRef) -> Vec<ModelRef> {
+    let (from_seq, until) = round_window(state, job.at.as_ref());
+    let step = job.at.as_ref().map(|at| &at.step);
+    let mut sessions: Vec<_> = state
+        .sessions
+        .by_key
+        .values()
+        .filter(|session| {
+            session.since >= from_seq
+                && until.is_none_or(|until| session.since < until)
+                && session.started.workflow_step.as_ref() == step
+                && session.started.role == job.role
+                && session.started.step == job.step
+                && session.task == job.task
+                && session.started.worker.agent != from.agent
+                && !session
+                    .end
+                    .as_ref()
+                    .is_some_and(|end| end.reason.is_agent_failure())
+        })
+        .collect();
+    sessions.sort_by_key(|session| session.since);
+    let mut at_work: Vec<ModelRef> = Vec::new();
+    for session in sessions {
+        if !at_work.contains(&session.started.worker) {
+            at_work.push(session.started.worker.clone());
+        }
+    }
+    at_work
 }
 
 /// Waits in a row before the run stops trying on its own.
@@ -1118,46 +1738,6 @@ pub(crate) fn retry_after(settings: &Settings, tries: u32) -> Option<Duration> {
         .unwrap_or(Duration::from_secs(300))
         .max(Duration::from_secs(60));
     Some(base * 2u32.pow(tries))
-}
-
-/// The line the run waits with: why nobody could take the job, and what happens next. It
-/// promises to carry on by itself only when a retry is set.
-pub(crate) fn wait_line(stall: &Stall, retry: Option<Duration>) -> String {
-    let when = match (stall.resets_at, retry) {
-        (Some(_), _) => Some("once its plan resets".to_owned()),
-        (None, Some(retry)) => Some(format!("in {}", span_in_words(retry))),
-        (None, None) => None,
-    };
-    let next = match (stall.logged_out.is_empty(), when) {
-        (false, Some(when)) => format!(
-            "{} It also tries again on its own {when}.",
-            crate::error::login_fix(&stall.logged_out)
-        ),
-        (false, None) => crate::error::login_fix(&stall.logged_out),
-        (true, Some(when)) => format!("It tries again on its own {when}; /resume tries now."),
-        (true, None) => "/resume tries again.".to_owned(),
-    };
-    format!("{} {next}", stall.line)
-}
-
-/// `a minute`, `20 minutes`, `1 hour 20 minutes`.
-fn span_in_words(span: Duration) -> String {
-    let minutes = span.as_secs().div_ceil(60).max(1);
-    let (hours, minutes) = (minutes / 60, minutes % 60);
-    let unit = |n: u64, one: &str, many: &str| match n {
-        1 => format!("1 {one}"),
-        n => format!("{n} {many}"),
-    };
-    match (hours, minutes) {
-        (0, 1) => "a minute".to_owned(),
-        (0, minutes) => unit(minutes, "minute", "minutes"),
-        (hours, 0) => unit(hours, "hour", "hours"),
-        (hours, minutes) => format!(
-            "{} {}",
-            unit(hours, "hour", "hours"),
-            unit(minutes, "minute", "minutes")
-        ),
-    }
 }
 
 /// A retry's wait, cut short when the run halts.
@@ -1233,7 +1813,7 @@ fn job_in_words(job: &Job) -> String {
     words.to_owned()
 }
 
-fn note(host: &Host, task: Option<&TaskId>, text: String) -> EngineResult<()> {
+pub(crate) fn note(host: &Host, task: Option<&TaskId>, text: String) -> EngineResult<()> {
     let level = NoteLevel::Warn;
     host.record(task, None, RunEventKind::Note(Note { level, text }))?;
     Ok(())
@@ -1333,18 +1913,6 @@ mod tests {
         assert_eq!(wait_in_words(&minutes, minutes.wait_before(3)), "2m");
     }
 
-    fn stall(logged_out: &[&str]) -> Stall {
-        Stall {
-            detail: "nobody to fall back to as the main agent".to_owned(),
-            line: "Nobody to fall back to as the main agent: GPT 5.6 Luna on Codex's session \
-                 ended early (a sign-in error), and no other agent can take the role."
-                .to_owned(),
-            logged_out: logged_out.iter().map(|name| (*name).to_owned()).collect(),
-            resets_at: None,
-            kept: None,
-        }
-    }
-
     /// Each wait in a row waits twice as long before it tries again, and after five it leaves
     /// the next try to you.
     #[test]
@@ -1355,31 +1923,6 @@ mod tests {
             (0..6).map(minutes).collect::<Vec<_>>(),
             [Some(5), Some(10), Some(20), Some(40), Some(80), None]
         );
-    }
-
-    /// The line promises a try on its own only when one is set, and asks for a login only when
-    /// the CLI said it's logged out.
-    #[test]
-    fn the_wait_line_says_what_happens_next() {
-        let retry = Some(Duration::from_secs(300));
-        assert!(
-            wait_line(&stall(&[]), retry)
-                .ends_with("role. It tries again on its own in 5 minutes; /resume tries now.")
-        );
-        assert!(wait_line(&stall(&[]), None).ends_with("role. /resume tries again."));
-        let logged_out = wait_line(&stall(&["GPT 5.6 Luna on Codex"]), retry);
-        assert!(
-            logged_out.ends_with(
-                "GPT 5.6 Luna on Codex says it's logged out: log in again, then /resume. It \
-                 also tries again on its own in 5 minutes."
-            ),
-            "{logged_out}"
-        );
-        assert_eq!(
-            span_in_words(Duration::from_secs(80 * 60)),
-            "1 hour 20 minutes"
-        );
-        assert_eq!(span_in_words(Duration::from_secs(60)), "a minute");
     }
 
     /// An overload reads as its model being overloaded, any other outage as the agent being
@@ -1461,6 +2004,7 @@ mod tests {
                     reason: WaitReason::NoFallback {
                         detail: "nobody to fall back to as the main agent".to_owned(),
                         until: None,
+                        stop: None,
                     },
                     waiting_on: Vec::new(),
                 }),
@@ -1478,6 +2022,25 @@ mod tests {
         ));
         assert_eq!(state.run.fallback_waits, 0);
     }
+
+    /// The work a review or a ruling waits to judge is named by whoever built it, each once.
+    #[test]
+    fn the_work_is_named_by_its_builders() {
+        let model = |text: &str| -> ModelRef { text.parse().expect("a model") };
+        let (haiku, sonnet) = (model("claude-code/haiku"), model("claude-code/sonnet"));
+        let short = |model: &ModelRef| roles::short_name(model);
+        assert_eq!(
+            work_of(std::slice::from_ref(&haiku)),
+            format!("{}'s work", short(&haiku))
+        );
+        assert_eq!(
+            work_of(&[haiku.clone(), sonnet.clone(), haiku.clone()]),
+            format!("the work of {} and {}", short(&haiku), short(&sonnet))
+        );
+        assert_eq!(verb_of(RoleName::Judge), "judge");
+        assert_eq!(verb_of(RoleName::Reviewer), "review");
+    }
+
     /// A fallback's line names the role, as in `fell back to Claude Code as reviewer`,
     /// keeping `the` where the job is the only one of its kind.
     #[test]
@@ -1560,5 +2123,24 @@ mod tests {
                 format!("{from} stopped · fell back to {elsewhere}")
             );
         }
+    }
+
+    /// A token revoked on the server reads as signed out from the error's own words, which the
+    /// CLI's local check can't see; a plain 401 still asks the CLI.
+    #[test]
+    fn a_revoked_sign_in_is_signed_out() {
+        let auth = |message: &str| EndReason::Auth {
+            message: message.to_owned(),
+        };
+        assert!(says_signed_out(&auth(
+            "Failed to authenticate: OAuth token revoked. Please log in again or contact your \
+             administrator."
+        )));
+        assert!(says_signed_out(&auth("Your session expired")));
+        assert!(!says_signed_out(&auth("401 Unauthorized")));
+        assert!(!says_signed_out(&EndReason::CliError {
+            category: argonauts_core::ErrorCategory::Network,
+            message: "token expired while offline".into(),
+        }));
     }
 }

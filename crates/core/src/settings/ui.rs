@@ -75,6 +75,27 @@ pub struct UiSettings {
     pub verbs: VerbTheme,
     /// Show the turn-end line, `✻ Sailed for 3s · done 10:42 AM`.
     pub turn_duration: bool,
+    /// A tip under the working line now and then, as Claude Code shows one.
+    pub tips: bool,
+    /// An example prompt in the empty input until your first, as Claude Code's prompt
+    /// suggestions offer one.
+    pub suggestions: bool,
+    /// Work going on shows in the terminal's tab or title bar too, through the OSC 9;4
+    /// progress sequence that Ghostty, iTerm2, and Windows Terminal draw.
+    pub progress_bar: bool,
+    /// Fullscreen: text you select with the mouse is copied when you let go. Off, Ctrl+Shift+C
+    /// copies it.
+    pub copy_on_select: bool,
+    /// Fullscreen: the conversation follows new output. Off, it holds still where you are
+    /// until you scroll down or send.
+    pub autoscroll: bool,
+    /// Start with the agent panel open, as ← on an empty prompt opens it.
+    pub agents_view: bool,
+    /// How answers are written: `default`, `brief`, `explanatory`, or `learning`.
+    /// `/output-style` changes it until you quit.
+    pub output_style: OutputStyle,
+    /// A pull request a run opened shows at the bottom line's right end, as `PR #12`.
+    pub pr_footer: bool,
     /// Show a `※ recap:` after long turns and finished runs.
     pub recaps: bool,
     pub recap_after: Span,
@@ -110,6 +131,47 @@ pub struct UiSettings {
     pub notices: Notices,
     /// When a crew agent shows in the conversation: once it finishes, or as it works.
     pub agents_in_conversation: AgentsInConversation,
+}
+
+/// How the main agent writes its answers, whatever CLI it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputStyle {
+    /// As the agent writes them.
+    #[default]
+    Default,
+    /// The answer first, in as few words as it takes.
+    Brief,
+    /// Why things work as they do, and what each choice trades off.
+    Explanatory,
+    /// The ideas behind the answer, step by step, with something to try.
+    Learning,
+}
+
+impl OutputStyle {
+    pub const ALL: [OutputStyle; 4] = [
+        OutputStyle::Default,
+        OutputStyle::Brief,
+        OutputStyle::Explanatory,
+        OutputStyle::Learning,
+    ];
+
+    /// Its name in settings and in `/output-style`.
+    pub fn name(self) -> &'static str {
+        match self {
+            OutputStyle::Default => "default",
+            OutputStyle::Brief => "brief",
+            OutputStyle::Explanatory => "explanatory",
+            OutputStyle::Learning => "learning",
+        }
+    }
+
+    /// The style named `name`, in any case.
+    pub fn find(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|style| style.name().eq_ignore_ascii_case(name.trim()))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
@@ -208,6 +270,14 @@ impl Default for UiSettings {
             live_area_max: 0.6,
             verbs: VerbTheme::Voyage,
             turn_duration: true,
+            tips: true,
+            suggestions: true,
+            progress_bar: true,
+            copy_on_select: true,
+            autoscroll: true,
+            agents_view: false,
+            output_style: OutputStyle::Default,
+            pr_footer: true,
             recaps: true,
             recap_after: Span::new("2m"),
             theme: Theme::Auto,

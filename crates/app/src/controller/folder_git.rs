@@ -937,6 +937,7 @@ mod tests {
             waiting: Vec::new(),
             live,
             remind: false,
+            shape_known: true,
         };
         let runs = [
             run("run-02", RunState::Merged, false),

@@ -1,4 +1,4 @@
- Overview    Status    Usage    Context    Limits    Stats                                     Today  Week  Month  All
+Settings   Overview    Status    Config    Usage    Context    Limits    Stats                 Today  Week  Month  All
 Every model the crew used: all together, then each one by itself                        By CLI    By model    By role 
 
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮

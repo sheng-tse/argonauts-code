@@ -388,6 +388,7 @@ mod tests {
             estimated: false,
             counts: false,
             categories: Vec::new(),
+            recorded: None,
         }
     }
 

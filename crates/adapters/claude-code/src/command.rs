@@ -9,7 +9,8 @@ use argonauts_core::{
 };
 
 use crate::settings::{
-    Allowed, CommandSandbox, Commands, LeftOut, OwnWorkflow, STATUS_SERVER, Style, session_settings,
+    Allowed, CommandSandbox, Commands, LeftOut, Manner, OwnWorkflow, STATUS_SERVER, Style,
+    session_settings,
 };
 use crate::tweaks::{self, Fanout, SUBAGENT_TOOL, WORKFLOW_TOOL};
 use crate::{control, isolation};
@@ -17,9 +18,14 @@ use crate::{control, isolation};
 /// Written into the session's scratch directory, outside the worktree.
 pub const SETTINGS_FILE: &str = "claude-settings.json";
 
-const READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
+/// Without it Claude Code turns tool search off and sends every MCP tool of your setup in full,
+/// hundreds of thousands of tokens before a run's session reads a line. With it those tools
+/// wait behind their names until the model asks for one, as when Claude Code runs on its own.
+/// It only loads tools the session already has.
+const TOOL_SEARCH: &str = "ToolSearch";
+const READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep", TOOL_SEARCH];
 const BASH_TOOL: &str = "Bash";
-const BUILD_TOOLS: &[&str] = &["Read", "Glob", "Grep", "Edit", "Write", "Bash"];
+const BUILD_TOOLS: &[&str] = &["Read", "Glob", "Grep", "Edit", "Write", "Bash", TOOL_SEARCH];
 /// Newer models only get these with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, and `--tools` must name
 /// them too. They are how a worker's to-do list reaches the agent panel.
 const TODO_TOOLS: &[&str] = &["TaskCreate", "TaskGet", "TaskUpdate", "TaskList"];
@@ -175,7 +181,10 @@ fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
         allowed,
         &left_out(req),
         &own,
-        style,
+        Manner {
+            style,
+            preferences: &req.preferences,
+        },
         reader_commands(req),
     )?;
     let Some(dir) = &req.scratch_dir else {

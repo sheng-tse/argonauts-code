@@ -14,7 +14,7 @@ use std::io;
 use std::path::Path;
 
 use argonauts_core::adapter::StartupField;
-use argonauts_core::status_tab::CliVersionCheck;
+use argonauts_core::status_tab::{CliVersionCheck, VersionStanding};
 use argonauts_core::{Adapter, ReportedCommand, create_private_dir_all, write_private_file};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,7 +23,7 @@ use time::OffsetDateTime;
 use crate::doctor::AgentCheck;
 use crate::doctor::newest::{install_source, update_command};
 use crate::doctor::standing::{is_newer, oldest_supported, standing};
-use crate::doctor::versions::{VersionFit, newest_tested, version_fit};
+use crate::doctor::versions::newest_tested;
 
 /// How long an answer about the newest version is good for.
 const NEWEST_GOOD_FOR: time::Duration = time::Duration::days(1);
@@ -356,18 +356,25 @@ pub fn out_line(name: &str, check: &CliVersionCheck) -> Option<String> {
     Some(line)
 }
 
-/// The notice for a CLI newer than the newest version its adapter was checked with.
+/// The notice for a CLI newer than the newest version its adapter was checked with, by the
+/// rule /doctor uses: any later version of the same major is newer than checked, and a later
+/// major is said as one.
 pub fn newer_notice(adapter: &dyn Adapter, version: &str) -> Option<String> {
     let tested = adapter.tested_versions();
-    if version_fit(version, tested) != VersionFit::Newer {
-        return None;
-    }
     let newest = newest_tested(tested)?;
     let cli = adapter.display_name();
-    Some(format!(
-        "{cli} {version} is newer than {newest}, the newest version Argonauts Code was checked with. \
-         It should work. /doctor lists anything it sends that Argonauts Code doesn't read yet."
-    ))
+    match standing(Some(version), tested, adapter.broken_versions()) {
+        VersionStanding::Newer => Some(format!(
+            "{cli} {version} is newer than {newest}, the newest version Argonauts Code was checked \
+             with. It should work. /doctor lists anything it sends that Argonauts Code doesn't \
+             read yet."
+        )),
+        VersionStanding::NewMajor => Some(format!(
+            "{cli} {version} is a new major version, after {newest}, the newest version Argonauts \
+             Code was checked with. /doctor says what it found."
+        )),
+        _ => None,
+    }
 }
 
 /// Whether `command` is one of the CLI's own that `adapter`'s table doesn't list, by name or
@@ -453,22 +460,26 @@ mod tests {
         assert!(!text.contains("content"), "{text}");
     }
 
-    /// With recordings up to 2.1.295: that version is checked, a later patch newer with one
-    /// notice that holds across restarts, and the next minor not checked.
+    /// With recordings up to 2.1.295: that version is checked, and a later patch or minor is
+    /// newer, with one notice per version that holds across restarts.
     #[test]
     fn a_newer_patch_is_noticed_once_per_version() {
         use argonauts_adapter_claude_code::ClaudeCodeAdapter;
+
+        use crate::doctor::versions::{VersionFit, version_fit};
 
         let adapter = ClaudeCodeAdapter;
         let tested = adapter.tested_versions();
         assert_eq!(version_fit("2.1.295", tested), VersionFit::Tested);
         assert_eq!(version_fit("2.1.297", tested), VersionFit::Newer);
-        assert_eq!(version_fit("2.2.0", tested), VersionFit::Untested);
+        assert_eq!(version_fit("2.2.0", tested), VersionFit::Newer);
+        assert_eq!(version_fit("3.0.0", tested), VersionFit::Untested);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state/cli-versions.json");
         assert!(CliVersions::notice_once(&path, &adapter, "2.1.295").is_none());
-        assert!(CliVersions::notice_once(&path, &adapter, "2.2.0").is_none());
+        // A later minor is newer too, as /doctor says.
+        assert!(CliVersions::notice_once(&path, &adapter, "2.2.0").is_some());
         let notice = CliVersions::notice_once(&path, &adapter, "2.1.297").unwrap();
         assert_eq!(
             notice,

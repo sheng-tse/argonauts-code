@@ -1,0 +1,2 @@
+⏸ You paused the run · /resume carries it on
+  ⎿  propose:p1, propose:p2 and propose:p3 stopped at a safe point, their work so far kept

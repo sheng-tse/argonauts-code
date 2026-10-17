@@ -42,6 +42,20 @@ pub trait StreamParser: Send {
     fn stop_turn_line(&self) -> Option<String> {
         None
     }
+    /// What the session's requests since the CLI last reported its own totals cost, priced
+    /// the way its provider bills them, such as a cache write by how long it keeps and a long
+    /// prompt at its own price. `None` leaves the estimate to the meter's price. The parser
+    /// answers because it's what has seen each request whole.
+    fn billed_since_totals(&self) -> Option<f64> {
+        None
+    }
+    /// What this process has spent at least, by the CLI's own word, where totals may never
+    /// follow: Claude Code says so when its spend cap stops the session's background agents
+    /// between turns. It leaves out what an earlier process of the CLI session spent. `None`
+    /// when the CLI said nothing of the kind.
+    fn spent_at_least(&self) -> Option<f64> {
+        None
+    }
 }
 
 /// One CLI, described well enough to run it headlessly.
@@ -63,7 +77,9 @@ pub trait Adapter: Send + Sync {
     fn parse_version(&self, output: &str) -> Option<String>;
     /// CLI versions whose recorded output the tests replay.
     fn tested_versions(&self) -> &'static [&'static str];
-    /// Model and effort for live tests.
+    /// Model and effort for live tests and recordings, and for cheap work while the CLI's own
+    /// list isn't known; once it is, [`crate::cheapest::cheapest_listed`] decides. A test keeps
+    /// this the cheapest its recorded list offers.
     fn cheapest_model(&self) -> (&'static str, Option<&'static str>);
     fn stop_plan(&self) -> StopPlan;
 

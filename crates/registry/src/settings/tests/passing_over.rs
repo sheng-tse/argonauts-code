@@ -4,7 +4,7 @@
 use argonauts_core::names::RoleName;
 
 use super::*;
-use crate::resolve;
+use crate::{SettingsWarning, resolve};
 
 fn warned(resolved: &ResolvedSettings, wanted: &str) {
     assert!(
@@ -135,8 +135,8 @@ fn a_workflow_with_no_such_name_runs_the_default_one_with_one_notice() {
     let repo = Repo::new();
     repo.project("workflow = \"no-such-workflow\"\n");
     let resolved = resolve(&repo.forgiving()).unwrap();
-    assert_eq!(resolved.settings.workflow, Settings::default().workflow);
-    let named: Vec<&String> = resolved
+    assert_eq!(resolved.settings.workflow, "captain");
+    let named: Vec<&SettingsWarning> = resolved
         .warnings
         .iter()
         .filter(|warning| warning.contains("no-such-workflow"))

@@ -532,13 +532,13 @@ fn a_failed_plan_read_says_it_failed() {
     for plan in &mut usage.plans {
         plan.windows.clear();
         plan.live = None;
-        plan.failed = (plan.agent == "codex").then(|| "no answer within 15s".to_owned());
+        plan.failed = (plan.agent == "codex").then(|| "Codex didn't answer within 15s".to_owned());
     }
     // Narrow, so the cards stack and each line sits under its own CLI.
     let mut tab = stats_tab();
     let rows = rows(&mut tab, &state(usage), 60);
     let (claude, codex) = (at(&rows, "● Claude Code"), at(&rows, "○ Codex"));
-    let failed = at(&rows, "failed to load usage data");
+    let failed = at(&rows, "Failed to load usage data");
     assert!(claude < codex && codex < failed, "{rows:#?}");
     assert!(
         rows[claude..codex]
@@ -548,7 +548,7 @@ fn a_failed_plan_read_says_it_failed() {
     );
     assert_eq!(
         rows.iter()
-            .filter(|row| row.contains("failed to load usage data"))
+            .filter(|row| row.contains("Failed to load usage data"))
             .count(),
         1,
         "{rows:#?}"
@@ -1273,4 +1273,63 @@ fn a_model_spelled_three_ways_is_one_model_in_every_grouping() {
     for (want, got) in want.iter().zip(&got) {
         assert_eq!(got, want);
     }
+}
+
+/// By role and a role opened list only the models that did the role's work, while the role's
+/// tokens still hold what a model that did none of it spent there.
+#[test]
+fn a_role_lists_only_the_models_that_did_its_work() {
+    use argonauts_core::crew_stats::WorkRow;
+    let once = sample::usage_with_stats();
+    let mut idle = once.clone();
+    let stats = idle.stats.as_mut().unwrap();
+    let spent = argonauts_core::Spend {
+        input_tokens: 2_000_000,
+        ..Default::default()
+    };
+    stats.work.push(WorkRow {
+        agent: "claude-code".to_owned(),
+        model: Some("claude-haiku-5-5".to_owned()),
+        role: StatsRole::Reviewer,
+        kind: None,
+        spent,
+        done: 0,
+        sent_back: 0,
+        took_secs: 0,
+        sessions: 1,
+        tool_calls: 0,
+        turns: 0,
+        review: Default::default(),
+    });
+    let reviewers = |usage: UsageSummary| {
+        let state = state(usage);
+        let mut tab = stats_tab();
+        by_role(&mut tab, &state);
+        let cards = rows(&mut tab, &state, 120);
+        // The reviewers' card comes after the workers'.
+        key(&mut tab, &state, KeyCode::Down);
+        key(&mut tab, &state, KeyCode::Down);
+        key(&mut tab, &state, KeyCode::Enter);
+        let opened = rows(&mut tab, &state, 120);
+        (cards, opened)
+    };
+    let (cards, opened) = reviewers(idle);
+    assert!(has(&cards, "63 reviews · 2 models"), "{cards:#?}");
+    assert!(!cards.iter().any(|row| row.contains("aiku")), "{cards:#?}");
+    let opened = &opened[at(&opened, "reviewers · opened with enter")..];
+    assert!(
+        !opened.iter().any(|row| row.contains("aiku")),
+        "{opened:#?}"
+    );
+    let tokens = |rows: &[String]| {
+        let row = &rows[at(rows, "reviewers · opened with enter")];
+        let after = &row[row.find("sent back").expect("the opened row's counts")..];
+        after
+            .split_whitespace()
+            .nth(3)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let (_, without) = reviewers(once);
+    assert_ne!(tokens(opened), tokens(&without), "{opened:#?}");
 }

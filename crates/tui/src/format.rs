@@ -7,9 +7,11 @@ use argonauts_core::app::ModelChoice;
 use argonauts_core::display_names::DisplayNames;
 use time::{OffsetDateTime, UtcOffset};
 
+mod clock;
 mod numbers;
 mod resets;
 
+pub use clock::{on_24_hours, set_clock, twenty_four_hours};
 pub use numbers::{
     Formats, PlanUsageWords, TokenUnit, UNKNOWN, duration_slot, multiplier, percent, plan_usage,
     stale, tokens, tokens_as,
@@ -105,6 +107,9 @@ impl ClockTime {
 
 impl fmt::Display for ClockTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(time) = on_24_hours(self.hour, self.minute) {
+            return f.write_str(&time);
+        }
         let suffix = if self.hour < 12 { "AM" } else { "PM" };
         let hour = match self.hour % 12 {
             0 => 12,
@@ -158,6 +163,19 @@ impl WallClock {
 
     pub fn clock(&self, at: OffsetDateTime) -> ClockTime {
         ClockTime::from(self.to_local(at))
+    }
+
+    /// `at` to the minute as a promise reads it, rounded up so it never says a try comes
+    /// earlier than it will.
+    pub fn clock_rounded_up(&self, at: OffsetDateTime) -> ClockTime {
+        let into_minute = std::time::Duration::from_secs(u64::from(at.second()))
+            + std::time::Duration::from_nanos(u64::from(at.nanosecond()));
+        let at = if into_minute.is_zero() {
+            at
+        } else {
+            at + (std::time::Duration::from_secs(60) - into_minute)
+        };
+        self.clock(at)
     }
 
     pub fn clock_now(&self) -> ClockTime {

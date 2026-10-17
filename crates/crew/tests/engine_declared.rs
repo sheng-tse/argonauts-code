@@ -79,10 +79,11 @@ async fn a_captain_run_is_named_and_declares_only_what_it_runs() -> anyhow::Resu
         .await?;
     let events = &outcome.events;
 
-    // Named before anything runs, from the request when intake never ran.
+    // Named before anything runs, from the request when intake never ran, and never on a
+    // small word.
     let names = named(events);
     assert_eq!(names.len(), 1, "{names:?}");
-    assert_eq!(names[0].name, "fix-the-typo-in");
+    assert_eq!(names[0].name, "fix-the-typo");
     assert_eq!(names[0].description, "fix the typo in the readme");
     assert_eq!(names[0].style, RunStyle::Workflow);
 
@@ -91,12 +92,12 @@ async fn a_captain_run_is_named_and_declares_only_what_it_runs() -> anyhow::Resu
         panic!("no workflow started: {workflow:?}");
     };
     assert_eq!(started.from, Some(WorkflowRef::new("captain")));
-    assert_eq!(started.workflow.name, "fix-the-typo-in");
+    assert_eq!(started.workflow.name, "fix-the-typo");
     assert_eq!(started.workflow.based_on.as_deref(), Some("captain"));
     let Some(WorkflowEvent::Declared(declared)) = workflow.get(1) else {
         panic!("the workflow isn't declared first: {workflow:?}");
     };
-    assert_eq!(declared.name, "fix-the-typo-in");
+    assert_eq!(declared.name, "fix-the-typo");
     let phases: Vec<&str> = declared.phases.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(phases, ["Understand", "Build", "Merge"]);
     assert!(declared.phases.iter().all(|phase| !phase.detail.is_empty()));

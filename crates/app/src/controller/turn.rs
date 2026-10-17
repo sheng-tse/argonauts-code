@@ -12,10 +12,11 @@ use argonauts_core::limits::{HealthState, ModelState, PlanUsageStatus};
 use argonauts_core::names::{ConversationId, ModelRef, RoleName, SessionKey, TurnId};
 use argonauts_core::paths::create_private_dir_all;
 use argonauts_core::pictures::Picture;
+use argonauts_core::registry::listed::{nearest_listed, runs_in_place};
 use argonauts_core::registry::{ModelRegistry, effort_to_run, known_efforts};
 use argonauts_core::session_runner::{
     Access, Asking, CliWorkflow, RunnerError, RunnerEvent, RunnerKind, SandboxMode, SandboxProfile,
-    SessionControl, SessionLimits, SessionRunner, SessionSpec,
+    SessionControl, SessionLimits, SessionPreferences, SessionRunner, SessionSpec,
 };
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
@@ -252,6 +253,28 @@ pub(crate) fn describe(err: &StepError) -> String {
             format!("its answer didn't match the schema: {}", errors.join("; "))
         }
     }
+}
+
+/// Whether `err` says `agent`'s CLI is signed out, as [`argonauts_core::sign_in`] reads a
+/// sign-in error's words.
+pub(crate) fn signed_out(err: &StepError, agent: &str) -> Option<argonauts_core::app::SignedOut> {
+    let StepError::Session(end) = err else {
+        return None;
+    };
+    argonauts_core::sign_in::signed_out(&end.reason, agent)
+}
+
+/// How a signed-out CLI's turn reads when nobody carries it on, such as `Claude Code is signed
+/// out (its sign-in was revoked) · run claude /login`.
+pub(crate) fn signed_out_words(cli: &str, out: &argonauts_core::app::SignedOut) -> String {
+    let mut words = format!("{cli} is signed out");
+    if !out.why.is_empty() {
+        words.push_str(&format!(" ({})", out.why));
+    }
+    if let Some(login) = &out.login {
+        words.push_str(&format!(" · run {login}"));
+    }
+    words
 }
 
 /// What the turn asks.
@@ -600,6 +623,7 @@ pub(crate) fn launch(ctx: &Ctx, launch: Launch<'_>) -> anyhow::Result<Launched> 
         .join(launch.turn.as_str());
     create_private_dir_all(&session_dir)
         .map_err(|err| anyhow::anyhow!("creating {}: {err}", session_dir.display()))?;
+    say_in_place(ctx, &launch);
     let spec = session_spec(ctx, &launch, key.clone(), session_dir);
     if spec.cli_workflow.ultracode || spec.cli_workflow.typed_keyword {
         crate::telemetry::used(&ctx.env.paths, crate::telemetry::Use::Ultracode);
@@ -716,6 +740,36 @@ pub(crate) fn conversation_agent(
     (worker, effort)
 }
 
+/// The worker and effort a turn names: [`conversation_agent`]'s, with the model and effort
+/// your words asked for over them.
+fn named_worker(settings: &Settings, launch: &Launch<'_>) -> (ModelRef, Option<String>) {
+    let (mut worker, mut effort) = conversation_agent(settings, &launch.worker);
+    if let Some(words) = launch.step.direct_words() {
+        if let Some(model) = &words.model {
+            worker.model = Some(model.clone());
+        }
+        if let Some(asked) = &words.effort {
+            effort = Some(asked.clone());
+        }
+    }
+    (worker, effort)
+}
+
+/// Says before a turn with your words starts that its CLI no longer lists the model it names,
+/// and which one runs in its place. The screen shows a warning once, so later turns can say it
+/// again.
+pub(crate) fn say_in_place(ctx: &Ctx, launch: &Launch<'_>) {
+    if !launch.step.takes_mentions() {
+        return;
+    }
+    let registry = ctx.services.registry.as_ref();
+    let (named, _) = named_worker(ctx.settings(), launch);
+    if let Some(nearest) = nearest_listed(registry, &named) {
+        let line = runs_in_place(registry, "This conversation", &named, &nearest);
+        ctx.notice(NoteLevel::Warn, line);
+    }
+}
+
 /// What `/fast` runs `worker` as: the lowest level its model takes, `low` when they aren't
 /// known, or for a model fixed at one level, the listed model of its line at the lowest, as
 /// agy lists `gemini-3.8-flash-low` beside `gemini-3.8-flash-high`. `None` when nothing is
@@ -795,15 +849,11 @@ pub(crate) fn session_spec(
 ) -> SessionSpec {
     let settings = ctx.settings();
     let role = settings.roles.get(&RoleName::Main);
-    let (mut worker, mut effort) = conversation_agent(settings, &launch.worker);
+    let (mut worker, effort) = named_worker(settings, launch);
     let words = launch.step.direct_words();
-    if let Some(words) = words {
-        if let Some(model) = &words.model {
-            worker.model = Some(model.clone());
-        }
-        if let Some(asked) = &words.effort {
-            effort = Some(asked.clone());
-        }
+    // The model that runs sets the level it takes, so the swap comes first.
+    if let Some(nearest) = nearest_listed(ctx.services.registry.as_ref(), &worker) {
+        worker = nearest;
     }
     let mut effort = effort_to_run(ctx.services.registry.as_ref(), &worker, effort);
     if launch.fast
@@ -895,6 +945,19 @@ pub(crate) fn session_spec(
         asking,
         cli_workflow: cli_workflow(settings, direct, words),
         shell: argonauts_core::session_runner::SessionShell::None,
+        preferences: preferences(settings, launch.fast),
+    }
+}
+
+/// What you set for the session you talk to that its CLI takes as settings of its own.
+fn preferences(settings: &Settings, fast: bool) -> SessionPreferences {
+    let main = &settings.main_session;
+    let language = main.language.trim();
+    SessionPreferences {
+        thinking_off: !main.thinking,
+        fast,
+        language: (!language.is_empty()).then(|| language.to_owned()),
+        workflow_word_off: !settings.workflows.ultracode_trigger,
     }
 }
 
@@ -1036,6 +1099,53 @@ mod tests {
             describe(&ended(EndReason::RateLimited)),
             "it is rate limited"
         );
+    }
+
+    /// A sign-in error that says the sign-in is gone means signed out, whatever the CLI's own
+    /// check says. A bare 401, or "expired" in an error that isn't about signing in, doesn't.
+    #[test]
+    fn a_sign_in_error_that_says_revoked_expired_or_log_in_again_is_signed_out() {
+        let ended = |reason| StepError::Session(Box::new(session_end(reason, None, None)));
+        let auth = |message: &str| {
+            ended(EndReason::Auth {
+                message: message.to_owned(),
+            })
+        };
+        let revoked = signed_out(
+            &auth(
+                "Failed to authenticate: OAuth token revoked. Please log in again or contact \
+                 your administrator.",
+            ),
+            "claude-code",
+        )
+        .expect("signed out");
+        assert_eq!(revoked.why, "its sign-in was revoked");
+        assert_eq!(revoked.login.as_deref(), Some("claude /login"));
+        assert_eq!(
+            signed_out_words("Claude Code", &revoked),
+            "Claude Code is signed out (its sign-in was revoked) · run claude /login"
+        );
+        let expired = signed_out(&auth("Login expired · Please run /login"), "codex");
+        assert_eq!(
+            expired.map(|out| (out.why, out.login)),
+            Some((
+                "its sign-in expired".to_owned(),
+                Some("codex login".to_owned())
+            ))
+        );
+        let asked = signed_out(&auth("Not logged in · Please run /login"), "claude-code");
+        assert_eq!(asked.map(|out| out.why), Some(String::new()));
+        let cli_error = ended(EndReason::CliError {
+            category: argonauts_core::ErrorCategory::Auth,
+            message: "Your session has been revoked".to_owned(),
+        });
+        assert!(signed_out(&cli_error, "opencode").is_some());
+        assert_eq!(signed_out(&auth("401 Unauthorized"), "claude-code"), None);
+        let network = ended(EndReason::CliError {
+            category: argonauts_core::ErrorCategory::Network,
+            message: "token expired while offline".to_owned(),
+        });
+        assert_eq!(signed_out(&network, "claude-code"), None);
     }
 
     /// Codex is the main agent and off in the file. Its binary is a path that doesn't exist,

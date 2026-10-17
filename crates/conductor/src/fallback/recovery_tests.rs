@@ -300,6 +300,45 @@ async fn ask_timeout_falls_back_to_auto() {
     assert!(asked(&plan).reason.ends_with("no valid fallback"));
 }
 
+/// Work done but the report out of format, as Haiku sent once: the same session is asked for
+/// the report alone, and only the first time.
+#[tokio::test]
+async fn a_missed_report_after_real_work_resumes_once_for_the_report() {
+    let fixture = Fixture::with_models();
+    let limits = fixture.limits();
+    let missed = || EndReason::CliError {
+        category: ErrorCategory::AnswerMissed,
+        message: "error_max_structured_output_retries".to_owned(),
+    };
+    let ended = |seq: u64| {
+        let journal = journal(&[]);
+        let mut end = context("claude-code/opus", missed(), &journal.path).end;
+        end.cli_session = Some(format!("v-{seq}"));
+        event(
+            seq,
+            RunEventKind::Session(SessionEvent::Ended(Box::new(end))),
+        )
+    };
+    let first = decide(&limits, "claude-code/opus", missed(), &[ended(1)]).await;
+    let RecoveryAction::ResumeSame { message } = first else {
+        panic!("{first:?}");
+    };
+    assert!(message.contains("send only the report"), "{message}");
+
+    // The second miss goes the usual way, to another provider.
+    let again = decide(&limits, "claude-code/opus", missed(), &[ended(1), ended(2)]).await;
+    assert_eq!(fell_back_to(&again), ("codex/gpt-5".to_owned(), Some(1)));
+
+    // A session that missed it before any work has no work to report.
+    let journal = journal(&[ended(1)]);
+    let mut stop = context("claude-code/opus", missed(), &journal.path);
+    stop.end.tool_calls = 0;
+    assert_eq!(
+        fell_back_to(&limits.after_stop(&stop).await),
+        ("codex/gpt-5".to_owned(), Some(1))
+    );
+}
+
 #[tokio::test]
 async fn retry_ladder() {
     let fixture = Fixture::with_models();
@@ -816,6 +855,11 @@ async fn context_full_rotates() {
         EndReason::CliError {
             category: ErrorCategory::ContextFull,
             message: "prompt is too long".to_owned(),
+        },
+        // A resume the CLI has no conversation for starts fresh at once, as no crash.
+        EndReason::CliError {
+            category: ErrorCategory::SessionLost,
+            message: "No conversation found with session ID: v-1".to_owned(),
         },
     ] {
         match decide(&limits, "claude-code/opus", reason, &[]).await {

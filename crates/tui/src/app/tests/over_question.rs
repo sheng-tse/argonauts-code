@@ -156,3 +156,34 @@ fn on_a_short_screen_the_question_shows_alone_and_the_view_comes_back() {
     let rows = screen(&ui);
     assert!(rows.iter().any(|row| row == "probe row 0"), "{rows:#?}");
 }
+
+/// A view that closes under any question.
+#[derive(Debug)]
+struct GoesProbe;
+
+impl View for GoesProbe {
+    fn render(
+        &mut self,
+        _area: ratatui::layout::Rect,
+        _buf: &mut ratatui::buffer::Buffer,
+        _ctx: &ViewCtx<'_>,
+    ) {
+    }
+
+    fn handle_key(&mut self, _key: KeyEvent, _ctx: &ViewCtx<'_>) -> ViewOutcome {
+        ViewOutcome::Consumed
+    }
+}
+
+/// The question a setting change asks closes the views over the one that stays up for it, and
+/// that one stays.
+#[test]
+fn a_settings_question_makes_way_down_to_the_view_that_stays() {
+    let (mut ui, _) = ui_of(24);
+    ui.push_view(Box::new(StaysProbe));
+    ui.push_view(Box::new(GoesProbe));
+    ui.make_way_for_question();
+    assert_eq!(ui.views_open(), 1);
+    ui.make_way_for_question();
+    assert_eq!(ui.views_open(), 1);
+}

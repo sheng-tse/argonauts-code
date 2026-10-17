@@ -48,6 +48,12 @@ pub struct History {
     /// Where the last drains printed your prompts, as ranges of the rows they returned, with
     /// each prompt's words, so the full screen can keep the one being answered in sight.
     prompt_rows: Vec<(Range<usize>, String)>,
+    /// Cells held back from scrollback while the screen decides how a stretch of a past it draws
+    /// again prints: in full, or as one line. Each says whether it was to print or only to be
+    /// kept for the transcript overlay.
+    withheld: Option<Vec<(Cell, bool)>>,
+    /// How many cells went to scrollback, so a line can tell whether anything printed since.
+    committed: usize,
 }
 
 #[derive(Debug)]
@@ -123,12 +129,54 @@ impl History {
     /// replays behind its condensed summary. Nothing streams during a replay, so it goes
     /// straight into [`cells`](Self::cells).
     pub fn keep(&mut self, cell: impl Into<Cell>) {
-        self.cells.push(cell.into());
+        let cell = cell.into();
+        match self.withheld.as_mut() {
+            Some(withheld) => withheld.push((cell, false)),
+            None => self.cells.push(cell),
+        }
     }
 
     fn commit(&mut self, cell: Cell) {
+        if let Some(withheld) = self.withheld.as_mut() {
+            withheld.push((cell, true));
+            return;
+        }
         self.cells.push(cell);
         self.queue.push_back(Pending::Cell(self.cells.len() - 1));
+        self.committed += 1;
+    }
+
+    /// From now on what would print waits, until [`print_withheld`](Self::print_withheld)
+    /// prints it in order or [`fold_withheld`](Self::fold_withheld) keeps it for the overlay.
+    pub fn withhold(&mut self) {
+        self.withheld.get_or_insert_with(Vec::new);
+    }
+
+    pub fn is_withholding(&self) -> bool {
+        self.withheld.is_some()
+    }
+
+    /// What waited prints as it would have.
+    pub fn print_withheld(&mut self) {
+        for (cell, prints) in self.withheld.take().unwrap_or_default() {
+            if prints {
+                self.commit(cell);
+            } else {
+                self.cells.push(cell);
+            }
+        }
+    }
+
+    /// What waited stays for the transcript overlay only, as a line said it in fewer words.
+    pub fn fold_withheld(&mut self) {
+        let withheld = self.withheld.take().unwrap_or_default();
+        self.cells
+            .extend(withheld.into_iter().map(|(cell, _)| cell));
+    }
+
+    /// How many cells have gone to scrollback so far.
+    pub fn committed(&self) -> usize {
+        self.committed
     }
 
     /// The header printed last now reads as `header`, such as once the setup saves. It prints

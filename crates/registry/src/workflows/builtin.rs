@@ -1,11 +1,16 @@
 //! The built-in workflows. Each is one file: what it is for, its steps, the settings it changes
-//! on top of the defaults, and its phases. The defaults are `council`, so its file sets no key.
+//! on top of the defaults, and its phases. The built-in settings are `council`'s, so its file
+//! sets no key, and the ablations change one key of it each.
 
 use argonauts_core::workflow_files;
 
 use super::choices::about_of;
 
-pub(crate) const DEFAULT_WORKFLOW: &str = "council";
+/// What runs when no setting names a workflow.
+pub(crate) const DEFAULT_WORKFLOW: &str = "captain";
+
+/// The workflow the built-in settings are, so its file sets no key.
+pub(crate) const BASE_WORKFLOW: &str = "council";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BuiltinWorkflow {

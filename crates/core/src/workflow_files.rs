@@ -13,8 +13,8 @@ macro_rules! built_in {
     };
 }
 
-/// `(name, the file's text)` for every built-in workflow, in the order the picker shows them,
-/// the default first.
+/// `(name, the file's text)` for every built-in workflow, in the order the picker shows them:
+/// council first, whose settings are the built-in ones.
 pub const BUILT_IN: &[(&str, &str)] = built_in![
     "council",
     "orchestrator",

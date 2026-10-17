@@ -4,8 +4,8 @@
 //! Keys reach a picker through the runtime: while `bottom.picker` is open it gets every key
 //! first, and each [`PickerEvent`] but `Unhandled` comes back here through [`on_picker`].
 
+pub mod all_settings;
 pub mod approvals;
-pub mod config;
 mod fallback;
 pub mod flow;
 mod models;
@@ -13,6 +13,8 @@ mod panel;
 pub mod permissions;
 mod table;
 pub mod words;
+
+pub(crate) use panel::{draw_editor, edit_key};
 
 #[cfg(test)]
 mod tests;
@@ -29,8 +31,8 @@ use crate::bridge::settings::theme_for;
 use crate::cell::{ResultLine, Tone, UserMessage};
 use crate::theme::{ColorEnv, Theme};
 
+use all_settings::AllSettingsView;
 use approvals::ApprovalsView;
-use config::ConfigView;
 use flow::{Asked, Kept, PALETTE_KEYS, Step};
 
 /// Routes a settings answer to the picker that asked for it (by `command`, `section`, or
@@ -75,7 +77,7 @@ pub fn open_for(data: &ViewData, cx: &mut Cx<'_>) {
             };
             open_picker(flow::effort_picker(&command, slider.clone()), cx);
         }
-        ViewData::Config { entries } => cx.out.open(ConfigView::from_entries(entries)),
+        ViewData::Config { entries } => cx.out.open(AllSettingsView::from_entries(entries)),
         ViewData::Approvals { view } => {
             cx.out.open(ApprovalsView::new(view.clone()));
             cx.out.send(ApprovalsView::rows_request());
@@ -92,7 +94,7 @@ fn settings_answer(
     cx: &mut Cx<'_>,
 ) {
     match (command, section) {
-        (Some("config"), _) => cx.out.open(ConfigView::new(rows.to_vec())),
+        (Some("config"), _) => cx.out.open(AllSettingsView::new(rows.to_vec())),
         (Some("approvals"), _) | (None, Some("approvals")) => {
             cx.out.open(ApprovalsView::with_rows(rows.to_vec()));
             cx.out.send(UiCommand::Request {
@@ -123,7 +125,7 @@ fn settings_answer(
                 return;
             }
             match section {
-                None => cx.out.open(ConfigView::new(rows.to_vec())),
+                None => cx.out.open(AllSettingsView::new(rows.to_vec())),
                 Some(section) => {
                     let command = command_for(section);
                     // The `ui` section answers with every key, and `/theme` picks the theme.
@@ -268,7 +270,7 @@ pub fn on_picker(event: &PickerEvent, cx: &mut Cx<'_>) {
 }
 
 /// `⎿  Kept theme as dark` under the command's echo, with the echo again when something
-/// printed between them.
+/// printed between them. The conversation's record keeps it after the command.
 fn leave_kept_line(picker: &Picker, kept: Kept, cx: &mut Cx<'_>) {
     let history = &mut cx.model.history;
     let right_under = picker.flow.echoed_at == Some(history.cells().len());
@@ -279,8 +281,10 @@ fn leave_kept_line(picker: &Picker, kept: Kept, cx: &mut Cx<'_>) {
         Some(value) => ResultLine::valued(kept.words, value),
         None => ResultLine::new(Tone::Normal, kept.words),
     };
+    let reply = line.reply();
     let line: Box<dyn crate::cell::HistoryCell> = Box::new(line);
     history.push(line);
+    cx.out.replies.push(reply);
 }
 
 /// The `[ui]` section with one key changed, when the value fits the key.

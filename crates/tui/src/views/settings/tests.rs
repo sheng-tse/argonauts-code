@@ -369,6 +369,17 @@ fn esc_on_scope_question_sends_nothing() {
     let transcript = screen.transcript();
     assert!(transcript.contains("/theme"), "{transcript}");
     assert!(transcript.contains("⎿  Kept theme as dark"), "{transcript}");
+    // The conversation's record keeps the line after the command.
+    assert_eq!(
+        out.replies,
+        [argonauts_core::app::CommandReply {
+            text: "Kept theme as".to_owned(),
+            value: Some("dark".to_owned()),
+            after: None,
+            dim: false,
+            error: false,
+        }]
+    );
 }
 
 #[test]

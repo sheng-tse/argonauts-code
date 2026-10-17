@@ -79,6 +79,9 @@ pub enum UiAction {
     Dismiss {
         question: u64,
     },
+    /// A line a command printed back as its view closed, which the conversation's record
+    /// keeps after the command.
+    Replied(argonauts_core::app::CommandReply),
     /// Already shown in the bottom line.
     ModeChanged(ApprovalMode),
     /// Esc while work runs. The host stops the main agent's turn, or stops a pausing run now.
@@ -169,6 +172,8 @@ pub struct Ui<W: Write> {
     /// The open views draw as a panel under the working line, since a command typed while an
     /// answer ran opened the first of them, and the answer goes on above.
     views_as_panel: bool,
+    /// What views asked for as they opened, for the screen to send before the next frame.
+    asked: Vec<argonauts_core::app::ViewRequest>,
     /// Whether the terminal shows the alternate screen now. Frames switch it to match what's
     /// open, so a switch's errors have a place to go.
     on_alternate: bool,
@@ -218,6 +223,7 @@ impl<W: Write> Ui<W> {
             overlay: None,
             views: Vec::new(),
             views_as_panel: false,
+            asked: Vec::new(),
             on_alternate: false,
             scrollback: None,
             quit: None,
@@ -283,7 +289,7 @@ impl<W: Write> Ui<W> {
         if self.views.is_empty() {
             self.views_as_panel = false;
         }
-        self.views.push(view);
+        self.stack_view(view);
         self.dirty = true;
     }
 
@@ -294,8 +300,19 @@ impl<W: Write> Ui<W> {
         if self.views.is_empty() {
             self.views_as_panel = true;
         }
-        self.views.push(view);
+        self.stack_view(view);
         self.dirty = true;
+    }
+
+    /// Puts `view` on top, keeping what it asks for as it opens.
+    fn stack_view(&mut self, view: Box<dyn crate::views::View>) {
+        self.asked.extend(view.asks_on_open());
+        self.views.push(view);
+    }
+
+    /// What the views opened since the last call asked for, oldest first.
+    pub fn take_asked(&mut self) -> Vec<argonauts_core::app::ViewRequest> {
+        std::mem::take(&mut self.asked)
     }
 
     /// Whether the open views draw as a panel under the working line.
@@ -312,6 +329,18 @@ impl<W: Write> Ui<W> {
     pub fn close_views(&mut self) {
         self.dirty = true;
         self.views.clear();
+    }
+
+    /// The views a question would hide close, down to one that stays up over it.
+    pub fn make_way_for_question(&mut self) {
+        while self
+            .views
+            .last()
+            .is_some_and(|view| !view.stays_over_question())
+        {
+            self.views.pop();
+            self.dirty = true;
+        }
     }
 
     pub fn top_view_mut(&mut self) -> Option<&mut (dyn crate::views::View + 'static)> {
@@ -662,6 +691,7 @@ impl<W: Write> Ui<W> {
     /// screen, then `exit_lines` in dim text, and only then does the live region clear. The
     /// fullscreen app leaves the alternate screen instead, and prints only `exit_lines`.
     pub fn finish_with(&mut self, exit_lines: Vec<String>) -> io::Result<()> {
+        self.terminal.set_progress(false)?;
         if self.scrollback.is_some() {
             return self.finish_fullscreen(exit_lines);
         }
@@ -713,8 +743,11 @@ impl<W: Write> Ui<W> {
             name => name,
         };
         let title = title_text(status, name, frame, glyphs);
+        // The bar shows work alone: a question waiting says so in the title.
+        let working = self.model.screen.progress_bar && status == TitleStatus::Working;
+        let progressed = self.terminal.set_progress(working)?;
         if self.terminal.title() == Some(title.as_str()) {
-            return Ok(false);
+            return Ok(progressed);
         }
         self.terminal.set_title(&title)?;
         Ok(true)

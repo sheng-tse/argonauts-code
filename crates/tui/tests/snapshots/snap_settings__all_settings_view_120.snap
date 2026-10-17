@@ -1,0 +1,36 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+All settings
+Every setting and the layer it comes from. ! marks a safety key                                               8 settings
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ general                                                                                                              │
+│ ❯   workflow               council           this project              How the crew works together                   │
+│                                                                                                                      │
+│ crew                                                                                                                 │
+│     crew.main              claude-code/opus  everywhere (global)       Conversation, the estimate, and Captain work  │
+│                                                                                                                      │
+│ ui                                                                                                                   │
+│     ui.theme               dark              everywhere (global)       Light or dark colors, or follow the terminal  │
+│     ui.keys                vim               this session              Standard or vim keys in the input             │
+│     ui.accent              unset             built-in                  A hex color for the accent                    │
+│                                                                                                                      │
+│ limits                                                                                                               │
+│   ! limits.spend_per_run   30.0              just you (project-local)  The most one run may spend                    │
+│                                                                                                                      │
+│ approvals                                                                                                            │
+│   ! approvals.merge.mode   auto_preview      --set                     Who approves a merge                          │
+│                                                                                                                      │
+│ roles                                                                                                                │
+│     roles.reviewer.effort  high              workflow                  How hard the reviewer thinks                  │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · ⏎ edit · type to search · esc back

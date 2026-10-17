@@ -934,6 +934,50 @@ async fn a_agent_failure_mid_turn_retries_with_the_fallback() {
     driver.exit().await;
 }
 
+/// A sign-in the server revoked fails nothing: the question goes on with the fallback, and
+/// its one line says the CLI is signed out and how to sign it in again.
+#[tokio::test]
+async fn a_revoked_sign_in_falls_back_and_says_so() {
+    let mut driver = TestDriver::start_with(with_codex_fallback()).await;
+    let codex = driver
+        .directory
+        .add(FakeRunner::cli("codex", "openai").then(answer("From codex.")));
+    driver.agent.push(FakeSession::ended(EndReason::Auth {
+        message: "Failed to authenticate: OAuth token revoked. Please log in again or contact \
+                  your administrator."
+            .into(),
+    }));
+    driver.submit("hi").await;
+    let fell_back = driver
+        .until(|event| {
+            matches!(
+                conversation_event(event),
+                Some(ConversationEvent::FellBack { .. } | ConversationEvent::TurnFailed { .. })
+            )
+        })
+        .await;
+    let Some(ConversationEvent::FellBack { to, signed_out, .. }) = conversation_event(&fell_back)
+    else {
+        panic!("the turn fell back: {fell_back:?}");
+    };
+    assert_eq!(to.agent, "codex");
+    assert_eq!(
+        signed_out,
+        &Some(argonauts_core::app::SignedOut {
+            why: "its sign-in was revoked".into(),
+            login: Some("claude /login".into()),
+        })
+    );
+    let done = turn_done(&mut driver).await;
+    assert!(matches!(
+        conversation_event(&done),
+        Some(ConversationEvent::TurnFinished { reply: TurnReply::Answer { markdown }, .. })
+            if markdown == "From codex."
+    ));
+    assert_eq!(codex.specs().len(), 1);
+    driver.exit().await;
+}
+
 /// With the main session's mode set to ask, a turn that only answers asks who answers, where
 /// it used to go to the next agent by itself. Your pick reads the turn from its start, and
 /// Stop leaves it where it failed.

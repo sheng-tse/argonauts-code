@@ -91,6 +91,7 @@ fn run(n: u32, name: &str, state: RunState, cost: f64) -> RunSummary {
         waiting: Vec::new(),
         live: state == RunState::Running,
         remind: false,
+        shape_known: true,
     }
 }
 
@@ -368,6 +369,7 @@ pub fn context() -> ContextView {
             estimated: false,
             counts: false,
             categories: Vec::new(),
+            recorded: None,
         };
     let (opus, gpt) = ("claude-code/claude-opus-5-5", "codex/gpt-5.6");
     ContextView {

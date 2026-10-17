@@ -329,6 +329,7 @@ fn session_state(
         follow: None,
         worker: worker.clone(),
         model_assumed: false,
+        model_guessed: false,
         agent_id: worker.agent.clone(),
         role: RoleName::Worker,
         step: None,
@@ -359,8 +360,10 @@ fn session_state(
         end: None,
         unknown: Vec::new(),
         doing: Doing::Nothing,
+        turn_over: false,
         stalled: false,
         cli_session: None,
+        sent_back: false,
         workflows: Vec::new(),
     }
 }

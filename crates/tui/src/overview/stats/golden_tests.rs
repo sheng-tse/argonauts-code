@@ -463,3 +463,127 @@ fn a_long_model_name_leaves_every_card_its_bars() {
         );
     }
 }
+
+/// The picture of one model in one row, from its numbers: Claude Code's records spell Haiku 5.5
+/// two ways, as the alias `haiku` with 3.47M tokens and 3 tasks and as `claude-haiku-5-5` with
+/// 2.03M and 6, and the orchestrators are a session of `haiku` that planned nothing,
+/// `claude-haiku-5-5` with 2 workflows and GPT 5.6 Luna with 1.
+fn one_model_two_ways(now: OffsetDateTime) -> Example {
+    use StatsRole::{Orchestrator, Worker};
+    let alias = (CLAUDE, "haiku");
+    let mut example = Example::default();
+    example.work(
+        alias,
+        Worker,
+        Some("build"),
+        split(3_470_000, 0.20, false),
+        (3, 0, 175),
+    );
+    example.tasks(alias, "build", 3, 0, 0);
+    example.work(
+        HAIKU,
+        Worker,
+        Some("build"),
+        split(2_030_000, 0.12, false),
+        (6, 0, 175),
+    );
+    example.tasks(HAIKU, "build", 6, 0, 0);
+    example.work(alias, Orchestrator, None, Default::default(), (0, 0, 0));
+    example.work(HAIKU, Orchestrator, None, Default::default(), (2, 0, 60));
+    example.work(LUNA, Orchestrator, None, Default::default(), (1, 0, 60));
+    example.stats.workflows = 3;
+    example.plan(CLAUDE, "Max", true, [0.07, 0.55], now);
+    example.plan(CODEX, "Plus", false, [0.01, 0.11], now);
+    example
+}
+
+/// The picture `stats_dupes` sums up two places of the By CLI screen, which its "After" rows
+/// stand for: a CLI's card and its rows of models, and who did what's orchestrators. They are
+/// compared by what they say, since the picture leaves out what draws around them:
+/// - "Claude Code  models" is the card's title row, `● Claude Code` with `5.5M tok` at the
+///   right, in the card's frame.
+/// - "  ▪ Haiku 5.5     5.50M  · 9 tasks" is the card's one row of Haiku 5.5,
+///   `■ Haiku 5.5  ━━━━  5.5M · 9 tasks`: the card's legend square in the model's own shade
+///   where the picture has `▪` in `#f3b27a`, a bar between the name and the tokens, and the
+///   tokens to two figures as every card writes them, `5.5M` for `5.50M`.
+/// - "who did what · orchestrators" is the card `◆ who did what` with `orchestrator` at the
+///   left of its row's bar.
+/// - "  Haiku 5.5 2 · GPT 5.6 Luna 1" is that row's legend,
+///   `■ Haiku 5.5 2   ■ GPT 5.6 Luna 1   of 3 workflows`, a square before each model and the
+///   whole the row is a part of after them.
+#[test]
+fn one_model_spelled_two_ways_is_one_row_as_its_picture_says() {
+    use argonauts_core::model_catalog::CatalogEntry;
+    use argonauts_core::names::ModelRef;
+
+    let now = next_friday();
+    let mut names = names();
+    let mut haiku = CatalogEntry::new(ModelRef::new(CLAUDE, Some(HAIKU.1.to_owned())));
+    haiku.name = Some("Haiku 5.5".to_owned());
+    haiku.aliases = Some(vec!["haiku".to_owned()]);
+    names.catalog.models.push(haiku);
+    let usage = one_model_two_ways(now).usage(UsagePeriod::All);
+    let screen = screen_named(&theme(), usage, now, &[], (SCREEN, None), names);
+    let shown: Vec<String> = text(&screen).lines().map(str::to_owned).collect();
+    let picture: Vec<&str> = include_str!("screens/stats_dupes.txt").lines().collect();
+    let after = picture
+        .iter()
+        .position(|row| row.starts_with(" After:"))
+        .expect("the picture's after");
+    let after = &picture[after + 1..];
+
+    // The Claude Code card: one row of Haiku 5.5, with the picture's model, tokens and tasks.
+    let card = shown
+        .iter()
+        .position(|row| row.contains("● Claude Code"))
+        .unwrap();
+    assert!(after[0].starts_with("Claude Code"), "{after:?}");
+    let card_end = card
+        + shown[card..]
+            .iter()
+            .position(|row| row.contains('╰'))
+            .unwrap();
+    // The card is the left one of two side by side.
+    let left = |row: &String| -> String { row.chars().take(SCREEN as usize / 2).collect() };
+    let haiku_rows: Vec<String> = shown[card..card_end]
+        .iter()
+        .map(left)
+        .filter(|row| row.contains("Haiku 5.5"))
+        .collect();
+    assert_eq!(haiku_rows.len(), 1, "{shown:#?}");
+    let (name, rest) = after[1]
+        .trim_start_matches([' ', '▪'])
+        .split_at("Haiku 5.5".len());
+    let (tokens, tasks) = rest.trim().split_once("  ").unwrap();
+    let row = &haiku_rows[0];
+    assert!(row.contains(&format!("■ {name} ")), "{row}");
+    let figures = |tokens: &str| -> f64 { tokens.trim_end_matches('M').parse().unwrap() };
+    let drawn = row
+        .split_whitespace()
+        .find(|word| word.ends_with('M') && word.parse::<f64>().is_err())
+        .unwrap();
+    assert_eq!(figures(drawn), figures(tokens), "{row}");
+    assert!(row.contains(&format!("{drawn} {}", tasks.trim())), "{row}");
+
+    // Who did what: the orchestrators are Haiku 5.5 once, with its 2, and GPT 5.6 Luna.
+    assert_eq!(after[2], "who did what · orchestrators");
+    let who = shown
+        .iter()
+        .position(|row| row.contains("◆ who did what"))
+        .unwrap();
+    let orchestrators = who
+        + shown[who..]
+            .iter()
+            .position(|row| row.contains("│ orchestrator "))
+            .unwrap();
+    let legend = shown[orchestrators + 1].trim_matches([' ', '│']);
+    let models: Vec<&str> = legend
+        .split('■')
+        .map(|part| part.split("   of ").next().unwrap_or_default().trim())
+        .filter(|part| !part.is_empty())
+        .collect();
+    let pictured: Vec<&str> = after[3].trim().split(" · ").collect();
+    assert_eq!(models, pictured, "{legend}");
+    assert!(legend.ends_with("of 3 workflows"), "{legend}");
+    assert!(!shown.iter().any(|row| row.contains("Haiku 5.5 0")));
+}

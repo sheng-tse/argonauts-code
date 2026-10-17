@@ -18,9 +18,12 @@ pub fn ignored_notice(key: &str) -> String {
 
 impl Composer {
     /// The draft holds the word where it counts: a message for the agent, never a shell
-    /// command or a field inside a question.
+    /// command or a field inside a question, while the trigger is on.
     pub fn holds_workflow_word(&self) -> bool {
-        !self.shell && !self.field && keywords::asks_for_workflow(&self.draft.text)
+        !self.workflow_word_off
+            && !self.shell
+            && !self.field
+            && keywords::asks_for_workflow(&self.draft.text)
     }
 
     /// The draft asks for a workflow: it holds the word, and Opt+W hasn't ignored it.

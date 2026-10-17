@@ -15,6 +15,7 @@ mod narrator;
 mod notice;
 pub mod picker;
 mod question;
+mod tips;
 pub mod verbs;
 mod workflows;
 mod working;
@@ -35,7 +36,7 @@ pub use agents::{
 };
 pub use answered::{AnsweredPick, REMEMBER_KEY};
 pub use band::{BAND_KEYS, Band, BandEvent, PinnedRun, wall_now};
-pub use bottom_row::{ApprovalMode, BottomRow, ModeNotice, ModeState, VimMode};
+pub use bottom_row::{ApprovalMode, BottomRow, ModeNotice, ModeState, PASTING, VimMode};
 pub use composer::{
     BUILT_IN_EXAMPLE, Composer, ComposerEvent, ComposerState, ComposerView, DraftAside,
     MAX_INPUT_ROWS, SHELL_PLACEHOLDER, SHELL_PROMPT, ignored_notice, is_on_disk, requested_notice,
@@ -62,6 +63,10 @@ pub use working::{Activity, SPINNER_PERIOD, WorkingLine};
 #[derive(Debug, Clone, Default)]
 pub struct BottomState {
     pub working: Option<WorkingLine>,
+    /// What the work waits for while nothing else of it goes on, such as `Waiting for 1
+    /// workflow to finish`, drawn dim and still in the working line's place, as Claude Code
+    /// ends a turn whose workflows go on.
+    pub waits_for: Option<String>,
     /// Messages sent while work runs, shown dim until they start.
     pub queued: Vec<String>,
     /// Where each queued message goes when it's for one agent, drawn after it, such as
@@ -165,6 +170,12 @@ pub struct BottomView {
 impl BottomState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The agent's work goes on: its working line shows, or the line that says what the work
+    /// waits for, so the input and its hint line draw as they do while it works.
+    fn at_work(&self) -> bool {
+        self.working.is_some() || self.waits_for.is_some()
     }
 
     /// A question that waits without focus leaves the keys with the composer.
@@ -363,9 +374,7 @@ impl BottomState {
         // one to it.
         let room = max_rows.saturating_sub(parts.rows());
         let question_up = self.focused_question().is_some();
-        parts.band = self
-            .band
-            .lines(ctx, room, question_up, self.working.is_some());
+        parts.band = self.band.lines(ctx, room, question_up, self.at_work());
         // Your mods share the band's rows, under its cap.
         let left = room
             .min(self.band.max_rows)
@@ -533,6 +542,15 @@ impl BottomState {
                 working.extend(line.lines(ctx));
                 working.push(Line::default());
             }
+            None if self.waits_for.is_some() => {
+                let waits = self.waits_for.as_deref().unwrap_or_default();
+                let line = Line::from(vec![
+                    Span::styled(format!("{} ", theme.glyphs.turn_end), dim),
+                    Span::styled(sanitize_line(waits).trim().to_owned(), dim),
+                ]);
+                working.push(truncate_line(&line, width));
+                working.push(Line::default());
+            }
             _ if !working.is_empty() => working.push(Line::default()),
             _ => {}
         }
@@ -595,7 +613,7 @@ impl BottomState {
         }
 
         let focused = self.composer_has_focus();
-        let busy = self.working.is_some();
+        let busy = self.at_work();
         let waiting = self.waiting_question().is_some();
         // With an agent selected in the list, the input is a message to it, as in Claude Code.
         let messaging = self.messaging();
@@ -633,7 +651,9 @@ impl BottomState {
                     ctx,
                     ComposerState {
                         focused: focused || messaging.is_some(),
-                        busy,
+                        // The mark dims only under a working line: while the work only waits,
+                        // a message goes in as a turn of its own, and the mark reads as ready.
+                        busy: self.working.is_some(),
                         offer_example,
                         placeholder,
                     },
@@ -693,9 +713,11 @@ impl BottomState {
             ModeState {
                 hint: notice_keys
                     .or_else(|| self.active_hint(ctx.clock.now))
+                    .or_else(|| self.composer.holds_paste().then_some(PASTING))
                     .or(list_keys)
                     .or(command.as_deref()),
                 working: self.working.as_ref().is_some_and(|line| line.esc_stops),
+                waiting: self.working.is_none() && self.waits_for.is_some(),
                 typing,
                 // A question passed on leaves the screen, so what still waits is in `needs_you`.
                 pinned_questions: 0,
@@ -889,3 +911,5 @@ const MENU_MIN_ROWS: usize = 3;
 mod command_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vim_picture_tests;

@@ -4,9 +4,9 @@
 use argonauts_core::settings::ui::{ModName, Theme, Threshold, TokenStyle};
 
 use super::{Repo, layer_of};
-use crate::{resolve, write_setting};
+use crate::{SettingsWarning, resolve, write_setting};
 
-fn warning<'a>(warnings: &'a [String], about: &str) -> &'a str {
+fn warning<'a>(warnings: &'a [SettingsWarning], about: &str) -> &'a str {
     warnings
         .iter()
         .find(|warning| warning.contains(about))

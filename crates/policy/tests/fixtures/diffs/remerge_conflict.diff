@@ -1,0 +1,18 @@
+diff --git a/ratelimit/bucket.py b/ratelimit/bucket.py
+remerge CONFLICT (content): Merge conflict in ratelimit/bucket.py
+index 1866304..bdd36e9 100644
+--- a/ratelimit/bucket.py
++++ b/ratelimit/bucket.py
+@@ -1,10 +1,5 @@
+-<<<<<<< fad5596 (run)
+ def take(bucket, n=1):
+-    bucket.tokens -= n
+-=======
+-def take(bucket):
+-    if bucket.tokens <= 0:
++    if bucket.tokens < n:
+         return 0
+-    bucket.tokens -= 1
+->>>>>>> 07ea9f5 (task)
++    bucket.tokens -= n
+     return bucket.tokens

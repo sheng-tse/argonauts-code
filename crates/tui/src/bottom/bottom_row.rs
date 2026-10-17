@@ -13,6 +13,10 @@ use crate::render::RenderCtx;
 use crate::text::sanitize_line;
 use crate::theme::Role;
 
+/// The bottom line while a paste typed out as keys is held back, as Claude Code's says while a
+/// paste comes in.
+pub const PASTING: &str = "Pasting…";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum ApprovalMode {
     #[default]
@@ -101,6 +105,11 @@ pub struct BottomRow {
     /// Hidden while `-- INSERT --` shows, since Esc there only leaves INSERT.
     pub footer_hints: bool,
     pub notice: Option<ModeNotice>,
+    /// The pull request a run opened last, such as `PR #12`, at the right end when nothing
+    /// else is.
+    pub pull_request: Option<String>,
+    /// `ui.pr_footer`: whether the pull request shows.
+    pub pr_footer: bool,
 }
 
 impl Default for BottomRow {
@@ -112,6 +121,8 @@ impl Default for BottomRow {
             needs_you: 0,
             footer_hints: true,
             notice: None,
+            pull_request: None,
+            pr_footer: true,
         }
     }
 }
@@ -129,6 +140,10 @@ pub struct ModeState<'a> {
     /// Takes the mode's place.
     pub hint: Option<&'a str>,
     pub working: bool,
+    /// The turn is over and its work waits on what runs in the background, as the dim line
+    /// above the input says. Esc stops nothing then, and the line keeps to the mode and the
+    /// panel's key, as Claude Code's does.
+    pub waiting: bool,
     /// The input has text, so ← moves the cursor rather than opening the agent panel, and the
     /// `←` hint hides.
     pub typing: bool,
@@ -170,6 +185,12 @@ impl BottomRow {
             short: None,
         };
         let mut pieces = Vec::new();
+        // A hint such as "Press Ctrl-C again to exit" or "Pasting…" takes the whole line, the
+        // vim label too, as Claude Code's footer does.
+        if let Some(hint) = state.hint {
+            pieces.push(words(Joiner::Space, &sanitize_line(hint), dim, None));
+            return (ModePieces(pieces), None);
+        }
         // A question that has the keys stands in for the input, so the input's vim mode isn't
         // shown while it does.
         if let Some(label) = self
@@ -178,10 +199,6 @@ impl BottomRow {
             .and_then(VimMode::label)
         {
             pieces.push(words(Joiner::Space, label, dim, None));
-        }
-        if let Some(hint) = state.hint {
-            pieces.push(words(Joiner::Space, &sanitize_line(hint), dim, None));
-            return (ModePieces(pieces), None);
         }
         // Claude Code's bottom line says only this in bash mode, so Esc and Enter mean one thing.
         if state.shell && !state.question_focused {
@@ -217,7 +234,10 @@ impl BottomRow {
             return (ModePieces(pieces), None);
         }
         // Esc in INSERT or VISUAL only goes back to NORMAL, so its hint waits until then.
-        if self.footer_hints && !matches!(self.vim, Some(VimMode::Insert | VimMode::Visual)) {
+        if self.footer_hints
+            && !state.waiting
+            && !matches!(self.vim, Some(VimMode::Insert | VimMode::Visual))
+        {
             let footer = if state.working {
                 "esc to interrupt"
             } else {
@@ -226,7 +246,7 @@ impl BottomRow {
             pieces.push(words(Joiner::Dot, footer, dim, Some(Give::FooterHint)));
         }
         if !state.typing
-            && let Some(arrow) = self.arrow_hint(ctx, state.pinned_questions)
+            && let Some(arrow) = self.arrow_hint(ctx, state.pinned_questions, state.waiting)
         {
             pieces.push(ModePiece::Words {
                 joiner: Joiner::Dot,
@@ -254,13 +274,24 @@ impl BottomRow {
             .filter(|notice| notice.until > ctx.clock.now)
             .map(|notice| (notice.text.as_str(), theme.style(notice.tone.role())))
             .or(enter_sends.map(|text| (text, theme.style(Role::Dim))))
+            .or(self
+                .pull_request
+                .as_deref()
+                .filter(|_| self.pr_footer)
+                .map(|text| (text, theme.style(Role::Dim))))
             .map(|(text, style)| Span::styled(sanitize_line(text).trim().to_owned(), style))
             .filter(|span| span.width() > 0)
     }
 
     /// Claude Code's space after the arrow, which some fonts draw two cells wide, keeps it off
     /// the count.
-    fn arrow_hint(&self, ctx: &RenderCtx<'_>, pinned_questions: usize) -> Option<Span<'static>> {
+    /// What waits on you always shows; the agents at work leave it while the work only waits.
+    fn arrow_hint(
+        &self,
+        ctx: &RenderCtx<'_>,
+        pinned_questions: usize,
+        work_waits: bool,
+    ) -> Option<Span<'static>> {
         let theme = ctx.theme;
         let arrow = theme.glyphs.agents;
         let waiting = self.needs_you + pinned_questions;
@@ -271,7 +302,7 @@ impl BottomRow {
             ));
         }
         let agents = self.background_agents;
-        (agents > 0).then(|| {
+        (agents > 0 && !work_waits).then(|| {
             let noun = if agents == 1 { "agent" } else { "agents" };
             Span::styled(format!("{arrow} {agents} {noun}"), theme.style(Role::Dim))
         })
@@ -455,6 +486,34 @@ mod tests {
         assert!(text(mode.line(&ctx, idle())).ends_with("← 1 agent"));
     }
 
+    /// A turn over with its workflows going: Esc stops nothing and the shortcuts wait, so the
+    /// line keeps to the mode and the panel's key, as Claude Code's does. What waits on you
+    /// still shows.
+    #[test]
+    fn while_the_work_waits_the_line_keeps_to_the_mode_and_the_panel() {
+        let theme = theme();
+        let ctx = RenderCtx::new(118, &theme, Clock::still(Instant::now()));
+        let mut mode = BottomRow {
+            approval: ApprovalMode::Auto,
+            background_agents: 1,
+            ..BottomRow::default()
+        };
+        let waiting = ModeState {
+            waiting: true,
+            panel: true,
+            ..idle()
+        };
+        assert_eq!(
+            text(mode.line(&ctx, waiting)),
+            "  ⏵⏵ auto mode on (shift+tab to cycle) · ↓ to manage"
+        );
+        mode.needs_you = 1;
+        assert_eq!(
+            text(mode.line(&ctx, waiting)),
+            "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 needs you · ↓ to manage"
+        );
+    }
+
     #[test]
     fn the_arrow_hint_says_when_questions_wait_and_hides_while_typing() {
         let theme = theme();
@@ -514,6 +573,20 @@ mod tests {
             ..idle()
         };
         assert_eq!(text(mode.line(&ctx, state)), "  Press Ctrl-C again to exit");
+        // The vim label goes too, as in Claude Code.
+        for vim in [VimMode::Insert, VimMode::Visual] {
+            let mode = BottomRow {
+                vim: Some(vim),
+                ..BottomRow::default()
+            };
+            for hint in ["Press Ctrl-C again to exit", PASTING] {
+                let state = ModeState {
+                    hint: Some(hint),
+                    ..idle()
+                };
+                assert_eq!(text(mode.line(&ctx, state)), format!("  {hint}"));
+            }
+        }
     }
 
     /// Claude Code draws `-- INSERT --` and `-- VISUAL --` dim at the start of the line under
@@ -573,6 +646,33 @@ mod tests {
         assert_eq!(line.spans.last().unwrap().style, theme.style(Role::Warn));
         let later = RenderCtx::new(80, &theme, Clock::still(now + Duration::from_secs(8)));
         assert!(!text(mode.line(&later, idle())).contains("unavailable"));
+    }
+
+    /// A pull request a run opened sits at the right end, dim, under any notice, and
+    /// `ui.pr_footer = false` hides it.
+    #[test]
+    fn the_pull_request_sits_at_the_right_end_unless_turned_off() {
+        let theme = theme();
+        let now = Instant::now();
+        let ctx = RenderCtx::new(80, &theme, Clock::still(now));
+        let mut mode = BottomRow {
+            pull_request: Some("PR #12".into()),
+            ..BottomRow::default()
+        };
+        let line = mode.line(&ctx, idle());
+        let row = text(line.clone());
+        assert!(row.ends_with("PR #12"), "{row:?}");
+        assert_eq!(str_width(&row), 80);
+        assert_eq!(line.spans.last().unwrap().style, theme.style(Role::Dim));
+        mode.notice = Some(ModeNotice {
+            text: "Copied".into(),
+            tone: Tone::Success,
+            until: now + Duration::from_secs(7),
+        });
+        assert!(text(mode.line(&ctx, idle())).ends_with("Copied"));
+        mode.notice = None;
+        mode.pr_footer = false;
+        assert!(!text(mode.line(&ctx, idle())).contains("PR #12"));
     }
 
     #[test]

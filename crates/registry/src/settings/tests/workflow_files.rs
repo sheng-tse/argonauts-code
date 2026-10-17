@@ -9,8 +9,10 @@ use toml::{Table, Value};
 
 use super::{Repo, invalid, layer_of};
 use crate::resolve::leaves;
-use crate::workflows::DEFAULT_WORKFLOW;
-use crate::{SettingsError, SettingsSources, resolve, workflow_choices, workflow_choices_in};
+use crate::workflows::{BASE_WORKFLOW, DEFAULT_WORKFLOW};
+use crate::{
+    SettingsError, SettingsSources, SettingsWarning, resolve, workflow_choices, workflow_choices_in,
+};
 
 /// What each built-in sets on top of the defaults.
 const CONTRACT: &[(&str, &[(&str, &str)])] = &[
@@ -109,24 +111,39 @@ fn every_workflow_resolves() {
 }
 
 #[test]
-fn default_workflow_is_council() {
-    assert_eq!(DEFAULT_WORKFLOW, "council");
-    assert_eq!(Settings::default().workflow, DEFAULT_WORKFLOW);
+fn captain_runs_when_nothing_names_a_workflow_on_councils_settings() {
+    assert_eq!(DEFAULT_WORKFLOW, "captain");
+    assert_eq!(BASE_WORKFLOW, "council");
+    assert_eq!(Settings::default().workflow, BASE_WORKFLOW);
     let resolved = resolve(&SettingsSources::default()).unwrap();
-    assert_eq!(resolved.settings.workflow, "council");
-    assert!(
-        resolved
-            .entries
-            .iter()
-            .all(|entry| entry.layer != "workflow")
-    );
+    assert_eq!(resolved.settings.workflow, "captain");
+    let from_the_workflow: Vec<&str> = resolved
+        .entries
+        .iter()
+        .filter(|entry| entry.layer == "workflow")
+        .map(|entry| entry.key.as_str())
+        .collect();
+    assert_eq!(from_the_workflow, ["captain_or_crew.force"]);
+    // Council's file sets no key, so picking it gives the built-in settings.
     let council = resolve(&SettingsSources {
         overrides: vec!["workflow=council".into()],
         ..SettingsSources::default()
     })
     .unwrap();
-    assert_eq!(council.settings, resolved.settings);
-    assert_eq!(council.sha256, resolved.sha256);
+    assert_eq!(council.settings, Settings::default());
+}
+
+#[test]
+fn the_default_nobody_picked_gives_way_to_every_settings_file() {
+    let repo = Repo::new();
+    repo.global("[captain_or_crew]\nforce = \"crew\"\n");
+    let resolved = resolve(&repo.sources()).unwrap();
+    assert_eq!(resolved.settings.workflow, "captain");
+    assert_eq!(
+        resolved.settings.captain_or_crew.force,
+        Some(argonauts_core::settings::protocol::ForcedMode::Crew)
+    );
+    assert!(resolved.warnings.is_empty(), "{:?}", resolved.warnings);
 }
 
 #[test]
@@ -152,7 +169,7 @@ fn workflow_file_overrides_builtin() {
 
     // The default workflow reads its file the same way.
     repo.project("");
-    let path = repo.global_workflow("council", "[judging]\nanonymize = false\n");
+    let path = repo.global_workflow(DEFAULT_WORKFLOW, "[judging]\nanonymize = false\n");
     assert!(!resolve(&repo.sources()).unwrap().settings.judging.anonymize);
     fs::remove_file(path).unwrap();
     assert!(resolve(&repo.sources()).unwrap().settings.judging.anonymize);
@@ -309,26 +326,21 @@ fn repo_workflow_leaves_your_keys_alone() {
     );
     assert_eq!(resolved.warnings.len(), 4, "{:?}", resolved.warnings);
 
-    // The same file in your own workflows folder is yours, and applies whole. What's left to
-    // say is that it hides the same keys in config.local.toml.
+    // The same file in your own workflows folder is yours. While nothing names it, it is the
+    // default, which gives way to every settings file, so it hides none of their keys.
     fs::remove_file(path).unwrap();
     repo.global_workflow(DEFAULT_WORKFLOW, text);
     let resolved = resolve(&repo.sources()).unwrap();
-    let mut hidden: Vec<&str> = resolved
+    let hidden: Vec<&str> = resolved
         .warnings
         .iter()
         .filter(|warning| warning.contains("has no effect"))
         .filter_map(|warning| warning.split(' ').next())
         .collect();
-    hidden.sort_unstable();
-    assert_eq!(
-        hidden,
-        ["crew.main", "roles.reviewer.models"],
-        "{:?}",
-        resolved.warnings
-    );
-    assert_eq!(resolved.warnings.len(), 2, "{:?}", resolved.warnings);
-    assert_eq!(resolved.settings.crew.main.agent, "opencode");
+    assert!(hidden.is_empty(), "{:?}", resolved.warnings);
+    assert!(resolved.warnings.is_empty(), "{:?}", resolved.warnings);
+    assert_eq!(resolved.settings.crew.main.agent, "codex");
+    assert_eq!(resolved.settings.critique.rounds, 3);
     assert!(!resolved.settings.agents["codex"].enabled);
 }
 
@@ -447,7 +459,7 @@ fn the_file_that_picks_a_workflow_keeps_its_own_values() {
         layer_of(&resolved, "review.per_task").as_deref(),
         Some("workflow")
     );
-    let hidden: Vec<&String> = resolved
+    let hidden: Vec<&SettingsWarning> = resolved
         .warnings
         .iter()
         .filter(|w| w.starts_with("review.per_task") && w.contains("has no effect"))

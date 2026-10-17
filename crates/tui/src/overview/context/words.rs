@@ -1,6 +1,11 @@
 //! The Context tab's wording: Claude Code's own names for where things come from, its
 //! rounding of small counts, and which of the theme's colours draws each of its colours.
 
+use argonauts_core::Spend;
+use argonauts_core::views::RecordedContext;
+use time::OffsetDateTime;
+
+use crate::format::{self, ClockTime};
 use crate::theme::Role;
 
 /// A share of the window in tenths of a percent, as Claude Code's legend writes it, and
@@ -40,6 +45,63 @@ pub(super) fn count(n: usize, noun: &str) -> String {
     } else {
         format!("{n} {noun}s")
     }
+}
+
+/// `as its last answer left it, yesterday at 1:52 AM · 1 turn · 73.7k in, 916 out · $0.0040`,
+/// for a session read from its conversation's record.
+pub(super) fn as_left(recorded: &RecordedContext, spent: &Spend, now: OffsetDateTime) -> String {
+    let mut parts = vec![
+        format!(
+            "as its last answer left it, {}",
+            day_and_time(recorded.at, now)
+        ),
+        count(recorded.turns as usize, "turn"),
+    ];
+    if spent.total_tokens() > 0 {
+        parts.push(format!(
+            "{} in, {} out",
+            format::tokens(spent.input_tokens),
+            format::tokens(spent.output_tokens)
+        ));
+    }
+    if spent.cost_usd > 0.0 || spent.cost_partial {
+        parts.push(cost(spent));
+    }
+    parts.join(" \u{b7} ")
+}
+
+/// `today at 1:52 AM`, `yesterday at 1:52 AM`, then the day, `Oct 8 at 1:52 AM`, with its year
+/// when that isn't this one, in the zone `now` is in.
+fn day_and_time(at: OffsetDateTime, now: OffsetDateTime) -> String {
+    let at = at.to_offset(now.offset());
+    let time = ClockTime::from(at);
+    let (day, today) = (at.date(), now.date());
+    if day == today {
+        return format!("today at {time}");
+    }
+    if today.previous_day() == Some(day) {
+        return format!("yesterday at {time}");
+    }
+    let month = &day.month().to_string()[..3];
+    if day.year() == today.year() {
+        format!("{month} {} at {time}", day.day())
+    } else {
+        format!("{month} {}, {} at {time}", day.day(), day.year())
+    }
+}
+
+/// A cost as Claude Code writes one: to four places under half a dollar, `$0.0040`, and to the
+/// cent from there, marked `~` where it is worked out and `+` where some of it is missing.
+fn cost(spent: &Spend) -> String {
+    let usd = spent.cost_usd;
+    let amount = if usd > 0.5 {
+        format!("${:.2}", (usd * 100.0).round() / 100.0)
+    } else {
+        format!("${usd:.4}")
+    };
+    let estimated = if spent.cost_estimated { "~" } else { "" };
+    let partial = if spent.cost_partial { "+" } else { "" };
+    format!("{estimated}{amount}{partial}")
 }
 
 /// The order Claude Code lists its source groups in. A plugin's own group follows `Plugin`,
@@ -258,5 +320,44 @@ mod tests {
         assert_eq!(color_role("permission"), Role::Question);
         assert_eq!(color_role("purple_FOR_SUBAGENTS_ONLY"), MESSAGES);
         assert_eq!(color_role("a-colour-from-later"), Role::Dim);
+    }
+
+    /// The day a record's answer ended, said from now, and its cost as Claude Code writes one.
+    #[test]
+    fn a_recorded_session_says_when_and_what_it_cost() {
+        use time::macros::datetime;
+        let now = datetime!(2026-10-15 00:35 UTC);
+        assert_eq!(
+            day_and_time(datetime!(2026-10-15 00:10 UTC), now),
+            "today at 12:10 AM"
+        );
+        assert_eq!(
+            day_and_time(datetime!(2026-10-14 13:52 UTC), now),
+            "yesterday at 1:52 PM"
+        );
+        assert_eq!(
+            day_and_time(datetime!(2026-10-08 09:05 UTC), now),
+            "Oct 8 at 9:05 AM"
+        );
+        assert_eq!(
+            day_and_time(datetime!(2025-12-31 23:00 UTC), now),
+            "Dec 31, 2025 at 11:00 PM"
+        );
+        let spent = |cost_usd: f64, cost_estimated: bool| Spend {
+            cost_usd,
+            cost_estimated,
+            ..Spend::default()
+        };
+        assert_eq!(cost(&spent(0.004_032_7, false)), "$0.0040");
+        assert_eq!(cost(&spent(0.5, false)), "$0.5000");
+        assert_eq!(cost(&spent(1.256, true)), "~$1.26");
+        let recorded = RecordedContext {
+            at: datetime!(2026-10-14 01:52 UTC),
+            turns: 3,
+        };
+        assert_eq!(
+            as_left(&recorded, &Spend::default(), now),
+            "as its last answer left it, yesterday at 1:52 AM \u{b7} 3 turns"
+        );
     }
 }

@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Instant;
 
 use argonauts_core::events::session::LaunchRecord;
 use argonauts_core::limits::{HealthBoard, PlanUsageBoard};
@@ -22,7 +23,7 @@ use super::{CliRunner, capabilities, launch, request};
 use crate::cli_versions::CliVersions;
 use crate::doctor::resolve_binary;
 use crate::sandbox::profile::{build_cache_env, build_cache_root, launch_paths, rewritten_files};
-use crate::sandbox::proxy::{self, Allowlist, Proxy};
+use crate::sandbox::proxy::{self, Allowlist, Proxy, Refusal};
 use crate::sandbox::{ProfileInput, SandboxWrap, session_profile};
 
 pub struct Context {
@@ -112,6 +113,7 @@ impl Context {
             make_rewritten_files(self.adapter.id(), &user_home(&self.home))?;
         }
         if self.proxied(&profile) {
+            crate::health::goes_through_proxy(&spec.key);
             let (port, url) = self.proxy()?;
             profile.proxy_port = Some(port);
             set_env(&mut command, proxy::session_env(&url));
@@ -184,8 +186,7 @@ impl Context {
     /// The proxy's port, and its URL for this CLI's hosts, `sandbox.proxy_allow`, and your
     /// local endpoints.
     fn proxy(&self) -> Result<(u16, String), String> {
-        let allow = Allowlist::for_cli(self.adapter.id(), &self.rules.proxy_allow)?
-            .with_local_endpoints(local_endpoint_addresses(&self.settings));
+        let allow = self.proxy_allows()?;
         let proxy = match &self.proxy {
             Some(proxy) => proxy.clone(),
             None => proxy::shared().map_err(|err| {
@@ -193,6 +194,24 @@ impl Context {
             })?,
         };
         Ok((proxy.port(), proxy.session_url(&allow)))
+    }
+
+    /// The hosts this CLI's sessions may reach through the proxy.
+    fn proxy_allows(&self) -> Result<Allowlist, String> {
+        Ok(
+            Allowlist::for_cli(self.adapter.id(), &self.rules.proxy_allow)?
+                .with_local_endpoints(local_endpoint_addresses(&self.settings)),
+        )
+    }
+
+    /// The latest tunnel the proxy refused this CLI's sessions since `since`.
+    pub(super) fn last_proxy_refusal(&self, since: Instant) -> Option<Refusal> {
+        let allow = self.proxy_allows().ok()?;
+        let proxy = match &self.proxy {
+            Some(proxy) => proxy.clone(),
+            None => proxy::shared().ok()?,
+        };
+        proxy.refused_since(&allow, since).pop()
     }
 
     /// The session's profile, with what its launch names in the session folder readable, and the
@@ -422,6 +441,61 @@ mod tests {
             .iter()
             .find(|(set, _)| set == name)
             .map(|(_, value)| value.as_str())
+    }
+
+    /// A session that went out through the proxy and failed on the network names what the
+    /// proxy refused it since it started. Any other failure, and one refused nothing, keeps the
+    /// CLI's own words.
+    #[test]
+    fn a_proxied_session_that_failed_on_the_network_names_what_the_proxy_refused() {
+        use crate::cli_runner::session::{name_proxy_refusal, not_started};
+        use crate::sandbox::proxy::tests::{connect_as, to_loopback};
+        use argonauts_core::ErrorCategory;
+        use argonauts_core::events::session::EndReason;
+
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = Proxy::with_resolver(to_loopback(1, Arc::default())).unwrap();
+        let h = TestDriver::new(TestAdapter::new("true").with_driver(FakeDriver::default()));
+        let worker = h
+            .worker
+            .with_sandbox(Arc::new(Pretend(SandboxMode::Os)))
+            .with_proxy(proxy.clone());
+        let spec = spec_in(dir.path(), dir.path(), "hi");
+        let ctx = Context::new(&worker, spec, worker.home().unwrap());
+        let started = Instant::now();
+        let ended = |category, since| {
+            let reason = EndReason::CliError {
+                category,
+                message: "API Error: Connection error.".to_owned(),
+            };
+            let mut end = not_started(reason, started, None);
+            name_proxy_refusal(&ctx, &mut end, since);
+            match end.reason {
+                EndReason::CliError { message, .. } => message,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(
+            ended(ErrorCategory::Network, started),
+            "API Error: Connection error."
+        );
+
+        let url = proxy.session_url(&ctx.proxy_allows().unwrap());
+        let head = connect_as(&proxy, &url, "statsig.example.test:443");
+        assert!(head.starts_with("HTTP/1.1 403 "), "{head}");
+        assert_eq!(
+            ended(ErrorCategory::Network, started),
+            "the sandbox's proxy refused statsig.example.test, which isn't on the session's \
+             list\nAPI Error: Connection error."
+        );
+        assert_eq!(
+            ended(ErrorCategory::Server, started),
+            "API Error: Connection error."
+        );
+        assert_eq!(
+            ended(ErrorCategory::Timeout, Instant::now()),
+            "API Error: Connection error."
+        );
     }
 
     #[test]

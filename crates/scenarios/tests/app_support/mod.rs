@@ -18,7 +18,7 @@ use argonauts_core::events::RunEventKind;
 use argonauts_core::events::approval::{AnswerOption, ApprovalEvent, ApprovalKind, ApprovalOpened};
 use argonauts_core::layout::run_files;
 use argonauts_core::names::ChoiceId;
-use argonauts_scenarios::{COLS, ROWS, Scenario, WAIT, past_the_question_guard};
+use argonauts_scenarios::{COLS, ROWS, Scenario, WAIT, as_set_up, past_the_question_guard};
 use argonauts_testkit::{Invocation, Key, Pty, PtyCommand, argonauts_bin};
 
 pub use files::{TomlEntry, json_at, same_toml, toml_entries, toml_value};
@@ -119,7 +119,7 @@ pub fn scenario() -> anyhow::Result<AppScenario> {
 /// A repo with the fake agents and this global config.
 pub fn scenario_with(global_config: &str) -> anyhow::Result<AppScenario> {
     let scenario = AppScenario(Scenario::new(AGENTS)?);
-    std::fs::write(scenario.repo.global_config(), global_config)
+    std::fs::write(scenario.repo.global_config(), as_set_up(global_config))
         .context("writing the global config")?;
     Ok(scenario)
 }
@@ -400,13 +400,17 @@ pub fn wait_turns_finished(scenario: &Scenario, n: usize) -> anyhow::Result<()> 
 }
 
 /// The newest app choice of `kind` that is still open.
+/// A question drops the keys pressed in its first moment, so once it is open this waits that out,
+/// as someone reading it would.
 pub fn wait_open_choice(scenario: &Scenario, kind: ChoiceKind) -> anyhow::Result<AppChoice> {
-    wait_until(&format!("an open {kind:?} choice"), || {
+    let choice = wait_until(&format!("an open {kind:?} choice"), || {
         Ok(open_choices(scenario)?
             .into_iter()
             .rev()
             .find(|c| c.kind == kind))
-    })
+    })?;
+    past_the_question_guard();
+    Ok(choice)
 }
 
 pub fn open_choices(scenario: &Scenario) -> anyhow::Result<Vec<AppChoice>> {

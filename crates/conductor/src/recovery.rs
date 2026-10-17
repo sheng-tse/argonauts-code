@@ -47,6 +47,10 @@ const NO_AGENT_ISOLATES: &str = "no other agent keeps your plugins out of a blin
 const RESUME_MESSAGE: &str =
     "The run was paused and is resuming. Continue the task from where you stopped.";
 
+/// For a session that did its work but missed the answer format, so the work isn't done twice.
+const REPORT_ONLY_MESSAGE: &str = "Your work is done, but your report didn't match the answer \
+     format. Don't change anything else: send only the report now, in that format.";
+
 /// A task `spread` passed to a model, and the newest log event read when it did.
 type Picks = HashMap<TaskId, (ModelRef, u64)>;
 
@@ -172,6 +176,7 @@ impl Limits {
             context,
             rules: applied(&self.settings, context.role, &context.worker.agent_id()),
             fell_back: history.fallbacks,
+            missed_answers: history.missed_answers,
             checks_ran: history.checks_ran,
             provider: self.provider(events, &context.worker),
             model,
@@ -254,13 +259,19 @@ impl Limits {
             }
             ErrorCategory::Auth => self.logged_out(stop, ""),
             ErrorCategory::Billing => self.billing(stop, ""),
-            ErrorCategory::ContextFull => RecoveryAction::Rotate {
+            // A fresh session takes over with the note at once, since a resume can't work.
+            ErrorCategory::ContextFull | ErrorCategory::SessionLost => RecoveryAction::Rotate {
                 note: Box::new(stop.note.clone()),
             },
             ErrorCategory::ModelUnavailable => self.successor(stop),
             ErrorCategory::Limit => {
                 RecoveryAction::LimitHit(self.settings.limits.spend.when_reached)
             }
+            // Once, and only after real work: a session that missed the format before doing
+            // anything has nothing a report could save.
+            ErrorCategory::AnswerMissed if report_only_due(stop) => RecoveryAction::ResumeSame {
+                message: REPORT_ONLY_MESSAGE.to_owned(),
+            },
             ErrorCategory::InvalidRequest
             | ErrorCategory::AnswerMissed
             | ErrorCategory::Permission
@@ -886,6 +897,8 @@ impl LimitsService for Limits {
             native_cap_usd: limit
                 .filter(|limit| limit.unit == LimitUnit::Usd)
                 .map(|limit| limit.amount * NATIVE_CAP_MARGIN),
+            run_left: None,
+            spends_unseen: false,
         }
     }
 
@@ -1006,6 +1019,8 @@ struct Stop<'a> {
     rules: AppliedFallback,
     /// Earlier fallbacks of this task.
     fell_back: u32,
+    /// The task's sessions that missed the answer format, the stopped one too.
+    missed_answers: u32,
     /// Checks ran on the task's latest commit.
     checks_ran: bool,
     provider: String,
@@ -1014,6 +1029,13 @@ struct Stop<'a> {
     note: FallbackNote,
     timed_out: bool,
     placements: Placements,
+}
+
+/// A session that used tools before it missed the answer format, the task's first to miss it,
+/// which can be resumed.
+fn report_only_due(stop: &Stop<'_>) -> bool {
+    let end = &stop.context.end;
+    end.tool_calls > 0 && end.cli_session.is_some() && stop.missed_answers <= 1
 }
 
 impl Stop<'_> {

@@ -55,6 +55,8 @@ fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
     ApprovalSettings {
         // Autopilot everywhere only while both say so.
         autopilot: a.autopilot && b.autopilot,
+        // Read by the app at your terminal as it starts, never by a run.
+        start_mode: a.start_mode,
         answers: answered_by(a.answers.as_ref(), b.answers.as_ref()),
         decides: decides(&a.decides, &b.decides),
         // Topics that come back to you add up, so a reload can't drop one mid-run.

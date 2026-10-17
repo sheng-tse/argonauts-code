@@ -38,11 +38,12 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
         AppEvent::Notice { level, text } => {
             let label = match level {
                 NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet => "notice",
-                NoteLevel::Warn => "warning",
+                NoteLevel::Warn | NoteLevel::Caution => "warning",
                 NoteLevel::Error => "error",
             };
             labeled(label, text)
         }
+        AppEvent::SettingRefused { why, .. } => labeled("error", why),
         AppEvent::Hint { text } => labeled("notice", text),
         AppEvent::View { data } => view_lines(data, &state.names),
         AppEvent::Recap { text, .. } => labeled("recap", text),
@@ -54,6 +55,8 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
         | AppEvent::Names { .. }
         | AppEvent::RepoFiles { .. }
         | AppEvent::BackgroundRuns { .. }
+        | AppEvent::PastBegins
+        | AppEvent::PastDrawn
         | AppEvent::ConversationCleared => Vec::new(),
         AppEvent::SettingChanged {
             key,
@@ -75,20 +78,6 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             } else {
                 vec![format!("setting: {key} is {value} in {}", word(scope))]
             }
-        }
-        AppEvent::CondensedReplay {
-            turns,
-            milestones,
-            recap,
-            ..
-        } => {
-            let mut lines: Vec<String> = turns
-                .iter()
-                .flat_map(|turn| labeled(&party(&turn.from, &state.names), &turn.text))
-                .collect();
-            lines.extend(milestones.iter().flat_map(|line| labeled("run", line)));
-            lines.extend(labeled("recap", recap));
-            lines
         }
         AppEvent::ConversationResumed {
             conversation,
@@ -316,13 +305,33 @@ fn conversation_lines(event: &ConversationEvent, state: &AppState) -> Vec<String
         },
         ConversationEvent::TurnFailed { error, .. } => labeled(&format!("{agent_id} error"), error),
         ConversationEvent::TurnCancelled { .. } => vec![format!("{agent_id}: stopped")],
-        ConversationEvent::FellBack { from, to, why, .. } => {
-            vec![format!("{} {why}, so {} continues", from.agent, to.agent)]
+        ConversationEvent::FellBack {
+            from,
+            to,
+            why,
+            signed_out,
+            ..
+        } => {
+            let mut line = format!("{} {why}, so {} continues", from.agent, to.agent);
+            if let Some(login) = signed_out.as_ref().and_then(|out| out.login.as_deref()) {
+                line.push_str(&format!("; {login} signs it in again"));
+            }
+            vec![line]
         }
         ConversationEvent::AnswerRetried { .. } => {
             vec![format!(
                 "{agent_id}: that answer missed its format, so it is asked again"
             )]
+        }
+        ConversationEvent::ContextLeft { .. } => Vec::new(),
+        ConversationEvent::CommandTyped { text, .. } => vec![format!("you typed {text}")],
+        ConversationEvent::CommandReplied { reply } => {
+            let words = [
+                Some(reply.text.as_str()),
+                reply.value.as_deref(),
+                reply.after.as_deref(),
+            ];
+            vec![words.into_iter().flatten().collect::<Vec<_>>().join(" ")]
         }
     }
 }

@@ -1,0 +1,12 @@
+ ╭ Build · 5 agents ─────┬ check:dates ─────────────────────────────────────────────────────────────────────────────╮ 
+ │   ⏺ build:due-flag    │ ⏺ Running · Haiku 5.5 on Claude Code · in build:due-flag's workflow add-due-flag         │ 
+ │     ▾ add-due-flag    │ 4.2k tok · 3 tool calls · 12s                                                            │ 
+ │       ✔ Write   2/2   │                                                                                          │ 
+ │         ✔ write:add   │ Prompt · shortened by Claude Code · ⏎ expand                                             │ 
+ │         ✔ write:list  │   Check that todo add --due refuses a bad date, and that todo list prints the date.      │ 
+ │       2 Check   0/1   │ Activity · 3 tool calls · Claude Code names only the last                                │ 
+ │ ❯       ⏺ check:dates │   ⏺ Bash(npm test -- --grep due) · running                                               │ 
+ │   ✔ build:due-tests   │ Outcome                                                                                  │ 
+ │                       │   Still running…                                                                         │ 
+ ╰───────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────╯ 
+ ↑↓ agent · j/k scroll · ⏎ expand · esc back · to message or stop it, select build:due-flag                           

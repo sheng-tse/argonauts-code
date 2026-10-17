@@ -640,7 +640,7 @@ fn docked_workflow() -> Box<argonauts_tui::views::workflow::WorkflowView> {
     let data: argonauts_core::views::WorkflowView = serde_json::from_value(serde_json::json!({
         "run": "run-01", "id": "wf-001", "name": "fix-slugify-median",
         "description": "Fix slugify's dashes and median's even and empty lists, with tests",
-        "breadcrumb": [], "agents_done": 1, "agents_total": 2, "elapsed_ms": 271000,
+        "agents_done": 1, "agents_total": 2, "elapsed_ms": 271000,
         "spent": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0, "cost_usd": 0.0,
                   "cost_partial": false, "cost_estimated": false},
         "phases": [{"name": "Fix", "standard": "do", "status": "running",

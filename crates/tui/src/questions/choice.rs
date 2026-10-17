@@ -22,10 +22,30 @@ const NEEDED_UPDATE_GAP: usize = 4;
 /// The cells between the longest name `/templates` lists and what kind of thing it is.
 const TEMPLATES_GAP: usize = 3;
 
+/// The cells between a setup step's longest answer and what each answer means.
+const SETUP_GAP: usize = 4;
+
+/// The cells between Rename them and Leave them and what each does.
+const RENAMED_GAP: usize = 3;
+
 pub fn choice_question(id: u64, choice: &AppChoice) -> QuestionPrompt {
     let options = question_options(&choice.options, false);
     let mut question = QuestionPrompt::new(id, choice.title.clone(), choice.title.clone(), options);
     question.selected = first_recommended(&choice.options);
+    // A trust question starts on the safe answer, as Claude Code's trust dialog starts on
+    // "No, exit", and Enter confirms what the pointer is on.
+    if choice.kind == ChoiceKind::TrustProject {
+        if let Some(not_now) = choice
+            .options
+            .iter()
+            .position(|option| option.action == AnswerAction::Cancel)
+        {
+            question.selected = not_now;
+        }
+        question.enter_hint = Some("Enter to confirm".to_owned());
+        // A file that sets safety settings you haven't trusted is a warning, as its title says.
+        question.warns = true;
+    }
     question.allow_note = choice.free_text != FreeText::None;
     question.esc_hint = esc_hint(choice.kind).to_owned();
     // A preview runs only on its own key, y.
@@ -67,10 +87,20 @@ pub fn choice_question(id: u64, choice: &AppChoice) -> QuestionPrompt {
         | ChoiceKind::RewindTurn
         | ChoiceKind::ConfirmTakeOver
         | ChoiceKind::TermsNote
-        | ChoiceKind::Init
         | ChoiceKind::SettingScope
         | ChoiceKind::KeepInstructions
         | ChoiceKind::Git => question.detail = rows,
+        ChoiceKind::Init => {
+            question.detail = rows;
+            question.framed = true;
+            question.descriptions_beside = Some(SETUP_GAP);
+        }
+        ChoiceKind::RenamedSettings => {
+            question.noted_rows = choice.body.iter().take(MAX_SETUP_ROWS).cloned().collect();
+            question.framed = true;
+            question.warns = true;
+            question.descriptions_beside = Some(RENAMED_GAP);
+        }
         // Many names to pick from, so each takes one row with its kind beside it.
         ChoiceKind::Templates => {
             question.detail = rows;
@@ -134,7 +164,8 @@ fn raised_by_work(kind: ChoiceKind) -> bool {
         | ChoiceKind::TryWorkflow
         | ChoiceKind::Setup
         | ChoiceKind::Git
-        | ChoiceKind::Templates => false,
+        | ChoiceKind::Templates
+        | ChoiceKind::RenamedSettings => false,
     }
 }
 
@@ -158,7 +189,11 @@ pub fn esc_hint(kind: ChoiceKind) -> &'static str {
         | ChoiceKind::DetectedChecks
         | ChoiceKind::ConfirmConnect
         | ChoiceKind::Setup => "Esc for not now",
-        ChoiceKind::TermsNote | ChoiceKind::Init => "Esc to take the recommended answers",
+        ChoiceKind::TermsNote => "Esc to take the recommended answers",
+        // Esc takes the recommended answers on a setup step too, and its key line names only
+        // Enter, as Claude Code's first-run steps do.
+        ChoiceKind::Init => "",
+        ChoiceKind::RenamedSettings => "Esc to leave them",
         ChoiceKind::TryWorkflow => "y runs it · n closes it",
     }
 }

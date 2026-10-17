@@ -15,8 +15,8 @@ use argonauts_tui::bottom::{Picker, PickerEvent};
 use argonauts_tui::stability::{WIDTHS, assert_frames, assert_lines, buffer_text};
 use argonauts_tui::state::{AppState, RunState};
 use argonauts_tui::theme::Role;
+use argonauts_tui::views::settings::all_settings::AllSettingsView;
 use argonauts_tui::views::settings::approvals::ApprovalsView;
-use argonauts_tui::views::settings::config::ConfigView;
 use argonauts_tui::views::settings::flow::{self, Kept, Step};
 use argonauts_tui::views::{View, ViewCtx, ViewOutcome};
 use common::{fg, still, style_of, t0, text, theme};
@@ -1039,20 +1039,20 @@ fn key(view: &mut dyn View, code: KeyCode, state: &AppState) -> ViewOutcome {
 }
 
 #[test]
-fn config_view() {
+fn all_settings_view() {
     let state = AppState::default();
     for width in WIDTHS {
-        screen(&mut ConfigView::new(config_rows()), width, 24, &state);
+        screen(&mut AllSettingsView::new(config_rows()), width, 24, &state);
     }
     for (width, height) in SIZES {
-        let mut view = ConfigView::new(config_rows());
+        let mut view = AllSettingsView::new(config_rows());
         insta::assert_snapshot!(
-            format!("config_view_{width}"),
+            format!("all_settings_view_{width}"),
             screen(&mut view, width, height, &state)
         );
     }
 
-    let mut view = ConfigView::new(config_rows());
+    let mut view = AllSettingsView::new(config_rows());
     let shown = screen(&mut view, 120, 32, &state);
     for (key, layer) in [
         ("ui.theme", "everywhere (global)"),
@@ -1111,9 +1111,9 @@ fn config_view() {
 }
 
 #[test]
-fn config_view_opens_an_editor_with_right_and_left_goes_back() {
+fn all_settings_view_opens_an_editor_with_right_and_left_goes_back() {
     let state = AppState::default();
-    let mut view = ConfigView::new(config_rows());
+    let mut view = AllSettingsView::new(config_rows());
     for ch in "theme".chars() {
         key(&mut view, KeyCode::Char(ch), &state);
     }
@@ -1139,7 +1139,7 @@ fn config_view_opens_an_editor_with_right_and_left_goes_back() {
 }
 
 #[test]
-fn config_view_lists_the_fallback_context_and_summarizer() {
+fn all_settings_view_lists_the_fallback_context_and_summarizer() {
     let mut rows = config_rows();
     rows.extend([
         row(
@@ -1166,12 +1166,12 @@ fn config_view_lists_the_fallback_context_and_summarizer() {
     ]);
     let state = AppState::default();
     for (width, height) in SIZES {
-        let mut view = ConfigView::new(rows.clone());
+        let mut view = AllSettingsView::new(rows.clone());
         for ch in "fallback".chars() {
             key(&mut view, KeyCode::Char(ch), &state);
         }
         let shown = screen(&mut view, width, height, &state);
-        insta::assert_snapshot!(format!("config_view_fallback_{width}"), shown);
+        insta::assert_snapshot!(format!("all_settings_view_fallback_{width}"), shown);
         for (key, value, layer) in [
             ("fallback.context", "note+summary", "this project"),
             (
@@ -1191,7 +1191,7 @@ fn config_view_lists_the_fallback_context_and_summarizer() {
 }
 
 #[test]
-fn config_view_edits_the_fallback_summarizer_with_vim_keys() {
+fn all_settings_view_edits_the_fallback_summarizer_with_vim_keys() {
     let mut rows = config_rows();
     rows.push(row(
         "fallback.summarizer",
@@ -1206,8 +1206,8 @@ fn config_view_edits_the_fallback_summarizer_with_vim_keys() {
         ..UiSettings::default()
     });
     let theme = theme();
-    let mut view = ConfigView::new(rows);
-    let type_text = |view: &mut ConfigView, text: &str| {
+    let mut view = AllSettingsView::new(rows);
+    let type_text = |view: &mut AllSettingsView, text: &str| {
         for ch in text.chars() {
             key(view, KeyCode::Char(ch), &state);
         }
@@ -1403,7 +1403,7 @@ fn paste(view: &mut dyn View, text: &str, state: &AppState) -> ViewOutcome {
 #[test]
 fn pastes_reach_the_settings_editors() {
     let state = AppState::default();
-    let mut view = ConfigView::new(config_rows());
+    let mut view = AllSettingsView::new(config_rows());
     // Without an editor, a paste searches as typing does.
     paste(&mut view, "accent\n", &state);
     assert_eq!(view.filter, "accent");

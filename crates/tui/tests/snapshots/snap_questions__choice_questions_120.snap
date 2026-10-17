@@ -39,11 +39,11 @@ expression: text(&lines)
   approvals.merge.mode = "auto"
   limits.protected_paths = []
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
-  ❯ 1. Trust them
-    2. Not now
+    1. Trust them
+  ❯ 2. Not now
     3. Show the file
 
-  Enter to choose · Esc for not now
+  Enter to confirm · Esc for not now
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◆ Use these check commands?
@@ -67,14 +67,15 @@ expression: text(&lines)
   Enter to choose · Esc to take the recommended answers
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◆ How should the crew work?
-  You can change it later with /workflow.
+ How should the crew work?
+ You can change it later with /workflow.
 
-  ❯ 1. council (recommended)
-    2. orchestrator
-    3. captain
+ ❯ 1. council (recommended)
+   2. orchestrator
+   3. captain
 
-  Enter to choose · Esc to take the recommended answers
+ Enter to choose
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◆ Rewind task-002 to fallback-1?

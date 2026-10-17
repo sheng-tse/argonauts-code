@@ -218,6 +218,7 @@ fn a_run_from_an_older_build_shows_its_day_and_the_key_that_archives_it() {
         waiting: Vec::new(),
         live: false,
         remind: false,
+        shape_known: true,
     };
     view.runs = vec![run("Add due dates", RunState::Crashed, "stopped")];
     let mut status = tab(view.clone());
@@ -308,7 +309,7 @@ fn status_draws_every_part_of_the_picture() {
     assert!(row(&rows, "○ OpenCode").contains("—         not installed · /update can't add it"));
     assert!(
         row(&rows, "◆ settings in effect")
-            .ends_with("enter shows each key and where it came from │")
+            .ends_with("enter opens All settings: each key and where it came from │")
     );
     assert!(row(&rows, "~/.argonauts/config.toml").contains("1 key · your settings"));
     assert!(row(&rows, ".argonauts/config.local.toml").contains("1 key · this folder, only you"));
@@ -333,7 +334,7 @@ fn status_draws_every_part_of_the_picture() {
 }
 
 #[test]
-fn enter_on_the_settings_lists_each_key_with_where_it_came_from_and_enter_closes_it() {
+fn enter_on_the_settings_opens_all_settings_over_the_panel() {
     let state = state();
     let mut status = tab(picture());
     // Into the cards, past your CLIs and their health, to the settings.
@@ -342,29 +343,13 @@ fn enter_on_the_settings_lists_each_key_with_where_it_came_from_and_enter_closes
     }
     let shown = rows(&mut status, &state, 110);
     assert!(
-        shown.last().unwrap().contains("enter each key"),
+        shown.last().unwrap().contains("enter all settings"),
         "{shown:#?}"
-    );
-    key(&mut status, &state, KeyCode::Enter);
-    let opened = rows(&mut status, &state, 110);
-    assert!(
-        row(&opened, "crew.main").contains("claude-code · ~/.argonauts/config.toml"),
-        "{opened:#?}"
-    );
-    assert!(row(&opened, "│ effort").contains("xhigh · .argonauts/config.local.toml"));
-    assert!(
-        opened
-            .last()
-            .unwrap()
-            .contains("enter closes the keys · tab tabs"),
-        "{opened:#?}"
     );
     assert!(matches!(
         key(&mut status, &state, KeyCode::Enter),
-        ViewOutcome::Consumed
+        ViewOutcome::Request(ViewRequest::Settings { section: None })
     ));
-    let closed = rows(&mut status, &state, 110);
-    assert!(!closed.iter().any(|row| row.contains("crew.main")));
     // Esc has one meaning: it closes the panel.
     assert!(matches!(
         key(&mut status, &state, KeyCode::Esc),
@@ -390,6 +375,7 @@ fn the_runs_card_lists_this_folders_runs_and_enter_opens_the_newest() {
         waiting: Vec::new(),
         live: true,
         remind: false,
+        shape_known: true,
     }];
     let mut status = tab(view);
     let shown = rows(&mut status, &state, 110);
@@ -474,7 +460,7 @@ fn home_and_end_go_to_the_first_and_last_card() {
         rows(status, &state, 110)
             .last()
             .unwrap()
-            .contains("enter each key")
+            .contains("enter all settings")
     };
     key(&mut status, &state, KeyCode::End);
     assert!(!on_settings(&mut status));

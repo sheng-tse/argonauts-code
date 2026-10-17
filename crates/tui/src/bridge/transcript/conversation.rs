@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use argonauts_core::app::{ConversationEvent, TurnReply};
+use argonauts_core::app::{ConversationEvent, SignedOut, TurnReply};
 use argonauts_core::events::session::CliWorkflowRun;
 use argonauts_core::input::{ParsedInput, parse_input_with};
 use argonauts_core::names::{ModelRef, TurnId};
@@ -17,7 +17,7 @@ use crate::bottom::verbs::VerbStyle;
 use crate::bridge::{plugin_output, tools};
 use crate::cell::{
     AssistantMessage, Cell, CollapsedGroup, Notice, ResultLine, Tone, ToolCall, ToolItem, ToolKind,
-    ToolState, TurnEnd, UserMessage, WorkflowResult,
+    ToolState, Trailing, TurnEnd, UserMessage, WorkflowResult,
 };
 use crate::format::WallClock;
 use crate::history::CellId;
@@ -144,9 +144,10 @@ impl ConversationTurns {
                 to,
                 why,
                 told,
+                signed_out,
             } => {
                 if let Some(open) = self.open.as_mut().filter(|open| open.turn == *turn) {
-                    fell_back(open, from, to, why, told, cx);
+                    fell_back(open, from, to, why, told, signed_out.as_ref(), cx);
                 }
             }
             ConversationEvent::Joined { turn, text } => {
@@ -171,6 +172,18 @@ impl ConversationTurns {
                     emit(cx, Notice::new(Tone::Error, text));
                 }
             }
+            // The Context tab's count; nothing prints.
+            ConversationEvent::ContextLeft { .. } => {}
+            // Live, the command printed as you typed it.
+            ConversationEvent::CommandTyped { text, .. } if cx.replaying() => {
+                emit(cx, UserMessage::command(text.clone()));
+            }
+            ConversationEvent::CommandTyped { .. } => {}
+            // Live, the command printed it as it answered.
+            ConversationEvent::CommandReplied { reply } if cx.replaying() => {
+                emit(cx, Cell::Custom(Box::new(ResultLine::of_reply(reply))));
+            }
+            ConversationEvent::CommandReplied { .. } => {}
         }
     }
 
@@ -204,7 +217,7 @@ impl ConversationTurns {
             .with_keywords(cx.keywords_of(worker))
             .with_pictures(cx.model.bottom.composer.picture_numbers_in(text))
             .running_a_command(runs_a_command);
-        let replaying = cx.replaying();
+        let replaying = cx.history_only();
         if !continues {
             if replaying {
                 cx.model.history.keep(message);
@@ -275,7 +288,9 @@ impl ConversationTurns {
                 VerbTheme::Plain => VerbStyle::Plain,
             };
             let label = format!("{} for", cx.model.verb_picker.done(style));
-            let end = TurnEnd::new(label, elapsed, Some(clock.clock_now()));
+            // A turn drawn again from its record ended then, and the record keeps no clock.
+            let done = (!cx.replaying()).then(|| clock.clock_now());
+            let end = TurnEnd::new(label, elapsed, done);
             emit(cx, end);
         }
     }
@@ -826,14 +841,15 @@ fn after_parts<'a>(reply: &'a str, parts: &[String]) -> &'a str {
 }
 
 /// `↷ Claude Code hit its usage limit · Codex continues with GPT-5.6 Luna`, with what the
-/// next agent was told under it. What the first agent did stays above, and the next one's
-/// work streams below as the same turn.
+/// next agent was told under it, or the one line of a CLI that turned out signed out. What the
+/// first agent did stays above, and the next one's work streams below as the same turn.
 fn fell_back(
     open: &mut OpenTurn,
     from: &ModelRef,
     to: &ModelRef,
     why: &str,
     told: &str,
+    signed_out: Option<&SignedOut>,
     cx: &mut Cx<'_>,
 ) {
     end_parts(open, ToolState::Stopped, cx);
@@ -845,6 +861,11 @@ fn fell_back(
         return;
     }
     let names = &cx.state.names;
+    if let Some(out) = signed_out {
+        let line = signed_out_line(&names.cli(&from.agent), out, &names.cli(&to.agent));
+        emit(cx, line);
+        return;
+    }
     let next = names.cli(&to.agent);
     let text = match names.model(&to.agent, to.model.as_deref()) {
         Some(model) => format!(
@@ -858,6 +879,27 @@ fn fell_back(
         notice = notice.with_detail(format!("Told: {told}"));
     }
     emit(cx, notice);
+}
+
+/// `● Claude Code is signed out (its sign-in was revoked) · run claude /login · Codex answers
+/// meanwhile`: one line, with the command that signs it in again at full strength.
+fn signed_out_line(cli: &str, out: &SignedOut, next: &str) -> Notice {
+    let mut trailing = Vec::new();
+    let why = out.why.trim();
+    if !why.is_empty() {
+        trailing.push(Trailing::Dim(format!(" ({why})")));
+    }
+    if let Some(login) = out
+        .login
+        .as_deref()
+        .map(str::trim)
+        .filter(|login| !login.is_empty())
+    {
+        trailing.push(Trailing::Dim(" · run ".to_owned()));
+        trailing.push(Trailing::Command(login.to_owned()));
+    }
+    trailing.push(Trailing::Dim(format!(" · {next} answers meanwhile")));
+    Notice::headline(Tone::Warning, format!("{cli} is signed out"), None).with_trailing(trailing)
 }
 
 /// What a stopped or failed turn leaves: its calls and the answer as far as it got.

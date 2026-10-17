@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use argonauts_core::RunId;
 use argonauts_core::display_names::DisplayNames;
+use argonauts_core::events::RunEvent;
 use argonauts_core::events::run::{RunOutcome, RunStarted};
+use argonauts_core::events::session::CliWorkflowRun;
 use argonauts_core::events::workflow::{WorkflowDeclared, WorkflowReport};
 use argonauts_core::hidden_git::MergedInto;
 use argonauts_core::names::ModelRef;
@@ -70,6 +72,8 @@ pub(super) fn declared(
         in_use,
         based_on,
         reviewers_asked: story.reviewers_asked.clone(),
+        captain: false,
+        reported: None,
     };
     let waits = state.is_some_and(|run| run.reported.expected_from(&declared.id));
     story.workflow = Some(start.title());
@@ -90,9 +94,69 @@ pub(super) fn reported(report: &WorkflowReport, story: &mut RunStory, cx: &mut C
             .workflow_start
             .as_ref()
             .is_some_and(|start| start.declared.id == report.step.workflow);
-    if let Some(start) = story.workflow_start.take_if(|_| ours) {
+    if let Some(mut start) = story.workflow_start.take_if(|_| ours) {
+        let templates = [
+            Some(start.declared.name.as_str()),
+            start.in_use.as_deref(),
+            start.based_on.as_deref(),
+        ];
+        if argonauts_core::text::names_the_run(&report.workflow.name, &templates) {
+            start.reported = Some(report.workflow.name.clone());
+        }
+        story.workflow = Some(start.title());
+        story.run_name = Some(start.name());
         emit(cx, start.item(Some(report)));
     }
+}
+
+/// A task's session reported its CLI's own workflow, as Claude Code's own does when it runs the
+/// run's steps. Its first report that names phases is the run's shape, so the start item that
+/// waited for it prints then, not at the run's end.
+pub(super) fn tasks_own_reported(
+    event: &RunEvent,
+    workflow: &CliWorkflowRun,
+    story: &mut RunStory,
+    cx: &mut Cx<'_>,
+) {
+    let named = !workflow.phases.is_empty() || !workflow.agents.is_empty();
+    let tasks_own = event
+        .session
+        .as_ref()
+        .zip(cx.state.runs.get(&event.run_id))
+        .and_then(|(key, run)| run.sessions.get(key))
+        .is_some_and(|session| session.task.is_some());
+    if let Some(mut start) = story.workflow_start.take_if(|_| named && tasks_own) {
+        // The task's own CLI runs it, its main agent captaining its own workflow.
+        start.captain = true;
+        story.workflow = Some(start.title());
+        story.run_name = Some(start.name());
+        story.announced.push(workflow.id.clone());
+        emit(cx, start.item(None));
+        return;
+    }
+    // A later workflow the task's CLI starts carries on the run's own, and prints as Claude
+    // Code prints every Workflow call: `● Workflow(final-signoff-money · in Fix the money
+    // rounding)`.
+    let later = named
+        && tasks_own
+        && !story.announced.is_empty()
+        && !story.announced.contains(&workflow.id);
+    if later {
+        story.announced.push(workflow.id.clone());
+        let run = story.run_name.clone().unwrap_or_default();
+        emit(cx, later_item(&workflow.name, &run));
+    }
+}
+
+/// The Workflow item of a later workflow for the run's task, under the run's name.
+fn later_item(name: &str, run: &str) -> ToolCall {
+    let name = Some(sanitize_line(name).trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "workflow".to_owned());
+    let mut call = ToolCall::call(ToolKind::Other, "Workflow", format!("{name} · in {run}"))
+        .with_state(ToolState::Done);
+    call.push(ToolItem::Workflow(WorkflowResult::Running));
+    call
 }
 
 /// A run's start item that hasn't printed.
@@ -106,18 +170,36 @@ pub(super) struct Start {
     based_on: Option<String>,
     /// The reviewers your words named, by name.
     reviewers_asked: Option<String>,
+    /// Whether the task's own CLI runs it as its workflow, as Claude Code's own does.
+    captain: bool,
+    /// The name its script gave the workflow in its first report, which the run then goes by.
+    reported: Option<String>,
 }
 
 impl Start {
+    /// The run's name as its view's header says it, a slug drawn as its words.
+    fn name(&self) -> String {
+        let name = self
+            .reported
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&self.name);
+        argonauts_core::text::title_words(&sanitize_line(name))
+    }
+
     /// The run's name and what kind of workflow it is, as its view's header says them: `Add
     /// due dates · orchestrator workflow`.
     fn title(&self) -> String {
-        let kind = self
-            .based_on
-            .as_deref()
-            .or(self.in_use.as_deref())
-            .map(|kind| format!(" · {} workflow", kind.to_lowercase()));
-        format!("{}{}", sanitize_line(&self.name), kind.unwrap_or_default())
+        let kind = if self.captain {
+            Some(" · Captain".to_owned())
+        } else {
+            self.based_on
+                .as_deref()
+                .or(self.in_use.as_deref())
+                .map(|kind| format!(" · {}", argonauts_core::text::workflow_kind(kind)))
+        };
+        format!("{}{}", self.name(), kind.unwrap_or_default())
     }
 
     /// `● Workflow(<name> · <kind> workflow)`, and under it that it runs in the background and
@@ -261,20 +343,28 @@ mod tests {
             in_use: None,
             based_on: Some("orchestrator".to_owned()),
             reviewers_asked: None,
+            captain: false,
+            reported: None,
         }
+    }
+
+    /// The dark theme as on macOS, where items start with Claude Code's `⏺`, as the pictures do.
+    fn on_macos() -> crate::theme::Theme {
+        let mut theme = dark();
+        theme.glyphs = crate::theme::Glyphs::MACOS;
+        theme
     }
 
     /// The run's two items as their picture draws them, cell for cell: Claude Code's Workflow
     /// call with where to watch it, then the same call with how it ended.
     #[test]
     fn the_workflows_items_read_as_their_picture() {
-        let theme = dark();
+        let theme = on_macos();
         let ctx = RenderCtx::new(118, &theme, Clock::still(Instant::now()));
         let mut picture = picture!("workflow_transcript");
-        // Every row of the conversation opens with the theme's bullet, in green once its call
-        // returned. The picture draws Claude Code's own glyph, plain.
+        // A call that returned has its bullet green, as Claude Code's own; the picture draws
+        // it plain.
         for row in [0, 3] {
-            picture.reword(row, "⏺", "●");
             picture.recolour(row, 0, theme.style(Role::Success).fg);
         }
         let started = start().item(None);
@@ -287,5 +377,42 @@ mod tests {
             counts: "6m 20s · 6 agents · 177k tokens · merged onto main".to_owned(),
         }));
         picture.assert_drawn(3..5, &buffer_of(&ended.lines(&ctx), 118), 0);
+    }
+
+    /// A Captain task's own CLI running its workflow: the line names the run by its words and
+    /// its mode, once the phases are known, and again with how it ended.
+    #[test]
+    fn a_captain_runs_workflow_line_reads_as_its_pictures() {
+        let theme = on_macos();
+        let ctx = RenderCtx::new(118, &theme, Clock::still(Instant::now()));
+        let mut known = picture!("workflow_shape_known");
+        let mut done = picture!("captain_done");
+        for (picture, row) in [(&mut known, 13), (&mut done, 2)] {
+            picture.recolour(row, 0, theme.style(Role::Success).fg);
+        }
+        let mut start = start();
+        start.name = "fix-the-money-rounding".to_owned();
+        start.captain = true;
+        known.assert_drawn(13..15, &buffer_of(&start.item(None).lines(&ctx), 118), 0);
+
+        let mut ended =
+            ToolCall::call(ToolKind::Other, "Workflow", start.title()).with_state(ToolState::Done);
+        ended.push(ToolItem::Workflow(WorkflowResult::Ended {
+            how: WorkflowEnd::Completed,
+            counts: "1m 31s · 6 agents · 157k tokens · merged onto main".to_owned(),
+        }));
+        done.assert_drawn(2..4, &buffer_of(&ended.lines(&ctx), 118), 0);
+    }
+
+    /// Claude Code's second Workflow call for the task prints as it prints every one, under
+    /// the run's name.
+    #[test]
+    fn a_later_workflow_of_the_task_prints_as_its_picture() {
+        let theme = on_macos();
+        let ctx = RenderCtx::new(118, &theme, Clock::still(Instant::now()));
+        let mut picture = picture!("nested_captain_second");
+        picture.recolour(4, 0, theme.style(Role::Success).fg);
+        let item = later_item("final-signoff-money", "Fix the money rounding");
+        picture.assert_drawn(4..6, &buffer_of(&item.lines(&ctx), 118), 0);
     }
 }

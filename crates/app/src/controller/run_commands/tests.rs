@@ -265,7 +265,7 @@ async fn status_and_every_view_start_no_model_session() {
         },
     ];
     let views = [
-        ViewRequest::Runs,
+        ViewRequest::ResumeList,
         ViewRequest::Status,
         ViewRequest::Context,
         ViewRequest::AllRepos,
@@ -695,6 +695,7 @@ fn listed(run: &str, live: bool) -> RunSummary {
         live,
         remind: false,
         name: None,
+        shape_known: true,
     }
 }
 
@@ -849,6 +850,7 @@ async fn context_lists_the_conversation_then_live_sessions_each_capped_by_its_wi
         estimated: false,
         counts: false,
         categories: Vec::new(),
+        recorded: None,
     };
 
     let rows = context_rows(&mut rig, &conversation).await;
@@ -1168,7 +1170,12 @@ async fn run_follow_up(rig: &mut Rig, run: Option<RunId>, request: String) -> su
 async fn follow_up_goes_to_the_crew_while_ultracode_is_on() {
     for on in [false, true] {
         let mut rig = Rig::with(true, |global| {
-            std::fs::write(global, format!("ultracode = {on}\n")).unwrap();
+            // Ultracode sends work to a crew workflow; Captain runs its own.
+            std::fs::write(
+                global,
+                format!("workflow = \"council\"\nultracode = {on}\n"),
+            )
+            .unwrap();
         });
         let merged = RunSummary {
             state: RunState::Merged,

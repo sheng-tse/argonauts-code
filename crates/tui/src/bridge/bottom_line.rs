@@ -601,7 +601,8 @@ pub fn clock_time(at: OffsetDateTime, clock: &Clock) -> String {
         12 => (12, "pm"),
         hour => (hour - 12, "pm"),
     };
-    let time = format!("{hour}:{:02}{half}", local.minute());
+    let time = crate::format::on_24_hours(local.hour(), local.minute())
+        .unwrap_or_else(|| format!("{hour}:{:02}{half}", local.minute()));
     if local.date() == clock.now.to_offset(clock.utc_offset).date() {
         time
     } else {

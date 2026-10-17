@@ -1,5 +1,5 @@
-  ◯ Add due dates         ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  2/4 · 4m12s · ↓ 128k tokens
-  ◯ Add due dates         ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/3 · 2m26s · ↓ 83.6k tokens · ↷ Sonnet 5.5 for Opus 5.5
-  ⏸ Add due dates         ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/3 · 2m46s · ↓ 84.2k tokens · needs you · Claude Code is down
-  ✔ Add due dates         ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  6/6 · 6m20s · ↓ 177k tokens · merged onto main
-❯ ✘ Add due dates         ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  3/6 · 5m02s · ↓ 140k tokens · stopped · /resume carries it on
+  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  2/4 · 4m12s · ↓ 128k tokens
+  ◯ Add due dates           ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/3 · 2m26s · ↓ 83.6k tokens · ↷ Sonnet 5.5 for Opus 5.5
+  ⏸ Add due dates           ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/3 · 2m46s · ↓ 84.2k tokens · needs you · Claude Code is down
+  ✔ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  6/6 · 6m20s · ↓ 177k tokens · merged onto main
+❯ ✘ Add due dates           ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  3/6 · 5m02s · ↓ 140k tokens · stopped · /resume carries it on

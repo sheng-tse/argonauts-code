@@ -80,10 +80,37 @@ pub struct JobWait {
     pub job: JobRef,
     /// The agent the job was asked of.
     pub stopped: ModelRef,
-    /// Who could take it on another CLI, best first.
+    /// Who could take it on another CLI, best first. For a job its builder's provider keeps
+    /// waiting, everyone you could still let take it, the role's own fallbacks first.
     pub elsewhere: Vec<ModelRef>,
     /// What the job is called: its task's title, or its role in words.
     pub title: String,
+    /// What keeps it from those agents. A record without one was kept by `same_cli`.
+    #[serde(default, skip_serializing_if = "JobKeeper::is_same_cli")]
+    pub kept_by: JobKeeper,
+}
+
+/// What keeps a waiting job from every agent that could take it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "rule", rename_all = "snake_case")]
+pub enum JobKeeper {
+    /// `fallback.same_cli`: only the asked CLI's own models may take it.
+    #[default]
+    SameCli,
+    /// A review or a ruling never falls back to its builder's own provider by itself, and
+    /// every agent left is of that provider.
+    BuildersProvider {
+        /// Whose work it reviews or judges.
+        builders: Vec<ModelRef>,
+        /// Who stopped and why, in one clause.
+        why: String,
+    },
+}
+
+impl JobKeeper {
+    pub fn is_same_cli(&self) -> bool {
+        *self == Self::SameCli
+    }
 }
 
 /// Who stopped, why, and who could continue. Also the fallback approval's question.

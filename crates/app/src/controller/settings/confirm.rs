@@ -165,3 +165,36 @@ mod tests {
         assert!(safety_lines(&dir.path().join("missing.toml")).is_empty());
     }
 }
+
+#[cfg(test)]
+mod picture_tests {
+    use argonauts_tui::questions::choice_question;
+
+    use super::*;
+    use crate::golden::{assert_looks, drawn_rows, picture_rows, still, theme};
+
+    #[test]
+    fn the_start_trust_question_reads_as_the_picture_draws_it() {
+        let unsafe_lines = [
+            "approvals.judge.model = \"antigravity-cli\"".to_owned(),
+            "checks.run = [{ command = [\"node\", \"--test\"], name = \"tests\" }]".to_owned(),
+        ];
+        let choice = start_trust_question(
+            ChoiceId::numbered(1),
+            ".argonauts/config.local.toml",
+            &unsafe_lines,
+        );
+        let theme = theme();
+        let lines = choice_question(1, &choice).lines(&still(&theme));
+        crate::golden::dump("trust_question", &lines);
+        assert_eq!(
+            drawn_rows(&lines),
+            picture_rows(include_str!("../../../tests/golden/trust_question.txt"))
+        );
+        assert_looks(
+            &theme,
+            &lines,
+            include_str!("../../../tests/golden/trust_question.html"),
+        );
+    }
+}

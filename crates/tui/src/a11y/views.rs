@@ -1,7 +1,6 @@
 //! Views as flat lines: a table row reads as `header: value` pairs, a list as numbered items,
 //! and a pager as its lines.
 
-use argonauts_core::agent_sessions::{AgentSession, Resume};
 use argonauts_core::api::RunSummary;
 use argonauts_core::app::ViewData;
 use argonauts_core::display_names::DisplayNames;
@@ -17,27 +16,27 @@ use super::words::{duration, tokens, word};
 
 pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
     match data {
-        ViewData::Runs {
-            runs,
+        ViewData::ResumeList {
             conversations,
             sessions,
-            agents,
-            ..
         } => {
             let mut lines = Vec::new();
             if !conversations.is_empty() {
                 lines.push(format!("conversations: {}", conversations.len()));
                 lines.extend(numbered(conversations.iter().map(|conversation| {
+                    let waits = if conversation.needs_you {
+                        ", a run of it waits on you"
+                    } else {
+                        ""
+                    };
                     format!(
-                        "{}: {}, turns: {}",
+                        "{}: {}, turns: {}{waits}",
                         conversation.conversation,
                         one(&conversation.title),
                         conversation.turns
                     )
                 })));
             }
-            lines.push(format!("runs: {}", runs.len()));
-            lines.extend(numbered(runs.iter().map(run_row)));
             if !sessions.is_empty() {
                 lines.push(format!("agent cli sessions: {}", sessions.len()));
                 lines.extend(numbered(sessions.iter().map(|session| {
@@ -49,16 +48,11 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
                     )
                 })));
             }
-            if !agents.is_empty() {
-                lines.push(format!("agent sessions: {}", agents.len()));
-                lines.extend(numbered(
-                    agents.iter().map(|agent| agent_line(agent, names)),
-                ));
-            }
-            if !runs.is_empty() || !conversations.is_empty() || !sessions.is_empty() {
+            if conversations.is_empty() && sessions.is_empty() {
+                lines.push("nothing to resume here yet".to_owned());
+            } else {
                 lines.push(
-                    "resume: type /resume and a conversation's, a run's, or a session's id to \
-                     carry it on."
+                    "resume: type /resume and a conversation's or a session's id to carry it on."
                         .to_owned(),
                 );
             }
@@ -390,13 +384,6 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             ));
             lines
         }
-        ViewData::AgentSessions { run, agents } => {
-            let mut lines = vec![format!("agent sessions of {run}: {}", agents.len())];
-            lines.extend(numbered(
-                agents.iter().map(|agent| agent_line(agent, names)),
-            ));
-            lines
-        }
         ViewData::Checkpoints {
             run, checkpoints, ..
         } => {
@@ -408,31 +395,6 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             lines
         }
     }
-}
-
-/// An agent's session by the id `/resume` takes, with whether it carries on, and its helpers,
-/// which come back with it.
-fn agent_line(agent: &AgentSession, names: &DisplayNames) -> String {
-    let resume = match &agent.resume {
-        Resume::Ready => "resumable".to_owned(),
-        Resume::Working => "working".to_owned(),
-        Resume::RunOwns => "its run owns it until the run ends".to_owned(),
-        Resume::Cannot { why } => format!("can't resume, {}", one(why)),
-    };
-    let mut line = format!(
-        "{}: {}, {}, {resume}",
-        one(&agent.reference().to_string()),
-        agent.role.as_str(),
-        one(&names.worker(&agent.worker))
-    );
-    let helpers = agent.helper_counts();
-    if !helpers.is_empty() {
-        line.push_str(&format!(
-            ", inside it: {}, not resumable on their own",
-            one(&helpers)
-        ));
-    }
-    line
 }
 
 /// A workflow file's page as lines: where the file is, each step with its role, who would
@@ -638,8 +600,7 @@ mod tests {
 
     #[test]
     fn the_resume_list_reads_cli_sessions_by_the_id_resume_takes() {
-        let data = ViewData::Runs {
-            runs: Vec::new(),
+        let data = ViewData::ResumeList {
             conversations: Vec::new(),
             sessions: vec![CliSession {
                 agent_id: AgentId("codex".into()),
@@ -653,17 +614,13 @@ mod tests {
                 last_message: None,
                 turns: 3,
             }],
-            agents: Vec::new(),
-            agents_read: Vec::new(),
         };
         assert_eq!(
             view_lines(&data, &Default::default()),
             vec![
-                "runs: 0",
                 "agent cli sessions: 1",
                 "  1. codex:019a5770-e3f9: Explain the input loop, agent: Codex",
-                "resume: type /resume and a conversation's, a run's, or a session's id to carry \
-                 it on.",
+                "resume: type /resume and a conversation's or a session's id to carry it on.",
             ]
         );
     }
@@ -689,6 +646,7 @@ mod tests {
                 argonauts_core::views::Tone::Warn,
             )),
             inner: None,
+            left_out: false,
         };
         let read = agent_row(&row, &Default::default());
         assert!(

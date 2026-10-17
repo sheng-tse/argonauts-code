@@ -546,6 +546,17 @@ impl Host {
                 () = shutdown.cancelled() => return HostExit::Waiting(reason),
             }
             retried_idle = false;
+            // What a client saved while the run waited, as for a run that stopped fully until
+            // /resume, goes to the engine this wake starts.
+            match self.queue_pending(queue).await {
+                Ok((receipts, again)) => {
+                    reopen |= again;
+                    if !receipts.is_empty() {
+                        tokio::spawn(report_pending(self.sink.clone(), receipts));
+                    }
+                }
+                Err(reason) => return self.crash(reason),
+            }
         }
     }
 
@@ -840,8 +851,10 @@ mod tests {
 
         /// A child that another test is spawning holds a copy of every descriptor until its
         /// exec closes them, so a lock let go a moment ago can read as held for a little while.
+        /// Waits for the run host's lock to go, as its exit lets go of it. A machine busy with
+        /// a full test run may take a while, so the bound only catches a lock that never goes.
         async fn lock_released(&self) -> bool {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + Duration::from_secs(60);
             while RunLock::is_held(&self.run_dir) {
                 if Instant::now() > deadline {
                     return false;

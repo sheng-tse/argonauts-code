@@ -339,6 +339,7 @@ async fn a_follow_up_run_waits_on_the_question_too() {
         waiting: Vec::new(),
         live: false,
         remind: false,
+        shape_known: true,
     };
     let options = CliOptions {
         runs: vec![merged.clone()],

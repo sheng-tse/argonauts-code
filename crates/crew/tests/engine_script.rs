@@ -1339,7 +1339,7 @@ async fn a_workflow_run_as_a_step_shows_under_its_own_name_and_is_not_run_twice(
 #[tokio::test]
 async fn with_nesting_off_a_script_cannot_run_another_workflow() -> anyhow::Result<()> {
     let (mut crew, _worker) = crew("ship-with-docs")?;
-    crew.settings.workflows.max_depth = 1;
+    crew.settings.workflows.max_depth = 0;
     write_workflow(&crew, "ship-with-docs.js", SHIP_WITH_DOCS)?;
     write_workflow(&crew, "docs.toml", DOCS)?;
     let _env = crew.repo.env_guard();

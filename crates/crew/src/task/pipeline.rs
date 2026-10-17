@@ -6,13 +6,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use tokio_util::sync::CancellationToken;
 
-use argonauts_core::TaskId;
 use argonauts_core::events::session::{EndReason, SessionEnd, loaded_words};
 use argonauts_core::events::task::{TaskEvent, TaskKind, TaskState, TryCause};
 use argonauts_core::limits::{FallbackNote, RecoveryAction};
 use argonauts_core::names::ModelRef;
 use argonauts_core::session_runner::RunnerKind;
 use argonauts_core::steps::task::ReportStatus;
+use argonauts_core::{ErrorCategory, TaskId};
 
 use crate::blackboard;
 use crate::captain;
@@ -376,6 +376,10 @@ async fn drive_from(
             TaskState::Blocked if crate::blackboard::questions::answered_meanwhile(host, task)? => {
                 Step::Moved
             }
+            // A question still open when the run relaunched for something else waits again.
+            TaskState::Blocked if crate::blackboard::questions::wait_again(host, task).await? => {
+                Step::Moved
+            }
             TaskState::Blocked | TaskState::Deferred | TaskState::Merged | TaskState::Cancelled => {
                 Step::Wait
             }
@@ -504,8 +508,9 @@ fn writes_tests_as_output(host: &Host, record: &TaskEntry, worker: &ModelRef) ->
             .is_ok_and(|model| model.kind() == RunnerKind::Endpoint)
 }
 
-/// The next worker session, and whether it continues a try already recorded (after a
-/// restart) instead of starting a new one.
+/// The next worker session, and whether it continues a try already recorded instead of
+/// starting a new one: after a restart, or a pause for a session the run's limit had no room
+/// for, which left the try with no session.
 fn next_session(
     host: &Host,
     task: &TaskId,
@@ -605,9 +610,16 @@ async fn after_session(
                     *carry = Some(Carry::Next(Next::resume(TryCause::Resumed, parts)));
                 }
                 RecoveryAction::Rotate { note } => {
+                    let why = match reason {
+                        EndReason::CliError {
+                            category: ErrorCategory::SessionLost,
+                            ..
+                        } => "its CLI no longer had the session to resume",
+                        _ => "its context was full",
+                    };
                     *carry = Some(Carry::Next(Next::Fresh {
                         cause: TryCause::Rotation,
-                        why: "its context was full".to_owned(),
+                        why: why.to_owned(),
                         note: Some(note),
                         extra: Vec::new(),
                     }));
@@ -664,6 +676,14 @@ async fn completed(
             )?;
         }
         ReportStatus::Blocked => blocked(host, task, carry)?,
+        // Its decision is the question it left for you, which the merge question carries.
+        ReportStatus::NeedsDecision
+            if host
+                .read(|state| crate::blackboard::questions::carried_for_the_merge(state, task)) =>
+        {
+            let reason = "the worker reported its work, with a question the merge question shows";
+            transition(host, task, Trigger::ReportedDone, reason)?;
+        }
         ReportStatus::NeedsDecision => {
             let reason = "the worker needs a decision";
             transition(host, task, Trigger::NeedsDecision, reason)?;

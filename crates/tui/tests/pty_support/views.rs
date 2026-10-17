@@ -82,7 +82,7 @@ pub fn workflow_view(agents: &[Agent], nested: Option<Value>) -> AppEvent {
     view(
         json!({"data": "workflow", "view": {"run": RUN, "id": "wf-001",
         "name": "council", "description": "Understand, plans, build, review, and merge",
-        "breadcrumb": [], "agents_done": 4, "agents_total": 4 + total,
+        "agents_done": 4, "agents_total": 4 + total,
         "elapsed_ms": 9_840_000, "spent": spend(747_000, 4.10),
         "phases": [
             phase("Understand", "understand", "done", 3, 3, json!(goal)),
@@ -141,8 +141,15 @@ pub fn run_summary(run: &str, title: &str, state: &str, remind: bool) -> Value {
            "live": state == "running", "remind": remind})
 }
 
-pub fn runs_view(runs: Vec<Value>) -> AppEvent {
-    view(json!({"data": "runs", "runs": runs}))
+pub fn resume_list_view(conversations: Vec<Value>) -> AppEvent {
+    view(json!({"data": "resume_list", "conversations": conversations}))
+}
+
+/// One conversation as the resume list has it, last used on 2026-09-30 at `hour` UTC.
+pub fn conversation_summary(n: u32, title: &str, hour: u32, needs_you: bool) -> Value {
+    json!({"conversation": format!("conversation-{n:03}"), "title": title,
+           "updated": format!("2026-09-30T{hour:02}:00:00Z"), "worker": "claude-code",
+           "turns": 2, "needs_you": needs_you})
 }
 
 pub fn all_repos_view(repos: Vec<(&str, Vec<Value>)>) -> AppEvent {
@@ -189,44 +196,13 @@ pub fn attached(run: &str, title: &str) -> AppEvent {
     app(json!({"type": "attached", "summary": run_summary(run, title, "running", false)}))
 }
 
-pub fn condensed_replay(
-    run: &str,
-    turns: &[(&str, &str)],
-    milestones: &[&str],
-    recap: &str,
-) -> AppEvent {
-    let turns: Vec<Value> = turns
-        .iter()
-        .map(|(from, text)| {
-            let from = if *from == "you" {
-                json!({"party": "user"})
-            } else {
-                json!({"party": "agent", "session": "s-001", "worker": from})
-            };
-            json!({"from": from, "text": text})
-        })
-        .collect();
-    app(
-        json!({"type": "condensed_replay", "run": run, "turns": turns,
-        "milestones": milestones, "recap": recap, "recap_model": null}),
-    )
-}
-
 pub fn replay_done(run: &str, seq: u64) -> AppEvent {
     app(json!({"type": "replay_done", "run": run, "seq": seq}))
 }
 
-pub const REPLAY_MILESTONES: [&str; 3] = [
-    "Goal approved",
-    "Plan approved · 3 tasks",
-    "task-002 merged into the run branch",
-];
-
-pub const REPLAY_RECAP: &str = "Two tasks are done and the merge waits for you.";
-
 /// Reattaching to a long run: `tool_calls` calls per agent for three agents, a question answered
-/// long ago, then the condensed replay and `ReplayDone`. Returns the script for events after
-/// it, and the history's events.
+/// long ago, then `ReplayDone`. Returns the script for events after it, and the history's
+/// events.
 pub fn long_replayed_run(tool_calls: usize) -> (RunScript, Vec<Agent>, Vec<AppEvent>) {
     let mut run = RunScript::default();
     let crew: Vec<Agent> = (1..=3).map(Agent::numbered).collect();
@@ -260,15 +236,6 @@ pub fn long_replayed_run(tool_calls: usize) -> (RunScript, Vec<Agent>, Vec<AppEv
             events.push(run.tool_finished(agent, &id, true, "ok"));
         }
     }
-    events.push(condensed_replay(
-        RUN,
-        &[
-            ("you", "Add a --json flag to the export command"),
-            ("codex/gpt-5.6", "The JSON writer sits beside the CSV one."),
-        ],
-        &REPLAY_MILESTONES,
-        REPLAY_RECAP,
-    ));
     let last = run.next_seq().saturating_sub(1);
     events.push(replay_done(RUN, last));
     (run, crew, events)

@@ -20,7 +20,7 @@ pub(crate) fn rows(
     conversation: &ConversationState,
     repo: &str,
 ) -> Vec<CrewRow> {
-    past::list(conversation_dir)
+    past::list(conversation_dir, &[])
         .into_iter()
         .take(MOST)
         .filter_map(|summary| {
@@ -106,7 +106,7 @@ fn first_line(text: &str) -> String {
 
 /// The CLI sessions the conversations ran in, which the panel lists as conversations only.
 pub(crate) fn cli_sessions(conversation_dir: &Path) -> BTreeSet<String> {
-    past::list(conversation_dir)
+    past::list(conversation_dir, &[])
         .iter()
         .filter_map(|summary| {
             ConversationStore::open(conversation_dir, &summary.conversation).session()

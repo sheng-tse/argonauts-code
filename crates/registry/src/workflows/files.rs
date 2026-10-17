@@ -13,7 +13,7 @@ use toml::{Table, Value};
 
 use super::builtin::{BuiltinWorkflow, builtins};
 use super::choices::toml_workflow_files;
-use super::{DEFAULT_WORKFLOW, builtin};
+use super::{BASE_WORKFLOW, DEFAULT_WORKFLOW, builtin};
 use crate::catalog::setting_meta;
 use crate::resolve::leaves;
 use crate::write::{io_error, lock_folder, real_path, write_replacing};
@@ -259,11 +259,18 @@ fn body_hash(body: &str) -> String {
 
 fn header(workflow: &BuiltinWorkflow) -> String {
     let name = workflow.name;
-    let what = if name == DEFAULT_WORKFLOW {
+    let what = if name == BASE_WORKFLOW {
         format!(
-            "The {name} workflow, the default. The built-in defaults are {name}, so this file sets \
-             no key: the default workflow sits above your settings files, and a key set here would \
-             hide your own. The protocol keys are below, commented out at their defaults."
+            "The {name} workflow. The built-in settings are {name}'s, so this file sets no key, \
+             and a key set here would hide the same key in the files before the one that picks \
+             it. The protocol keys are below, commented out at their defaults."
+        )
+    } else if name == DEFAULT_WORKFLOW {
+        format!(
+            "The {name} workflow, the default when no setting names one. This file sets only the \
+             keys {name} changes. Each of your settings files wins over it while it is the \
+             default; once a file picks it, what you set there or in a later file wins. The other \
+             protocol keys are below, commented out at their defaults."
         )
     } else {
         format!(
@@ -481,9 +488,11 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ");
             if name == DEFAULT_WORKFLOW {
-                assert!(header.contains("workflow, the default"), "{header}");
+                assert!(header.contains("workflow, the default when"), "{header}");
+            } else if name == BASE_WORKFLOW {
+                assert!(header.contains("settings are council's"), "{header}");
             } else {
-                assert!(header.contains("council is the default"), "{header}");
+                assert!(header.contains("captain is the default"), "{header}");
             }
             assert!(
                 header.contains(&format!("/workflow diff {name}")),

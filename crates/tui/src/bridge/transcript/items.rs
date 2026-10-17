@@ -5,14 +5,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use argonauts_core::app::{AppEvent, HeaderAndBottomLine};
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::log::{NO_SECOND_TRY, SAME_CLI_IS_ON};
+use argonauts_core::log::{NO_LONGER_OFFERS, NO_SECOND_TRY, SAME_CLI_IS_ON};
 use argonauts_core::names::ModelRef;
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::Settings;
 use argonauts_core::{Note, NoteLevel};
 
-use crate::cell::{AgentReady, Cell, HungLine, Notice, Recap, ResultLine, SessionHeader, Tone};
+use crate::cell::{
+    AgentReady, Cell, HungLine, Notice, Recap, ResultLine, SessionHeader, Tone, UserMessage,
+};
 use crate::format;
 use crate::history::CellId;
 use crate::views::settings::words::{model_role, word_for_a_model};
@@ -166,7 +168,7 @@ impl Items {
             // Rows are there to be read, so the line over them isn't dimmed away.
             NoteLevel::Info if !rows.is_empty() => Tone::Normal,
             NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet => Tone::Dim,
-            NoteLevel::Warn => {
+            NoteLevel::Warn | NoteLevel::Caution => {
                 if !self.warnings_seen.insert(text.to_owned()) {
                     return;
                 }
@@ -179,13 +181,17 @@ impl Items {
             .strip_suffix(NO_SECOND_TRY)
             .and_then(|head| head.strip_suffix(" · "))
             .filter(|_| level == NoteLevel::Warn);
+        // A model that runs in place of one its CLI dropped: the mark warns, the words read
+        // plain.
+        let in_place = level == NoteLevel::Warn && text.contains(NO_LONGER_OFFERS);
         let mut notice = match fallback {
             Some(head) => Notice::plain_with_after(tone, head, NO_SECOND_TRY),
+            None if in_place => Notice::plain_with_after(tone, text, ""),
             None => Notice::new(tone, text),
         };
         match level {
             NoteLevel::Aside => notice = notice.with_glyph(ASIDE),
-            NoteLevel::Quiet => notice = notice.with_glyph(NO_MARK),
+            NoteLevel::Quiet | NoteLevel::Caution => notice = notice.with_glyph(NO_MARK),
             _ => {}
         }
         for row in rows {
@@ -279,6 +285,18 @@ pub(super) fn setting_changed(
     reset: bool,
     cx: &mut Cx<'_>,
 ) {
+    // The view that saved it says so itself when it closes.
+    if !reset && cx.model.said_by_view.remove(key) {
+        return;
+    }
+    // `/config key=value`, as Claude Code's says it: the key, its value, and the file.
+    if !reset && let Some((_, typed)) = cx.model.typed_config.take_if(|(typed, _)| typed == key) {
+        let shown = format::setting_value(value);
+        let line = format!("Set {key} to {shown} ({})", scope_file(scope));
+        emit(cx, UserMessage::command(typed));
+        replied(ResultLine::new(Tone::Dim, line), cx);
+        return;
+    }
     let words = Words {
         picked: &cx.state.model_words,
         names: &cx.state.names,
@@ -287,7 +305,7 @@ pub(super) fn setting_changed(
     let next_request = applies_at_next_request(key) && cx.model.is_working();
     if !reset && let Some(line) = command_result(key, value, scope, previous, &words, next_request)
     {
-        emit(cx, Cell::Custom(Box::new(line)));
+        replied(line, cx);
         return;
     }
     let value = format::setting_value(value);
@@ -311,6 +329,37 @@ pub(super) fn setting_changed(
         text
     };
     emit(cx, Notice::new(Tone::Success, text));
+}
+
+/// `/config key=value` left as it was: why, in the error colour under the command as typed,
+/// where a saved change says where it went. Without the command, a notice says why.
+pub(super) fn setting_refused(key: &str, why: &str, cx: &mut Cx<'_>) {
+    match cx.model.typed_config.take_if(|(typed, _)| typed == key) {
+        Some((_, typed)) => {
+            emit(cx, UserMessage::command(typed));
+            replied(ResultLine::new(Tone::Error, why), cx);
+        }
+        None => emit(cx, Notice::new(Tone::Error, why)),
+    }
+}
+
+/// Prints a command's answer under it, which the conversation's record keeps after the
+/// command so the conversation drawn again prints it too.
+fn replied(line: ResultLine, cx: &mut Cx<'_>) {
+    if !cx.replaying() {
+        cx.out.replies.push(line.reply());
+    }
+    emit(cx, Cell::Custom(Box::new(line)));
+}
+
+/// Where a scope saves, as `/config key=value` names it.
+fn scope_file(scope: SettingScope) -> &'static str {
+    match scope {
+        SettingScope::Global => "in ~/.argonauts/config.toml",
+        SettingScope::Project => "in .argonauts/config.toml",
+        SettingScope::ProjectLocal => "in .argonauts/config.local.toml",
+        SettingScope::Session => "for this session",
+    }
 }
 
 /// Said after a change made while an answer runs, which that answer doesn't take up.

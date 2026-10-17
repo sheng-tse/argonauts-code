@@ -298,7 +298,7 @@ impl UsageCards<'_> {
     /// When a window resets, on the clock times are shown in.
     fn reset_time(&self, at: OffsetDateTime) -> String {
         let at = at.to_offset(self.now.offset());
-        format::reset_time(at, self.now, ClockStyle::default())
+        format::reset_time(at, self.now, ClockStyle::now())
     }
 
     fn tokens_body(&self, kit: &Kit<'_>, width: usize, full: bool) -> Drawn {

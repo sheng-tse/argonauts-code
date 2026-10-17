@@ -1,4 +1,4 @@
- Overview    Status    Usage    Context    Limits    Stats                                     Today  Week  Month  All
+Settings   Overview    Status    Config    Usage    Context    Limits    Stats                 Today  Week  Month  All
 What the crew did: every CLI together, then each one by itself                          By CLI    By model    By role 
 
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮

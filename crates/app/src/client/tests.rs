@@ -175,6 +175,30 @@ async fn start_gives_up_when_no_run_host_answers() {
     assert!(message.contains("run_host.log"), "{message}");
 }
 
+/// A run host launched for a stop takes it, ends the run and exits cleanly without greeting:
+/// the stop is done, and nothing waits out the time for an answer.
+#[tokio::test]
+async fn a_run_host_that_did_its_work_and_exited_cleanly_counts_as_done() {
+    struct DidItAndLeft;
+    impl Launcher for DidItAndLeft {
+        fn launch(&self, _: &Path, _: &RunId, _: &Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn exited_cleanly(&self, _: &Path) -> bool {
+            true
+        }
+    }
+    let home = TestHome::new();
+    let client = Client::new(home.env(true), Arc::new(DidItAndLeft), true);
+    let run = other_run("0002");
+    let run_dir = home.run_with(&client.env, &run, &[]);
+    let waited = start::await_welcome(&client, &run_dir, Duration::from_secs(10));
+    let waited = tokio::time::timeout(Duration::from_secs(2), waited)
+        .await
+        .expect("no wait for an answer that never comes");
+    assert!(waited.is_ok(), "{waited:?}");
+}
+
 #[tokio::test]
 async fn list_tells_crashed_starting_and_waiting_runs_apart() {
     let home = TestHome::new();
@@ -319,6 +343,70 @@ async fn waiting_guidance_lands_in_pending_answers_and_launches() {
             outside_agent: None,
         }]
     );
+}
+
+/// A run that stopped fully goes on only when you /resume it: a message or a mode change sent
+/// to it is kept for the run host /resume starts, and none starts for it now.
+#[tokio::test]
+async fn a_run_that_stopped_fully_keeps_what_you_send_it_for_resume() {
+    use argonauts_core::events::run::WaitReason;
+    use argonauts_core::input::MentionTarget;
+
+    let home = TestHome::new();
+    let launcher = Arc::new(FakeRunHost::default());
+    let client = app_client(&home, Arc::clone(&launcher));
+    let run = other_run("0202");
+    let stopped = event_at(
+        1,
+        OffsetDateTime::now_utc(),
+        RunEventKind::Run(RunLifecycle::Waiting {
+            reason: WaitReason::NoFallback {
+                detail: "nobody to fall back to as the task's worker".to_owned(),
+                until: None,
+                stop: None,
+            },
+            waiting_on: Vec::new(),
+        }),
+    );
+    let run_dir = home.run_with(
+        &client.env,
+        &run,
+        &[run_started(0, "stopped", None), stopped],
+    );
+
+    let sent = client
+        .mention(
+            &run,
+            MentionTarget::Task(argonauts_core::TaskId::numbered(1)),
+            "use the v2 API".to_owned(),
+        )
+        .await;
+    assert!(matches!(sent, Err(ApiError::NotNow(_))), "{sent:?}");
+    let mode = ControlRequest::ApprovalMode {
+        mode: ApprovalMode::Autopilot,
+        token: "token".to_owned(),
+    };
+    let moded = super::control::call(&client, &run, mode).await;
+    assert!(
+        matches!(moded, Ok(super::control::Reply::Deferred)),
+        "{moded:?}"
+    );
+
+    let kept = run_files::take_pending(&run_dir).unwrap();
+    assert!(
+        matches!(
+            kept.as_slice(),
+            [
+                ControlRequest::Mention { .. },
+                ControlRequest::ApprovalMode {
+                    mode: ApprovalMode::Autopilot,
+                    ..
+                }
+            ]
+        ),
+        "{kept:?}"
+    );
+    assert!(launcher.launches().is_empty(), "{:?}", launcher.launches());
 }
 
 #[tokio::test]

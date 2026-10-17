@@ -21,8 +21,9 @@ use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::run::{Party, RunLifecycle};
 use argonauts_core::events::session::SessionStarted;
 use argonauts_core::events::task::{CheckKind, ReviewEvent, TaskEvent, TaskKind, TaskState};
-use argonauts_core::events::{MergeEvent, PlanEvent, RunEvent, RunEventKind};
+use argonauts_core::events::{MergeEvent, PlanEvent, RunEvent, RunEventKind, SessionEvent};
 use argonauts_core::limits::PlanUsageStatus;
+use argonauts_core::model_catalog::ModelCatalog;
 use argonauts_core::names::{AgentId, ModelRef, SessionKey};
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::judgment::ReviewVerdict;
@@ -204,8 +205,70 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
+/// The model a ledger line is filed under: the catalog's spelling of it, so the alias `haiku`
+/// and the `claude-haiku-5-5` its CLI reports are one model in both ledgers. A model the
+/// catalog doesn't know, and a CLI named alone, stay as they are.
+pub(crate) fn filed_as(catalog: &ModelCatalog, worker: &ModelRef) -> ModelRef {
+    match worker.model.as_ref().and_then(|_| catalog.runs(worker)) {
+        Some(model) => ModelRef::new(worker.agent.clone(), Some(model)),
+        None => worker.clone(),
+    }
+}
+
+/// The sessions of a run in the order they started, as [`RunFacts`] lists them, with the
+/// model each one's CLI said it runs. A key that starts again is a new session that says its
+/// own, as when a session falls back to another CLI under the same key.
+#[derive(Default)]
+pub(crate) struct Reported<'a> {
+    latest: BTreeMap<&'a SessionKey, usize>,
+    models: Vec<Option<&'a str>>,
+}
+
+impl<'a> Reported<'a> {
+    pub fn of(events: &'a [RunEvent]) -> Self {
+        let mut reported = Self::default();
+        for event in events {
+            reported.note(event);
+        }
+        reported
+    }
+
+    fn note(&mut self, event: &'a RunEvent) {
+        let Some(key) = &event.session else { return };
+        match &event.kind {
+            RunEventKind::Session(SessionEvent::Started(_)) => {
+                self.latest.insert(key, self.models.len());
+                self.models.push(None);
+            }
+            RunEventKind::Agent(AgentEvent::Init {
+                model: Some(model), ..
+            }) => {
+                if let Some(model_of) = self.latest.get(key).and_then(|at| self.models.get_mut(*at))
+                {
+                    *model_of = Some(model);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Where the session `key` names so far stands in the order they started.
+    fn now(&self, key: &SessionKey) -> Option<usize> {
+        self.latest.get(key).copied()
+    }
+
+    /// The model the session at `at` ran: the one its CLI said, else the one it started with.
+    pub fn ran(&self, at: usize, session: &SessionFacts) -> ModelRef {
+        match self.models.get(at).copied().flatten() {
+            Some(model) => ModelRef::new(session.worker.agent.clone(), Some(model.to_owned())),
+            None => session.worker.clone(),
+        }
+    }
+}
+
 pub(crate) struct WorkLedger {
     dir: PathBuf,
+    catalog: &'static ModelCatalog,
 }
 
 impl WorkLedger {
@@ -213,6 +276,7 @@ impl WorkLedger {
     pub fn beside(usage: &Path) -> Self {
         Self {
             dir: usage.join("work"),
+            catalog: argonauts_registry::models::shipped_catalog(),
         }
     }
 
@@ -226,7 +290,7 @@ impl WorkLedger {
         if seen {
             return;
         }
-        let lines = lines_of(repo, run, events, day);
+        let lines = self.lines_of(repo, run, events, day);
         if let Err(err) = self.append(&lines) {
             tracing::warn!("couldn't add run {run} to the work ledger: {err}");
         }
@@ -279,6 +343,52 @@ impl WorkLedger {
 
     fn month_file(&self, day: Date) -> PathBuf {
         self.dir.join(format!("{}.jsonl", month_name(day)))
+    }
+
+    /// The run's lines from its log, each model filed under the catalog's spelling.
+    pub(crate) fn lines_of(
+        &self,
+        repo: &Path,
+        run: &RunId,
+        events: &[RunEvent],
+        ended: Date,
+    ) -> Vec<WorkLine> {
+        let mut lines = lines_of(repo, run, events, ended);
+        for line in &mut lines {
+            self.refile(line);
+        }
+        lines
+    }
+
+    /// Files each model `line` names under the catalog's spelling.
+    pub(crate) fn refile(&self, line: &mut WorkLine) {
+        for model in line.what.models_mut() {
+            *model = filed_as(self.catalog, model);
+        }
+    }
+
+    /// The folder of its month files.
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl Work {
+    /// Every model the line names.
+    fn models_mut(&mut self) -> Vec<&mut ModelRef> {
+        match self {
+            Work::Session {
+                by, fallback_for, ..
+            } => [Some(by), fallback_for.as_mut()]
+                .into_iter()
+                .flatten()
+                .collect(),
+            Work::Task { by, .. } | Work::Review { by, .. } | Work::Signoff { by, .. } => {
+                vec![by]
+            }
+            Work::Run { by, .. } => by.as_mut().into_iter().collect(),
+            Work::Outcome { merged_by, .. } => merged_by.as_mut().into_iter().collect(),
+        }
     }
 }
 
@@ -355,7 +465,12 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
     // Each task's check commands as they last ran, and whether each passed.
     let mut checks: BTreeMap<TaskId, BTreeMap<String, bool>> = BTreeMap::new();
     // The model each session's CLI said it runs, which the line is filed under.
-    let mut reported: BTreeMap<&SessionKey, &str> = BTreeMap::new();
+    let mut reported = Reported::default();
+    // Each review line made in a session the log names, by where that session started, so
+    // the review is the session's own and not whichever session last ran its worker.
+    let mut made_in: BTreeMap<usize, usize> = BTreeMap::new();
+    // The tasks a reviewer or the judge looked at.
+    let mut looked_at: BTreeSet<TaskId> = BTreeSet::new();
     let line = |day: Date, what: Work| WorkLine {
         day,
         repo: repo.display().to_string(),
@@ -365,6 +480,15 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
     let mut lines = Vec::new();
     for event in events {
         let task = event.task_id.as_ref();
+        reported.note(event);
+        if let RunEventKind::Review(ReviewEvent::Reviewed { .. } | ReviewEvent::Settled { .. }) =
+            &event.kind
+        {
+            looked_at.extend(task.cloned());
+            if let Some(at) = event.session.as_ref().and_then(|key| reported.now(key)) {
+                made_in.insert(lines.len(), at);
+            }
+        }
         match &event.kind {
             RunEventKind::Task(TaskEvent::Created(spec)) => {
                 kinds.insert(spec.id.clone(), kind_word(&spec.kind));
@@ -381,13 +505,6 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
                         .entry(task.clone())
                         .or_default()
                         .insert(command.join(" "), check.passed);
-                }
-            }
-            RunEventKind::Agent(AgentEvent::Init {
-                model: Some(model), ..
-            }) => {
-                if let Some(session) = &event.session {
-                    reported.insert(session, model);
                 }
             }
             RunEventKind::Review(ReviewEvent::Reviewed {
@@ -479,39 +596,62 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
 
     // A line is filed under the model the session's CLI said it ran, which an alias in the
     // settings, such as `haiku`, may not name the way the catalog does.
-    let ran_on = |session: &SessionFacts| -> ModelRef {
-        match reported.get(&session.key) {
-            Some(model) => ModelRef::new(session.worker.agent.clone(), Some((*model).to_owned())),
-            None => session.worker.clone(),
-        }
-    };
-    // A review names the reviewer as its step asked; its session knows the model it ran, and
-    // whether it ran commands of its own.
-    let ran: BTreeMap<&ModelRef, ModelRef> = facts
-        .sessions
-        .iter()
-        .map(|session| (&session.started.worker, ran_on(session)))
+    let ran_on: Vec<ModelRef> = (facts.sessions.iter().enumerate())
+        .map(|(at, session)| reported.ran(at, session))
+        .collect();
+    let ran_shell = |session: &SessionFacts| session.tools.iter().any(|tool| is_shell(&tool.name));
+    // A review the log doesn't tie to a session names the reviewer as its step asked; the
+    // session that ran that worker knows the model, and whether it ran commands of its own.
+    let ran: BTreeMap<&ModelRef, &ModelRef> = (facts.sessions.iter().zip(&ran_on))
+        .map(|(session, worker)| (&session.started.worker, worker))
         .collect();
     let own_commands: BTreeSet<(&TaskId, &ModelRef)> = facts
         .sessions
         .iter()
         .filter(|session| {
             let role = StatsRole::counted_as(role_of(&session.started));
-            matches!(role, StatsRole::Reviewer | StatsRole::Judge)
-                && session.tools.iter().any(|tool| is_shell(&tool.name))
+            matches!(role, StatsRole::Reviewer | StatsRole::Judge) && ran_shell(session)
         })
         .filter_map(|session| Some((session.task.as_ref()?, &session.started.worker)))
         .collect();
-    for review in &mut lines {
-        if let Work::Review {
-            by, task, ran_own, ..
+    for (at, review) in lines.iter_mut().enumerate() {
+        let session = made_in
+            .get(&at)
+            .and_then(|at| Some((facts.sessions.get(*at)?, ran_on.get(*at)?)));
+        let Work::Review {
+            by,
+            task,
+            judge,
+            sent_back,
+            ran_own,
+            ..
         } = &mut review.what
-        {
-            *ran_own = task
-                .as_ref()
-                .is_some_and(|task| own_commands.contains(&(task, &*by)));
-            if let Some(worker) = ran.get(&*by) {
+        else {
+            continue;
+        };
+        match session {
+            // A judge's verdict on the work, rather than its ruling between a worker and a
+            // reviewer, is one of its sign-offs.
+            Some((session, worker))
+                if !*judge
+                    && StatsRole::counted_as(role_of(&session.started)) == StatsRole::Judge =>
+            {
+                review.what = Work::Signoff {
+                    by: worker.clone(),
+                    refused: *sent_back,
+                };
+            }
+            Some((session, worker)) => {
                 *by = worker.clone();
+                *ran_own = ran_shell(session);
+            }
+            None => {
+                *ran_own = task
+                    .as_ref()
+                    .is_some_and(|task| own_commands.contains(&(task, &*by)));
+                if let Some(worker) = ran.get(&*by) {
+                    *by = (*worker).clone();
+                }
             }
         }
     }
@@ -519,10 +659,9 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
     let mut builders: BTreeMap<TaskId, ModelRef> = BTreeMap::new();
     let mut orchestrator = None;
     let mut merged_by = None;
-    for session in &facts.sessions {
+    for (session, worker) in facts.sessions.iter().zip(ran_on) {
         let role = role_of(&session.started);
         let crew_role = StatsRole::counted_as(role);
-        let worker = ran_on(session);
         if crew_role == StatsRole::Orchestrator && orchestrator.is_none() {
             orchestrator = Some(worker.clone());
         }
@@ -562,21 +701,12 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
         lines.push(line(local_day(session.started_at), what));
     }
 
-    let reviewed: BTreeSet<TaskId> = lines
-        .iter()
-        .filter_map(|line| match &line.what {
-            Work::Review {
-                task: Some(task), ..
-            } => Some(task.clone()),
-            _ => None,
-        })
-        .collect();
     for (task, by) in builders {
         let what = Work::Task {
             kind: kinds.get(&task).map(|kind| (*kind).to_owned()),
             sent_back: sent_back.get(&task).map_or(0, |rounds| rounds.len() as u32),
             merged: merged.contains(&task),
-            reviewed: reviewed.contains(&task),
+            reviewed: looked_at.contains(&task),
             task,
             by,
         };

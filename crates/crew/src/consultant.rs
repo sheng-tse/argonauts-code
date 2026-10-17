@@ -4,7 +4,7 @@
 //! It owns no task and never writes.
 
 use argonauts_core::events::run::Party;
-use argonauts_core::events::session::{InputPart, InputPartKind, SessionEnd};
+use argonauts_core::events::session::{EndReason, InputPart, InputPartKind, SessionEnd};
 use argonauts_core::events::shared::{BlackboardKind, BlackboardMessage};
 use argonauts_core::names::{MessageId, ModelRef, RoleName, SessionKey};
 use argonauts_core::session_runner::Access;
@@ -35,13 +35,24 @@ pub async fn answer(host: &Host, question: &MessageId) -> EngineResult<MessageId
         .ok_or_else(|| EngineError::Refused(format!("{question} isn't a question")))?;
 
     let worker = consultant(host.settings());
-    let (session, text) = session_answer(host, &asked, &worker, RoleName::Consultant).await?;
+    // The consultant's own failure goes back as its answer, so the asker isn't left waiting.
+    let (from, text) = match session_answer(host, &asked, &worker, RoleName::Consultant).await {
+        Ok((session, text)) => (
+            Party::Agent {
+                session,
+                worker: worker.clone(),
+            },
+            text,
+        ),
+        Err(EngineError::Refused(why)) => (
+            Party::ArgonautsCode,
+            format!("The consultant couldn't answer: {why}."),
+        ),
+        Err(err) => return Err(err),
+    };
     let reply = host.read(|state| Post {
         kind: BlackboardKind::Answer,
-        from: Party::Agent {
-            session,
-            worker: worker.clone(),
-        },
+        from,
         to: reply_to(state, &asked),
         refs: records::record_refs(&asked, &text),
         text,
@@ -81,11 +92,16 @@ pub(crate) async fn session_answer(
             label: None,
             reviews: false,
             fresh: false,
+            independent_of: Vec::new(),
         })
         .await?;
     let session = running.key.clone();
     let end = running.ended().await?;
-    Ok((session, answer_text(&end)))
+    match answered(&end) {
+        Some(text) => Ok((session, text)),
+        // A session that crashed or ended with nothing to say didn't answer.
+        None => Err(EngineError::Refused(no_answer(&end))),
+    }
 }
 
 /// `roles.consultant.models`, else the main agent.
@@ -139,19 +155,24 @@ fn part(kind: InputPartKind, label: &str, text: &str, source: Option<String>) ->
     }
 }
 
-fn answer_text(end: &SessionEnd) -> String {
+/// What a session that finished said, `None` unless it finished with text.
+fn answered(end: &SessionEnd) -> Option<String> {
+    if end.reason != EndReason::Completed {
+        return None;
+    }
     end.result_text
         .as_deref()
         .or(end.last_message.as_deref())
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_owned)
-        .unwrap_or_else(|| {
-            format!(
-                "The consultant ended without an answer ({}).",
-                crate::status::folder::words(&end.reason)
-            )
-        })
+}
+
+fn no_answer(end: &SessionEnd) -> String {
+    format!(
+        "it ended without an answer ({})",
+        crate::status::folder::words(&end.reason)
+    )
 }
 
 /// Tells one question's consultant session from another's, for resuming the right one.

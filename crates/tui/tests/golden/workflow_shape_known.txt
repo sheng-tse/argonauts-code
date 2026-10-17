@@ -1,0 +1,28 @@
+ 0 to 14.6 s · Claude Code is still writing its script: no view and no row yet, only the working line
+❯ Use a workflow for this, with Codex as the reviewer, and choose everything else yourself. Fix the …
+
+✻ Writing a workflow… (12s · ↓ 2.2k tokens · esc to interrupt)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ autopilot on (shift+tab to cycle) · ? for shortcuts · ↓ to manage
+
+   (no row: Enter, ctrl+t and /workflows say "The workflow is being written; it opens when its phases are known")
+
+ 14.6 s on · the phases are known: the Workflow row prints, the bottom row appears, and the view shows all of it
+⏺ Workflow(Fix the money rounding · Captain)
+  ⎿  Running in background · /workflows to monitor and save
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Fix the money rounding
+ Captain · Claude Code's workflow fix-money-rounding · Codex reviews, as you asked                   0/1 agents · 15s 
+
+ ╭ Phases ──────────┬ Build · 1 agent ──────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ 1 Build    0/1 │  ⏺ build:fix-money  Haiku 5.5 · 2.1k tok                                                   1s │
+ │   2 Review       │                                                                                               │
+ │   3 Final        │   Review, Final and Merge: Not started yet                                                    │
+ │   4 Merge        │                                                                                               │
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
+
+  ◯ Fix the money rounding  ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/1 · 15s · ↓ 2.2k tokens

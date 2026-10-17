@@ -142,6 +142,7 @@ pub(crate) async fn run(host: &Host, call: SessionCall<'_>) -> EngineResult<Ende
         label: None,
         reviews: false,
         fresh: starts_over,
+        independent_of: Vec::new(),
     };
     plan.slot = slot.unwrap_or_else(|| host.slot_for(&plan));
     // A CLI error has the worker go again once on its own session; when it fails again, the

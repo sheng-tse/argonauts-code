@@ -407,7 +407,7 @@ fn plain_line(event: &RunEvent) -> Option<String> {
 fn note_line(note: &Note) -> String {
     let mut line = match note.level {
         NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet => note.line().to_owned(),
-        NoteLevel::Warn => format!("warning: {}", note.line()),
+        NoteLevel::Warn | NoteLevel::Caution => format!("warning: {}", note.line()),
         NoteLevel::Error => format!("error: {}", note.line()),
     };
     for detail in note.detail().into_iter().flat_map(str::lines) {
@@ -467,6 +467,7 @@ mod tests {
             live: false,
             remind: false,
             name: None,
+            shape_known: true,
         }
     }
 
@@ -575,6 +576,7 @@ mod tests {
         let config = paths.global_config();
         std::fs::create_dir_all(config.parent().unwrap()).unwrap();
         std::fs::write(&config, global).unwrap();
+        crate::controller::test_support::set_up_with_council(&config);
         let mut env = AppEnv::for_repo(paths, repo.root(), false).unwrap();
         env.agent_session = false;
         env.user_home = Some(repo.user_home().to_owned());

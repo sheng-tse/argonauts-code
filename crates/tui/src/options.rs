@@ -24,6 +24,9 @@ pub struct UiOptions {
     /// This repo's prompt history, `~/.argonauts/state/<repo>/history.jsonl`, which the app
     /// sets. `None` keeps history in memory only, as every test does.
     pub history_file: Option<PathBuf>,
+    /// `workflows.ultracode_trigger` at start, which the app sets: the word `ultracode` in a
+    /// prompt asks for a workflow.
+    pub ultracode_trigger: bool,
 }
 
 impl UiOptions {
@@ -42,6 +45,7 @@ impl UiOptions {
             screen_reader: ui.screen_reader || screen_reader_from_env(),
             settings: ui.clone(),
             history_file: None,
+            ultracode_trigger: true,
         }
     }
 }

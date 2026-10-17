@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use app_support::*;
 use argonauts_core::events::run::RunMode;
-use argonauts_scenarios::scenario_file;
+use argonauts_scenarios::{as_set_up, scenario_file};
 use argonauts_testkit::scenario::StdinPrompt;
 use argonauts_testkit::{FakeRule, FakeScenario, FakeStep};
 use serde_json::json;
@@ -74,7 +74,7 @@ fn fakes_file(dir: &Path) -> anyhow::Result<PathBuf> {
 fn app_main_session_answers_and_hands_real_work_over() -> anyhow::Result<()> {
     let fakes = tempfile::tempdir()?;
     let scenario = scenario_playing(&fakes_file(fakes.path())?)?;
-    std::fs::write(scenario.repo.global_config(), config())?;
+    std::fs::write(scenario.repo.global_config(), as_set_up(&config()))?;
     let mut pty = start(&scenario)?;
 
     // A question: the session answers it, and nothing starts.

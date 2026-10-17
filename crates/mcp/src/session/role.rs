@@ -65,9 +65,11 @@ fn description(role: CrewRole) -> String {
     };
     format!(
         "Asks {who} the change now in your folder. Argonauts Code runs that role's own model on \
-         the change and returns its answer. In a workflow of your own, call it at each review step \
-         and once more for the final change: nothing merges that didn't go through it. Otherwise \
-         call it only when the user asks for it."
+         the change and returns its answer, each finding marked blocking or a note. In a workflow \
+         of your own, call it at the review step with the label your workflow gives that agent. \
+         Argonauts Code goes through the final change itself before it merges, so don't call it \
+         again for that, and when it says the role was asked as often as the task allows, report. \
+         Otherwise call it only when the user asks for it."
     )
 }
 
@@ -167,5 +169,16 @@ mod tests {
             .collect();
         assert!(hints[0].contains("review:store"), "{}", hints[0]);
         assert!(hints[1].contains("sign-off:store"), "{}", hints[1]);
+    }
+
+    /// The final review is Argonauts Code's own, so the tool never asks for one more.
+    #[test]
+    fn the_tool_asks_for_no_final_round_of_its_own() {
+        for role in [CrewRole::Reviewer, CrewRole::Judge] {
+            let text = description(role);
+            assert!(!text.contains("once more"), "{text}");
+            assert!(text.contains("blocking or a note"), "{text}");
+            assert!(text.contains("the label your workflow gives"), "{text}");
+        }
     }
 }

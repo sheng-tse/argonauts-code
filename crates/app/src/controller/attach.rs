@@ -1,8 +1,8 @@
-//! Attaching to a run: its events from the latest snapshot, the condensed replay, then
-//! `ReplayDone`, so replayed approvals ring no bell. Each stream runs on its own task and
-//! reports through `RunUpdate`.
+//! Attaching to a run: its events from the latest snapshot, then `ReplayDone`, so replayed
+//! approvals ring no bell. What the run did before is on screen already, drawn live or from its
+//! record, so the replay only rebuilds state. Each stream runs on its own task and reports
+//! through `RunUpdate`.
 
-use std::io;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -10,7 +10,6 @@ use argonauts_core::api::{EventStream, RunState, RunSummary, StatusSummary};
 use argonauts_core::app::{AppEvent, AppMode};
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::run::{RunOutcome, WaitReason};
-use argonauts_core::layout::run_files;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::limit::LimitAmount;
 use argonauts_core::{NoteLevel, RunId, Spend};
@@ -18,22 +17,21 @@ use argonauts_crew::status::Viewer;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::journal_history;
 use super::narrator_host::NarratorHost;
-use super::recap;
 use super::runs::{self, RunUpdate, RunsState};
 use super::{Ctx, Internal};
+use crate::client;
 use crate::conversation_store::ConversationRun;
-use crate::{client, views};
 
 /// How a run's stream opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Opening {
-    /// A run this app just started: every event, and no condensed replay.
+    /// A run this app just started: every event, live from the first.
     New,
-    /// A run started elsewhere, such as by `argonauts run`: every event, then the replay.
+    /// A run started elsewhere, such as by `argonauts run`: every event, those it had already
+    /// as history.
     Watch,
-    /// From the latest snapshot, then the replay.
+    /// From the latest snapshot, which is history.
     Reattach,
 }
 
@@ -50,9 +48,6 @@ pub(super) struct Attached {
     pub(super) run: RunId,
     /// Saved with each conversation the run is on screen in.
     pub(super) title: String,
-    show_replay: bool,
-    /// The stream began at the latest snapshot, not at the run's first event.
-    from_snapshot: bool,
     /// Events up to this `seq` are history.
     replay_until: Option<u64>,
     pub(super) replay_done: bool,
@@ -67,7 +62,7 @@ pub(super) struct Attached {
     pub(super) approval_mode: Option<ApprovalMode>,
     pub(super) spent: Option<Spend>,
     pub(super) limit: Option<LimitAmount>,
-    /// Every event of this stream, for the replay and for views when the log can't be read.
+    /// Every event of this stream, for views when the log can't be read.
     pub(super) events: Vec<RunEvent>,
     pub(super) narrator: NarratorHost,
     stream: JoinHandle<()>,
@@ -145,8 +140,6 @@ pub(super) async fn attach(
     let attached = Attached {
         run: run.clone(),
         title: title.clone(),
-        show_replay: opening != Opening::New,
-        from_snapshot: opening == Opening::Reattach,
         replay_until,
         replay_done: replay_until.is_none(),
         live,
@@ -194,50 +187,16 @@ pub(super) async fn follow_on(ctx: &Ctx, attached: &mut Attached) -> anyhow::Res
     Ok(())
 }
 
-/// Sends the condensed replay when there was history, then `ReplayDone`, and applies the mode
-/// the history left.
-pub(super) async fn finish_replay(ctx: &mut Ctx, attached: &mut Attached) {
+/// The history is in: `ReplayDone`, then the mode the history left.
+pub(super) fn finish_replay(ctx: &mut Ctx, attached: &mut Attached) {
     attached.replay_done = true;
-    let run = attached.run.clone();
-    if attached.show_replay && !attached.events.is_empty() {
-        let summary = status_summary(ctx, &run, &attached.events).await;
-        let outcome = match attached.stage {
-            Stage::Finished(outcome) => Some(outcome),
-            Stage::Going | Stage::Waiting => None,
-        };
-        let closing = recap::closing_in(&attached.events);
-        let recap = recap::recap_from_summary(&summary, outcome, closing);
-        let journal = whole_history(ctx, attached).await;
-        let history = journal.as_deref().unwrap_or(&attached.events);
-        if let Some(replay) = views::condensed_replay(history, &run, recap) {
-            ctx.send(replay);
-        }
-    }
     let seq = attached.replay_until.unwrap_or(0);
-    ctx.send(AppEvent::ReplayDone { run, seq });
+    ctx.send(AppEvent::ReplayDone {
+        run: attached.run.clone(),
+        seq,
+    });
     ctx.set_mode(attached.mode.clone());
     report_crash(ctx, attached);
-}
-
-/// For a stream that began at the latest snapshot: what the replay needs from the whole
-/// journal. `None` leaves the replay to the events this app holds.
-async fn whole_history(ctx: &Ctx, attached: &Attached) -> Option<Vec<RunEvent>> {
-    let upto = attached.replay_until.filter(|_| attached.from_snapshot)?;
-    let path = ctx.env.run_dir(&attached.run).join(run_files::EVENTS);
-    let read =
-        tokio::task::spawn_blocking(move || journal_history::replay_history(&path, upto)).await;
-    let err = match read {
-        Ok(Ok(history)) => return (!history.is_empty()).then_some(history),
-        // Argonauts Code that keeps no journal here has nothing more to give.
-        Ok(Err(err)) if err.kind() == io::ErrorKind::NotFound => return None,
-        Ok(Err(err)) => err.to_string(),
-        Err(err) => err.to_string(),
-    };
-    ctx.notice(
-        NoteLevel::Warn,
-        format!("The replay covers only what happened since the latest snapshot: {err}"),
-    );
-    None
 }
 
 /// Shows a crashed run as crashed, once, rather than quietly tailing its log. The run's lock

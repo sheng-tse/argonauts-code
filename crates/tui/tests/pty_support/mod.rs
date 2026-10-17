@@ -12,6 +12,13 @@ mod script;
 mod views;
 
 pub use argonauts_testkit::{Key, Screen};
+
+/// The mark items and agents start with: Claude Code's `⏺` on macOS, `●` elsewhere.
+pub const BULLET: &str = if cfg!(target_os = "macos") {
+    "⏺"
+} else {
+    "●"
+};
 pub use conversation::*;
 pub use driver::{COLS, Launch, ROWS, TestDriver, WAIT, command_type};
 pub use run::*;
@@ -19,8 +26,8 @@ pub use screen::*;
 pub use script::Script;
 pub use views::*;
 
-/// A question that took the keys by itself works only the arrows for a moment, so a key meant for
-/// something else never answers it. Waits that out, as someone reading the question would.
+/// A question works only the arrows for a moment after it shows, so a key meant for something
+/// else never answers it. Waits that out, as someone reading the question would.
 pub fn past_the_question_guard() {
     std::thread::sleep(
         argonauts_tui::bottom::QUESTION_GUARD + std::time::Duration::from_millis(100),

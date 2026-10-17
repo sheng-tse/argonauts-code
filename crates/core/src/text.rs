@@ -17,6 +17,15 @@ pub fn sentence_case(text: &str) -> String {
     }
 }
 
+/// `a`, `a and b`, `a, b and c`, as a sentence lists things.
+pub fn and_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 /// A workflow, mode or role as the screen names it, its first letter a capital: `Council`,
 /// `Maker-checker`, `Best-of-n`, `Supervised`, `Judge`. What you type and what files hold keep
 /// the spelling they have; only what's drawn changes.
@@ -26,6 +35,67 @@ pub fn shown_name(name: &str) -> String {
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => String::new(),
+    }
+}
+
+/// What a run's header and its Workflow line call the workflow it runs, after the run's name:
+/// a council is the mode itself, `Council`; any other is `orchestrator workflow`.
+pub fn workflow_kind(kind: &str) -> String {
+    let kind = kind.trim();
+    if kind.eq_ignore_ascii_case("council") {
+        shown_name(kind)
+    } else {
+        format!("{} workflow", kind.to_lowercase())
+    }
+}
+
+/// Whether `reported`, the name a workflow's script gave itself, names the run: a script that
+/// calls itself by its template, a built-in one such as `orchestrator` or `council`, says
+/// nothing the run's own name doesn't.
+pub fn names_the_run(reported: &str, templates: &[Option<&str>]) -> bool {
+    let reported = reported.trim();
+    let built_in = crate::workflow_files::BUILT_IN
+        .iter()
+        .map(|(name, _)| Some(*name));
+    !reported.is_empty()
+        && !templates
+            .iter()
+            .copied()
+            .chain(built_in)
+            .flatten()
+            .any(|template| template.trim().eq_ignore_ascii_case(reported))
+}
+
+/// The small words a run's name never ends on when it is drawn as words.
+const SMALL_WORDS: &[&str] = &[
+    "a", "an", "and", "for", "in", "of", "on", "the", "to", "with",
+];
+
+/// A run's name as the screen draws it. A slug stays the run's id, and is drawn as its words:
+/// `fix-the-money-rounding` reads `Fix the money rounding`, and `add-due-dates-to` drops the
+/// small word it was cut on, `Add due dates`. Any other name keeps its own spelling.
+pub fn title_words(name: &str) -> String {
+    let name = name.trim();
+    let slug = name.contains('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !slug {
+        return name.to_owned();
+    }
+    let mut words: Vec<&str> = name.split('-').filter(|word| !word.is_empty()).collect();
+    while words.len() > 1 && words.last().is_some_and(|last| SMALL_WORDS.contains(last)) {
+        words.pop();
+    }
+    shown_name(&words.join(" "))
+}
+
+/// `a`, `a and b`, or `a, b and c`, as a sentence lists things.
+pub fn listed(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -73,6 +143,19 @@ pub fn state_words(name: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_runs_slug_is_drawn_as_its_words() {
+        assert_eq!(
+            title_words("fix-the-money-rounding"),
+            "Fix the money rounding"
+        );
+        assert_eq!(title_words("add-due-dates-to"), "Add due dates");
+        assert_eq!(title_words("per-key-rate-limit"), "Per key rate limit");
+        assert_eq!(title_words("Add due dates"), "Add due dates");
+        assert_eq!(title_words("council"), "council");
+        assert_eq!(title_words("the-"), "The");
+    }
 
     #[test]
     fn a_clause_starts_in_lowercase_unless_it_names_something() {

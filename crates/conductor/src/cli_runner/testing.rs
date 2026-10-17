@@ -466,6 +466,7 @@ pub(crate) fn spec_in(workdir: &Path, session_dir: &Path, prompt: &str) -> Sessi
         asking: None,
         cli_workflow: argonauts_core::session_runner::CliWorkflow::default(),
         shell: argonauts_core::session_runner::SessionShell::None,
+        preferences: Default::default(),
     }
 }
 

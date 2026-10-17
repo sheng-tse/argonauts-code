@@ -3,23 +3,30 @@
 
 mod support;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
 
+use argonauts_core::LimitDimension;
 use argonauts_core::event::AgentEvent;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::run::RunMode;
-use argonauts_core::events::session::{EndReason, SessionEvent};
+use argonauts_core::events::run::{Party, ResumeCause, RunLifecycle, RunMode, RunResumed};
+use argonauts_core::events::session::{EndReason, LimitEvent, SessionEvent};
+use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::meter::{MeterAction, MeterLimit, Spend, SpendStatus};
 use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::registry::ModelEntry;
 use argonauts_core::session_runner::{Access, RunnerEvent, SessionControl};
+use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::roles::RoleSettings;
 use argonauts_core::settings::sessions::SessionLifetime;
+use argonauts_core::steps::StepError;
 use argonauts_core::steps::understand::{Read, ReadInput};
 use argonauts_crew::EngineError;
 use argonauts_crew::engine::commands;
 use argonauts_crew::engine::host::{Ask, Host, SessionPlan};
-use argonauts_testkit::runner::FakeSession;
+use argonauts_crew::state::RunState;
+use argonauts_testkit::runner::{FakeRunner, FakeSession};
 
 use support::{Crew, names, script};
 
@@ -61,6 +68,7 @@ fn plan(worker: &ModelRef, access: Access, host: &Host) -> SessionPlan {
         label: None,
         reviews: false,
         fresh: false,
+        independent_of: Vec::new(),
     }
 }
 
@@ -336,6 +344,259 @@ async fn steering_reaches_a_running_session() -> anyhow::Result<()> {
     assert!(
         host.control(&key, SessionControl::Stop).is_err(),
         "it has ended"
+    );
+    Ok(())
+}
+
+/// A reading of what the session has spent so far.
+fn spent(usd: f64) -> RunnerEvent {
+    RunnerEvent::Session(SessionEvent::Limit(LimitEvent::Spend(SpendStatus {
+        level: MeterAction::Continue,
+        limit: MeterLimit::Usd(0.60),
+        spend: Spend {
+            cost_usd: usd,
+            ..Spend::default()
+        },
+        fraction_used: None,
+        work: Default::default(),
+        work_limits: Default::default(),
+        binding: None,
+    })))
+}
+
+/// The council run under its $0.60 limit after its second session asked to start.
+struct UnderTheLimit {
+    crew: Crew,
+    worker: Arc<FakeRunner>,
+    reference: ModelRef,
+    /// What the second session's ask came to.
+    second: Result<(), EngineError>,
+    /// How many sessions started.
+    started: usize,
+    stopped: bool,
+    paused: bool,
+    notes: Vec<String>,
+    /// The run's log once it settled.
+    history: Vec<RunEvent>,
+}
+
+/// The council run under its $0.60 limit: its first Claude Code session opened at $0.3619 and
+/// ended at $0.3745, which leaves $0.2255, and a second one like it asks to start.
+async fn a_second_session_under_the_limit(autopilot: bool) -> anyhow::Result<UnderTheLimit> {
+    let mut crew = Crew::new()?;
+    crew.settings.limits.spend.spend_per_run = Some(0.60);
+    let worker = crew.worker("claude-code/haiku", "anthropic");
+    let reference: ModelRef = "claude-code/haiku".parse()?;
+    // Claude Code lists the model by the name every line of the run gives it.
+    let mut listed: ModelEntry = serde_json::from_value(json!({
+        "id": "claude-code/haiku",
+        "provider": "anthropic",
+        "kind": "cli",
+        "access": "subscription",
+        "cost": { "unit": "usd" },
+    }))?;
+    listed.discovered = true;
+    listed.name = Some("Haiku 5.5".to_owned());
+    crew.services.registry.add(listed);
+    let mut first = FakeSession::structured(reading("first"));
+    first.events.insert(0, spent(0.361891));
+    first.end.spend.cost_usd = 0.3745;
+    worker.push(first);
+    script(&worker, vec![reading("second")]);
+    let (host, sink) = crew.host(RunMode::Captain)?;
+    if autopilot {
+        host.record(
+            None,
+            None,
+            RunEventKind::Run(RunLifecycle::ApprovalModeChanged {
+                mode: ApprovalMode::Autopilot,
+                by: Party::User,
+            }),
+        )?;
+    }
+    host.ask::<Read>(read_ask(RoleName::Reader, &reference, 0))
+        .await?;
+    let second = host
+        .ask::<Read>(read_ask(RoleName::Reader, &reference, 1))
+        .await
+        .map(|_| ());
+    for _ in 0..200 {
+        let settled = sink.events().iter().any(|event| {
+            matches!(
+                &event.kind,
+                RunEventKind::Run(RunLifecycle::StopRequested { .. } | RunLifecycle::Paused { .. })
+            )
+        });
+        if settled {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let history = sink.events();
+    let stopped = history.iter().any(|event| {
+        matches!(
+            &event.kind,
+            RunEventKind::Run(RunLifecycle::StopRequested { by: Party::Rules })
+        )
+    });
+    let paused = history.iter().any(|event| {
+        matches!(
+            &event.kind,
+            RunEventKind::Run(RunLifecycle::PauseRequested { .. })
+        )
+    });
+    let notes = history
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Note(note) => Some(note.text.clone()),
+            _ => None,
+        })
+        .collect();
+    let started = worker.specs().len();
+    Ok(UnderTheLimit {
+        crew,
+        worker,
+        reference,
+        second,
+        started,
+        stopped,
+        paused,
+        notes,
+        history,
+    })
+}
+
+/// A session that would cross the run's limit never starts. On autopilot its step hears that
+/// it reached its limit and the run ends; otherwise the run pauses. Either way the run says
+/// what a session costs to open.
+#[tokio::test]
+async fn a_session_the_run_has_no_room_for_never_starts() -> anyhow::Result<()> {
+    let ended = a_second_session_under_the_limit(true).await?;
+    assert!(
+        matches!(
+            &ended.second,
+            Err(EngineError::Step(StepError::Session(end)))
+                if end.reason == EndReason::LimitHit { dimension: LimitDimension::Spend }
+        ),
+        "{:?}",
+        ended.second
+    );
+    assert_eq!(ended.started, 1, "the second session started");
+    assert!(ended.stopped && !ended.paused, "{:?}", ended.notes);
+    let said = "The run can't start another session under its $0.60 spend limit: a session of \
+                Haiku 5.5 on Claude Code costs about $0.36 to start here and $0.23 is left, so it \
+                ends here with its work kept.";
+    assert!(
+        ended.notes.iter().any(|note| note.starts_with(said)),
+        "{:?}",
+        ended.notes
+    );
+
+    let paused = a_second_session_under_the_limit(false).await?;
+    assert_eq!(paused.started, 1);
+    assert!(paused.paused && !paused.stopped, "{:?}", paused.notes);
+    assert!(
+        paused
+            .notes
+            .iter()
+            .any(|note| note.contains("so it pauses here with its work kept")),
+        "{:?}",
+        paused.notes
+    );
+    Ok(())
+}
+
+/// The run that paused for a session it had no room for carries that session on as its note
+/// says: once you raise the limit and resume, the session's step starts it, afresh and with
+/// its whole prompt, and takes its answer. It cost nothing and never reached a CLI session.
+#[tokio::test]
+async fn a_session_the_run_had_no_room_for_starts_once_the_limit_is_raised() -> anyhow::Result<()> {
+    let paused = a_second_session_under_the_limit(false).await?;
+    assert!(
+        matches!(paused.second, Err(EngineError::Interrupted)),
+        "the step unwinds as a pause has it: {:?}",
+        paused.second
+    );
+    let state = RunState::fold(&paused.history);
+    assert!(state.run.paused, "{:?}", names(&paused.history));
+    let refused = &state.sessions.in_order()[1];
+    assert_eq!(
+        refused.end.as_ref().map(|end| end.reason.clone()),
+        Some(EndReason::Paused)
+    );
+    assert!(refused.resumable() && refused.cli_session.is_none());
+
+    let UnderTheLimit {
+        mut crew,
+        worker,
+        reference,
+        history,
+        ..
+    } = paused;
+    crew.settings.limits.spend.spend_per_run = Some(1.00);
+    let (host, _) = crew.host_over(history)?;
+    host.record(
+        None,
+        None,
+        RunEventKind::Run(RunLifecycle::Resumed(RunResumed {
+            cause: ResumeCause::User,
+            settings_changed: true,
+            cli_versions_changed: Vec::new(),
+            main_moved_by: None,
+            sessions: Vec::new(),
+        })),
+    )?;
+    let second = host
+        .ask::<Read>(read_ask(RoleName::Reader, &reference, 1))
+        .await?;
+    assert_eq!(worker.specs().len(), 2, "the second session started");
+    assert_eq!(second.output.summary, "second");
+    let spec = &worker.specs()[1];
+    assert!(spec.resume.is_none(), "{:?}", spec.resume);
+    assert_eq!(
+        host.read(|state| state.sessions.in_order().len()),
+        2,
+        "it carried on in its own record"
+    );
+    Ok(())
+}
+
+/// A no-tools session works in a folder of its own, where nothing tells the sandbox which
+/// checkout is yours, so the engine closes your checkout to it. A session in one of the run's
+/// worktrees keeps the checkout its worktree's git needs.
+#[tokio::test]
+async fn a_session_in_a_folder_of_its_own_is_kept_out_of_your_checkout() -> anyhow::Result<()> {
+    let mut crew = Crew::new()?;
+    let worker = crew.worker("claude-code/haiku", "anthropic");
+    let reference: ModelRef = "claude-code/haiku".parse()?;
+    script(&worker, vec![reading("on its own"), reading("in the base")]);
+    let (host, _) = crew.host(RunMode::Captain)?;
+    let mut on_its_own = read_ask(RoleName::Reader, &reference, 0);
+    on_its_own.access = Access::NoTools;
+    host.ask::<Read>(on_its_own).await?;
+    host.ask::<Read>(read_ask(RoleName::Reader, &reference, 1))
+        .await?;
+
+    let checkout = host.repo().root.clone();
+    let specs = worker.specs();
+    let [no_tools, in_base] = specs.as_slice() else {
+        panic!("{} sessions started", specs.len());
+    };
+    assert!(
+        !no_tools.workdir.starts_with(&checkout),
+        "{}",
+        no_tools.workdir.display()
+    );
+    assert!(
+        no_tools.sandbox.deny_read.contains(&checkout),
+        "{:?}",
+        no_tools.sandbox.deny_read
+    );
+    assert_eq!(in_base.workdir, host.repo().base_worktree);
+    assert!(
+        !in_base.sandbox.deny_read.contains(&checkout),
+        "{:?}",
+        in_base.sandbox.deny_read
     );
     Ok(())
 }

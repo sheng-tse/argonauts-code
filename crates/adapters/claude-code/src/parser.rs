@@ -15,7 +15,7 @@ use crate::plan_limits::{self, LimitTracker};
 use crate::settings::STATUS_SERVER;
 use crate::subagents::SubagentTracker;
 use crate::todo::TodoTracker;
-use crate::usage::UsageTracker;
+use crate::usage::{self, UsageTracker};
 use crate::workflows::{self, WorkflowTracker};
 use crate::{control, plugin_output};
 
@@ -59,6 +59,11 @@ pub struct ClaudeStreamParser {
     rejected_mcp: Option<String>,
     /// The last stderr error nothing classified, to explain an exit without a result.
     stderr_error: Option<String>,
+    /// The last line on stderr of any kind, which is often all a crash says of itself.
+    last_stderr: Option<String>,
+    /// What Claude Code said the process spent at least when its spend cap stopped the
+    /// session's background agents.
+    spent_at_least: Option<f64>,
     /// A usage limit read this turn, which waits for the turn's end: Claude Code may finish on
     /// its wrap-up allowance.
     limits: LimitTracker,
@@ -148,7 +153,7 @@ impl ClaudeStreamParser {
             "api_retry" => vec![self.on_api_retry(line)],
             "permission_denied" => self.on_denied(line),
             // Transient hints about a request in flight or a running estimate of thinking tokens,
-            // and the --name title.
+            // which can run past what the message then counts, and the --name title.
             "status" | "thinking_tokens" | "session_title_changed" => Vec::new(),
             // What runs in the background, which keeps the session's input open.
             "background_tasks_changed" => self
@@ -307,18 +312,42 @@ impl ClaudeStreamParser {
                 let mut events = self.drop_pending(parent.as_deref());
                 events.extend(self.observe_usage(
                     str_at(message, "id"),
+                    str_at(message, "model"),
                     message.get("usage"),
                     main,
                 ));
                 Some(events)
             }
+            // The message's own count of all it wrote, which takes the estimate's place.
             "message_delta" => {
                 let id = self.streaming_message_id.clone();
-                Some(self.observe_usage(id.as_deref(), event.get("usage"), main))
+                if let Some(id) = &id {
+                    self.usage.settle(id);
+                }
+                Some(self.observe_usage(id.as_deref(), None, event.get("usage"), main))
             }
-            "content_block_delta" => Self::on_content_delta(line, event.get("delta")?),
+            "content_block_delta" => {
+                let delta = event.get("delta")?;
+                match str_at(delta, "type") {
+                    // Claude Code sends no usage while a call's input streams, so the count goes
+                    // on by what it streamed, as its own spinner's does.
+                    Some("input_json_delta") => {
+                        let chars =
+                            str_at(delta, "partial_json").map_or(0, |json| json.chars().count());
+                        let id = self.streaming_message_id.clone();
+                        Some(
+                            id.and_then(|id| self.usage.streamed_input(&id, chars))
+                                .into_iter()
+                                .collect(),
+                        )
+                    }
+                    _ => Self::on_content_delta(line, delta),
+                }
+            }
             "message_stop" => {
-                self.streaming_message_id = None;
+                if let Some(id) = self.streaming_message_id.take() {
+                    self.usage.settle(&id);
+                }
                 Some(self.drop_pending(parent.as_deref()))
             }
             "content_block_start" => Some(
@@ -448,6 +477,7 @@ impl ClaudeStreamParser {
         }
         events.extend(self.observe_usage(
             str_at(message, "id"),
+            str_at(message, "model"),
             message.get("usage"),
             parent.is_none(),
         ));
@@ -659,13 +689,15 @@ impl ClaudeStreamParser {
     fn observe_usage(
         &mut self,
         id: Option<&str>,
+        model: Option<&str>,
         usage: Option<&Value>,
         main: bool,
     ) -> Vec<AgentEvent> {
         let (Some(id), Some(usage)) = (id, usage) else {
             return Vec::new();
         };
-        let mut events: Vec<AgentEvent> = self.usage.observe(id, usage).into_iter().collect();
+        let mut events: Vec<AgentEvent> =
+            self.usage.observe(id, model, usage).into_iter().collect();
         if main {
             events.extend(self.context.observe(usage));
         }
@@ -683,11 +715,16 @@ impl ClaudeStreamParser {
     }
 
     /// A process that failed with a result nobody could classify, then exited non-zero, crashed.
+    /// Its last stderr line is what it said of itself.
     fn crash_after_error_result(&self, exit_code: Option<i32>) -> Option<AgentEvent> {
         let code = exit_code.filter(|code| !matches!(code, 0 | 130 | 143))?;
-        (self.result_error == Some(ErrorCategory::Unknown)).then(|| AgentEvent::Error {
+        let message = match &self.last_stderr {
+            Some(line) => format!("claude exited with code {code}: {line}"),
+            None => format!("claude exited with code {code} after an error it didn't explain"),
+        };
+        (self.result_error == Some(ErrorCategory::Unknown)).then_some(AgentEvent::Error {
             category: ErrorCategory::Unknown,
-            message: format!("claude exited with code {code} after an error it didn't explain"),
+            message,
             retryable: false,
         })
     }
@@ -714,10 +751,32 @@ impl StreamParser for ClaudeStreamParser {
         self.spares_background.then(control::stop_turn_line)
     }
 
+    fn billed_since_totals(&self) -> Option<f64> {
+        self.usage.billed_since_result()
+    }
+
+    fn spent_at_least(&self) -> Option<f64> {
+        self.spent_at_least
+    }
+
     fn parse_stderr_line(&mut self, line: &str) -> Vec<AgentEvent> {
         let line = line.trim();
         if line.is_empty() {
             return Vec::new();
+        }
+        self.last_stderr = Some(line.to_owned());
+        // The agents it stops may have spent since the last result, and no result need follow.
+        if let Some(spent) = usage::spent_at_cap(line) {
+            self.spent_at_least = Some(self.spent_at_least.map_or(spent, |was| was.max(spent)));
+            return Vec::new();
+        }
+        // A resume of a conversation Claude Code no longer has, which a fresh session replaces.
+        // The result may have come first and called it unexplained.
+        if errors::lost_session(line) {
+            if self.result_error.is_some() {
+                self.result_error = Some(ErrorCategory::SessionLost);
+            }
+            return vec![self.error(ErrorCategory::SessionLost, line.to_owned())];
         }
         if line.to_lowercase().starts_with("error") {
             if let Some(category) = errors::from_text(line) {
@@ -755,7 +814,10 @@ impl StreamParser for ClaudeStreamParser {
         if !self.error_reported {
             let (category, message) = match self.limits.unfinished() {
                 Some(limit) => (ErrorCategory::UsageLimit, limit),
-                None => missing_result_error(exit_code, self.stderr_error.as_deref()),
+                None => missing_result_error(
+                    exit_code,
+                    self.stderr_error.as_deref().or(self.last_stderr.as_deref()),
+                ),
             };
             events.push(self.error(category, message));
         }
@@ -983,6 +1045,120 @@ mod tests {
                 cumulative: false
             }]
         );
+    }
+
+    /// The output tokens the usage events say were added, in all.
+    fn output_added(events: &[AgentEvent]) -> u64 {
+        events
+            .iter()
+            .map(|event| match event {
+                AgentEvent::Usage {
+                    output_tokens,
+                    cumulative: false,
+                    ..
+                } => *output_tokens,
+                _ => 0,
+            })
+            .sum()
+    }
+
+    /// Claude Code 2.1.301 sends a message's usage only as it ends, so while a call's input
+    /// streams the count goes on by a token for about every four characters of the input, a
+    /// few dozen at a time. The message's own count takes the estimate's place once it ends.
+    #[test]
+    fn a_call_written_in_the_stream_counts_on_until_its_message_says() {
+        let mut parser = ClaudeStreamParser::new();
+        let started = parse(
+            &mut parser,
+            json!({"type": "stream_event", "event": {"type": "message_start", "message": {
+                "id": "msg_1", "model": "claude-haiku-5-5",
+                "usage": {"input_tokens": 2, "cache_read_input_tokens": 379_734,
+                          "output_tokens": 3}}}}),
+        );
+        assert_eq!(output_added(&started), 3);
+        parse(
+            &mut parser,
+            json!({"type": "stream_event", "event": {"type": "content_block_start",
+                   "index": 1, "content_block": {"type": "tool_use", "id": "toolu_1",
+                   "name": "Workflow", "input": {}}}}),
+        );
+        let piece = "x".repeat(12);
+        let mut streamed = Vec::new();
+        for _ in 0..288 {
+            streamed.extend(parse(
+                &mut parser,
+                json!({"type": "stream_event", "event": {"type": "content_block_delta",
+                       "index": 1, "delta": {"type": "input_json_delta", "partial_json": piece}},
+                       "parent_tool_use_id": null}),
+            ));
+        }
+        // 3,456 characters, about 864 tokens, in steps of at least 20.
+        let added = output_added(&streamed);
+        assert!((850..=864).contains(&added), "{added}");
+        assert!(
+            streamed.len() >= 20 && streamed.len() <= 44,
+            "{}",
+            streamed.len()
+        );
+        let whole = parse(
+            &mut parser,
+            json!({"type": "assistant", "parent_tool_use_id": null, "message": {
+                "id": "msg_1", "content": [{"type": "tool_use", "id": "toolu_1",
+                "name": "Workflow", "input": {"script": "x"}}],
+                "usage": {"input_tokens": 2, "output_tokens": 3}}}),
+        );
+        assert_eq!(added + output_added(&whole), 864);
+        let ended = parse(
+            &mut parser,
+            json!({"type": "stream_event", "event": {"type": "message_delta",
+                   "usage": {"input_tokens": 2, "output_tokens": 1_820}}}),
+        );
+        assert_eq!(output_added(&ended), 1_820 - (3 + 864));
+        let stopped = parse(
+            &mut parser,
+            json!({"type": "stream_event", "event": {"type": "message_stop"}}),
+        );
+        assert_eq!(output_added(&stopped), 0);
+    }
+
+    /// An estimate past what the message's usage then says stays counted until the result, whose
+    /// totals still stand: they are checked against what the usage said, never the estimate.
+    #[test]
+    fn an_estimate_past_the_messages_own_count_never_holds_back_the_totals() {
+        let mut parser = ClaudeStreamParser::new();
+        parse(
+            &mut parser,
+            json!({"type": "stream_event", "event": {"type": "message_start", "message": {
+                "id": "msg_1", "usage": {"input_tokens": 100, "output_tokens": 1}}}}),
+        );
+        let prose = "word ".repeat(800);
+        parse(
+            &mut parser,
+            json!({"type": "stream_event", "event": {"type": "content_block_delta",
+                   "index": 0, "delta": {"type": "input_json_delta", "partial_json": prose}}}),
+        );
+        let ended = parse(
+            &mut parser,
+            json!({"type": "stream_event", "event": {"type": "message_delta",
+                   "usage": {"input_tokens": 100, "output_tokens": 600}}}),
+        );
+        assert_eq!(output_added(&ended), 0, "the estimate already counted more");
+        let result = parse(
+            &mut parser,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "ok",
+                   "total_cost_usd": 0.01, "usage": {"input_tokens": 100, "output_tokens": 600},
+                   "session_id": "cc-1"}),
+        );
+        let totals = result.iter().find_map(|event| match event {
+            AgentEvent::Usage {
+                output_tokens,
+                cost_usd,
+                cumulative: true,
+                ..
+            } => Some((*output_tokens, *cost_usd)),
+            _ => None,
+        });
+        assert_eq!(totals, Some((600, Some(0.01))));
     }
 
     #[test]
@@ -1364,6 +1540,81 @@ mod tests {
         assert_eq!(parser.parse_stderr_line("Error: something broke"), []);
     }
 
+    /// A resume of a conversation Claude Code keeps no transcript of is a lost session, whichever
+    /// stream says so first, and never a crash.
+    #[test]
+    fn a_resume_claude_code_cant_find_is_a_lost_session() {
+        let lost = "No conversation found with session ID: 2c1f0a9e-1b2c-4d5e-8f90-123456789abc";
+        let failed =
+            || json!({"type": "result", "subtype": "error_during_execution", "is_error": true});
+        let crashed = |events: &[AgentEvent]| {
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    AgentEvent::Error {
+                        category: ErrorCategory::Unknown,
+                        ..
+                    }
+                )
+            })
+        };
+
+        let mut parser = ClaudeStreamParser::new();
+        assert_eq!(
+            parser.parse_stderr_line(lost),
+            [AgentEvent::Error {
+                category: ErrorCategory::SessionLost,
+                message: lost.into(),
+                retryable: false
+            }]
+        );
+        let result = parse(&mut parser, failed());
+        assert!(!crashed(&result), "{result:?}");
+        let end = parser.finish(Some(1));
+        assert!(!crashed(&end), "{end:?}");
+
+        let mut parser = ClaudeStreamParser::new();
+        parse(&mut parser, failed());
+        parser.parse_stderr_line(lost);
+        let end = parser.finish(Some(1));
+        assert!(!crashed(&end), "{end:?}");
+
+        // With no result at all.
+        let mut parser = ClaudeStreamParser::new();
+        parser.parse_stderr_line(lost);
+        assert_eq!(types(&parser.finish(Some(1))), ["result"]);
+    }
+
+    /// The last thing a crashed claude wrote is the best account of it there is.
+    #[test]
+    fn a_crash_says_its_last_stderr_line() {
+        let mut parser = ClaudeStreamParser::new();
+        parse(
+            &mut parser,
+            json!({"type": "result", "subtype": "error_during_execution", "is_error": true}),
+        );
+        parser.parse_stderr_line("TypeError: undefined is not an object");
+        parser.parse_stderr_line("  ");
+        let end = parser.finish(Some(1));
+        assert!(
+            end.contains(&AgentEvent::Error {
+                category: ErrorCategory::Unknown,
+                message: "claude exited with code 1: TypeError: undefined is not an object".into(),
+                retryable: false
+            }),
+            "{end:?}"
+        );
+
+        let mut parser = ClaudeStreamParser::new();
+        parser.parse_stderr_line("Segmentation fault at address 0x0");
+        let end = parser.finish(Some(139));
+        assert!(
+            matches!(&end[0], AgentEvent::Error { message, .. }
+                if message.ends_with("before it reported a result: Segmentation fault at address 0x0")),
+            "{end:?}"
+        );
+    }
+
     #[test]
     fn stderr_errors_are_categorized_and_other_lines_ignored() {
         let mut parser = ClaudeStreamParser::new();
@@ -1383,6 +1634,24 @@ mod tests {
         );
         assert_eq!(parser.parse_stderr_line("Warning: something"), []);
         assert_eq!(types(&parser.finish(Some(1))), ["result"]);
+    }
+
+    /// Claude Code's note that its spend cap stopped the session's background agents is no
+    /// error. It says what the process spent at least, where no result may follow.
+    #[test]
+    fn the_cap_note_on_stderr_says_what_the_process_spent() {
+        let mut parser = ClaudeStreamParser::new();
+        assert_eq!(parser.spent_at_least(), None);
+        assert_eq!(
+            parser.parse_stderr_line(
+                "Budget limit reached ($0.68 of $0.66); stopping background agents."
+            ),
+            []
+        );
+        let spent = parser.spent_at_least().unwrap();
+        assert!((spent - 0.675).abs() < 1e-12, "{spent}");
+        assert_eq!(parser.parse_stderr_line("Warning: something"), []);
+        assert_eq!(parser.spent_at_least(), Some(spent));
     }
 
     #[test]

@@ -763,7 +763,7 @@ impl Stats<'_> {
         match self.plan_windows(kit, cli, bar) {
             Some(windows) => truncate_spans(&windows, inner),
             // The Usage tab's own words; its page says why.
-            None if plan.failed.is_some() => vec![kit.dim("failed to load usage data")],
+            None if plan.failed.is_some() => vec![kit.dim("Failed to load usage data")],
             None => vec![kit.dim("no plan reading yet")],
         }
     }
@@ -776,10 +776,12 @@ impl Stats<'_> {
             .and_then(|plan| plan.plan.clone())
     }
 
-    /// The models that filled `role`, the CLI that did the most of it first, its models
-    /// together.
+    /// The models that did `role`'s work, the CLI that did the most of it first, its models
+    /// together. A model that only spent in the role counts in its tokens, not in its list.
     pub(super) fn filled_by(&self, role: StatsRole) -> Vec<(&Cli, &Model)> {
-        let mut filled = self.crew.in_role(role);
+        let mut filled: Vec<_> = (self.crew.in_role(role).into_iter())
+            .filter(|(_, model)| model.did(role) > 0)
+            .collect();
         filled.sort_by_key(|(cli, _)| std::cmp::Reverse(cli.did(role)));
         filled
     }
@@ -796,12 +798,7 @@ impl Stats<'_> {
         let bar_cells = inner.saturating_sub(ROLE_COLUMN);
         for role in self.crew.roles() {
             drawn.push(Vec::new());
-            // The row counts work, so a model that only spent in the role isn't on it.
-            let filled: Vec<_> = self
-                .filled_by(role)
-                .into_iter()
-                .filter(|(_, model)| model.did(role) > 0)
-                .collect();
+            let filled = self.filled_by(role);
             let parts: Vec<(u64, Style)> = filled
                 .iter()
                 .map(|(cli, model)| (u64::from(model.did(role)), model_style(kit, cli, model)))

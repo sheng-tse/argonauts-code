@@ -271,6 +271,7 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
             "Your agents",
             "Who you talk to",
             "How the crew works",
+            "Who orchestrates",
             "Who does what",
             "Approvals",
             "Usage counts",
@@ -284,6 +285,7 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
         "crew.reviewer",
         "crew.judge",
         "workflow",
+        "roles.orchestrator.models",
         "telemetry.enabled",
     ];
     expected.extend([
@@ -307,7 +309,7 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
         "{text}"
     );
     assert!(text.contains(r#"main = "claude-code""#), "{text}");
-    assert!(text.contains(r#"workflow = "council""#), "{text}");
+    assert!(text.contains(r#"workflow = "orchestrator""#), "{text}");
 
     let closing = notices(&seen)
         .into_iter()
@@ -345,6 +347,7 @@ async fn guided_setup_without_a_terminal_writes_no_safety_key_and_finishes_at_on
             "crew.worker",
             "crew.reviewer",
             "crew.judge",
+            "roles.orchestrator.models",
             "limits.when_reached"
         ],
         "{text}"
@@ -392,7 +395,7 @@ async fn guided_setup_rerun_preselects_your_values() {
         )
         .unwrap();
     });
-    // With Claude Code logged out, Captain would be recommended, but your file says council.
+    // Your file says council, but the workflow step recommends Orchestrator every time.
     let logins = vec![("claude-code".to_owned(), LoginState::LoggedOut)];
     let (mut setup, effects) = start(&mut fixture, two_ready(), logins, Vec::new()).await;
     let (asked, _) = answer_all(&mut fixture, &mut setup, effects, enter).await;
@@ -406,7 +409,7 @@ async fn guided_setup_rerun_preselects_your_values() {
     let text = fixture.global();
     let settings: argonauts_core::settings::Settings = toml::from_str(&text).unwrap();
     assert_eq!(settings.crew.main.to_string(), "codex/gpt-5.6-luna");
-    assert_eq!(settings.workflow, "council");
+    assert_eq!(settings.workflow, "orchestrator");
     assert_eq!(
         settings.approvals.understand.mode,
         ApprovalMode::Auto,
@@ -433,7 +436,7 @@ async fn guided_setup_esc_takes_the_recommendations_for_the_rest() {
     let effects = setup.set_aside(&mut fixture.ctx, &agents.id).await.unwrap();
     assert!(finished(&effects));
     let text = fixture.global();
-    assert!(text.contains(r#"workflow = "council""#), "{text}");
+    assert!(text.contains(r#"workflow = "orchestrator""#), "{text}");
     assert!(text.contains(r#"mode = "auto""#), "{text}");
     let outcome = fixture.drain().into_iter().find_map(|event| match event {
         AppEvent::ChoiceClosed { id, outcome } if id == agents.id => Some(outcome),
@@ -509,7 +512,7 @@ async fn guided_setup_leaves_a_logged_out_agent_out_of_the_crew() {
     );
     let text = fixture.global();
     assert!(text.contains(r#"worker = ["claude-code"]"#), "{text}");
-    assert!(text.contains(r#"workflow = "captain""#), "{text}");
+    assert!(text.contains(r#"workflow = "orchestrator""#), "{text}");
 }
 
 #[tokio::test]
@@ -670,7 +673,7 @@ async fn guided_setup_with_no_agent_ready_still_finishes_and_says_what_to_instal
     let text = fixture.global();
     assert!(!text.contains("crew ="), "{text}");
     assert!(!text.contains("crew.main"), "{text}");
-    assert!(text.contains(r#"workflow = "captain""#), "{text}");
+    assert!(text.contains(r#"workflow = "orchestrator""#), "{text}");
     let warned = notices(&seen)
         .into_iter()
         .any(|line| line.contains("install claude-code"));
@@ -800,5 +803,74 @@ async fn guided_setup_leaves_a_file_that_needs_a_fix_untrusted_and_says_what_to_
             .iter()
             .all(|notice| !notice.contains("invalid type")),
         "{notices:#?}"
+    );
+}
+
+/// The bottom line shows the mode the approvals step picked, before the setup writes it.
+#[tokio::test]
+async fn the_approvals_answer_shows_on_the_bottom_line_at_once() {
+    let mut fixture = Fixture::new(true);
+    let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
+    let pick = |choice: &AppChoice| match choice.title.as_str() {
+        "Approvals" => crate::choices::choose("autopilot"),
+        _ => enter(choice),
+    };
+    let mut effects = effects;
+    for _ in 0..20 {
+        let choice = open_choice(&fixture.drain()).expect("a question");
+        let approvals = choice.title == "Approvals";
+        effects = setup
+            .answer(&mut fixture.ctx, &choice.id, pick(&choice), None)
+            .await
+            .unwrap();
+        if approvals {
+            assert!(
+                matches!(effects.first(), Some(Effect::Status)),
+                "{effects:?}"
+            );
+            assert_eq!(setup.approval_mode(), Some(ApprovalMode::Autopilot));
+            return;
+        }
+    }
+    panic!("no approvals step: {effects:?}");
+}
+
+/// A repo with its own `.argonauts/` is asked once whether the guide pages go there too, and
+/// the closing line names each page written.
+#[tokio::test]
+async fn the_guide_pages_go_into_a_repo_only_after_a_yes_asked_once() {
+    let mut fixture = Fixture::prepared(true, |repo| {
+        std::fs::create_dir_all(repo.root().join(".argonauts")).unwrap();
+    });
+    let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
+    let yes = |choice: &AppChoice| match choice.title.as_str() {
+        "Guide pages in this repo" => crate::choices::choose("yes"),
+        _ => enter(choice),
+    };
+    let (asked, seen) = answer_all(&mut fixture, &mut setup, effects, yes).await;
+    let guides = asked
+        .iter()
+        .find(|choice| choice.title == "Guide pages in this repo")
+        .expect("the guide pages question");
+    assert_eq!(guides.options[0].label, "Not here");
+    let dot = fixture.repo.root().join(".argonauts");
+    assert!(dot.join("README.md").is_file());
+    assert!(dot.join("workflows/README.md").is_file());
+    let closing = notices(&seen)
+        .into_iter()
+        .find(|text| text.starts_with("Saved to"))
+        .expect("the closing line");
+    assert!(
+        closing.contains("Wrote .argonauts/README.md, "),
+        "{closing}"
+    );
+
+    let (mut again, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
+    let (asked, _) = answer_all(&mut fixture, &mut again, effects, enter).await;
+    assert!(
+        !asked
+            .iter()
+            .any(|choice| choice.title == "Guide pages in this repo"),
+        "asked once"
     );
 }

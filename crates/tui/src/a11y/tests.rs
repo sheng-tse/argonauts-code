@@ -683,9 +683,8 @@ fn a_bang_line_runs_in_your_shell() {
 /// `/workflows` shows what the run's row opens on screen: what the run waits for
 /// before any agent, the main agent's session while it designs, then the workflow.
 #[test]
-fn workflows_shows_the_main_agent_while_it_designs() {
+fn workflows_says_the_workflow_is_being_written_while_it_is_designed() {
     use crate::views::waiting::fixture::{RunLog, run_id};
-    use argonauts_core::names::SessionKey;
 
     let workflows = |log: &RunLog| {
         let mut reader = Reader::new(&UiOptions::default());
@@ -702,15 +701,9 @@ fn workflows_shows_the_main_agent_while_it_designs() {
         ["Waiting for the main agent to start designing the workflow."]
     );
     log.design("s-001", "main:design");
-    assert_eq!(
-        workflows(&log).commands,
-        [UiCommand::Request {
-            view: ViewRequest::Agent {
-                run: run_id(),
-                session: SessionKey::parse("s-001").unwrap(),
-            },
-        }]
-    );
+    let said = workflows(&log);
+    assert!(said.commands.is_empty(), "{:?}", said.commands);
+    assert_eq!(said.lines, [crate::views::waiting::BEING_WRITTEN]);
     log.ended("s-001");
     log.declare();
     assert_eq!(
@@ -722,4 +715,29 @@ fn workflows_shows_the_main_agent_while_it_designs() {
             },
         }]
     );
+}
+
+/// A fallback for a CLI that turned out signed out says how to sign it in again.
+#[test]
+fn a_signed_out_fallback_says_how_to_sign_in_again() {
+    use argonauts_core::app::{ConversationEvent, SignedOut};
+    use argonauts_core::names::{ModelRef, TurnId};
+
+    let event = AppEvent::Conversation {
+        event: ConversationEvent::FellBack {
+            turn: TurnId::numbered(1),
+            from: ModelRef::new("claude-code", None),
+            to: ModelRef::new("codex", None),
+            why: "is signed out (its sign-in was revoked)".into(),
+            told: "your request".into(),
+            signed_out: Some(SignedOut {
+                why: "its sign-in was revoked".into(),
+                login: Some("claude /login".into()),
+            }),
+        },
+    };
+    let lines = super::lines::lines_for(&event, &crate::state::AppState::default());
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("is signed out"), "{lines:?}");
+    assert!(lines[0].ends_with("signs it in again"), "{lines:?}");
 }

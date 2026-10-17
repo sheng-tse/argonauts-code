@@ -48,6 +48,7 @@ pub(crate) fn on_set_aside(kind: ChoiceKind) -> OnSetAside {
         ChoiceKind::KeepInstructions => OnSetAside::JustThisRequest,
         ChoiceKind::Setup => OnSetAside::NotChanged,
         ChoiceKind::NeededUpdate => OnSetAside::NotStarted,
+        ChoiceKind::RenamedSettings => OnSetAside::NotChanged,
     }
 }
 
@@ -93,6 +94,10 @@ pub(crate) fn options(kind: ChoiceKind) -> Vec<AnswerOption> {
         ChoiceKind::GoAhead => vec![
             option('y', "Yes, go ahead", choose("yes"), true),
             option('n', "No, keep planning", choose("no"), false),
+        ],
+        ChoiceKind::RenamedSettings => vec![
+            option('r', "Rename them", AnswerAction::Approve, false),
+            option('l', "Leave them", AnswerAction::Cancel, false),
         ],
         // A preview's answer is No unless you say otherwise.
         ChoiceKind::TryWorkflow => vec![
@@ -416,6 +421,14 @@ mod tests {
             (ChoiceKind::Git, Vec::new(), OnSetAside::NotChanged),
             (ChoiceKind::Templates, Vec::new(), OnSetAside::NotChanged),
             (ChoiceKind::NeededUpdate, Vec::new(), OnSetAside::NotStarted),
+            (
+                ChoiceKind::RenamedSettings,
+                vec![
+                    ('r', "Rename them", AnswerAction::Approve),
+                    ('l', "Leave them", AnswerAction::Cancel),
+                ],
+                OnSetAside::NotChanged,
+            ),
         ];
         for (kind, expected, esc) in &table {
             assert_eq!(shape(&options(*kind)), *expected, "{kind:?}");
@@ -459,7 +472,8 @@ mod tests {
                 | ChoiceKind::Setup
                 | ChoiceKind::Git
                 | ChoiceKind::Templates
-                | ChoiceKind::NeededUpdate => {}
+                | ChoiceKind::NeededUpdate
+                | ChoiceKind::RenamedSettings => {}
             }
         }
 

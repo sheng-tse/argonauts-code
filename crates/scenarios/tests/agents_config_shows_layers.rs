@@ -1,5 +1,5 @@
-//! `/config` lists every key with the layer that set it: the built-in default, your settings
-//! everywhere, this project's, or a `--set` flag.
+//! `/config all` lists every key with the layer that set it: the built-in default, your
+//! settings everywhere, this project's, or a `--set` flag.
 
 mod agents_support;
 
@@ -15,9 +15,10 @@ fn workers_config_shows_layers() -> anyhow::Result<()> {
     write_project_config(&scenario, "[review]\nper_task = 2\n")?;
     let mut pty = launch_ready(&scenario, &["--set", "review.max_change_rounds=3"], &[])?;
 
-    // `/config` answers with its editable rows, each with the layer that set it.
+    // `/config all` answers with every editable row, each with the layer that set it; a bare
+    // `/config` opens Claude Code's shorter list on the Config tab.
     let is_config = |data: &ViewData| matches!(data, ViewData::Settings { command: Some(command), .. } if command == "config");
-    pty.send("/config\r")?;
+    pty.send("/config all\r")?;
     let event = scenario.trace.wait_for_event(
         |event| matches!(event, AppEvent::View { data } if is_config(data)),
         WAIT,

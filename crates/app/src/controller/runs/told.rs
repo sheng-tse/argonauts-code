@@ -69,6 +69,7 @@ mod tests {
             waiting: Vec::new(),
             live: false,
             remind: false,
+            shape_known: true,
         }
     }
 

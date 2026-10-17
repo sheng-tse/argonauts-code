@@ -1,6 +1,6 @@
 # Council: no single planner. Also called multi-agent debate.
 name  = "council"
-about = "No single planner: everyone proposes and challenges, the judge decides (the default)"
+about = "No single planner: everyone proposes and challenges, the judge decides"
 adapt = true
 
 [[step]]
@@ -33,7 +33,7 @@ not_the_author = true        # each task goes to a worker who didn't build it
 send_back_to   = "Build"
 
 [[step]]
-name = "Sign off"
+name = "Sign-off"
 role = "judge"
 
 # Its phases, which run in place of the steps above when workflows.adapt_with = "phases".

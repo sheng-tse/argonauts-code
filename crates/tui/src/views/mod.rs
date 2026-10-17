@@ -38,11 +38,16 @@ mod vim_tests;
 pub mod waiting;
 pub mod workflow;
 #[cfg(test)]
+mod workflow_captain_tests;
+#[cfg(test)]
 pub(crate) mod workflow_examples;
 #[cfg(test)]
 mod workflow_golden_tests;
 #[cfg(test)]
 mod workflow_inner_tests;
+#[cfg(test)]
+mod workflow_nested_tests;
+mod workflow_outline;
 pub mod workflow_page;
 #[cfg(test)]
 pub(crate) mod workflow_pictures;
@@ -103,6 +108,12 @@ pub trait View: fmt::Debug + Send {
     fn handle_paste(&mut self, text: &str, ctx: &ViewCtx<'_>) -> ViewOutcome {
         let _ = (text, ctx);
         ViewOutcome::Ignored
+    }
+
+    /// What the view asks the controller for each time it opens, however it was opened, such
+    /// as the agent panel's rows: it shows the last ones sent until the new ones arrive.
+    fn asks_on_open(&self) -> Option<ViewRequest> {
+        None
     }
 
     /// A controller answer to a request this view made. True when the view took it.
@@ -171,6 +182,22 @@ pub enum ViewOutcome {
     },
     /// Back to the conversation, where the answer shows, sending this on the way.
     SendToConversation(UiCommand),
+    /// Back to the conversation, leaving `line` under an echo of `command`, as Config's Esc
+    /// leaves `⎿  Set Editor mode to vim` under `/config`.
+    CloseSaying {
+        command: String,
+        line: String,
+    },
+    /// [`ViewOutcome::CloseSaying`], then `then` sent on to the conversation, as a Config row
+    /// that opens a picker leaves what the tab changed under `/config` before it.
+    CloseSayingThen {
+        command: String,
+        line: String,
+        then: UiCommand,
+    },
+    /// A setting saved now, which the view sums up itself when it closes, so the conversation
+    /// doesn't print it as it happens.
+    SaveQuietly(UiCommand),
 }
 
 /// Whether `run` can still be paused or have agents stopped: not finished and not waiting, as far
@@ -364,6 +391,19 @@ pub(crate) fn steer_refusal(state: &AppState, run: &RunId, session: &SessionKey)
     })
 }
 
+/// `x x` on a run: the one on screen through `Stop`, any other by name, as `/stop <run>` does.
+pub(crate) fn stop(run: &RunId, state: &AppState) -> UiCommand {
+    if state.attached.as_ref() == Some(run) {
+        UiCommand::Stop
+    } else {
+        UiCommand::Slash {
+            command: SlashCommand::Stop {
+                run: Some(run.clone()),
+            },
+        }
+    }
+}
+
 /// `p` in a run's view. A pause acts on the run on screen, so another run's view says so.
 pub(crate) fn pause(run: &RunId, ctx: &ViewCtx<'_>) -> ViewOutcome {
     if ctx.state.attached.as_ref() == Some(run) {
@@ -383,9 +423,18 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         return;
     };
     match data.as_ref() {
-        ViewData::Workflow { view } => cx
-            .out
-            .open(workflow::WorkflowView::new((**view).clone()).following(refresh.follower())),
+        ViewData::Workflow { view } => {
+            let mut opened = workflow::WorkflowView::new((**view).clone());
+            // Opened from a row inside the run in the bottom list, it opens on that workflow.
+            let inside = cx.model.bottom.workflows.opening.take();
+            if let Some((run, id)) = inside.as_deref().and_then(|key| key.split_once('#'))
+                && run == view.run.as_str()
+                && let Some(id) = argonauts_core::names::WorkflowId::parse(id)
+            {
+                opened = opened.on_inside(&id);
+            }
+            cx.out.open(opened.following(refresh.follower()));
+        }
         ViewData::Agent { view } => cx
             .out
             .open(agent::AgentView::new((**view).clone()).following(refresh.follower())),
@@ -397,18 +446,13 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
             )
             .with_context(view.clone()),
         ),
-        ViewData::Runs {
-            runs,
+        ViewData::ResumeList {
             conversations,
             sessions,
-            agents,
-            agents_read,
-        } => cx.out.open(
-            resume::ResumePicker::listing(runs.clone(), conversations.clone(), sessions.clone())
-                .with_agents(agents.clone(), agents_read.clone()),
-        ),
-        // For a picker that closed before they came.
-        ViewData::AgentSessions { .. } => {}
+        } => cx.out.open(resume::ResumePicker::listing(
+            conversations.clone(),
+            sessions.clone(),
+        )),
         ViewData::Diff { diff } => cx.out.open(pager::Pager::diff(diff.clone())),
         // A refresh is for a /mods that closed before it came.
         ViewData::Mods { view } if view.refresh => {}

@@ -1,0 +1,17 @@
+ ╭ Build · 5 agents ─────┬ build:due-flag ──────────────────────────────────────────────────────────────────────────╮ 
+ │ ❯ ⏺ build:due-flag    │ ⏺ Running · Sonnet 5.5 on Claude Code · worker · worktree                                │ 
+ │     ▾ add-due-flag    │ 22.4k tok · 11 tool calls · 2m 40s · context 14% of 200k                                 │ 
+ │       ✔ Write   2/2   │                                                                                          │ 
+ │         ✔ write:add   │ Prompt · 9 lines · ⏎ expand                                                              │ 
+ │         ✔ write:list  │   Add --due <date> to todo add, and show the date in todo list.                          │ 
+ │       2 Check   0/1   │   … 8 more lines                                                                         │ 
+ │         ⏺ check:dates │ Activity · last 3 of 11 tool calls · ⏎ expand                                            │ 
+ │   ✔ build:due-tests   │   ⏺ Read(src/cli.js)                                                                     │ 
+ │                       │   ⏺ Read(test/cli.test.js)                                                               │ 
+ │                       │   ⏺ Workflow(add-due-flag) · running                                                     │ 
+ │                       │ Its workflow · add-due-flag · 2/3 agents · 25.9k tok                                     │ 
+ │                       │   ✔ Write 2/2 · 2 Check 0/1                                                              │ 
+ │                       │ Outcome                                                                                  │ 
+ │                       │   Still running…                                                                         │ 
+ ╰───────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────╯ 
+ ↑↓ agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save                      

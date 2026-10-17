@@ -1,19 +1,23 @@
 //! A workflow an agent's own CLI runs, such as one Claude Code's Workflow tool starts, is part
 //! of that agent's step. It sits under the agent's row, never beside the run as a second one,
-//! and opening it shows its own phases.
+//! and opens there to its own phases and their agents.
 
 use argonauts_core::events::session::{CliAgentState, CliWorkflowRun, SubagentStatus};
 use argonauts_core::names::{ModelRef, SessionKey};
-use argonauts_core::views::{NestedWorkflowRow, RowStatus, WorkflowRow, cli_workflow_run_id};
+use argonauts_core::views::{
+    NestedWorkflowRow, RowStatus, WorkflowRow, cli_phases, cli_workflow_run_id,
+};
+
+use super::WorkflowLog;
 
 /// The row of each workflow `parent`'s CLI ran, oldest first.
 pub(super) fn rows(
     parent: &SessionKey,
     worker: &ModelRef,
-    agent_ids: &[(SessionKey, CliWorkflowRun)],
+    log: &WorkflowLog,
     now_ms: Option<u64>,
 ) -> Vec<WorkflowRow> {
-    agent_ids
+    log.agent_ids
         .iter()
         .filter(|(host, _)| host == parent)
         .map(|(_, workflow)| {
@@ -25,6 +29,8 @@ pub(super) fn rows(
             let name = Some(workflow.name.trim())
                 .filter(|name| !name.is_empty())
                 .unwrap_or("workflow");
+            let mut phases = cli_phases(parent, worker, workflow, now_ms);
+            crate::views::asked::answered_in(&mut phases, &log.sessions);
             WorkflowRow::Workflow(NestedWorkflowRow {
                 id: cli_workflow_run_id(&workflow.id),
                 name: name.to_owned(),
@@ -35,9 +41,21 @@ pub(super) fn rows(
                 elapsed_ms: workflow.elapsed_ms(now_ms),
                 parent: Some(parent.clone()),
                 worker: Some(worker.agent.clone()),
+                phases,
+                rows: Vec::new(),
             })
         })
         .collect()
+}
+
+/// Agents done and in all of the workflows agents' own CLIs run among `rows`.
+pub(super) fn counted(rows: &[WorkflowRow]) -> (u32, u32) {
+    rows.iter().fold((0, 0), |(done, total), row| match row {
+        WorkflowRow::Workflow(nested) if nested.parent.is_some() => {
+            (done + nested.agents_done, total + nested.agents_total)
+        }
+        _ => (done, total),
+    })
 }
 
 fn status(workflow: &CliWorkflowRun) -> RowStatus {
@@ -58,10 +76,10 @@ fn status(workflow: &CliWorkflowRun) -> RowStatus {
 /// included, so it reads as part of the agent's step.
 pub(super) fn under_agents(
     rows: Vec<WorkflowRow>,
-    agent_ids: &[(SessionKey, CliWorkflowRun)],
+    log: &WorkflowLog,
     now_ms: Option<u64>,
 ) -> Vec<WorkflowRow> {
-    if agent_ids.is_empty() {
+    if log.agent_ids.is_empty() {
         return rows;
     }
     let mut placed = Vec::with_capacity(rows.len());
@@ -72,9 +90,9 @@ pub(super) fn under_agents(
         };
         let mut inner = Vec::new();
         for tried in &agent.tries {
-            inner.extend(self::rows(&tried.session, &tried.worker, agent_ids, now_ms));
+            inner.extend(self::rows(&tried.session, &tried.worker, log, now_ms));
         }
-        inner.extend(self::rows(&agent.session, &agent.worker, agent_ids, now_ms));
+        inner.extend(self::rows(&agent.session, &agent.worker, log, now_ms));
         placed.push(row);
         placed.extend(inner);
     }
@@ -104,6 +122,7 @@ mod tests {
             tries: Vec::new(),
             note: None,
             inner: None,
+            left_out: false,
         })
     }
 
@@ -125,11 +144,12 @@ mod tests {
     #[test]
     fn a_workflow_an_agents_cli_runs_sits_under_that_agent() {
         let rows = vec![agent("s-001"), agent("s-002")];
-        let agent_ids = vec![(
+        let mut log = WorkflowLog::of(&[]);
+        log.agent_ids = vec![(
             SessionKey::parse("s-001").unwrap(),
             claude_codes_own("wf_1", "add-due-dates"),
         )];
-        let rows = under_agents(rows, &agent_ids, None);
+        let rows = under_agents(rows, &log, None);
         let shape: Vec<String> = rows
             .iter()
             .map(|row| match row {

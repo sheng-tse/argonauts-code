@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use argonauts_scenarios::{Scenario, WAIT, past_the_question_guard, scenario_file};
+use argonauts_scenarios::{Scenario, WAIT, as_set_up, past_the_question_guard, scenario_file};
 use argonauts_testkit::{FakeScenario, FakeStep, Key, Pty, Screen};
 use regex::Regex;
 
@@ -26,8 +26,10 @@ fn skip_setup(scenario: &Scenario) -> anyhow::Result<()> {
     }
     fs::write(
         config,
-        "crew.main = \"claude-code/haiku\"\n\n[ui]\ntheme = \"dark\"\n\n\
-         [approvals.merge]\nmode = \"supervised\"\n\n[main_session]\ntools = false\n",
+        as_set_up(
+            "crew.main = \"claude-code/haiku\"\n\n[ui]\ntheme = \"dark\"\n\n\
+             [approvals.merge]\nmode = \"supervised\"\n\n[main_session]\ntools = false\n",
+        ),
     )?;
     Ok(())
 }

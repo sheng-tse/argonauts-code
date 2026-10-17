@@ -87,6 +87,63 @@ fn no_real_home_folder_or_address_is_in_a_file() {
 }
 
 #[test]
+fn no_recording_keeps_the_machines_own_setup() {
+    let table = table::load();
+    report::fail_on(
+        "the recording machine's setup",
+        &private::setup_places(&table, tree::files()),
+    );
+}
+
+/// Made-up names take the place of a machine's own: the check needs only their shape.
+#[test]
+fn a_recordings_setup_and_a_scratch_folder_are_found() {
+    let table = table::load();
+    let file = |path: &str, text: String| tree::File {
+        path: path.to_owned(),
+        text: Some(text),
+    };
+    let init = r#"{"type":"system","subtype":"init","skills":["debug","anthropic-skills:field-notes","anthropic-skills:example-a"],"slash_commands":["compact","standup-notes","probe-cmd"],"agents":["Explore","release-captain"],"plugins":[{"name":"lint-helper","path":"~/.claude/plugins/cache/claude-plugins-official/lint-helper/1.0.0","source":"lint-helper@claude-plugins-official"},{"name":"example-plugin-a","source":"example-plugin-a@claude-plugins-official"},{"name":"cc-plugin-telemetry","path":"builtin"},{"name":"probe","source":"probe@inline"}],"mcp_servers":[{"name":"claude.ai Trip Planner","source":"claudeai"},{"name":"claude.ai Example A","source":"claudeai"},{"name":"argonauts","source":"dynamic"}],"tools":["Read","mcp__claude_ai_Trip_Planner__plan"]}"#;
+    let account = r#"{"response":{"account":{"email":"<email>","organization":"Sails Ltd","subscriptionType":"<plan>"}}}"#;
+    let files = [
+        file(
+            "crates/adapters/claude-code/fixtures/sample.stdout.jsonl",
+            format!("{init}\n{account}\n"),
+        ),
+        // The code's own examples are made up, so only recordings are read.
+        file("crates/adapters/claude-code/src/sample.rs", init.to_owned()),
+    ];
+    let found: Vec<String> = private::setup_places(&table, &files)
+        .iter()
+        .map(|place| place.found.clone())
+        .collect();
+    assert_eq!(
+        found,
+        [
+            "anthropic-skills:field-notes",
+            "mcp__claude_ai_Trip_Planner",
+            "lint-helper",
+            "plugin lint-helper",
+            "slash_commands standup-notes",
+            "agents release-captain",
+            "connector claude.ai Trip Planner",
+            "organization: Sails Ltd",
+        ]
+    );
+
+    let scratch = format!("{}/{}-{}/scratchpad", "/private/tmp", "claude", 501);
+    let files = [file(
+        "crates/tui/src/sample.rs",
+        format!("let repo = \"{scratch}\";"),
+    )];
+    let found: Vec<String> = private::places(&table, &files)
+        .iter()
+        .map(|place| place.found.clone())
+        .collect();
+    assert_eq!(found, [format!("{}-{}", "claude", 501)]);
+}
+
+#[test]
 fn a_key_is_spelled_like_its_field() {
     let table = table::load();
     report::fail_on(
@@ -215,14 +272,16 @@ fn a_snapshot_missing_from_the_list_is_found() {
     );
 }
 
-/// The docs in the folder `ARGONAUTS_DOCS` names are read only when it is set.
+/// The docs in the folder `ARGONAUTS_DOCS` names are read only when it is set. A relative
+/// folder is read from the workspace's top, where the command is typed, since cargo runs the
+/// test from the crate's own folder.
 #[test]
 fn the_living_docs_hold_no_retired_name() {
     let Some(docs) = std::env::var_os("ARGONAUTS_DOCS") else {
         return;
     };
     let table = table::load();
-    let docs = std::path::PathBuf::from(docs);
+    let docs = table::workspace().join(docs);
     let files: Vec<tree::File> = table
         .living_docs
         .files

@@ -2,6 +2,10 @@
 //! into the limit lines. The host records it as `Limit(Run)`, which the scheduler reads to
 //! defer tasks and the screen reads for the spend against the limit. Once the run's limit is
 //! spent, the host pauses the run, since only you raise a ceiling.
+//!
+//! A session spends most of what it costs to open in its first request, before any reading
+//! can stop it, so the meter also learns what a session of each worker costs to open, and the
+//! host starts none that what's left of the limit can't hold.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -11,7 +15,8 @@ use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::session::{LimitEvent, SessionEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::meter::Spend;
-use argonauts_core::names::{RoleName, SessionKey};
+use argonauts_core::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::session_runner::Access;
 use argonauts_core::settings::limit::{LimitAmount, LimitLineKind, LimitUnit, SpendLimits};
 use argonauts_core::steps::StepName;
 use time::{Duration, OffsetDateTime};
@@ -25,9 +30,27 @@ const EVERY: Duration = Duration::SECOND;
 struct SessionSpend {
     role: Option<RoleName>,
     step: Option<StepName>,
+    /// How it opened: sessions alike cost about the same to open.
+    opened_as: Option<Opener>,
+    /// Started, and no reading of what it spent has come yet, so it holds what one like it
+    /// costs to open.
+    unread: bool,
     /// What its earlier processes spent. A resumed session's meter starts again from zero.
     banked: Spend,
     current: Spend,
+}
+
+/// The worker, its access, and whether it resumed a CLI session, whose first request mostly
+/// reads what an earlier one wrote to the cache.
+type Opener = (ModelRef, Access, bool);
+
+/// A session the run's limit can't hold: what's left of it, and what one like it costs to open
+/// plus what the sessions started and not yet heard from will take.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NoRoom {
+    pub left: LimitAmount,
+    pub opening: f64,
+    pub held: f64,
 }
 
 #[derive(Debug, Default)]
@@ -40,6 +63,9 @@ pub struct RunMeter {
     last_limit: Option<RunSpend>,
     /// A pause for the spent limit is under way, so no second one starts.
     holding: bool,
+    /// The least a session that opened each way cost to open in this run, in the limit's unit:
+    /// its first reading, or all it spent by its end.
+    opening: HashMap<Opener, f64>,
 }
 
 impl RunMeter {
@@ -64,17 +90,37 @@ impl RunMeter {
                     let entry = self.session(event)?;
                     entry.role = Some(started.role);
                     entry.step = started.step;
+                    entry.opened_as = Some((
+                        started.worker.clone(),
+                        started.access,
+                        started.resumed_from.is_some(),
+                    ));
+                    entry.unread = true;
                     entry.current = Spend::default();
                     return None;
                 }
                 SessionEvent::Limit(LimitEvent::Spend(status)) => {
-                    self.session(event)?.current = status.spend;
+                    let first = self.session(event)?.unread;
+                    let spent = self.spent_amount(&status.spend);
+                    let entry = self.session(event)?;
+                    entry.current = status.spend;
+                    if first && spent > 0.0 {
+                        entry.unread = false;
+                        let opener = entry.opened_as.clone();
+                        self.learn_opening(opener, spent);
+                    }
                     false
                 }
                 SessionEvent::Ended(end) => {
+                    let spent = self.spent_amount(&end.spend);
                     let entry = self.session(event)?;
                     entry.banked = add(&entry.banked, &end.spend);
                     entry.current = Spend::default();
+                    entry.unread = false;
+                    let opener = entry.opened_as.clone();
+                    if spent > 0.0 {
+                        self.learn_opening(opener, spent);
+                    }
                     true
                 }
                 _ => return None,
@@ -176,11 +222,57 @@ impl RunMeter {
 
     /// True once, when the run's limit is spent and no pause for it is under way yet.
     pub fn start_holding(&mut self) -> bool {
-        if self.holding || self.left().is_none_or(|left| left.amount > 0.0) {
+        if self.left().is_none_or(|left| left.amount > 0.0) {
+            return false;
+        }
+        self.hold()
+    }
+
+    /// True once while no pause for the run's limit is under way, so only one starts.
+    pub fn hold(&mut self) -> bool {
+        if self.holding {
             return false;
         }
         self.holding = true;
         true
+    }
+
+    /// Whether what's left of the run's limit can't hold a session of `worker` with `access`
+    /// starting now, fresh or resuming a CLI session: less is left than one like it costs to
+    /// open, with what the sessions started and not yet heard from will take. One like no
+    /// session that opened in this run yet always starts.
+    pub fn no_room_for(&self, worker: &ModelRef, access: Access, resumes: bool) -> Option<NoRoom> {
+        let left = self.left()?;
+        let opening = *self.opening.get(&(worker.clone(), access, resumes))?;
+        let held = self
+            .sessions
+            .values()
+            .filter(|session| session.unread && session.role != Some(RoleName::Narrator))
+            .filter_map(|session| session.opened_as.as_ref())
+            .filter_map(|opener| self.opening.get(opener))
+            .sum();
+        (left.amount < opening + held).then_some(NoRoom {
+            left,
+            opening,
+            held,
+        })
+    }
+
+    fn learn_opening(&mut self, opener: Option<Opener>, spent: f64) {
+        let Some(opener) = opener else {
+            return;
+        };
+        let least = self.opening.entry(opener).or_insert(spent);
+        *least = least.min(spent);
+    }
+
+    /// `spend` in the run limit's unit, or nothing when the run has none the meter counts.
+    fn spent_amount(&self, spend: &Spend) -> f64 {
+        self.plan
+            .as_ref()
+            .map(|plan| plan.total.unit)
+            .filter(|unit| metered(*unit))
+            .map_or(0.0, |unit| amount(spend, unit))
     }
 }
 
@@ -287,6 +379,87 @@ mod tests {
             spend_per_run: Some(spend_per_run),
             ..SpendLimits::default()
         })
+    }
+
+    /// A session of Haiku 5.5 on Claude Code, read-only, fresh or resuming a CLI session.
+    fn opened(seq: u64, session: &str, resumes: bool) -> RunEvent {
+        event(
+            seq,
+            0,
+            session,
+            json!({
+                "event": "started", "worker": "claude-code/haiku", "agent_id": "claude-code",
+                "provider": "anthropic", "kind": "cli", "role": "draft", "step": null,
+                "access": "read_only", "lifetime": "task",
+                "resumed_from": resumes.then_some("cc-1"), "follow_key": null,
+                "workflow_step": null,
+            }),
+        )
+    }
+
+    fn haiku() -> ModelRef {
+        "claude-code/haiku".parse().unwrap()
+    }
+
+    /// The council run under its $0.60 limit: the planner's first request was billed $0.3619
+    /// and its session $0.3745, which leaves $0.2255, less than another one costs to open.
+    #[test]
+    fn a_session_that_would_cross_the_limit_has_no_room() {
+        let mut meter = meter(0.60);
+        meter.observe(&opened(1, "s-001", false));
+        // A reading before any request says nothing of what a session costs to open.
+        meter.observe(&reading(2, 1, "s-001", 0.0));
+        assert_eq!(meter.no_room_for(&haiku(), Access::ReadOnly, false), None);
+        meter.observe(&reading(3, 2, "s-001", 0.361891));
+        meter.observe(&ended(4, 3, "s-001", 0.3745));
+        let no_room = meter
+            .no_room_for(&haiku(), Access::ReadOnly, false)
+            .expect("no room");
+        assert!((no_room.left.amount - 0.2255).abs() < 1e-9, "{no_room:?}");
+        assert!((no_room.opening - 0.361891).abs() < 1e-9, "{no_room:?}");
+        assert_eq!(no_room.held, 0.0);
+        // Another worker, another access, or a resumed session opens its own way.
+        let codex: ModelRef = "codex/gpt-6-luna".parse().unwrap();
+        assert_eq!(meter.no_room_for(&codex, Access::ReadOnly, false), None);
+        assert_eq!(meter.no_room_for(&haiku(), Access::Build, false), None);
+        assert_eq!(meter.no_room_for(&haiku(), Access::ReadOnly, true), None);
+    }
+
+    /// Two sessions started together can't both count on one remainder: one started and not
+    /// heard from yet holds what it costs to open.
+    #[test]
+    fn a_session_started_and_not_heard_from_holds_its_opening() {
+        let mut meter = meter(1.0);
+        meter.observe(&opened(1, "s-001", false));
+        meter.observe(&reading(2, 1, "s-001", 0.36));
+        meter.observe(&ended(3, 2, "s-001", 0.37));
+        assert_eq!(meter.no_room_for(&haiku(), Access::ReadOnly, false), None);
+        meter.observe(&opened(4, "s-002", false));
+        let no_room = meter
+            .no_room_for(&haiku(), Access::ReadOnly, false)
+            .expect("no room");
+        assert!((no_room.held - 0.36).abs() < 1e-9, "{no_room:?}");
+        // Once it has read what it spent, that's in the run's spend instead.
+        meter.observe(&reading(5, 3, "s-002", 0.20));
+        assert_eq!(meter.no_room_for(&haiku(), Access::ReadOnly, false), None);
+        // A resumed session learns its own opening, the least that one like it spent.
+        meter.observe(&opened(6, "s-003", true));
+        meter.observe(&reading(7, 4, "s-003", 0.02));
+        meter.observe(&ended(8, 5, "s-003", 0.03));
+        assert_eq!(meter.no_room_for(&haiku(), Access::ReadOnly, true), None);
+        let mut nearly_spent = super::RunMeter::new(&SpendLimits {
+            spend_per_run: Some(0.39),
+            ..SpendLimits::default()
+        });
+        nearly_spent.observe(&opened(1, "s-001", false));
+        nearly_spent.observe(&ended(2, 1, "s-001", 0.37));
+        nearly_spent.observe(&opened(3, "s-002", true));
+        nearly_spent.observe(&ended(4, 2, "s-002", 0.03));
+        assert!(
+            nearly_spent
+                .no_room_for(&haiku(), Access::ReadOnly, true)
+                .is_some()
+        );
     }
 
     #[test]

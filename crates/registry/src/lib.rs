@@ -26,6 +26,7 @@ pub use models::{provider_from_model_id, provider_problems, registry};
 pub use resolve::resolve;
 pub use settings::crew::crew_list_problems;
 pub use settings::plain::check_commands;
+pub use settings::renamed::{Rename, Renamed, rename_in_file, renames_in};
 pub use settings::tighten::tightens;
 pub use terms::TERMS_NOTE;
 pub use workflows::{WorkflowError, WorkflowInfo, find_workflow, workflows_in};
@@ -68,6 +69,8 @@ pub struct SettingsSources {
     /// workflow's settings layer passes them over, so one named after a built-in leaves it in
     /// place until you trust it.
     pub waiting: Vec<PathBuf>,
+    /// Your home folder, so a file under it is named from `~/` in what reading it warns of.
+    pub home: Option<PathBuf>,
 }
 
 /// A learned workflow version's protocol settings, as learning's
@@ -96,7 +99,79 @@ pub struct ResolvedSettings {
     pub entries: Vec<ConfigEntry>,
     /// Keys a layer set to something other than the built-in default.
     pub overrides: Vec<OverrideRecord>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<SettingsWarning>,
+}
+
+/// Something reading the settings left out or put back to its default, worded for a line on
+/// the screen. What it is about tells the start which lines a question there already says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsWarning {
+    pub about: WarningAbout,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WarningAbout {
+    /// A key of a project file you haven't trusted, left out until you do.
+    Untrusted {
+        file: PathBuf,
+        key: String,
+    },
+    /// A key no setting has, such as a typo.
+    Unknown {
+        key: String,
+    },
+    /// A name that changed, which the file still uses, so the line does nothing until the file
+    /// says the new one.
+    Renamed {
+        file: PathBuf,
+    },
+    Other,
+}
+
+impl SettingsWarning {
+    pub(crate) fn new(about: WarningAbout, text: impl Into<String>) -> Self {
+        Self {
+            about,
+            text: text.into(),
+        }
+    }
+
+    pub(crate) fn other(text: impl Into<String>) -> Self {
+        Self::new(WarningAbout::Other, text)
+    }
+}
+
+impl std::ops::Deref for SettingsWarning {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl PartialEq<str> for SettingsWarning {
+    fn eq(&self, other: &str) -> bool {
+        self.text == other
+    }
+}
+
+impl PartialEq<&str> for SettingsWarning {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
+impl PartialEq<String> for SettingsWarning {
+    fn eq(&self, other: &String) -> bool {
+        &self.text == other
+    }
+}
+
+impl std::fmt::Display for SettingsWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

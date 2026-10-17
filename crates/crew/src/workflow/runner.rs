@@ -108,24 +108,24 @@ pub fn captain_workflow(settings: &Settings) -> &'static str {
 }
 
 /// Where a Captain task that needs you goes: the workflow it names, unless it builds the Captain
-/// task too, and then the default crew workflow.
+/// task too, and then [`CAPTAIN_CREW_WORKFLOW`].
 pub fn crew_workflow(host: &Host) -> WorkflowRef {
     let configured = phases_in_use(host);
     match lookup(host, configured.as_str()) {
-        Ok(workflow) if builds_goal(&workflow) => WorkflowRef::new(DEFAULT_CREW_WORKFLOW),
+        Ok(workflow) if builds_goal(&workflow) => WorkflowRef::new(CAPTAIN_CREW_WORKFLOW),
         _ => configured,
     }
 }
 
 /// The workflow whose phases a run starts from: the one in use when it has phases, and
-/// otherwise the default crew workflow. A file of steps, a script and a workflow that only sets
+/// otherwise [`BASE_PHASES_WORKFLOW`]'s. A file of steps, a script and a workflow that only sets
 /// settings have none of their own.
 pub fn phases_in_use(host: &Host) -> WorkflowRef {
     let name = host.settings().workflow.as_str();
     if has_phases(host, name) {
         WorkflowRef::new(name)
     } else {
-        WorkflowRef::new(DEFAULT_CREW_WORKFLOW)
+        WorkflowRef::new(BASE_PHASES_WORKFLOW)
     }
 }
 
@@ -151,8 +151,12 @@ fn has_phases(host: &Host, name: &str) -> bool {
     })
 }
 
-/// Where the crew goes when the chosen workflow is a Captain one.
-pub const DEFAULT_CREW_WORKFLOW: &str = "council";
+/// Where the crew goes when the chosen workflow is a Captain one: the workflow setup recommends.
+pub const CAPTAIN_CREW_WORKFLOW: &str = "orchestrator";
+
+/// Whose phases a workflow with none of its own runs: the workflow the built-in settings are, so
+/// a workflow that changes one key of them, as an ablation does, runs as that change of it.
+pub const BASE_PHASES_WORKFLOW: &str = "council";
 
 /// Whether any step of the workflow builds the Captain task from the goal.
 pub fn builds_goal(workflow: &Workflow) -> bool {

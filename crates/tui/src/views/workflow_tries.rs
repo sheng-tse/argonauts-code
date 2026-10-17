@@ -104,11 +104,10 @@ fn try_line(tried: &StepTry, names: &DisplayNames, theme: &Theme) -> Line<'stati
     if tried.round.is_some() {
         text.push_str(" · sent it back");
     }
-    let cli = names.cli(&tried.worker.agent);
     if let Some(words) = tried
         .reason
         .as_ref()
-        .and_then(|reason| agents::reason_words(reason, &cli))
+        .and_then(|reason| agents::reason_words(reason, &tried.worker.agent, names))
     {
         text.push_str(" · ");
         text.push_str(&words);
@@ -151,6 +150,7 @@ mod tests {
             tries,
             note: None,
             inner: None,
+            left_out: false,
         }
     }
 

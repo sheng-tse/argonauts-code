@@ -1,0 +1,12 @@
+ Today
+Claude Code  models
+  ▪ Haiku 5.5     3.47M  · 3 tasks
+  ▪ Haiku 5.5     2.03M  · 6 tasks
+who did what · orchestrators
+  Haiku 5.5 0 · Haiku 5.5 2 · GPT 5.6 Luna 1
+
+ After: one model, one row; a role lists only models that did that job
+Claude Code  models
+  ▪ Haiku 5.5     5.50M  · 9 tasks
+who did what · orchestrators
+  Haiku 5.5 2 · GPT 5.6 Luna 1

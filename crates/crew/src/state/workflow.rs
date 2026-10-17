@@ -218,6 +218,7 @@ impl Workflows {
             // record already holds it.
             WorkflowEvent::PhaseAdded { .. }
             | WorkflowEvent::Note(_)
+            | WorkflowEvent::LeftOut(_)
             | WorkflowEvent::Reported(_) => {}
             WorkflowEvent::StepStarted(started) => {
                 if let Some(record) = self.by_id.get_mut(&started.step.workflow) {

@@ -92,6 +92,25 @@ pub struct LaunchRecord {
     pub sandbox: Option<String>,
 }
 
+impl LaunchRecord {
+    /// The model the command launched, as its `--model` or `-m` names it, which every CLI
+    /// here takes. `None` where the CLI's own settings pick.
+    pub fn model(&self) -> Option<&str> {
+        let mut args = self.args.iter().map(String::as_str);
+        while let Some(arg) = args.next() {
+            let named = match arg.strip_prefix("--model=") {
+                Some(model) => Some(model),
+                None if matches!(arg, "--model" | "-m") => args.next(),
+                None => None,
+            };
+            if let Some(model) = named.map(str::trim).filter(|model| !model.is_empty()) {
+                return Some(model);
+            }
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptVia {
@@ -155,6 +174,9 @@ pub enum InputPartKind {
     Request,
     /// A picture sent with your message. Its `source` is the file; it adds no text.
     Picture,
+    /// What earlier rounds of review found in the same work, each finding blocking or a note,
+    /// and how the agent that asked answered it.
+    EarlierFindings,
 }
 
 impl InputPartKind {
@@ -392,6 +414,7 @@ impl EndReason {
                     | ErrorCategory::Timeout
                     | ErrorCategory::Interrupted
                     | ErrorCategory::AnswerMissed
+                    | ErrorCategory::SessionLost
             ),
             _ => false,
         }
@@ -565,6 +588,20 @@ impl CliAgentState {
     }
 }
 
+/// What a workflow's CLI names the group a child workflow's agents run in: `▸ date-cases`, and
+/// `▸ date-cases #2` for its second call, as Claude Code and Argonauts Code's runner both name it.
+pub const CHILD_GROUP: &str = "▸ ";
+
+impl CliPhase {
+    /// The name of the child workflow this phase is, when it is one.
+    pub fn child(&self) -> Option<&str> {
+        self.title
+            .strip_prefix(CHILD_GROUP)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
+}
+
 impl CliWorkflowRun {
     /// The agents of one phase, by the agent's index.
     pub fn agents_in(&self, phase: u32) -> impl Iterator<Item = &CliAgent> {
@@ -659,6 +696,35 @@ mod tests {
 
     fn names(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    /// The model a command launched, as each CLI's command names it.
+    #[test]
+    fn a_launch_names_the_model_its_command_ran() {
+        let launch = |args: &[&str]| LaunchRecord {
+            program: "cli".to_owned(),
+            args: names(args),
+            cwd: PathBuf::from("/w"),
+            env_set: Vec::new(),
+            env_removed: Vec::new(),
+            prompt_via: PromptVia::Argument,
+            sandbox: None,
+        };
+        let model = |args: &[&str]| launch(args).model().map(str::to_owned);
+        assert_eq!(
+            model(&["-p", "--model", "haiku", "<prompt>"]).as_deref(),
+            Some("haiku")
+        );
+        assert_eq!(
+            model(&["exec", "-m", "gpt-6-luna", "-c", "x=1"]).as_deref(),
+            Some("gpt-6-luna")
+        );
+        assert_eq!(
+            model(&["--model=gemini-3.6-flash-low"]).as_deref(),
+            Some("gemini-3.6-flash-low")
+        );
+        assert_eq!(model(&["-p", "<prompt>"]), None, "the CLI's settings pick");
+        assert_eq!(model(&["--model"]), None);
     }
 
     #[test]

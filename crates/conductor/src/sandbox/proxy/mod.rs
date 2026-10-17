@@ -12,16 +12,21 @@
 //! outlives whichever runtime asked for it. Each list of hosts gets a random key, which its
 //! sessions send as the proxy URL's password. The key picks the list, and a process without one,
 //! such as a check with loopback open for its test servers, gets no tunnel at all.
+//!
+//! Where Argonauts Code itself reaches the internet only through a proxy, its environment's
+//! `HTTPS_PROXY` or `ALL_PROXY`, tunnels go on through that one.
 
 mod allow;
+mod upstream;
 
 pub use allow::{Allowlist, Rule, cli_hosts};
+pub use upstream::Upstream;
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -47,6 +52,9 @@ pub struct Refusal {
     pub host: String,
     pub port: u16,
     pub why: Why,
+    pub at: Instant,
+    /// The list of the key it came with, so a session finds its own.
+    list: Option<Arc<Allowlist>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +65,20 @@ pub enum Why {
     NotListed,
     /// A call to a local endpoint that would pull, push, copy, or delete a model.
     ManagesModels,
+    /// An allowed host it couldn't reach, itself or through the proxy it goes out by.
+    Unreachable,
+}
+
+impl Refusal {
+    /// What the proxy said to the session, as a line: `couldn't reach api.anthropic.com`.
+    pub fn words(&self) -> String {
+        match self.why {
+            Why::NoKey => format!("refused {} without a session's key", self.host),
+            Why::NotListed => format!("refused {}, which isn't on the session's list", self.host),
+            Why::ManagesModels => format!("refused a call that manages {}'s models", self.host),
+            Why::Unreachable => format!("couldn't reach {}", self.host),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -86,6 +108,8 @@ struct State {
     local_resolver: Resolver,
     keys: Mutex<Keys>,
     refusals: Mutex<VecDeque<Refusal>>,
+    /// The proxy this process goes out through, when its environment names one.
+    upstream: Option<Upstream>,
 }
 
 #[derive(Default)]
@@ -111,16 +135,31 @@ pub fn shared() -> io::Result<Proxy> {
 impl Proxy {
     /// A proxy that looks hosts up in DNS.
     pub fn start() -> io::Result<Self> {
-        Self::with_resolvers(system_resolver(Reach::Outside), system_resolver(Reach::Any))
+        let upstream = Upstream::from_env(|name| std::env::var(name).ok());
+        Self::with_resolvers(
+            system_resolver(Reach::Outside),
+            system_resolver(Reach::Any),
+            upstream,
+        )
     }
 
     /// One resolver for every host, as tests use to send them all to a local server.
     pub fn with_resolver(resolver: Resolver) -> io::Result<Self> {
-        Self::with_resolvers(resolver.clone(), resolver)
+        Self::with_resolvers(resolver.clone(), resolver, None)
+    }
+
+    /// [`Proxy::with_resolver`] for the hosts it tunnels to, going out through `upstream`,
+    /// which is looked up in DNS as your local endpoints are.
+    pub fn through(resolver: Resolver, upstream: Upstream) -> io::Result<Self> {
+        Self::with_resolvers(resolver, system_resolver(Reach::Any), Some(upstream))
     }
 
     /// Listens on a random loopback port from now on. Its log lines go wherever the caller's go.
-    fn with_resolvers(resolver: Resolver, local_resolver: Resolver) -> io::Result<Self> {
+    fn with_resolvers(
+        resolver: Resolver,
+        local_resolver: Resolver,
+        upstream: Option<Upstream>,
+    ) -> io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("argonauts-proxy")
@@ -139,6 +178,7 @@ impl Proxy {
             local_resolver,
             keys: Mutex::new(Keys::default()),
             refusals: Mutex::new(VecDeque::new()),
+            upstream,
         });
         runtime.spawn(serve(listener, state.clone()).with_current_subscriber());
         Ok(Self {
@@ -175,6 +215,16 @@ impl Proxy {
     /// The latest refused tunnels, oldest first.
     pub fn refusals(&self) -> Vec<Refusal> {
         lock(&self.inner.state.refusals).iter().cloned().collect()
+    }
+
+    /// The tunnels refused since `since` to sessions that may reach `allow`'s hosts, oldest
+    /// first.
+    pub fn refused_since(&self, allow: &Allowlist, since: Instant) -> Vec<Refusal> {
+        lock(&self.inner.state.refusals)
+            .iter()
+            .filter(|refusal| refusal.at >= since && refusal.list.as_deref() == Some(allow))
+            .cloned()
+            .collect()
     }
 }
 
@@ -258,7 +308,7 @@ async fn tunnel(mut client: TcpStream, state: Arc<State>) {
         .and_then(|credentials| lock(&state.keys).by_credentials.get(&credentials).cloned());
     let Some(allow) = allow else {
         tracing::warn!(%host, port, "the proxy refused a tunnel without a session's key");
-        state.refused(&host, port, Why::NoKey);
+        state.refused(&host, port, Why::NoKey, None);
         let reply = "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic \
                      realm=\"argonauts\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         let _ = client.write_all(reply.as_bytes()).await;
@@ -270,7 +320,7 @@ async fn tunnel(mut client: TcpStream, state: Arc<State>) {
     }
     if !allow.allows(&host, port) {
         tracing::warn!(%host, port, "the proxy refused a tunnel to a host not on the session's list");
-        state.refused(&host, port, Why::NotListed);
+        state.refused(&host, port, Why::NotListed, Some(&allow));
         let why = format!(
             "{host}:{port} isn't on this session's list. Add it to sandbox.proxy_allow if it \
              should be."
@@ -283,7 +333,7 @@ async fn tunnel(mut client: TcpStream, state: Arc<State>) {
         .is_some_and(|forward| manages_models(&forward.method, &forward.path))
     {
         tracing::warn!(%host, port, "the proxy refused a call that manages a local endpoint's models");
-        state.refused(&host, port, Why::ManagesModels);
+        state.refused(&host, port, Why::ManagesModels, Some(&allow));
         let why = "a session may use your local models, not pull, push, copy, or delete them";
         return respond(&mut client, "403 Forbidden", why).await;
     }
@@ -292,10 +342,25 @@ async fn tunnel(mut client: TcpStream, state: Arc<State>) {
     } else {
         &state.resolver
     };
-    let mut upstream = match connect(resolver, &host, port).await {
+    // Your own proxy may be on this machine, so it's looked up as a local endpoint is.
+    let through = state
+        .upstream
+        .as_ref()
+        .filter(|upstream| !local && upstream.takes(&host, port));
+    let reached = match through {
+        // A name that points only into this machine stays out of reach, as it does dialled
+        // straight. One that can't be looked up here may still be out there, past the proxy.
+        Some(through) => match resolver(host.clone(), port).await {
+            Ok(addrs) if addrs.is_empty() => Err(io::ErrorKind::NotFound.into()),
+            _ => through.open(&state.local_resolver, &host, port).await,
+        },
+        None => connect(resolver, &host, port).await,
+    };
+    let mut upstream = match reached {
         Ok(upstream) => upstream,
         Err(_) => {
             tracing::warn!(%host, port, "the proxy couldn't reach an allowed host");
+            state.refused(&host, port, Why::Unreachable, Some(&allow));
             let why = format!("couldn't reach {host}:{port}");
             return respond(&mut client, "502 Bad Gateway", &why).await;
         }
@@ -379,7 +444,7 @@ fn clean_path(path: &str) -> Option<String> {
 }
 
 impl State {
-    fn refused(&self, host: &str, port: u16, why: Why) {
+    fn refused(&self, host: &str, port: u16, why: Why, list: Option<&Arc<Allowlist>>) {
         let mut kept = lock(&self.refusals);
         if kept.len() == REFUSALS_KEPT {
             kept.pop_front();
@@ -388,6 +453,8 @@ impl State {
             host: host.to_owned(),
             port,
             why,
+            at: Instant::now(),
+            list: list.cloned(),
         });
     }
 }

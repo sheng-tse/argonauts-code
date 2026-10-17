@@ -23,6 +23,17 @@ pub enum ClockStyle {
     TwentyFour,
 }
 
+impl ClockStyle {
+    /// The clock `ui.format.clock` picked.
+    pub fn now() -> Self {
+        if super::twenty_four_hours() {
+            Self::TwentyFour
+        } else {
+            Self::Twelve
+        }
+    }
+}
+
 /// `Resets 4:40pm`, `Resets Tue 10pm`, `Resets Oct 12`, or a countdown, for a window that
 /// resets `at`. Both times are in the zone they're shown in.
 pub fn resets(

@@ -12,4 +12,4 @@
  ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save
 
   its row in the bottom list
-  ◯ Add due dates         ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  2/4 · 4m12s · ↓ 128k tokens
+  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  2/4 · 4m12s · ↓ 128k tokens

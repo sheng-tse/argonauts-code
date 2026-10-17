@@ -15,6 +15,7 @@
           properties: {
             title: { type: 'string' },
             done_when: { type: 'array', items: { type: 'string' } },
+            after: { type: 'array', items: { type: 'string' } },
           },
           required: ['title'],
         },
@@ -48,8 +49,9 @@
   // the same count at which the policy stops a task sent back twice.
   const SEND_BACKS = 2;
 
-  // A row's label is `step:task`, at most this many characters, as every label in a run is.
-  const WIDTH = 20;
+  // A row's label is `step:task`, at most this many characters, as every label in a run is
+  // (argonauts_core::labels::MAX_CELLS): a task's name stays whole, and a view cuts it.
+  const WIDTH = 40;
   const words = (text, most) =>
     String(text).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).slice(0, most).join('-');
   const slug = (title) => words(title, 3) || 'task';
@@ -92,7 +94,12 @@
         let id = slug(title);
         for (let n = 2; used.has(id); n++) id = slug(title) + '-' + n;
         used.add(id);
-        return { id, title, done_when: Array.isArray(given.done_when) ? given.done_when : [] };
+        return {
+          id,
+          title,
+          done_when: Array.isArray(given.done_when) ? given.done_when : [],
+          after: Array.isArray(given.after) ? given.after.map(String) : [],
+        };
       });
     };
     if (fixed) tasks = name(fixed);
@@ -105,9 +112,17 @@
       if (isPlanner && fixed) {
         parts.push('The tasks are fixed. Plan these and no others:\n' + bullets(tasks.map((t) => t.title)));
       } else if (isPlanner) {
-        parts.push('List the tasks, each with a short title and what done means for it.');
+        parts.push(
+          'List the tasks, each with a short title and what done means for it. The tasks run side ' +
+            'by side from the same start, so each stands alone: its own files, its own tests, and ' +
+            'no task that only writes a note. A task that needs another one finished first names ' +
+            "that task's title in after, and waits for it.",
+        );
       }
-      if (request && !(step.does || '').includes('{request}')) parts.push('The request:\n' + request);
+      if (request && !(step.does || '').includes('{request}')) {
+        // A step about one task reads the request for context and judges that task alone.
+        parts.push(task ? 'The request, of which this task is one part:\n' + request : 'The request:\n' + request);
+      }
       if (task) {
         const done = task.done_when.length ? '\nDone when:\n' + bullets(task.done_when) : '';
         parts.push('The task: ' + task.title + done);
@@ -251,7 +266,26 @@
           while (end < all.length && file.per_task[end]) end++;
           if (!tasks.length) tasks = name([request || 'the request']);
           const entered = feedback;
-          const each = await parallel(tasks.map((item) => () => walk(at, start, end, item, entered)));
+          // A task waits for the tasks it names in after; one that would wait on itself in a
+          // ring doesn't, so nothing waits forever.
+          const begun = new Map();
+          const begin = (item, ring) => {
+            if (!begun.has(item.id)) {
+              const path = new Set(ring).add(item.id);
+              const first = item.after
+                .map((named) => tasks.find((other) => other.title === named || other.id === slug(named)))
+                .filter((other) => other && !path.has(other.id));
+              begun.set(
+                item.id,
+                (async () => {
+                  for (const other of first) await begin(other, path);
+                  return walk(at, start, end, item, entered);
+                })(),
+              );
+            }
+            return begun.get(item.id);
+          };
+          const each = await parallel(tasks.map((item) => () => begin(item, new Set())));
           const out = each.filter((ended) => ended && ended.to !== undefined);
           accepted = accepted && each.every((ended) => ended && ended.accepted);
           if (out.length) {

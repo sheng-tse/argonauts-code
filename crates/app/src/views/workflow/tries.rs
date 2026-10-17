@@ -1,14 +1,15 @@
 //! A step tried more than once is one row. Every try at a step runs under the step's label, so
 //! the newest try stands for the step, and the ones before it, each failed try, the agent it
-//! is the fallback for and each earlier round of a review, fold beneath it. A review asked again
-//! after its round sent the work back reads `review:per-key · round 2`. Agents that run side by
-//! side in a step stay rows of their own. The row keeps the place of the step's first try, so
+//! is the fallback for and each earlier round of a review or of the work, fold beneath it. A
+//! review asked again after its round sent the work back reads `review:per-key · round 2`, and
+//! so does the worker asked for its next round: `build:per-key · round 2`. Agents that run side
+//! by side in a step stay rows of their own. The row keeps the place of the step's first try, so
 //! the steps stay in the order they started.
 
 use std::collections::BTreeMap;
 
 use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::views::{AgentRow, RowStatus, StepTry, WorkflowRow};
+use argonauts_core::views::{AgentRow, RowStatus, StepTry, WorkflowRow, round_stem};
 
 use crate::views::sessions::RunFacts;
 
@@ -31,6 +32,16 @@ struct Kept {
 
 /// Folds every earlier try at a step under the step's newest row.
 pub(super) fn fold(rows: Vec<WorkflowRow>, sessions: &RunFacts) -> (Vec<WorkflowRow>, Folded) {
+    fold_counting(rows, sessions, &|_| false)
+}
+
+/// Like [`fold`], where `waits` says which rows read done but don't count as done yet, so a
+/// folded try takes back only what it added.
+pub(super) fn fold_counting(
+    rows: Vec<WorkflowRow>,
+    sessions: &RunFacts,
+    waits: &dyn Fn(&AgentRow) -> bool,
+) -> (Vec<WorkflowRow>, Folded) {
     let mut folded = Folded::default();
     let mut kept: Vec<Kept> = Vec::with_capacity(rows.len());
     let mut starts: BTreeMap<SessionKey, usize> = BTreeMap::new();
@@ -47,7 +58,6 @@ pub(super) fn fold(rows: Vec<WorkflowRow>, sessions: &RunFacts) -> (Vec<Workflow
         let nth = *start;
         *start += 1;
         let label = agent.label.trim().to_owned();
-        let judges = judges(sessions, &agent.session);
         let earlier = (!label.is_empty())
             .then(|| {
                 kept.iter().rposition(|kept| {
@@ -56,9 +66,8 @@ pub(super) fn fold(rows: Vec<WorkflowRow>, sessions: &RunFacts) -> (Vec<Workflow
                     };
                     let same_step = kept.step == label || known.label.trim() == label;
                     (same_step && tried_before(known, &agent))
-                        || (judges
-                            && asked_again(known, &agent)
-                            && (same_step || stem(&label) == Some(kept.step.as_str())))
+                        || ((same_step || round_stem(&label) == Some(kept.step.as_str()))
+                            && next_round(known, &agent, sessions))
                 })
             })
             .flatten();
@@ -72,7 +81,7 @@ pub(super) fn fold(rows: Vec<WorkflowRow>, sessions: &RunFacts) -> (Vec<Workflow
         };
         if let WorkflowRow::Agent(before) = &kept[at].row {
             folded.tries += 1;
-            if before.status == RowStatus::Done {
+            if before.status == RowStatus::Done && !waits(before) {
                 folded.done += 1;
             }
             let mut tried = try_of(before, kept[at].nth, sessions);
@@ -111,29 +120,25 @@ fn tried_before(before: &AgentRow, after: &AgentRow) -> bool {
     ended_early || after.fallback_for.as_ref() == Some(&before.worker)
 }
 
-/// Whether `after` is the same reviewer asked again once `before`, its round, finished. Two
-/// reviewers of one round are two workers, and stay two rows.
-fn asked_again(before: &AgentRow, after: &AgentRow) -> bool {
-    before.status == RowStatus::Done && before.worker == after.worker
-}
-
-/// Whether the session reviews or signs off, the agents a step asks again round after round.
-fn judges(sessions: &RunFacts, session: &SessionKey) -> bool {
-    sessions
-        .session(session)
-        .is_some_and(|facts| matches!(facts.started.role, RoleName::Reviewer | RoleName::Judge))
-}
-
-/// The step's label inside a later round's, such as `review:per-key` for `review:per-key-2`,
-/// which the run made unique, or for `review:per-key · round 2`, named for its round.
-fn stem(label: &str) -> Option<&str> {
-    fn numbered<'a>((stem, n): (&'a str, &str)) -> Option<&'a str> {
-        n.parse::<u32>().is_ok().then_some(stem)
+/// Whether `after` is the step `before` stood for, asked again for its next round once
+/// `before` finished: the same reviewer or judge, or the same worker started only after
+/// `before` ended, as once a review sent its work back. Two reviewers of one round, and two
+/// workers a step runs side by side, stay two rows.
+fn next_round(before: &AgentRow, after: &AgentRow, sessions: &RunFacts) -> bool {
+    if before.status != RowStatus::Done || before.worker != after.worker {
+        return false;
     }
-    label
-        .rsplit_once(" · round ")
-        .and_then(numbered)
-        .or_else(|| label.rsplit_once('-').and_then(numbered))
+    let Some(asked) = sessions.session(&after.session) else {
+        return false;
+    };
+    match asked.started.role {
+        RoleName::Reviewer | RoleName::Judge => true,
+        RoleName::Worker => sessions
+            .session(&before.session)
+            .and_then(|done| done.ended_at)
+            .is_some_and(|ended| ended <= asked.started_at),
+        _ => false,
+    }
 }
 
 /// How many earlier rounds the step's tries hold.
@@ -185,6 +190,7 @@ mod tests {
             tries: Vec::new(),
             note: None,
             inner: None,
+            left_out: false,
         })
     }
 
@@ -357,9 +363,46 @@ mod tests {
         assert_eq!(rounds_of(&rows[0]), [Some(1), None, None]);
     }
 
+    /// Workers that start and end at `(start, end)` seconds in, in that order.
+    fn workers_at(times: &[(u64, u64)]) -> RunFacts {
+        use crate::client::test_support::{session_ended, session_started};
+        use argonauts_core::events::session::EndReason;
+        let mut events: Vec<_> = Vec::new();
+        for (n, (start, end)) in (1..).zip(times) {
+            let key = SessionKey::numbered(n);
+            events.push(session_started(
+                *start,
+                &key,
+                None,
+                RoleName::Worker,
+                "codex",
+            ));
+            events.push(session_ended(*end, &key, EndReason::Completed, 1));
+        }
+        events.sort_by_key(|event| event.seq);
+        RunFacts::of(&events)
+    }
+
+    /// A worker asked for its next round once the one before finished is the same step, as a
+    /// review asked again is: `build:per-key · round 3`, its earlier rounds beneath it.
     #[test]
-    fn only_reviews_and_sign_offs_are_asked_again_in_rounds() {
-        let sessions = facts_of(&[("s-001", RoleName::Worker), ("s-002", RoleName::Worker)]);
+    fn a_worker_asked_for_its_next_round_folds_under_its_step() {
+        let sessions = workers_at(&[(1, 2), (5, 6), (9, 10)]);
+        let rows = vec![
+            agent("s-001", "build:per-key", "codex", RowStatus::Done),
+            agent("s-002", "build:per-key", "codex", RowStatus::Done),
+            agent("s-003", "build:per-key", "codex", RowStatus::Running),
+        ];
+        let (rows, folded) = fold(rows, &sessions);
+        assert_eq!(labels(&rows), [("build:per-key · round 3", 2)]);
+        assert_eq!(rounds_of(&rows[0]), [Some(1), Some(2)]);
+        assert_eq!(folded, Folded { tries: 2, done: 2 });
+    }
+
+    /// Two workers of one step that ran side by side are two agents, whichever ended first.
+    #[test]
+    fn workers_side_by_side_stay_two_rows() {
+        let sessions = workers_at(&[(1, 4), (2, 6)]);
         let rows = vec![
             agent("s-001", "build:per-key", "codex", RowStatus::Done),
             agent("s-002", "build:per-key", "codex", RowStatus::Done),
@@ -395,6 +438,6 @@ mod tests {
         let (rows, _) = fold(rows, &sessions);
         assert_eq!(labels(&rows), [("review:add-due-dates · round 3", 2)]);
         assert_eq!(rounds_of(&rows[0]), [Some(1), Some(2)]);
-        assert_eq!(stem("review:fix-it"), None);
+        assert_eq!(round_stem("review:fix-it"), None);
     }
 }

@@ -251,6 +251,7 @@ fn read_only_reply() {
 #[test]
 fn write_creates_a_file_and_returns_a_structured_report() {
     let events = replay("write");
+    // The usage after each call's start is the count going on while its input streams.
     assert_eq!(
         shape(&events),
         [
@@ -260,6 +261,7 @@ fn write_creates_a_file_and_returns_a_structured_report() {
             "text_delta",
             "message",
             "tool_pending",
+            "usage",
             "tool_started",
             "tool_finished",
             "file_changed",
@@ -272,11 +274,13 @@ fn write_creates_a_file_and_returns_a_structured_report() {
             "usage",
             "context_fill",
             "tool_pending",
+            "usage",
             "tool_started",
+            "usage",
             "tool_finished",
             "usage",
             "context_fill",
-            "result"
+            "result",
         ]
     );
     assert_clean_session(&events);
@@ -1484,19 +1488,21 @@ fn position(events: &[AgentEvent], wanted: impl Fn(&AgentEvent) -> bool) -> usiz
 }
 
 /// The command send now moved stays listed past the turn's result, until Claude Code says it
-/// ended. Here that came only after the input closed, which killed it.
+/// ended. Here that came only after the input closed, which killed it, and a task Claude Code
+/// stopped starts no turn of its own.
 #[test]
 fn a_command_moved_to_the_background_stays_listed_past_the_result() {
     let events = replay("send_now_resume");
     assert_eq!(
         background_lists(&events),
-        [(vec!["bmvwwjv0b".to_owned()], false), (Vec::new(), true)]
+        [(vec!["bmvwwjv0b".to_owned()], false), (Vec::new(), false)]
     );
     let result_at = position(&events, |e| matches!(e, AgentEvent::Result { .. }));
-    let ended_at = position(&events, |e| {
-        matches!(e, AgentEvent::BackgroundTasks { ended: true, .. })
-    });
-    assert!(result_at < ended_at);
+    let emptied_at = position(
+        &events,
+        |e| matches!(e, AgentEvent::BackgroundTasks { running, .. } if running.is_empty()),
+    );
+    assert!(result_at < emptied_at);
     assert_eq!(results(&events), [(Some("PONG".to_owned()), false)]);
 }
 

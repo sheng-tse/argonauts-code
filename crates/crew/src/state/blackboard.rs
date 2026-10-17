@@ -87,6 +87,7 @@ impl Board {
                 }
                 self.messages.push(message.clone());
             }
+            BlackboardEvent::AnsweredForYou(_) => {}
             BlackboardEvent::Delivered { message, to } => {
                 if self.was_delivered(message, to) {
                     return;

@@ -147,7 +147,7 @@ fn workflow() -> AppEvent {
         json!({"data": "workflow", "view": {"run": RUN, "id": "wf-001",
         "name": "add-due-dates",
         "description": "Add due dates to tasks, with a command that lists what's overdue",
-        "breadcrumb": [], "agents_done": 5, "agents_total": 8, "elapsed_ms": 840_000,
+        "agents_done": 5, "agents_total": 8, "elapsed_ms": 840_000,
         "spent": {"input_tokens": 900_000, "output_tokens": 200_000, "cached_tokens": 0,
                   "cost_usd": 0.0, "cost_partial": false, "cost_estimated": false},
         "notes": ["orchestrator workflow"],

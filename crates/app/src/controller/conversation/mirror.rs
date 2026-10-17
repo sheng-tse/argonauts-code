@@ -111,6 +111,7 @@ fn host_row(context: &ContextRow, workflow: &CliWorkflowRun) -> AgentRow {
         tries: Vec::new(),
         note: None,
         inner: None,
+        left_out: false,
     }
 }
 
@@ -177,6 +178,7 @@ mod tests {
             estimated: false,
             counts: true,
             categories: Vec::new(),
+            recorded: None,
         }
     }
 

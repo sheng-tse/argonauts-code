@@ -13,16 +13,17 @@ use argonauts_core::app::{AppChoice, AppEvent, ChoiceKind, UiCommand};
 use argonauts_core::events::approval::{AnswerAction, AnswerOption};
 use argonauts_core::prompt_files;
 use argonauts_core::settings::workflows::WORKFLOW_FILE_KEYS;
-use argonauts_scenarios::{Scenario, scenario_file};
+use argonauts_scenarios::{Scenario, past_the_question_guard, scenario_file};
 use argonauts_testkit::{FakeOpenAi, FakeRule, FakeScenario, FakeStep, Key, Pty};
 
 /// The keys an Enter-through setup writes, and nothing else.
-const SETUP_KEYS: [&str; 14] = [
+const SETUP_KEYS: [&str; 15] = [
     "crew.main",
     "crew.worker",
     "crew.reviewer",
     "crew.judge",
     "workflow",
+    "roles.orchestrator.models",
     "approvals.understand.mode",
     "approvals.plan.mode",
     "approvals.merge.mode",
@@ -83,6 +84,8 @@ fn walk_setup(
             return Ok(seen);
         };
         check_no_history_search(pty)?;
+        // A step drops the keys pressed in its first moment, as every question does.
+        past_the_question_guard();
         match pick(&step) {
             Some(key) => pty.press(Key::Char(number_of(&step.options, key)))?,
             None => pty.press(Key::Enter)?,
@@ -140,7 +143,7 @@ fn assert_recommended_global(scenario: &Scenario) -> anyhow::Result<()> {
     assert!(toml_value(&text, "crew.main").is_some_and(|v| v.contains("claude-code")));
     assert!(same_toml(
         &toml_value(&text, "workflow").unwrap_or_default(),
-        "\"council\""
+        "\"orchestrator\""
     ));
     for key in SETUP_KEYS.iter().filter(|k| k.ends_with(".mode")) {
         assert!(
@@ -268,10 +271,12 @@ fn app_first_run_esc_takes_defaults() -> anyhow::Result<()> {
     let scenario = first_run_scenario()?;
     let mut pty = launch_setup(&scenario, &[], &[])?;
     let terms = wait_open_choice(&scenario, ChoiceKind::TermsNote)?;
+    past_the_question_guard();
     pty.press(Key::Enter)?;
     wait_choice_closed(&scenario, &terms.id)?;
 
     let agents = wait_open_choice(&scenario, ChoiceKind::Init)?;
+    past_the_question_guard();
     pty.press(Key::Esc)?;
     wait_choice_closed(&scenario, &agents.id)?;
     assert!(
@@ -490,10 +495,11 @@ fn app_setup_again_keeps_your_choices_and_workflows() -> anyhow::Result<()> {
         toml_value(&text, "crew.main").is_some_and(|v| v.contains("codex")),
         "{text}"
     );
+    // The workflow step recommends Orchestrator every time, so Enter through it picks that.
     assert!(
         same_toml(
             &toml_value(&text, "workflow").unwrap_or_default(),
-            "\"captain\""
+            "\"orchestrator\""
         ),
         "{text}"
     );
@@ -536,7 +542,7 @@ fn app_setup_shows_terms_note_once() -> anyhow::Result<()> {
 }
 
 #[test]
-fn app_setup_writes_council() -> anyhow::Result<()> {
+fn app_setup_writes_orchestrator_and_councils_file_sets_no_key() -> anyhow::Result<()> {
     let scenario = first_run_scenario()?;
     let mut pty = launch_setup(&scenario, &["setup"], &[])?;
     enter_through(&scenario, &mut pty)?;
@@ -545,12 +551,12 @@ fn app_setup_writes_council() -> anyhow::Result<()> {
     assert!(
         same_toml(
             &toml_value(&text, "workflow").unwrap_or_default(),
-            "\"council\""
+            "\"orchestrator\""
         ),
         "{text}"
     );
-    // The defaults are council, and a workflow sits above your settings files, so beside its
-    // own steps the file sets no key that would hide your own.
+    // The built-in settings are council's, so beside its own steps its file sets no key that
+    // would hide your own.
     let workflow = assert_commented_workflow(&workflows_dir(&scenario).join("council.toml"))?;
     let settings: Vec<String> = toml_entries(&workflow)
         .into_iter()
@@ -565,6 +571,6 @@ fn app_setup_writes_council() -> anyhow::Result<()> {
         same_toml(&toml_value(&workflow, "adapt").unwrap_or_default(), "true"),
         "the council workflow's steps are its orchestrator's to adapt:\n{workflow}"
     );
-    scenario.shot(&pty, "app_setup_writes_council")?;
+    scenario.shot(&pty, "app_setup_writes_orchestrator")?;
     Ok(())
 }

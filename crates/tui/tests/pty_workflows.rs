@@ -190,7 +190,7 @@ fn down_past_panel_opens_run_tree() {
         let rows = screen.visible.len() - blank_rows_at_bottom(screen);
         // The selected agent has the filled dot, as in Claude Code's list.
         rows.checked_sub(1)
-            .is_some_and(|last| screen.visible[last].starts_with("    ●"))
+            .is_some_and(|last| screen.visible[last].starts_with(&format!("    {BULLET}")))
     });
     driver.assert_no_command("request");
     driver.press(Key::Down);
@@ -250,7 +250,7 @@ fn enter_on_workflow_row_opens_agent_view() {
     driver.press(Key::Ctrl('t'));
     let view = driver.wait_visible(VIEW_HEADER);
     assert!(
-        row_of(&view, "◇ review loop").is_some(),
+        row_of(&view, "▸ review loop").is_some() || row_of(&view, "▾ review loop").is_some(),
         "a nested workflow is a row among the agents:\n{}",
         view.visible_text()
     );
@@ -410,7 +410,7 @@ fn items(screen: &Screen) -> usize {
 /// as it works, and once the workflow is declared, the workflow view. Pressing it again and again
 /// leaves the transcript as it was.
 #[test]
-fn enter_opens_the_main_agent_while_it_designs_then_the_workflow() {
+fn nothing_opens_while_the_main_agent_designs_then_the_workflow_does() {
     let mut run = RunScript::default();
     let events = designing(&mut run);
     let declared = vec![
@@ -439,25 +439,17 @@ fn enter_opens_the_main_agent_while_it_designs_then_the_workflow() {
         .ui("motion = \"reduced\"")
         .start();
     taller(&mut driver);
-    let before = driver.wait_visible("↓ to manage");
+    let before = driver.wait_visible("~/code/api");
     let shown = items(&before);
 
-    driver.press(Key::Down);
-    driver.press(Key::Enter);
-    let main_agent = driver.wait_visible(SESSION_VIEW);
-    expect_row(
-        &main_agent,
-        "^. main:design · Haiku on Claude Code +Output ",
-    );
-    expect_row(&main_agent, "Reading the rate limiter");
+    // While the main agent designs it, Ctrl+T says the workflow is being written, however
+    // often it's pressed, and opens nothing in its place.
     for _ in 0..10 {
-        driver.press(Key::Esc);
-        driver.wait_gone(SESSION_VIEW);
-        driver.press(Key::Enter);
-        driver.wait_visible(SESSION_VIEW);
+        driver.press(Key::Ctrl('t'));
+        driver.wait_visible("The workflow is being written; it opens when its phases are known");
     }
-    driver.press(Key::Esc);
-    let after = driver.wait_gone(SESSION_VIEW);
+    let after = driver.wait_visible("The workflow is being written");
+    assert!(row_of(&after, SESSION_VIEW).is_none(), "{}", after.text());
     driver.assert_no_command("request");
     assert_eq!(
         items(&after),
@@ -473,7 +465,7 @@ fn enter_opens_the_main_agent_while_it_designs_then_the_workflow() {
 
     driver.signal("declare");
     driver.wait_visible("The main agent's plan holds");
-    driver.press(Key::Enter);
+    driver.press(Key::Ctrl('t'));
     driver.wait_command_where("request", workflow_request);
     driver.wait_visible(VIEW_HEADER);
 }
@@ -513,11 +505,12 @@ fn a_hint_from_a_key_stays_on_the_notice_line() {
     assert!(notice >= mode, "{}", after.text());
 }
 
-/// What Enter opens before any agent starts follows the run: the view of what it waits
-/// for becomes the main agent's session once the main agent starts, and that becomes the workflow
-/// view once the workflow is declared, with no second Enter.
+/// What Ctrl+T opens before any agent starts follows the run: the view of what it waits for
+/// says the workflow is being written once the main agent designs it, never the main agent's
+/// page, and becomes the workflow view once the workflow is declared, with no second key. The
+/// run has no row under the input until then.
 #[test]
-fn the_view_from_a_run_row_follows_the_run() {
+fn the_view_opened_before_any_agent_starts_follows_the_run() {
     let mut run = RunScript::default();
     let mut events = designing(&mut run);
     let main_agent = events.split_off(4);
@@ -556,15 +549,22 @@ fn the_view_from_a_run_row_follows_the_run() {
         .at(0, workflow_view(&crew, None));
     let mut driver = TestDriver::start(script);
     taller(&mut driver);
-    driver.wait_visible("↓ to manage");
-    driver.press(Key::Down);
-    driver.press(Key::Enter);
-    driver.wait_visible("Waiting for the main agent to start designing the workflow");
+    driver.wait_visible("~/code/api");
+    driver.press(Key::Ctrl('t'));
+    let waiting = driver.wait_visible("Waiting for the main agent to start designing the workflow");
+    assert!(
+        row_of(&waiting, "↓ to manage").is_none(),
+        "{}",
+        waiting.text()
+    );
+    // The main agent's design is the workflow being written, so the view stays and opens
+    // nothing in its place: never the main agent's page.
     driver.signal("main_agent");
-    let main_agent = driver.wait_visible(SESSION_VIEW);
-    expect_row(
-        &main_agent,
-        "^. main:design · Haiku on Claude Code +Output ",
+    let writing = driver.wait_visible("Its workflow is being written.");
+    assert!(
+        row_of(&writing, SESSION_VIEW).is_none(),
+        "{}",
+        writing.text()
     );
     driver.signal("declare");
     driver.wait_command_where("request", workflow_request);

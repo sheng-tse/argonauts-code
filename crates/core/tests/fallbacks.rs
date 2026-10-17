@@ -164,6 +164,7 @@ merge_rule = "upgrade_review"
 unknown_tier = "weaker"
 max_fallbacks = 3
 same_cli = false
+same_step = "ask"
 context = "note+transcript"
 
 [fallback.retry]

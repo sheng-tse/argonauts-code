@@ -7,9 +7,10 @@ use serde_json::{Map, Value, json};
 
 use crate::steps::strict_schema;
 
-/// The format as it goes to a CLI. A property the format didn't require and gave no default
-/// may come back as `null`; one with a default stays as it is, since serde fills a default
-/// only for a missing field and would refuse a `null`.
+/// The format as it goes to a CLI. A property the format didn't require may come back as
+/// `null`, one with a default too: a model that leaves out a list it has nothing for, as Haiku
+/// does, would otherwise send no answer at all. [`as_written`] leaves the null out again, so
+/// serde fills the default.
 pub fn strict(schema: &Value) -> Value {
     strict_schema(with_optional_nullable(schema))
 }
@@ -178,9 +179,7 @@ fn with_optional_nullable(node: &Value) -> Value {
                     .flatten()
                     .map(|(name, property)| {
                         let property = with_optional_nullable(property);
-                        let optional =
-                            !required.contains(&name.as_str()) && property.get("default").is_none();
-                        let property = if optional {
+                        let property = if !required.contains(&name.as_str()) {
                             nullable(property)
                         } else {
                             property
@@ -359,14 +358,18 @@ mod tests {
     }
 
     #[test]
-    fn a_field_with_a_default_stays_required_and_never_null() {
+    fn a_field_with_a_default_may_be_null_and_reads_as_its_default() {
         let schema = json!({
             "type": "object",
             "properties": {"tags": {"type": "array", "items": {"type": "string"}, "default": []}},
         });
         let strict = strict(&schema);
-        assert_eq!(strict["properties"]["tags"]["type"], "array");
+        assert_eq!(
+            strict["properties"]["tags"]["type"],
+            json!(["array", "null"])
+        );
         assert_eq!(codex_problems(&strict), Vec::<String>::new());
+        assert_eq!(as_written(&schema, json!({"tags": null})), json!({}));
     }
 
     #[test]

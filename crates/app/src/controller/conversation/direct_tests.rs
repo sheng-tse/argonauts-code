@@ -511,6 +511,39 @@ async fn running_out_hands_the_turn_to_the_next_agent() {
     assert_eq!(started, 1, "the turn goes on, it doesn't start again");
 }
 
+/// A sign-in that expired mid-turn falls back the same way, and the line says the CLI is
+/// signed out and how to sign it in again rather than its raw error.
+#[tokio::test]
+async fn a_signed_out_cli_falls_back_and_says_how_to_sign_in() {
+    let mut options = captain_workflow_options("");
+    options.flags = vec![r#"fallback.main.order=["codex"]"#.to_owned()];
+    let mut driver = TestDriver::start_with(options).await;
+    driver
+        .directory
+        .add(FakeRunner::cli("codex", "openai").then(FakeSession::completed(ANSWER)));
+    driver.agent.push(FakeSession::ended(EndReason::Auth {
+        message: "Login expired · Please run /login".into(),
+    }));
+    driver.submit(TASK).await;
+    driver.until(turn_ended).await;
+    let events = driver.exit().await;
+    let fell_back = events.iter().find_map(|event| match conversation(event) {
+        Some(ConversationEvent::FellBack {
+            why, signed_out, ..
+        }) => Some((why, signed_out)),
+        _ => None,
+    });
+    let (why, signed_out) = fell_back.expect("a fallback");
+    assert_eq!(why, "is signed out (its sign-in expired)");
+    assert_eq!(
+        signed_out,
+        &Some(argonauts_core::app::SignedOut {
+            why: "its sign-in expired".into(),
+            login: Some("claude /login".into()),
+        })
+    );
+}
+
 /// With `fallback.mode = "wait"` the turn ends the way the CLI ends it, with a line saying what
 /// it changed.
 #[tokio::test]

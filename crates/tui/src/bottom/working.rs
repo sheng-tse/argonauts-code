@@ -41,6 +41,9 @@ pub struct WorkingLine {
     pub task: Option<String>,
     /// The first task still waiting on that list, drawn under the line as `⎿ Next: …`.
     pub next: Option<String>,
+    /// With `ui.tips`, a tip for this stretch of work, drawn as `⎿ Tip: …` where no next task
+    /// takes the place.
+    pub tip: Option<&'static str>,
     pub started_at: Instant,
     pub tokens_down: u64,
     pub activity: Activity,
@@ -140,6 +143,7 @@ impl WorkingLine {
             verb: verb.into(),
             task: None,
             next: None,
+            tip: None,
             started_at,
             tokens_down: 0,
             activity: Activity::None,
@@ -225,7 +229,8 @@ impl WorkingLine {
         line
     }
 
-    /// The line, and under it the task that comes next when the CLI's list names one.
+    /// The line, and under it the task that comes next when the CLI's list names one, or else
+    /// the stretch's tip.
     pub fn lines(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
         let mut lines = vec![self.line(ctx)];
         lines.extend(self.next_line(ctx));
@@ -233,15 +238,20 @@ impl WorkingLine {
     }
 
     fn next_line(&self, ctx: &RenderCtx<'_>) -> Option<Line<'static>> {
-        let next = sanitize_line(self.next.as_deref()?);
-        let next = next.trim();
-        if next.is_empty() {
-            return None;
-        }
+        let next = self
+            .next
+            .as_deref()
+            .map(|next| sanitize_line(next).trim().to_owned())
+            .filter(|next| !next.is_empty());
+        let words = match (next, self.tip) {
+            (Some(next), _) => format!("Next: {next}"),
+            (None, Some(tip)) => format!("Tip: {tip}"),
+            (None, None) => return None,
+        };
         let dim = ctx.theme.style(Role::Dim);
         let line = Line::from(vec![
             Span::styled(format!("  {} ", ctx.theme.glyphs.result), dim),
-            Span::styled(format!("Next: {next}"), dim),
+            Span::styled(words, dim),
         ]);
         Some(truncate_line(&line, usize::from(ctx.width)))
     }
@@ -709,6 +719,31 @@ mod tests {
         let rows = line.lines(&narrow);
         assert_eq!(rows.len(), 2);
         assert!(crate::text::spans_width(&rows[1].spans) <= 20);
+    }
+
+    /// A stretch's tip sits where the next task would, dim, and a next task wins the row.
+    #[test]
+    fn a_tip_sits_under_the_line_unless_a_next_task_does() {
+        let theme = theme();
+        let t0 = Instant::now();
+        let mut line = WorkingLine::new("Rowing", t0);
+        line.tip = Some("Ctrl+O shows the whole transcript");
+        let ctx = RenderCtx::new(60, &theme, Clock::new(t0, t0 + Duration::from_secs(3)));
+        assert_eq!(
+            plain_text(&line.lines(&ctx)),
+            "✼ Rowing… (3s)\n  ⎿ Tip: Ctrl+O shows the whole transcript"
+        );
+        assert!(
+            line.lines(&ctx)[1]
+                .spans
+                .iter()
+                .all(|span| span.style == theme.style(Role::Dim))
+        );
+        line.next = Some("Run the tests".into());
+        assert_eq!(
+            plain_text(&line.lines(&ctx)),
+            "✼ Rowing… (3s)\n  ⎿ Next: Run the tests"
+        );
     }
 
     #[test]

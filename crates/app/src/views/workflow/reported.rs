@@ -8,7 +8,9 @@
 
 use argonauts_core::events::session::{CliAgent, CliAgentState, CliWorkflowRun};
 use argonauts_core::names::{SessionKey, WorkflowId};
-use argonauts_core::views::{AgentRow, PhaseCount, PhaseRow, RowStatus, WorkflowRow};
+use argonauts_core::views::{
+    AgentRow, PhaseCount, PhaseRow, RowStatus, WorkflowRow, children_inside,
+};
 use argonauts_core::workflow::{StandardPhase, StepRef};
 
 use crate::views::sessions::{RunFacts, SessionFacts};
@@ -101,7 +103,7 @@ impl StepWorkflow {
             .filter(|agent| !declared(agent))
             .filter_map(|agent| self.row(agent, sessions))
             .collect();
-        let phases = workflow
+        let phases: Vec<(u32, PhaseRow)> = workflow
             .phases
             .iter()
             .map(|phase| {
@@ -116,8 +118,8 @@ impl StepWorkflow {
                 } else {
                     phase_status(&agents)
                 };
-                PhaseRow {
-                    name: phase.title.clone(),
+                let row = PhaseRow {
+                    name: argonauts_core::text::shown_name(&phase.title),
                     detail: phase.detail.clone(),
                     standard,
                     status,
@@ -130,9 +132,12 @@ impl StepWorkflow {
                         .filter_map(|(_, row)| row.map(WorkflowRow::Agent))
                         .collect(),
                     note: None,
-                }
+                };
+                (phase.index, row)
             })
             .collect();
+        // A workflow its script runs as a step is a row of the phase that started it.
+        let phases = children_inside(phases, workflow, None, None);
         let done = workflow
             .agents
             .iter()
@@ -397,9 +402,9 @@ mod tests {
         // The workflow's own phases in its order are the view's: no phase of
         // the run's own around them. The agent that wrote the steps is none of its agents, so
         // it is no row of theirs.
-        assert_eq!(names(&view), ["Build", "Review"]);
-        let [build, review] = view.phases.as_slice() else {
-            panic!("two phases");
+        assert_eq!(names(&view), ["Build", "Review", "Merge"]);
+        let [build, review, _merge] = view.phases.as_slice() else {
+            panic!("two phases, then the merge");
         };
         assert_eq!(labels(build), ["build:store", "build:cli"]);
 
@@ -420,8 +425,8 @@ mod tests {
                 (done + count.done, total + count.total)
             });
         assert_eq!(added_up, (1, 5));
-        // An unnamed run goes by the name of the workflow it runs.
-        assert_eq!(view.name, "add-due-dates");
+        // An unnamed run goes by the name of the workflow it runs, as its words.
+        assert_eq!(view.name, "Add due dates");
         assert_eq!(view.description, "what the workflow does");
     }
 
@@ -442,8 +447,8 @@ mod tests {
             &[("build:rate-limit", Some(1), Running)],
         );
         let view = view(&events, &workflow, &[]);
-        let [build, _review] = view.phases.as_slice() else {
-            panic!("two phases");
+        let [build, _review, _merge] = view.phases.as_slice() else {
+            panic!("two phases, then the merge");
         };
         assert_eq!(labels(build), ["build:rate-limit"]);
         assert_eq!(build.status, RowStatus::Running);
@@ -460,7 +465,7 @@ mod tests {
             &[("translate:changelog", Some(1), Running)],
         );
         let shown = view(&events, &one, &[(1, 1)]);
-        assert_eq!(names(&shown), ["Translate the changelog"]);
+        assert_eq!(names(&shown), ["Translate the changelog", "Merge"]);
         assert_eq!(labels(&shown.phases[0]), ["translate:changelog"]);
 
         let twelve = [
@@ -475,7 +480,9 @@ mod tests {
             &[("draft:two", Some(5), Running)],
         );
         let shown = view(&events, &paper, &[(1, 1)]);
-        assert_eq!(names(&shown), twelve);
+        let mut listed = twelve.to_vec();
+        listed.push("Merge");
+        assert_eq!(names(&shown), listed);
         let with_agents: Vec<usize> = shown
             .phases
             .iter()
@@ -486,6 +493,51 @@ mod tests {
         assert_eq!(with_agents, [4]);
         assert_eq!(shown.phases[2].status, RowStatus::Waiting);
         assert_eq!(shown.phases[4].status, RowStatus::Running);
+    }
+
+    /// A phase's name starts with a capital, whatever case its script wrote it in.
+    #[test]
+    fn a_phase_name_starts_with_a_capital() {
+        let events = vec![run_started(), started_as(1, 1, "build:due-flag")];
+        let lower = report(
+            "add-due-flag",
+            &["build", "review", "sign-off"],
+            &[("build:due-flag", Some(1), Running)],
+        );
+        let shown = view(&events, &lower, &[(1, 1)]);
+        assert_eq!(names(&shown), ["Build", "Review", "Sign-off", "Merge"]);
+    }
+
+    /// A workflow the script runs as a step, which the runner reports as one more phase named
+    /// for it, is a row of the phase that ran it, Argonauts Code's own, with its agents under it.
+    #[test]
+    fn a_workflow_the_script_runs_is_a_row_of_its_phase() {
+        let events = vec![
+            run_started(),
+            started_as(1, 1, "check:types"),
+            started_as(2, 2, "lint:clippy"),
+        ];
+        let release = report(
+            "release",
+            &["Check", "▸ lint"],
+            &[
+                ("check:types", Some(1), CliAgentState::Done),
+                ("lint:clippy", Some(2), Running),
+            ],
+        );
+        let shown = view(&events, &release, &[(1, 1), (2, 2)]);
+        assert_eq!(names(&shown), ["Check", "Merge"]);
+        let check = &shown.phases[0];
+        let Some(WorkflowRow::Workflow(lint)) = check.rows.last() else {
+            panic!("lint is a row of Check: {check:#?}");
+        };
+        assert_eq!((lint.name.as_str(), lint.worker.as_deref()), ("lint", None));
+        assert_eq!((lint.agents_done, lint.agents_total), (0, 1));
+        assert_eq!(
+            check.count.map(|count| count.total),
+            Some(2),
+            "its agents count in Check"
+        );
     }
 
     /// Before the workflow says what its phases are, the step's own phase holds what there
@@ -521,7 +573,7 @@ mod tests {
         let shown = view(&events, &grown, &[(1, 1), (2, 2)]);
         // Once it names one, its phases are the view's, and an agent in none goes first in
         // the first of them.
-        assert_eq!(names(&shown), ["Build"]);
+        assert_eq!(names(&shown), ["Build", "Merge"]);
         assert_eq!(labels(&shown.phases[0]), ["scout", "build:a"]);
     }
 
@@ -556,7 +608,7 @@ mod tests {
         );
         log.note_report(&work(), &again, vec![(1, SessionKey::numbered(2))]);
         let shown = view_from(&log, &events, &run_id(), None).unwrap();
-        assert_eq!(names(&shown), ["Build", "Review"]);
+        assert_eq!(names(&shown), ["Build", "Review", "Merge"]);
         let WorkflowRow::Agent(row) = &shown.phases[0].rows[0] else {
             panic!("an agent");
         };
@@ -602,12 +654,12 @@ mod tests {
             ),
         ];
         let shown = super::super::workflow_view(&events, &run_id(), None).unwrap();
-        assert_eq!(names(&shown), ["Build", "Review"]);
+        assert_eq!(names(&shown), ["Build", "Review", "Merge"]);
         assert_eq!(labels(&shown.phases[0]), ["build:rate-limit"]);
         assert_eq!(labels(&shown.phases[1]), ["review:rate-limit"]);
         assert_eq!(shown.phases[1].status, RowStatus::Running);
         assert_eq!((shown.agents_done, shown.agents_total), (1, 2));
-        assert_eq!(shown.name, "rate-limit-per-key");
+        assert_eq!(shown.name, "Rate limit per key");
     }
 
     /// Once the workflow is over, a phase none of its agents ran in stays, marked as never run.
@@ -625,7 +677,7 @@ mod tests {
         );
         done.status = SubagentStatus::Done;
         let shown = view(&events, &done, &[(1, 1)]);
-        assert_eq!(names(&shown), ["Build", "Review", "Sign off"]);
+        assert_eq!(names(&shown), ["Build", "Review", "Sign off", "Merge"]);
         assert_eq!(shown.phases[0].status, RowStatus::Done);
         assert_eq!(shown.phases[1].status, RowStatus::Skipped);
         assert_eq!(shown.phases[2].status, RowStatus::Skipped);

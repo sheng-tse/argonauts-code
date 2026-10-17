@@ -17,7 +17,9 @@ use std::collections::BTreeSet;
 use argonauts_core::TaskId;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::agent_status::{FallbackEvent, FallbackPlan, JobRef, JobWait};
+use argonauts_core::events::agent_status::{
+    FallbackEvent, FallbackPlan, JobKeeper, JobRef, JobWait,
+};
 use argonauts_core::events::approval::{
     AgentDownPacket, AnswerAction, ApprovalDecided, ApprovalKind, ApprovalOpened, ApprovalPacket,
     FreeText, PausedTask,
@@ -37,7 +39,7 @@ use crate::engine::host::Host;
 use crate::engine::job_fallback::Followed;
 use crate::engine::shared::lock;
 use crate::error::{EngineError, EngineResult};
-use crate::fallback::{ask, assign, broken, choose, rules};
+use crate::fallback::{ask, assign, broken, builders_provider, choose, rules};
 use crate::state::RunState;
 use crate::state::approvals::ApprovalRecord;
 use crate::state::tasks::TaskEntry;
@@ -102,7 +104,7 @@ type Key = (TaskId, RoleName);
 
 /// The id a job is listed under: its task's, or one made from where its step sits, since a
 /// step of the main agent's own has no task.
-fn listed_as(job: &JobRef) -> Option<TaskId> {
+pub(super) fn listed_as(job: &JobRef) -> Option<TaskId> {
     if let Some(task) = &job.task {
         return Some(task.clone());
     }
@@ -200,13 +202,17 @@ pub fn ask_again(host: &Host) -> EngineResult<()> {
 }
 
 /// A job that isn't a build task stopped the run, and only `same_cli` keeps it from an agent
-/// of another CLI. The log says it waits, so the question about its CLI lists it too.
+/// of another CLI. The log says it waits, so the question about its CLI lists it too. A
+/// review or a ruling that only its builder's provider could take asks its own question.
 pub fn job_waits(host: &Host, wait: &JobWait) -> EngineResult<()> {
     if !host.read(|state| state.run.waiting_jobs.contains(wait)) {
         let waiting = FallbackEvent::JobWaiting(wait.clone());
         host.record(None, None, RunEventKind::Fallback(waiting))?;
     }
-    ask_in_background(host, &wait.stopped.agent_id())
+    match wait.kept_by {
+        JobKeeper::SameCli => ask_in_background(host, &wait.stopped.agent_id()),
+        JobKeeper::BuildersProvider { .. } => builders_provider::ask(host, wait),
+    }
 }
 
 /// Your answer to the question about a CLI lets the jobs it listed leave at once. The
@@ -219,6 +225,8 @@ pub fn on_decided(host: &Host, opened: &ApprovalOpened, decided: &ApprovalDecide
     if packet.kept_by.is_some() {
         let freed = free_jobs(host, packet, decided);
         report(host, None, freed, "Letting a job leave its CLI");
+    } else {
+        builders_provider::on_decided(host, packet, decided);
     }
     let passed = pass_note_on(host, packet, decided);
     report(host, None, passed, "Passing your note to the paused tasks");
@@ -475,7 +483,7 @@ async fn ask_task(host: &Host, task: &TaskId) -> EngineResult<()> {
 
 /// A question that failed says so in the run's log. One cut short by a pause or a stop is
 /// asked again by the engine that goes on.
-fn report(host: &Host, task: Option<&TaskId>, result: EngineResult<()>, what: &str) {
+pub(super) fn report(host: &Host, task: Option<&TaskId>, result: EngineResult<()>, what: &str) {
     let err = match result {
         Ok(()) | Err(EngineError::Interrupted) => return,
         Err(err) => err,
@@ -495,8 +503,8 @@ fn request(host: &Host, agent_id: &AgentId, paused: &[Paused]) -> ApprovalReques
     let health = services.health.state(agent_id);
     let fits_all = fits_all(host, paused);
     let count = match paused.len() {
-        1 => "1 task".to_owned(),
-        many => format!("{many} tasks"),
+        1 => "1 task waits".to_owned(),
+        many => format!("{many} tasks wait"),
     };
     let packet = AgentDownPacket {
         agent_id: agent_id.clone(),
@@ -512,7 +520,7 @@ fn request(host: &Host, agent_id: &AgentId, paused: &[Paused]) -> ApprovalReques
         at: host.read(rules::current_step),
         kind: ApprovalKind::AgentDown,
         title: format!(
-            "{} is down · {count} paused",
+            "{} is down · {count} for it",
             DisplayNames::default().cli(&agent_id.0)
         ),
         task: None,
@@ -539,7 +547,8 @@ fn paused(host: &Host, agent_id: &AgentId) -> Vec<Paused> {
                 state.tasks.progress(&record.spec.id).waiting_for.as_ref() == Some(agent_id)
             });
         let jobs = state.run.waiting_jobs.iter();
-        let jobs = jobs.filter(|wait| wait.stopped.agent_id() == *agent_id);
+        let jobs =
+            jobs.filter(|wait| wait.stopped.agent_id() == *agent_id && wait.kept_by.is_same_cli());
         (tasks.cloned().collect(), jobs.cloned().collect())
     });
     let kept = |rules: AppliedFallback| rules.same_cli && rules.mode == FallbackMode::Auto;

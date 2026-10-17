@@ -122,9 +122,11 @@ pub(crate) fn picker(ctx: &Ctx, command: &SlashCommand) -> Vec<ViewData> {
                 None,
             )]
         }
+        // `/config all` and `/config <key>`: All settings, every key or those under one.
         SlashCommand::Config { key, .. } => {
-            let found = rows::rows(settings, Some("config"), key.as_deref());
-            vec![view(found, "config", key.clone())]
+            let section = key.as_deref().filter(|key| *key != "all");
+            let found = rows::rows(settings, Some("config"), section);
+            vec![view(found, "config", section.map(str::to_owned))]
         }
         SlashCommand::Records { agent } => learning(ctx, LearningArea::Records, agent.clone()),
         SlashCommand::LearnedWorkflows { name } => {
@@ -184,7 +186,7 @@ pub(crate) fn approvals(ctx: &Ctx) -> ViewData {
         .warnings
         .iter()
         .filter(|warning| warning.contains("approvals."))
-        .cloned()
+        .map(|warning| warning.text.clone())
         .collect();
     ViewData::Approvals { view }
 }

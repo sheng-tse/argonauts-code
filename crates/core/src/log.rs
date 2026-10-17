@@ -263,6 +263,9 @@ pub enum NoteLevel {
     /// Worth one dim line and no mark, said once and never again, such as a newer version of
     /// a CLI being out.
     Quiet,
+    /// Worth one line in the warning colour and no mark, about how the app goes on, such as
+    /// autopilot coming back at start as you left it.
+    Caution,
 }
 
 /// The note a failed run review leaves. Why it failed is in the run review phase's `Failed`
@@ -281,6 +284,19 @@ pub const NO_SECOND_TRY: &str = "no second try, this error repeats every time";
 /// CLI, as in `same_cli is on, so Codex isn't asked`. The main view shows that line under the
 /// note rather than keeping it for Ctrl+O.
 pub const SAME_CLI_IS_ON: &str = "same_cli is on, so ";
+
+/// Between a job's label and why it got no answer, in the note a script's call leaves, as in
+/// `propose:p3 gave no answer: Nobody to fall back to as the task's worker: …`.
+pub const GAVE_NO_ANSWER: &str = " gave no answer: ";
+
+/// How the reason starts when no agent could take a job, as in `Nobody to fall back to as the
+/// task's worker: …`. A run drawn again says it once, in the item of the wait it led to.
+pub const NOBODY_TO_FALL_BACK_TO: &str = "Nobody to fall back to";
+
+/// What the line says of a model its CLI no longer lists, before the model, as in
+/// `propose:p3 runs on Gemini 3.8 Flash (Low): Antigravity CLI no longer offers Gemini 3.6 Flash
+/// (Low)`. The screen draws the line's words plain.
+pub const NO_LONGER_OFFERS: &str = " no longer offers ";
 
 /// One line in plain words. Lines after the first are its detail, such as a validator's
 /// errors, which the main view keeps for Ctrl+O, but for the rows right under the first

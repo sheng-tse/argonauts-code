@@ -18,6 +18,7 @@ use argonauts_core::app::AppEvent;
 use argonauts_core::log::NoteLevel;
 use argonauts_core::settings::Settings;
 use argonauts_core::status_tab::{VERSION_ROW_NAMES, VERSION_ROW_STATES, version_row};
+use argonauts_registry::SettingsWarning;
 
 use super::{Ctx, Effect};
 use crate::setup::probe::{self, FoundAgent, LoginState};
@@ -50,7 +51,7 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
 
 /// Each thing reading the settings warned of, such as a key that can't be used and has its
 /// default instead.
-fn settings_lines(warnings: &[String]) -> Vec<String> {
+fn settings_lines(warnings: &[SettingsWarning]) -> Vec<String> {
     warnings
         .iter()
         .map(|warning| format!("settings · {warning}"))

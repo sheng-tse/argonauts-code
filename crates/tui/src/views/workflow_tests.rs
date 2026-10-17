@@ -49,6 +49,7 @@ pub(super) fn agent(session: &str, label: &str, status: RowStatus) -> AgentRow {
         tries: Vec::new(),
         note: None,
         inner: None,
+        left_out: false,
     }
 }
 
@@ -86,7 +87,6 @@ pub(super) fn workflow(name: &str, phases: Vec<PhaseRow>) -> WorkflowData {
         description: "Whatever its own script says it does".into(),
         style: None,
         status_lines: Vec::new(),
-        breadcrumb: Vec::new(),
         agents_done: agents()
             .filter(|agent| agent.status == RowStatus::Done)
             .count() as u32,
@@ -431,8 +431,8 @@ fn a_workflow_with_no_required_step_has_no_column_for_the_mark() {
         )],
     ));
     let text = draw(&mut view, 100, 14);
-    // The pane is never under fourteen cells, as in Claude Code, and the count ends at its edge.
-    assert!(text.contains("│ ❯ 1 Build  0/1 │"), "{text}");
+    // The pane is never under sixteen cells, and the count ends at its edge.
+    assert!(text.contains("│ ❯ 1 Build    0/1 │"), "{text}");
     assert!(!text.contains('★'), "{text}");
 }
 
@@ -660,9 +660,11 @@ fn dock_rows(view: &mut WorkflowView, rows: u16) -> u16 {
         .min(rows.saturating_sub(2))
 }
 
+/// The box fits what it holds, with no empty rows under it, up to the usual frame, where it
+/// scrolls; a workflow with goals takes more rows for the goal panel under the agents.
 #[test]
-fn a_workflow_with_goals_takes_more_rows_and_one_without_takes_the_usual() {
-    let plain = WorkflowView::new(workflow(
+fn a_workflow_fits_its_contents_and_one_with_goals_takes_more_rows() {
+    let mut plain = WorkflowView::new(workflow(
         "plain",
         vec![phase(
             "Build",
@@ -670,11 +672,25 @@ fn a_workflow_with_goals_takes_more_rows_and_one_without_takes_the_usual() {
             vec![agent("s-001", "build:a", RowStatus::Running)],
         )],
     ));
-    let mut plain = plain;
+    let many: Vec<AgentRow> = (1..=30)
+        .map(|n| {
+            agent(
+                &format!("s-{n:03}"),
+                &format!("build:{n}"),
+                RowStatus::Running,
+            )
+        })
+        .collect();
+    let mut big = WorkflowView::new(workflow(
+        "big",
+        vec![phase("Build", RowStatus::Running, many)],
+    ));
     let mut goals = WorkflowView::new(on_goals());
     for rows in [24, 40] {
         let usual = super::dock::height(rows);
-        assert_eq!(dock_rows(&mut plain, rows), usual, "{rows}");
+        // One phase of one agent: the rule, the header, the box at its least, and the keys.
+        assert_eq!(dock_rows(&mut plain, rows), 5 + 5, "{rows}");
+        assert_eq!(dock_rows(&mut big, rows), usual, "{rows}");
         let taller = dock_rows(&mut goals, rows);
         assert!(taller > usual && taller <= rows - 2, "{rows}: {taller}");
     }
@@ -1021,5 +1037,43 @@ fn a_step_tried_again_is_one_row_that_says_so_and_unfolds_its_tries() {
     press(&mut view, KeyCode::Left);
     let text = draw(&mut view, 130, 16);
     assert!(!text.contains("refused the answer format"), "{text}");
-    assert_eq!(view.depth(), 1, "← folded the tries, and stayed");
+    assert!(
+        text.contains("❯"),
+        "← folded the tries, and stayed on the agents: {text}"
+    );
+}
+
+/// A run nothing could take a job of has stopped fully, and its workflow's header says so, as
+/// its row in the bottom list does.
+#[test]
+fn a_run_that_stopped_fully_says_so_in_its_header() {
+    use argonauts_core::events::run::WaitReason;
+
+    let mut view = WorkflowView::new(workflow(
+        "Per key rate limit",
+        vec![phase(
+            "Propose",
+            RowStatus::Running,
+            vec![agent("s-001", "propose:p1", RowStatus::Done)],
+        )],
+    ));
+    let mut state = AppState::default();
+    let mut stopped = crate::state::RunState::new(run());
+    stopped.waiting = Some(WaitReason::NoFallback {
+        detail: "a council needs two proposals".into(),
+        until: None,
+        stop: None,
+    });
+    state.runs.insert(run(), stopped);
+    let theme = theme();
+    let area = Rect::new(0, 0, 100, 14);
+    let mut buf = Buffer::empty(area);
+    let ctx = ViewCtx {
+        theme: &theme,
+        state: &state,
+        now: Instant::now(),
+    };
+    view.render(area, &mut buf, &ctx);
+    let text = buffer_text(&buf);
+    assert!(text.contains("· stopped"), "{text}");
 }

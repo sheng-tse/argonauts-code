@@ -320,8 +320,10 @@ pub enum ResumeCause {
     User,
     /// Your answer to an approval.
     Answer,
-    /// An agent came back, or the time a waiting run waited for passed.
+    /// An agent the run waited for came back, as its health says.
     AgentBack,
+    /// The time a waiting run waited for passed, so it tried again on its own.
+    Timer,
     /// A fallback approval's `ask_timeout` passed, so the role's fallback applies.
     AskTimeout,
     Crash,
@@ -356,15 +358,69 @@ pub enum WaitReason {
         #[serde(with = "time::serde::rfc3339::option")]
         until: Option<OffsetDateTime>,
     },
-    /// A step's agent stopped for an agent reason, and no other agent could take its role.
+    /// A step's agent stopped for an agent reason, and nothing could take a job the run
+    /// needs, so the run stopped fully, its work kept. Waiting can't bring a model or a login
+    /// back, so it never tries again on its own: only `/resume` carries it on.
     NoFallback {
         /// Which role nobody could fill, in words, as the run's row says it.
         detail: String,
-        /// When it tries again: the agent's reset, else a retry after a wait that grows with
-        /// each try. `None` once it stopped trying on its own.
+        /// When an older run said it would try again. A run stops with none now.
         #[serde(with = "time::serde::rfc3339::option")]
         until: Option<OffsetDateTime>,
+        /// Why it stopped, what was tried, and how to carry it on. Older runs have none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop: Option<Box<RunStop>>,
     },
+}
+
+/// What a run that stopped fully says in its one item: why, each job nothing could take
+/// with what its own CLI said, what else was tried, and how to carry it on.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RunStop {
+    /// Such as `a council needs two proposals, and only propose:p1 can make one`.
+    pub why: String,
+    /// Each job nothing could take: `propose:p3 · Antigravity CLI is signed out`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
+    /// Why nothing else could take them: `OpenCode has no model set`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tried: Vec<String>,
+    /// The agents whose work so far is kept.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<String>,
+    /// The CLIs whose working again lets `/resume` carry the run on, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waits_for: Vec<String>,
+}
+
+impl RunStop {
+    /// The item's lines under its title: the agents, what else was tried, and how to carry on.
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines = self.agents.clone();
+        // Each is a clause of its own, so the last joins with a comma before its `and`.
+        let tried = match self.tried.as_slice() {
+            [] => None,
+            [only] => Some(only.clone()),
+            [rest @ .., last] => Some(format!("{}, and {last}", rest.join(", "))),
+        };
+        if let Some(tried) = tried {
+            let them = if self.agents.len() > 1 { "them" } else { "it" };
+            lines.push(format!("Nothing else can take {them}: {tried}"));
+        }
+        let kept = match self.kept.as_slice() {
+            [] => "Its work so far is kept".to_owned(),
+            kept => format!("{}'s work so far is kept", crate::text::and_list(kept)),
+        };
+        let carry_on = match self.waits_for.as_slice() {
+            [] => "/resume carries the run on".to_owned(),
+            clis => format!(
+                "once {} works, /resume carries the run on",
+                clis.join(" or ")
+            ),
+        };
+        lines.push(format!("{kept} · {carry_on}"));
+        lines
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -179,6 +179,17 @@ impl ConversationStore {
             .collect()
     }
 
+    /// Every event recorded, oldest first, for drawing the conversation again. A line that
+    /// doesn't parse, such as a torn last line, is skipped, and no journal has none.
+    pub(crate) fn every_event(&self) -> Vec<ConversationEvent> {
+        fs::read_to_string(&self.journal)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
+    }
+
     /// The turns' own events, oldest first, leaving out what the agents did along the way, which
     /// makes up most of a journal. `None` when there's no journal. A line that doesn't parse,
     /// such as a torn last line, is skipped.
@@ -196,6 +207,21 @@ impl ConversationStore {
             .filter_map(|line| serde_json::from_str(line).ok())
             .collect();
         Ok(Some(events))
+    }
+
+    /// Every line of the journal, oldest first and still unparsed, for a reader that parses only
+    /// the few it needs. No journal, or one that can't be read, has none.
+    pub(crate) fn each_line(&self, see: impl FnMut(&str)) {
+        if let Ok(text) = fs::read_to_string(&self.journal) {
+            text.lines()
+                .filter(|line| !line.trim().is_empty())
+                .for_each(see);
+        }
+    }
+
+    /// A line of what an agent did along the way, which most of a journal is.
+    pub(crate) fn is_agent_line(line: &str) -> bool {
+        line.starts_with(AGENT_TAG)
     }
 
     /// Walks what the agents did along the way, a journal line at a time and still unparsed,

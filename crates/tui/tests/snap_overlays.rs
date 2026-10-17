@@ -3,20 +3,20 @@ mod common;
 use std::path::PathBuf;
 
 use argonauts_core::agent_panel::{AgentPanelRows, CrewTab};
-use argonauts_core::api::{DiffView, RawView, RunState as RunPhase, RunSummary};
+use argonauts_core::api::{DiffView, RawView};
 use argonauts_core::app::{
     AgentReady, AnswerTarget, ConversationSummary, HeaderAndBottomLine, UiCommand, ViewRequest,
 };
 use argonauts_core::cli_sessions::CliSession;
 use argonauts_core::events::approval::ApprovalOpened;
-use argonauts_core::events::run::{Party, RunMode};
+use argonauts_core::events::run::Party;
 use argonauts_core::events::session::{
     Delivery, FileDiff, QueuedMessage, SessionInput, SubagentKind, SubagentStatus, SubagentUpdate,
 };
 use argonauts_core::input::{MentionTarget, ResumeTarget, SlashCommand};
 use argonauts_core::names::{AgentId, ConversationId, MessageId, ModelRef, RoleName, SessionKey};
 use argonauts_core::views::ContextUse;
-use argonauts_core::{DiffStat, RunId, Spend, TaskId};
+use argonauts_core::{DiffStat, RunId, TaskId};
 use argonauts_tui::format::WallClock;
 use argonauts_tui::keymap::Keymap;
 use argonauts_tui::stability::{WIDTHS, assert_frames, buffer_text, samples};
@@ -310,28 +310,6 @@ fn open_crew(state: &AppState) -> AgentPanelView {
     let mut view = AgentPanelView::new(state);
     view.clock = WallClock::pinned(WALL);
     view
-}
-
-fn summary(run: &str, title: &str, state: RunPhase, remind: bool, hours_ago: i64) -> RunSummary {
-    RunSummary {
-        run: RunId::new(run).unwrap(),
-        title: title.into(),
-        mode: RunMode::Crew,
-        workflow: "council".into(),
-        state,
-        stopped_at: "merge approval".into(),
-        updated: WALL - Duration::hours(hours_ago),
-        spent: Spend {
-            output_tokens: 9_000,
-            cost_usd: 0.46,
-            ..Spend::default()
-        },
-        sessions_to_resume: 2,
-        waiting: Vec::new(),
-        live: state == RunPhase::Running,
-        remind,
-        name: None,
-    }
 }
 
 /// What the controller lists beside this screen's agents: a conversation, a Codex session of
@@ -1002,30 +980,27 @@ fn session_view_input_side() {
     assert!(screen(&mut view, 100, 32, &long).contains("tab output"));
 }
 
+fn conversation_row(n: u32, title: &str, hours_ago: i64, needs_you: bool) -> ConversationSummary {
+    ConversationSummary {
+        conversation: ConversationId::numbered(n),
+        title: title.into(),
+        updated: WALL - Duration::hours(hours_ago),
+        worker: Some(worker("claude-code")),
+        turns: 3,
+        runs: 1,
+        needs_you,
+    }
+}
+
 fn picker() -> ResumePicker {
-    let mut view = ResumePicker::new(vec![
-        summary(
-            "run-03",
-            "Add a --json flag to export",
-            RunPhase::Waiting,
-            true,
-            50,
-        ),
-        summary(
-            "run-02",
-            "Fix the flaky export test",
-            RunPhase::Crashed,
-            false,
-            3,
-        ),
-        summary(
-            "run-01",
-            "Rename the CSV writer",
-            RunPhase::Merged,
-            false,
-            0,
-        ),
-    ]);
+    let mut view = ResumePicker::listing(
+        vec![
+            conversation_row(3, "Add a --json flag to export", 1, true),
+            conversation_row(2, "Fix the flaky export test", 3, false),
+            conversation_row(1, "Rename the CSV writer", 50, false),
+        ],
+        Vec::new(),
+    );
     view.clock = WallClock::pinned(WALL);
     view
 }
@@ -1042,18 +1017,13 @@ fn resume_picker_rows() {
     }
     let mut view = picker();
     let text = screen(&mut view, 100, 32, &state);
-    assert!(text.contains("Resume a run · in "), "{text}");
-    // A run that waits for you keeps its mark, and says its state where a length would be.
+    assert!(text.contains("Resume a conversation · in "), "{text}");
+    // A conversation whose run waits on you is marked, since the run comes back with it.
     let waiting = row_with(&text, "Add a --json flag to export");
     assert!(waiting.contains('◆'), "{text}");
-    for cell in ["Argonauts", "waiting"] {
-        assert!(waiting.contains(cell), "{cell}:\n{text}");
-    }
-    let stopped = row_with(&text, "Fix the flaky export test");
-    assert!(
-        stopped.contains("stopped") && !stopped.contains('◆'),
-        "{text}"
-    );
+    assert!(waiting.contains("Argonauts"), "{text}");
+    let other = row_with(&text, "Fix the flaky export test");
+    assert!(!other.contains('◆'), "{text}");
 }
 
 fn cli_session(id: &str, title: &str, branch: Option<&str>, hours_ago: i64) -> CliSession {
@@ -1073,22 +1043,6 @@ fn cli_session(id: &str, title: &str, branch: Option<&str>, hours_ago: i64) -> C
 
 fn picker_with_sessions(title: &str) -> ResumePicker {
     let mut view = ResumePicker::listing(
-        vec![
-            summary(
-                "run-02",
-                "Fix the flaky export test",
-                RunPhase::Crashed,
-                false,
-                3,
-            ),
-            summary(
-                "run-03",
-                "Add a --json flag to export",
-                RunPhase::Waiting,
-                true,
-                50,
-            ),
-        ],
         vec![ConversationSummary {
             conversation: ConversationId::numbered(2),
             title: "what does export do?".into(),
@@ -1096,6 +1050,7 @@ fn picker_with_sessions(title: &str) -> ResumePicker {
             worker: Some(worker("claude-code")),
             turns: 3,
             runs: 0,
+            needs_you: false,
         }],
         vec![
             cli_session(
@@ -1133,7 +1088,7 @@ fn resume_picker_with_cli_sessions() {
     for cell in ["Claude Code", "just now", "3 turns"] {
         assert!(newest.contains(cell), "{cell}:\n{text}");
     }
-    assert!(position(&text, "Explain the in") < position(&text, "Fix the flaky export test"));
+    assert!(position(&text, "Explain the in") < position(&text, "what does export do?"));
     assert!(
         text.contains("enter continues it · b branches from it, the original untouched"),
         "{text}"
@@ -1361,8 +1316,8 @@ fn overlays_hold_their_frames_at_every_width() {
                 assert_frames(&draw(&mut output, width, height, &state));
 
                 let mut resume = picker();
-                resume.runs[0].title = text.into();
-                resume.runs[1].stopped_at = text.into();
+                resume.conversations[0].title = text.into();
+                resume.conversations[1].title = text.into();
                 assert_frames(&draw(&mut resume, width, height, &state));
 
                 assert_frames(&draw(

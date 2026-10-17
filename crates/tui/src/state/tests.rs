@@ -35,6 +35,7 @@ use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::settings::ui::NarratorMode;
+use argonauts_core::steps::judgment::{ReviewOutput, ReviewVerdict};
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
 use argonauts_core::{AgentEvent, DiffStat, Note, NoteLevel, PhaseStatus, Spend, TaskId};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -252,6 +253,7 @@ fn summary() -> RunSummary {
         live: true,
         remind: false,
         name: None,
+        shape_known: true,
     }
 }
 
@@ -501,6 +503,64 @@ fn state_folds_task() {
     let task = &run(&state).tasks[&task_id(1)];
     assert!(task.debt.is_empty());
     assert_eq!(task.fallback_for, None);
+}
+
+/// A session its run named no model for reads by the model its command launched, not by what
+/// the settings say today; its CLI's own report still says it more exactly. One its run named
+/// keeps that name.
+#[test]
+fn a_session_is_named_by_the_model_it_launched() {
+    use argonauts_core::events::session::{LaunchRecord, PromptVia, SessionInput};
+    let input = |model: &str| {
+        SessionEvent::Input(Box::new(SessionInput {
+            launch: LaunchRecord {
+                program: "agy".into(),
+                args: vec!["--model".into(), model.into(), "<prompt>".into()],
+                cwd: "/w".into(),
+                env_set: Vec::new(),
+                env_removed: Vec::new(),
+                prompt_via: PromptVia::Argument,
+                sandbox: None,
+            },
+            parts: Vec::new(),
+            queued: Vec::new(),
+        }))
+    };
+    let mut log = Log::new();
+    let unnamed = ModelRef::new("antigravity-cli", None);
+    let mut state = fold(&[
+        log.event(started("Fix the export race", RunMode::Crew)),
+        log.session(1, None, session_started(unnamed, 1)),
+        log.session(1, None, input("gemini-3.6-flash-low")),
+    ]);
+    assert_eq!(
+        session(&state).worker,
+        worker("antigravity-cli", "gemini-3.6-flash-low")
+    );
+    state.apply(&log.agent(
+        1,
+        AgentEvent::Init {
+            session_id: None,
+            model: Some("gemini-3.6-flash-low-2".into()),
+            tools: Vec::new(),
+            plugins: Vec::new(),
+            capabilities: Vec::new(),
+            version: None,
+        },
+    ));
+    assert_eq!(
+        session(&state).worker,
+        worker("antigravity-cli", "gemini-3.6-flash-low-2")
+    );
+
+    let mut log = Log::new();
+    let named = worker("codex", "gpt-6-luna");
+    let state = fold(&[
+        log.event(started("Fix the export race", RunMode::Crew)),
+        log.session(1, None, session_started(named.clone(), 1)),
+        log.session(1, None, input("gpt-6")),
+    ]);
+    assert_eq!(session(&state).worker, named);
 }
 
 #[test]
@@ -760,6 +820,84 @@ fn state_folds_review() {
     state.apply(&log.at(Some(task_id(1)), None, RunEventKind::Review(tests)));
     assert_eq!(run(&state).tasks[&task_id(1)].reviews, 0);
     assert_eq!(run(&state).seq, 3);
+}
+
+#[test]
+fn a_reviewer_that_sent_the_work_back_waits_for_its_next_round() {
+    let mut log = Log::new();
+    let mut state = fold(&[log.event(started("Fix the export race", RunMode::Crew))]);
+    let step = StepRef {
+        workflow: WorkflowId::numbered(1),
+        phase: 1,
+        path: vec![0],
+    };
+    let start = |log: &mut Log, n: u32, role: RoleName, label: &str| {
+        let SessionEvent::Started(mut started) = session_started(worker("codex", "gpt-6"), 1)
+        else {
+            unreachable!()
+        };
+        started.role = role;
+        started.label = Some(label.into());
+        started.workflow_step = Some(step.clone());
+        log.session(n, Some(1), SessionEvent::Started(started))
+    };
+    let ended = |log: &mut Log, n: u32| {
+        log.session(
+            n,
+            Some(1),
+            SessionEvent::Ended(Box::new(SessionEnd {
+                cli_session: None,
+                exit_code: Some(0),
+                signal: None,
+                duration_ms: 1_000,
+                reason: EndReason::Completed,
+                spend: Spend::default(),
+                tool_calls: 0,
+                result_text: None,
+                structured: None,
+                last_message: None,
+                raw_log: None,
+            })),
+        )
+    };
+    let reviewed = |log: &mut Log, n: u32, verdict: ReviewVerdict| {
+        let review = ReviewEvent::Reviewed {
+            reviewer: worker("codex", "gpt-6"),
+            blind: false,
+            round: n,
+            review: ReviewOutput {
+                verdict,
+                summary: String::new(),
+                comments: Vec::new(),
+                tamper_suspected: false,
+            },
+        };
+        log.at(Some(task_id(1)), Some(key(n)), RunEventKind::Review(review))
+    };
+    let counted = |state: &AppState| {
+        let totals = run(state).totals(T0);
+        (totals.agents_done, totals.agents_total)
+    };
+
+    let first = [
+        start(&mut log, 1, RoleName::Reviewer, "review:per-key"),
+        ended(&mut log, 1),
+        reviewed(&mut log, 1, ReviewVerdict::RequestChanges),
+    ];
+    for event in &first {
+        state.apply(event);
+    }
+    assert_eq!(counted(&state), (0, 1), "its next round is still to come");
+
+    let again = [
+        start(&mut log, 2, RoleName::Reviewer, "review:per-key-2"),
+        ended(&mut log, 2),
+        reviewed(&mut log, 2, ReviewVerdict::Approve),
+    ];
+    for event in &again {
+        state.apply(event);
+    }
+    assert_eq!(counted(&state), (1, 1), "its rounds are one agent");
 }
 
 #[test]
@@ -1199,6 +1337,21 @@ fn the_conversations_context_count_is_kept_until_another_model_answers() {
     state.apply(&conversation(started(3, "sonnet")));
     assert_eq!(state.conversation.context, None);
     assert_eq!(state.conversation.growth.per_turn(), None);
+
+    // A resumed conversation's record brings the count back, as old as it is.
+    let at = time::macros::datetime!(2026-10-14 01:52 UTC);
+    let mut resumed = AppState::default();
+    resumed.apply(&conversation(started(1, "opus")));
+    resumed.apply(&conversation(ConversationEvent::ContextLeft {
+        turn: TurnId::numbered(1),
+        at,
+        used: usage.total_tokens,
+        window: Some(usage.window),
+        usage: Some(Box::new(usage.clone())),
+    }));
+    resumed.apply(&finished(1));
+    let counted = resumed.conversation.context.expect("the record's count");
+    assert_eq!((counted.usage, counted.counted), (usage, at));
 }
 
 #[test]
@@ -2292,7 +2445,6 @@ fn published_artifacts_are_kept_with_who_published_them() {
         conversation: argonauts_core::names::ConversationId::numbered(1),
         title: "write it up".into(),
         worker: None,
-        earlier: Vec::new(),
         turns: Vec::new(),
         artifacts: vec![argonauts_core::artifacts::Artifact {
             url: overview.into(),

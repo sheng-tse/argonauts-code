@@ -360,6 +360,7 @@ fn merge_row(n: u32, title: &str, who: &str, review: Option<ReviewVerdict>) -> M
         checks_passed: true,
         review,
         debt: Vec::new(),
+        questions: Vec::new(),
     }
 }
 
@@ -1158,11 +1159,11 @@ fn plan_question_with_workflow() {
 fn merge_question() {
     approval_case("merge_question", merge(), None);
 
-    // Request changes opens the rows as a checklist.
+    // Request changes, picked by its number, opens the rows as a checklist.
     let opened = merge();
     snapshot("merge_question_request_changes", |width| {
         let mut prompt = focused(approval_question(1, &opened, None));
-        let key = crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('b'));
+        let key = crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('3'));
         prompt.handle_key(key);
         question_lines(&prompt, width)
     });
@@ -1277,7 +1278,12 @@ fn guided_setup_step() {
         let first = &question.options[0];
         assert_eq!(question.selected, 0, "Enter takes the recommended answer");
         assert!(step.kind == ChoiceKind::TermsNote || first.recommended);
-        assert_eq!(question.esc_hint, "Esc to take the recommended answers");
+        // Esc still takes them, but a step's key line names only Enter.
+        let esc = match step.kind {
+            ChoiceKind::TermsNote => "Esc to take the recommended answers",
+            _ => "",
+        };
+        assert_eq!(question.esc_hint, esc);
     }
 }
 

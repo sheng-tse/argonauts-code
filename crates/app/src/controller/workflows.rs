@@ -1099,7 +1099,11 @@ mod tests {
         assert_eq!(started[0].mode, RunMode::Crew);
         assert_eq!(started[0].request_settings, ["workflow=\"mine\""]);
         // The workflow in use stays as it was: nothing is written to your settings.
-        assert!(!driver.env.paths.home().join("config.toml").exists());
+        let global = std::fs::read_to_string(driver.env.paths.home().join("config.toml"));
+        assert_eq!(
+            global.unwrap(),
+            crate::controller::test_support::SET_UP_GLOBAL
+        );
         driver.exit().await;
     }
 
@@ -1127,6 +1131,7 @@ mod tests {
             live: true,
             remind: false,
             name: None,
+            shape_known: true,
         }
     }
 

@@ -68,13 +68,13 @@ fn down(paused: usize) -> AgentDownPacket {
 /// the paused tasks' workers.
 fn opened(packet: AgentDownPacket, options: Vec<AnswerOption>) -> ApprovalOpened {
     let paused = match packet.paused.len() {
-        1 => "1 task".to_owned(),
-        many => format!("{many} tasks"),
+        1 => "1 task waits".to_owned(),
+        many => format!("{many} tasks wait"),
     };
     ApprovalOpened {
         id: ApprovalId::numbered(1),
         kind: ApprovalKind::AgentDown,
-        title: format!("Claude Code is down · {paused} paused"),
+        title: format!("Claude Code is down · {paused} for it"),
         task: None,
         packet: ApprovalPacket::AgentDown(packet),
         evidence_sha256: "0".repeat(64),
@@ -125,7 +125,7 @@ fn the_title_names_the_cli_and_the_options_say_what_they_mean() {
         question.detail,
         [
             "Opus 5.5 overloaded, Sonnet 5.5 failing with server errors",
-            "Two tasks are paused, their work so far kept.",
+            "Two tasks wait for it, their work so far kept.",
         ]
     );
     let now = Instant::now();
@@ -163,7 +163,7 @@ fn a_setting_that_keeps_the_tasks_here_makes_waiting_your_own_answer() {
     );
     assert_eq!(
         question.detail[1],
-        "Two tasks are paused, their work so far kept. same_cli keeps them on Claude Code."
+        "Two tasks wait for it, their work so far kept. same_cli keeps them on Claude Code."
     );
 
     let now = Instant::now();
@@ -218,7 +218,7 @@ fn the_words_follow_how_many_tasks_wait() {
     assert_eq!(
         fits(1),
         (
-            Some("One task is paused, its work so far kept.".to_owned()),
+            Some("One task waits for it, its work so far kept.".to_owned()),
             "GPT 5.6 | on Codex can take it".to_owned(),
             "an agent of your choice, from every installed CLI".to_owned(),
         )
@@ -226,7 +226,7 @@ fn the_words_follow_how_many_tasks_wait() {
     assert_eq!(
         fits(3),
         (
-            Some("Three tasks are paused, their work so far kept.".to_owned()),
+            Some("Three tasks wait for it, their work so far kept.".to_owned()),
             "GPT 5.6 | on Codex fits all 3".to_owned(),
             "an agent for each, from every installed CLI".to_owned(),
         )
@@ -266,8 +266,16 @@ fn an_explanation_the_event_carries_is_kept() {
 #[test]
 fn under_the_workflow_view_the_question_reads_as_its_picture() {
     let mut picture = picture!("workflow_cli_down");
-    // The picture spells the count as Claude Code does. Every screen here writes `44k`.
-    picture.reword(6, "44.0k", "44k");
+    picture.respell_tokens(6, "44.0k", "44k");
+    // The picture says paused, which now only a pause you asked for reads: these tasks wait
+    // for their CLI.
+    picture.reword(3, "2 tasks paused", "2 tasks wait for it");
+    picture.reword(
+        6,
+        "paused · work so far kept",
+        "waits for Claude Code · work so far kept",
+    );
+    picture.reword(13, "Two tasks are paused,", "Two tasks wait for it,");
     // Esc means carry on without me, as it does on every question a run asks: whoever asked
     // then decides, and here the tasks go on waiting. The picture calls it setting the
     // question aside, and ends the row there.

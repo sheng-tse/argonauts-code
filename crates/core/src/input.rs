@@ -568,7 +568,8 @@ pub const SLASH_COMMANDS: &[SlashSpec] = &[
     SlashSpec { name: "mods", args: "[mod] [change]", help: "Where each mod shows, above the input, on the bottom line, or on a tab, and how it draws", handler: Handler::App, category: CommandCategory::Display },
     SlashSpec { name: "pin", args: "<mod>", help: "Show a mod above the input, such as context", handler: Handler::App, category: CommandCategory::Display },
     SlashSpec { name: "unpin", args: "<mod>", help: "Take a mod from above the input", handler: Handler::App, category: CommandCategory::Display },
-    SlashSpec { name: "config", args: "", help: "Every setting and where it came from", handler: Handler::App, category: CommandCategory::SetupAndHelp },
+    SlashSpec { name: "config", args: "[key=value|all]", help: "Settings, each changed in place. key=value sets one; all lists every key and where it came from", handler: Handler::App, category: CommandCategory::SetupAndHelp },
+    SlashSpec { name: "settings", args: "[key=value|all]", help: "Settings, as /config opens them", handler: Handler::App, category: CommandCategory::SetupAndHelp },
     SlashSpec { name: "setup", args: "", help: "The guided setup again", handler: Handler::App, category: CommandCategory::SetupAndHelp },
     SlashSpec { name: "git", args: "[clean]", help: "How this folder keeps history: off, hidden, or made a git repository. In a repository, what a merged run leaves on your branch. clean removes what ended runs left behind", handler: Handler::App, category: CommandCategory::SetupAndHelp },
     SlashSpec { name: "connect", args: "<hermes|openclaw>", help: "Let an outside agent drive Argonauts Code over MCP: shows the config it needs, and writes it only after you confirm", handler: Handler::App, category: CommandCategory::SetupAndHelp },
@@ -775,7 +776,7 @@ fn parse_slash(name: &str, args: &str) -> Result<SlashCommand, InputError> {
         "mods" => mods::parse_mods(name, args),
         "pin" => mods::parse_pin(name, args, true),
         "unpin" => mods::parse_pin(name, args, false),
-        "config" => parse_config(name, args),
+        "config" | "settings" => parse_config(name, args),
         "setup" => no_args(SlashCommand::Setup),
         "connect" => parse_connect(name, args),
         "git" => match args {
@@ -1018,11 +1019,18 @@ fn parse_narrator(name: &str, args: &str) -> Result<SlashCommand, InputError> {
 }
 
 fn parse_config(name: &str, args: &str) -> Result<SlashCommand, InputError> {
-    let (key, value) = key_and_value(args);
+    // `/config key=value` sets one directly, as Claude Code's does.
+    let (key, value) = match args.split_once('=') {
+        Some((key, value)) if !key.trim().is_empty() && !key.contains(char::is_whitespace) => (
+            Some(key.trim().to_owned()),
+            Some(value.trim().to_owned()).filter(|value| !value.is_empty()),
+        ),
+        _ => key_and_value(args),
+    };
     if key.as_deref().is_some_and(|key| key.starts_with('-')) {
         return Err(bad(
             name,
-            "use /config [key], /config <key> <value>, or /config <key> --reset",
+            "use /config, /config key=value, /config all, /config <key>, or /config <key> --reset",
         ));
     }
     let reset = value.as_deref() == Some("--reset");
@@ -1529,6 +1537,11 @@ mod tests {
             ("/config ui.keys \"vim\"", slash(SlashCommand::Config { key: Some("ui.keys".into()), value: Some("\"vim\"".into()), reset: false })),
             ("/config checks.run [\"cargo\", \"test\"]", slash(SlashCommand::Config { key: Some("checks.run".into()), value: Some("[\"cargo\", \"test\"]".into()), reset: false })),
             ("/config narrator.model --reset", slash(SlashCommand::Config { key: Some("narrator.model".into()), value: None, reset: true })),
+            ("/config ui.tips=false", slash(SlashCommand::Config { key: Some("ui.tips".into()), value: Some("false".into()), reset: false })),
+            ("/config checks.run=[\"cargo\", \"test\"]", slash(SlashCommand::Config { key: Some("checks.run".into()), value: Some("[\"cargo\", \"test\"]".into()), reset: false })),
+            ("/config all", slash(SlashCommand::Config { key: Some("all".into()), value: None, reset: false })),
+            ("/settings", slash(SlashCommand::Config { key: None, value: None, reset: false })),
+            ("/settings ui.keys=vim", slash(SlashCommand::Config { key: Some("ui.keys".into()), value: Some("vim".into()), reset: false })),
             ("/config --reset", bad_args("config")),
             ("/config -x 1", bad_args("config")),
             ("/setup", slash(SlashCommand::Setup)),
@@ -1605,7 +1618,7 @@ mod tests {
                 spec.name
             );
         }
-        assert_eq!(SLASH_COMMANDS.len(), 45);
+        assert_eq!(SLASH_COMMANDS.len(), 46);
         let mut names: Vec<&str> = SLASH_COMMANDS.iter().map(|spec| spec.name).collect();
         names.sort_unstable();
         names.dedup();
@@ -1675,7 +1688,8 @@ mod tests {
                 (
                     "Setup and help",
                     vec![
-                        "config", "setup", "git", "connect", "doctor", "awake", "update", "help"
+                        "config", "settings", "setup", "git", "connect", "doctor", "awake",
+                        "update", "help"
                     ]
                 ),
             ]

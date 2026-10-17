@@ -69,36 +69,33 @@ fn agent(text: &str) -> ReplayTurn {
     }
 }
 
+/// A session carried on prints every turn as it was, with nothing above it to say so, as
+/// Claude Code's resume draws the old messages on its own screen.
 #[test]
-fn a_resumed_conversation_prints_its_last_turns_and_keeps_the_rest_for_ctrl_o() {
+fn a_resumed_session_prints_every_turn_as_it_was() {
     let mut screen = Screen::default();
     screen.printed();
     screen.send(AppEvent::ConversationResumed {
         conversation: ConversationId::numbered(3),
         title: "hi".to_owned(),
         worker: Some(ModelRef::new("claude-code", None)),
-        earlier: vec![you("hi"), agent("Hi. Ask me anything.")],
-        turns: vec![you("what does export do?"), agent("It writes CSV.")],
+        turns: vec![
+            you("hi"),
+            agent("Hi. Ask me anything."),
+            you("what does export do?"),
+            agent("It writes CSV."),
+        ],
         artifacts: Vec::new(),
     });
     let printed = screen.printed();
     assert_eq!(
         printed,
-        "● Resumed conversation-003 · hi\n  ⎿  with Claude Code · 1 earlier turn folded\n     ctrl+o shows the whole history\n\n❯ what does export do?\n\n● It writes CSV."
+        "❯ hi\n\n● Hi. Ask me anything.\n\n❯ what does export do?\n\n● It writes CSV."
     );
-    assert!(!printed.contains("Ask me anything"));
     assert!(
         screen.closed_views,
         "the picker gives the screen to the conversation"
     );
-    let kept: String = screen
-        .model
-        .history
-        .cells()
-        .iter()
-        .map(|cell| format!("{cell:?}"))
-        .collect();
-    assert!(kept.contains("Ask me anything"), "{kept}");
 }
 
 /// A turn of a Claude Code session: it thought, read a file, said so, edited it, ran a failing
@@ -152,7 +149,6 @@ fn resumed_with(turn: ReplayTurn) -> AppEvent {
         conversation: ConversationId::numbered(1),
         title: "Fix the rounding".to_owned(),
         worker: Some(ModelRef::new("claude-code", None)),
-        earlier: Vec::new(),
         turns: vec![you("fix the rounding"), turn],
         artifacts: Vec::new(),
     }
@@ -167,7 +163,7 @@ fn a_cli_sessions_turn_reprints_its_calls_and_diffs_where_they_happened() {
     let printed = screen.printed();
     assert_eq!(
         printed,
-        "● Resumed conversation-001 · Fix the rounding\n  ⎿  with Claude Code\n\n\
+        "\
          ❯ fix the rounding\n\n\
          ● Read(src/tax.rs)\n  ⎿  Read 1 line\n\n\
          ● It rounds half up.\n\n\
@@ -270,7 +266,7 @@ fn a_subagents_calls_fold_into_its_row_and_ctrl_o_shows_each() {
     let printed = screen.printed();
     assert_eq!(
         printed,
-        "● Resumed conversation-001 · Fix the rounding\n  ⎿  with Claude Code\n\n\
+        "\
          ❯ fix the rounding\n\n\
          ● Task(Find the rounding)\n  ⎿  Done (3 tool uses)\n\n\
          ● In src/tax.rs."

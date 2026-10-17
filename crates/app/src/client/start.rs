@@ -159,6 +159,11 @@ pub(crate) async fn await_welcome(
                 )),
             });
         }
+        // It took what it was launched for, a stop or a wake, did it and left: nothing is
+        // left for it to say.
+        if client.launcher.exited_cleanly(run_dir) {
+            return Ok(());
+        }
         if tokio::time::Instant::now() >= deadline {
             return Err(ApiError::RunHost(format!(
                 "the run's run host didn't answer within {} s; see {}",

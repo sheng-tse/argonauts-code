@@ -183,7 +183,7 @@ fn remove(file: &Path, key: &str, in_agent_session: bool) -> Result<bool, Settin
 
 /// Refuses a file that `resolve` would refuse on its own, with the message it would give. A
 /// value of the wrong type never reaches the file.
-fn resolves_alone(file: &Path, text: &str) -> Result<(), SettingsError> {
+pub(crate) fn resolves_alone(file: &Path, text: &str) -> Result<(), SettingsError> {
     let invalid = |message: String| SettingsError::Invalid {
         layer: shown(file),
         message,

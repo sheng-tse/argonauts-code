@@ -374,7 +374,9 @@ pub struct Marks {
     pub failed: &'static str,
     pub needs_you: &'static str,
     pub stopped: &'static str,
-    pub nested: &'static str,
+    /// A workflow inside another, folded to its row and open to its phases.
+    pub folded: &'static str,
+    pub open: &'static str,
     pub phase_waiting: &'static str,
     pub selected: &'static str,
     pub expand: &'static str,
@@ -404,7 +406,8 @@ impl Marks {
                 failed: "x",
                 needs_you: glyphs.question,
                 stopped: "-",
-                nested: "<>",
+                folded: ">",
+                open: "v",
                 phase_waiting: ".",
                 selected: glyphs.prompt,
                 expand: ">",
@@ -427,7 +430,8 @@ impl Marks {
                 failed: "✗",
                 needs_you: glyphs.question,
                 stopped: "■",
-                nested: "◇",
+                folded: "▸",
+                open: "▾",
                 phase_waiting: "·",
                 selected: glyphs.prompt,
                 // `⏎` is drawn two cells wide by some fonts, which breaks the frame around it.
@@ -445,7 +449,7 @@ impl Marks {
         }
     }
 
-    /// Cells a row's state glyph takes, so rows with `<>` still line up.
+    /// Cells a row's state glyph takes, so every row's label starts in one column.
     pub fn slot(&self) -> usize {
         [
             self.done,
@@ -453,7 +457,7 @@ impl Marks {
             self.waiting,
             self.failed,
             self.needs_you,
-            self.nested,
+            self.folded,
         ]
         .iter()
         .map(|glyph| str_width(glyph))
@@ -553,6 +557,23 @@ mod tests {
         let one = split(Rect::new(0, 0, 60, 10), 0);
         assert_eq!(one.left.width, 0);
         assert_eq!(one.right, Rect::new(2, 4, 56, 4));
+    }
+
+    /// The outline's marks, `▸` folded, `▾` open and `›` between levels, are one cell in every
+    /// terminal, wide ambiguous glyphs or not, so a folded row never moves the labels.
+    #[test]
+    fn the_outline_marks_are_one_cell_everywhere() {
+        use unicode_width::UnicodeWidthChar;
+
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let marks = Marks::for_theme(&theme);
+        for mark in [marks.folded, marks.open, marks.crumb] {
+            for c in mark.chars() {
+                assert_eq!(c.width(), Some(1), "{c:?}");
+                assert_eq!(c.width_cjk(), Some(1), "{c:?}");
+            }
+        }
     }
 
     #[test]

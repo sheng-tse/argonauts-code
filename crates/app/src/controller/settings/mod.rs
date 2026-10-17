@@ -16,6 +16,7 @@ mod labels;
 mod models;
 mod pickers;
 mod refresh;
+pub(crate) mod renamed;
 mod rows;
 mod save;
 mod scope;
@@ -39,11 +40,13 @@ use argonauts_core::app::{AppEvent, ChoiceKind, ViewData, ViewRequest};
 use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::input::SlashCommand;
 use argonauts_core::names::{ChoiceId, ModelRef, RoleName};
-use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::ui::NarratorMode;
+use argonauts_core::settings::{SettingScope, asks_where};
 use argonauts_core::{KeyScheme, NoteLevel, Verbosity};
-use argonauts_registry::{SettingsError, safety_keys_in, setting_meta};
+use argonauts_registry::{
+    SettingsError, SettingsWarning, WarningAbout, safety_keys_in, setting_meta,
+};
 
 use super::{Ctx, Effect, ScopeRequest};
 use crate::choices::{self, NOT_CHANGED, OnSetAside};
@@ -159,7 +162,40 @@ pub(crate) async fn command(
     {
         return reset_in_effect(ctx, settings, key);
     }
-    match args::setting_write(ctx, &command)? {
+    // A `/config key=value` that can't be saved says why under the command, where a saved one
+    // says where it went.
+    let typed = match &command {
+        SlashCommand::Config {
+            key: Some(key),
+            value: Some(_),
+            reset: false,
+        } => Some(key.clone()),
+        _ => None,
+    };
+    match (write_or_pick(ctx, settings, &command), typed) {
+        (Err(err), Some(key)) => {
+            let why = ctx.env.shown_in(&format!("{err:#}"));
+            ctx.send(AppEvent::SettingRefused { key, why });
+            Ok(Vec::new())
+        }
+        (handled, _) => handled,
+    }
+}
+
+/// A command's setting written, or asked where to save, else its picker opened.
+fn write_or_pick(ctx: &mut Ctx, settings: &mut SettingsState, command: &SlashCommand) -> Handled {
+    match args::setting_write(ctx, command)? {
+        // A key of yours saves at once, as Claude Code's `/config key=value` does.
+        Some(write)
+            if write.command == "config"
+                && write.also.is_empty()
+                && !asks_where(
+                    &write.key,
+                    setting_meta(&write.key).is_some_and(|m| m.safety),
+                ) =>
+        {
+            set_at_once(ctx, settings, write.key, write.value)
+        }
         Some(write) => {
             let recommended = rows::default_scope(write.command, &write.key);
             let mut pairs = vec![(write.key, write.value)];
@@ -169,7 +205,7 @@ pub(crate) async fn command(
         None => {
             if let SlashCommand::Model {
                 role, worker: None, ..
-            } = &command
+            } = command
             {
                 refresh::start(ctx, settings);
                 if role.is_some() {
@@ -180,7 +216,7 @@ pub(crate) async fn command(
                     return Ok(Vec::new());
                 }
             }
-            for data in pickers::picker(ctx, &command) {
+            for data in pickers::picker(ctx, command) {
                 ctx.send(AppEvent::View {
                     data: Box::new(data),
                 });
@@ -188,6 +224,41 @@ pub(crate) async fn command(
             Ok(Vec::new())
         }
     }
+}
+
+/// Saves `key` to your global file at once, unless a project file, the workflow or `--set`
+/// holds it, where a save there wouldn't show; then it says where the value is set instead.
+fn set_at_once(ctx: &mut Ctx, settings: &mut SettingsState, key: String, value: String) -> Handled {
+    let layer = ctx.settings.layer(&key);
+    if let Some(holder) = held_above_your_file(&layer) {
+        ctx.notice(
+            NoteLevel::Info,
+            format!(
+                "{key} is set by {holder}, which wins over ~/.argonauts/config.toml · /config {key} \
+                 changes it there"
+            ),
+        );
+        return Ok(Vec::new());
+    }
+    begin(
+        ctx,
+        settings,
+        Change::Set(vec![(key, value)]),
+        SettingScope::Global,
+    )
+}
+
+/// Who holds a value above your global file, in words, or `None` when your file decides.
+fn held_above_your_file(layer: &str) -> Option<&'static str> {
+    use argonauts_core::settings::layer;
+    Some(match layer {
+        layer::PROJECT => "the project's .argonauts/config.toml",
+        layer::PROJECT_LOCAL => "this project's .argonauts/config.local.toml",
+        layer::WORKFLOW => "the workflow",
+        layer::FLAG => "--set",
+        layer::SESSION => "this session",
+        _ => return None,
+    })
 }
 
 /// Reads the CLIs' model lists again in the background, as at start.
@@ -662,6 +733,23 @@ fn trust_step(
         .pending
         .insert(id, Pending::Trust { change, scope });
     Ok(Vec::new())
+}
+
+/// Whether a question at start already says what `warning` would, so its line is left out: the
+/// trust question lists a file's untrusted safety keys, and the rename question a file's old
+/// names. `argonauts run` and /doctor still print every line.
+pub(crate) fn said_by_a_question(ctx: &Ctx, warning: &SettingsWarning) -> bool {
+    match &warning.about {
+        WarningAbout::Untrusted { file, key } => {
+            !ctx.settings.trust().is_trusted(file)
+                && confirm::safety_lines(file)
+                    .iter()
+                    .any(|line| line.split_once(" = ").is_some_and(|(set, _)| set == key))
+                && ctx.settings.check_trust(&ctx.env, file).is_ok()
+        }
+        WarningAbout::Renamed { file } => renamed::said_at_start(ctx, file),
+        WarningAbout::Unknown { .. } | WarningAbout::Other => false,
+    }
 }
 
 /// At start: one `TrustProject` question for each project file that sets safety keys you

@@ -3,38 +3,76 @@
 //! mirrored workflow that step's row is the model that answered, with its tokens and time and,
 //! once it answered, what it decided, and it opens that model's session.
 
+use std::collections::BTreeMap;
+
 use argonauts_core::names::RoleName;
-use argonauts_core::views::{RowNote, Tone, WorkflowRow, WorkflowView};
+use argonauts_core::views::{PhaseRow, RowNote, RowStatus, Tone, WorkflowRow, WorkflowView};
 
 use super::sessions::{RunFacts, SessionFacts};
 
 /// Each agent row of a CLI's own workflow whose label a role asked through Argonauts Code carries,
 /// drawn as that role's session. The latest such session wins, as a retried step's would.
 pub(super) fn answered_by_the_crew(view: &mut WorkflowView, facts: &RunFacts) {
-    for phase in &mut view.phases {
-        for row in &mut phase.rows {
-            let WorkflowRow::Agent(agent) = row else {
-                continue;
-            };
-            let asked = facts
-                .sessions
-                .iter()
-                .rev()
-                .find(|session| asked_for(session, &agent.label));
-            if let Some(asked) = asked {
-                let mut answered = facts.agent_row(asked);
-                answered.label = agent.label.clone();
-                answered.answered = true;
-                // A role that ended without an answer says so, where its verdict would be.
-                let silent = asked
-                    .ended
-                    .as_ref()
-                    .is_some_and(|end| end.structured.is_none());
-                if silent && answered.note.is_none() {
-                    answered.note = Some(RowNote::new("no answer", Tone::Plain));
+    answered_in(&mut view.phases, facts);
+}
+
+/// As [`answered_by_the_crew`], for the phases of a workflow inside another, and of each
+/// workflow inside those.
+pub(super) fn answered_in(phases: &mut [PhaseRow], facts: &RunFacts) {
+    let mut rounds = BTreeMap::new();
+    for phase in phases {
+        answered_rows(&mut phase.rows, facts, &mut rounds);
+    }
+}
+
+/// `rounds` counts the rows of each label so far: the crew labels an ask of a label it was
+/// asked before by its round, `review:money · round 2`, so the second such row is that one's.
+fn answered_rows(rows: &mut [WorkflowRow], facts: &RunFacts, rounds: &mut BTreeMap<String, u32>) {
+    for row in rows {
+        let agent = match row {
+            WorkflowRow::Agent(agent) => agent,
+            WorkflowRow::Workflow(nested) => {
+                for phase in &mut nested.phases {
+                    answered_rows(&mut phase.rows, facts, rounds);
                 }
-                *agent = answered;
+                answered_rows(&mut nested.rows, facts, rounds);
+                continue;
             }
+            WorkflowRow::Command(_) => continue,
+        };
+        let round = rounds.entry(agent.label.clone()).or_default();
+        *round += 1;
+        let label = match *round {
+            1 => agent.label.clone(),
+            n => format!("{} · round {n}", agent.label),
+        };
+        let asked = facts
+            .sessions
+            .iter()
+            .rev()
+            .find(|session| asked_for(session, &label));
+        if let Some(asked) = asked {
+            let mut answered = facts.agent_row(asked);
+            answered.label = agent.label.clone();
+            answered.answered = true;
+            // The agent that asked passes the answer back, and is at work until it has.
+            let asking = matches!(agent.status, RowStatus::Running | RowStatus::Queued);
+            let passing_on = asking && asked.ended.is_some();
+            if let Some(note) = facts.verdicts.handed_back(asked, passing_on) {
+                answered.note = Some(note);
+            }
+            if asking {
+                answered.status = RowStatus::Running;
+            }
+            // A role that ended without an answer says so, where its verdict would be.
+            let silent = asked
+                .ended
+                .as_ref()
+                .is_some_and(|end| end.structured.is_none());
+            if silent && answered.note.is_none() {
+                answered.note = Some(RowNote::new("no answer", Tone::Plain));
+            }
+            *agent = answered;
         }
     }
 }
@@ -169,7 +207,8 @@ mod tests {
         );
     }
 
-    /// Once Astra answers, its row says what it decided.
+    /// Once Astra answers, its row says what it decided. Claude Code's agent that asked is
+    /// still at work passing the answer on, so the row has the verdict alone for now.
     #[test]
     fn an_answered_step_says_what_the_role_decided() {
         for (answer, said) in [
@@ -177,7 +216,7 @@ mod tests {
             (json!({"accept": false}), "sent it back"),
             (
                 json!({"accept": false, "findings": ["--due with no date isn't rejected"]}),
-                "sent it back · 1 finding",
+                "sent it back",
             ),
         ] {
             let (_, astra, mut events) = asked_about_store();
@@ -188,5 +227,27 @@ mod tests {
             events.push(ended);
             assert_eq!(rows(&events)[0].3.as_deref(), Some(said));
         }
+    }
+
+    /// Claude Code's workflow asks about `store` a second time under the same label, and the
+    /// crew labels that ask by its round: each row of the label is the round it asked for.
+    #[test]
+    fn a_label_asked_again_fills_the_row_of_its_round() {
+        let (_, astra, mut events) = asked_about_store();
+        for event in &mut events {
+            if let RunEventKind::Agent(AgentEvent::Workflow { workflow }) = &mut event.kind {
+                workflow.agents[1] = agent(2, "review:store");
+            }
+        }
+        let again = SessionKey::numbered(3);
+        events.push(labelled(
+            session_started(4, &again, None, RoleName::Reviewer, "astra"),
+            "review:store · round 2",
+        ));
+        let sessions: Vec<SessionKey> = rows(&events)
+            .into_iter()
+            .map(|(_, _, session, _)| session)
+            .collect();
+        assert_eq!(sessions, [astra, again]);
     }
 }

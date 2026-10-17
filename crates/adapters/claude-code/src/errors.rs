@@ -190,6 +190,13 @@ const TEXT_HINTS: &[(ErrorCategory, &[&str])] = &[
     ),
 ];
 
+/// Claude Code's words for a `--resume` of a conversation it has no transcript of, as
+/// 2.1.296 writes them: `No conversation found with session ID: <id>`.
+pub(crate) fn lost_session(text: &str) -> bool {
+    text.to_lowercase()
+        .contains("no conversation found with session id")
+}
+
 pub(crate) fn from_text(text: &str) -> Option<ErrorCategory> {
     let text = text.to_lowercase();
     TEXT_HINTS

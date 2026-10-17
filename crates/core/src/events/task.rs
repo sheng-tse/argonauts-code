@@ -191,7 +191,7 @@ pub enum TryCause {
     /// You started it over with the worker it has: a session of its own, which carries no
     /// earlier one on, with a note of the work so far.
     Restarted,
-    /// Same agent, fresh session, after the context filled.
+    /// Same agent, fresh session, after the context filled or the CLI lost the session.
     Rotation,
     MergeFailed,
     /// After a pause, wait, or crash.

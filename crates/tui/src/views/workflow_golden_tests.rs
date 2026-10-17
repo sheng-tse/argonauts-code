@@ -17,7 +17,7 @@ use ratatui::layout::Rect;
 
 use super::workflow::WorkflowView;
 use super::workflow_examples::{self as examples, Merge};
-use super::workflow_pictures::{dark, picture};
+use super::workflow_pictures::{Picture, dark, picture};
 use super::{View, ViewCtx};
 use crate::state::{AppState, RunState, SessionState, TaskRow};
 
@@ -54,7 +54,9 @@ fn press(view: &mut WorkflowView, code: KeyCode) {
 
 #[test]
 fn a_run_mid_review_reads_as_its_picture() {
-    let picture = picture!("workflow_running");
+    let mut picture = picture!("workflow_running");
+    // The status line colours the model it names as that model's row does.
+    picture.colour_as_its_row(3, &["GPT 5.6 Luna"]);
     let mut view = WorkflowView::new(examples::running());
     // It opens on Build, where the worker is on its second round.
     press(&mut view, KeyCode::Down);
@@ -80,7 +82,10 @@ fn a_long_list_scrolls_with_claude_codes_mark() {
 
 #[test]
 fn a_fallback_at_work_reads_as_its_picture() {
-    let picture = picture!("workflow_fallback");
+    let mut picture = picture!("workflow_fallback");
+    // The status line colours the model that does the job as its row does, and leaves the
+    // one it stands in for dim.
+    picture.colour_as_its_row(3, &["Sonnet 5.5"]);
     let mut view = WorkflowView::new(examples::fallback());
     press(&mut view, KeyCode::Down);
     picture.assert_drawn(0..12, &drawn(&mut view, 12), 0);
@@ -89,8 +94,15 @@ fn a_fallback_at_work_reads_as_its_picture() {
 #[test]
 fn a_run_paused_on_a_cli_that_is_down_reads_as_its_picture() {
     let mut picture = picture!("workflow_cli_down");
-    // The picture spells the count as Claude Code does. Every screen here writes `44k`.
-    picture.reword(6, "44.0k", "44k");
+    picture.respell_tokens(6, "44.0k", "44k");
+    // The picture says paused, which now only a pause you asked for reads: these tasks wait
+    // for their CLI.
+    picture.reword(3, "2 tasks paused", "2 tasks wait for it");
+    picture.reword(
+        6,
+        "paused · work so far kept",
+        "waits for Claude Code · work so far kept",
+    );
     let mut view = WorkflowView::new(examples::cli_down());
     // The question about the CLI takes the keys' row and the rows under it.
     picture.assert_drawn(0..11, &drawn(&mut view, 12), 0);
@@ -119,7 +131,7 @@ fn the_wait_under_the_header_counts_down() {
     let at = |secs: u64| t0 + std::time::Duration::from_secs(secs);
     assert_eq!(
         status_at(&mut view, t0),
-        " ◆ Claude Code is down · 2 tasks paused · tried again in 4m48s"
+        " ◆ Claude Code is down · 2 tasks wait for it · tried again in 4m48s"
     );
     assert_eq!(view.next_change(t0), Some(at(1)));
     assert!(status_at(&mut view, at(60)).ends_with(" · tried again in 3m48s"));
@@ -366,6 +378,13 @@ fn the_merge_phase_reads_as_its_pictures_in_each_case() {
 }
 
 /// Enter on the selected agent, and its answer arriving.
+/// A finding is blocking or a note now, in the colours `high` and `low` had, and its column is
+/// as wide as `blocking` in every section.
+fn blocking_and_notes(picture: &mut Picture, high: usize, low: usize) {
+    picture.reword(high, "high  ", "blocking  ");
+    picture.reword(low, "low   ", "note      ");
+}
+
 fn open(view: &mut WorkflowView, agent: AgentData) {
     press(view, KeyCode::Enter);
     assert!(view.accept(&ViewData::Agent {
@@ -375,7 +394,8 @@ fn open(view: &mut WorkflowView, agent: AgentData) {
 
 #[test]
 fn a_worker_sent_back_opens_as_its_picture() {
-    let picture = picture!("workflow_agent_worker");
+    let mut picture = picture!("workflow_agent_worker");
+    blocking_and_notes(&mut picture, 8, 9);
     let mut view = WorkflowView::new(examples::running());
     press(&mut view, KeyCode::Enter);
     open(&mut view, examples::worker_opened());
@@ -385,7 +405,20 @@ fn a_worker_sent_back_opens_as_its_picture() {
 
 #[test]
 fn the_reviewer_that_sent_it_back_opens_as_its_picture() {
-    let picture = picture!("workflow_agent_reviewer");
+    let mut picture = picture!("workflow_agent_reviewer");
+    blocking_and_notes(&mut picture, 12, 13);
+    // The outcome counts what blocks and what is a note, and reads the verdict in its colour.
+    picture.reword(11, "2 findings", "1 blocking · 1 note");
+    let verdict = picture.text(11..12)[0]
+        .chars()
+        .collect::<Vec<_>>()
+        .windows("sent it back".chars().count())
+        .position(|window| window.iter().copied().eq("sent it back".chars()))
+        .expect("the verdict");
+    let warn = dark().style(crate::theme::Role::Warn).fg;
+    for column in verdict..verdict + "sent it back".len() {
+        picture.recolour(11, column, warn);
+    }
     let mut view = WorkflowView::new(examples::running());
     press(&mut view, KeyCode::Down);
     press(&mut view, KeyCode::Enter);
@@ -412,6 +445,30 @@ fn the_header_says_how_a_run_ended_in_its_colour() {
     assert_eq!(buf[(3, 3)].fg, danger);
 }
 
+/// A run kept on its branch, not merged, ends on a warning, as the conversation says it.
+#[test]
+fn a_run_kept_on_its_branch_ends_on_a_warning() {
+    let mut data = examples::done(Merge::Clean);
+    data.status_lines = vec![
+        StatusLine::new(
+            StatusKind::Ended,
+            "Kept on its branch, not merged · 4 files +105 \u{2212}4",
+        )
+        .toned(Tone::Warn),
+    ];
+    let mut view = WorkflowView::new(data);
+    let buf = drawn(&mut view, 12);
+    let row = |y: u16| -> String { (0..SCREEN).map(|x| buf[(x, y)].symbol()).collect() };
+    assert!(
+        row(3).starts_with(" ◆ Kept on its branch, not merged · 4 files +105 \u{2212}4"),
+        "{}",
+        row(3)
+    );
+    let warn = dark().style(crate::theme::Role::Warn).fg.unwrap();
+    assert_eq!(buf[(1, 3)].fg, warn);
+    assert_eq!(buf[(3, 3)].fg, warn);
+}
+
 /// A run that Claude Code's own workflow runs, as the app builds it from such a run's events:
 /// it draws in the one view, with its phases on the left and the open phase's agents on the
 /// right, and the reviewer it asked says what it decided.
@@ -428,8 +485,9 @@ fn claude_codes_own_workflow_draws_in_the_same_view() {
         .map(|y| (0..SCREEN).map(|x| buf[(x, y)].symbol()).collect())
         .collect();
     assert_eq!(rows[1].trim_end(), " Add due dates", "{rows:#?}");
+    // The description names the mode and the workflow that really runs.
     assert!(
-        rows[2].starts_with(" orchestrator workflow · "),
+        rows[2].starts_with(" Captain · Claude Code's workflow add-due-dates · "),
         "{rows:#?}"
     );
     assert!(rows[2].contains("2/3 agents · "), "{rows:#?}");
@@ -443,7 +501,8 @@ fn claude_codes_own_workflow_draws_in_the_same_view() {
         .iter()
         .find(|row| row.contains("review:due-dates"))
         .unwrap_or_else(|| panic!("{rows:#?}"));
-    assert!(reviewer.contains("GPT 5.6 Luna · "), "{rows:#?}");
+    // Inside Claude Code's own workflow, a model of another CLI says which.
+    assert!(reviewer.contains("GPT 5.6 Luna on Codex · "), "{rows:#?}");
     assert!(reviewer.contains(" · sent it back"), "{rows:#?}");
     let keys = rows.last().unwrap().trim_end();
     assert!(

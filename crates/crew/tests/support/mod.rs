@@ -609,3 +609,16 @@ pub fn names(events: &[RunEvent]) -> Vec<String> {
         })
         .collect()
 }
+
+/// A run's recorded log with its placeholders (`{run}`, `{repo}`, `{run_dir}`, `{worktrees}`,
+/// `{base_commit}`) filled in, one event per line.
+pub fn recorded_run(text: &str, fill: &[(&str, &str)]) -> Vec<RunEvent> {
+    text.lines()
+        .map(|line| {
+            let line = fill
+                .iter()
+                .fold(line.to_owned(), |line, (from, to)| line.replace(from, to));
+            serde_json::from_str(&line).expect("a recorded event")
+        })
+        .collect()
+}

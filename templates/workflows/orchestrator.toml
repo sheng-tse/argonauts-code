@@ -22,7 +22,7 @@ for_each     = "task"
 send_back_to = "Build"      # until the reviewer accepts
 
 [[step]]
-name = "Sign off"
+name = "Sign-off"
 role = "judge"
 does = "Check the result against what done means."
 

@@ -137,6 +137,7 @@ pub(super) async fn script_for(
             label: Some("plan:orchestrator".to_owned()),
             reviews: false,
             fresh: false,
+            independent_of: Vec::new(),
         };
         let end = host
             .run_session_in_turn(plan, None, Fallbacks::Allowed, &|_| Ok(()))
@@ -385,6 +386,14 @@ fn described(file: &WorkflowFile) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A workflow inside a workflow is yours to write in your own files: the orchestrator is
+    /// never taught `workflow()`, so a script it writes runs one level.
+    #[test]
+    fn the_orchestrator_is_not_taught_to_start_workflows() {
+        assert!(WRITE_SCRIPT.contains("`agent(prompt, opts)`"));
+        assert!(!WRITE_SCRIPT.contains("workflow("), "{WRITE_SCRIPT}");
+    }
 
     #[test]
     fn a_fenced_script_is_still_the_script() {

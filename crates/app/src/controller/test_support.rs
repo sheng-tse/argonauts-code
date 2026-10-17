@@ -591,6 +591,22 @@ impl Default for CliOptions {
     }
 }
 
+/// What a global file holds that a test didn't write, as after a setup that picked council.
+pub(crate) const SET_UP_GLOBAL: &str = "workflow = \"council\"\n";
+
+/// Names council in the global file unless it names a workflow already, as after a setup: the
+/// crew most of these tests drive. With no setting naming a workflow, Captain would run.
+pub(crate) fn set_up_with_council(global: &std::path::Path) {
+    let text = std::fs::read_to_string(global).unwrap_or_default();
+    let names_one = text
+        .parse::<toml::Table>()
+        .is_ok_and(|table| table.contains_key("workflow"));
+    if !names_one {
+        std::fs::create_dir_all(global.parent().expect("a folder")).expect("the home folder");
+        std::fs::write(global, format!("{SET_UP_GLOBAL}{text}")).expect("a global config");
+    }
+}
+
 /// A `Ctx` in a temp repo and home, with a fake conductor, fake approvals, and a fake default
 /// agent (`claude-code`) whose sessions a test scripts. The receivers hold what the handlers
 /// send, for tests that call them directly.
@@ -614,6 +630,7 @@ impl TestCtx {
         if let Some(prepare) = options.prepare {
             prepare(&repo);
         }
+        set_up_with_council(&repo.global_config());
         let paths = Paths::new(repo.home());
         let mut env = AppEnv::for_repo(paths.clone(), repo.root(), options.interactive)
             .expect("the app environment");

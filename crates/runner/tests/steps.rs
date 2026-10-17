@@ -40,8 +40,8 @@ async fn orchestrator_plans_builds_each_task_and_sends_a_rejected_one_back() {
             "build:add-a-due worker 1",
             "build:show-due-dates worker 1",
             "review:add-a-due reviewer 1",
-            // A label is 20 characters at most, like every label in a run.
-            "review:show-due-date reviewer 1",
+            // A task's name stays whole in every phase that works on it.
+            "review:show-due-dates reviewer 1",
             "build:add-a-due worker 2",
             "review:add-a-due reviewer 2",
             "sign-off judge 1",
@@ -106,7 +106,7 @@ async fn every_workflow_reports_its_own_name_phases_and_agents() {
         .collect();
     assert_eq!(
         phases,
-        [(1, "Plan"), (2, "Build"), (3, "Review"), (4, "Sign off")]
+        [(1, "Plan"), (2, "Build"), (3, "Review"), (4, "Sign-off")]
     );
     assert_eq!(report.phases[1].detail, "workers · one per task");
     let agents: Vec<String> = report
@@ -451,9 +451,9 @@ async fn a_fixed_task_list_replaces_the_planners() {
     input.args["tasks"] = json!(["Rename the flag", "Update the docs"]);
     run(&script, input, &host).await;
     let asked = host.asked();
-    assert_eq!(asked[1], "build:rename-the-fla worker 1");
-    assert_eq!(asked[2], "build:update-the-doc worker 1");
-    // A long title still fits a row: three words of it, cut to the row's width.
+    assert_eq!(asked[1], "build:rename-the-flag worker 1");
+    assert_eq!(asked[2], "build:update-the-docs worker 1");
+    // A long title still fits a row: three words of it, the task's name, kept whole.
     let long = steps(built_in("orchestrator").expect("built in"));
     let wordy = Fake::new(|call| match call.phase.as_deref() {
         Some("Plan") => tasks(&["Internationalization of the settings screen"]),
@@ -461,9 +461,15 @@ async fn a_fixed_task_list_replaces_the_planners() {
         _ => text("ok"),
     });
     run(&long, request("i18n", 1, 1), &wordy).await;
-    assert_eq!(wordy.asked()[1], "build:internationali worker 1");
     assert_eq!(
-        wordy.call("build:internationali", 1).task.as_deref(),
+        wordy.asked()[1],
+        "build:internationalization-of-the worker 1"
+    );
+    assert_eq!(
+        wordy
+            .call("build:internationalization-of-the", 1)
+            .task
+            .as_deref(),
         Some("internationalization-of-the")
     );
     assert!(host.call("plan", 1).prompt.contains(

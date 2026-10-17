@@ -48,10 +48,14 @@ const RELEASE_NOTES: &[&[&str]] = &[&[
     "Reviews go to an agent from another provider than the main agent's when the crew has one.",
 ]];
 
-/// The span `/usage` adds spend and runs up over. PlanUsage is always now.
-pub(crate) fn parse_period(word: Option<&str>) -> anyhow::Result<UsagePeriod> {
+/// The span `/usage` adds spend and runs up over, `opens_on` when it names none. PlanUsage
+/// is always now.
+pub(crate) fn parse_period(
+    word: Option<&str>,
+    opens_on: UsagePeriod,
+) -> anyhow::Result<UsagePeriod> {
     Ok(match word.map(str::to_ascii_lowercase).as_deref() {
-        None => UsagePeriod::OPENS_ON,
+        None => opens_on,
         Some("day" | "daily" | "today") => UsagePeriod::Today,
         Some("week" | "weekly") => UsagePeriod::Week,
         Some("month" | "monthly") => UsagePeriod::Month,
@@ -77,7 +81,8 @@ pub(crate) async fn usage(
     conversation: Option<Spend>,
     period: Option<String>,
 ) -> anyhow::Result<Vec<Effect>> {
-    let period = parse_period(period.as_deref())?;
+    let opens_on = ctx.settings().ui.views.usage.period.usage();
+    let period = parse_period(period.as_deref(), opens_on)?;
     let now = OffsetDateTime::now_utc();
     let settings = ctx.settings();
     let mut crew = vec![settings.crew.main.clone()];
@@ -1190,12 +1195,29 @@ mod tests {
 
     #[test]
     fn periods_take_the_agents_words_too() {
-        assert_eq!(parse_period(None).unwrap(), UsagePeriod::All);
-        assert_eq!(parse_period(Some("today")).unwrap(), UsagePeriod::Today);
-        assert_eq!(parse_period(Some("weekly")).unwrap(), UsagePeriod::Week);
-        assert_eq!(parse_period(Some("monthly")).unwrap(), UsagePeriod::Month);
-        assert_eq!(parse_period(Some("cumulative")).unwrap(), UsagePeriod::All);
-        assert!(parse_period(Some("yearly")).is_err());
+        let all = UsagePeriod::All;
+        assert_eq!(parse_period(None, all).unwrap(), UsagePeriod::All);
+        assert_eq!(
+            parse_period(None, UsagePeriod::Week).unwrap(),
+            UsagePeriod::Week
+        );
+        assert_eq!(
+            parse_period(Some("today"), all).unwrap(),
+            UsagePeriod::Today
+        );
+        assert_eq!(
+            parse_period(Some("weekly"), all).unwrap(),
+            UsagePeriod::Week
+        );
+        assert_eq!(
+            parse_period(Some("monthly"), all).unwrap(),
+            UsagePeriod::Month
+        );
+        assert_eq!(
+            parse_period(Some("cumulative"), all).unwrap(),
+            UsagePeriod::All
+        );
+        assert!(parse_period(Some("yearly"), all).is_err());
     }
 
     #[test]

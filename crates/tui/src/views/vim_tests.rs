@@ -4,13 +4,13 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use argonauts_core::api::{RawView, RunState as RunPhase, RunSummary};
-use argonauts_core::app::{SettingRow, UiCommand};
-use argonauts_core::events::run::RunMode;
-use argonauts_core::names::{ModelRef, SessionKey};
+use argonauts_core::api::RawView;
+use argonauts_core::app::{ConversationSummary, SettingRow, UiCommand};
+use argonauts_core::input::{ResumeTarget, SlashCommand};
+use argonauts_core::names::{ConversationId, ModelRef, SessionKey};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::views::{CheckpointRow, WorkflowFile, WorkflowOrigin};
-use argonauts_core::{RunId, Spend, TaskId};
+use argonauts_core::{RunId, TaskId};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -22,8 +22,8 @@ use super::list::keys_state;
 use super::pager::Pager;
 use super::resume::ResumePicker;
 use super::rewind::RewindPicker;
+use super::settings::all_settings::AllSettingsView;
 use super::settings::approvals::ApprovalsView;
-use super::settings::config::ConfigView;
 use super::{View, ViewCtx, ViewOutcome};
 use crate::keymap::Keymap;
 use crate::theme::{Role, Theme};
@@ -74,21 +74,15 @@ impl Driver {
     }
 }
 
-fn run(n: u32) -> RunSummary {
-    RunSummary {
-        run: RunId::new(format!("run-{n:02}")).unwrap(),
-        title: format!("Run {n}"),
-        mode: RunMode::Crew,
-        workflow: "council".into(),
-        state: RunPhase::Waiting,
-        stopped_at: "merge approval".into(),
-        updated: OffsetDateTime::UNIX_EPOCH,
-        spent: Spend::default(),
-        sessions_to_resume: 1,
-        waiting: Vec::new(),
-        live: false,
-        remind: false,
-        name: None,
+fn conversation(n: u32) -> ConversationSummary {
+    ConversationSummary {
+        conversation: ConversationId::numbered(n),
+        title: format!("Conversation {n}"),
+        updated: OffsetDateTime::UNIX_EPOCH + time::Duration::hours(i64::from(n)),
+        worker: None,
+        turns: 2,
+        runs: 0,
+        needs_you: false,
     }
 }
 
@@ -111,28 +105,33 @@ fn is_ignored(outcome: &ViewOutcome) -> bool {
 
 #[test]
 fn resume_picker() {
-    let runs = || vec![run(3), run(2), run(1)];
+    let conversations = || vec![conversation(3), conversation(2), conversation(1)];
     let off = Driver::new(false);
-    let mut view = ResumePicker::new(runs());
+    let mut view = ResumePicker::listing(conversations(), Vec::new());
     off.draw(&mut view);
     for c in ['j', 'k', 'g', 'G', 'h', 'l'] {
         assert!(is_ignored(&off.press(&mut view, c)), "{c}");
     }
 
     let vim = Driver::new(true);
-    let mut view = ResumePicker::new(runs());
+    let mut view = ResumePicker::listing(conversations(), Vec::new());
     vim.draw(&mut view);
     vim.press(&mut view, 'G');
     vim.press(&mut view, 'k');
     let resumed = |outcome: ViewOutcome| match outcome {
-        ViewOutcome::SendToConversation(UiCommand::Resume { run: Some(run) }) => run.to_string(),
+        ViewOutcome::Send(UiCommand::Slash {
+            command:
+                SlashCommand::Resume {
+                    target: Some(ResumeTarget::Conversation(id)),
+                },
+        }) => id.to_string(),
         other => panic!("{other:?}"),
     };
-    assert_eq!(resumed(vim.press(&mut view, 'l')), "run-02");
+    assert_eq!(resumed(vim.press(&mut view, 'l')), "conversation-002");
     vim.press(&mut view, 'g');
     vim.press(&mut view, 'j');
     vim.press(&mut view, 'j');
-    assert_eq!(resumed(vim.press(&mut view, 'l')), "run-01");
+    assert_eq!(resumed(vim.press(&mut view, 'l')), "conversation-001");
     assert!(matches!(vim.press(&mut view, 'h'), ViewOutcome::Close));
 }
 
@@ -228,7 +227,7 @@ fn a_long_raw_log_draws_quickly_and_search_finds_its_start() {
 #[test]
 fn config_filters_as_you_type_without_vim_keys() {
     let off = Driver::new(false);
-    let mut view = ConfigView::new(vec![setting("ui.keys"), setting("ui.theme")]);
+    let mut view = AllSettingsView::new(vec![setting("ui.keys"), setting("ui.theme")]);
     off.press(&mut view, 'j');
     assert_eq!(view.filter, "j");
     off.key(&mut view, KeyCode::Esc);
@@ -241,7 +240,7 @@ fn config_filters_as_you_type_without_vim_keys() {
 #[test]
 fn config_with_vim_keys_filters_only_after_slash() {
     let vim = Driver::new(true);
-    let mut view = ConfigView::new(vec![
+    let mut view = AllSettingsView::new(vec![
         setting("ui.keys"),
         setting("ui.theme"),
         setting("ui.verbs"),
@@ -281,7 +280,7 @@ fn config_with_vim_keys_filters_only_after_slash() {
 #[test]
 fn config_editor_picks_with_vim_keys() {
     let vim = Driver::new(true);
-    let mut view = ConfigView::new(vec![setting("ui.keys")]);
+    let mut view = AllSettingsView::new(vec![setting("ui.keys")]);
     vim.press(&mut view, 'l');
     // The editor's values move with `j` and pick with `l`, then ask where to save it.
     vim.press(&mut view, 'j');
@@ -326,7 +325,7 @@ fn approvals_view() {
 fn without_vim_keys_right_opens_a_level_and_left_goes_back() {
     let off = Driver::new(false);
     // In the settings views → opens the editor, ← backs out of it and then out of the view.
-    let mut config = ConfigView::new(vec![setting("ui.keys")]);
+    let mut config = AllSettingsView::new(vec![setting("ui.keys")]);
     let mut approvals = ApprovalsView::with_rows(vec![setting("approvals.mode")]);
     for view in [&mut config as &mut dyn View, &mut approvals] {
         off.draw(view);
@@ -429,7 +428,10 @@ fn the_chosen_row_is_in_the_question_colour() {
     let colour = driver.theme.style(Role::Question).fg;
     let rewind = RewindPicker::new(RunId::new("run-02").unwrap(), None, vec![checkpoint(1)]);
     let views: Vec<(&str, Box<dyn View>)> = vec![
-        ("resume", Box::new(ResumePicker::new(vec![run(1)]))),
+        (
+            "resume",
+            Box::new(ResumePicker::listing(vec![conversation(1)], Vec::new())),
+        ),
         ("rewind", Box::new(rewind)),
         (
             "library",

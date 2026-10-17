@@ -21,12 +21,14 @@ use argonauts_core::layout::user_files;
 use argonauts_core::model_catalog::display_name_from_id;
 use argonauts_core::names::{ChoiceId, ModelRef};
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::settings::approvals::ApprovalMode;
 
 use crate::builtin_adapters;
 use crate::choices::app_choice;
 use crate::controller::{Ctx, Effect, Internal};
 use crate::startup::{RunCounts, run_counts, settings_warnings, welcome_from};
 use crate::trust::cant_trust;
+use argonauts_registry::SettingsWarning;
 
 pub(crate) use finish::project_dir as project_folder;
 pub(crate) use probe::{FoundAgent, LocalServer, LoginState};
@@ -104,6 +106,7 @@ impl Setup {
             current,
             untrusted,
             project_dir_exists: finish::project_dir(&ctx.env).is_dir(),
+            guides_answer: templates::guides_answer(&ctx.env),
             role_keys: crate::controller::settings::model_keys(),
             models: models_by_agent(ctx),
             workflows: crate::controller::settings::workflow_list(ctx)
@@ -124,6 +127,7 @@ impl Setup {
             Step::Telemetry,
             Step::Trust,
             Step::ProjectFolder,
+            Step::Guides,
         ]);
         let mut setup = Self {
             open: None,
@@ -181,7 +185,17 @@ impl Setup {
             id: id.clone(),
             outcome,
         });
-        self.advance(ctx)
+        let mut effects = self.advance(ctx)?;
+        // The bottom line shows the mode just picked.
+        if step == Step::Approvals {
+            effects.insert(0, Effect::Status);
+        }
+        Ok(effects)
+    }
+
+    /// The approval mode the approvals step picked, until the setup writes it.
+    pub(crate) fn approval_mode(&self) -> Option<ApprovalMode> {
+        self.answers.approvals
     }
 
     /// Esc: the recommended answers for this step and the rest.
@@ -388,15 +402,27 @@ impl Setup {
                 ));
             }
         }
+        // A yes you gave without a terminal isn't yours, so it isn't kept.
+        if let Some(yes) = self.answers.guides.filter(|_| env.interactive)
+            && let Err(err) = templates::keep_guides_answer(&env, yes)
+        {
+            notices.push((NoteLevel::Warn, format!("Couldn't keep your answer: {err}")));
+        }
         // After the project's folder is made, so its READMEs go in with it.
-        notices.extend(templates::write(&env));
+        let in_project = self.answers.guides.or(self.view.guides_answer) == Some(true);
+        let pages = templates::write(&env, in_project);
+        notices.extend(pages.notices);
         if let Err(err) = ctx.settings.reload(&env) {
             notices.push((NoteLevel::Error, format!("{err:#}")));
         }
         // The header printed before you answered, so it changes in place to the new agent and
         // workflow, followed by the warnings about the settings now in effect.
         ctx.send(welcome_from(ctx, &self.header.report, self.header.runs));
-        notices.splice(0..0, settings_warnings(&ctx.settings.resolved().warnings));
+        let warnings = ctx.settings.resolved().warnings.iter();
+        let said = |warning: &&SettingsWarning| {
+            crate::controller::settings::said_by_a_question(ctx, warning)
+        };
+        notices.splice(0..0, settings_warnings(warnings.filter(|w| !said(w))));
         for (level, text) in notices {
             ctx.notice(level, text);
         }
@@ -407,10 +433,20 @@ impl Setup {
             );
         }
         if written.is_ok() {
+            let wrote: Vec<String> = pages
+                .in_project
+                .iter()
+                .map(|page| env.shown(page))
+                .collect();
+            let also = if wrote.is_empty() {
+                String::new()
+            } else {
+                format!(" Wrote {} here.", wrote.join(", "))
+            };
             ctx.notice(
                 NoteLevel::Info,
                 format!(
-                    "Saved to {}. {}",
+                    "Saved to {}.{also} {}",
                     env.display(&env.global_config()),
                     finish::CLOSING
                 ),

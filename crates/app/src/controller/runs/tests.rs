@@ -1,16 +1,14 @@
 use std::time::Duration;
 
 use argonauts_core::Paths;
-use argonauts_core::api::{RunState, RunSummary, StatusSummary, TaskBrief};
-use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, ReplayTurn, UiCommand};
-use argonauts_core::events::approval::AnswerAction;
+use argonauts_core::api::{RunState, RunSummary};
+use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, UiCommand};
 use argonauts_core::events::run::{Party, RunMode, RunOutcome, WaitReason};
-use argonauts_core::events::task::TaskState;
 use argonauts_core::input::{ResumeTarget, SlashCommand};
 use argonauts_core::names::{ApprovalId, ConversationId, TurnId};
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::{NoteLevel, Spend, TaskId};
+use argonauts_core::{NoteLevel, Spend};
 use argonauts_testkit::FakeSession;
 use serde_json::json;
 use time::OffsetDateTime;
@@ -20,7 +18,6 @@ use super::{RunNews, RunUpdate, attached, focus, on_update, open, status_parts};
 use crate::FirstView;
 use crate::client::test_support as log;
 use crate::controller::header_and_bottom_line::header_and_bottom_line;
-use crate::controller::recap::recap_from_summary;
 use crate::controller::test_support::{ApprovalCall, Call, CliOptions, TestDriver, WAIT};
 use crate::controller::{Effect, Opening, run_commands};
 use crate::conversation_store::{ConversationRun, ConversationStore};
@@ -149,7 +146,7 @@ async fn resume_after_a_merged_run_opens_the_picker() {
     rig.until(|event| {
         matches!(
             event,
-            AppEvent::View { data } if matches!(**data, argonauts_core::app::ViewData::Runs { .. })
+            AppEvent::View { data } if matches!(**data, argonauts_core::app::ViewData::ResumeList { .. })
         )
     })
     .await;
@@ -589,6 +586,7 @@ fn summary(run: &str, state: RunState, live: bool) -> RunSummary {
         live,
         remind: false,
         name: None,
+        shape_known: true,
     }
 }
 
@@ -1301,7 +1299,7 @@ async fn a_run_that_wakes_is_named_as_its_row_names_it() {
         .expect("the wake applies");
     assert_eq!(
         notices(&rig.settle().await),
-        ["run-009 title woke up: the agent it waited for is tried again."]
+        ["run-009 title woke up: the agent it waited for is back."]
     );
 
     let unanswered = ApiError::RunHost("it didn't answer".to_owned());
@@ -1314,81 +1312,6 @@ async fn a_run_that_wakes_is_named_as_its_row_names_it() {
     );
 }
 
-fn task(id: &str, state: TaskState) -> TaskBrief {
-    TaskBrief {
-        task: TaskId::new(id).expect("a task id"),
-        title: format!("{id} title"),
-        state,
-        worker: None,
-        note: String::new(),
-    }
-}
-
-/// The resume recap comes from the code-built digest alone: no model session, and no agent
-/// text from the history.
-#[tokio::test]
-async fn resume_recap_code_built_from_digest() {
-    let mut rig = Rig::new();
-    let run = run_id("run-009");
-    rig.conductor
-        .set_runs(vec![summary("run-009", RunState::Waiting, true)]);
-    let digest = StatusSummary {
-        run: Some(run.clone()),
-        goal: vec!["export now takes --json.".to_owned()],
-        tasks: vec![
-            task("task-001", TaskState::Merged),
-            task("task-002", TaskState::Running),
-        ],
-        waiting: vec!["the merge approval".to_owned()],
-        ..StatusSummary::default()
-    };
-    rig.conductor.set_status(digest.clone());
-    open(&mut rig.ctx, &mut rig.runs, FirstView::Resume(run.clone()))
-        .await
-        .expect("the app opens");
-    assert_eq!(attached(&rig.runs), Some(&run));
-    rig.settle().await;
-    rig.runs
-        .attached
-        .as_mut()
-        .expect("attached")
-        .replay_history_until(2);
-
-    rig.conductor.push(&run, resumed(&run, 0)).await;
-    rig.conductor
-        .push(&run, question(&run, 1, "approval-001"))
-        .await;
-    rig.conductor.push(&run, waiting(&run, 2, vec![])).await;
-    rig.until(|event| matches!(event, AppEvent::ReplayDone { .. }))
-        .await;
-    let after_history: Vec<&AppEvent> = rig
-        .seen()
-        .iter()
-        .skip_while(|event| !matches!(event, AppEvent::CondensedReplay { .. }))
-        .collect();
-    let [
-        AppEvent::CondensedReplay {
-            recap, recap_model, ..
-        },
-        done,
-    ] = after_history.as_slice()
-    else {
-        panic!("{:#?}", rig.seen());
-    };
-    assert_eq!(*recap, recap_from_summary(&digest, None, None));
-    assert_eq!(*recap_model, None);
-    assert!(!recap.contains("Which store?"), "{recap}");
-    assert_eq!(
-        **done,
-        AppEvent::ReplayDone {
-            run: run.clone(),
-            seq: 2
-        }
-    );
-    assert!(rig.conductor.calls().contains(&Call::Status(run)));
-    assert!(rig.agent.specs().is_empty());
-}
-
 /// Short labels for what a run puts in the scrollback, in order.
 fn scrollback(events: &[AppEvent]) -> Vec<String> {
     events
@@ -1396,19 +1319,18 @@ fn scrollback(events: &[AppEvent]) -> Vec<String> {
         .filter_map(|event| match event {
             AppEvent::Attached { .. } => Some("header".to_owned()),
             AppEvent::Run { event } => Some(format!("event {}", event.seq)),
-            AppEvent::CondensedReplay { .. } => Some("condensed replay".to_owned()),
+            AppEvent::PastBegins => Some("past".to_owned()),
+            AppEvent::PastDrawn => Some("past drawn".to_owned()),
             AppEvent::ReplayDone { seq, .. } => Some(format!("replay done at {seq}")),
             _ => None,
         })
         .collect()
 }
 
-fn is_condensed_replay(event: &AppEvent) -> bool {
-    matches!(event, AppEvent::CondensedReplay { .. })
-}
-
+/// A resumed run's history only rebuilds the screen: what it did is drawn already, so nothing
+/// sums it up, no recap, no milestones, and no model or status call to make one.
 #[tokio::test]
-async fn resume_replay_condensed_from_events() {
+async fn a_resumed_runs_history_is_only_replayed() {
     let mut rig = Rig::new();
     let run = log::run_id();
     rig.conductor
@@ -1416,7 +1338,7 @@ async fn resume_replay_condensed_from_events() {
     super::resume_and_attach(&mut rig.ctx, &mut rig.runs, &run)
         .await
         .expect("the run resumes");
-    // The fake conductor's streams open on an empty log, which has nothing to condense.
+    // The fake conductor's streams open on an empty log, and the run has no record to draw.
     let opened = rig.settle().await;
     assert_eq!(scrollback(&opened), ["header", "replay done at 0"]);
 
@@ -1426,19 +1348,10 @@ async fn resume_replay_condensed_from_events() {
         .as_mut()
         .expect("attached")
         .replay_history_until(8);
-    let plan = ApprovalId::numbered(1);
     let mut history = vec![log::run_started(0, "Add --json to export", None)];
-    for seq in 1..=5 {
+    for seq in 1..=7 {
         history.push(log::queued(seq, &format!("note {seq}"), Party::User));
     }
-    history.push(log::plan_approval(6, &plan, 3));
-    history.push(log::approval_decided(
-        7,
-        &plan,
-        AnswerAction::Approve,
-        Party::User,
-        Some("ship it"),
-    ));
     history.push(waiting(&run, 8, Vec::new()));
     let mark = rig.seen().len();
     for event in history {
@@ -1449,52 +1362,10 @@ async fn resume_replay_condensed_from_events() {
         .await;
     let replayed = &rig.seen()[mark..];
     let mut order: Vec<String> = (0..=8).map(|seq| format!("event {seq}")).collect();
-    order.extend(["condensed replay", "replay done at 8", "event 9"].map(str::to_owned));
+    order.extend(["replay done at 8", "event 9"].map(str::to_owned));
     assert_eq!(scrollback(replayed), order);
-
-    let Some(AppEvent::CondensedReplay {
-        run: replay_run,
-        turns,
-        milestones,
-        ..
-    }) = replayed.iter().find(|event| is_condensed_replay(event))
-    else {
-        unreachable!()
-    };
-    assert_eq!(replay_run, &run);
-    let said = ["note 1", "note 2", "note 3", "note 4", "note 5", "ship it"];
-    let expected: Vec<ReplayTurn> = said
-        .iter()
-        .map(|text| ReplayTurn {
-            from: Party::User,
-            text: (*text).to_owned(),
-            steps: Vec::new(),
-        })
-        .collect();
-    assert_eq!(turns, &expected, "the last turns, word for word");
-    assert_eq!(
-        milestones,
-        &["Plan approved · 3 tasks", "Waiting · waiting for you"]
-    );
-
-    // A run this app just started shows its own events and needs no condensed replay.
-    let mut rig = Rig::new();
-    let run = rig.start("Fix the flaky test").await;
-    rig.settle().await;
-    rig.runs
-        .attached
-        .as_mut()
-        .expect("attached")
-        .replay_history_until(1);
-    rig.conductor.push(&run, resumed(&run, 0)).await;
-    rig.conductor.push(&run, waiting(&run, 1, Vec::new())).await;
-    rig.until(|event| matches!(event, AppEvent::ReplayDone { seq: 1, .. }))
-        .await;
-    assert!(
-        !rig.seen().iter().any(is_condensed_replay),
-        "{:#?}",
-        rig.seen()
-    );
+    assert!(!rig.conductor.calls().contains(&Call::Status(run)));
+    assert!(rig.agent.specs().is_empty());
 }
 
 /// A run that won't resume says why in plain words, without its id or the error's own prefix.

@@ -2,7 +2,7 @@
 source: crates/tui/tests/snap_workflows.rs
 expression: text
 ---
-  ⏸ workflow-0            ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 0s · needs you
-  ✔ workflow-1            ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 0s · done
-  ✘ workflow-2            ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 0s · failed
-  ⏸ workflow-3            ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 0s · paused
+  ⏸ workflow-0              ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 0s · needs you
+  ✔ workflow-1              ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 0s · done
+  ✘ workflow-2              ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 0s · failed
+  ⏸ workflow-3              ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 0s · paused

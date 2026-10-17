@@ -112,6 +112,34 @@ pub struct SessionSpec {
     pub cli_workflow: CliWorkflow,
     /// What it may run in a shell when it only reads.
     pub shell: SessionShell,
+    /// What you set for the session you talk to that its CLI takes as settings of its own.
+    pub preferences: SessionPreferences,
+}
+
+/// Thinking, fast mode, the language answers come in, and the workflow word, as you set them
+/// for the session you talk to. A CLI takes each as a setting of its own where it has one, as
+/// Claude Code does; the default leaves the CLI's own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionPreferences {
+    /// No thinking before it answers.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub thinking_off: bool,
+    /// The CLI's own fast mode.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
+    /// Such as `japanese` or `ja`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// The word `ultracode` in a prompt asks the CLI for nothing.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub workflow_word_off: bool,
+}
+
+impl SessionPreferences {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// A CLI's own workflow in one session. Only Claude Code has one.
@@ -180,6 +208,13 @@ pub struct SessionLimits {
     /// The agent's native cap as a backstop, set a little above `limit`, such as
     /// `--max-budget-usd`.
     pub native_cap_usd: Option<f64>,
+    /// What's left of the run's own limit as the session starts. Only the session's own
+    /// spend counts against it: the run's already holds what the CLI session it resumes spent.
+    pub run_left: Option<LimitAmount>,
+    /// What the session spends can go on after its turn where the meter doesn't see it, as its
+    /// CLI's own workflow or agents do in the background. The native cap is then the only stop
+    /// there, so it holds to the limit itself. The runner sets it from the spec.
+    pub spends_unseen: bool,
 }
 
 impl Default for SessionLimits {
@@ -193,6 +228,8 @@ impl Default for SessionLimits {
             inactivity_min: None,
             repeat_limit: None,
             native_cap_usd: None,
+            run_left: None,
+            spends_unseen: false,
         }
     }
 }

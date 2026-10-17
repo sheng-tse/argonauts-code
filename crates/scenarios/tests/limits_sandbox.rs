@@ -25,7 +25,8 @@ fn assert_blocked(stderr: &str, what: &str, names: &[&str]) {
 #[test]
 fn limits_sandbox_blocks_write_outside_worktree() -> anyhow::Result<()> {
     // passes when: the profile's temp allowance is the session's own folder, not all of
-    // `TMPDIR`, since the test's repo and homes live under `TMPDIR`.
+    // `TMPDIR`, since the test's repo and homes live under `TMPDIR`. Every session the run
+    // starts tries the writes, the build and the run review in a folder of its own alike.
     let limits = setup("sandbox-write-outside", "")?;
     let targets: Vec<PathBuf> = vec![
         limits.repo.root().join("outside.txt"),
@@ -45,15 +46,19 @@ fn limits_sandbox_blocks_write_outside_worktree() -> anyhow::Result<()> {
 
     let mut pty = limits.run(&[])?;
     limits.wait_for("the task to finish", LONG_WAIT, completed_by("claude-code"))?;
-    assert_blocked(&limits.sessions_stderr()?, "write", &["outside.txt"]);
+    // The run review starts once the task is done, so the writes are judged when the run is over.
+    pty.wait_for_exit(LONG_WAIT)?;
+    let stderr = limits.sessions_stderr()?;
+    assert_blocked(&stderr, "write", &["outside.txt"]);
+    let sessions = ends_of(&limits.events(), "claude-code").len();
+    assert!(sessions >= 2, "{sessions} Claude Code sessions ran");
     assert_eq!(
-        probe_lines(&limits.sessions_stderr()?, BLOCKED, "write").len(),
-        targets.len()
+        probe_lines(&stderr, BLOCKED, "write").len(),
+        targets.len() * sessions
     );
     for target in &targets {
         assert!(!target.exists(), "{} was written", target.display());
     }
-    pty.wait_for_exit(LONG_WAIT)?;
     Ok(())
 }
 

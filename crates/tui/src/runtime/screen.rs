@@ -100,6 +100,8 @@ impl<W: Write> Screen<W> {
         if options.keys == KeyScheme::Vim {
             model.bottom.mode.vim = Some(VimMode::Insert);
         }
+        crate::bridge::settings::habits(&options.settings, &mut model);
+        model.bottom.composer.workflow_word_off = !options.ultracode_trigger;
         let mut bridge = Bridge::new(options);
         bridge.state.terminal = info;
         let (returns_tx, returns) = mpsc::unbounded_channel();
@@ -181,6 +183,12 @@ impl<W: Write> Screen<W> {
             self.run_handovers(keys).await?;
             if self.exit.is_some() {
                 return Ok(());
+            }
+            // What the views that just opened ask for, such as the agent panel's rows.
+            for view in self.ui.take_asked() {
+                if !self.bridge.state.replaying() {
+                    self.send(UiCommand::Request { view }).await;
+                }
             }
             if let Err(error) = self.ui.frame_in(Instant::now(), &self.bridge.state) {
                 self.gone = self.gone_check.is_some();
@@ -321,10 +329,13 @@ impl<W: Write> Screen<W> {
     async fn apply(&mut self, effects: Effects) {
         let Effects {
             commands,
+            typed,
+            replies,
             bell,
             views,
             views_as_panel,
             close_views,
+            views_make_way,
             take_over,
             run_in_terminal,
             clipboard,
@@ -336,8 +347,14 @@ impl<W: Write> Screen<W> {
             exit_lines,
             ..
         } = effects;
+        if let Some(text) = typed {
+            self.send(UiCommand::CommandTyped { text }).await;
+        }
         for command in commands {
             self.send(command).await;
+        }
+        for reply in replies {
+            self.send(UiCommand::CommandReplied { reply }).await;
         }
         // The bell is a courtesy; a terminal that can't take it fails the next frame anyway.
         if bell && self.bridge.settings().bell {
@@ -355,6 +372,8 @@ impl<W: Write> Screen<W> {
         }
         if close_views {
             self.ui.close_views();
+        } else if views_make_way {
+            self.ui.make_way_for_question();
         }
         for view in views {
             if views_as_panel {

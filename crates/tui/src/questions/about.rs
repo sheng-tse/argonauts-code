@@ -6,7 +6,7 @@ use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::agent_status::FallbackPlan;
 use argonauts_core::events::approval::{
     AgentDownPacket, ApprovalOpened, ApprovalPacket, ChangeRequestPacket, GoalChangePacket,
-    GoalPacket, LimitPacket, MergePacket, PlanPacket, StuckPacket,
+    GoalPacket, LimitPacket, MergePacket, MergeQuestion, PlanPacket, StuckPacket,
 };
 use argonauts_core::events::goal::GoalFile;
 use argonauts_core::events::task::TaskSpec;
@@ -21,6 +21,7 @@ use super::item::AboutCell;
 use super::plan_workflow;
 use super::table::{Column, Table, TableCell};
 use super::words;
+use crate::bottom::picker::one_line;
 use crate::cell::Cell;
 use crate::format;
 use crate::state::RunState;
@@ -387,9 +388,16 @@ fn merge_item(merge: &MergePacket, run: Option<&RunState>, names: &DisplayNames)
             ),
         };
         let task = run.map_or_else(|| row.task.to_string(), |run| run.task_label(&row.task));
+        // A task a script's call made is titled with the label its worker goes by, so the
+        // title would only say the task's name again.
+        let title = if row.title == task {
+            ""
+        } else {
+            row.title.as_str()
+        };
         table.row(vec![
             TableCell::text(task),
-            TableCell::text(&row.title),
+            TableCell::text(title),
             TableCell::dim(row.stat.files_changed.to_string()),
             TableCell::text(words::lines(&row.stat)),
             TableCell::dim(
@@ -417,6 +425,12 @@ fn merge_item(merge: &MergePacket, run: Option<&RunState>, names: &DisplayNames)
     }
     item.table(table);
     item.dim(totals(merge.rows.len(), &merge.combined));
+    for row in merge.rows.iter().filter(|row| !row.questions.is_empty()) {
+        let task = run.map_or_else(|| row.task.to_string(), |run| run.task_label(&row.task));
+        for question in &row.questions {
+            asked_you(&mut item, &task, question, names);
+        }
+    }
     // Only a branch of yours has a latest main for the suite to have run on.
     let on_main = matches!(into, Some(MergedInto::Branch(_)));
     let (suite, role) = match (words::Suite::of(merge), on_main) {
@@ -443,6 +457,30 @@ fn merge_item(merge: &MergePacket, run: Option<&RunState>, names: &DisplayNames)
         );
     }
     item
+}
+
+/// A question a merged task's agent asked you that nothing waited on, or that was answered in
+/// your place: merging takes the work as that answer left it.
+fn asked_you(item: &mut AboutCell, task: &str, question: &MergeQuestion, names: &DisplayNames) {
+    let text = one_line(&question.text);
+    match (&question.answer, &question.answered_by) {
+        (None, _) => {
+            item.push(format!("{task} asked you: {text}"), Role::Warn, 0);
+            item.push(
+                "Nothing waited for your answer, so the task went on to its reviews",
+                Role::Dim,
+                1,
+            );
+        }
+        (Some(answer), by) => {
+            item.push(format!("{task} asked you: {text}"), Role::Text, 0);
+            let by = by
+                .as_ref()
+                .map(|by| format!("{} answered in your place", names.short(by)))
+                .unwrap_or_else(|| "Answered in your place".to_owned());
+            item.push(format!("{by}: {}", one_line(answer)), Role::Dim, 1);
+        }
+    }
 }
 
 fn fallback_item(plan: &FallbackPlan, names: &DisplayNames) -> AboutCell {

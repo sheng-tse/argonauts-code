@@ -206,6 +206,9 @@ fn stands_word(run: &RunSummary) -> String {
     match run.state {
         RunState::Running if run.live => "running",
         RunState::Pausing if run.live => "pausing",
+        // The listing words why it waits: a run that stopped fully, or one you paused, says so.
+        RunState::Waiting if run.stopped_at.starts_with("stopped") => "stopped",
+        RunState::Waiting if run.stopped_at == "paused" => "paused",
         RunState::Running | RunState::Pausing | RunState::Waiting => "waiting",
         RunState::Crashed => "stopped",
         RunState::NeverStarted => "never started",
@@ -279,6 +282,7 @@ mod tests {
             live,
             remind: false,
             name: None,
+            shape_known: true,
         }
     }
 
@@ -291,6 +295,19 @@ mod tests {
         run.stopped_at = "written into your folder".into();
         assert_eq!(stands_word(&run), "written into your folder");
         assert_eq!(run_row(&run, "~/todo").latest, "written into your folder");
+    }
+
+    /// A run that stopped fully reads stopped, one you paused reads paused, and one that waits
+    /// out an outage reads waiting.
+    #[test]
+    fn a_waiting_run_says_what_holds_it() {
+        let mut run = summary(RunState::Waiting, false, false);
+        run.stopped_at = "stopped · a council needs two proposals".into();
+        assert_eq!(stands_word(&run), "stopped");
+        run.stopped_at = "paused".into();
+        assert_eq!(stands_word(&run), "paused");
+        run.stopped_at = "waiting for Codex · tries again at 1:14 AM".into();
+        assert_eq!(stands_word(&run), "waiting");
     }
 
     #[test]

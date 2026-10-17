@@ -74,7 +74,13 @@ pub struct VerbPicker {
     rng: Option<u64>,
     last_working: Option<&'static str>,
     last_done: Option<&'static str>,
+    last_tip: Option<&'static str>,
+    /// Stretches of work so far, for the tip that comes now and then.
+    stretches: u32,
 }
+
+/// Tips come now and then: one stretch of work in this many gets one.
+const TIP_EVERY: u32 = 4;
 
 impl VerbPicker {
     pub fn random() -> Self {
@@ -102,6 +108,19 @@ impl VerbPicker {
         let word = self.pick(done_words(style), &mut last);
         self.last_done = last;
         word
+    }
+
+    /// The tip for a stretch of work just begun, for one stretch in [`TIP_EVERY`], never the
+    /// one shown before.
+    pub fn tip(&mut self) -> Option<&'static str> {
+        self.stretches += 1;
+        if !self.stretches.is_multiple_of(TIP_EVERY) {
+            return None;
+        }
+        let mut last = self.last_tip;
+        let tip = self.pick(super::tips::TIPS, &mut last);
+        self.last_tip = last;
+        Some(tip)
     }
 
     fn pick(
@@ -140,6 +159,19 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
     use unicode_width::UnicodeWidthStr;
+
+    /// One stretch of work in four gets a tip, and no tip comes twice in a row.
+    #[test]
+    fn tips_come_now_and_then_and_never_twice_running() {
+        let mut picker = VerbPicker::seeded(7);
+        let tips: Vec<Option<&str>> = (0..16).map(|_| picker.tip()).collect();
+        for (stretch, tip) in tips.iter().enumerate() {
+            assert_eq!(tip.is_some(), (stretch + 1) % 4 == 0, "stretch {stretch}");
+        }
+        let shown: Vec<&str> = tips.into_iter().flatten().collect();
+        assert_eq!(shown.len(), 4);
+        assert!(shown.windows(2).all(|pair| pair[0] != pair[1]), "{shown:?}");
+    }
 
     #[test]
     fn the_lists_are_the_sizes_the_design_asks_for() {

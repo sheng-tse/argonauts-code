@@ -13,6 +13,7 @@
 mod clipboard;
 mod flush;
 mod insert;
+mod progress;
 pub mod setup;
 mod sgr;
 pub mod title;
@@ -72,6 +73,8 @@ pub struct InlineTerminal<W: Write> {
     /// The rows the live region drew last frame: its trailing rows and its pinned ones.
     live_rows: [Range<u16>; 2],
     title: Option<String>,
+    /// Whether the progress bar last sent shows work, once one was sent.
+    progress: Option<bool>,
     /// What each row of the alternate screen shows, or `None` where it isn't known, so an
     /// overlay frame rewrites only the rows that changed.
     screen_rows: Vec<Option<Line<'static>>>,
@@ -152,6 +155,7 @@ impl<W: Write> InlineTerminal<W> {
             clear_from: None,
             live_rows: [0..0, 0..0],
             title: None,
+            progress: None,
             screen_rows: Vec::new(),
             screen_buffer: None,
             scratch: Vec::new(),
@@ -500,6 +504,19 @@ impl<W: Write> InlineTerminal<W> {
         self.emit(&out)?;
         self.title = Some(title.to_owned());
         Ok(())
+    }
+
+    /// Shows the terminal's progress bar while `working`, and takes it off after. Only a
+    /// change is written, and nothing until work first shows. True when it wrote.
+    pub fn set_progress(&mut self, working: bool) -> io::Result<bool> {
+        if self.progress.unwrap_or(false) == working {
+            return Ok(false);
+        }
+        let mut out = Vec::new();
+        queue!(out, progress::SetProgress { working })?;
+        self.emit(&out)?;
+        self.progress = Some(working);
+        Ok(true)
     }
 
     /// History goes on under the cursor's row, after a child program printed to the screen.

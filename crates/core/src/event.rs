@@ -190,12 +190,15 @@ pub enum AgentEvent {
         change: ScreenChange,
     },
     /// The tasks the CLI runs in the background now, by id, such as a command send now moved
-    /// there. They outlive the turn, and the CLI stops them once its input closes. A task
-    /// leaves the list when the CLI tells the model it ended.
+    /// there. They outlive the turn, and the CLI stops what still runs a while after its input
+    /// closes. A task leaves the list when it ends.
     BackgroundTasks {
         running: Vec<String>,
-        /// A task just ended. Between turns, telling the model is a turn of the CLI's own,
-        /// whose result follows.
+        /// A task just ended and the CLI tells the model. Between turns that is a turn of the
+        /// CLI's own, whose result follows. A task the CLI stopped isn't counted as told:
+        /// Claude Code never tells a workflow or an agent it stopped, and tells a command it
+        /// stopped at its deadline or for memory only in a turn that comes after the input
+        /// closed.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         ended: bool,
     },
@@ -369,6 +372,14 @@ pub enum RetryReason {
     Other(String),
 }
 
+impl RetryReason {
+    /// A retry after a sign-in error, such as Claude Code's `authentication_failed`: it says
+    /// the account needs signing in, not that the model is in trouble.
+    pub fn is_sign_in(&self) -> bool {
+        matches!(self, Self::Other(why) if why.contains("auth"))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCategory {
@@ -385,6 +396,8 @@ pub enum ErrorCategory {
     /// A network or stream failure.
     Network,
     ContextFull,
+    /// The CLI no longer has the session it was asked to resume, so a fresh one takes over.
+    SessionLost,
     ModelUnavailable,
     InvalidRequest,
     /// The model missed an answer format the CLI had accepted. Another try may give it.

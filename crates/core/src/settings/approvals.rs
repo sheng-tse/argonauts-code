@@ -17,6 +17,11 @@ pub struct ApprovalSettings {
     /// Autopilot for every approval a run opens that its own mode leaves to auto. One you
     /// keep supervised, or in auto preview, stays yours. Off, each approval keeps its own mode.
     pub autopilot: bool,
+    /// The approval mode the interactive app starts in. `last` brings back the one Shift+Tab
+    /// picked last, kept in Argonauts Code's own state, unless the approvals in a settings file
+    /// changed after that pick. `approvals` starts as the approvals say, the least autonomous
+    /// of them. `argonauts run` and outside agents always start as the approvals say.
+    pub start_mode: StartMode,
     /// Who answers the crew's questions: the open questions from Understand, the go-ahead,
     /// a stuck goal, "keep going as a goal", and in autopilot the agents' questions meant for
     /// you. `you`, `main`, or a model such as `codex/gpt-5.6`. Unset follows the mode, so the
@@ -71,6 +76,7 @@ impl Default for ApprovalSettings {
     fn default() -> Self {
         Self {
             autopilot: false,
+            start_mode: StartMode::default(),
             answers: None,
             decides: Decides::Judge,
             ask_you_about: Vec::new(),
@@ -245,6 +251,39 @@ impl ApprovalPointSettings {
             mode: ApprovalMode::Auto,
             decide_with,
             ..Self::default()
+        }
+    }
+}
+
+/// What the app says when `last` brings autopilot back at start, since nothing will wait for
+/// you. Supervised and auto come back quietly; the bottom line shows them.
+pub const AUTOPILOT_BACK: &str =
+    "Autopilot is on, as you left it: nothing waits for you · shift+tab to change";
+
+/// Where the interactive app's approval mode comes from at start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StartMode {
+    /// The mode Shift+Tab picked last.
+    #[default]
+    Last,
+    /// The least autonomous mode of the approvals, then `approvals.autopilot`.
+    Approvals,
+    Supervised,
+    AutoPreview,
+    Auto,
+    Autopilot,
+}
+
+impl StartMode {
+    /// The mode it names itself, `None` for `last` and `approvals`, which look elsewhere.
+    pub fn named(self) -> Option<ApprovalMode> {
+        match self {
+            StartMode::Last | StartMode::Approvals => None,
+            StartMode::Supervised => Some(ApprovalMode::Supervised),
+            StartMode::AutoPreview => Some(ApprovalMode::AutoPreview),
+            StartMode::Auto => Some(ApprovalMode::Auto),
+            StartMode::Autopilot => Some(ApprovalMode::Autopilot),
         }
     }
 }

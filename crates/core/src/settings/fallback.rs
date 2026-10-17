@@ -185,6 +185,10 @@ pub struct FallbackTable {
     /// the work waits for the CLI instead of moving to another one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub same_cli: Option<bool>,
+    /// When nothing else can take a job of a step, whether another model of a CLI already at
+    /// work in the step may: `"ask"`, `"allow"`, or `"never"`, when the run stops instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub same_step: Option<SameStep>,
     /// How the same model tries again before any fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry: Option<Retry>,
@@ -218,6 +222,7 @@ impl Default for FallbackTable {
             unknown_tier: None,
             max_fallbacks: None,
             same_cli: None,
+            same_step: None,
             retry: None,
             context: None,
             summarizer: None,
@@ -239,6 +244,7 @@ impl FallbackTable {
             unknown_tier: Some(rules.unknown_tier),
             max_fallbacks: Some(rules.max_fallbacks),
             same_cli: Some(rules.same_cli),
+            same_step: Some(rules.same_step),
             retry: Some(rules.retry),
             context: Some(rules.context),
             ..Self::default()
@@ -317,6 +323,7 @@ impl FallbackTable {
             max_fallbacks: set(role, top, |table| table.max_fallbacks)
                 .unwrap_or(built_in.max_fallbacks),
             same_cli: set(role, top, |table| table.same_cli).unwrap_or(built_in.same_cli),
+            same_step: set(role, top, |table| table.same_step).unwrap_or(built_in.same_step),
             retry: set(role, top, |table| table.retry.clone()).unwrap_or(built_in.retry),
             summarizer: set(role, top, |table| table.summarizer.clone()),
         }
@@ -350,6 +357,9 @@ pub struct AppliedFallback {
     pub max_fallbacks: u32,
     /// Fallbacks stay on the CLI that stopped, and the work waits for it when none is left.
     pub same_cli: bool,
+    /// Whether another model of a CLI already at work in the step may take a job nothing
+    /// else can.
+    pub same_step: SameStep,
     pub retry: Retry,
     pub context: FallbackContext,
     /// `None` uses the fallback's own CLI with its cheapest model.
@@ -373,6 +383,7 @@ impl Default for AppliedFallback {
             unknown_tier: UnknownTier::Weaker,
             max_fallbacks: 3,
             same_cli: false,
+            same_step: SameStep::Ask,
             retry: Retry::default(),
             context: FallbackContext::NoteAndTranscript,
             summarizer: None,
@@ -437,6 +448,19 @@ pub enum Backoff {
     Fixed,
     /// Twice the wait before each next retry: 5s, 10s, 20s.
     Double,
+}
+
+/// A job of a step that nothing else can take, and a CLI already at work in that step that has
+/// another model: two answers from one CLI are less independent than two from two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SameStep {
+    /// You're asked whether it may.
+    Ask,
+    /// It takes the job, and one line says so.
+    Allow,
+    /// It never does, and the run stops instead.
+    Never,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]

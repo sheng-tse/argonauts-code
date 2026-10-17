@@ -307,7 +307,6 @@ mod tests {
                     id: WorkflowId::numbered(1),
                     name: "ui-kit".into(),
                     description: String::new(),
-                    breadcrumb: Vec::new(),
                     agents_done: 0,
                     agents_total: 0,
                     elapsed_ms: 0,

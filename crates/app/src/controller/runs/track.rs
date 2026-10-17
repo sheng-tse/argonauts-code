@@ -44,9 +44,10 @@ fn held_words(reason: &WaitReason) -> Option<String> {
         WaitReason::AllAgentsOut { .. } => {
             Some("every agent's CLI is out of plan usage or down until one comes back".to_owned())
         }
-        WaitReason::WaitingForAgent { agent_id, .. } => {
-            Some(format!("its tasks wait for {agent_id} to come back"))
-        }
+        WaitReason::WaitingForAgent { agent_id, .. } => Some(format!(
+            "its tasks wait for {} to come back",
+            argonauts_core::display_names::DisplayNames::default().cli(&agent_id.0)
+        )),
         WaitReason::NoFallback { detail, .. } => Some(detail.clone()),
     }
 }

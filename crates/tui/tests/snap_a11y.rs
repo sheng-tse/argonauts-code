@@ -112,21 +112,10 @@ fn screen_reader_lines_stay_quiet_during_replay() {
     let mut lines = read(&mut reader, &[attached(RUN, "Add a --json flag")]);
     lines.extend(read(&mut reader, &events));
     assert_eq!(lines.len(), 1, "only the attach line: {lines:?}");
-    let replay = condensed_replay(
-        RUN,
-        &[("you", "add a --json flag")],
-        &REPLAY_MILESTONES,
-        REPLAY_RECAP,
-    );
-    let caught_up = read(&mut reader, &[replay, replay_done(RUN, 40)]);
+    let caught_up = read(&mut reader, &[replay_done(RUN, 40)]);
     assert!(
-        caught_up.contains(&format!("recap: {REPLAY_RECAP}")),
-        "{caught_up:?}"
-    );
-    assert!(
-        caught_up
-            .iter()
-            .any(|line| line == "you: add a --json flag")
+        caught_up.iter().all(|line| !line.starts_with("recap: ")),
+        "what the run did before was read out already: {caught_up:?}"
     );
 }
 

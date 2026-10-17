@@ -314,6 +314,7 @@ async fn resolve_with(
         label: None,
         reviews: false,
         fresh: true,
+        independent_of: Vec::new(),
     };
     plan.slot = host.slot_for(&plan);
     // A resolver that a pause or a crash cut off picks up its own half-done merge.

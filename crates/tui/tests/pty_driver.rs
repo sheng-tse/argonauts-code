@@ -71,7 +71,7 @@ fn every_builder_makes_a_contract_event() {
             vec![setting_row("ui.theme", "\"dark\"", "global", &[])],
         ),
         config_view(&[("ui.keys", "\"vim\"", "global")]),
-        runs_view(vec![run_summary("run-02", "Old run", "waiting", true)]),
+        resume_list_view(vec![conversation_summary(2, "Old talk", 11, true)]),
         all_repos_view(vec![(
             "~/code/web",
             vec![run_summary("run-03", "Web", "waiting", true)],

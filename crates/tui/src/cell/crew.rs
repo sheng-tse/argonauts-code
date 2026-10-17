@@ -1,4 +1,3 @@
-use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
 use super::HistoryCell;
@@ -52,8 +51,7 @@ impl HistoryCell for AgentsStarted {
         let noun = if count == 1 { "agent" } else { "agents" };
         let text = theme.style(Role::Text);
         let head = [
-            Span::styled(count.to_string(), text.add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" {noun} started"), text),
+            Span::styled(format!("{count} {noun} started"), text),
             Span::styled(" (↓ to manage)", theme.style(Role::Dim)),
         ];
         // The launch is done by the time this prints.
@@ -70,11 +68,15 @@ impl HistoryCell for AgentsStarted {
             };
             let opening = [
                 Span::raw(" ".repeat(TREE_COL)),
-                Span::styled(branch, theme.style(Role::Dim)),
+                Span::styled(branch, text),
                 Span::raw(" "),
             ];
             let hang = [Span::raw(" ".repeat(TREE_COL + str_width(branch) + 1))];
-            let name_style = agent.color.map_or(text, |color| theme.style(color.role()));
+            // A name with no colour of its own, such as a job's label, reads in the colour
+            // Claude Code gives an agent's name.
+            let name_style = agent.color.map_or(theme.style(Role::Question), |color| {
+                theme.style(color.role())
+            });
             let name = sanitize_line(&agent.name).trim().to_owned();
             let mut spans = vec![Span::styled(name, name_style)];
             let detail = sanitize_line(&agent.detail);
@@ -99,6 +101,55 @@ mod tests {
     use crate::render::Clock;
     use crate::text::plain_text;
     use crate::theme::{Glyphs, Theme};
+
+    /// The council's three proposers as they start, drawn from `waiting_rows` at its width of
+    /// 118 columns, colours included: the head plain, each label in the colour of an agent's
+    /// name, and the rest plain.
+    #[test]
+    fn the_proposers_start_as_their_picture() {
+        use crate::bridge::transcript::picture_check::assert_matches;
+
+        const PICTURE: &str = include_str!("../../tests/golden/waiting_rows.txt");
+        const COLOURS: &str = include_str!("../../tests/golden/waiting_rows.html");
+        let rows = 23..27;
+        let text: Vec<&str> = PICTURE.lines().collect();
+        let grid = COLOURS
+            .split_once("<pre class=\"term grid\">")
+            .and_then(|(_, rest)| rest.rsplit_once("</pre>"))
+            .map(|(grid, _)| grid)
+            .expect("the picture's grid");
+        let grid: Vec<&str> = grid.split('\n').collect();
+        let html = format!(
+            "<pre class=\"term grid\">{}</pre>",
+            grid[rows.clone()].join("\n")
+        );
+
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::MACOS;
+        let ctx = RenderCtx::new(118, &theme, Clock::still(Instant::now()));
+        let cell = AgentsStarted::new(vec![
+            StartedAgent::new("propose:p1", None, "Haiku 5.5 on Claude Code"),
+            StartedAgent::new("propose:p2", None, "GPT 6 Luna on Codex"),
+            StartedAgent::new(
+                "propose:p3",
+                None,
+                "Gemini 3.8 Flash (Low) on Antigravity CLI",
+            ),
+        ]);
+        assert_matches(
+            "waiting_rows_started",
+            &cell.lines(&ctx),
+            // The picture pads each row to its width with spaces the screen never draws.
+            &text[rows]
+                .iter()
+                .map(|row| row.trim_end())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            &html,
+            &theme,
+            &[],
+        );
+    }
 
     #[test]
     fn it_reads_like_claude_codes_launch_record() {
@@ -128,12 +179,10 @@ mod tests {
             lines[0].spans[0].style,
             marks::decoration(theme.style(Role::Success))
         );
-        assert!(
-            lines[0].spans[2]
-                .style
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
+        // The head reads plain, and only its key hint is dim.
+        assert_eq!(lines[0].spans[2].style, theme.style(Role::Text));
+        assert_eq!(lines[0].spans[3].style, theme.style(Role::Dim));
+        assert_eq!(lines[2].spans[3].style, theme.style(Role::Question));
         assert_eq!(lines[1].spans[3].style, theme.style(Role::AgentBlue));
     }
 }

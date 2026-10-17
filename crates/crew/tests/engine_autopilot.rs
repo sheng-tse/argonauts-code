@@ -14,9 +14,12 @@ use serde_json::{Value, json};
 use argonauts_core::ErrorCategory;
 use argonauts_core::engine::EngineExit;
 use argonauts_core::events::agent_status::FallbackPlan;
-use argonauts_core::events::approval::{ApprovalEvent, ApprovalKind};
+use argonauts_core::events::approval::{
+    ApprovalEvent, ApprovalKind, ApprovalPacket, MergeQuestion,
+};
 use argonauts_core::events::run::{Party, RunLifecycle, RunMode};
 use argonauts_core::events::session::EndReason;
+use argonauts_core::events::shared::{AnsweredForYou, BlackboardEvent};
 use argonauts_core::events::task::{MergeEvent, TaskEvent, TaskState};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::limits::{Candidate, CostEstimate, HealthState, RecoveryAction};
@@ -121,11 +124,16 @@ fn prompt_text(spec: &SessionSpec) -> String {
 
 /// Runs the request on autopilot, with the real policy, until the run waits or finishes.
 async fn on_autopilot(crew: &Crew) -> anyhow::Result<Outcome> {
+    in_mode(crew, ApprovalMode::Autopilot).await
+}
+
+/// Runs the request in `mode`, with the real policy, until the run waits or finishes.
+async fn in_mode(crew: &Crew, mode: ApprovalMode) -> anyhow::Result<Outcome> {
     let started = crew.run_started(RunMode::Crew, "add a --verbose flag")?;
     let autopilot = RunEvent {
         seq: 1,
         kind: RunEventKind::Run(RunLifecycle::ApprovalModeChanged {
-            mode: ApprovalMode::Autopilot,
+            mode,
             by: Party::User,
         }),
         ..started.clone()
@@ -159,6 +167,17 @@ fn notes(events: &[RunEvent]) -> Vec<&str> {
         .iter()
         .filter_map(|event| match &event.kind {
             RunEventKind::Note(note) => Some(note.text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every question answered in your place.
+fn answered_for_you(events: &[RunEvent]) -> Vec<&AnsweredForYou> {
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Blackboard(BlackboardEvent::AnsweredForYou(answered)) => Some(answered),
             _ => None,
         })
         .collect()
@@ -252,19 +271,29 @@ async fn a_question_that_blocks_is_answered_and_its_task_carries_on() -> anyhow:
         "{:?}",
         task_states(events)
     );
-    let said = notes(events);
+    let answered = answered_for_you(events);
     assert!(
-        said.iter().any(|line| {
-            line.starts_with("Decided on autopilot · ")
-                && line.contains(" answered the question from build:flag (")
-                && line.ends_with("): No: log to stderr only.")
+        answered.iter().any(|answered| {
+            answered.asker == "build:flag"
+                && answered.answer == "No: log to stderr only."
+                && answered.by.is_some()
+                && !answered.finished
         }),
-        "{said:#?}"
+        "{answered:#?}"
     );
     // The builder's second turn was given the answer.
     let given = given.lock().unwrap();
     assert_eq!(given.len(), 2, "{given:#?}");
     assert!(given[1].contains("No: log to stderr only."), "{given:#?}");
+    // The merge question shows what was answered in your place, and by whom.
+    let carried = merge_questions(events);
+    assert_eq!(carried.len(), 1, "{carried:#?}");
+    assert_eq!(carried[0].text, QUESTION);
+    assert_eq!(
+        carried[0].answer.as_deref(),
+        Some("No: log to stderr only.")
+    );
+    assert!(carried[0].answered_by.is_some(), "{carried:#?}");
     Ok(())
 }
 
@@ -293,7 +322,79 @@ async fn a_finished_reports_question_becomes_its_workers_call() -> anyhow::Resul
         }),
         "{said:#?}"
     );
+    assert_eq!(
+        merge_questions(events),
+        vec![MergeQuestion {
+            text: QUESTION.to_owned(),
+            answer: Some("its agent's own call".to_owned()),
+            answered_by: None,
+        }]
+    );
     Ok(())
+}
+
+/// In auto, a question in a report that needs a decision but finished its work waits for
+/// nobody: the task goes on to its reviews with one line, no question opens, and the question
+/// stays open on the board for the merge question to show.
+#[tokio::test]
+async fn in_auto_a_finished_reports_question_doesnt_block_its_task() -> anyhow::Result<()> {
+    let crew = crew(Arc::new(|_, _| report("needs_decision", &[QUESTION], &[])))?;
+    let outcome = in_mode(&crew, ApprovalMode::Auto).await?;
+    let events = &outcome.events;
+    assert!(
+        !approvals(events)
+            .iter()
+            .any(|(kind, _)| *kind == ApprovalKind::Question),
+        "{:?}",
+        approvals(events)
+    );
+    assert!(
+        !task_states(events).contains(&TaskState::Blocked),
+        "{:?}",
+        task_states(events)
+    );
+    assert!(
+        task_states(events).contains(&TaskState::InReview),
+        "{:?}",
+        task_states(events)
+    );
+    let said = notes(events);
+    assert!(
+        said.iter()
+            .any(|line| line.starts_with("build:flag asked, and goes on to its reviews: ")),
+        "{said:#?}"
+    );
+    // The merge question carries the question, still open, beside its task.
+    assert_eq!(
+        merge_questions(events),
+        vec![MergeQuestion {
+            text: QUESTION.to_owned(),
+            answer: None,
+            answered_by: None,
+        }]
+    );
+    Ok(())
+}
+
+/// What the merge question shows of the questions its tasks' agents asked you.
+fn merge_questions(events: &[RunEvent]) -> Vec<MergeQuestion> {
+    events
+        .iter()
+        .find_map(|event| match &event.kind {
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) => match &opened.packet {
+                ApprovalPacket::Merge(packet) => Some(packet.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .map(|packet| {
+            packet
+                .rows
+                .into_iter()
+                .flat_map(|row| row.questions)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// On autopilot a worker's instructions never offer a question for the person: the report's
@@ -694,11 +795,12 @@ async fn nothing_waits_on_autopilot() -> anyhow::Result<()> {
     assert!(crew.repo.root().join(OUTAGE).exists(), "{said:#?}");
 
     // The question that blocked was answered by a model, and its task carried on.
+    let answered = answered_for_you(&outcome.events);
     assert!(
-        said.iter()
-            .any(|line| line.starts_with("Decided on autopilot · ")
-                && line.contains("answered the question from build:")),
-        "{said:#?}"
+        answered
+            .iter()
+            .any(|answered| answered.asker.starts_with("build:") && answered.by.is_some()),
+        "{answered:#?}"
     );
     // The task whose CLI went down wasn't put off: autopilot gave it another try, with a note.
     assert!(

@@ -408,6 +408,11 @@ fn details_width(width: u16) -> u16 {
 }
 
 impl View for AgentPanelView {
+    /// Conversations, the CLIs' own sessions and other repos' runs come from the controller.
+    fn asks_on_open(&self) -> Option<ViewRequest> {
+        Some(ViewRequest::Crew)
+    }
+
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
         let theme = ctx.theme;
         let state = ctx.state;

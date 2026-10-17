@@ -205,8 +205,8 @@ fn limits(host: &Host) -> Limits {
     let settings = host.settings();
     Limits {
         at_once: settings.concurrency.max_sessions.max(1) as usize,
-        // `workflows.max_depth` counts the run's own workflow, so 1 means none inside it.
-        nested: settings.workflows.max_depth > 1,
+        // `workflows.max_depth` counts the levels inside the run's own workflow.
+        nested: settings.workflows.max_depth > 0,
         ..Limits::default()
     }
 }

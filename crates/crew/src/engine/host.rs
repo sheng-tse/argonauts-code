@@ -12,6 +12,7 @@ use tokio::sync::mpsc::OwnedPermit;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::engine::{RepoContext, Services};
 use argonauts_core::events::agent_status::SpendEvent;
 use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
@@ -36,13 +37,14 @@ use argonauts_core::settings::limit::{LimitAmount, LimitUnit, OnHit};
 use argonauts_core::steps::{
     Step, StepError, StepName, StepObserver, StepOutcome, StepRequest, decode, output_schema,
 };
-use argonauts_core::{Note, NoteLevel};
+use argonauts_core::{LimitDimension, Note, NoteLevel};
 use argonauts_core::{RunId, Spend, TaskId};
 
 use crate::blackboard::delivery::{self, StartDeliveries};
 use crate::engine::commands;
 use crate::engine::job_fallback::{self, Job};
 use crate::engine::live::{LiveSession, pump};
+use crate::engine::run_meter::NoRoom;
 use crate::engine::shared::{Admission, Interrupt, Shared, StatusTarget, lock};
 use crate::engine::snapshot;
 use crate::error::{EngineError, EngineResult};
@@ -179,6 +181,9 @@ pub struct SessionPlan {
     /// Starts a session of its own, never carrying one on: the merger's work is no
     /// part of the session a role keeps for the project.
     pub fresh: bool,
+    /// Who built the work a reviewer or a judge reads, whose provider a fallback for this
+    /// session may not share. Empty for every other job.
+    pub independent_of: Vec<ModelRef>,
 }
 
 /// A started session. Steer or stop it with [`Host::control`]; its events are recorded as
@@ -240,7 +245,7 @@ impl Job {
             role: plan.role,
             step: plan.step,
             task: plan.task.clone(),
-            independent_of: Vec::new(),
+            independent_of: plan.independent_of.clone(),
             isolated: false,
         }
     }
@@ -357,6 +362,21 @@ struct Launch {
     fresh: bool,
     /// As [`Ask::time_limit`].
     time_limit: Option<Duration>,
+    /// What becomes of it where the run pauses because its limit has no room for it.
+    refused: Refused,
+}
+
+/// What becomes of a session the run's limit has no room for, where the run pauses for that
+/// rather than ending. Either way, once you raise the limit and resume, its step starts it as
+/// it first would have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refused {
+    /// An ask's ends paused in its own slot with no CLI session, and its step starts it afresh,
+    /// with its whole prompt.
+    EndsPaused,
+    /// A planned session never starts and leaves nothing in the log: its step unwinds as for a
+    /// pause, and a task's worker goes on with the try it had begun.
+    LeftOut,
 }
 
 struct Launched {
@@ -366,6 +386,8 @@ struct Launched {
     live: LiveSession,
     status: Option<StatusTarget>,
     deliveries: StartDeliveries,
+    /// What's left of the run's limit can't hold it, so it ends before its process starts.
+    no_room: Option<NoRoom>,
 }
 
 impl Host {
@@ -473,32 +495,21 @@ impl Host {
         if settled || !lock(&self.shared.run_meter).start_holding() {
             return Ok(());
         }
-        // On autopilot a reached limit never waits for you, and `stop` says
-        // to end there; otherwise the run pauses until you raise the limit.
-        let stops = self.approval_mode() == ApprovalMode::Autopilot
-            || self.settings().limits.spend.when_reached == OnHit::Stop;
+        self.settle_for_limit(format!("The run reached {which}"));
+        Ok(())
+    }
+
+    /// Ends the run or pauses it for its spend limit, saying `why`. On autopilot a reached
+    /// limit never waits for you, and `stop` says to end there; otherwise the run pauses until
+    /// you raise the limit. The pause runs beside the caller, which may hold locks it needs.
+    fn settle_for_limit(&self, why: String) {
+        let stops = self.stops_at_limit();
         let host = self.clone();
         self.shared.tasks.spawn(async move {
-            let text = if stops {
-                format!(
-                    "The run reached {which}, so it ends here with its work kept. Raise the \
-                     limit with /limits and ask again for what's left."
-                )
-            } else {
-                format!(
-                    "The run reached {which}, so it pauses here with its work kept. Raise the \
-                     limit with /limits and resume it to carry on."
-                )
-            };
-            let note = Note {
-                level: NoteLevel::Warn,
-                text,
-            };
-            let noted = host.record(None, None, RunEventKind::Note(note));
-            let result = match noted {
+            let result = match host.limit_note(&why, stops) {
                 Err(err) => Err(err),
-                Ok(_) if stops => commands::stop_by(&host, Party::Rules).await,
-                Ok(_) => match commands::begin_pause_by(&host, false, Party::Rules) {
+                Ok(()) if stops => commands::stop_by(&host, Party::Rules).await,
+                Ok(()) => match commands::begin_pause_by(&host, false, Party::Rules) {
                     Ok(true) => commands::finish_pause(&host).await,
                     Ok(false) => Ok(()),
                     Err(err) => Err(err),
@@ -508,7 +519,144 @@ impl Host {
                 tracing::error!(%err, "the run's limit is spent, and settling the run failed");
             }
         });
+    }
+
+    /// On autopilot a reached limit never waits for you, and `stop` says to end there.
+    fn stops_at_limit(&self) -> bool {
+        self.approval_mode() == ApprovalMode::Autopilot
+            || self.settings().limits.spend.when_reached == OnHit::Stop
+    }
+
+    /// Says why the run ends or pauses for its limit, and how to carry on.
+    fn limit_note(&self, why: &str, stops: bool) -> EngineResult<()> {
+        let text = if stops {
+            format!(
+                "{why}, so it ends here with its work kept. Raise the limit with /limits and ask \
+                 again for what's left."
+            )
+        } else {
+            format!(
+                "{why}, so it pauses here with its work kept. Raise the limit with /limits and \
+                 resume it to carry on."
+            )
+        };
+        let note = Note {
+            level: NoteLevel::Warn,
+            text,
+        };
+        self.record(None, None, RunEventKind::Note(note))
+            .map(|_| ())
+    }
+
+    /// Ends a session the run's limit has no room for before its process starts, and ends or
+    /// pauses the run as a spent limit does, once. Where the run pauses, an ask's ends paused
+    /// as [`Refused::EndsPaused`] says; otherwise it ends at its limit.
+    fn no_room(
+        &self,
+        key: &SessionKey,
+        task: Option<&TaskId>,
+        spec: &SessionSpec,
+        no_room: NoRoom,
+        refused: Refused,
+    ) -> EngineResult<SessionEnd> {
+        let stops = self.stops_at_limit();
+        let waits = refused == Refused::EndsPaused && self.pauses_for_no_room();
+        let why = self.settles_for_no_room(&spec.model, no_room);
+        let paused_here = match why.as_deref() {
+            Some(why) if !stops => self.begin_pause_for_no_room(why)?,
+            _ => false,
+        };
+        let end = SessionEnd {
+            reason: if waits {
+                EndReason::Paused
+            } else {
+                EndReason::LimitHit {
+                    dimension: LimitDimension::Spend,
+                }
+            },
+            cli_session: spec
+                .resume
+                .clone()
+                .filter(|_| refused != Refused::EndsPaused),
+            ..crashed_end("")
+        };
+        let end = self.finish_session(key, task, end)?;
+        if paused_here {
+            self.finish_pause_beside();
+        } else if let Some(why) = why
+            && stops
+        {
+            self.settle_for_limit(why);
+        }
+        Ok(end)
+    }
+
+    /// Pauses the run for a planned session its limit has no room for. That session never
+    /// started, so the pause waits only for the others.
+    fn pause_for_no_room(&self, worker: &ModelRef, no_room: NoRoom) -> EngineResult<()> {
+        if let Some(why) = self.settles_for_no_room(worker, no_room)
+            && self.begin_pause_for_no_room(&why)?
+        {
+            self.finish_pause_beside();
+        }
         Ok(())
+    }
+
+    /// Where the run's limit has no room for a session, whether the run pauses for that: it
+    /// doesn't end there, and isn't over already.
+    fn pauses_for_no_room(&self) -> bool {
+        !self.stops_at_limit() && self.read(|state| state.run.finished.is_none())
+    }
+
+    /// Why a session of `worker` can't start, where this refusal is the one that settles the
+    /// run: no pause is under way, none began for the limit since the run last resumed, and
+    /// the run isn't over.
+    fn settles_for_no_room(&self, worker: &ModelRef, no_room: NoRoom) -> Option<String> {
+        let settled = self.read(|state| {
+            state.run.paused || state.run.pause_requested.is_some() || state.run.finished.is_some()
+        });
+        (!settled && lock(&self.shared.run_meter).hold())
+            .then(|| self.no_room_words(worker, no_room))
+    }
+
+    /// Says why and begins the pause before the step unwinds, so the workflow it re-enters
+    /// waits for the resume instead of finding no room again at once. True where this began it.
+    fn begin_pause_for_no_room(&self, why: &str) -> EngineResult<bool> {
+        self.limit_note(why, false)?;
+        commands::begin_pause_by(self, false, Party::Rules)
+    }
+
+    /// Records `Paused` beside the caller, once the sessions the pause stopped have ended.
+    fn finish_pause_beside(&self) {
+        let host = self.clone();
+        self.shared.tasks.spawn(async move {
+            if let Err(err) = commands::finish_pause(&host).await {
+                tracing::error!(%err, "the run's limit has no room, and pausing it failed");
+            }
+        });
+    }
+
+    /// "The run can't start another session under its $0.60 spend limit: a session of Haiku 5.5
+    /// on Claude Code costs about $0.36 to start here and $0.23 is left".
+    fn no_room_words(&self, worker: &ModelRef, no_room: NoRoom) -> String {
+        let limit = lock(&self.shared.run_meter).limit().limit;
+        let cli = DisplayNames::default().cli(&worker.agent);
+        let session = match job_fallback::model_name(self, worker) {
+            Some(model) => format!("{model} on {cli}"),
+            None => cli,
+        };
+        format!(
+            "The run can't start another session under {}: a session of {session} costs about \
+             {} to start here and {} {} left",
+            limit_words(limit.as_ref()),
+            amount_words(no_room.opening, no_room.left.unit),
+            amount_words(no_room.left.amount, no_room.left.unit),
+            if no_room.left.unit == LimitUnit::Tokens {
+                "are"
+            } else {
+                "is"
+            },
+        )
     }
 
     /// The next number for `kind`, never one the log or this process has used.
@@ -553,7 +701,7 @@ impl Host {
             input: serde_json::to_string_pretty(&input)?,
             at,
             role,
-            worker,
+            worker: job_fallback::listed(self, &worker),
             task,
             access,
             workdir,
@@ -674,6 +822,7 @@ impl Host {
             status_part: true,
             reviews: false,
             time_limit: ask.time_limit,
+            refused: Refused::EndsPaused,
         })?;
         let Launched {
             key,
@@ -682,9 +831,17 @@ impl Host {
             live,
             status,
             deliveries,
+            no_room,
         } = launched;
         *ran = Some(key.clone());
         let task = live.task.clone();
+        if let Some(no_room) = no_room {
+            let end = self.no_room(&key, task.as_ref(), &spec, no_room, Refused::EndsPaused)?;
+            if self.cut_short(&end) {
+                return Err(EngineError::Interrupted);
+            }
+            return Err(EngineError::Step(StepError::Session(Box::new(end))));
+        }
         let (control, steering) = mpsc::channel(16);
         let cancel = live.cancel.clone();
         self.go_live(&key, LiveSession { control, ..live }, status);
@@ -932,7 +1089,8 @@ impl Host {
     /// newest earlier one's while it can still resume, so a restart or a pause continues it
     /// under the same key, else the next free one.
     pub fn slot_for(&self, plan: &SessionPlan) -> u32 {
-        let identity = Identity::of(plan);
+        let mut identity = Identity::of(plan);
+        identity.worker = job_fallback::listed(self, &identity.worker);
         self.read(|state| {
             let mut taken = 0u32;
             let mut newest_resumable = false;
@@ -944,10 +1102,12 @@ impl Host {
         })
     }
 
-    /// Starts a session and pumps its events into the log. Waits while the run is paused.
+    /// Starts a session and pumps its events into the log. Waits while the run is paused, and
+    /// unwinds with `Interrupted` where the run pauses because its limit has no room for it.
     /// An earlier session with the same identity that never ended is resumed, not restarted.
     /// A worker that couldn't start ends the session `StartFailed`.
-    pub async fn start(&self, plan: SessionPlan) -> EngineResult<Running> {
+    pub async fn start(&self, mut plan: SessionPlan) -> EngineResult<Running> {
+        plan.worker = job_fallback::listed(self, &plan.worker);
         self.start_with(plan, None, None).await
     }
 
@@ -956,7 +1116,12 @@ impl Host {
     /// `fallbacks` allows, the next agent that may take its job, and an agent known to be out
     /// has its job taken at once. With `Fallbacks::None` the last agent end comes back, for the
     /// task's own recovery to fall back. `Err(Stalled)` when nobody can take the job.
-    pub async fn run_session(&self, plan: SessionPlan, fallbacks: Fallbacks) -> EngineResult<Ran> {
+    pub async fn run_session(
+        &self,
+        mut plan: SessionPlan,
+        fallbacks: Fallbacks,
+    ) -> EngineResult<Ran> {
+        plan.worker = job_fallback::listed(self, &plan.worker);
         let job = Job::of(&plan);
         let allowed = fallbacks == Fallbacks::Allowed;
         let running = self
@@ -978,6 +1143,7 @@ impl Host {
         fallbacks: Fallbacks,
         started: &(dyn Fn(&SessionKey) -> EngineResult<()> + Sync),
     ) -> EngineResult<Ran> {
+        plan.worker = job_fallback::listed(self, &plan.worker);
         let job = Job::of(&plan);
         let allowed = fallbacks == Fallbacks::Allowed;
         let running = {
@@ -1094,6 +1260,7 @@ impl Host {
             live,
             status,
             deliveries,
+            no_room,
         } = self.launch(Launch {
             asked: Some(plan.worker).filter(|asked| *asked != identity.worker),
             identity,
@@ -1109,9 +1276,15 @@ impl Host {
             reviews: plan.reviews,
             fresh: plan.fresh,
             time_limit: None,
+            refused: Refused::LeftOut,
         })?;
         let task = live.task.clone();
         let (sender, ended) = oneshot::channel();
+        if let Some(no_room) = no_room {
+            let end = self.no_room(&key, task.as_ref(), &spec, no_room, Refused::LeftOut)?;
+            let _ = sender.send(Ok(end));
+            return Ok(Running::new(key, running, ended));
+        }
         let handle = match worker.start(spec).await {
             Ok(handle) => handle,
             Err(err) => {
@@ -1438,20 +1611,20 @@ impl Host {
             reviews,
             fresh,
             time_limit,
+            refused,
         } = launch;
         let worker = self.shared.services.workers.get(&identity.worker)?;
         let settings = self.shared.settings.clone();
         let mut lease = None;
         let mut kept_label = None;
         let mut carries_on_in_role = false;
-        let (key, resume, continuing) = match &earlier {
+        let (earlier_key, resume, continuing) = match &earlier {
             Some(record) => (
-                record.key.clone(),
+                Some(record.key.clone()),
                 record.cli_session.clone(),
                 record.cli_session.is_some(),
             ),
             None => {
-                let key = SessionKey::numbered(self.allocate(IdKind::Session)?);
                 let asked = resume.filter(|_| !blind).and_then(|earlier| {
                     self.read(|state| {
                         let session = state.sessions.get(&earlier)?;
@@ -1498,8 +1671,22 @@ impl Host {
                         }
                     }
                 };
-                (key, cli_session, false)
+                (None, cli_session, false)
             }
+        };
+        // Asked before it counts as started, when it would hold what it costs to open itself.
+        let no_room =
+            lock(&self.shared.run_meter).no_room_for(&identity.worker, access, resume.is_some());
+        if let Some(no_room) = no_room
+            && refused == Refused::LeftOut
+            && self.pauses_for_no_room()
+        {
+            self.pause_for_no_room(&identity.worker, no_room)?;
+            return Err(EngineError::Interrupted);
+        }
+        let key = match earlier_key {
+            Some(key) => key,
+            None => SessionKey::numbered(self.allocate(IdKind::Session)?),
         };
 
         let session_dir = layout::session_dir(&self.shared.repo.run_dir, &key);
@@ -1533,6 +1720,9 @@ impl Host {
             Some(label) => label,
             None => self.agent_label(&key, &identity, &provider),
         };
+        if resume.is_none() {
+            job_fallback::say_listed(self, &agent_label, &identity.worker, identity.task.as_ref())?;
+        }
         let started = SessionStarted {
             worker: identity.worker.clone(),
             agent_id: worker.agent_id(),
@@ -1542,7 +1732,11 @@ impl Host {
             step: identity.step,
             access,
             lifetime,
-            resumed_from: resume.clone(),
+            // An ask the limit has no room for never reaches the CLI session it would have
+            // carried on, so its step later starts it afresh, with its whole prompt.
+            resumed_from: resume
+                .clone()
+                .filter(|_| no_room.is_none() || refused != Refused::EndsPaused),
             follow_key: None,
             workflow_step: identity.at.as_ref().map(|at| at.step.clone()),
             label: Some(agent_label),
@@ -1658,6 +1852,7 @@ impl Host {
                 live,
                 status,
                 deliveries,
+                no_room,
             }),
             Err(err) => {
                 let end = SessionEnd {
@@ -1673,19 +1868,12 @@ impl Host {
     }
 
     /// A session may spend no more than what's left of the run's limit, since the run's
-    /// ceiling is as hard as a task's. The narrator answers to its own cap.
+    /// ceiling is as hard as a task's. It goes beside the task's own limit, since only the
+    /// session's own spend counts against it. The narrator answers to its own cap.
     fn capped_by_run(&self, mut limits: SessionLimits) -> SessionLimits {
-        let Some(left) = lock(&self.shared.run_meter).left() else {
-            return limits;
-        };
-        let tighter = match limits.limit {
-            Some(own) if own.unit == left.unit => own.amount > left.amount,
-            Some(_) => false,
-            None => true,
-        };
-        if tighter {
-            limits.limit = Some(left);
-        }
+        let left = lock(&self.shared.run_meter).left();
+        // A task limit in another unit stands alone.
+        limits.run_left = left.filter(|left| limits.limit.is_none_or(|own| own.unit == left.unit));
         limits
     }
 
@@ -1784,7 +1972,8 @@ impl Host {
         let _ = control.try_send(stop);
     }
 
-    /// The state directory, `~/.ssh`, and every other worktree of the run.
+    /// The state directory, `~/.ssh`, and every other worktree of the run, and your checkout
+    /// for a session working in neither, as a no-tools one does in its own folder.
     fn deny_read(&self, workdir: &Path) -> Vec<PathBuf> {
         let repo = &self.shared.repo;
         let mut deny: Vec<PathBuf> = repo
@@ -1796,6 +1985,12 @@ impl Host {
             .collect();
         if let Some(home) = std::env::var_os("HOME") {
             deny.push(PathBuf::from(home).join(".ssh"));
+        }
+        // The sandbox keeps your checkout read-only for a session in one of its worktrees, but
+        // knows it only through that worktree's git, so a checkout under a temp folder would be
+        // writable for a session anywhere else.
+        if !workdir.starts_with(&repo.root) && !workdir.starts_with(&repo.worktrees) {
+            deny.push(repo.root.clone());
         }
         if let Ok(entries) = std::fs::read_dir(&repo.worktrees) {
             for entry in entries.flatten() {
@@ -1964,6 +2159,16 @@ pub fn crashed_end(message: &str) -> SessionEnd {
         structured: None,
         last_message: None,
         raw_log: None,
+    }
+}
+
+/// An amount in a limit's unit, as the run's notes say it.
+fn amount_words(amount: f64, unit: LimitUnit) -> String {
+    match unit {
+        LimitUnit::Usd => format!("${amount:.2}"),
+        LimitUnit::Tokens => format!("{} tokens", amount.round()),
+        LimitUnit::PlanUsage => format!("{:.0}% of plan usage", amount * 100.0),
+        LimitUnit::Minutes => format!("{} minutes", amount.round()),
     }
 }
 

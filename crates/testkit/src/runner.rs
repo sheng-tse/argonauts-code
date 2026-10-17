@@ -134,6 +134,13 @@ impl FakeSession {
         self
     }
 
+    /// A session that ended before its CLI had a session of its own, as one that crashes as
+    /// it starts.
+    pub fn without_cli_session(mut self) -> Self {
+        self.end.cli_session = None;
+        self
+    }
+
     pub fn with_spend(mut self, spend: Spend) -> Self {
         self.end.spend = spend;
         self
@@ -627,6 +634,7 @@ pub fn session_spec(worker: &str, access: Access, workdir: &Path) -> SessionSpec
         asking: None,
         cli_workflow: argonauts_core::session_runner::CliWorkflow::default(),
         shell: argonauts_core::session_runner::SessionShell::None,
+        preferences: Default::default(),
     }
 }
 

@@ -123,13 +123,13 @@ fn limits_edge_all_down_waits() -> anyhow::Result<()> {
         completed_by("claude-code")(events)
             && resumes(events)
                 .iter()
-                .any(|resumed| resumed.cause == ResumeCause::AgentBack)
+                .any(|resumed| woke_by_itself(resumed.cause))
     })?;
     let woke = events
         .iter()
         .find(|event| {
             matches!(&event.kind,
-                RunEventKind::Run(RunLifecycle::Resumed(resumed)) if resumed.cause == ResumeCause::AgentBack)
+                RunEventKind::Run(RunLifecycle::Resumed(resumed)) if woke_by_itself(resumed.cause))
         })
         .context("no wake")?;
     assert!(woke.ts >= until, "woke at {} before {until}", woke.ts);
@@ -480,4 +480,9 @@ fn limits_edge_you_take_over() -> anyhow::Result<()> {
     })?;
     assert!(task_states(&events).contains(&TaskState::TakenOver));
     limits.shot(&pty, "limits_edge_you_take_over")
+}
+
+/// A wake the app gave the run by itself: its time came, or the agent it waited for is back.
+fn woke_by_itself(cause: ResumeCause) -> bool {
+    matches!(cause, ResumeCause::AgentBack | ResumeCause::Timer)
 }

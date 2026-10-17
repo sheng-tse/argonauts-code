@@ -286,24 +286,28 @@ fn follow_mode_1_to_9_end_esc() {
     driver.wait_visible(TOP_RULE);
 }
 
+/// The list holds conversations, and a run comes back with the one that started it, which is
+/// marked while the run waits on you.
 #[test]
 fn resume_picker() {
-    let runs = vec![
-        run_summary("run-03", "Add a --json flag to export", "waiting", true),
-        run_summary("run-02", "Fix the flaky export test", "crashed", false),
-        run_summary("run-01", "Rename the CSV writer", "merged", false),
+    let conversations = vec![
+        conversation_summary(3, "Add a --json flag to export", 11, true),
+        conversation_summary(2, "Fix the flaky export test", 10, false),
+        conversation_summary(1, "Rename the CSV writer", 9, false),
     ];
-    let script = Script::idle().await_signal("runs").at(0, runs_view(runs));
+    let script = Script::idle()
+        .await_signal("listed")
+        .at(0, resume_list_view(conversations));
     let mut driver = TestDriver::start(script);
     driver.wait_visible(MODE_IDLE);
     driver.send("/resume");
     driver.press(Key::Enter);
-    driver.wait_until("the screen to ask for the runs", |_| {
+    driver.wait_until("the screen to ask for the list", |_| {
         has_command(&driver, |c| {
-            c["view"]["view"] == "runs" || c["command"]["command"] == "resume"
+            c["view"]["view"] == "resume_list" || c["command"]["command"] == "resume"
         })
     });
-    driver.signal("runs");
+    driver.signal("listed");
     let picker = driver.wait_visible("Fix the flaky export test");
     assert_order(
         &picker,
@@ -313,30 +317,19 @@ fn resume_picker() {
             "Rename the CSV writer",
         ],
     );
-    let reminded = expect_row(&picker, "Add a --json flag to export");
+    let waiting = expect_row(&picker, "Add a --json flag to export");
     assert!(
-        picker.visible[reminded].contains('◆'),
+        picker.visible[waiting].contains('◆'),
         "{}",
         picker.visible_text()
     );
-    let crashed = expect_row(&picker, "Fix the flaky export test");
-    assert!(!picker.visible[crashed].contains('◆'));
-    let hints = last_row_of(&picker, "\\bx\\b").unwrap_or(0);
-    for key in ["\\br\\b", "\\bd\\b", "\\bx\\b"] {
-        assert!(
-            regex::Regex::new(key)
-                .unwrap()
-                .is_match(&picker.visible[hints]),
-            "{key} in the key line:\n{}",
-            picker.visible_text()
-        );
-    }
-    // Enter resumes; `r` is the run's raw log.
+    let other = expect_row(&picker, "Fix the flaky export test");
+    assert!(!picker.visible[other].contains('◆'));
     driver.press(Key::Down);
     driver.press(Key::Enter);
     driver.wait_until("the resume", |_| {
         has_command(&driver, |c| {
-            c["run"] == "run-02" || c["command"]["run"] == "run-02"
+            c["command"]["target"]["id"] == "conversation-002"
         })
     });
 }

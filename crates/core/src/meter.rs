@@ -259,6 +259,32 @@ impl SpendMeter {
         self.price.is_some()
     }
 
+    /// What the requests since the agent's last totals cost, as its parser priced them the way
+    /// they are billed. It stands in for the meter's own estimate of them until the next
+    /// totals, which are the agent's own figure.
+    pub fn bill_since_totals(&mut self, usd: f64) {
+        if !(usd.is_finite() && usd > 0.0) {
+            return;
+        }
+        self.since_baseline.cost_usd = usd;
+        self.since_baseline.cost_estimated = true;
+        self.since_baseline.cost_partial = false;
+    }
+
+    /// The agent said it has spent at least `usd` in all, where its totals may never come. The
+    /// tally rises to that as an estimate and never falls, and the agent's next totals replace
+    /// it.
+    pub fn spent_at_least(&mut self, usd: f64) {
+        let short = usd - self.spend().cost_usd;
+        if !(short.is_finite() && short > 0.0) {
+            return;
+        }
+        // Held with the totals, since a parser's figure for the requests after them replaces
+        // what came since.
+        self.baseline.cost_usd += short;
+        self.baseline.cost_estimated = true;
+    }
+
     /// Non-usage events leave the tally alone but still return the current action, so `Stop`
     /// repeats until the session ends. `WrapUp` is returned only once.
     pub fn observe(&mut self, event: &AgentEvent) -> MeterAction {
@@ -440,6 +466,7 @@ fn share(used: f64, limit: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pricing::builtin_price;
 
     fn usage(input: u64, output: u64, cost: Option<f64>, cumulative: bool) -> AgentEvent {
         AgentEvent::Usage {
@@ -566,6 +593,66 @@ mod tests {
         assert!((spend.cost_usd - 0.55).abs() < 1e-9);
         assert!(spend.cost_estimated);
         assert!(!spend.cost_partial);
+    }
+
+    /// A billed figure stands in for the flat estimate of the requests since the last totals,
+    /// so a session that crosses its limit stops at the request that does, and the next totals,
+    /// the agent's own, replace it.
+    #[test]
+    fn a_billed_figure_stands_in_for_the_estimate_until_the_totals() {
+        let price = builtin_price("claude-haiku-5-5");
+        let mut meter = SpendMeter::new(MeterLimit::Usd(0.25), 0.85).with_price(price);
+        // A first request of 361,887 tokens, priced flat at $0.036.
+        meter.observe(&AgentEvent::Usage {
+            input_tokens: 361_887,
+            output_tokens: 2,
+            cached_tokens: 0,
+            cost_usd: None,
+            cumulative: false,
+        });
+        assert_eq!(meter.level(), MeterAction::Continue);
+        meter.bill_since_totals(0.361891);
+        let spend = meter.spend();
+        assert!((spend.cost_usd - 0.361891).abs() < 1e-12, "{spend:?}");
+        assert!(spend.cost_estimated);
+        assert_eq!(meter.level(), MeterAction::Stop);
+        // Nothing billed leaves the figure as it was.
+        meter.bill_since_totals(0.0);
+        assert!((meter.spend().cost_usd - 0.361891).abs() < 1e-12);
+        meter.observe(&usage(361_887, 5_039, Some(0.3612), true));
+        meter.bill_since_totals(0.0);
+        let spend = meter.spend();
+        assert!((spend.cost_usd - 0.3612).abs() < 1e-12, "{spend:?}");
+        assert!(!spend.cost_estimated);
+    }
+
+    /// What the agent says it spent at least raises the tally where it's more, so a session
+    /// whose totals never come is still counted that much. Its next totals replace it.
+    #[test]
+    fn spent_at_least_raises_the_tally_until_the_next_totals() {
+        let mut meter = SpendMeter::new(MeterLimit::Usd(0.60), 0.85);
+        meter.observe(&usage(366_000, 3_000, Some(0.4274356), true));
+        meter.bill_since_totals(0.05);
+        meter.spent_at_least(0.30);
+        assert!((meter.spend().cost_usd - 0.4774356).abs() < 1e-12);
+        assert!(!meter.spend().cost_partial);
+
+        meter.spent_at_least(0.675);
+        let spend = meter.spend();
+        assert!((spend.cost_usd - 0.675).abs() < 1e-12, "{spend:?}");
+        assert!(spend.cost_estimated);
+        assert_eq!(spend.input_tokens, 366_000);
+        assert_eq!(meter.level(), MeterAction::Stop);
+        // A request after it adds to it.
+        meter.bill_since_totals(0.06);
+        assert!((meter.spend().cost_usd - 0.685).abs() < 1e-12);
+        meter.spent_at_least(f64::NAN);
+        assert!((meter.spend().cost_usd - 0.685).abs() < 1e-12);
+
+        meter.observe(&usage(1_459_024, 3_100, Some(0.69), true));
+        let spend = meter.spend();
+        assert!((spend.cost_usd - 0.69).abs() < 1e-12, "{spend:?}");
+        assert!(!spend.cost_estimated);
     }
 
     #[test]

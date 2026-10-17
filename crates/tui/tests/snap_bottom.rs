@@ -285,17 +285,6 @@ fn a_question_that_needs_you_holds_the_keys() {
     let all = text(&view.lines);
     assert!(all.contains("❯ 1. Merge"), "{all}");
     assert!(!all.contains("guide the run"), "{all}");
-
-    bottom.question.as_mut().unwrap().stray_typing = true;
-    snapshot_widths("question_needs_you_typed_at", &bottom);
-    let view = bottom.render(&ctx(&theme(), 80, NOW));
-    assert!(
-        text(&view.lines).contains(
-            "\n  Typing waits while the question has the keys · Esc to carry on without me"
-        ),
-        "{}",
-        text(&view.lines)
-    );
 }
 
 /// Passed on while work runs, the question leaves the screen whole and the input guides the run.

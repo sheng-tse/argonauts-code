@@ -256,7 +256,7 @@ mod tests {
             FakeSession::structured(json!({
                 "accept": false,
                 "summary": "The sign flips every amount",
-                "findings": ["money.py: sign must stay 1"],
+                "findings": [{"text": "money.py: sign must stay 1", "blocking": true}],
             }))
             .with_spend(argonauts_core::Spend {
                 input_tokens: 1200,
@@ -305,7 +305,13 @@ mod tests {
             "{}",
             reply.text
         );
-        assert!(reply.text.contains("- money.py: sign must stay 1"));
+        assert!(
+            reply
+                .text
+                .contains("- blocking: money.py: sign must stay 1"),
+            "{}",
+            reply.text
+        );
         let asked = codex.specs().remove(0);
         assert_eq!(asked.access, Access::ReadOnly);
         assert_eq!(asked.run, None);

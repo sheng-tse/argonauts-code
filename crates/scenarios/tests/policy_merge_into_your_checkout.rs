@@ -112,6 +112,7 @@ fn with_every_new_file_committed_your_bytecode_in_the_way_waits_to_merge() -> an
     pty.wait_for("Move them aside and merge", WAIT)?;
     let screen = pty.screen().text();
     assert!(!screen.contains("The run failed"), "{screen}");
+    assert!(!screen.contains("The run ended"), "{screen}");
     assert_eq!(scenario.repo.head()?, main, "nothing merged");
     assert_eq!(
         std::fs::read_to_string(scenario.repo.root().join(YOURS))?,
@@ -188,6 +189,7 @@ fn a_file_of_yours_in_the_way_waits_to_merge_and_moves_aside() -> anyhow::Result
     );
     assert!(!screen.contains("Merged the run into main"), "{screen}");
     assert!(!screen.contains("The run failed"), "{screen}");
+    assert!(!screen.contains("The run ended"), "{screen}");
     scenario.shot(&pty, "policy_merge_waits_on_your_files")?;
 
     // The question opens waiting, or already focused on its first option.

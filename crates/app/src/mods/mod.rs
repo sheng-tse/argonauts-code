@@ -12,6 +12,7 @@
 mod command;
 pub(crate) mod files;
 mod sources;
+pub(crate) mod stats_starter;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

@@ -665,8 +665,23 @@ fn conversation_session(
     fixture: &Fixture,
     fast: bool,
 ) -> argonauts_core::session_runner::SessionSpec {
-    use crate::controller::turn::{Launch, TurnStep, session_spec};
-    use argonauts_core::names::{ConversationId, SessionKey, TurnId};
+    use crate::controller::turn::session_spec;
+    use argonauts_core::names::SessionKey;
+
+    conversation_turn(fixture, fast, |launch| {
+        let dir = fixture.ctx.env.state_dir.join("conversation-test");
+        session_spec(&fixture.ctx, launch, SessionKey::numbered(1), dir)
+    })
+}
+
+/// What `then` makes of a question's turn on the main agent, with `/fast` on or off.
+fn conversation_turn<T>(
+    fixture: &Fixture,
+    fast: bool,
+    then: impl FnOnce(&crate::controller::turn::Launch<'_>) -> T,
+) -> T {
+    use crate::controller::turn::{Launch, TurnStep};
+    use argonauts_core::names::{ConversationId, TurnId};
 
     let (conversation, turn) = (ConversationId::numbered(1), TurnId::numbered(1));
     let step = TurnStep::Ask { run_status: None };
@@ -687,8 +702,7 @@ fn conversation_session(
         fast,
         workdir: fixture.ctx.env.repo_root.clone(),
     };
-    let dir = fixture.ctx.env.state_dir.join("conversation-test");
-    session_spec(&fixture.ctx, &launch, SessionKey::numbered(1), dir)
+    then(&launch)
 }
 
 /// A level set before a model fixed at one was picked stays set, but never reaches the model:
@@ -720,6 +734,71 @@ async fn a_level_set_before_never_reaches_a_model_fixed_at_one() {
         assert_eq!(spec.effort.as_deref(), Some("high"), "{set}");
         assert_eq!(effort_slider(&fixture).level(), Some("high"));
     }
+}
+
+/// A main model agy no longer lists runs as the nearest it does, at that model's level, the
+/// header names that one, and the turn says so first in the line a run's job says it in.
+#[tokio::test]
+async fn a_main_model_agy_no_longer_lists_runs_its_nearest_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(false, |repo| {
+        let config = "crew.main = \"antigravity-cli/gemini-3.6-flash-low\"\n";
+        std::fs::write(repo.global_config(), config).unwrap();
+    });
+    codex_and_agy(&mut fixture, dir.path());
+    agy_after_an_update(dir.path());
+    refresh_models(&fixture.ctx, &mut fixture.state);
+    refresh_lands(&mut fixture).await;
+    fixture.drain();
+
+    let spec = conversation_session(&fixture, false);
+    assert_eq!(
+        spec.model.to_string(),
+        "antigravity-cli/gemini-3.8-flash-low"
+    );
+    assert_eq!(spec.effort.as_deref(), Some("low"));
+    let (header, effort) = crate::controller::header_agent(&fixture.ctx);
+    assert_eq!(header, spec.model);
+    assert_eq!(effort, spec.effort);
+
+    conversation_turn(&fixture, false, |launch| {
+        crate::controller::turn::say_in_place(&fixture.ctx, launch);
+    });
+    let notices: Vec<_> = fixture
+        .drain()
+        .into_iter()
+        .filter_map(|event| match event {
+            AppEvent::Notice { level, text } => Some((level, text)),
+            _ => None,
+        })
+        .collect();
+    let line = "This conversation runs on Gemini 3.8 Flash (Low): Antigravity CLI no longer \
+                offers Gemini 3.6 Flash (Low)";
+    assert_eq!(
+        notices,
+        [(argonauts_core::NoteLevel::Warn, line.to_owned())]
+    );
+}
+
+/// The fake `agy` lists what it does after an update that dropped its 3.6 and 3.7 models.
+fn agy_after_an_update(dir: &Path) {
+    let mut today: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(AGY_MODELS).unwrap()).unwrap();
+    let models = today
+        .pointer_mut("/command/data/models")
+        .and_then(serde_json::Value::as_array_mut)
+        .unwrap();
+    models.retain(|model| {
+        let id = model["id"].as_str().unwrap_or_default();
+        !id.starts_with("gemini-3.6") && !id.starts_with("gemini-3.7")
+    });
+    let listed = dir.join("agy-models-today.json");
+    std::fs::write(&listed, today.to_string()).unwrap();
+    let script = format!(
+        "#!/bin/sh\n[ \"$*\" = \"--output-format json models\" ] || exit 2\ncat '{}'\n",
+        listed.display()
+    );
+    std::fs::write(dir.join("agy"), script).unwrap();
 }
 
 /// `/fast` on a model fixed at one level runs its line's lowest instead, as agy lists

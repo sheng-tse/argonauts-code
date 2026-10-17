@@ -1,0 +1,20 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Add due dates                                                                                                        
+ orchestrator workflow · add --due to the todo CLI, each part reviewed on another CLI              3/5 agents · 2m52s 
+ › build:due-flag runs a workflow of its own, add-due-flag: Write is done, Check is under way                         
+                                                                                                                      
+ ╭ Phases ──────────┬ Build · 5 agents ─────────────────────────────────────────────────────────────────────────────╮ 
+ │ ❯ 1 Build    3/5 │  ⏺ build:due-flag     Sonnet 5.5 · 22.4k tok                                            2m40s │ 
+ │   2 Review       │    ▾ add-due-flag     Claude Code's workflow · 2/3 agents                               1m58s │ 
+ │   3 Sign-off     │      ✔ Write   2/2                                                                            │ 
+ │   4 Merge        │        ✔ write:add    Sonnet 5.5 · 12.1k tok                                              41s │ 
+ │                  │        ✔ write:list   Sonnet 5.5 · 9.6k tok                                               38s │ 
+ │                  │      2 Check   0/1                                                                            │ 
+ │                  │        ⏺ check:dates  Haiku 5.5 · 4.2k tok                                                12s │ 
+ │                  │  ✔ build:due-tests    GPT 5.6 · 30.3k tok · passed                                      1m02s │ 
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
+ ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save                                   
+                                                                                                                      
+  its rows in the bottom list                                                                                         
+  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱  3/5 · 2m52s · ↓ 91.4k tokens                                        
+    ⎿ ◯ add-due-flag        ▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱  2/3 · 1m58s · ↓ 25.9k tokens · run by build:due-flag                

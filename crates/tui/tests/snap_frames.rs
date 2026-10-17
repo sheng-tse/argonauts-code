@@ -43,8 +43,8 @@ use argonauts_tui::views::help::HelpView;
 use argonauts_tui::views::pager::Pager;
 use argonauts_tui::views::resume::ResumePicker;
 use argonauts_tui::views::session::SessionView;
+use argonauts_tui::views::settings::all_settings::AllSettingsView;
 use argonauts_tui::views::settings::approvals::ApprovalsView;
-use argonauts_tui::views::settings::config::ConfigView;
 use argonauts_tui::views::settings::flow::{self, Step};
 use argonauts_tui::views::workflow::WorkflowView;
 use argonauts_tui::views::{View, ViewCtx};
@@ -213,12 +213,15 @@ fn every_view(
         ViewData::Agent { view } => *view,
         other => panic!("{other:?}"),
     };
-    let runs = vec![
-        run_summary(RUN, "Add a --json flag to export", "running", false),
-        run_summary("run-02", "Fix the flaky export test", "waiting", true),
+    let listed = vec![
+        conversation_summary(2, "Add a --json flag to export", 11, false),
+        conversation_summary(1, "Fix the flaky export test", 10, true),
     ];
-    let resume = match event(runs_view(runs.clone())) {
-        ViewData::Runs { runs, .. } => runs,
+    let (conversations, sessions) = match event(resume_list_view(listed)) {
+        ViewData::ResumeList {
+            conversations,
+            sessions,
+        } => (conversations, sessions),
         other => panic!("{other:?}"),
     };
     let diff = match event(diff_view(
@@ -259,7 +262,10 @@ fn every_view(
             Box::new(WorkflowView::new(workflow)) as Box<dyn View>,
         ),
         ("agent", Box::new(AgentView::new(agent))),
-        ("resume", Box::new(ResumePicker::new(resume))),
+        (
+            "resume",
+            Box::new(ResumePicker::listing(conversations, sessions)),
+        ),
         ("diff", Box::new(Pager::diff(diff))),
         ("raw", Box::new(Pager::raw(raw))),
         (
@@ -284,7 +290,7 @@ fn every_view(
             Box::new(HelpView::new(Keymap::default()).with_commands(Some(cli_commands(sample)))),
         ),
         ("session", Box::new(SessionView::new(run_id(), key))),
-        ("config", Box::new(ConfigView::new(rows))),
+        ("all settings", Box::new(AllSettingsView::new(rows))),
         (
             "approvals",
             Box::new(ApprovalsView::new(parse(approvals_data()))),

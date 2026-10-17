@@ -80,7 +80,9 @@ fn the_usage_tab_draws_a_card_per_cli_under_the_tabs_and_takes_only_their_rows()
     let rows = rows(&mut usage, &state, 110, 60);
     assert!(rows[0].chars().all(|c| c == '─'), "{rows:#?}");
     assert!(
-        rows[1].starts_with("  Overview    Status   [Usage]   Context    Limits    Stats"),
+        rows[1].starts_with(
+            " Settings   Overview    Status    Config   [Usage]   Context    Limits    Stats"
+        ),
         "{rows:#?}"
     );
     assert!(rows[1].ends_with("Today  Week  Month  All"), "{rows:#?}");
@@ -166,7 +168,7 @@ fn the_keys_change_tab_units_and_pin_the_card_in_focus() {
         Level::Tabs,
         "the keys are on the tab they moved"
     );
-    for _ in 0..3 {
+    for _ in 0..4 {
         key(&mut overview, &state, KeyCode::Left);
     }
     assert_eq!(overview.tab(), Tab::Overview);
@@ -922,7 +924,9 @@ fn vim_keys_move_through_the_panel() {
     assert_eq!(overview.tab(), Tab::Context);
     letter(&mut overview, 'h');
     letter(&mut overview, 'h');
+    letter(&mut overview, 'h');
     assert_eq!(overview.tab(), Tab::Status);
+    letter(&mut overview, 'l');
     letter(&mut overview, 'l');
     letter(&mut overview, 'j');
     assert_eq!(overview.level(), Level::SubTabs);
@@ -1211,6 +1215,8 @@ fn card_at(view: &OverviewView) -> usize {
         Tab::Context => view.pane.focused(),
         Tab::Limits => view.limit,
         Tab::Stats => view.stats.picked,
+        // Config's search box takes letters, so its own tests move through its rows.
+        Tab::Config => 0,
     }
 }
 
@@ -1246,7 +1252,7 @@ fn home_end_g_and_shift_g_reach_the_first_and_last_card_on_every_tab() {
     }
     for vim in [false, true] {
         state.ui = list::keys_state(vim).ui;
-        for tab in Tab::ALL {
+        for tab in Tab::ALL.into_iter().filter(|tab| *tab != Tab::Config) {
             let pairs = [
                 (KeyCode::End, KeyCode::Home),
                 (KeyCode::Char('G'), KeyCode::Char('g')),

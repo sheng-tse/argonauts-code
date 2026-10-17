@@ -8,7 +8,7 @@ use std::time::Duration;
 use argonauts_core::api::{ApiError, DiffScope, DiffView, RawView, StatusSummary, SteerAck};
 use argonauts_core::control::{ControlReply, ControlRequest};
 use argonauts_core::events::approval::ApprovalEvent;
-use argonauts_core::events::run::{RunLifecycle, RunOutcome};
+use argonauts_core::events::run::{RunLifecycle, RunOutcome, WaitReason};
 use argonauts_core::events::session::QueuedMessage;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::journal::{RunLock, read_all};
@@ -187,6 +187,11 @@ async fn try_once(
     run_dir: &Path,
     request: &ControlRequest,
 ) -> Result<Option<Reply>, ApiError> {
+    // A run that stopped fully goes on only when you /resume it, so what would change it until
+    // then is kept for the run host that /resume starts, and none starts for it now.
+    if kept_for_resume(request) && stopped_fully(run_dir) {
+        return keep_for_resume(client, run_dir, request).map(Some);
+    }
     if let Some(connection) = connect(client, run_dir).await? {
         return live(connection, request.clone()).await;
     }
@@ -231,6 +236,50 @@ async fn try_once(
     drop(lock);
     start::launch(client, run, run_dir).await?;
     Ok(Some(Reply::Deferred))
+}
+
+/// Requests a run that stopped fully keeps for `/resume`: they change what it does once it goes
+/// on, so none of them carries it on.
+fn kept_for_resume(request: &ControlRequest) -> bool {
+    matches!(
+        request,
+        ControlRequest::ApprovalMode { .. }
+            | ControlRequest::Mention { .. }
+            | ControlRequest::Guidance { .. }
+            | ControlRequest::Reassign { .. }
+            | ControlRequest::Goal { .. }
+            | ControlRequest::SpotCheck { .. }
+    )
+}
+
+/// Nothing could take a job the run needs, so it stopped until you carry it on.
+fn stopped_fully(run_dir: &Path) -> bool {
+    journal_ends::last_stage_event(&run_dir.join(names::EVENTS)).is_some_and(|event| {
+        matches!(
+            event.kind,
+            RunEventKind::Run(RunLifecycle::Waiting {
+                reason: WaitReason::NoFallback { .. },
+                ..
+            })
+        )
+    })
+}
+
+/// Saves `request` in `pending-answers.jsonl`. A run host that waits out its grace holds the
+/// run's lock, and takes what was saved when /resume wakes it.
+fn keep_for_resume(
+    client: &Client,
+    run_dir: &Path,
+    request: &ControlRequest,
+) -> Result<Reply, ApiError> {
+    if needs_a_person(request) {
+        ancestry::check_self(&client.env.paths, &AgentMarkers::builtin())
+            .map_err(|err| ApiError::Refused(format!("{err:#}")))?;
+    }
+    let lock = RunLock::try_acquire(run_dir).map_err(run_host_error)?;
+    run_files::append_pending(run_dir, request).map_err(run_host_error)?;
+    drop(lock);
+    Ok(Reply::Deferred)
 }
 
 /// Starts a run host unless one is live, and wakes one that is in its wait grace. A

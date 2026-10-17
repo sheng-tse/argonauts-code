@@ -349,13 +349,13 @@ fn limits_wait_mode_resumes_when_agent_back() -> anyhow::Result<()> {
         completed_by("claude-code")(events)
             && resumes(events)
                 .iter()
-                .any(|resumed| resumed.cause == ResumeCause::AgentBack)
+                .any(|resumed| woke_by_itself(resumed.cause))
     })?;
     let woke = events
         .iter()
         .find(|event| {
             matches!(&event.kind,
-                RunEventKind::Run(RunLifecycle::Resumed(resumed)) if resumed.cause == ResumeCause::AgentBack)
+                RunEventKind::Run(RunLifecycle::Resumed(resumed)) if woke_by_itself(resumed.cause))
         })
         .context("no wake")?;
     assert!(woke.ts >= until);
@@ -486,4 +486,9 @@ fn limits_fallback_checkpoint_roundtrip() -> anyhow::Result<()> {
         "Claude Code never reviewed"
     );
     Ok(())
+}
+
+/// A wake the app gave the run by itself: its time came, or the agent it waited for is back.
+fn woke_by_itself(cause: ResumeCause) -> bool {
+    matches!(cause, ResumeCause::AgentBack | ResumeCause::Timer)
 }

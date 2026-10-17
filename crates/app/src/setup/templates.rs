@@ -4,7 +4,7 @@
 //! to say, until you make it yours by deleting its first line. A starter mod is yours from the
 //! start and is never written twice, and neither is the program one of them runs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use argonauts_core::NoteLevel;
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
@@ -90,12 +90,16 @@ fn write_readme(dir: &Path, text: &str) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// Writes the four READMEs under `root`, an `.argonauts` folder.
-fn write_readmes(root: &Path) -> std::io::Result<()> {
+/// Writes the four READMEs under `root`, an `.argonauts` folder, and returns those it wrote.
+fn write_readmes(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut wrote = Vec::new();
     for page in &PAGES {
-        write_readme(&root.join(page.folder), &written(page.text))?;
+        let dir = root.join(page.folder);
+        if write_readme(&dir, &written(page.text))? {
+            wrote.push(dir.join(README));
+        }
     }
-    Ok(())
+    Ok(wrote)
 }
 
 /// Writes each starter mod that's missing into `dir`. A file you have is never touched.
@@ -132,10 +136,17 @@ fn write_program(path: &Path, text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What writing the setup's pages did: what failed, as notices, since the setup goes on
+/// without them, and the project's pages it wrote.
+#[derive(Debug, Default)]
+pub(crate) struct Written {
+    pub notices: Vec<(NoteLevel, String)>,
+    pub in_project: Vec<PathBuf>,
+}
+
 /// Writes the READMEs and the starter mods into `~/.argonauts/`, and the READMEs into the
-/// project's `.argonauts/` when it has one. Failures come back as notices, since the setup
-/// goes on without them.
-pub(crate) fn write(env: &AppEnv) -> Vec<(NoteLevel, String)> {
+/// project's `.argonauts/` when it has one and you said yes to them there.
+pub(crate) fn write(env: &AppEnv, in_project: bool) -> Written {
     let mut notices = Vec::new();
     let home = env.paths.home();
     let mut warn = |what: &str, err: &dyn std::fmt::Display| {
@@ -148,12 +159,36 @@ pub(crate) fn write(env: &AppEnv) -> Vec<(NoteLevel, String)> {
         warn("the starter mods", &format!("{err:#}"));
     }
     let project = super::finish::project_dir(env);
-    if project.is_dir()
-        && let Err(err) = write_readmes(&project)
-    {
-        warn("the project's READMEs", &err);
+    let mut wrote = Vec::new();
+    if in_project && project.is_dir() {
+        match write_readmes(&project) {
+            Ok(pages) => wrote = pages,
+            Err(err) => warn("the project's READMEs", &err),
+        }
     }
-    notices
+    Written {
+        notices,
+        in_project: wrote,
+    }
+}
+
+/// Where a repo keeps whether you want the guide pages written into its `.argonauts/`.
+const GUIDES_ANSWER: &str = "guide-pages";
+
+/// Your answer about the guide pages in this repo, once you gave one.
+pub(crate) fn guides_answer(env: &AppEnv) -> Option<bool> {
+    let text = std::fs::read_to_string(env.state_dir.join(GUIDES_ANSWER)).ok()?;
+    match text.trim() {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
+    }
+}
+
+pub(crate) fn keep_guides_answer(env: &AppEnv, yes: bool) -> std::io::Result<()> {
+    create_private_dir_all(&env.state_dir)?;
+    let answer = if yes { "yes\n" } else { "no\n" };
+    write_private_file(&env.state_dir.join(GUIDES_ANSWER), answer.as_bytes())
 }
 
 #[cfg(test)]
@@ -188,7 +223,7 @@ mod tests {
     fn setup_writes_a_readme_in_every_place_you_can_change_and_four_starter_mods() {
         let repo = TempRepo::new().unwrap();
         let env = env(&repo);
-        assert!(write(&env).is_empty());
+        assert!(write(&env, false).notices.is_empty());
         let written: Vec<String> = files_under(repo.home())
             .into_iter()
             .filter(|path| path.ends_with(".md") || path.starts_with("mods/"))
@@ -216,18 +251,18 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let repo = TempRepo::new().unwrap();
         let env = env(&repo);
-        write(&env);
+        write(&env, false);
         let program = repo.home().join("mods/checks.sh");
         let mode = std::fs::metadata(&program).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
         // Deleted, it stays deleted: the mod is yours by now.
         std::fs::remove_file(&program).unwrap();
-        write(&env);
+        write(&env, false);
         assert!(!program.exists());
         // And yours is never written over when the mod comes back.
         std::fs::write(&program, "#!/bin/sh\necho mine\n").unwrap();
         std::fs::remove_file(repo.home().join("mods/checks.toml")).unwrap();
-        write(&env);
+        write(&env, false);
         assert!(repo.home().join("mods/checks.toml").exists());
         assert_eq!(
             std::fs::read_to_string(&program).unwrap(),
@@ -236,12 +271,20 @@ mod tests {
     }
 
     #[test]
-    fn a_project_with_its_folder_gets_the_readmes_and_no_mods() {
+    fn a_project_gets_the_readmes_only_after_a_yes_and_no_mods() {
         let repo = TempRepo::new().unwrap();
-        std::fs::create_dir_all(repo.root().join(".argonauts")).unwrap();
-        assert!(write(&env(&repo)).is_empty());
+        let dot = repo.root().join(".argonauts");
+        std::fs::create_dir_all(&dot).unwrap();
+        let env = env(&repo);
+        let not_here = write(&env, false);
+        assert!(not_here.notices.is_empty() && not_here.in_project.is_empty());
+        assert!(files_under(&dot).is_empty());
+
+        let written = write(&env, true);
+        assert!(written.notices.is_empty());
+        assert_eq!(written.in_project.len(), 4);
         assert_eq!(
-            files_under(&repo.root().join(".argonauts")),
+            files_under(&dot),
             [
                 "README.md",
                 "mods/README.md",
@@ -249,6 +292,12 @@ mod tests {
                 "workflows/README.md"
             ]
         );
+        // Once written, the pages are said only when they change.
+        assert!(write(&env, true).in_project.is_empty());
+
+        assert_eq!(guides_answer(&env), None);
+        keep_guides_answer(&env, true).unwrap();
+        assert_eq!(guides_answer(&env), Some(true));
     }
 
     #[test]
@@ -278,7 +327,7 @@ mod tests {
     fn a_page_you_made_yours_is_left_alone_and_argonauts_own_is_written_again() {
         let repo = TempRepo::new().unwrap();
         let env = env(&repo);
-        write(&env);
+        write(&env, false);
         let mods = repo.home().join("mods/README.md");
         let roles = repo.home().join("roles/README.md");
         // Yours: the first line is gone.
@@ -290,7 +339,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(repo.home().join("mods/checks.toml"), "# mine\n").unwrap();
-        write(&env);
+        write(&env, false);
         assert_eq!(
             std::fs::read_to_string(&mods).unwrap(),
             "# My notes on mods\n"

@@ -12,8 +12,9 @@ use unicode_width::UnicodeWidthStr;
 use crate::names::RoleName;
 use crate::workflow::StepKind;
 
-/// The widest a label may be, in terminal cells.
-pub const MAX_CELLS: usize = 20;
+/// The widest a label may be, in terminal cells: room for a task's name whole, as in
+/// `review:show-due-dates`. A view with less room cuts a label to its column with `…`.
+pub const MAX_CELLS: usize = 40;
 
 /// What a label pattern's placeholders stand for. Unset ones fill from the phase.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -364,39 +365,65 @@ mod tests {
     }
 
     #[test]
-    fn a_label_too_wide_drops_whole_words() {
+    fn a_label_keeps_a_tasks_name_whole() {
         let build = LabelParts {
-            item: Some("add-explicit-burst"),
+            item: Some("show-due-dates"),
             ..parts("Build")
         };
-        assert_eq!(fill("build:{item}", &build), "build:add-explicit");
+        assert_eq!(fill("build:{item}", &build), "build:show-due-dates");
         let review = LabelParts {
-            item: Some("document-the-burst"),
+            round: 2,
+            ..build.clone()
+        };
+        assert_eq!(fill("review:{item}", &review), "review:show-due-dates:r2");
+    }
+
+    #[test]
+    fn a_label_too_wide_drops_whole_words() {
+        let build = LabelParts {
+            item: Some("internationalization-configuration-screens"),
+            ..parts("Build")
+        };
+        assert_eq!(
+            fill("build:{item}", &build),
+            "build:internationalization-configuration"
+        );
+        let review = LabelParts {
+            item: Some("documentation-configuration-screens"),
             round: 2,
             ..parts("Review")
         };
-        assert_eq!(fill("review:{item}", &review), "review:document:r2");
+        assert_eq!(
+            fill("review:{item}", &review),
+            "review:documentation-configuration:r2"
+        );
         assert_eq!(
             unique("build:add-explicit", |label| label == "build:add-explicit"),
             "build:add-explicit-2"
         );
         // One word wider than the label is all there is to cut.
         let word = LabelParts {
-            item: Some("internationalization"),
+            item: Some("pneumonoultramicroscopicsilicovolcanoconiosis"),
             ..parts("Review")
         };
-        assert_eq!(fill("review:{item}", &word), "review:international");
         assert_eq!(
-            unique("fix after main moved", |label| label
-                == "fix after main moved"),
-            "fix after main-2"
+            fill("review:{item}", &word),
+            "review:pneumonoultramicroscopicsilicovol"
+        );
+        let given = "fix after main moved and the checks failed";
+        assert_eq!(
+            unique(given, |label| label == given),
+            "fix after main moved and the checks-2"
         );
         // The phase's own dash is never where a label ends.
         let phase = LabelParts {
-            item: Some("verbose-flag-parsing"),
+            item: Some("internationalization-configuration-parsing"),
             ..parts("Sign off")
         };
-        assert_eq!(fill("{phase}:{item}", &phase), "sign-off:verbose");
+        assert_eq!(
+            fill("{phase}:{item}", &phase),
+            "sign-off:internationalization"
+        );
     }
 
     #[test]

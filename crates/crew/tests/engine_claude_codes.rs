@@ -539,3 +539,221 @@ async fn the_reviewers_read_the_change_without_what_a_command_left_behind() -> a
     assert!(merged(&outcomes));
     Ok(())
 }
+
+/// A Captain run's record, its paths replaced: Haiku's session started six workflows, one to
+/// fix the money rounding and five more sign-offs, because each time Codex sent the change back.
+const REVIEW_LOOP: &str = include_str!("fixtures/runs/captain-review-loop.jsonl");
+
+fn recorded() -> Vec<RunEvent> {
+    support::recorded_run(
+        REVIEW_LOOP,
+        &[
+            ("{run}", argonauts_testkit::services::TEST_RUN),
+            ("{repo}", "/repo"),
+            ("{run_dir}", "/state/run"),
+            ("{worktrees}", "/worktrees"),
+            ("{base_commit}", "eecdf983f2dfa422118f1a999438c399f3d446f8"),
+        ],
+    )
+}
+
+/// The asks the recorded session made, in order: each review and sign-off agent of Claude
+/// Code's workflows, by role and label, from each workflow's last report.
+fn recorded_asks(events: &[RunEvent]) -> Vec<(CrewRole, String)> {
+    let mut asks = Vec::new();
+    for event in events {
+        let RunEventKind::Agent(AgentEvent::Workflow { workflow }) = &event.kind else {
+            continue;
+        };
+        for agent in &workflow.agents {
+            let label = agent.label.clone();
+            if label.starts_with("review:") {
+                asks.push((CrewRole::Reviewer, label));
+            } else if label.starts_with("sign-off:") {
+                asks.push((CrewRole::Judge, label));
+            }
+        }
+    }
+    asks
+}
+
+/// What each recorded review said, in order, as the reviewer answered then.
+fn recorded_answers(events: &[RunEvent]) -> Vec<Value> {
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Review(ReviewEvent::Reviewed { review, .. }) => Some(json!({
+                "accept": false,
+                "summary": review.summary,
+                "findings": review.comments.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+            })),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Sends one ask through the build session's tool, once it has written its file.
+async fn ask(orchestrator: &FakeRunner, role: CrewRole, label: &str, what: &str) -> AskReply {
+    let spec = loop {
+        if let Some(spec) = build_spec(orchestrator)
+            && spec.workdir.join("due.rs").exists()
+        {
+            break spec;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let asking = spec.asking.expect("the build session can ask");
+    let mut stream = TcpStream::connect(&asking.endpoint).await.unwrap();
+    let line = AskLine {
+        token: asking.token.clone(),
+        ask: Ask::Role {
+            role,
+            label: label.into(),
+            what: what.into(),
+        },
+    };
+    let text = format!("{}\n", serde_json::to_string(&line).unwrap());
+    stream.write_all(text.as_bytes()).await.unwrap();
+    let mut answer = String::new();
+    BufReader::new(stream).read_line(&mut answer).await.unwrap();
+    serde_json::from_str(answer.trim()).unwrap()
+}
+
+fn labels_of(events: &[RunEvent], worker: &str) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Session(SessionEvent::Started(started))
+                if started.worker.to_string() == worker =>
+            {
+                started.label.clone()
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The recorded session's thirteen asks, replayed with Codex's recorded answers: each keeps the
+/// label Claude Code's script gave it, each role is asked at most `max_change_rounds + 1` times
+/// before the session is told to report, later rounds read the earlier findings, and the
+/// sign-off comes from another provider than the reviewer.
+#[tokio::test]
+async fn the_recorded_six_workflows_stop_at_the_cap() -> anyhow::Result<()> {
+    let record = recorded();
+    let prompt = record.iter().find_map(|event| match &event.kind {
+        RunEventKind::Session(SessionEvent::Input(input)) => Some(input.parts.clone()),
+        _ => None,
+    });
+    let said_once_more = prompt.unwrap_or_default().iter().any(|part| {
+        part.text
+            .contains("ask them once more about the final change")
+    });
+    assert!(
+        said_once_more,
+        "the recorded prompt asked for one more review"
+    );
+    let asks = recorded_asks(&record);
+    let reviews = asks
+        .iter()
+        .filter(|(role, _)| *role == CrewRole::Reviewer)
+        .count();
+    assert_eq!((reviews, asks.len() - reviews), (7, 6), "{asks:?}");
+    let answers = recorded_answers(&record);
+    assert_eq!(answers.len(), 13);
+
+    let (mut crew, orchestrator, reviewer) = crew(Duration::ZERO)?;
+    // The first build runs while the asks come in; the rounds of fixes after it are quick.
+    let builds = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counted = builds.clone();
+    orchestrator.respond(move |spec| {
+        let mut delay = Duration::ZERO;
+        if spec.access == Access::Build {
+            std::fs::write(spec.workdir.join("due.rs"), "pub struct Due;\n").expect("writes");
+            if counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                delay = Duration::from_secs(5);
+            }
+        }
+        FakeSession::structured(report("Added due dates", "due.rs")).with_delay(delay)
+    });
+    let codex = FakeRunner::cli("codex", "openai");
+    let given = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let next = given.clone();
+    let codex = crew.services.workers.add(codex.respond_with(move |_| {
+        let n = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        FakeSession::structured(answers[n % answers.len()].clone())
+    }));
+    let judge = crew.services.workers.add(
+        FakeRunner::cli("antigravity-cli/flash", "google").respond_with(|_| {
+            FakeSession::structured(json!({"accept": true, "summary": "Ready", "findings": []}))
+        }),
+    );
+    crew.settings.crew.reviewer = vec!["codex".parse()?];
+    crew.settings.crew.judge = vec!["codex".parse()?, "antigravity-cli/flash".parse()?];
+    let _env = crew.repo.env_guard();
+    let replies = async {
+        let mut replies = Vec::new();
+        for (role, label) in &asks {
+            replies.push(
+                ask(
+                    &orchestrator,
+                    *role,
+                    label,
+                    "Fixed what the last round found",
+                )
+                .await,
+            );
+        }
+        replies
+    };
+    let (outcomes, replies) = tokio::join!(crew.run_to_end(RunMode::Crew, REQUEST, 0), replies);
+    let outcomes = outcomes?;
+    let events = events(&outcomes);
+
+    let capped = replies
+        .iter()
+        .filter(|reply| reply.text.contains("as many as it allows"));
+    assert_eq!(
+        capped.count(),
+        13 - 6,
+        "{:#?}",
+        replies.iter().map(|r| &r.text).collect::<Vec<_>>()
+    );
+    let codex_labels = labels_of(events, "codex");
+    assert_eq!(
+        codex_labels[..3],
+        ["review:money", "review:final", "review:final-2"],
+        "{codex_labels:?}"
+    );
+    assert_eq!(
+        labels_of(events, "antigravity-cli/flash")[..3],
+        ["sign-off:money", "sign-off:money-2", "sign-off:money-3"]
+    );
+    assert!(judge.specs().len() >= 3);
+    let later = codex.specs().into_iter().nth(1).expect("a second review");
+    let earlier = later
+        .prompt
+        .iter()
+        .find(|part| part.kind == InputPartKind::EarlierFindings)
+        .expect("the second round reads the first's findings");
+    assert!(earlier.text.contains("1. review:money"), "{}", earlier.text);
+    assert!(earlier.text.contains("- blocking: "), "{}", earlier.text);
+    assert!(
+        earlier
+            .text
+            .contains("Answered: Fixed what the last round found"),
+        "{}",
+        earlier.text
+    );
+    assert!(
+        reviewer.specs().is_empty(),
+        "only the reviewers the run names are asked"
+    );
+    let told = build_spec(&orchestrator).expect("built");
+    let told = told
+        .prompt
+        .iter()
+        .map(|part| part.text.as_str())
+        .collect::<String>();
+    assert!(!told.contains("once more"), "{told}");
+    Ok(())
+}

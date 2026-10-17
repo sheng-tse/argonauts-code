@@ -95,6 +95,19 @@ pub struct RunSummary {
     /// Waiting longer than `runs.remind_waiting_days`. Waiting runs never expire.
     #[serde(default)]
     pub remind: bool,
+    /// Its workflow has its shape, so its row is drawn: see [`crate::views::shape_known`]. A
+    /// summary from a build before this one says nothing of it, so it shows; only `false` is
+    /// written.
+    #[serde(default = "shape_was_known", skip_serializing_if = "is_known")]
+    pub shape_known: bool,
+}
+
+fn shape_was_known() -> bool {
+    true
+}
+
+fn is_known(shape_known: &bool) -> bool {
+    *shape_known
 }
 
 impl RunSummary {
@@ -620,7 +633,42 @@ pub trait Approvals: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::RunState;
+    use super::{RunState, RunSummary};
+
+    /// A summary writes that its workflow's shape isn't known only while it isn't, and one that
+    /// says nothing of it, as an older build's does, has its shape.
+    #[test]
+    fn a_summary_says_its_shape_only_while_it_is_unknown() {
+        let summary = RunSummary {
+            run: crate::RunId::new("run-01").unwrap(),
+            title: "Fix the money rounding".to_owned(),
+            name: None,
+            mode: crate::events::run::RunMode::Captain,
+            workflow: String::new(),
+            state: RunState::Running,
+            stopped_at: String::new(),
+            updated: time::OffsetDateTime::UNIX_EPOCH,
+            spent: crate::Spend::default(),
+            sessions_to_resume: 0,
+            waiting: Vec::new(),
+            live: true,
+            remind: false,
+            shape_known: false,
+        };
+        let written = serde_json::to_value(&summary).unwrap();
+        assert_eq!(written["shape_known"], serde_json::json!(false));
+        let read: RunSummary = serde_json::from_value(written).unwrap();
+        assert!(!read.shape_known);
+
+        let shaped = RunSummary {
+            shape_known: true,
+            ..summary
+        };
+        let written = serde_json::to_value(&shaped).unwrap();
+        assert!(written.get("shape_known").is_none(), "{written}");
+        let read: RunSummary = serde_json::from_value(written).unwrap();
+        assert!(read.shape_known);
+    }
 
     /// A run that can still start its sessions again hasn't ended: waiting and crashed runs
     /// resume them where they were.

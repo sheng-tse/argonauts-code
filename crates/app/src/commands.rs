@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, anyhow, bail};
 use argonauts_conductor::DoctorDetails;
 use argonauts_core::api::{RunState, RunSummary};
+use argonauts_core::cheapest::cheapest_listed;
 use argonauts_core::layout::user_files;
 use argonauts_core::names::ModelRef;
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
@@ -349,6 +350,33 @@ pub async fn models(repo: Option<&Path>, discover: bool) -> anyhow::Result<Vec<M
     })
 }
 
+/// The cheapest model and effort `agent` lists, from the list discovery last kept, else the
+/// adapter's own pick while no list is known. `None` for a CLI Argonauts Code has no adapter
+/// for and whose list prices nothing. Nothing is fetched.
+pub fn cheapest_model(
+    repo: Option<&Path>,
+    overrides: Vec<String>,
+    agent: &str,
+) -> anyhow::Result<Option<(String, Option<String>)>> {
+    let (env, resolved) = resolve_here(repo, overrides)?;
+    let repo = env
+        .as_ref()
+        .map(|env| RepoModels::new(&env.repo_root, &env.state_dir));
+    let cache = home()?.models_cache();
+    let registry = crate::host::clis::registry(&resolved.settings, repo.as_ref(), Some(&cache));
+    let listed =
+        cheapest_listed(registry.as_ref(), agent).map(|cheapest| (cheapest.model, cheapest.effort));
+    Ok(listed.or_else(|| {
+        builtin_adapters()
+            .iter()
+            .find(|adapter| adapter.id() == agent)
+            .map(|adapter| {
+                let (model, effort) = adapter.cheapest_model();
+                (model.to_owned(), effort.map(str::to_owned))
+            })
+    }))
+}
+
 /// `argonauts config set`: to the key's default scope unless `scope` picks the file. A safety key
 /// needs a terminal, and this refuses inside an agent. Returns the file written.
 pub fn config_set(
@@ -577,7 +605,10 @@ pub fn current_settings(repo: Option<&Path>, overrides: Vec<String>) -> anyhow::
 /// default, for Doctor to name.
 pub fn settings_warnings(repo: Option<&Path>, overrides: Vec<String>) -> Vec<String> {
     resolve_here(repo, overrides)
-        .map(|(_, resolved)| resolved.warnings)
+        .map(|(_, resolved)| {
+            let warnings = resolved.warnings.into_iter();
+            warnings.map(|warning| warning.text).collect()
+        })
         .unwrap_or_default()
 }
 
@@ -633,6 +664,7 @@ fn resolve_here(
         global: Some(paths.global_config()),
         overrides,
         interactive: false,
+        home: std::env::var_os("HOME").map(PathBuf::from),
         ..SettingsSources::default()
     };
     Ok((None, resolve(&sources)?))
@@ -868,6 +900,7 @@ mod tests {
             live: false,
             remind,
             name: None,
+            shape_known: true,
         }
     }
 

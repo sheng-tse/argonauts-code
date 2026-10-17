@@ -1,21 +1,27 @@
 //! The Context tab against its pictures, cell for cell and colour for colour: a 1M main
 //! session at 75% with two crew agents at work, and the same session at 94%.
 //!
-//! The pictures spell token counts as Claude Code does (`1m`, `799.6k`). The screen spells
-//! them as every other screen does (`1M`, `800k`), so each picture is compared after the counts
-//! in [`COUNTS_AT_THREE_QUARTERS`] and [`COUNTS_NEAR_FULL`] are respelled. A respelled count that
-//! is shorter leaves blank cells where its column says. Each model is compared in the shade of
-//! its CLI's colour that the pictures draw it in.
+//! Every screen writes tokens in one format, Argonauts Code's own (`1M`, `800k`), and that format
+//! stands over the pictures, which spell counts as Claude Code does (`1m`, `799.6k`). So each
+//! picture is compared after the counts in [`COUNTS_AT_THREE_QUARTERS`] and [`COUNTS_NEAR_FULL`]
+//! are respelled. A respelled count that is shorter leaves blank cells where its column says.
+//! Each model is compared in the shade of its CLI's colour that the pictures draw it in.
 
 use std::sync::Arc;
 use std::time::Instant;
 
+use argonauts_core::Spend;
 use argonauts_core::app::AppMode;
-use argonauts_core::names::TurnId;
+use argonauts_core::names::{ModelRef, SessionKey, TurnId};
+use argonauts_core::overview::ModelTokens;
+use argonauts_core::views::{ContextRow, ContextView, RecordedContext};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Rect, Size};
+use time::OffsetDateTime;
+use time::macros::datetime;
 
 use super::example::{self, Example};
+use crate::bridge::tools::Places;
 use crate::overview::golden::{Picture, PictureCell, Region, differences, theme};
 use crate::overview::{OverviewView, Tab, UsageWatch};
 use crate::state::{AppState, ContextGrowth, RunState};
@@ -166,17 +172,26 @@ fn state(example: &Example) -> AppState {
 /// The panel as it opens on `example`, on a screen 118 cells wide and tall enough for all of
 /// it.
 fn drawn(example: &Example) -> Buffer {
-    let state = state(example);
+    panel(
+        &state(example),
+        example.view.clone(),
+        example.now,
+        example.places.clone(),
+    )
+}
+
+/// The Context tab drawn from `view` at `now`.
+fn panel(state: &AppState, view: ContextView, now: OffsetDateTime, places: Places) -> Buffer {
     let theme = theme();
     let ctx = ViewCtx {
         theme: &theme,
-        state: &state,
+        state,
         now: Instant::now(),
     };
     let mut view = OverviewView::new(Tab::Context, UsageWatch::default())
-        .at(example.now)
-        .showing_paths_from(example.places.clone())
-        .with_context(example.view.clone());
+        .at(now)
+        .showing_paths_from(places)
+        .with_context(view);
     let height = view
         .dock_height(Size::new(118, 120), &ctx)
         .expect("the panel docks");
@@ -246,6 +261,90 @@ fn the_context_tab_near_full_matches_its_picture() {
     let picture = respell(Picture::load("context_near_full"), COUNTS_NEAR_FULL);
     let buf = drawn(&example::near_full());
     assert_panel_matches(&picture, &buf, 4..79);
+}
+
+/// A resumed conversation before a turn of it runs again, its session as the record left it:
+/// the council session's one turn, which left 25,517 of 1M tokens and spent $0.0040, drawn
+/// under the transcript of `resumed_after`.
+#[test]
+fn a_resumed_conversations_context_matches_its_picture() {
+    let mut picture = respell(
+        Picture::screen("resumed_after"),
+        &[respelled(45, "/1m", "/1M", None)],
+    );
+    // The picture's tab row has no Config tab. The panel's is the one the Context tab's own
+    // picture draws: Config after Status, under the bold Settings title.
+    let tabs = Picture::load("context_tab");
+    let at = tabs
+        .text()
+        .iter()
+        .position(|row| row.contains(" Settings   Overview"))
+        .expect("the Context tab's picture has its tab row");
+    let mut tab_row = tabs.rows[at].clone();
+    let width = picture.rows[42].len();
+    tab_row.resize(
+        width,
+        PictureCell {
+            ch: ' ',
+            fg: None,
+            bg: None,
+            bold: false,
+        },
+    );
+    picture.rows[42] = tab_row;
+    let worker: ModelRef = "claude-code/claude-haiku-5-5".parse().expect("a model");
+    let row = ContextRow {
+        run: None,
+        session: SessionKey::numbered(1),
+        label: "conversation".to_owned(),
+        worker: worker.clone(),
+        used: 25_517,
+        window: Some(1_000_000),
+        cap: None,
+        tool_calls: 2,
+        spent: Spend {
+            input_tokens: 73_708,
+            output_tokens: 916,
+            cached_tokens: 58_770,
+            cost_usd: 0.004_032_7,
+            cost_partial: false,
+            cost_estimated: false,
+        },
+        rotations: 0,
+        estimated: false,
+        counts: false,
+        categories: Vec::new(),
+        recorded: Some(RecordedContext {
+            at: datetime!(2026-10-14 01:52 UTC),
+            turns: 1,
+        }),
+    };
+    let mut state = AppState::default();
+    state.names = crate::overview::sample::names();
+    state.conversation.worker = Some(worker);
+    // Haiku 5.5 has run the fewest tokens of the three Claude Code models here, so it draws in
+    // the third shade of Claude Code's colour.
+    let mut usage = crate::overview::sample::usage();
+    usage.all_time_models = [
+        ("claude-opus-5-5", 9_400_000),
+        ("claude-sonnet-5-5", 2_100_000),
+        ("claude-haiku-5-5", 310_000),
+    ]
+    .map(|(model, tokens)| ModelTokens {
+        agent: "claude-code".to_owned(),
+        model: Some(model.to_owned()),
+        tokens,
+    })
+    .to_vec();
+    state.usage = Some(Arc::new(usage));
+    let buf = panel(
+        &state,
+        ContextView { rows: vec![row] },
+        datetime!(2026-10-15 00:35 UTC),
+        Places::default(),
+    );
+    // From the panel's rule to its key line: the rows above are the conversation.
+    assert_panel_matches(&picture, &buf, 41..50);
 }
 
 /// A count that is respelled moves nothing but itself and the blanks its column takes.

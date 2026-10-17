@@ -60,15 +60,15 @@ fn overrides(args: &RunArgs, set: &[String]) -> anyhow::Result<Vec<String>> {
         None => String::new(),
     };
     let cheapest = if args.cheapest {
-        argonauts_app::builtin_adapters()
-            .iter()
-            .find(|adapter| adapter.id() == agent)
-            .map(|adapter| adapter.cheapest_model())
+        argonauts_app::cheapest_model(None, set.to_vec(), &agent)
+            .map_err(usage)?
             .ok_or_else(|| usage(anyhow!("there's no cheapest model known for {agent}")))?
     } else {
-        ("", None)
+        (String::new(), None)
     };
-    args.overrides(set, &agent, cheapest).map_err(usage)
+    let (model, effort) = &cheapest;
+    args.overrides(set, &agent, (model, effort.as_deref()))
+        .map_err(usage)
 }
 
 /// What the run's own lines didn't say already.
@@ -224,6 +224,7 @@ mod tests {
                 live: false,
                 remind: false,
                 name: None,
+                shape_known: true,
             }],
         };
         assert_eq!(

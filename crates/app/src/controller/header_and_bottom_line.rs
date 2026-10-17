@@ -14,6 +14,7 @@ use argonauts_core::limits::{HealthBoard, PlanUsageBoard, PlanUsageReading};
 use argonauts_core::names::{AgentId, ModelRef};
 use argonauts_core::plan_usage::{LiveUsage, UNNAMED_SHOWN_FOR, current_live};
 use argonauts_core::registry::effort_to_run;
+use argonauts_core::registry::listed::nearest_listed;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::bottom_line::{BRANCH, BottomLineSettings, SPEND};
 use argonauts_core::settings::limit::LimitAmount;
@@ -194,7 +195,8 @@ fn spend_days(env: &AppEnv, now: OffsetDateTime) -> Vec<f64> {
 /// names an agent only once you change it. With no model set the CLI runs its own default: the one
 /// its model list marks, else the one the catalog's "Default (recommended)" runs. With no effort
 /// set it runs the level that model starts at, as the CLI says, else the catalog. A model fixed at
-/// one level, or taking none, runs as it does whatever is set.
+/// one level, or taking none, runs as it does whatever is set. A model its CLI no longer lists
+/// runs as the nearest one it does, so that is the one named.
 pub(crate) fn header_agent(ctx: &Ctx) -> (ModelRef, Option<String>) {
     let settings = ctx.settings();
     let (mut agent, effort) = conversation_agent(settings, &settings.crew.main);
@@ -202,6 +204,10 @@ pub(crate) fn header_agent(ctx: &Ctx) -> (ModelRef, Option<String>) {
     let catalog = registry.catalog();
     if agent.model.is_none() {
         agent.model = cli_defaults(ctx, [agent.agent.as_str()]).remove(&agent.agent);
+    }
+    // The model that runs sets the level it takes, so the swap comes first, as a turn's does.
+    if let Some(nearest) = nearest_listed(registry.as_ref(), &agent) {
+        agent = nearest;
     }
     let effort = effort_to_run(registry.as_ref(), &agent, effort)
         .or_else(|| registry.get(&agent)?.default_effort)

@@ -59,6 +59,8 @@ pub fn run_rows(state: &AppState, wall: OffsetDateTime, now: Instant) -> Vec<Wor
         .background
         .iter()
         .filter(|run| !state.runs.contains_key(&run.run))
+        // A run that isn't on this screen has no row either while its workflow is written.
+        .filter(|run| run.shape_known || !run.is_open() || run.needs_you())
         .collect();
     background.sort_by(|a, b| a.updated.cmp(&b.updated).then_with(|| a.run.cmp(&b.run)));
     let mut runs: Vec<&RunState> = state
@@ -68,6 +70,9 @@ pub fn run_rows(state: &AppState, wall: OffsetDateTime, now: Instant) -> Vec<Wor
             run.finished.is_none() || !run.approvals.is_empty() || kept_for(run, wall).is_some()
         })
         .filter(|run| !state.ended_off_screen.contains(&run.id))
+        // A workflow still being written has no row: only the working line says so. What
+        // waits on you, and how a run ended, still show.
+        .filter(|run| run.shape_known() || run.finished.is_some() || !run.approvals.is_empty())
         .collect();
     runs.sort_by(|a, b| a.started.cmp(&b.started).then_with(|| a.id.cmp(&b.id)));
     let held = runs.into_iter().flat_map(|run| {
@@ -83,11 +88,8 @@ pub fn run_rows(state: &AppState, wall: OffsetDateTime, now: Instant) -> Vec<Wor
         if run.approvals.is_empty() {
             row.leaves_at = kept_for(run, wall).map(|left| now + left);
         }
-        let own_key = the_runs_own(run).map(|workflow| agent_key(&run.id, workflow));
-        let nested = cli_workflow_rows(run, wall, now)
-            .into_iter()
-            .filter(move |nested| own_key.as_ref() != Some(&nested.key));
-        std::iter::once(row).chain(nested)
+        let inside = inside_rows(run, wall, now);
+        std::iter::once(row).chain(inside)
     });
     // A workflow the conversation's own CLI runs gets a row as a run's does.
     let conversation = conversation_run();
@@ -123,11 +125,10 @@ fn kept_for(run: &RunState, wall: OffsetDateTime) -> Option<Duration> {
 }
 
 /// Two runs never share a name in the list: the second of a name reads `add-due-dates-2`,
-/// the third `-3`. A workflow under an agent is part of that agent's step, not a run, and keeps
-/// its own.
+/// the third `-3`. A workflow inside a run is part of it, not a run, and keeps its own.
 fn number_alike(rows: &mut [WorkflowRow]) {
     let mut seen: Vec<(String, usize)> = Vec::new();
-    for row in rows.iter_mut().filter(|row| row.parent.is_none()) {
+    for row in rows.iter_mut().filter(|row| row.depth == 0) {
         let name = row.name.trim().to_owned();
         match seen.iter_mut().find(|(known, _)| *known == name) {
             Some((_, count)) => {
@@ -150,51 +151,198 @@ pub(crate) fn agent_key(run: &RunId, workflow: &CliWorkflowRun) -> String {
     format!("{run}#{}", cli_workflow_run_id(&workflow.id))
 }
 
-/// The CLI workflow a run is: the one that the sessions of its only task are running, as when
-/// Claude Code's own workflow runs the crew's. It gets no row of its own, and the run counts
-/// its steps. Once the run has ended, the last one it ran is still the one it was.
-fn the_runs_own(run: &RunState) -> Option<&CliWorkflowRun> {
+/// The CLI workflows a run is: those the sessions of its only task run, as when Claude Code's
+/// own workflow runs the crew's, oldest first. The first is the run's own and gets no row of its
+/// own; a later one is a workflow inside the run.
+fn the_tasks_own(run: &RunState) -> Vec<&CliWorkflowRun> {
     let mut tasks = run
         .sessions_in_order()
         .filter_map(|session| session.task.as_ref());
-    let task = tasks.next()?;
+    let Some(task) = tasks.next() else {
+        return Vec::new();
+    };
     if tasks.any(|other| other != task) {
-        return None;
+        return Vec::new();
     }
     run.sessions_in_order()
         .filter(|session| session.task.as_ref() == Some(task))
         .flat_map(|session| session.workflows.iter())
-        .filter(|workflow| run.finished.is_some() || !workflow.ended())
-        .last()
+        .collect()
+}
+
+/// The CLI workflow whose phases are the run's: the first its task ran.
+pub(super) fn the_runs_own(run: &RunState) -> Option<&CliWorkflowRun> {
+    the_tasks_own(run).into_iter().next()
 }
 
 /// A run's agents done and in all, its time and its tokens: the one count its row here and
 /// its closing row in the conversation show, as its workflow view's header does. A run that
-/// is one CLI workflow counts that workflow's agents.
+/// is its task's CLI workflows counts every agent of each of them, and never switches from one
+/// to the next, then the agents of its own that work after them, such as the merge's.
 pub(crate) fn run_totals(run: &RunState, wall: OffsetDateTime) -> RunTotals {
     let mut totals = run.totals(wall);
-    if let Some(workflow) = the_runs_own(run) {
-        let done = workflow
-            .agents
-            .iter()
-            .filter(|agent| agent.state == CliAgentState::Done)
-            .count();
-        totals.agents_done = u32::try_from(done).unwrap_or(u32::MAX);
-        totals.agents_total = u32::try_from(workflow.agents.len()).unwrap_or(u32::MAX);
+    let own = the_tasks_own(run);
+    if own.is_empty() {
+        // The agents of a workflow a worker's own CLI runs are the run's agents too, and stay
+        // in its count once that workflow ends.
+        let inside = run
+            .sessions_in_order()
+            .flat_map(|session| &session.workflows)
+            .flat_map(|workflow| &workflow.agents);
+        let (done, all) = inside.fold((0u32, 0u32), |(done, all), agent| {
+            (
+                done + u32::from(agent.state == CliAgentState::Done),
+                all + 1,
+            )
+        });
+        totals.agents_done += done;
+        totals.agents_total += all;
+        return totals;
     }
+    let agents = || own.iter().flat_map(|workflow| &workflow.agents);
+    let done = agents()
+        .filter(|agent| agent.state == CliAgentState::Done)
+        .count();
+    let hosts: Vec<_> = run
+        .sessions_in_order()
+        .filter(|session| !session.workflows.is_empty())
+        .filter_map(|session| session.workflow_step.as_ref().map(|step| step.phase))
+        .collect();
+    let after = run.sessions_in_order().filter(|session| {
+        argonauts_core::views::is_workflow_agent(session.step, session.workflow_step.as_ref())
+            && session
+                .workflow_step
+                .as_ref()
+                .is_some_and(|step| !hosts.contains(&step.phase))
+    });
+    let (after_done, after_all) = after.fold((0, 0), |(done, all), session| {
+        (
+            done + usize::from(session.status == SessionStatus::Done),
+            all + 1,
+        )
+    });
+    let (asked_done, asked_all) = asked_of_its_own(run, &own, &hosts);
+    totals.agents_done = u32::try_from(done + after_done + asked_done).unwrap_or(u32::MAX);
+    totals.agents_total =
+        u32::try_from(agents().count() + after_all + asked_all).unwrap_or(u32::MAX);
     totals
 }
 
-/// A row for each workflow an agent's own CLI is running, as Claude Code's panel lists its own.
-/// Its time counts from its start, so a report of its totals never sets it back.
-fn cli_workflow_rows(run: &RunState, wall: OffsetDateTime, now: Instant) -> Vec<WorkflowRow> {
-    run.sessions_in_order()
-        .flat_map(|session| session.workflows.iter().map(move |w| (session, w)))
-        .filter(|(_, workflow)| !workflow.ended())
-        .map(|(session, workflow)| {
-            let mut row = cli_workflow_row(&run.id, workflow, wall, now);
-            row.parent = Some(session.key.to_string());
-            row
+/// The reviewers and judges the task's workflows asked of Argonauts Code, done and in all, that
+/// fill no row of those workflows: each answer joins the row that asked, by the label its ask
+/// kept, so only an ask under a label none of their agents has, as between two of its
+/// workflows, is a row of its own in the view, and an agent once across its rounds.
+fn asked_of_its_own(run: &RunState, own: &[&CliWorkflowRun], hosts: &[u32]) -> (usize, usize) {
+    let named = |label: &str| {
+        own.iter()
+            .flat_map(|workflow| &workflow.agents)
+            .any(|agent| agent.label.trim() == label)
+    };
+    let mut asks: std::collections::BTreeMap<&str, bool> = Default::default();
+    for session in run.sessions_in_order() {
+        let in_a_host = session
+            .workflow_step
+            .as_ref()
+            .is_some_and(|step| hosts.contains(&step.phase));
+        let asked = in_a_host
+            && session.workflows.is_empty()
+            && argonauts_core::views::is_workflow_agent(
+                session.step,
+                session.workflow_step.as_ref(),
+            );
+        let label = session.label.as_deref().map(str::trim).unwrap_or_default();
+        if !asked || label.is_empty() {
+            continue;
+        }
+        let stem = argonauts_core::views::round_stem(label).unwrap_or(label);
+        if named(label) || named(stem) {
+            continue;
+        }
+        asks.insert(stem, session.status == SessionStatus::Done);
+    }
+    let done = asks.values().filter(|done| **done).count();
+    (done, asks.len())
+}
+
+/// A `⎿` row for each workflow at work inside the run, a level further in for each one that
+/// holds it: one a worker's own CLI runs, which names that worker, a later one the run's task
+/// starts, and a child either of them starts, which its CLI reports as a phase named for it.
+/// The run's own CLI workflow is the run's row, so only its children have rows. Each leaves
+/// once it ends, and the run's count keeps its agents.
+fn inside_rows(run: &RunState, wall: OffsetDateTime, now: Instant) -> Vec<WorkflowRow> {
+    let wall_ms = u64::try_from((wall - OffsetDateTime::UNIX_EPOCH).whole_milliseconds()).ok();
+    let own = the_runs_own(run).map(|workflow| workflow.id.as_str());
+    let tasks_own: Vec<&str> = the_tasks_own(run)
+        .iter()
+        .map(|workflow| workflow.id.as_str())
+        .collect();
+    let mut rows = Vec::new();
+    for session in run.sessions_in_order() {
+        for workflow in session
+            .workflows
+            .iter()
+            .filter(|workflow| !workflow.ended())
+        {
+            let depth = if own == Some(workflow.id.as_str()) {
+                0
+            } else {
+                let mut row = cli_workflow_row(&run.id, workflow, wall, now);
+                row.depth = 1;
+                // A worker's own workflow says whose it is; a later one of the task's is the
+                // run's own carrying on.
+                if !tasks_own.contains(&workflow.id.as_str()) {
+                    row.run_by = session
+                        .label
+                        .clone()
+                        .or_else(|| Some(session.agent_id.clone()));
+                }
+                rows.push(row);
+                1
+            };
+            rows.extend(child_rows(&run.id, workflow, depth + 1, wall_ms, now));
+        }
+    }
+    rows
+}
+
+/// A row for each child at work that `workflow`'s script started, which its CLI reports as a
+/// phase named `▸` and the child's name: its agents done of all, its time and its tokens.
+fn child_rows(
+    run: &RunId,
+    workflow: &CliWorkflowRun,
+    depth: usize,
+    wall_ms: Option<u64>,
+    now: Instant,
+) -> Vec<WorkflowRow> {
+    workflow
+        .phases
+        .iter()
+        .filter_map(|phase| {
+            let name = phase.child()?;
+            let agents: Vec<_> = workflow.agents_in(phase.index).collect();
+            let at_work = agents.iter().any(|agent| !agent.state.ended());
+            if !at_work {
+                return None;
+            }
+            let id = cli_workflow_run_id(&format!("{}-{name}", workflow.id));
+            let mut row = WorkflowRow::new(format!("{run}#{id}"), name, WorkflowRowState::Running);
+            row.depth = depth;
+            row.agents_total = u32::try_from(agents.len()).unwrap_or(u32::MAX);
+            row.agents_done = u32::try_from(
+                agents
+                    .iter()
+                    .filter(|agent| agent.state == CliAgentState::Done)
+                    .count(),
+            )
+            .unwrap_or(u32::MAX);
+            let started = agents.iter().filter_map(|agent| agent.started_at_ms).min();
+            row.elapsed_ms = match (started, wall_ms) {
+                (Some(started), Some(wall)) => wall.saturating_sub(started),
+                _ => 0,
+            };
+            row.measured_at = Some(now);
+            row.tokens = agents.iter().map(|agent| agent.tokens).sum();
+            Some(row)
         })
         .collect()
 }
@@ -228,13 +376,23 @@ fn cli_workflow_row(
 /// The run's own name, `fix-slugify-median`, or before it has one, its workflow and title,
 /// `Council · add --json to export`.
 fn run_name(run: &RunState) -> String {
+    // A workflow its script writes names itself in its first report, as the view's header does.
+    let templates = [run.workflow.as_deref()];
+    if let Some(reported) = run
+        .reported
+        .all()
+        .map(|workflow| workflow.name.trim())
+        .find(|name| argonauts_core::text::names_the_run(name, &templates))
+    {
+        return argonauts_core::text::title_words(reported);
+    }
     if let Some(named) = run
         .named
         .as_ref()
         .map(|named| named.name.trim())
         .filter(|name| !name.is_empty())
     {
-        return named.to_owned();
+        return argonauts_core::text::title_words(named);
     }
     row_name(workflow_name(run), &run.title, &run.id)
 }
@@ -274,8 +432,19 @@ fn background_row(run: &RunSummary) -> WorkflowRow {
 fn listed_state(run: &RunSummary) -> WorkflowRowState {
     if run.needs_you() {
         WorkflowRowState::NeedsYou
-    } else if matches!(run.state, ApiRunState::Pausing | ApiRunState::Waiting) {
+    } else if run.state == ApiRunState::Pausing {
         WorkflowRowState::Paused
+    } else if run.state == ApiRunState::Waiting {
+        // The listing words why it waits, as its journal ends.
+        let why = run.stopped_at.as_str();
+        // Only a pause you asked for reads paused.
+        if why.starts_with("stopped") {
+            WorkflowRowState::Stopped
+        } else if why == "paused" {
+            WorkflowRowState::Paused
+        } else {
+            WorkflowRowState::Waiting
+        }
     } else {
         WorkflowRowState::Running
     }
@@ -324,6 +493,7 @@ fn run_row(
     row.agents_done = totals.agents_done;
     row.tokens = totals.tokens;
     row.said = row_says(run);
+    row.carry_on = carry_on(run);
     row.fallback = filling_in(run, names);
     row.outside_agent = run
         .outside_agent
@@ -362,6 +532,16 @@ fn row_says(run: &RunState) -> Option<String> {
             (RunOutcome::Failed, _) => "failed".to_owned(),
         });
     }
+    match &run.waiting {
+        Some(WaitReason::Paused) => return Some("paused by you".to_owned()),
+        Some(WaitReason::NoFallback { .. }) => return Some("stopped".to_owned()),
+        Some(WaitReason::AllAgentsOut { until }) => return Some(waiting_for("an agent", *until)),
+        Some(WaitReason::WaitingForAgent { agent_id, until }) => {
+            let cli = DisplayNames::default().cli(&agent_id.0);
+            return Some(waiting_for(&cli, *until));
+        }
+        _ => {}
+    }
     let asks = run
         .approvals
         .iter()
@@ -371,6 +551,28 @@ fn row_says(run: &RunState) -> Option<String> {
     let title = asks?.opened.title.trim();
     let headline = title.split_once(" · ").map_or(title, |(first, _)| first);
     Some(headline.to_owned()).filter(|headline| !headline.is_empty())
+}
+
+/// `waiting for Claude Code · tries again at 1:14 AM`, for an outage you chose to wait out.
+fn waiting_for(who: &str, until: Option<OffsetDateTime>) -> String {
+    match until {
+        Some(until) => format!(
+            "waiting for {who} · tries again at {}",
+            crate::format::WallClock::default().clock_rounded_up(until)
+        ),
+        None => format!("waiting for {who}"),
+    }
+}
+
+/// How a run that stopped or that you paused goes on: only `/resume` carries it on.
+fn carry_on(run: &RunState) -> Option<String> {
+    // A run you stopped says it in one breath, as its row always has.
+    let stopped = run.finished.is_none()
+        && matches!(
+            run.waiting,
+            Some(WaitReason::Paused | WaitReason::NoFallback { .. })
+        );
+    stopped.then(|| "/resume carries it on".to_owned())
 }
 
 /// `Sonnet 5.5 for Opus 5.5`: the model at work in another's place, while the run goes on.
@@ -396,7 +598,12 @@ fn row_state(run: &RunState) -> WorkflowRowState {
         (Some(outcome), _) => WorkflowRowState::ended(*outcome),
         (None, _) if !run.approvals.is_empty() => WorkflowRowState::NeedsYou,
         (None, Some(WaitReason::Approval)) => WorkflowRowState::NeedsYou,
-        (None, Some(_)) => WorkflowRowState::Paused,
+        // Only a pause you asked for says paused.
+        (None, Some(WaitReason::Paused)) => WorkflowRowState::Paused,
+        (None, Some(WaitReason::NoFallback { .. })) => WorkflowRowState::Stopped,
+        (None, Some(WaitReason::AllAgentsOut { .. } | WaitReason::WaitingForAgent { .. })) => {
+            WorkflowRowState::Waiting
+        }
         (None, None) if run.pausing => WorkflowRowState::Paused,
         (None, None) => WorkflowRowState::Running,
     }
@@ -407,11 +614,6 @@ fn waiting_notice(run: &RunState) -> Option<String> {
         return None;
     }
     match &run.waiting {
-        Some(WaitReason::AllAgentsOut { .. }) => Some("every agent is out".to_owned()),
-        Some(WaitReason::NoFallback { detail, .. }) => Some(detail.clone()),
-        Some(WaitReason::WaitingForAgent { agent_id, .. }) => {
-            Some(format!("waiting for {agent_id}"))
-        }
         _ if run.pausing && run.waiting.is_none() => Some("pausing at a safe point".to_owned()),
         _ => None,
     }
@@ -607,6 +809,21 @@ mod tests {
         run
     }
 
+    /// [`run_state`] once its workflow has started, so its row shows.
+    fn begun(id: &str, wall: OffsetDateTime) -> RunState {
+        let mut run = run_state(id, wall);
+        run.workflows.push(crate::state::WorkflowState {
+            id: argonauts_core::names::WorkflowId::numbered(1),
+            name: "council".into(),
+            from: Some("council".into()),
+            description: String::new(),
+            phases: vec!["Build".into()],
+            parent: None,
+            steps: Vec::new(),
+        });
+        run
+    }
+
     fn status(run: &str, limit: LimitAmount) -> HeaderAndBottomLine {
         HeaderAndBottomLine {
             title: String::new(),
@@ -689,6 +906,126 @@ mod tests {
         let rows = run_rows(&state, wall, Instant::now());
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!((rows[0].agents_done, rows[0].agents_total), (2, 3));
+
+        // A later workflow for the same task adds its agents to the run's count, which never
+        // switches from the first workflow to the next.
+        let run = state.runs.get_mut(&RunId::new("run-own").unwrap()).unwrap();
+        let host = run.sessions.get_mut(&SessionKey::numbered(1)).unwrap();
+        let mut later = host.workflows[0].clone();
+        later.id = "wf_2".into();
+        later.name = "final-signoff".into();
+        later.agents = vec![
+            agent(1, 1, CliAgentState::Done),
+            agent(2, 2, CliAgentState::Running),
+        ];
+        host.workflows.push(later);
+        let rows = run_rows(&state, wall, Instant::now());
+        assert_eq!((rows[0].agents_done, rows[0].agents_total), (3, 5));
+        // While it runs it has a row of its own under the run's, the run's own carrying on.
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!((rows[1].name.as_str(), rows[1].depth), ("final-signoff", 1));
+        assert_eq!(rows[1].run_by, None);
+    }
+
+    /// A worker's own workflow is a row under its run's while it runs, naming the worker, and
+    /// a child its script starts is one more a step further in. The run counts their agents.
+    #[test]
+    fn a_workflow_inside_a_run_follows_its_row() {
+        use argonauts_core::events::session::{CliAgent, CliPhase};
+        use argonauts_core::names::{RoleName, SessionKey, WorkflowId};
+        use argonauts_core::workflow::StepRef;
+        let wall = OffsetDateTime::now_utc();
+        let mut run = run_state("run-due", wall);
+        let step = StepRef {
+            workflow: WorkflowId::numbered(1),
+            phase: 0,
+            path: vec![0],
+        };
+        let worker = |n: u32, label: &str, task: &str| {
+            let mut session = SessionState::new(
+                SessionKey::numbered(n),
+                "claude-code/sonnet".parse().unwrap(),
+                "claude-code",
+                RoleName::Worker,
+                wall,
+            );
+            session.task = Some(argonauts_core::TaskId::new(task).unwrap());
+            session.label = Some(label.to_owned());
+            session.workflow_step = Some(step.clone());
+            session
+        };
+        let agent = |index: u32, phase: u32, state, started: u64| CliAgent {
+            index,
+            label: format!("step:{index}"),
+            phase: Some(phase),
+            state,
+            tokens: 1_000,
+            started_at_ms: Some(started),
+            try_number: 1,
+            ..CliAgent::default()
+        };
+        let wall_ms =
+            u64::try_from((wall - OffsetDateTime::UNIX_EPOCH).whole_milliseconds()).unwrap();
+        let mut flag = worker(1, "build:due-flag", "task-due-flag");
+        flag.workflows.push(CliWorkflowRun {
+            id: "wf_due".into(),
+            call: None,
+            name: "add-due-flag".into(),
+            description: String::new(),
+            phases: ["Write", "Check", "▸ date-cases"]
+                .iter()
+                .zip(1..)
+                .map(|(title, index)| CliPhase {
+                    index,
+                    title: (*title).to_owned(),
+                    detail: String::new(),
+                })
+                .collect(),
+            agents: vec![
+                agent(1, 1, CliAgentState::Done, wall_ms - 60_000),
+                agent(2, 2, CliAgentState::Done, wall_ms - 40_000),
+                agent(3, 3, CliAgentState::Done, wall_ms - 22_000),
+                agent(4, 3, CliAgentState::Running, wall_ms - 9_000),
+            ],
+            status: SubagentStatus::Running,
+            tokens: 25_900,
+            tool_calls: 0,
+            duration_ms: 0,
+            summary: None,
+            started_at_ms: Some(wall_ms - 120_000),
+        });
+        let mut tests = worker(2, "build:due-tests", "task-due-tests");
+        tests.status = SessionStatus::Done;
+        for session in [flag, tests] {
+            run.session_order.push(session.key.clone());
+            run.sessions.insert(session.key.clone(), session);
+        }
+        let mut state = AppState::default();
+        state.runs.insert(run.id.clone(), run);
+        let rows = run_rows(&state, wall, Instant::now());
+        let shape: Vec<String> = rows
+            .iter()
+            .map(|row| {
+                format!(
+                    "{} · {} in · by {} · {}/{}",
+                    row.name,
+                    row.depth,
+                    row.run_by.as_deref().unwrap_or("-"),
+                    row.agents_done,
+                    row.agents_total
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                "title of run-due · 0 in · by - · 4/6",
+                "add-due-flag · 1 in · by build:due-flag · 3/4",
+                "date-cases · 2 in · by - · 1/2",
+            ]
+        );
+        assert_eq!(rows[2].elapsed_ms / 1000, 22);
+        assert_eq!(rows[2].tokens, 2_000);
     }
 
     /// The main agent's own subagents list under `main`, as Claude Code lists them: each by
@@ -766,10 +1103,10 @@ mod tests {
         let mut state = AppState::default();
         state
             .runs
-            .insert(RunId::new("run-a").unwrap(), run_state("run-a", wall));
+            .insert(RunId::new("run-a").unwrap(), begun("run-a", wall));
         state
             .runs
-            .insert(RunId::new("run-b").unwrap(), run_state("run-b", wall));
+            .insert(RunId::new("run-b").unwrap(), begun("run-b", wall));
         let usd = LimitAmount {
             unit: LimitUnit::Usd,
             amount: 5.0,
@@ -826,17 +1163,23 @@ mod tests {
             agent_id: argonauts_core::names::AgentId("codex".into()),
             until: None,
         });
-        assert_eq!(row(&run).notice.as_deref(), Some("waiting for codex"));
-        // Nobody to fall back to for a job: the row says which, not that every agent is out.
+        // An outage you chose to wait out says what it waits for, never paused.
+        assert_eq!(row(&run).state, WorkflowRowState::Waiting);
+        assert_eq!(row(&run).said.as_deref(), Some("waiting for Codex"));
+        assert_eq!(row(&run).notice, None);
+        // Nothing could take a job the run needs: it stopped, and only /resume carries it on.
         run.waiting = Some(WaitReason::NoFallback {
             detail: "nobody to fall back to as the main agent".into(),
             until: None,
+            stop: None,
         });
-        assert_eq!(
-            row(&run).notice.as_deref(),
-            Some("nobody to fall back to as the main agent")
-        );
-        assert_eq!(row(&run).state, WorkflowRowState::Paused);
+        assert_eq!(row(&run).state, WorkflowRowState::Stopped);
+        assert_eq!(row(&run).said.as_deref(), Some("stopped"));
+        assert_eq!(row(&run).carry_on.as_deref(), Some("/resume carries it on"));
+        // Only a pause you asked for says paused.
+        run.waiting = Some(WaitReason::Paused);
+        assert_eq!(row(&run).said.as_deref(), Some("paused by you"));
+        assert_eq!(row(&run).carry_on.as_deref(), Some("/resume carries it on"));
 
         // A finished run's time stops at its end.
         run.waiting = None;
@@ -921,6 +1264,7 @@ mod tests {
             live: false,
             remind: false,
             name: None,
+            shape_known: true,
         }
     }
 
@@ -941,6 +1285,51 @@ mod tests {
         assert_eq!(state.background_waiting(), 0);
     }
 
+    /// A run this screen doesn't stream draws no row while its workflow is written, as the one
+    /// it streams doesn't: it shows once its summary says the shape is known. What waits on you
+    /// and how a run ended still show.
+    #[test]
+    fn a_run_not_on_screen_has_no_row_until_its_shape_is_known() {
+        let wall = OffsetDateTime::now_utc();
+        let now = Instant::now();
+        let mut state = AppState::default();
+        let mut written = waiting_summary("run-001", false);
+        written.state = ApiRunState::Running;
+        written.shape_known = false;
+        state.background = vec![written.clone()];
+        assert!(run_rows(&state, wall, now).is_empty());
+
+        let asking = argonauts_core::api::RunSummary {
+            run: RunId::new("run-002").unwrap(),
+            state: ApiRunState::Waiting,
+            ..waiting_summary("run-002", true)
+        };
+        let ended = argonauts_core::api::RunSummary {
+            run: RunId::new("run-003").unwrap(),
+            state: ApiRunState::Merged,
+            ..written.clone()
+        };
+        state.background = vec![
+            written.clone(),
+            argonauts_core::api::RunSummary {
+                shape_known: false,
+                ..asking
+            },
+            ended,
+        ];
+        let keys: Vec<String> = run_rows(&state, wall, now)
+            .into_iter()
+            .map(|row| row.key)
+            .collect();
+        assert_eq!(keys, ["run-002", "run-003"]);
+
+        written.shape_known = true;
+        state.background = vec![written];
+        let rows = run_rows(&state, wall, now);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, "run-001");
+    }
+
     #[test]
     fn a_run_not_on_screen_keeps_its_row_until_it_is_opened() {
         let wall = OffsetDateTime::now_utc();
@@ -952,7 +1341,7 @@ mod tests {
         ];
         state
             .runs
-            .insert(RunId::new("run-003").unwrap(), run_state("run-003", wall));
+            .insert(RunId::new("run-003").unwrap(), begun("run-003", wall));
 
         let rows = run_rows(&state, wall, now);
         let keys: Vec<&str> = rows.iter().map(|row| row.key.as_str()).collect();
@@ -960,7 +1349,8 @@ mod tests {
         assert_eq!(rows[0].state, WorkflowRowState::NeedsYou);
         assert_eq!(rows[0].name, "Captain · hi");
         assert!(!rows[0].timed, "its time isn't known here");
-        assert_eq!(rows[1].state, WorkflowRowState::Paused);
+        // A wait the listing gives no words for isn't a pause you asked for.
+        assert_eq!(rows[1].state, WorkflowRowState::Waiting);
         assert!(rows[2].timed);
 
         // A run that has its own name goes by it, as its row will once it's open.
@@ -970,7 +1360,7 @@ mod tests {
         // Opened, the run is held here, and its own row takes the place of the summary's.
         state
             .runs
-            .insert(RunId::new("run-001").unwrap(), run_state("run-001", wall));
+            .insert(RunId::new("run-001").unwrap(), begun("run-001", wall));
         let rows = run_rows(&state, wall, now);
         let keys: Vec<&str> = rows.iter().map(|row| row.key.as_str()).collect();
         assert_eq!(keys, ["run-002", "run-001", "run-003"]);
@@ -987,10 +1377,8 @@ mod tests {
         let first = RunId::new("run-001").unwrap();
         let second = RunId::new("run-002").unwrap();
         let mut state = AppState::default();
-        state.runs.insert(first.clone(), run_state("run-001", wall));
-        state
-            .runs
-            .insert(second.clone(), run_state("run-002", wall));
+        state.runs.insert(first.clone(), begun("run-001", wall));
+        state.runs.insert(second.clone(), begun("run-002", wall));
         state.attached = Some(second.clone());
         let summary = |waiting: bool| RunSummary {
             spent: Spend {
@@ -1034,14 +1422,14 @@ mod tests {
 
         // Resumed in another window, it is listed again and has its row back.
         state.apply(&listing(false));
-        assert_eq!(row(&state).unwrap().state, WorkflowRowState::Paused);
+        assert_eq!(row(&state).unwrap().state, WorkflowRowState::Waiting);
     }
 
     #[test]
     fn two_runs_never_share_a_name_and_an_agents_own_workflow_keeps_its_own() {
         let row = |name: &str, parent: Option<&str>| {
             let mut row = WorkflowRow::new(name, name, WorkflowRowState::Running);
-            row.parent = parent.map(str::to_owned);
+            row.depth = usize::from(parent.is_some());
             row
         };
         let mut rows = vec![

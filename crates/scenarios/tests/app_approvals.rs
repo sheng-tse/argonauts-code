@@ -361,7 +361,11 @@ fn app_safety_setting_confirms() -> anyhow::Result<()> {
         &toml_value(&read(&global)?, key).unwrap_or_default(),
         "\"auto\""
     ));
-    pty.wait_for(r#"● Set approvals\.merge\.mode = "?auto"?"#, WAIT)?;
+    // `/config key value` says it as Claude Code's `/config` does: the key, its value, its file.
+    pty.wait_for(
+        r#"Set approvals\.merge\.mode to "?auto"? \(in ~/\.argonauts/config\.toml\)"#,
+        WAIT,
+    )?;
 
     // A `/permissions` pick: the TUI asks the scope, the app asks the confirm.
     let before_pick = commands(&scenario)?.len();

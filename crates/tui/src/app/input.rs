@@ -3,10 +3,10 @@
 //! second Esc that clears the input, the focused agent panel, the open menu, vim's modes, the
 //! global keys, and last the composer. The search, a picker, or a focused question lets only the
 //! quit keys past it, so while a question has the keys, Ctrl+R and `/` don't open the search and
-//! `!` doesn't start shell mode. A question you set off yourself opens with the keys. One work
-//! waits on takes them once the input is empty and left alone for a moment, so typing never
-//! reaches the input under it, and a draft, even one just cleared, is never cut off. An open
-//! search or shell mode counts as a draft. Esc sets a run's question aside and gives the keys
+//! `!` doesn't start shell mode. A question you set off yourself opens with the keys, and one
+//! work waits on takes them the moment it shows. A draft in the input goes aside meanwhile and
+//! comes back after, and keys typed in a burst as a question shows are dropped. An open search
+//! or shell mode counts as a draft. Esc sets a run's question aside and gives the keys
 //! back, and ↑ or Tab on an empty input hands them to a waiting question again.
 //! What the named keys do comes from the [`Keymap`].
 //!
@@ -206,7 +206,11 @@ impl<W: Write> Ui<W> {
         if self.clear_key(key, now)
             || self.panel_key(key, actions)
             || self.menu_key(key, now, actions)
-            || self.vim_key(key, actions)
+        {
+            return;
+        }
+        let key = self.as_vim_arrow(key);
+        if self.vim_key(key, actions)
             || self.shell_key(key)
             || self.global_key(key, now, actions)
             || self.raw_failure_key(&key)
@@ -379,6 +383,15 @@ impl<W: Write> Ui<W> {
         }
         self.dirty = true;
         true
+    }
+
+    /// In vim's NORMAL, `j` and `k` in the input are ↓ and ↑ from here on.
+    fn as_vim_arrow(&self, key: KeyEvent) -> KeyEvent {
+        let bottom = &self.model.bottom;
+        match bottom.composer.vim_arrow(&key) {
+            Some(code) if bottom.composer_has_focus() => KeyEvent::new(code, KeyModifiers::NONE),
+            _ => key,
+        }
     }
 
     /// Esc leaves shell mode and keeps what was typed, before it could interrupt anything.
@@ -585,16 +598,10 @@ impl<W: Write> Ui<W> {
         };
         let id = question.id;
         let key = question.read_key(key, vim);
-        let was_stray = question.stray_typing;
         if question.held_off(&key, now) {
-            self.dirty |= question.stray_typing != was_stray;
             return true;
         }
         let event = question.handle_key(key);
-        // Stray letters change the question's key line, though the question does nothing with them.
-        if question.stray_typing != was_stray {
-            self.dirty = true;
-        }
         match event {
             QuestionEvent::Answered {
                 index,
@@ -977,8 +984,9 @@ impl<W: Write> Ui<W> {
             .as_mut()
             .filter(|question| question.focused && !question.dismissed)
         {
-            if question.guarded(now) || !question.handle_paste(text) {
-                question.pasted_at();
+            // A paste a question can't take goes nowhere, as typing does.
+            if !question.guarded(now) {
+                question.handle_paste(text);
             }
             self.dirty = true;
             return;

@@ -3,7 +3,7 @@
 ✶ Pondering… (2m 41s · ↓ 8.2k tokens · thinking with xhigh effort)
 
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Overview    Status    Usage    Context    Limits    Stats 
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats 
  What fills each session's context                                                     3 sessions · 799.6k in context
 
      Context Usage  counted 6s ago             Opus 5.5  claude-opus-5-5                         750k/1m tokens (75%)
@@ -82,4 +82,4 @@ After esc, back at the prompt:
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← 2 agents · ↓ to manage     context · build:due-flag 20%
 
-  ◯ Add due dates         ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/4 · 1m13s · ↓ 61k tokens
+  ◯ Add due dates           ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/4 · 1m13s · ↓ 61k tokens

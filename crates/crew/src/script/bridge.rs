@@ -7,8 +7,10 @@ use std::sync::{Mutex, MutexGuard};
 
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::session::{CliWorkflowRun, EndReason, InputPartKind};
-use argonauts_core::events::workflow::{AgentSession, RunNote, WorkflowEvent, WorkflowReport};
-use argonauts_core::log::{Note, NoteLevel};
+use argonauts_core::events::workflow::{
+    AgentLeftOut, AgentSession, RunNote, WorkflowEvent, WorkflowReport,
+};
+use argonauts_core::log::{GAVE_NO_ANSWER, Note, NoteLevel};
 use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::session_runner::Access;
 use argonauts_core::settings::crew::CrewRole;
@@ -17,9 +19,12 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+mod beside;
+
 use super::{goal, journal, tasks};
 use crate::engine::host::{Fallbacks, Host, Ran, SessionPlan};
-use crate::error::{EngineError, EngineResult};
+use crate::engine::job_fallback;
+use crate::error::{EngineError, EngineResult, Stall};
 use crate::prompts::instructions::{self, CallAuthor};
 use crate::roles;
 use crate::task::support::part;
@@ -54,6 +59,54 @@ pub(super) struct Bridge<'a> {
     pub own_workflow_in: BTreeSet<String>,
     /// Each phase that started an agent, with the role it went to.
     ran: Mutex<BTreeSet<(String, CrewRole)>>,
+    /// The agents of each phase and role: who works now, who answered, and who was left out.
+    phases: Mutex<BTreeMap<(Option<String>, CrewRole), PhaseAgents>>,
+    /// The jobs that went to a second agent of a CLI in their step, or were asked to, by label.
+    second_tried: Mutex<BTreeSet<String>>,
+}
+
+/// One phase's agents of one role, by label.
+#[derive(Debug, Default)]
+struct PhaseAgents {
+    working: BTreeSet<String>,
+    answered: BTreeSet<String>,
+    left_out: Vec<LeftOut>,
+}
+
+/// A job nothing could take, with what its CLI said and that CLI's name.
+#[derive(Debug, Clone)]
+struct LeftOut {
+    label: String,
+    said: String,
+    cli: String,
+    tried: Vec<String>,
+}
+
+/// Whether `call` is in the step where a council's agents propose.
+fn proposes(call: &AgentCall) -> bool {
+    call.phase
+        .as_deref()
+        .is_some_and(|phase| phase.trim().eq_ignore_ascii_case("propose"))
+}
+
+/// What a job that can be left out is in its phase, and what it gives: a proposer a
+/// proposal, a reviewer a review.
+fn job_words(call: &AgentCall) -> (&'static str, &'static str) {
+    match call.role {
+        CrewRole::Reviewer => ("reviewer", "review"),
+        _ => ("proposer", "proposal"),
+    }
+}
+
+/// `two`, as a count reads in a sentence. Past twelve, digits.
+fn count_in_words(count: usize) -> String {
+    const WORDS: [&str; 13] = [
+        "none", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve",
+    ];
+    WORDS
+        .get(count)
+        .map_or_else(|| count.to_string(), |word| (*word).to_owned())
 }
 
 impl<'a> Bridge<'a> {
@@ -85,6 +138,8 @@ impl<'a> Bridge<'a> {
             workflow_words: None,
             own_workflow_in: BTreeSet::new(),
             ran: Mutex::default(),
+            phases: Mutex::default(),
+            second_tried: Mutex::default(),
         }
     }
 
@@ -153,6 +208,179 @@ impl<'a> Bridge<'a> {
         AgentEnd::failed(why)
     }
 
+    /// Leaves `call`'s job out when nothing can take it and enough of its phase's others
+    /// answered or still work for the step to go on, saying so once in the run and under the
+    /// workflow's header. `None` when the run needs the job.
+    fn leave_out(&self, call: &AgentCall, stall: &Stall) -> Option<AgentEnd> {
+        let fewest = self.fewest_answers(call)?;
+        let others = {
+            let mut phases = lock(&self.phases);
+            let agents = phases.entry((call.phase.clone(), call.role)).or_default();
+            let others = agents.working.len() + agents.answered.len();
+            if others < fewest {
+                return None;
+            }
+            agents.left_out.push(LeftOut {
+                label: call.label.clone(),
+                said: stall.job.said.clone(),
+                cli: cli_of(stall),
+                tried: stall.tried.clone(),
+            });
+            others
+        };
+        let goes_on = if self.is_council() {
+            format!("the council goes on with {others}")
+        } else {
+            format!("the workflow goes on with {others}")
+        };
+        let line = format!(
+            "{} is left out: {} and nothing else can take it · {goes_on}",
+            call.label, stall.job.said
+        );
+        let (acts_as, gives) = job_words(call);
+        let whole = if self.is_council() {
+            "a council"
+        } else {
+            "the workflow"
+        };
+        let again = "the next run asks it again";
+        let means = vec![
+            format!(
+                "{whole} can do without one {gives}, so it goes on with {}",
+                count_in_words(others)
+            ),
+            if stall.job.signed_out {
+                format!("sign in to {} and {again}", cli_of(stall))
+            } else {
+                again.to_owned()
+            },
+        ];
+        let host = self.host;
+        let left = AgentLeftOut {
+            step: self.call.at.step.clone(),
+            label: call.label.clone(),
+            meant_for: stall
+                .job
+                .asked
+                .clone()
+                .unwrap_or_else(|| ModelRef::new("", None)),
+            why: stall.job.short.clone(),
+            said: stall.job.said.clone(),
+            acts_as: acts_as.to_owned(),
+            means,
+        };
+        let recorded = host
+            .record(
+                None,
+                None,
+                RunEventKind::Workflow(WorkflowEvent::LeftOut(left)),
+            )
+            .and_then(|_| {
+                let note = RunNote {
+                    text: line.clone(),
+                    workflow: Some(self.call.at.step.workflow.clone()),
+                    left: false,
+                };
+                host.record(
+                    None,
+                    None,
+                    RunEventKind::Workflow(WorkflowEvent::Note(note)),
+                )
+            })
+            .and_then(|_| {
+                let note = Note {
+                    level: NoteLevel::Warn,
+                    text: line.clone(),
+                };
+                host.record(None, None, RunEventKind::Note(note))
+            });
+        if let Err(err) = recorded {
+            return Some(self.failed(err));
+        }
+        Some(AgentEnd::failed(line))
+    }
+
+    /// How many of its phase's agents of the same role must answer for `call`'s job to be
+    /// left out when nothing can take it: two proposals in a council's Propose step, as two make
+    /// a choice, and one review beside a reviewer's. Any other job, such as a planner's or a
+    /// cross-review a worker reads, the run needs. `None` when the job can't be left out.
+    fn fewest_answers(&self, call: &AgentCall) -> Option<usize> {
+        match call.role {
+            CrewRole::Reviewer => Some(1),
+            CrewRole::Worker if !call.writes && self.is_council() && proposes(call) => Some(2),
+            _ => None,
+        }
+    }
+
+    /// The workflow in use is a council, whose proposals the stop and its lines name.
+    fn is_council(&self) -> bool {
+        self.host.settings().workflow == "council"
+    }
+
+    /// The run's stop when `call`'s job can't be left out: why, in the step's own words where
+    /// it can do with fewer, and with every job of its phase left out before.
+    fn stop_with_left_out(&self, call: &AgentCall, mut stall: Box<Stall>) -> Box<Stall> {
+        let phases = lock(&self.phases);
+        let Some(agents) = phases.get(&(call.phase.clone(), call.role)) else {
+            return stall;
+        };
+        let mut stop = stall.run_stop();
+        let this = LeftOut {
+            label: call.label.clone(),
+            said: stall.job.said.clone(),
+            cli: cli_of(&stall),
+            tried: stall.tried.clone(),
+        };
+        let mut out: Vec<&LeftOut> = agents.left_out.iter().chain([&this]).collect();
+        out.sort_by(|a, b| a.label.cmp(&b.label));
+        stop.agents = out
+            .iter()
+            .map(|left| format!("{} · {}", left.label, left.said))
+            .collect();
+        stop.tried = Vec::new();
+        let in_step = stall.in_step.clone();
+        stop.waits_for = Vec::new();
+        for left in &out {
+            for tried in &left.tried {
+                if !stop.tried.contains(tried) {
+                    stop.tried.push(tried.clone());
+                }
+            }
+            if !stop.waits_for.contains(&left.cli) {
+                stop.waits_for.push(left.cli.clone());
+            }
+        }
+        stop.tried = crate::error::with_step(&stop.tried, &in_step);
+        let mut kept: Vec<String> = agents.answered.union(&agents.working).cloned().collect();
+        kept.sort();
+        if let Some(fewest) = self.fewest_answers(call) {
+            let only = argonauts_core::text::and_list(&kept);
+            let makes = if kept.len() == 1 {
+                "can make one"
+            } else {
+                "can make them"
+            };
+            stop.why = match fewest {
+                2 if self.is_council() => {
+                    format!("a council needs two proposals, and only {only} {makes}")
+                }
+                _ => format!(
+                    "{} needs {fewest} answers, and only {only} {makes}",
+                    call.phase.as_deref().unwrap_or("the step")
+                ),
+            };
+        } else {
+            stop.why = format!("nothing else can take {}", call.label);
+            stop.agents = out
+                .iter()
+                .map(|left| format!("{} · {}", left.label, left.said))
+                .collect();
+        }
+        stop.kept = kept;
+        stall.stop = Some(Box::new(stop));
+        stall
+    }
+
     async fn run_agent(&self, call: &AgentCall) -> EngineResult<AgentEnd> {
         let worker = self.pick(call)?;
         if call.writes {
@@ -160,6 +388,12 @@ impl<'a> Bridge<'a> {
         }
         let (workdir, change) = match tasks::change_of(self, call).await? {
             Some((tree, change)) => (tree, Some(change)),
+            // A reviewer or a judge about no one task reads the run's whole change, never the
+            // untouched base.
+            None if call.task.is_none() && !self.builders(call).is_empty() => (
+                self.host.repo().base_worktree.clone(),
+                tasks::combined_change(self).await?,
+            ),
             None => (self.host.repo().base_worktree.clone(), None),
         };
         let reviews = change.is_some();
@@ -198,6 +432,7 @@ impl<'a> Bridge<'a> {
             label: Some(call.label.clone()),
             reviews,
             fresh: false,
+            independent_of: self.builders(call),
         };
         // The session this call started before the run stopped carries on.
         let known = lock(&self.sessions).get(&call.index).cloned();
@@ -213,6 +448,18 @@ impl<'a> Bridge<'a> {
             tasks::judged(self, call, &ran, verdict)?;
         }
         Ok(end)
+    }
+
+    /// Who built what a reviewer or a judge reads, so a fallback for it never comes from their
+    /// provider: the task's worker, or every writer's for a call about no one task.
+    fn builders(&self, call: &AgentCall) -> Vec<ModelRef> {
+        if !matches!(call.role, CrewRole::Reviewer | CrewRole::Judge) {
+            return Vec::new();
+        }
+        if call.task.is_some() {
+            return tasks::author(self, call).into_iter().collect();
+        }
+        tasks::authors(self)
     }
 
     /// Who takes the call: the model it names, else the one of its role's models it numbers.
@@ -256,15 +503,43 @@ impl argonauts_runner::Host for Bridge<'_> {
             if let Some(phase) = &call.phase {
                 lock(&self.ran).insert((phase.clone(), call.role));
             }
-            let end = match self.run_agent(call).await {
+            let place = (call.phase.clone(), call.role);
+            lock(&self.phases)
+                .entry(place.clone())
+                .or_default()
+                .working
+                .insert(call.label.clone());
+            let ran = self.run_agent(call).await;
+            {
+                let mut phases = lock(&self.phases);
+                let agents = phases.entry(place).or_default();
+                agents.working.remove(&call.label);
+                if matches!(&ran, Ok(end) if end.result.is_ok()) {
+                    agents.answered.insert(call.label.clone());
+                }
+            }
+            let end = match ran {
                 Ok(end) => end,
+                Err(EngineError::Stalled(mut stall)) => {
+                    if let Ok(own) = self.pick(call) {
+                        job_fallback::named_by_its_own(self.host, &mut stall, &own);
+                    }
+                    match self.leave_out(call, &stall) {
+                        Some(left) => return left,
+                        None => match self.beside(call, stall).await {
+                            Ok(end) => end,
+                            Err(stall) => self
+                                .failed(EngineError::Stalled(self.stop_with_left_out(call, stall))),
+                        },
+                    }
+                }
                 Err(err) => self.failed(err),
             };
             // The script only sees a missing answer, so the reason is said here.
             if let Err(why) = &end.result {
                 let note = Note {
                     level: NoteLevel::Warn,
-                    text: format!("{} gave no answer: {why}", call.label),
+                    text: format!("{}{GAVE_NO_ANSWER}{why}", call.label),
                 };
                 let _ = self.host.record(None, None, RunEventKind::Note(note));
             }
@@ -309,6 +584,12 @@ impl argonauts_runner::Host for Bridge<'_> {
 
     fn replayed(&self, call: &AgentCall) {
         lock(&self.rows).insert(call.row, call.index);
+        // It answered before the run stopped, which counts as its phase goes on without one.
+        lock(&self.phases)
+            .entry((call.phase.clone(), call.role))
+            .or_default()
+            .answered
+            .insert(call.label.clone());
     }
 
     fn report(&self, workflow: &CliWorkflowRun) {
@@ -447,6 +728,17 @@ pub(super) fn shown_change(diff: String) -> String {
         "{}\n… the change goes on. Read the rest in this folder, which is the task's worktree.",
         &diff[..cut]
     )
+}
+
+/// The name of the CLI a stalled job was asked of.
+fn cli_of(stall: &Stall) -> String {
+    let names = argonauts_core::display_names::DisplayNames::default();
+    stall
+        .job
+        .asked
+        .as_ref()
+        .map(|asked| names.cli(asked.agent.as_str()))
+        .unwrap_or_default()
 }
 
 /// A panic elsewhere while the lock was held leaves the data as it was, which is still right

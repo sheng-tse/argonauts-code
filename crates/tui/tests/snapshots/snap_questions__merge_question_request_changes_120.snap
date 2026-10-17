@@ -6,11 +6,15 @@ expression: text(&lines)
 ◆ Merge this run into main?
   4 tasks · 9 files · +327 -40 · suite passed on the latest main · 1 task needs a stronger review · $0.46 of $3.00
 
-  ❯ 1. Merge
+    1. Merge
     2. Open a pull request
-    3. Request changes on some tasks
+  ❯ 3. Request changes on some tasks
+       ❯ ☐ task-001 Exporter trait
+         ☐ task-002 JSON writer
+         ☐ task-003 Wire --json into the CLI
+         ☐ task-004 Middleware
     4. Keep the branch
     5. Abandon the run
     6. Show the diff
 
-  Typing waits while the question has the keys · ↑↓ to choose · Esc to carry on without me
+  Space to tick · Enter to add a note · Esc to go back

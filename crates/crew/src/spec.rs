@@ -120,6 +120,7 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
             ..argonauts_core::session_runner::CliWorkflow::default()
         },
         shell,
+        preferences: Default::default(),
     })
 }
 

@@ -286,7 +286,7 @@ fn busy_screen_keeps_its_layout() {
             // named by its workflow and title, with its agents
             // under it, each by its name, what it's doing, and how long and how many tokens.
             // This recording is from before agents had labels, so each goes by its task.
-            "^  ● main$",
+            &format!("^  {BULLET} main$"),
             "^  ◯ Council · Add a --json flag to export +▱+ +0/3 · ",
             &format!(
                 "^    ○ task-002 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓ [\\d.]+k tokens$"

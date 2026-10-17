@@ -405,6 +405,32 @@ async fn fast_and_output_style_change_how_the_main_agent_answers() {
     driver.exit().await;
 }
 
+/// `ui.output_style` is the style an app session starts in, and saving it changes the style at
+/// once, over one `/output-style` picked.
+#[tokio::test]
+async fn a_saved_output_style_takes_over_at_once() {
+    let mut driver = TestDriver::start().await;
+    slash(
+        &driver,
+        SlashCommand::OutputStyle {
+            style: Some("brief".into()),
+        },
+    )
+    .await;
+    notice(&mut driver, "brief style").await;
+    driver
+        .send(UiCommand::SetSetting {
+            key: "ui.output_style".to_owned(),
+            value: "\"learning\"".to_owned(),
+            scope: argonauts_core::settings::SettingScope::Session,
+        })
+        .await;
+    one_turn(&mut driver).await;
+    assert!(prompt(&driver, 0).contains("Teach as you answer"));
+    assert!(!prompt(&driver, 0).contains("Write the answer briefly"));
+    driver.exit().await;
+}
+
 /// The runs started, once there are `count` of them.
 async fn starts(driver: &TestDriver, count: usize) -> Vec<argonauts_core::api::StartRun> {
     let deadline = tokio::time::Instant::now() + crate::controller::test_support::WAIT;

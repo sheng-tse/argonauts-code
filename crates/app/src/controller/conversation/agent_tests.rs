@@ -6,11 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use argonauts_core::agent_sessions::{AgentSession, AgentSessionRef, Resume};
+use argonauts_core::agent_sessions::AgentSessionRef;
 use argonauts_core::api::{RunState, RunSummary};
-use argonauts_core::app::{
-    AppEvent, AppMode, ConversationEvent, ShellEvent, UiCommand, ViewData, ViewRequest,
-};
+use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, ShellEvent, UiCommand};
 use argonauts_core::cli_commands::CliCommandSet;
 use argonauts_core::event::AgentEvent;
 use argonauts_core::events::run::{Party, RunMode};
@@ -219,6 +217,7 @@ fn summary(run: RunId, state: RunState, live: bool) -> RunSummary {
         live,
         remind: false,
         name: None,
+        shape_known: true,
     }
 }
 
@@ -286,38 +285,6 @@ async fn notice(driver: &mut TestDriver, part: &str) -> String {
     }
 }
 
-async fn listed(driver: &mut TestDriver) -> (Vec<AgentSession>, Vec<RunId>) {
-    driver
-        .send(UiCommand::Slash {
-            command: SlashCommand::Resume { target: None },
-        })
-        .await;
-    let AppEvent::View { data } = driver
-        .until(|event| {
-            matches!(event, AppEvent::View { data } if matches!(data.as_ref(), ViewData::Runs { .. }))
-        })
-        .await
-    else {
-        unreachable!()
-    };
-    let ViewData::Runs {
-        agents,
-        agents_read,
-        ..
-    } = *data
-    else {
-        unreachable!()
-    };
-    (agents, agents_read)
-}
-
-fn worker_of(agents: &[AgentSession]) -> &AgentSession {
-    agents
-        .iter()
-        .find(|agent| agent.session == SessionKey::numbered(1))
-        .expect("the worker's session")
-}
-
 /// Carries the worker's session on and waits until it's on screen.
 async fn carry_on_worker(driver: &mut TestDriver) -> String {
     driver.send(resume("s-001")).await;
@@ -362,62 +329,6 @@ fn worker_turn(text: &str) -> FakeSession {
     FakeSession::completed(text).with_cli_session(WORKER_SESSION)
 }
 
-#[tokio::test]
-async fn resume_lists_each_agents_session_under_its_run() {
-    let mut driver = start().await;
-    driver.repo.git(&["branch", BRANCH]).unwrap();
-    let (agents, read) = listed(&mut driver).await;
-    assert_eq!(read, [run()]);
-    let ids: Vec<String> = agents
-        .iter()
-        .map(|agent| agent.reference().to_string())
-        .collect();
-    assert_eq!(ids, ["run-01/s-001", "run-01/s-002"]);
-
-    let worker = &agents[0];
-    assert_eq!(worker.role, RoleName::Worker);
-    // Its name in the run, as the conversation and the panel call it, not its task.
-    assert_eq!(worker.label.as_deref(), Some("build:money"));
-    assert_eq!(worker.worker.to_string(), "claude-code/claude-opus-5-5");
-    assert_eq!(
-        worker.last_message.as_deref(),
-        Some("Fixed both functions. All 6 tests pass.")
-    );
-    // Its worktree is gone since the merge, but its branch makes it again.
-    assert_eq!(worker.resume, Resume::Ready);
-    // The explorer is counted inside the worker's session, never a session of its own.
-    assert_eq!(worker.helpers.len(), 1);
-    assert_eq!(worker.helpers[0].label.as_deref(), Some("explorer"));
-    assert_eq!(worker.helper_counts(), "1 subagent");
-
-    let Resume::Cannot { why } = &agents[1].resume else {
-        panic!("{:?}", agents[1].resume)
-    };
-    assert_eq!(why, "OpenCode can't resume a session");
-
-    // An older run's agents come when the picker opens it.
-    driver
-        .send(UiCommand::Request {
-            view: ViewRequest::AgentSessions { run: run() },
-        })
-        .await;
-    let AppEvent::View { data } = driver
-        .until(|event| {
-            matches!(event, AppEvent::View { data }
-                if matches!(data.as_ref(), ViewData::AgentSessions { .. }))
-        })
-        .await
-    else {
-        unreachable!()
-    };
-    let ViewData::AgentSessions { run: of, agents } = *data else {
-        unreachable!()
-    };
-    assert_eq!(of, run());
-    assert_eq!(agents.len(), 2);
-    driver.exit().await;
-}
-
 /// Until its run ended, the run owns a finished agent's session, since its next round on the
 /// task resumes that same CLI session: nothing carries it on, and no worktree is made for it.
 #[tokio::test]
@@ -439,11 +350,12 @@ async fn a_session_whose_run_hasnt_ended_stays_the_runs() {
         (Some(working), input(&worktree_of(&driver))),
     ];
     write_run_as(&driver, "opencode", RunState::Running, true, fixer);
-    let (agents, _) = listed(&mut driver).await;
-    assert_eq!(worker_of(&agents).resume, Resume::RunOwns);
-    assert_eq!(agents[2].resume, Resume::Working);
+    driver.send(resume("s-003")).await;
+    let said = notice(&mut driver, "is still working").await;
+    assert!(said.starts_with("run-01/s-003 is still working."), "{said}");
 
     for (state, live) in [
+        (RunState::Running, true),
         (RunState::Waiting, false),
         (RunState::Crashed, false),
         (RunState::Pausing, true),
@@ -451,18 +363,15 @@ async fn a_session_whose_run_hasnt_ended_stays_the_runs() {
         (RunState::Merged, true),
     ] {
         set_run(&driver, state, live);
-        let (agents, _) = listed(&mut driver).await;
-        assert_eq!(worker_of(&agents).resume, Resume::RunOwns, "{state:?}");
+        driver.send(resume("s-001")).await;
+        let said = notice(&mut driver, "still owns").await;
+        assert_eq!(
+            said,
+            "run-01 hasn't ended, so it still owns run-01/s-001. t in its agent view takes it \
+             over, or it carries on here once the run ends.",
+            "{state:?}"
+        );
     }
-
-    set_run(&driver, RunState::Waiting, false);
-    driver.send(resume("s-001")).await;
-    let said = notice(&mut driver, "still owns").await;
-    assert_eq!(
-        said,
-        "run-01 hasn't ended, so it still owns run-01/s-001. t in its agent view takes it over, \
-         or it carries on here once the run ends."
-    );
     assert!(!worktree_of(&driver).exists());
     assert!(
         !driver
@@ -656,13 +565,6 @@ async fn a_session_its_cli_cant_resume_shows_its_transcript() {
 #[tokio::test]
 async fn a_session_whose_branch_or_cli_is_gone_cant_carry_on() {
     let mut driver = start().await;
-    let (agents, _) = listed(&mut driver).await;
-    assert_eq!(
-        worker_of(&agents).resume,
-        Resume::Cannot {
-            why: format!("its worktree is gone, and so is its branch {BRANCH}")
-        }
-    );
     driver.send(resume("s-001")).await;
     let said = notice(&mut driver, "can't carry on").await;
     assert!(said.contains("so is its branch"), "{said}");
@@ -670,13 +572,6 @@ async fn a_session_whose_branch_or_cli_is_gone_cant_carry_on() {
 
     driver.repo.git(&["branch", BRANCH]).unwrap();
     driver.directory.uninstall("claude-code");
-    let (agents, _) = listed(&mut driver).await;
-    assert_eq!(
-        worker_of(&agents).resume,
-        Resume::Cannot {
-            why: "claude isn't installed".to_owned()
-        }
-    );
     driver.send(resume("s-001")).await;
     let said = notice(&mut driver, "isn't installed").await;
     assert_eq!(

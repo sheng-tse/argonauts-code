@@ -40,7 +40,7 @@ const DAWN: u8 = 6;
 const PAGE_BAR: usize = 50;
 /// Claude Code's `/usage` words when it can't read, said for every CLI. The CLI's own page
 /// says why after them.
-const LOAD_FAILED: &str = "failed to load usage data";
+const LOAD_FAILED: &str = "Failed to load usage data";
 
 /// What the tab draws from.
 pub(super) struct UsageTab<'a> {
@@ -896,7 +896,7 @@ pub(super) fn left_words(left: Duration) -> String {
 pub(super) fn clock_words(at: OffsetDateTime, now: OffsetDateTime, with_time: bool) -> String {
     let at = at.to_offset(now.offset());
     let weekday = &at.weekday().to_string()[..3];
-    let time = twelve_hour(at);
+    let time = short_time(at);
     let days = (at.date() - now.date()).whole_days();
     match (days, with_time) {
         (0, true) => format!("today {time}"),
@@ -911,8 +911,11 @@ fn month(at: OffsetDateTime) -> String {
     at.month().to_string()[..3].to_owned()
 }
 
-/// `10:40pm`, `12:15am`, `10:00pm`.
-pub(super) fn twelve_hour(at: OffsetDateTime) -> String {
+/// `10:40pm`, `12:15am`, `10:00pm`, or `22:40` on a 24-hour clock.
+pub(super) fn short_time(at: OffsetDateTime) -> String {
+    if let Some(time) = crate::format::on_24_hours(at.hour(), at.minute()) {
+        return time;
+    }
     let suffix = if at.hour() < 12 { "am" } else { "pm" };
     let hour = match at.hour() % 12 {
         0 => 12,

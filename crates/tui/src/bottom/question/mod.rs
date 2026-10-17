@@ -2,10 +2,9 @@
 //! stands in for the input until it's answered. One you set off yourself, such as
 //! a confirm or the save-scope question, closes on Esc as Claude Code's do. On one work waits
 //! on, Esc means "carry on without me": it leaves the screen, and whoever asked decides and
-//! goes on. For a moment after it takes the keys by itself only the arrows work on it, so a key
-//! meant for something else answers nothing. Typing at it answers nothing either: letters mark
-//! it as conversation meant for the input, and until you move the pointer neither a number nor
-//! Enter answers.
+//! goes on. Letters do nothing, a digit picks, and Enter confirms. Keys typed in a burst as it
+//! shows are dropped, as Claude Code's dialogs drop them, so a sentence meant for the input
+//! can't answer it, and nothing on screen says so.
 
 mod render;
 
@@ -28,9 +27,10 @@ pub const ESC_HINT: &str = "Esc to carry on without me";
 /// What a free-text question's open answer field shows until you type.
 pub const ANSWER_PLACEHOLDER: &str = "Type your answer";
 
-/// How long after a question takes the keys by itself only the arrows work on it: a key pressed as
-/// it shows was meant for whatever had them before.
-pub const QUESTION_GUARD: Duration = Duration::from_millis(400);
+/// How long after a question shows only the arrows work on it, counted again from each key it
+/// drops: a burst typed as it shows was meant for whatever had the keys before, and the first key
+/// after a pause works. Claude Code's dialogs wait as long.
+pub const QUESTION_GUARD: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuestionPrompt {
@@ -60,15 +60,14 @@ pub struct QuestionPrompt {
     /// So it takes the keys when it shows and keeps them until you answer or hand it on. A
     /// draft in the input goes aside meanwhile.
     pub needs_you: bool,
-    /// Letters or a paste came to it, likely conversation meant for the input, so nothing answers
-    /// it until you move the pointer: not a number, and not the Enter that ends the line.
-    pub stray_typing: bool,
     /// You worked it with keys meant for it: you brought it up with ↑ or Tab, moved with the
     /// arrows, or set it off yourself. Until then vim's `l` and `h` are letters here, since a
     /// conversation line can start with them.
     pub engaged: bool,
-    /// Until then only the arrows work on it, since it took the keys by itself.
+    /// Until then only the arrows work on it, since it has only just shown.
     pub guard_until: Option<Instant>,
+    /// It has shown, so the guard it starts with is spent.
+    pub shown: bool,
     /// Esc took it off the screen. It comes back only when you open it again, from the list
     /// of what needs you.
     pub dismissed: bool,
@@ -97,6 +96,15 @@ pub struct QuestionPrompt {
     /// longest label, where every row fits the width. Otherwise a description goes under its
     /// option.
     pub descriptions_beside: Option<usize>,
+    /// Drawn between two faint rules, one cell in, with its title alone on its row, as the
+    /// guided setup's steps and the start's own questions are.
+    pub framed: bool,
+    /// Its title is a warning, drawn amber, as a settings problem is. Only a framed question
+    /// draws it so.
+    pub warns: bool,
+    /// What Enter does where "choose" isn't the word, such as `Enter to confirm` on a trust
+    /// question.
+    pub enter_hint: Option<String>,
 }
 
 /// One question's chip on a question that asks several.
@@ -359,9 +367,9 @@ impl QuestionPrompt {
             focused: false,
             takes_focus: false,
             needs_you: false,
-            stray_typing: false,
             engaged: false,
             guard_until: None,
+            shown: false,
             dismissed: false,
             allow_note: false,
             note: None,
@@ -374,6 +382,9 @@ impl QuestionPrompt {
             keys_only: false,
             offers_shift_tab: false,
             descriptions_beside: None,
+            framed: false,
+            warns: false,
+            enter_hint: None,
         };
         question.open_field();
         question
@@ -399,8 +410,8 @@ impl QuestionPrompt {
     pub fn focus(&mut self) {
         self.dismissed = false;
         self.focused = true;
-        self.stray_typing = false;
         self.engaged = true;
+        self.shown = true;
         self.guard_until = None;
         self.open_field();
     }
@@ -438,8 +449,12 @@ impl QuestionPrompt {
     }
 
     /// Takes the keys if it claims them, the moment it shows. Until [`QUESTION_GUARD`] has passed
-    /// only the arrows work on it.
+    /// only the arrows work on it, on a question you set off too.
     pub fn take_keys(&mut self, now: Instant) -> bool {
+        if !self.shown {
+            self.shown = true;
+            self.guard_until = Some(now + QUESTION_GUARD);
+        }
         let takes = !self.focused && self.claims_keys();
         if takes {
             self.focus();
@@ -449,15 +464,14 @@ impl QuestionPrompt {
         takes
     }
 
-    /// It took the keys by itself less than [`QUESTION_GUARD`] ago.
+    /// It showed, or dropped a key, less than [`QUESTION_GUARD`] ago.
     pub fn guarded(&self, now: Instant) -> bool {
         self.guard_until.is_some_and(|until| now < until)
     }
 
-    /// Whether `key`, as the question reads it, is held off because the question only just took the
-    /// keys. The arrows still move, and Ctrl and Alt keys go on to the quit keys. A letter or a
-    /// number then was the start of a line meant for the input, so it counts as stray typing,
-    /// and the rest of that line can't answer either.
+    /// Whether `key`, as the question reads it, is dropped because the question only just showed.
+    /// The arrows still move, and Ctrl and Alt keys go on to the quit keys. Each key dropped
+    /// holds the guard up a moment longer, so the rest of a burst is dropped too.
     pub fn held_off(&mut self, key: &KeyEvent, now: Instant) -> bool {
         if !self.guarded(now) {
             return false;
@@ -473,24 +487,14 @@ impl QuestionPrompt {
         {
             return false;
         }
-        if matches!(key.code, KeyCode::Char(_)) {
-            self.stray_typing = true;
-            self.armed = None;
-        }
+        self.guard_until = Some(now + QUESTION_GUARD);
         true
-    }
-
-    /// A paste came to it while it had the keys. It goes nowhere, as typing does.
-    pub fn pasted_at(&mut self) {
-        self.stray_typing = true;
-        self.armed = None;
     }
 
     /// The key as the question reads it. Arrows, Home, End, and Tab are meant for the question, so
     /// they engage it. With vim keys on, `j` and `k` move, `g` and `G` go to the first and last
     /// option, and once the question is engaged `l` answers as Enter does and `h` hands it on as
-    /// Esc does. None of them work while stray typing waits, and a note being typed keeps its
-    /// letters.
+    /// Esc does. A note being typed keeps its letters.
     pub fn read_key(&mut self, key: KeyEvent, vim: bool) -> KeyEvent {
         if matches!(
             key.code,
@@ -498,7 +502,7 @@ impl QuestionPrompt {
         ) {
             self.engaged = true;
         }
-        if !vim || self.note.is_some() || self.stray_typing {
+        if !vim || self.note.is_some() {
             return key;
         }
         match list::vim_equivalent(&key, KeyCode::Esc) {
@@ -534,7 +538,6 @@ impl QuestionPrompt {
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         if let Some((letter, index)) = self.view_key
             && plain
-            && !self.stray_typing
             && key.code == KeyCode::Char(letter)
         {
             return QuestionEvent::OpenView { index };
@@ -544,9 +547,6 @@ impl QuestionPrompt {
             && let Some(index) = self.option_for_letter(c)
         {
             return self.pick(index, true);
-        }
-        if let Some(event) = self.stray_key(key, plain) {
-            return event;
         }
         match key.code {
             // A y/N question answers to its letters alone: Enter and Esc do nothing.
@@ -590,37 +590,14 @@ impl QuestionPrompt {
                     let confirmed = self.armed == Some(index);
                     self.pick(index, confirmed)
                 }
-                None => QuestionEvent::Unhandled,
+                // A letter does nothing, but disarms an option that can't be undone, so the
+                // Enter that ends a typed line never confirms it.
+                None => {
+                    self.armed = None;
+                    QuestionEvent::Unhandled
+                }
             },
             _ => QuestionEvent::Unhandled,
-        }
-    }
-
-    /// Letters do nothing here, and they disarm an option that can't be undone. They're likely
-    /// a conversation line typed as the question took the keys, so until a key meant for the
-    /// question, nothing after them answers: not a number in the line, and not the Enter that ends
-    /// it.
-    fn stray_key(&mut self, key: KeyEvent, plain: bool) -> Option<QuestionEvent> {
-        if !plain {
-            return None;
-        }
-        match key.code {
-            KeyCode::Char(c) if self.stray_typing || self.option_for_digit(c).is_none() => {
-                self.stray_typing = true;
-                self.armed = None;
-                Some(QuestionEvent::Unhandled)
-            }
-            _ if !self.stray_typing => None,
-            KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::Home
-            | KeyCode::End
-            | KeyCode::Tab
-            | KeyCode::Esc => {
-                self.stray_typing = false;
-                None
-            }
-            _ => Some(QuestionEvent::Moved),
         }
     }
 
@@ -922,7 +899,6 @@ impl QuestionPrompt {
     pub fn dismiss(&mut self) -> QuestionEvent {
         self.dismissed = true;
         self.focused = false;
-        self.stray_typing = false;
         if !self.is_answer_field() {
             self.note = None;
         }

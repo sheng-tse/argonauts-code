@@ -18,7 +18,9 @@ use argonauts_core::settings::Settings;
 use argonauts_core::settings::fallback::FallbackEntry;
 use argonauts_core::steps::SchemaStepRunner;
 use argonauts_core::text::sentence_case;
-use argonauts_registry::{WorkflowUpgrade, WorkflowUpgradeOutcome, upgrade_workflows};
+use argonauts_registry::{
+    SettingsWarning, WorkflowUpgrade, WorkflowUpgradeOutcome, upgrade_workflows,
+};
 use argonauts_tui::{AppIo, UiOptions, history_file_in, run_app, run_screen_reader, stop_signal};
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
@@ -81,6 +83,7 @@ async fn run_once(
     )?;
     let mut ui = UiOptions::from_settings(&settings.settings().ui);
     ui.history_file = Some(history_file_in(&env.state_dir));
+    ui.ultracode_trigger = settings.settings().workflows.ultracode_trigger;
     let screen_reader =
         options.screen_reader || settings.settings().ui.screen_reader || !env.interactive;
     // `argonauts run` attaches to the run it just started and never opens the setup.
@@ -243,7 +246,8 @@ fn newer_cli_notices(ctx: &Ctx, report: &DoctorReport) -> Vec<String> {
     report
         .agents
         .iter()
-        .filter(|check| check.status == AgentStatus::Newer)
+        // Later than every recording, as /doctor judges it: a later patch, minor or major.
+        .filter(|check| matches!(check.status, AgentStatus::Newer | AgentStatus::Untested))
         .filter_map(|check| {
             let adapter = adapters.iter().find(|adapter| adapter.id() == check.id)?;
             CliVersions::notice_once(&path, adapter.as_ref(), check.version.as_deref()?)
@@ -362,8 +366,12 @@ fn agent_ready(check: &AgentCheck, settings: &Settings) -> AgentReady {
 /// old settings file, a committed local file.
 pub(crate) fn start_notices(ctx: &Ctx) -> Vec<(NoteLevel, String)> {
     let env = &ctx.env;
-    let mut notices = settings_warnings(&ctx.settings.resolved().warnings);
+    let warnings = ctx.settings.resolved().warnings.iter();
+    let mut notices = settings_warnings(
+        warnings.filter(|warning| !crate::controller::settings::said_by_a_question(ctx, warning)),
+    );
     notices.extend(workflow_notices(&env.paths.global_workflows()));
+    notices.extend(crate::mods::stats_starter::opens_on_all(env));
     if let Ok(old) = old_global_config_path()
         && let Some(notice) = old_config_notice(&old, env)
     {
@@ -380,9 +388,11 @@ pub(crate) fn start_notices(ctx: &Ctx) -> Vec<(NoteLevel, String)> {
 
 /// Each warning on every start, since each one is a setting you wrote that does nothing, such as
 /// a typo or a safety key in a file you haven't trusted.
-pub(crate) fn settings_warnings(warnings: &[String]) -> Vec<(NoteLevel, String)> {
+pub(crate) fn settings_warnings<'a>(
+    warnings: impl IntoIterator<Item = &'a SettingsWarning>,
+) -> Vec<(NoteLevel, String)> {
     warnings
-        .iter()
+        .into_iter()
         // `resolve` words its warnings for a log line, starting in lowercase, often with the
         // key, which keeps its spelling.
         .map(|warning| (NoteLevel::Warn, sentence_case(warning)))
@@ -862,7 +872,8 @@ mod tests {
             );
         }
         let now = std::fs::read_to_string(parts.repo.global_config()).unwrap();
-        assert_eq!(now, OLDER);
+        let set_up = crate::controller::test_support::SET_UP_GLOBAL;
+        assert_eq!(now, format!("{set_up}{OLDER}"));
     }
 
     #[test]
@@ -873,7 +884,7 @@ mod tests {
             })),
             ..CliOptions::default()
         });
-        assert_eq!(parts.ctx.settings.settings().workflow, "council");
+        assert_eq!(parts.ctx.settings.settings().workflow, "captain");
         let notices = start_notices(&parts.ctx);
         let named: Vec<&str> = notices
             .iter()

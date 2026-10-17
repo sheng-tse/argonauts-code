@@ -28,7 +28,7 @@ use argonauts_core::names::ModelRef;
 use argonauts_core::views::CheckpointRow;
 use argonauts_core::workflow::{Count, StepKind};
 use argonauts_core::{Paths, RepoId, RunId};
-use argonauts_scenarios::{Scenario, WAIT, scenario_file};
+use argonauts_scenarios::{Scenario, WAIT, past_the_question_guard, scenario_file};
 use argonauts_testkit::{FakeScenario, Invocation, Key, Pty};
 use serde_json::{Value, json};
 
@@ -182,12 +182,13 @@ fn app_example_bigger_task_crew() -> anyhow::Result<()> {
     answer_question(&mut pty, '1')?;
     pty.wait_for("Goal question answered · Per API key", WAIT)?;
     pty.wait_for(
-        r"● Goal\(.*\n.*Agreed by 3 agents · 1 question answered",
+        r"[●⏺] Goal\(.*\n.*Agreed by 3 agents · 1 question answered",
         WAIT,
     )?;
     let drafting_agents = wait_until("three drafting agent blocks", || {
         let text = pty.screen().text();
-        Ok((text.matches("● draft:").count() >= 3).then_some(text))
+        let drafts = text.matches("● draft:").count() + text.matches("⏺ draft:").count();
+        Ok((drafts >= 3).then_some(text))
     })?;
     for agent in ["Claude Code", "Codex", "Antigravity CLI"] {
         assert!(
@@ -284,7 +285,8 @@ fn app_close_screen_run_continues_and_reattaches() -> anyhow::Result<()> {
         "the replay to end",
         |event| matches!(event, AppEvent::ReplayDone { run: done, .. } if *done == run),
     )?;
-    pty.wait_for("build:\\S+ · ", WAIT)?;
+    // The run is drawn as it printed live: so far, the working line of its build.
+    pty.wait_for(r"Build · \d+/\d+ tasks", WAIT)?;
     assert!(pid_alive(worker), "reattaching restarted the worker");
     assert_eq!(
         claude_sessions(&scenario, "acceptEdits")?.len(),
@@ -379,8 +381,8 @@ fn app_start_leaves_a_waiting_question_for_you_to_open() -> anyhow::Result<()> {
 /// A run belongs to the conversation that started or opened it. Started now, it gets a panel row.
 /// After a restart it shows only under the header, with no row and no count in the bottom line,
 /// until `/resume <run>` opens it, question and row. `argonauts -c` carries on the newest
-/// conversation, one with no turn that only opened the run, and brings its row back, and Enter on
-/// the row opens it.
+/// conversation, one with no turn that only opened the run, and brings its run back with it,
+/// row and question.
 #[test]
 fn app_waiting_run_belongs_to_the_conversation_that_started_it() -> anyhow::Result<()> {
     let scenario = scenario_with(&merge_question_config())?;
@@ -414,23 +416,15 @@ fn app_waiting_run_belongs_to_the_conversation_that_started_it() -> anyhow::Resu
     // The newest conversation carries on, though it only opened the run, and brings its row
     // back.
     rotate_trace(&scenario, "second")?;
-    let mut pty = start_with(&scenario, &["-c"])?;
+    let pty = start_with(&scenario, &["-c"])?;
     wait_event(&scenario, "the conversation to carry on", |event| {
         matches!(event, AppEvent::ConversationResumed { .. })
     })?;
+    // Its run comes back with it, drawn as it printed, with the question it waits on.
     pty.wait_for(NEEDS_YOU_ROW, WAIT)?;
-    pty.wait_for(" 1 needs you", WAIT)?;
     check_bottom_row(&pty)?;
-    pty.press(Key::Down)?;
-    pty.wait_for(r"❯ ⏸ ", WAIT)?;
-    pty.press(Key::Enter)?;
-    wait_event(
-        &scenario,
-        "the run to open",
-        |event| matches!(event, AppEvent::Attached { summary, .. } if summary.run == run),
-    )?;
     pty.wait_for("◆ Merge this run into main?", WAIT)?;
-    // Focus left the panel, so the question takes the keys.
+    // The question takes the keys.
     pty.wait_for(r"(?m)^  Enter to \w+.* · Esc to ", WAIT)?;
     scenario.shot(&pty, "app_continue_brings_back_the_conversations_run")?;
     Ok(())
@@ -593,21 +587,19 @@ fn app_resume_cli_opens_picker() -> anyhow::Result<()> {
     })?;
     let listed = wait_event(
         &scenario,
-        "the runs picker",
-        |event| matches!(event, AppEvent::View { data } if matches!(data.as_ref(), ViewData::Runs { .. })),
+        "the resume picker",
+        |event| matches!(event, AppEvent::View { data } if matches!(data.as_ref(), ViewData::ResumeList { .. })),
     )?;
     let AppEvent::View { data } = listed else {
         unreachable!("matched a view")
     };
-    let ViewData::Runs { runs, .. } = *data else {
-        unreachable!("matched the runs picker")
+    let ViewData::ResumeList { conversations, .. } = *data else {
+        unreachable!("matched the resume picker")
     };
-    let listed = runs
-        .iter()
-        .find(|summary| summary.run == waiting.run)
-        .with_context(|| format!("{runs:?}"))?;
-    // The list names a run by what was asked, as it names every session.
-    pty.wait_for(&regex::escape(&listed.title), WAIT)?;
+    // A run comes back with the conversation that started it, so one started without a
+    // conversation isn't listed on its own.
+    assert!(conversations.is_empty(), "{conversations:?}");
+    pty.wait_for("Resume a conversation", WAIT)?;
     pty.press(Key::Esc)?;
     check_bottom_row(&pty)?;
     assert_eq!(
@@ -792,7 +784,7 @@ fn app_offers_detected_checks_once() -> anyhow::Result<()> {
     skipping.repo.write("package.json", package)?;
     skipping.repo.commit_all("add package.json")?;
     let mut pty = start(&skipping)?;
-    start_captain(&skipping, &mut pty, requests::SMALL_FIX)?;
+    let first = start_captain(&skipping, &mut pty, requests::SMALL_FIX)?;
     let offer = wait_open_choice(&skipping, argonauts_core::app::ChoiceKind::DetectedChecks)?;
     let body = offer.body.join("\n");
     assert!(body.contains("test") && body.contains("lint"), "{body}");
@@ -800,6 +792,10 @@ fn app_offers_detected_checks_once() -> anyhow::Result<()> {
     assert_eq!(keys, ['y', 'e', 'n'], "{offer:?}");
     answer_question(&mut pty, number_of(&offer.options, 'n'))?;
     wait_choice_closed(&skipping, &offer.id)?;
+    // The run's merge question takes the keys as it shows, so the next run starts once this
+    // one has merged.
+    wait_approval(&skipping, ApprovalKind::Merge)?;
+    merge(&mut pty, &first)?;
     start_captain(&skipping, &mut pty, requests::TIMED_TASK)?;
     wait_worker_started(&skipping)?;
     thread::sleep(Duration::from_millis(500));
@@ -916,8 +912,11 @@ fn app_every_slash_command_handled() -> anyhow::Result<()> {
         let screen_before = pty.screen().text();
         submit(&mut pty, &line)?;
         let needs_argument = spec.needs_argument();
+        // Bare, `/config` and `/settings` open the Config tab on the screen, which asks for its
+        // rows; with a key the app answers them.
+        let opens_config = matches!(spec.name, "config" | "settings");
         // The screen answers some itself, such as `/theme`, which asks for its rows.
-        if spec.handler != Handler::App || needs_argument {
+        if spec.handler != Handler::App || needs_argument || opens_config {
             // Handled here means something answered: the app or the screen.
             wait_until(&format!("an answer to {line}"), || {
                 let answered =
@@ -1138,6 +1137,7 @@ fn app_main_agent_picks_review_panel_and_fills_params() -> anyhow::Result<()> {
     let mut pty = start(&scenario)?;
     // A workflow that came with the repository waits until you trust it, once.
     pty.wait_for(r"Use these instructions\?", WAIT)?;
+    past_the_question_guard();
     pty.send("1")?;
     pty.wait_for(r"Trusted ", WAIT)?;
     submit(&mut pty, &format!("/crew {REVIEW_TASK}"))?;
@@ -1275,7 +1275,7 @@ fn app_remember_pick_saves_fallback_rule() -> anyhow::Result<()> {
         .write(".argonauts/config.toml", &format!("{KEPT_COMMENT}\n"))?;
     scenario.repo.commit_all("add the project settings")?;
     let mut pty = start(&scenario)?;
-    start_captain(&scenario, &mut pty, LIMITED_TASK)?;
+    let first = start_captain(&scenario, &mut pty, LIMITED_TASK)?;
     let question = wait_approval(&scenario, ApprovalKind::Fallback)?;
     let (pick_key, pick) = codex_candidate(&question)?;
     let rule = format!("[\"{pick}\"]");
@@ -1301,6 +1301,10 @@ fn app_remember_pick_saves_fallback_rule() -> anyhow::Result<()> {
             .into_iter()
             .find(|invocation| prompt_of(invocation).contains(LIMITED_TASK)))
     })?;
+    // The run's merge question takes the keys as it shows, so the next run starts once this
+    // one has merged.
+    wait_approval(&scenario, ApprovalKind::Merge)?;
+    merge(&mut pty, &first)?;
     let next_dir = start_captain(&scenario, &mut pty, requests::TIMED_TASK)?;
     let settings = wait_until("the next run's settings", || {
         Ok(run_settings(&next_dir).ok())

@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use argonauts_core::status_tab::VersionStanding;
+
 use super::command::ask;
+use super::standing::standing;
 
 pub const HELP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -141,31 +144,23 @@ fn mentions(help: &str, flag: &str) -> bool {
 pub enum VersionFit {
     /// From the oldest recorded version to the newest.
     Tested,
-    /// A later patch of the newest recorded minor, which should work.
+    /// A later version of the newest recorded major, which should work.
     Newer,
-    /// Older than any recording, a later minor, or no version at all.
+    /// Older than any recording, a later major, or no version at all.
     Untested,
 }
 
+/// The fit by the one rule /doctor states a version's standing with.
 pub fn version_fit(version: &str, tested: &[&str]) -> VersionFit {
-    let Some(version) = numbers(version) else {
-        return VersionFit::Untested;
-    };
-    let tested: Vec<_> = tested.iter().filter_map(|v| numbers(v)).collect();
-    let (Some(oldest), Some(newest)) = (tested.iter().min(), tested.iter().max()) else {
-        return VersionFit::Untested;
-    };
-    if *oldest <= version && version <= *newest {
-        VersionFit::Tested
-    } else if version > *newest && (version.0, version.1) == (newest.0, newest.1) {
-        VersionFit::Newer
-    } else {
-        VersionFit::Untested
+    match standing(Some(version), tested, &[]) {
+        VersionStanding::Checked => VersionFit::Tested,
+        VersionStanding::Newer => VersionFit::Newer,
+        _ => VersionFit::Untested,
     }
 }
 
-/// Whether `version` is tested or a newer patch: from the oldest tested one up to, not
-/// including, the next minor version after the newest.
+/// Whether `version` is tested or newer: from the oldest tested one up to, not including, the
+/// next major version after the newest.
 pub fn in_tested_range(version: &str, tested: &[&str]) -> bool {
     version_fit(version, tested) != VersionFit::Untested
 }
@@ -175,18 +170,17 @@ pub fn newest_tested<'a>(tested: &[&'a str]) -> Option<&'a str> {
     tested.iter().copied().max_by_key(|v| numbers(v))
 }
 
-/// The range [`in_tested_range`] accepts, such as `2.1.284 up to 2.2`.
+/// The range [`in_tested_range`] accepts, such as `2.1.284 up to 3.0`.
 pub fn tested_range_label(tested: &[&str]) -> Option<String> {
     let tested: Vec<_> = tested.iter().filter_map(|v| numbers(v)).collect();
     let oldest = tested.iter().min()?;
     let newest = tested.iter().max()?;
     Some(format!(
-        "{}.{}.{} up to {}.{}",
+        "{}.{}.{} up to {}.0",
         oldest.0,
         oldest.1,
         oldest.2,
-        newest.0,
-        newest.1 + 1
+        newest.0 + 1
     ))
 }
 
@@ -208,31 +202,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ranges_run_from_the_oldest_to_the_next_minor() {
+    fn ranges_run_from_the_oldest_to_the_next_major() {
         let tested = ["2.1.284", "2.1.290"];
         assert!(in_tested_range("2.1.284", &tested));
         assert!(in_tested_range("2.1.285", &tested));
         assert!(in_tested_range("2.1.999", &tested));
         assert!(!in_tested_range("2.1.283", &tested));
-        assert!(!in_tested_range("2.2.0", &tested));
+        assert!(in_tested_range("2.2.0", &tested));
         assert!(!in_tested_range("3.0.0", &tested));
         assert!(in_tested_range("v2.1.300-beta.1", &tested));
         assert!(!in_tested_range("banana", &tested));
         assert!(!in_tested_range("2.1.285", &[]));
         assert_eq!(
             tested_range_label(&tested).as_deref(),
-            Some("2.1.284 up to 2.2")
+            Some("2.1.284 up to 3.0")
         );
     }
 
     #[test]
-    fn a_later_patch_is_newer_and_a_later_minor_untested() {
+    fn a_later_patch_or_minor_is_newer_and_a_later_major_untested() {
         let tested = ["2.1.284", "2.1.285", "2.1.289"];
         assert_eq!(version_fit("2.1.289", &tested), VersionFit::Tested);
         assert_eq!(version_fit("2.1.286", &tested), VersionFit::Tested);
         assert_eq!(version_fit("2.1.291", &tested), VersionFit::Newer);
         assert_eq!(version_fit("v2.1.300-beta.1", &tested), VersionFit::Newer);
-        assert_eq!(version_fit("2.2.0", &tested), VersionFit::Untested);
+        assert_eq!(version_fit("2.2.0", &tested), VersionFit::Newer);
+        assert_eq!(version_fit("3.0.0", &tested), VersionFit::Untested);
         assert_eq!(version_fit("2.1.283", &tested), VersionFit::Untested);
         assert_eq!(version_fit("banana", &tested), VersionFit::Untested);
         assert_eq!(version_fit("2.1.289", &[]), VersionFit::Untested);

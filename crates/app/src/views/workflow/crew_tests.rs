@@ -53,6 +53,7 @@ fn row(session: &SessionKey, label: &str, worker: &ModelRef, status: RowStatus) 
         tries: Vec::new(),
         note: None,
         inner: None,
+        left_out: false,
     }
 }
 
@@ -107,7 +108,7 @@ async fn a_workflow_an_agent_ran_sits_under_it_by_a_name_of_its_own() {
     )
     .unwrap();
 
-    let agent_ids = super::cli_workflow_runs(&sink.events());
+    let log = super::WorkflowLog::of(&sink.events());
     let claude = ModelRef::new("claude-code", None);
     let rows = super::inner::under_agents(
         vec![WorkflowRow::Agent(row(
@@ -116,7 +117,7 @@ async fn a_workflow_an_agent_ran_sits_under_it_by_a_name_of_its_own() {
             &claude,
             RowStatus::Running,
         ))],
-        &agent_ids,
+        &log,
         None,
     );
     let [WorkflowRow::Agent(_), WorkflowRow::Workflow(nested)] = rows.as_slice() else {

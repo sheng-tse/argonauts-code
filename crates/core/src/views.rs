@@ -9,13 +9,13 @@ use crate::agent_goal::AgentGoal;
 use crate::events::context::ContextCategory;
 use crate::events::goal::{Assumption, Criterion, CriterionState, GoalStatus, Try};
 use crate::events::session::{
-    CliAgent, CliAgentState, CliWorkflowRun, EndReason, SubagentStatus, SubagentUpdate,
+    CHILD_GROUP, CliAgent, CliAgentState, CliWorkflowRun, EndReason, SubagentStatus, SubagentUpdate,
 };
 use crate::names::{ModelRef, SessionKey, WorkflowId};
 use crate::settings::workflows::RunStyle;
 use crate::steps::StepName;
 use crate::steps::plan::Severity;
-use crate::workflow::{StandardPhase, StepRef};
+use crate::workflow::{StandardPhase, Step, StepKind, StepRef, Workflow};
 use crate::{DiffStat, RunId, Spend, TaskId};
 
 /// A run's workflow, or a nested one, with every phase it declares and their rows.
@@ -34,8 +34,6 @@ pub struct WorkflowView {
     /// needs you or the main agent's latest note. A finished run's line says how it ended.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub status_lines: Vec<StatusLine>,
-    /// Names from the run's workflow down to this one. Empty at the top.
-    pub breadcrumb: Vec<String>,
     /// Counted at every level below this one too.
     pub agents_done: u32,
     pub agents_total: u32,
@@ -115,6 +113,10 @@ pub struct RowNote {
     pub text: String,
     #[serde(default, skip_serializing_if = "Tone::is_plain")]
     pub tone: Tone,
+    /// Dim words after it, each after ` · `, such as `1 note` after `approved`, or `passing it
+    /// on` while the agent that asked still has the answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub then: Vec<String>,
 }
 
 impl RowNote {
@@ -122,7 +124,14 @@ impl RowNote {
         Self {
             text: text.into(),
             tone,
+            then: Vec::new(),
         }
+    }
+
+    /// The same note with `words` after it, dim.
+    pub fn then(mut self, words: impl Into<String>) -> Self {
+        self.then.push(words.into());
+        self
     }
 }
 
@@ -211,7 +220,7 @@ pub struct PhaseRow {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhaseCount {
-    /// A nested workflow counts as one.
+    /// A workflow inside counts its own agents.
     pub done: u32,
     pub total: u32,
 }
@@ -227,7 +236,8 @@ impl PhaseCount {
 #[serde(tag = "row", rename_all = "snake_case")]
 pub enum WorkflowRow {
     Agent(AgentRow),
-    /// A `◇` row that opens the nested workflow's own view.
+    /// A workflow inside this one, started in this phase: a `▸` row that opens to its phases
+    /// and their agents, or to its agents for a workflow that reports no phases.
     Workflow(NestedWorkflowRow),
     /// A step Argonauts Code runs itself, a check or the merge, such as `final check  npm test ·
     /// 15 of 16 pass`: drawn like an agent, with the command or `git` where a model would be.
@@ -284,6 +294,42 @@ pub struct AgentRow {
     /// running that workflow, which all its agents share.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inner: Option<InnerAgent>,
+    /// A job its workflow can do without that no model could take. It never ran, so it has no
+    /// tokens or time and no count counts it; `worker` is the model it was meant for, and its
+    /// note says why it was left out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub left_out: bool,
+}
+
+/// Agents done and in all among `rows`, by the one rule every count of a workflow keeps: its
+/// phases, its pane titles, its header and its row in the bottom list. A row is one agent,
+/// whatever tries and rounds fold under it, and it is done once it finished, unless `again`
+/// says a later round of its own is coming, as for one of Argonauts Code's reviewers that sent
+/// the work back. A workflow inside counts its own agents, and a step Argonauts Code runs
+/// itself, such as a check or the merge, none.
+pub fn agents_counted(rows: &[WorkflowRow], again: impl Fn(&AgentRow) -> bool) -> (u32, u32) {
+    rows.iter().fold((0, 0), |(done, total), row| match row {
+        // A job left out never ran, and is no agent of the workflow's.
+        WorkflowRow::Agent(agent) if agent.left_out => (done, total),
+        WorkflowRow::Agent(agent) => {
+            let finished = agent.status == RowStatus::Done && !again(agent);
+            (done + u32::from(finished), total + 1)
+        }
+        WorkflowRow::Workflow(nested) => (done + nested.agents_done, total + nested.agents_total),
+        WorkflowRow::Command(_) => (done, total),
+    })
+}
+
+/// The step's label inside a later round's, such as `review:per-key` for `review:per-key-2`,
+/// which the run made unique, or for `review:per-key · round 2`, named for its round.
+pub fn round_stem(label: &str) -> Option<&str> {
+    fn numbered<'a>((stem, n): (&'a str, &str)) -> Option<&'a str> {
+        n.parse::<u32>().is_ok().then_some(stem)
+    }
+    label
+        .rsplit_once(" · round ")
+        .and_then(numbered)
+        .or_else(|| label.rsplit_once('-').and_then(numbered))
 }
 
 /// One agent of a workflow its CLI runs itself, such as Claude Code's own. It has no session
@@ -334,9 +380,16 @@ pub struct NestedWorkflowRow {
     /// The agent whose own CLI started it, when one did. The row sits under that agent's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<SessionKey>,
-    /// Whose workflow it is when it isn't Argonauts Code's, such as `Claude Code's own`.
+    /// Whose workflow it is when it isn't Argonauts Code's: the CLI, such as `claude-code`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
+    /// Its phases, each a heading over its agents, as its row opens to them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<PhaseRow>,
+    /// Its agents straight under its row, for a workflow that reports no phases of its own, as
+    /// Claude Code reports a child workflow its script started.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<WorkflowRow>,
 }
 
 /// In tokens.
@@ -372,6 +425,35 @@ pub fn is_workflow_agent(step: Option<StepName>, workflow_step: Option<&StepRef>
     workflow_step.is_some() && !matches!(step, Some(StepName::DesignWorkflow | StepName::PlanTry))
 }
 
+/// What opening a run's workflow says while it is still being written.
+pub const BEING_WRITTEN: &str = "The workflow is being written; it opens when its phases are known";
+
+/// Whether a step of `workflow` writes the phases it runs as it goes: a script, which the runner
+/// or a CLI's own workflow carries out. Its declared phases then only hold a place for them.
+pub fn writes_its_phases(workflow: &Workflow) -> bool {
+    fn writes(steps: &[Step]) -> bool {
+        steps
+            .iter()
+            .any(|step| step.kind == StepKind::Script || writes(&step.steps))
+    }
+    workflow.phases.iter().any(|phase| writes(&phase.steps))
+}
+
+/// Whether a run's workflow has its shape, so anything of it is drawn: its row, its view and
+/// its line in the conversation. A workflow whose phases are fixed has it from its start. One
+/// whose step writes them, `written`, has it at the first report that lists phases: the
+/// script's, or the CLI's own workflow a task's session runs. A script that declares no phase
+/// has it once its first agent shows. Until then only the working line moves.
+pub fn shape_known<'a>(
+    written: bool,
+    reports: impl IntoIterator<Item = &'a CliWorkflowRun>,
+) -> bool {
+    !written
+        || reports
+            .into_iter()
+            .any(|report| !report.phases.is_empty() || !report.agents.is_empty())
+}
+
 /// The id the views give a workflow an agent's own CLI runs, kept apart from Argonauts Code's own
 /// `wf-NNN` so a request for it can't name one of ours.
 /// The run the views name your conversation by, for a workflow its own CLI runs in a conversation
@@ -401,36 +483,7 @@ impl WorkflowView {
         workflow: &CliWorkflowRun,
         now_ms: Option<u64>,
     ) -> Self {
-        let ended = matches!(
-            workflow.status,
-            SubagentStatus::Done | SubagentStatus::Failed
-        );
-        let phases: Vec<PhaseRow> = workflow
-            .phases
-            .iter()
-            .filter_map(|phase| {
-                let rows: Vec<WorkflowRow> = workflow
-                    .agents_in(phase.index)
-                    .map(|agent| WorkflowRow::Agent(inner_row(host, workflow, agent, now_ms)))
-                    .collect();
-                if ended && rows.is_empty() {
-                    return None;
-                }
-                let count = workflow
-                    .count(phase.index)
-                    .and_then(|(done, total)| PhaseCount::of(done, total));
-                Some(PhaseRow {
-                    name: phase.title.clone(),
-                    detail: phase.detail.clone(),
-                    standard: StandardPhase::Do,
-                    status: cli_phase_status(&rows),
-                    try_number: None,
-                    count,
-                    rows,
-                    note: None,
-                })
-            })
-            .collect();
+        let phases = cli_phases(&host.session, &host.worker, workflow, now_ms);
         let done = workflow
             .agents
             .iter()
@@ -443,7 +496,6 @@ impl WorkflowView {
             description: workflow.description.clone(),
             style: None,
             status_lines: Vec::new(),
-            breadcrumb: Vec::new(),
             agents_done: u32::try_from(done).unwrap_or(u32::MAX),
             agents_total: u32::try_from(workflow.agents.len()).unwrap_or(u32::MAX),
             elapsed_ms: workflow.elapsed_ms(now_ms),
@@ -496,6 +548,156 @@ impl WorkflowView {
     }
 }
 
+/// The phases of a workflow `session`'s CLI runs itself, on `worker`, each with its agents'
+/// rows. A child workflow its script started, which the CLI reports as one more phase such as
+/// `▸ date-cases`, is a row of the phase that started it, with its agents under it, and that
+/// phase counts them and is at work while it runs. Once the workflow ends, a phase that never
+/// ran leaves the list, as ours do. `now_ms` times what's still running.
+pub fn cli_phases(
+    session: &SessionKey,
+    worker: &ModelRef,
+    workflow: &CliWorkflowRun,
+    now_ms: Option<u64>,
+) -> Vec<PhaseRow> {
+    let ended = workflow.ended();
+    let rows_in = |index: u32| -> Vec<WorkflowRow> {
+        workflow
+            .agents_in(index)
+            .map(|agent| WorkflowRow::Agent(inner_row(session, worker, workflow, agent, now_ms)))
+            .collect()
+    };
+    let mut phases: Vec<(u32, PhaseRow)> = Vec::new();
+    for phase in &workflow.phases {
+        let rows = rows_in(phase.index);
+        if ended && rows.is_empty() {
+            continue;
+        }
+        let row = PhaseRow {
+            name: crate::text::shown_name(&phase.title),
+            detail: phase.detail.clone(),
+            standard: StandardPhase::Do,
+            status: cli_phase_status(&rows),
+            try_number: None,
+            count: workflow
+                .count(phase.index)
+                .and_then(|(done, total)| PhaseCount::of(done, total)),
+            rows,
+            note: None,
+        };
+        phases.push((phase.index, row));
+    }
+    children_inside(phases, workflow, Some(&worker.agent), now_ms)
+}
+
+/// `phases`, each by its index among `workflow`'s, with each child workflow its script
+/// started, which the workflow reports as one more phase named `▸` and the child's name, made
+/// a row of the phase that started it: the last whose agents began before the child's did.
+/// That phase counts the child's agents and is at work while it runs. `whose` is the CLI whose
+/// workflow it is, `None` for one of Argonauts Code's own.
+pub fn children_inside(
+    phases: Vec<(u32, PhaseRow)>,
+    workflow: &CliWorkflowRun,
+    whose: Option<&str>,
+    now_ms: Option<u64>,
+) -> Vec<PhaseRow> {
+    let first_start = |index: u32| {
+        workflow
+            .agents_in(index)
+            .filter_map(|agent| agent.started_at_ms)
+            .min()
+    };
+    let is_child = |index: u32| {
+        workflow
+            .phases
+            .iter()
+            .any(|phase| phase.index == index && phase.child().is_some())
+    };
+    let (children, mut phases): (Vec<_>, Vec<_>) =
+        phases.into_iter().partition(|(index, _)| is_child(*index));
+    for (index, child) in children {
+        let started = first_start(index);
+        let at = phases
+            .iter()
+            .rposition(|(index, _)| match (first_start(*index), started) {
+                (Some(phase), Some(child)) => phase <= child,
+                (Some(_), None) => true,
+                (None, _) => false,
+            });
+        let Some(at) = at.or_else(|| phases.len().checked_sub(1)) else {
+            // A workflow that reports nothing but its child keeps it as a phase.
+            phases.push((index, child));
+            continue;
+        };
+        let nested = child_row(whose, workflow, child, started, now_ms);
+        let holder = &mut phases[at].1;
+        holder.rows.push(WorkflowRow::Workflow(nested));
+        let (done, total) = agents_counted(&holder.rows, |_| false);
+        holder.count = PhaseCount::of(done, total);
+        holder.status = cli_phase_status(&holder.rows);
+    }
+    phases.into_iter().map(|(_, phase)| phase).collect()
+}
+
+/// The row of a child workflow, from the phase its workflow reported it as.
+fn child_row(
+    whose: Option<&str>,
+    workflow: &CliWorkflowRun,
+    phase: PhaseRow,
+    started: Option<u64>,
+    now_ms: Option<u64>,
+) -> NestedWorkflowRow {
+    let name = phase
+        .name
+        .strip_prefix(CHILD_GROUP)
+        .unwrap_or(&phase.name)
+        .trim()
+        .to_owned();
+    let (agents_done, agents_total) = agents_counted(&phase.rows, |_| false);
+    let mut workers: Vec<ModelRef> = Vec::new();
+    for row in &phase.rows {
+        if let WorkflowRow::Agent(agent) = row
+            && !workers.contains(&agent.worker)
+        {
+            workers.push(agent.worker.clone());
+        }
+    }
+    // From its first agent's start to now while it runs, else to its last agent's end.
+    let elapsed_ms = match (started, now_ms) {
+        (Some(started), Some(now)) if phase.status == RowStatus::Running => {
+            now.saturating_sub(started)
+        }
+        _ => workflow
+            .agents
+            .iter()
+            .filter(|agent| agent.started_at_ms.is_some())
+            .filter(|agent| {
+                phase.rows.iter().any(|row| {
+                    matches!(row, WorkflowRow::Agent(known)
+                        if known.inner.as_ref().is_some_and(|inner| inner.index == agent.index))
+                })
+            })
+            .filter_map(|agent| {
+                let from = started?;
+                Some(agent.started_at_ms?.saturating_sub(from) + agent.duration_ms)
+            })
+            .max()
+            .unwrap_or(0),
+    };
+    NestedWorkflowRow {
+        id: cli_workflow_run_id(&format!("{}-{name}", workflow.id)),
+        name,
+        status: phase.status,
+        agents_done,
+        agents_total,
+        workers,
+        elapsed_ms,
+        parent: None,
+        worker: whose.map(str::to_owned),
+        phases: Vec::new(),
+        rows: phase.rows,
+    }
+}
+
 /// What an agent of a CLI's own workflow ended with when the workflow was over before it
 /// was, in Claude Code's words for it.
 const STOPPED_WITH_ITS_WORKFLOW: &str = "The workflow stopped before this agent finished.";
@@ -503,7 +705,8 @@ const STOPPED_WITH_ITS_WORKFLOW: &str = "The workflow stopped before this agent 
 /// The row of one agent of a workflow `host`'s CLI runs itself: its own label, model, state
 /// and counts as the CLI reports them, on the host's session.
 fn inner_row(
-    host: &AgentRow,
+    session: &SessionKey,
+    worker: &ModelRef,
     workflow: &CliWorkflowRun,
     agent: &CliAgent,
     now_ms: Option<u64>,
@@ -511,8 +714,8 @@ fn inner_row(
     // An agent that names no model runs on its session's.
     let on = |model: &Option<String>| {
         ModelRef::new(
-            host.worker.agent.clone(),
-            model.clone().or_else(|| host.worker.model.clone()),
+            worker.agent.clone(),
+            model.clone().or_else(|| worker.model.clone()),
         )
     };
     let stopped = workflow.stopped_with_it(agent);
@@ -522,7 +725,7 @@ fn inner_row(
         None => (&agent.model, None),
     };
     AgentRow {
-        session: host.session.clone(),
+        session: session.clone(),
         label: agent.label.clone(),
         worker: on(at_work),
         status: match agent.state {
@@ -553,15 +756,19 @@ fn inner_row(
             workflow: cli_workflow_run_id(&workflow.id),
             index: agent.index,
         }),
+        left_out: false,
     }
 }
 
 fn cli_phase_status(rows: &[WorkflowRow]) -> RowStatus {
+    // A child workflow at work keeps the phase that started it at work, whatever its own
+    // agents have done.
     let statuses: Vec<RowStatus> = rows
         .iter()
         .filter_map(|row| match row {
             WorkflowRow::Agent(agent) => Some(agent.status),
-            _ => None,
+            WorkflowRow::Workflow(nested) => Some(nested.status),
+            WorkflowRow::Command(_) => None,
         })
         .collect();
     if statuses.is_empty() {
@@ -641,6 +848,67 @@ pub struct AgentView {
     /// A reviewer's own verdict and findings, which are its outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<ReviewGiven>,
+    /// The agent of a CLI's own workflow that handed this session the job and passed its
+    /// answer back, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_for: Option<AskedFor>,
+    /// For a reviewer, the earlier round's findings it was given and how each was answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earlier: Option<EarlierFindings>,
+    /// Why its job came to its model, when it took another's place or its job was left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved: Option<Moved>,
+}
+
+/// Why an agent's job came to the model that does it, or to none, for its agent view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Moved {
+    /// It does the job in `asked`'s place: `which` says what became of that one, such as
+    /// `crashed twice as it started`, and `lines` what more is known, such as the error.
+    FallbackFor {
+        asked: ModelRef,
+        which: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lines: Vec<String>,
+    },
+    /// No model could take the job, and the workflow goes on without it: `because` such as
+    /// `Antigravity CLI is signed out`, and `lines` what that means for the run.
+    LeftOut {
+        because: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lines: Vec<String>,
+    },
+}
+
+/// An earlier round of the review a reviewer gives, as it was given to it: the findings, who
+/// worked on them, and the answer to each.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EarlierFindings {
+    /// The reviewer's label, such as `review:money`, and its round, from 1.
+    pub from: String,
+    pub round: u32,
+    /// The agent that worked on them, such as `fix:review-findings`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_by: Option<String>,
+    pub items: Vec<Finding>,
+    /// Each finding's answer, in the order of `items`; empty where it had none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answers: Vec<String>,
+}
+
+/// A hand-over by design: an agent of a CLI's own workflow, such as Claude Code's
+/// `review:final`, gave another CLI the job and passed its answer back. The agent view tells it
+/// once, as `Asked for by Claude Code · its agent review:final, on Haiku 5.5`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskedFor {
+    /// The CLI whose workflow asked, such as `claude-code`.
+    pub cli: String,
+    /// Its agent's label and model, and that agent's own tokens and time.
+    pub label: String,
+    pub worker: ModelRef,
+    pub tokens: u64,
+    pub elapsed_ms: u64,
 }
 
 impl AgentView {
@@ -666,7 +934,7 @@ impl AgentView {
         };
         Some(Self {
             run: run.clone(),
-            row: inner_row(host, workflow, agent, now_ms),
+            row: inner_row(&host.session, &host.worker, workflow, agent, now_ms),
             prompt: agent.prompt.clone().unwrap_or_default(),
             // Whether the call answered isn't reported, so it has no result either way.
             activity: agent
@@ -676,6 +944,7 @@ impl AgentView {
                     tool: tool.name.clone(),
                     summary: tool.summary.clone().unwrap_or_default(),
                     ok: None,
+                    note: None,
                 })
                 .collect(),
             tool_calls: agent.tool_calls,
@@ -701,6 +970,9 @@ impl AgentView {
                 .collect(),
             to_fix: None,
             review: None,
+            asked_for: None,
+            earlier: None,
+            moved: None,
         })
     }
 }
@@ -740,6 +1012,9 @@ pub struct ActivityLine {
     pub summary: String,
     /// `None` while it runs.
     pub ok: Option<bool>,
+    /// Dim words after the call, such as why no command ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// An agent's own internal workflow, whose structure the agent doesn't expose.
@@ -785,6 +1060,18 @@ pub struct ContextRow {
     /// CLI that says only how full.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<ContextCategory>,
+    /// Read from a resumed conversation's record, until a turn of it runs again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded: Option<RecordedContext>,
+}
+
+/// What a conversation's record says of its session, for a row read from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedContext {
+    /// When its last answer ended.
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
+    pub turns: u32,
 }
 
 /// One workflow in the Library tab of the workflow view.
@@ -1017,4 +1304,173 @@ pub enum LearningCommand {
     OpenPullRequest {
         branch: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent(label: &str, status: RowStatus) -> WorkflowRow {
+        WorkflowRow::Agent(AgentRow {
+            session: SessionKey::numbered(1),
+            label: label.to_owned(),
+            worker: ModelRef::new("codex", None),
+            status,
+            tokens: 0,
+            spent: Spend::default(),
+            elapsed_ms: 0,
+            subagents: 0,
+            context: None,
+            fallback_for: None,
+            answered: false,
+            tries: Vec::new(),
+            note: None,
+            inner: None,
+            left_out: false,
+        })
+    }
+
+    /// One rule for every count: an agent is done once it finished, unless its next round is
+    /// coming; a workflow inside counts its own agents; a check or the merge counts none.
+    #[test]
+    fn agents_count_by_one_rule() {
+        let inside = WorkflowRow::Workflow(NestedWorkflowRow {
+            id: WorkflowId::numbered(2),
+            name: "date-cases".to_owned(),
+            status: RowStatus::Running,
+            agents_done: 1,
+            agents_total: 3,
+            workers: Vec::new(),
+            elapsed_ms: 0,
+            parent: None,
+            worker: None,
+            phases: Vec::new(),
+            rows: Vec::new(),
+        });
+        let check = WorkflowRow::Command(CommandRow {
+            label: "final check".to_owned(),
+            command: "npm test".to_owned(),
+            result: None,
+            tone: Tone::Plain,
+            status: RowStatus::Done,
+            elapsed_ms: 0,
+        });
+        let rows = vec![
+            agent("build:due-flag", RowStatus::Done),
+            agent("review:due-flag", RowStatus::Done),
+            agent("review:due-tests", RowStatus::Running),
+            inside,
+            check,
+        ];
+        assert_eq!(agents_counted(&rows, |_| false), (3, 6));
+        let sent_back = |row: &AgentRow| row.label == "review:due-flag";
+        assert_eq!(agents_counted(&rows, sent_back), (2, 6));
+    }
+
+    /// Claude Code reports a child its script started as one more phase, `▸ date-cases`. It is
+    /// a row of the phase that started it instead, with its agents under it, and that phase
+    /// counts them and is at work while it runs.
+    #[test]
+    fn a_child_workflow_is_a_row_of_the_phase_that_started_it() {
+        let workflow: CliWorkflowRun = serde_json::from_value(serde_json::json!({
+            "id": "wf_1", "name": "add-due-flag", "description": "",
+            "phases": [
+                { "index": 1, "title": "write" },
+                { "index": 2, "title": "Check" },
+                { "index": 3, "title": "▸ date-cases" },
+            ],
+            "agents": [
+                { "index": 1, "label": "write:add", "phase": 1, "state": "done", "tokens": 0, "tool_calls": 0,
+                  "started_at_ms": 1_000, "duration_ms": 41_000, "try_number": 1 },
+                { "index": 2, "label": "check:dates", "phase": 2, "state": "done", "tokens": 0, "tool_calls": 0,
+                  "started_at_ms": 50_000, "duration_ms": 31_000, "try_number": 1 },
+                { "index": 3, "label": "case:leap-day", "phase": 3, "state": "done", "tokens": 0, "tool_calls": 0,
+                  "started_at_ms": 60_000, "duration_ms": 14_000, "try_number": 1 },
+                { "index": 4, "label": "case:bad-date", "phase": 3, "state": "running", "tokens": 0, "tool_calls": 0,
+                  "started_at_ms": 70_000, "duration_ms": 0, "try_number": 1 },
+            ],
+            "status": "running", "tokens": 0, "tool_calls": 0, "duration_ms": 0,
+        }))
+        .unwrap();
+        let phases = cli_phases(
+            &SessionKey::numbered(1),
+            &ModelRef::new("claude-code", None),
+            &workflow,
+            Some(82_000),
+        );
+        let names: Vec<&str> = phases.iter().map(|phase| phase.name.as_str()).collect();
+        // A phase's name starts with a capital, whatever case the script wrote it in.
+        assert_eq!(names, ["Write", "Check"]);
+        let check = &phases[1];
+        assert_eq!(check.status, RowStatus::Running);
+        assert_eq!(check.count, PhaseCount::of(2, 3));
+        let WorkflowRow::Workflow(child) = &check.rows[1] else {
+            panic!("the child is a row of Check");
+        };
+        assert_eq!(child.name, "date-cases");
+        assert_eq!(child.worker.as_deref(), Some("claude-code"));
+        assert_eq!((child.agents_done, child.agents_total), (1, 2));
+        assert_eq!(child.rows.len(), 2);
+        assert_eq!(child.elapsed_ms, 22_000);
+    }
+
+    fn workflow(steps: serde_json::Value) -> Workflow {
+        serde_json::from_value(serde_json::json!({
+            "name": "any",
+            "phases": [
+                { "name": "Work", "standard": "do", "steps": steps },
+                { "name": "Merge", "standard": "decide", "steps": [{ "kind": "merge" }] },
+            ],
+        }))
+        .unwrap()
+    }
+
+    fn reported(phases: &[&str], agents: u32) -> CliWorkflowRun {
+        CliWorkflowRun {
+            id: "wf_1".to_owned(),
+            call: None,
+            name: "fix-money-rounding".to_owned(),
+            description: String::new(),
+            phases: phases
+                .iter()
+                .zip(1..)
+                .map(|(title, index)| crate::events::session::CliPhase {
+                    index,
+                    title: (*title).to_owned(),
+                    detail: String::new(),
+                })
+                .collect(),
+            agents: (1..=agents)
+                .map(|index| CliAgent {
+                    index,
+                    ..CliAgent::default()
+                })
+                .collect(),
+            status: SubagentStatus::Running,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 0,
+            summary: None,
+            started_at_ms: None,
+        }
+    }
+
+    /// A workflow whose phases are fixed has its shape from its start. One a script writes has
+    /// it at the first report that names its phases, or its first agent when it names none.
+    #[test]
+    fn a_workflow_has_its_shape_once_its_phases_are_known() {
+        let fixed = workflow(serde_json::json!([{ "kind": "build" }]));
+        let script = workflow(serde_json::json!([{ "kind": "script" }]));
+        assert!(!writes_its_phases(&fixed));
+        assert!(writes_its_phases(&script));
+
+        assert!(shape_known(writes_its_phases(&fixed), []));
+        let written = writes_its_phases(&script);
+        assert!(!shape_known(written, []));
+        let empty = reported(&[], 0);
+        assert!(!shape_known(written, [&empty]));
+        let phases = reported(&["Build", "Review", "Final"], 0);
+        assert!(shape_known(written, [&empty, &phases]));
+        assert!(shape_known(written, [&reported(&[], 1)]));
+    }
 }

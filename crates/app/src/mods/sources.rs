@@ -312,6 +312,7 @@ mod tests {
                 .collect(),
             live: true,
             remind: false,
+            shape_known: true,
         }
     }
 
@@ -415,6 +416,7 @@ mod tests {
                 estimated: false,
                 counts: false,
                 categories: Vec::new(),
+                recorded: None,
             }),
             ..Numbers::default()
         };

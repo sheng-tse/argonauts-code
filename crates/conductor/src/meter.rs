@@ -184,6 +184,9 @@ pub struct SessionMeter {
     estimator: Option<(Arc<dyn ModelRegistry>, ModelRef)>,
     /// Set when no price is known yet, so the model the stream reports can supply one.
     price_from_model: bool,
+    /// The model runs on a server of yours, or the registry says it costs nothing, so no
+    /// figure the parser prices at a provider's rates counts.
+    free: bool,
     capabilities: Capabilities,
     rotate_at: Option<RotateAt>,
     context_window: Option<u64>,
@@ -191,6 +194,12 @@ pub struct SessionMeter {
     context: Option<ContextSize>,
     /// What earlier sessions spent on the CLI session this one resumes.
     earlier: Spend,
+    /// What the CLI session had spent in all when its current process started, to which what
+    /// a process says of its own spend adds.
+    before_process: f64,
+    /// What was left of the run's limit as the session started, against which only its own
+    /// spend counts.
+    run_left: Option<LimitAmount>,
     /// The whole run time at the latest tick.
     elapsed: Duration,
     /// The run time when the CLI session last resumed in a new process. Core's meter counts
@@ -250,6 +259,7 @@ impl SessionMeter {
             plan_usage_limit,
             plan_usage: PlanUsageTally::default(),
             price_from_model: price.is_none() && estimator.is_none(),
+            free: price == Some(FREE),
             estimator,
             capabilities,
             rotate_at,
@@ -257,6 +267,10 @@ impl SessionMeter {
             context_cap,
             context: None,
             earlier: Spend::default(),
+            before_process: 0.0,
+            run_left: limits.run_left.filter(|left| {
+                left.amount.is_finite() && matches!(left.unit, LimitUnit::Usd | LimitUnit::Tokens)
+            }),
             elapsed: Duration::ZERO,
             resumed_at: Duration::ZERO,
             wrapped: false,
@@ -304,6 +318,7 @@ impl SessionMeter {
             self.inner.start_new_session();
         }
         self.resumed_at = self.elapsed;
+        self.before_process = self.inner.spend().cost_usd;
     }
 
     /// This meter's session resumes a CLI session on which `earlier` was already spent, such
@@ -323,24 +338,59 @@ impl SessionMeter {
         });
         self.inner.start_new_session();
         self.earlier = earlier;
+        self.before_process = self.inner.spend().cost_usd;
     }
 
+    /// The parser's figure for the requests since the agent's last totals, priced the way they
+    /// are billed, in place of the meter's own estimate of them.
+    pub fn bill_since_totals(&mut self, usd: Option<f64>) -> MeterVerdict {
+        if let Some(usd) = usd.filter(|_| !self.free) {
+            self.inner.bill_since_totals(usd);
+        }
+        self.verdict()
+    }
+
+    /// The process says it has spent at least `usd` of its own, where its totals may never
+    /// follow, as Claude Code does when its spend cap stops the session's background agents.
+    /// What the CLI session spent before the process adds to it.
+    pub fn spent_at_least(&mut self, usd: Option<f64>) -> MeterVerdict {
+        if let Some(usd) = usd.filter(|_| !self.free) {
+            self.inner.spent_at_least(self.before_process + usd);
+        }
+        self.verdict()
+    }
+
+    /// Where the session stands against its limits. The spend in it is the session's own: the
+    /// CLI session's earlier spend counts toward the task's limit, but the run holds it already.
     pub fn status(&self) -> SpendStatus {
         let mut status = self.inner.status();
+        status.spend = self.spend();
+        if let Some((share, limit)) = self.run_share()
+            && status.fraction_used.is_none_or(|used| share > used)
+        {
+            status.fraction_used = Some(share);
+            status.binding = Some(LimitDimension::Spend);
+            status.limit = limit;
+            status.level = self.level_at(share);
+        }
         if let Some(share) = self.plan_usage_share()
             && status.fraction_used.is_none_or(|used| share > used)
         {
             status.fraction_used = Some(share);
             status.binding = Some(LimitDimension::Spend);
-            status.level = if share >= 1.0 {
-                MeterAction::Stop
-            } else if share >= self.inner.soft_ratio() {
-                MeterAction::WrapUp
-            } else {
-                MeterAction::Continue
-            };
+            status.level = self.level_at(share);
         }
         status
+    }
+
+    fn level_at(&self, share: f64) -> MeterAction {
+        if share >= 1.0 {
+            MeterAction::Stop
+        } else if share >= self.inner.soft_ratio() {
+            MeterAction::WrapUp
+        } else {
+            MeterAction::Continue
+        }
     }
 
     /// What this session spent, without what earlier sessions spent on the CLI session.
@@ -427,6 +477,24 @@ impl SessionMeter {
         let limit = self.plan_usage_limit?;
         let used = self.plan_usage.used().unwrap_or(0.0);
         Some(if limit > 0.0 { used / limit } else { 1.0 })
+    }
+
+    /// The share of what was left of the run that the session has spent itself, and that
+    /// remainder as a limit.
+    fn run_share(&self) -> Option<(f64, MeterLimit)> {
+        let left = self.run_left?;
+        let limit = match left.unit {
+            LimitUnit::Usd => MeterLimit::Usd(left.amount),
+            LimitUnit::Tokens => MeterLimit::Tokens(left.amount.max(0.0).round() as u64),
+            LimitUnit::PlanUsage | LimitUnit::Minutes => return None,
+        };
+        let spent = spent_in(&self.spend(), left.unit);
+        let share = if left.amount > 0.0 {
+            spent / left.amount
+        } else {
+            1.0
+        };
+        Some((share, limit))
     }
 
     /// A usage report as this session's own: where the agent's totals include what earlier
@@ -590,24 +658,64 @@ pub fn record_cli_session_spend(workdir: &Path, agent_id: &str, id: &str, total:
 }
 
 /// Claude Code's `--max-budget-usd` backstop: a little above the meter's dollar limit, and on a
-/// resume only what's left of it, since earlier totals don't count there.
+/// resume only what's left of it, since earlier totals don't count there. A session whose spend
+/// goes on unseen in the background has no other stop there, so its cap is the limit itself,
+/// rounded down to the cent.
 pub fn native_cap_usd(limits: &SessionLimits, spent_before_usd: f64) -> Option<f64> {
-    let cap = limits.native_cap_usd.or_else(|| match limits.limit {
+    let margin = if limits.spends_unseen {
+        1.0
+    } else {
+        NATIVE_CAP_MARGIN
+    };
+    let task_limit = match limits.limit {
         Some(LimitAmount {
             unit: LimitUnit::Usd,
             amount,
-        }) if amount.is_finite() && amount > 0.0 => Some(amount * NATIVE_CAP_MARGIN),
+        }) if amount.is_finite() && amount > 0.0 => Some(amount),
         _ => None,
-    })?;
+    };
+    let task = if limits.spends_unseen {
+        task_limit.or(limits.native_cap_usd)
+    } else {
+        limits
+            .native_cap_usd
+            .or(task_limit.map(|amount| amount * NATIVE_CAP_MARGIN))
+    };
     let spent = if spent_before_usd.is_finite() {
         spent_before_usd.max(0.0)
     } else {
         0.0
     };
-    let left = (cap - spent).max(MIN_NATIVE_CAP_USD);
-    // Whole cents, rounded up, so the backstop never lands below the limit. The small nudge
-    // keeps 0.55 from becoming 0.56 through float error.
-    Some(((left * 100.0) - 1e-6).ceil() / 100.0)
+    // What's left of the run counts only this process's spend, as Claude Code's own count does.
+    let run = match limits.run_left {
+        Some(LimitAmount {
+            unit: LimitUnit::Usd,
+            amount,
+        }) if amount.is_finite() && amount >= 0.0 => Some(amount * margin),
+        _ => None,
+    };
+    let left = match (task.map(|cap| cap - spent), run) {
+        (Some(task), Some(run)) => task.min(run),
+        (task, run) => task.or(run)?,
+    };
+    let left = left.max(MIN_NATIVE_CAP_USD);
+    // Whole cents: rounded up, so a backstop never lands below the limit, or down, so a cap
+    // that is the limit never lets the background past it. The small nudge keeps 0.55 from
+    // becoming 0.56 or 0.54 through float error.
+    let cents = if limits.spends_unseen {
+        ((left * 100.0) + 1e-6).floor()
+    } else {
+        ((left * 100.0) - 1e-6).ceil()
+    };
+    Some((cents / 100.0).max(MIN_NATIVE_CAP_USD))
+}
+
+fn spent_in(spend: &Spend, unit: LimitUnit) -> f64 {
+    match unit {
+        LimitUnit::Usd => spend.cost_usd,
+        LimitUnit::Tokens => spend.billable_tokens() as f64,
+        LimitUnit::PlanUsage | LimitUnit::Minutes => 0.0,
+    }
 }
 
 #[cfg(test)]
@@ -1145,6 +1253,200 @@ mod tests {
         restarted.observe(&usage(500, 50, Some(0.5), true));
         assert!((restarted.spend().cost_usd - 0.5).abs() < 1e-9);
         assert!((restarted.total_spend().cost_usd - 1.5).abs() < 1e-9);
+    }
+
+    /// A session resumed the CLI session of one that had spent $0.4355 of the run's $0.50, with
+    /// $0.0626 of the run left. Its readings say what it spent itself, so the run counts the
+    /// earlier spend once, and only its own spend counts against what was left of the run.
+    #[test]
+    fn a_resumed_session_counts_only_its_own_spend_against_the_run() {
+        let usd = |amount| {
+            Some(LimitAmount {
+                unit: LimitUnit::Usd,
+                amount,
+            })
+        };
+        let earlier = Spend {
+            input_tokens: 370_264,
+            output_tokens: 3_000,
+            cost_usd: 0.43548515,
+            ..Spend::default()
+        };
+        let mut meter = SessionMeter::new(setup(SessionLimits {
+            run_left: usd(0.0626),
+            ..SessionLimits::default()
+        }));
+        meter.resumed_from(earlier);
+        // Before Claude Code answers, the resumed CLI session's totals are the earlier ones.
+        assert_eq!(
+            meter.observe(&usage(370_264, 3_000, Some(0.43548515), true)),
+            MeterVerdict::Continue
+        );
+        let status = meter.status();
+        assert_eq!(status.spend.cost_usd, 0.0);
+        assert_eq!(status.fraction_used, Some(0.0));
+        assert_eq!(status.limit, MeterLimit::Usd(0.0626));
+        // Its own $0.064 crosses it.
+        assert_eq!(
+            meter.observe(&usage(380_000, 3_500, Some(0.49948515), true)),
+            MeterVerdict::Stop(LimitDimension::Spend)
+        );
+
+        // The task's limit still counts what the CLI session spent before.
+        let mut task = SessionMeter::new(setup(SessionLimits {
+            limit: usd(0.50),
+            run_left: usd(0.30),
+            ..SessionLimits::default()
+        }));
+        task.resumed_from(earlier);
+        assert_eq!(
+            task.observe(&usage(372_000, 3_100, Some(0.50), true)),
+            MeterVerdict::Stop(LimitDimension::Spend)
+        );
+    }
+
+    #[test]
+    fn the_native_cap_holds_to_what_is_left_of_the_run() {
+        let limits = |limit: Option<f64>, left: f64| SessionLimits {
+            limit: limit.map(|amount| LimitAmount {
+                unit: LimitUnit::Usd,
+                amount,
+            }),
+            run_left: Some(LimitAmount {
+                unit: LimitUnit::Usd,
+                amount: left,
+            }),
+            ..SessionLimits::default()
+        };
+        assert_eq!(native_cap_usd(&limits(None, 0.2255), 0.0), Some(0.25));
+        // Claude Code counts only the resumed process's spend, as what's left of the run does.
+        assert_eq!(native_cap_usd(&limits(None, 0.0626), 0.4355), Some(0.07));
+        // The tighter of the task's and the run's.
+        assert_eq!(
+            native_cap_usd(&limits(Some(0.50), 0.30), 0.4355),
+            Some(0.12)
+        );
+        assert_eq!(native_cap_usd(&limits(Some(0.50), 0.0), 0.0), Some(0.01));
+    }
+
+    /// What a session's own workflow spends in the background reaches the meter only with a
+    /// later result, so for such a session the cap is the only stop there and holds to the
+    /// limit with no margin, rounded down to the cent.
+    #[test]
+    fn a_session_spending_unseen_is_capped_at_the_limit_itself() {
+        let usd = |amount: f64| {
+            Some(LimitAmount {
+                unit: LimitUnit::Usd,
+                amount,
+            })
+        };
+        let plain = SessionLimits {
+            run_left: usd(0.60),
+            ..SessionLimits::default()
+        };
+        let unseen = SessionLimits {
+            spends_unseen: true,
+            ..plain.clone()
+        };
+        assert_eq!(native_cap_usd(&plain, 0.0), Some(0.66));
+        assert_eq!(native_cap_usd(&unseen, 0.0), Some(0.60));
+        // The task's cap likewise, and the tighter of the two still wins.
+        let task = SessionLimits {
+            limit: usd(0.50),
+            native_cap_usd: Some(0.55),
+            ..unseen.clone()
+        };
+        assert_eq!(native_cap_usd(&task, 0.0), Some(0.50));
+        assert_eq!(native_cap_usd(&task, 0.2), Some(0.30));
+        let left = SessionLimits {
+            run_left: usd(0.239),
+            ..unseen.clone()
+        };
+        assert_eq!(native_cap_usd(&left, 0.0), Some(0.23));
+        let none_left = SessionLimits {
+            run_left: usd(0.0),
+            ..unseen
+        };
+        assert_eq!(native_cap_usd(&none_left, 0.0), Some(MIN_NATIVE_CAP_USD));
+    }
+
+    /// The parser's figure for a request, as it is billed, stops the session at the request
+    /// that crosses its limit, where a flat price would have let it go on.
+    #[test]
+    fn a_billed_figure_stops_the_request_that_crosses_the_limit() {
+        let mut meter = SessionMeter::new(MeterSetup {
+            pricing: Pricing::Price(builtin_price("claude-haiku-5-5").unwrap()),
+            ..setup(limits(Some((LimitUnit::Usd, 0.2255))))
+        });
+        assert_eq!(
+            meter.observe(&usage(361_887, 2, None, false)),
+            MeterVerdict::Continue
+        );
+        assert_eq!(meter.bill_since_totals(None), MeterVerdict::Continue);
+        assert_eq!(
+            meter.bill_since_totals(Some(0.361891)),
+            MeterVerdict::Stop(LimitDimension::Spend)
+        );
+        assert!(meter.status().spend.cost_estimated);
+    }
+
+    /// Claude Code on a model a server of yours runs costs nothing, whatever the parser would
+    /// price its requests at.
+    #[test]
+    fn a_session_on_a_free_model_takes_no_billed_figure() {
+        let mut meter = SessionMeter::new(MeterSetup {
+            pricing: Pricing::Price(FREE),
+            ..setup(limits(Some((LimitUnit::Usd, 0.10))))
+        });
+        meter.observe(&usage(361_887, 2, None, false));
+        assert_eq!(
+            meter.bill_since_totals(Some(0.361891)),
+            MeterVerdict::Continue
+        );
+        assert_eq!(meter.spent_at_least(Some(0.675)), MeterVerdict::Continue);
+        assert_eq!(meter.status().spend.cost_usd, 0.0);
+    }
+
+    /// Claude Code says what its process spent when its cap stops the session's background
+    /// agents, and no result may follow. That counts as the process's own spend, on top of what
+    /// the CLI session spent before the process, and never lowers the tally.
+    #[test]
+    fn what_a_process_says_it_spent_counts_on_top_of_what_came_before_it() {
+        let mut fresh = meter(Some((LimitUnit::Usd, 0.60)));
+        fresh.observe(&usage(366_000, 3_000, Some(0.4274356), true));
+        assert_eq!(
+            fresh.spent_at_least(Some(0.675)),
+            MeterVerdict::Stop(LimitDimension::Spend)
+        );
+        let spend = fresh.spend();
+        assert!((spend.cost_usd - 0.675).abs() < 1e-9, "{spend:?}");
+        assert!(spend.cost_estimated);
+
+        // Resumed after a session that spent $0.4355 on the CLI session, whose figure the
+        // process leaves out.
+        let earlier = Spend {
+            input_tokens: 370_264,
+            output_tokens: 3_000,
+            cost_usd: 0.43548515,
+            ..Spend::default()
+        };
+        let mut later = meter(None);
+        later.resumed_from(earlier);
+        later.observe(&usage(371_000, 3_100, Some(0.45), true));
+        later.spent_at_least(Some(0.10));
+        assert!((later.spend().cost_usd - 0.10).abs() < 1e-9);
+        assert!((later.total_spend().cost_usd - 0.53548515).abs() < 1e-9);
+
+        // In a new process of the same session, what the first one spent comes first.
+        let mut relaunched = meter(None);
+        relaunched.observe(&usage(1_000, 100, Some(0.20), true));
+        relaunched.resumed();
+        relaunched.observe(&usage(1_500, 150, Some(0.25), true));
+        relaunched.spent_at_least(Some(0.30));
+        assert!((relaunched.spend().cost_usd - 0.50).abs() < 1e-9);
+        relaunched.spent_at_least(Some(0.01));
+        relaunched.spent_at_least(None);
+        assert!((relaunched.spend().cost_usd - 0.50).abs() < 1e-9);
     }
 
     #[test]

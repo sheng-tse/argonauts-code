@@ -13,7 +13,9 @@ use tokio::sync::mpsc;
 
 use argonauts_core::api::ApprovalAnswer;
 use argonauts_core::engine::{EngineCommand, RepoContext};
-use argonauts_core::events::agent_status::{FallbackEvent, FallbackPlan, JobRef, JobWait};
+use argonauts_core::events::agent_status::{
+    FallbackEvent, FallbackPlan, JobKeeper, JobRef, JobWait,
+};
 use argonauts_core::events::approval::{
     AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
     FreeText, MergePacket,
@@ -1906,12 +1908,12 @@ async fn a_cli_that_is_down_asks_once_about_every_task_kept_on_it() -> anyhow::R
     waits_for_its_cli(&bench.host, &first).await?;
     let alone = down_question(&bench.host, 1).await?;
     assert_eq!(alone.task, None, "it asks about the CLI, not one task");
-    assert_eq!(alone.title, "Claude Code is down · 1 task paused");
+    assert_eq!(alone.title, "Claude Code is down · 1 task waits for it");
 
     waits_for_its_cli(&bench.host, &second).await?;
     let both = down_question(&bench.host, 2).await?;
     assert_eq!(open_questions(&bench.host, ApprovalKind::AgentDown), 1);
-    assert_eq!(both.title, "Claude Code is down · 2 tasks paused");
+    assert_eq!(both.title, "Claude Code is down · 2 tasks wait for it");
     let ApprovalPacket::AgentDown(down) = &both.packet else {
         bail!("{:?}", both.packet);
     };
@@ -2051,11 +2053,13 @@ async fn a_review_that_waits_for_its_cli_is_one_of_the_paused_tasks() -> anyhow:
         stopped: worker(OPUS),
         elsewhere: vec![worker(AGY)],
         title: "Tests for due dates".to_owned(),
+
+        kept_by: JobKeeper::SameCli,
     };
     fallback::down::job_waits(&bench.host, &review)?;
 
     let both = down_question(&bench.host, 2).await?;
-    assert_eq!(both.title, "Claude Code is down · 2 tasks paused");
+    assert_eq!(both.title, "Claude Code is down · 2 tasks wait for it");
     let ApprovalPacket::AgentDown(down) = &both.packet else {
         bail!("{:?}", both.packet);
     };
@@ -2120,6 +2124,8 @@ async fn a_step_of_the_main_agents_that_waits_is_listed_by_its_place() -> anyhow
         stopped: worker(OPUS),
         elsewhere: vec![worker(CODEX)],
         title: "The orchestrator".to_owned(),
+
+        kept_by: JobKeeper::SameCli,
     };
     for (answer, freed) in [
         (AnswerAction::Wait, None),
@@ -2241,7 +2247,7 @@ async fn a_second_cli_that_is_down_waits_its_turn_to_ask() -> anyhow::Result<()>
 
     bench.answer(&about_claude, AnswerAction::Wait)?;
     let about_codex = down_question(&bench.host, 1).await?;
-    assert_eq!(about_codex.title, "Codex is down · 1 task paused");
+    assert_eq!(about_codex.title, "Codex is down · 1 task waits for it");
     Ok(())
 }
 

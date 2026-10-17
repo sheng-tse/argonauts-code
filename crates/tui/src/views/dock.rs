@@ -130,8 +130,7 @@ pub fn draw_rule(buf: &mut Buffer, dock: &Dock, theme: &Theme) {
 /// What the header rows say.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Heading {
-    /// From the run's workflow down to the one shown; the last is its own name.
-    pub names: Vec<String>,
+    pub name: String,
     /// What kind of workflow it is, before the description: such as `orchestrator workflow`.
     pub notes: Vec<String>,
     pub description: String,
@@ -139,34 +138,20 @@ pub struct Heading {
     pub totals: String,
 }
 
-/// The name in bold in the accent color, with a nested workflow's parents dim before it, and
-/// under it, dim, what kind of workflow it is and its description cut with `…`, then the
-/// totals at the right.
+/// The name in bold in the accent color, and under it, dim, what kind of workflow it is and its
+/// description cut with `…`, then the totals at the right.
 pub fn draw_heading(buf: &mut Buffer, dock: &Dock, heading: &Heading, theme: &Theme) {
     let area = dock.panes.header;
     if area.height == 0 || area.width == 0 {
         return;
     }
     let dim = theme.style(Role::Dim);
-    let marks = panes::Marks::for_theme(theme);
-    let names: Vec<String> = heading
-        .names
-        .iter()
-        .map(|name| sanitize_line(name).trim().to_owned())
-        .filter(|name| !name.is_empty())
-        .collect();
-    let mut spans = Vec::new();
-    if let Some((own, parents)) = names.split_last() {
-        for parent in parents {
-            spans.push(Span::styled(parent.clone(), dim));
-            spans.push(Span::styled(format!(" {} ", marks.crumb), dim));
-        }
-        spans.push(Span::styled(
-            own.clone(),
-            theme.style(Role::Question).add_modifier(Modifier::BOLD),
-        ));
-    }
-    let spans = truncate_spans(&spans, usize::from(area.width));
+    // A long title ends at the last whole word that fits, as its description does.
+    let name = cut_at_word(sanitize_line(&heading.name).trim(), usize::from(area.width));
+    let spans = vec![Span::styled(
+        name,
+        theme.style(Role::Question).add_modifier(Modifier::BOLD),
+    )];
     panes::put(buf, area.x, area.y, area.width, &Line::from(spans));
     if area.height < 2 {
         return;
@@ -199,8 +184,16 @@ pub fn draw_heading(buf: &mut Buffer, dock: &Dock, heading: &Heading, theme: &Th
 
 /// The status line with its mark: `◆` and the headline in the needs-you color for what needs
 /// you, as every view draws that state, `›` for a note, `◎` for the goal, and for a run that
-/// ended `✔` or `✘` with the headline in that color. What follows the headline's ` · ` is dim.
-pub fn draw_status(buf: &mut Buffer, dock: &Dock, lines: &[StatusLine], theme: &Theme) {
+/// ended `✔` or `✘` with the headline in that color. What follows the headline's ` · ` is dim,
+/// but for the models in `named`, each in its own color as its row draws it, so the header
+/// reads as a key.
+pub fn draw_status(
+    buf: &mut Buffer,
+    dock: &Dock,
+    lines: &[StatusLine],
+    named: &[(String, Style)],
+    theme: &Theme,
+) {
     let area = dock.status;
     let dim = theme.style(Role::Dim);
     let ascii = theme.glyphs.prompt.is_ascii();
@@ -216,6 +209,10 @@ pub fn draw_status(buf: &mut Buffer, dock: &Dock, lines: &[StatusLine], theme: &
                 let mark = if ascii { "*" } else { "✔" };
                 (Some(mark), Role::StateDone, Some(Role::StateDone))
             }
+            (StatusKind::Ended, Tone::Warn) => {
+                let mark = if ascii { "!" } else { "◆" };
+                (Some(mark), Role::Warn, Some(Role::Warn))
+            }
             (StatusKind::Ended, Tone::Bad) => {
                 let mark = if ascii { "x" } else { "✘" };
                 (Some(mark), Role::StateFailed, Some(Role::StateFailed))
@@ -226,15 +223,17 @@ pub fn draw_status(buf: &mut Buffer, dock: &Dock, lines: &[StatusLine], theme: &
         if let Some(mark) = mark {
             spans.push(Span::styled(format!("{mark} "), theme.style(role)));
         }
-        let text = sanitize_line(&status.text);
-        let text = text.trim();
+        // A line too long for the box ends at its last whole word.
+        let room = usize::from(area.width).saturating_sub(spans_width(&spans));
+        let text = cut_at_word(sanitize_line(&status.text).trim(), room);
+        let text = text.as_str();
         match (headline, text.split_once(" · ")) {
             (Some(role), Some((first, rest))) => {
                 spans.push(Span::styled(first.to_owned(), theme.style(role)));
-                spans.push(Span::styled(format!(" · {rest}"), dim));
+                spans.extend(with_names(&format!(" · {rest}"), dim, named));
             }
             (Some(role), None) => spans.push(Span::styled(text.to_owned(), theme.style(role))),
-            (None, _) => spans.push(Span::styled(text.to_owned(), dim)),
+            (None, _) => spans.extend(with_names(text, dim, named)),
         }
         panes::put(
             buf,
@@ -244,6 +243,48 @@ pub fn draw_status(buf: &mut Buffer, dock: &Dock, lines: &[StatusLine], theme: &
             &Line::from(spans),
         );
     }
+}
+
+/// `text` in `style`, with each of `named` in it in that name's own style, the longest first
+/// where two start at once. A name counts only whole, so `Opus 5` isn't found in `Opus 5.5`.
+pub(super) fn with_names(
+    text: &str,
+    style: Style,
+    named: &[(String, Style)],
+) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut rest = text;
+    loop {
+        let whole = |at: usize, name: &str| {
+            let before = rest[..at].chars().next_back();
+            let after = rest[at + name.len()..].chars().next();
+            let joins = |c: char| c.is_alphanumeric() || c == '.';
+            !before.is_some_and(joins) && !after.is_some_and(joins)
+        };
+        let next = named
+            .iter()
+            .filter(|(name, _)| !name.is_empty())
+            .filter_map(|(name, own)| {
+                let at = rest
+                    .match_indices(name.as_str())
+                    .map(|(at, _)| at)
+                    .find(|at| whole(*at, name))?;
+                Some((at, name, *own))
+            })
+            .min_by_key(|(at, name, _)| (*at, std::cmp::Reverse(name.len())));
+        let Some((at, name, own)) = next else {
+            break;
+        };
+        if at > 0 {
+            spans.push(Span::styled(rest[..at].to_owned(), style));
+        }
+        spans.push(Span::styled(name.clone(), own));
+        rest = &rest[at + name.len()..];
+    }
+    if !rest.is_empty() {
+        spans.push(Span::styled(rest.to_owned(), style));
+    }
+    spans
 }
 
 /// The box in a faint line with both pane titles plain on its top edge, whichever pane has
@@ -489,9 +530,35 @@ pub fn lines(buf: &Buffer) -> Vec<Line<'static>> {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::style::Color;
+
     use super::*;
     use crate::stability;
     use crate::theme::Glyphs;
+
+    /// A status line colours each model it names in that model's own style, and only where
+    /// the name stands whole: `Opus 5` is no part of `Opus 5.5`.
+    #[test]
+    fn a_status_line_colours_whole_model_names() {
+        let dim = Style::new().fg(Color::DarkGray);
+        let opus = Style::new().fg(Color::Red);
+        let luna = Style::new().fg(Color::Blue);
+        let named = [("Opus 5".to_owned(), opus), ("GPT 6 Luna".to_owned(), luna)];
+        let spans = with_names("Opus 5.5 asked GPT 6 Luna, then Opus 5", dim, &named);
+        let drawn: Vec<(&str, Style)> = spans
+            .iter()
+            .map(|span| (span.content.as_ref(), span.style))
+            .collect();
+        assert_eq!(
+            drawn,
+            [
+                ("Opus 5.5 asked ", dim),
+                ("GPT 6 Luna", luna),
+                (", then ", dim),
+                ("Opus 5", opus),
+            ]
+        );
+    }
 
     #[test]
     fn the_frame_takes_about_half_the_screen() {
@@ -525,7 +592,7 @@ mod tests {
             let dock = split(area, 14, 2);
             draw_rule(&mut buf, &dock, &theme);
             let heading = Heading {
-                names: vec![stability::samples::CJK.to_owned()],
+                name: stability::samples::CJK.to_owned(),
                 description: stability::samples::EMOJI.to_owned(),
                 totals: "8/9 agents · 2h44m".to_owned(),
                 ..Heading::default()
@@ -582,7 +649,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let dock = split(area, 10, 0);
         let heading = Heading {
-            names: vec!["fix-it".to_owned()],
+            name: "fix-it".to_owned(),
             description: "a description far too long for the row it has".to_owned(),
             totals: "6/8 agents · 4m31s".to_owned(),
             ..Heading::default()
@@ -603,6 +670,57 @@ mod tests {
         );
     }
 
+    /// A title too long for the header ends at its last whole word, as its description does.
+    #[test]
+    fn a_long_title_ends_at_a_word() {
+        let theme = Theme::dark();
+        let area = Rect::new(0, 0, 60, 14);
+        let mut buf = Buffer::empty(area);
+        let dock = split(area, 10, 0);
+        let name = "Make each request read its token bucket from the header value given";
+        let heading = Heading {
+            name: name.to_owned(),
+            ..Heading::default()
+        };
+        draw_heading(&mut buf, &dock, &heading, &theme);
+        let row: String = (0..area.width)
+            .map(|x| buf[(x, dock.panes.header.y)].symbol().to_owned())
+            .collect();
+        let title = row.trim();
+        let kept = title.strip_suffix('…').expect("a title cut short");
+        assert!(name.starts_with(kept), "{row:?}");
+        assert!(
+            name[kept.len()..].starts_with(' '),
+            "cut inside a word: {row:?}"
+        );
+        assert!(str_width(title) <= usize::from(dock.panes.header.width));
+    }
+
+    /// A note too long for the box under the header ends at its last whole word, as the title
+    /// and the description do.
+    #[test]
+    fn a_long_note_ends_at_a_word() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let area = Rect::new(0, 0, 60, 14);
+        let mut buf = Buffer::empty(area);
+        let dock = split(area, 10, 1);
+        let text = "build:due-flag runs a workflow of its own, add-due-flag: Write is done, \
+                    Check is under way";
+        let line = StatusLine::new(StatusKind::Note, text);
+        draw_status(&mut buf, &dock, &[line], &[], &theme);
+        let row: String = (dock.status.x..dock.status.right())
+            .map(|x| buf[(x, dock.status.y)].symbol().to_owned())
+            .collect();
+        let said = row.trim_end().strip_prefix("› ").expect("the note's mark");
+        let kept = said.strip_suffix('…').expect("a note cut short");
+        assert!(text.starts_with(kept), "{row:?}");
+        assert!(
+            text[kept.len()..].starts_with(' '),
+            "cut inside a word: {row:?}"
+        );
+    }
+
     /// What needs you is marked as that state is in every view, so a theme that moves the
     /// state's color moves this line's mark too.
     #[test]
@@ -613,7 +731,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let dock = split(area, 10, 1);
         let line = StatusLine::new(StatusKind::NeedsYou, "the plan approval");
-        draw_status(&mut buf, &dock, &[line], &theme);
+        draw_status(&mut buf, &dock, &[line], &[], &theme);
         let mark = &buf[(dock.status.x, dock.status.y)];
         assert_eq!(mark.symbol(), "◆");
         assert_eq!(mark.fg, theme.style(Role::StateNeedsYou).fg.unwrap());

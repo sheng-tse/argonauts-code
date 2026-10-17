@@ -32,6 +32,7 @@ const REASONS: [Role; 4] = [Role::Warn, Role::Danger, Role::AgentBlue, Role::Dim
 /// A role with the models that filled it, and what they did in it together.
 struct InRole<'a> {
     role: StatsRole,
+    /// The models that did its work. What it spent and took counts every model in it.
     models: Vec<(&'a Cli, &'a Model)>,
     spent: Spend,
     done: u32,
@@ -40,15 +41,17 @@ struct InRole<'a> {
 
 impl Stats<'_> {
     fn in_role(&self, role: StatsRole) -> InRole<'_> {
-        let models = self.crew.in_role(role);
+        let spent_in = self.crew.in_role(role);
         InRole {
             role,
-            spent: models.iter().fold(Spend::default(), |sum, (_, model)| {
+            spent: spent_in.iter().fold(Spend::default(), |sum, (_, model)| {
                 sum.plus(&model.spent_in(role))
             }),
-            done: models.iter().map(|(_, model)| model.did(role)).sum(),
-            took_secs: models.iter().map(|(_, model)| model.took_in(role)).sum(),
-            models,
+            done: spent_in.iter().map(|(_, model)| model.did(role)).sum(),
+            took_secs: spent_in.iter().map(|(_, model)| model.took_in(role)).sum(),
+            models: (spent_in.into_iter())
+                .filter(|(_, model)| model.did(role) > 0)
+                .collect(),
         }
     }
 

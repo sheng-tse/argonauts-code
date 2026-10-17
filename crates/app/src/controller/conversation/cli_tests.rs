@@ -128,12 +128,12 @@ async fn the_picker_lists_every_clis_own_sessions_newest_first() {
         })
         .await;
     let AppEvent::View { data } = driver
-        .until(|event| matches!(event, AppEvent::View { data } if matches!(data.as_ref(), ViewData::Runs { .. })))
+        .until(|event| matches!(event, AppEvent::View { data } if matches!(data.as_ref(), ViewData::ResumeList { .. })))
         .await
     else {
         unreachable!()
     };
-    let ViewData::Runs { sessions, .. } = *data else {
+    let ViewData::ResumeList { sessions, .. } = *data else {
         unreachable!()
     };
     // Claude Code is the main agent, and Codex's sessions list beside its own.
@@ -311,7 +311,6 @@ async fn picking_a_session_reprints_it_and_the_next_turn_resumes_it() {
         conversation,
         title,
         worker,
-        earlier,
         turns,
         ..
     } = driver
@@ -323,7 +322,6 @@ async fn picking_a_session_reprints_it_and_the_next_turn_resumes_it() {
     assert_eq!(conversation, ConversationId::numbered(1));
     assert_eq!(title, "Input loop notes");
     assert_eq!(worker, Some("claude-code".parse().unwrap()));
-    assert!(earlier.is_empty());
     let said: Vec<(bool, &str)> = turns
         .iter()
         .map(|turn| (turn.from == Party::User, turn.text.as_str()))

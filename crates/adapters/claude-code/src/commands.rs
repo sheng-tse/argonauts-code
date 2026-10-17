@@ -90,7 +90,8 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command("diff", &[], "", "The uncommitted changes", Argonauts("diff")),
     command("install-github-app", &[], "", "Set up the GitHub app", ScreenOnly),
     // Config and setup.
-    command("config", &["settings"], "", "Settings", Argonauts("config")),
+    // Argonauts Code's own /settings opens the same Config, so it needs no alias here.
+    command("config", &[], "", "Settings", Argonauts("config")),
     command("status", &[], "", "Version, model, and account", Argonauts("status")),
     command("permissions", &["allowed-tools"], "", "Tool permission rules", Argonauts("permissions")),
     command("hooks", &[], "", "Hooks", ScreenOnly),

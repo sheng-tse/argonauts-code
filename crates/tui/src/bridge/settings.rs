@@ -1,10 +1,11 @@
 //! `[ui]` settings take effect the moment they arrive, with no restart.
 
 use argonauts_core::KeyScheme;
-use argonauts_core::app::AppEvent;
+use argonauts_core::app::{AppEvent, NOT_CHANGED};
 use argonauts_core::settings::ui::UiSettings;
 use argonauts_core::settings::ui::{ColorChoice, Motion};
 
+use crate::model::{ScreenHabits, ViewModel};
 use crate::text::set_ambiguous_width;
 use crate::theme::{Brightness, ColorEnv, ColorLevel, Glyphs, Theme};
 
@@ -15,6 +16,13 @@ use super::status::{apply_keys, verb_style};
 /// keys, the live area's share, and the panel settings. The bridge keeps the section itself for the
 /// parts that read it as they draw, such as `turn_duration` and `bell`.
 pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>) {
+    // A change a view sent that its question left as it was prints nothing, so no view still
+    // waits to say it.
+    if let AppEvent::ChoiceClosed { outcome, .. } = event
+        && outcome == NOT_CHANGED
+    {
+        cx.model.said_by_view.clear();
+    }
     let AppEvent::UiSettings { vim, ui, .. } = event else {
         return;
     };
@@ -42,6 +50,17 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>) {
     bottom.live_area_max = Some(ui.live_area_max);
     bottom.workflows.max_rows = usize::try_from(ui.panel.max_rows).unwrap_or(usize::MAX);
     bottom.workflows.show_agents = ui.panel.agents;
+    habits(ui, cx.model);
+}
+
+/// What the screen reads of `[ui]` as it goes, at start and after each change: the clock times
+/// are written in, the progress bar, copy on select, following new output, the example prompt,
+/// and the pull request on the bottom line.
+pub fn habits(ui: &UiSettings, model: &mut ViewModel) {
+    crate::format::set_clock(ui.format.clock);
+    model.screen = ScreenHabits::from_settings(ui);
+    model.bottom.composer.examples_off = !ui.suggestions;
+    model.bottom.mode.pr_footer = ui.pr_footer;
 }
 
 /// The palette for these settings. `background_is_light` is the terminal's answer to OSC 11,
@@ -273,7 +292,10 @@ mod tests {
             ui: Some(Box::new(UiSettings::default())),
         };
         let out = bridge.on_event(&mut model, &narrow, Instant::now());
-        assert_eq!(out.theme.map(|theme| theme.glyphs), Some(Glyphs::UNICODE));
+        assert_eq!(
+            out.theme.map(|theme| theme.glyphs).as_ref(),
+            Some(Glyphs::unicode())
+        );
         assert_eq!(str_width("● done"), 6);
     }
 }

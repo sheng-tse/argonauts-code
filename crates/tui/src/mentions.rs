@@ -346,6 +346,7 @@ pub(crate) mod fixture {
             follow,
             worker: ModelRef::new(worker, model.map(str::to_owned)),
             model_assumed: false,
+            model_guessed: false,
             agent_id: worker.to_owned(),
             role,
             step: None,
@@ -377,8 +378,10 @@ pub(crate) mod fixture {
             end: None,
             unknown: Vec::new(),
             doing: Doing::Nothing,
+            turn_over: false,
             stalled: false,
             cli_session: None,
+            sent_back: false,
         }
     }
 

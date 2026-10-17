@@ -96,7 +96,7 @@ async fn write(
 
 /// Code's own answer, with the files, checks, and what's left filled in.
 async fn gather(host: &Host, outcome: RunOutcome, detail: Option<&str>) -> ClosingAnswer {
-    let (tasks, run_merged, checks, diff_path, agents) = host.read(|state| {
+    let (tasks, put_off, run_merged, checks, diff_path, agents) = host.read(|state| {
         let tasks: Vec<TaskEntry> = state.tasks.by_id.values().cloned().collect();
         let (checks, diff_path) = match latest_merge(state) {
             Some((checks, diff_path)) => (checks, Some(diff_path)),
@@ -104,6 +104,7 @@ async fn gather(host: &Host, outcome: RunOutcome, detail: Option<&str>) -> Closi
         };
         (
             tasks,
+            put_off(state),
             run_merged(state),
             checks,
             diff_path,
@@ -130,6 +131,7 @@ async fn gather(host: &Host, outcome: RunOutcome, detail: Option<&str>) -> Closi
     };
     let mut answer = answer_from(
         &tasks,
+        &put_off,
         &run_merged,
         &checks,
         files,
@@ -138,6 +140,9 @@ async fn gather(host: &Host, outcome: RunOutcome, detail: Option<&str>) -> Closi
         &agents,
     );
     answer.decided = host.read(|state| decided_alone(state, host.settings(), &run_merged));
+    if let Some(reviews) = host.read(reviews_line) {
+        answer.checks.push(reviews);
+    }
     if !answer.decided.is_empty() {
         // An assumption is listed as decided, so it isn't something left.
         answer
@@ -288,9 +293,12 @@ fn steps_done(state: &RunState) -> Vec<String> {
 }
 
 /// Code's answer: what the merged tasks reported is what changed, and every other task is
-/// left, with how it ended.
+/// left, with how it ended. A task put off for another reason than the run's limit says why,
+/// from `put_off`.
+#[allow(clippy::too_many_arguments)]
 fn answer_from(
     tasks: &[TaskEntry],
+    put_off: &BTreeMap<TaskId, String>,
     run_merged: &BTreeSet<TaskId>,
     checks: &[CheckOutcome],
     files: Vec<ChangedFile>,
@@ -308,7 +316,8 @@ fn answer_from(
         .iter()
         .filter(|task| !run_merged.contains(&task.spec.id))
         .filter_map(|task| {
-            not_merged(task, run_merged).map(|how| format!("{} · {how}", task.spec.title.trim()))
+            not_merged(task, run_merged, put_off)
+                .map(|how| format!("{} · {how}", task.spec.title.trim()))
         })
         .collect();
     for report in &reports {
@@ -388,8 +397,29 @@ fn run_merged(state: &RunState) -> BTreeSet<TaskId> {
         .collect()
 }
 
+/// Why each task something other than the run's limit put off was put off, as the move said:
+/// "you deferred it", or "the split was refused: …".
+fn put_off(state: &RunState) -> BTreeMap<TaskId, String> {
+    state
+        .tasks
+        .by_id
+        .values()
+        .filter(|record| record.state == TaskState::Deferred)
+        .filter_map(|record| {
+            let progress = state.tasks.progress(&record.spec.id);
+            let why = progress.why.trim();
+            (!progress.deferred_for_limit && !why.is_empty())
+                .then(|| (record.spec.id.clone(), why.to_owned()))
+        })
+        .collect()
+}
+
 /// How a task that didn't land ended, for what's left. `None` for one you took over.
-fn not_merged(task: &TaskEntry, run_merged: &BTreeSet<TaskId>) -> Option<&'static str> {
+fn not_merged(
+    task: &TaskEntry,
+    run_merged: &BTreeSet<TaskId>,
+    put_off: &BTreeMap<TaskId, String>,
+) -> Option<String> {
     // Best of n keeps one try; the others stay on their branches.
     let try_of = |id: &TaskId| {
         id.as_str()
@@ -401,37 +431,46 @@ fn not_merged(task: &TaskEntry, run_merged: &BTreeSet<TaskId>) -> Option<&'stati
             .iter()
             .any(|kept| try_of(kept).as_deref() == Some(task_id.as_str()))
     {
-        return Some("not kept, left on its branch");
+        return Some("not kept, left on its branch".to_owned());
     }
-    Some(match task.state {
+    let words = match task.state {
         TaskState::Failed => "failed",
         TaskState::Cancelled => "dropped",
         TaskState::NeedsYou | TaskState::NeedsDecision => "waits for a decision",
         TaskState::Blocked => "blocked on a question",
-        TaskState::Deferred => "waits for limit",
+        TaskState::Deferred => {
+            return Some(put_off.get(&task.spec.id).map_or_else(
+                || "waits for limit".to_owned(),
+                |why| format!("put off: {why}"),
+            ));
+        }
         TaskState::Merged => "not merged",
         TaskState::Running | TaskState::Checking | TaskState::InReview | TaskState::Merging => {
             "stopped unfinished"
         }
         TaskState::Waiting | TaskState::Ready => "never started",
         TaskState::TakenOver => return None,
-    })
+    };
+    Some(words.to_owned())
 }
 
 /// The words a task's state has for the main agent: `merged`, else how it ended.
-fn digest_state(task: &TaskEntry, run_merged: &BTreeSet<TaskId>) -> String {
+fn digest_state(
+    task: &TaskEntry,
+    run_merged: &BTreeSet<TaskId>,
+    put_off: &BTreeMap<TaskId, String>,
+) -> String {
     if run_merged.contains(&task.spec.id) {
         "merged".to_owned()
     } else {
-        not_merged(task, run_merged)
-            .unwrap_or("taken over")
-            .to_owned()
+        not_merged(task, run_merged, put_off).unwrap_or_else(|| "taken over".to_owned())
     }
 }
 
 /// What the main agent is told of each task, the merged ones first.
 fn digests(state: &RunState) -> Vec<TaskDigest> {
     let run_merged = run_merged(state);
+    let put_off = put_off(state);
     let mut records: Vec<&TaskEntry> = state.tasks.by_id.values().collect();
     records.sort_by_key(|record| !run_merged.contains(&record.spec.id));
     records
@@ -441,7 +480,7 @@ fn digests(state: &RunState) -> Vec<TaskDigest> {
             let report = record.reports.last();
             TaskDigest {
                 title: record.spec.title.clone(),
-                state: digest_state(record, &run_merged),
+                state: digest_state(record, &run_merged, &put_off),
                 summary: report
                     .map(|report| report.summary.clone())
                     .unwrap_or_default(),
@@ -579,14 +618,66 @@ fn asked(state: &RunState) -> Vec<String> {
         .collect()
 }
 
-/// How many times the run came to you: each approval you decided, and each still waiting.
+/// Who reviewed, for whom, and what each said, from the reviews themselves, so a fallback is
+/// named as one whatever a worker's report says: "Codex asked for changes · Claude Code, in place
+/// of Codex, accepted it". `None` when nothing was reviewed.
+fn reviews_line(state: &RunState) -> Option<CheckLine> {
+    use argonauts_core::events::task::ReviewEvent;
+    use argonauts_core::steps::judgment::ReviewVerdict;
+    let in_place_of = |reviewer: &ModelRef| {
+        state.sessions.by_key.values().find_map(|session| {
+            let reviews = matches!(session.started.role, RoleName::Reviewer | RoleName::Judge);
+            let asked = session.asked.as_ref()?;
+            (reviews && session.started.worker == *reviewer && asked != reviewer)
+                .then(|| asked.clone())
+        })
+    };
+    let mut said: Vec<String> = Vec::new();
+    let mut accepted = None;
+    for task in state.tasks.by_id.values() {
+        for review in &task.reviews {
+            let ReviewEvent::Reviewed {
+                reviewer, review, ..
+            } = review
+            else {
+                continue;
+            };
+            let mut who = crate::roles::display_name(reviewer);
+            if let Some(asked) = in_place_of(reviewer) {
+                who = format!("{who}, in place of {}", crate::roles::display_name(&asked));
+            }
+            let yes = review.verdict == ReviewVerdict::Approve;
+            let line = format!(
+                "{who} {}",
+                if yes {
+                    "accepted it"
+                } else {
+                    "asked for changes"
+                }
+            );
+            if said.last() != Some(&line) {
+                said.push(line);
+            }
+            accepted = Some(yes);
+        }
+    }
+    Some(CheckLine {
+        what: "reviews".to_owned(),
+        passed: accepted?,
+        result: said.join(" · "),
+    })
+}
+
+/// How many times the run came to you: each approval you decided, Esc's "leave it to the
+/// agent" included, and each still waiting.
 fn needed_you(state: &RunState) -> u32 {
+    use argonauts_core::events::run::Party;
     let count = state
         .approvals
         .by_id
         .values()
         .filter(|record| match &record.decided {
-            Some(decided) => decided.by == argonauts_core::events::run::Party::User,
+            Some(decided) => matches!(decided.by, Party::User | Party::Declined),
             None => record.withdrawn.is_none(),
         })
         .count();
@@ -793,6 +884,40 @@ mod tests {
         state
     }
 
+    /// "Defer it" on a task that kept failing says who put it off; only the run's limit reads
+    /// as waiting for it.
+    #[test]
+    fn a_task_put_off_says_why() {
+        let tasks = vec![
+            task("task-001", "Add the flag", TaskState::Deferred, "FLAG"),
+            task("task-002", "Write the docs", TaskState::Deferred, "DOCS"),
+        ];
+        let mut state = state_of(tasks.clone());
+        let progress = &mut state.tasks.progress;
+        let stuck = progress.entry(TaskId::numbered(1)).or_default();
+        stuck.why = "autopilot deferred it".to_owned();
+        let low = progress.entry(TaskId::numbered(2)).or_default();
+        low.why = "the run's limit is near".to_owned();
+        low.deferred_for_limit = true;
+        let answer = answer_from(
+            &tasks,
+            &put_off(&state),
+            &run_merged(&state),
+            &[],
+            Vec::new(),
+            RunOutcome::Failed,
+            None,
+            &Agents::default(),
+        );
+        assert_eq!(
+            answer.left[..2],
+            [
+                "Add the flag · put off: autopilot deferred it",
+                "Write the docs · waits for limit"
+            ]
+        );
+    }
+
     #[test]
     fn only_a_task_that_merged_is_what_changed() {
         // A crew run whose second task was dropped: its claims are left, never what changed.
@@ -804,6 +929,7 @@ mod tests {
         let run_merged = run_merged(&state);
         let answer = answer_from(
             &tasks,
+            &BTreeMap::new(),
             &run_merged,
             &[],
             Vec::new(),
@@ -843,6 +969,7 @@ mod tests {
         let tasks: Vec<TaskEntry> = state.tasks.by_id.values().cloned().collect();
         let answer = answer_from(
             &tasks,
+            &put_off(&state),
             &run_merged(&state),
             &[],
             Vec::new(),
@@ -1107,6 +1234,7 @@ diff --git a/my notes.md b/my notes.md
         let run_merged: BTreeSet<TaskId> = [TaskId::new("task-001").unwrap()].into();
         let answer = answer_from(
             &tasks,
+            &BTreeMap::new(),
             &run_merged,
             &[],
             Vec::new(),
@@ -1127,6 +1255,7 @@ diff --git a/my notes.md b/my notes.md
         assert_eq!((agents.reported, agents.total), (7, 8));
         let answer = answer_from(
             &[],
+            &BTreeMap::new(),
             &BTreeSet::new(),
             &[],
             Vec::new(),

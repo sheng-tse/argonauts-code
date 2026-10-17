@@ -108,19 +108,19 @@ pub(super) fn count_down(
     }
 }
 
-/// `Two tasks are paused, their work so far kept. same_cli keeps them on Claude Code.`
+/// `Two tasks wait for it, their work so far kept. same_cli keeps them on Claude Code.`
 fn paused_words(down: &AgentDownPacket, cli: &str) -> Option<String> {
-    let (count, are, their, them) = match down.paused.len() {
+    let (count, wait, their, them) = match down.paused.len() {
         0 => return None,
-        1 => ("One task".to_owned(), "is", "its", "it"),
+        1 => ("One task".to_owned(), "waits", "its", "it"),
         many => (
             format!("{} tasks", number_word(many)),
-            "are",
+            "wait",
             "their",
             "them",
         ),
     };
-    let mut said = format!("{count} {are} paused, {their} work so far kept.");
+    let mut said = format!("{count} {wait} for it, {their} work so far kept.");
     if let Some(setting) = down.kept_by.as_deref().map(str::trim)
         && !setting.is_empty()
     {

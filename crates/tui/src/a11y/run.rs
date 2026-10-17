@@ -6,6 +6,7 @@ use argonauts_core::events::agent_status::{AgentStatusEvent, SpendEvent};
 use argonauts_core::events::approval::{ApprovalEvent, PolicyCheck};
 use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::session::SessionEvent;
+use argonauts_core::events::shared::BlackboardEvent;
 use argonauts_core::events::task::TaskEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::{AgentEvent, NoteLevel, Verbosity};
@@ -56,7 +57,7 @@ pub fn run_lines(event: &RunEvent, state: &AppState) -> Vec<String> {
                     return Vec::new();
                 }
                 NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet => "note",
-                NoteLevel::Warn => "warning",
+                NoteLevel::Warn | NoteLevel::Caution => "warning",
                 NoteLevel::Error => "error",
             };
             // The plain line; its detail is for Ctrl+O on screen.
@@ -68,6 +69,13 @@ pub fn run_lines(event: &RunEvent, state: &AppState) -> Vec<String> {
         {
             Vec::new()
         }
+        RunEventKind::Blackboard(BlackboardEvent::AnsweredForYou(answered)) if normal => labeled(
+            "note",
+            &format!(
+                "autopilot answered {}'s question: {}",
+                answered.asker, answered.answer
+            ),
+        ),
         RunEventKind::Blackboard(_) | RunEventKind::RunReview(_) if !full => Vec::new(),
         kind if normal => vec![event_words(kind)],
         _ => Vec::new(),

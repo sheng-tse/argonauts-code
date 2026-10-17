@@ -5,6 +5,7 @@
 #[cfg(test)]
 mod bar_gap_tests;
 pub mod cards;
+pub mod config;
 mod context;
 #[cfg(test)]
 pub(crate) mod golden;

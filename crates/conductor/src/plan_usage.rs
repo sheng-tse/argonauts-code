@@ -565,16 +565,19 @@ impl PlanUsageBoard for FilePlanUsageBoard {
                     self.observe_live(live);
                 }
             };
-            let read = try_probe_answer_early(&prober?, self.probe_timeout, &mut early).await;
+            let prober = prober?;
+            let cli = prober.adapter.display_name();
+            let read = try_probe_answer_early(&prober, self.probe_timeout, &mut early).await;
             let mut answer = match read {
                 Ok(answer) => answer,
                 Err(err) => {
                     tracing::warn!("plan usage probe: {err}");
-                    self.note_failure(&agent_id, failure_words(&err));
+                    self.note_failure(&agent_id, failure_words(cli, &err));
                     return None;
                 }
             };
-            self.note_failure(&agent_id, answer.failed.clone());
+            let said = answer.failed.as_deref();
+            self.note_failure(&agent_id, said.map(|said| own_words(cli, said)));
             for reading in &mut answer.windows {
                 reading.agent_id = agent_id.clone();
             }
@@ -595,17 +598,41 @@ impl PlanUsageBoard for FilePlanUsageBoard {
     }
 }
 
-/// Why a probe got no reading, said after "failed to load usage data:". A CLI with no free
-/// read failed at nothing, so it has none.
-fn failure_words(err: &ProbeError) -> Option<String> {
+/// Why a probe of the CLI named `cli` got no reading, said after "Failed to load usage
+/// data:". A CLI with no free read failed at nothing, so it has none.
+fn failure_words(cli: &str, err: &ProbeError) -> Option<String> {
     match err {
         ProbeError::NoProbe(_) => None,
-        ProbeError::Run { detail, .. } => Some(format!("couldn't start it: {detail}")),
-        ProbeError::TimedOut { seconds, .. } => Some(format!("no answer within {seconds}s")),
+        ProbeError::Run { detail, .. } => Some(format!("{cli} couldn't start: {detail}")),
+        ProbeError::TimedOut { seconds, .. } => {
+            Some(format!("{cli} didn't answer within {seconds}s"))
+        }
         ProbeError::Unreadable { status, .. } => {
-            Some(format!("it ended without an answer ({status})"))
+            Some(format!("{cli} ended without an answer ({status})"))
         }
     }
+}
+
+/// Words in a CLI's own failure that say its read never got through.
+const NETWORK_WORDS: [&str; 7] = [
+    "network",
+    "connection",
+    "connect to",
+    "unreachable",
+    "dns",
+    "offline",
+    "timed out",
+];
+
+/// What the CLI named `cli` said of a read that failed, in its own words, unless they say the
+/// read never got through: then that it couldn't be reached, and the cause it gave last.
+fn own_words(cli: &str, said: &str) -> String {
+    let lower = said.to_lowercase();
+    if !NETWORK_WORDS.iter().any(|words| lower.contains(words)) {
+        return said.to_owned();
+    }
+    let cause = said.rsplit(": ").next().unwrap_or(said).trim();
+    format!("{cli} couldn't be reached ({cause})")
 }
 
 /// Reads again, once at start, each of `agents` whose CLI runner registered a free probe
@@ -1122,7 +1149,7 @@ mod tests {
         assert!(board.probe(&cli).await.is_none());
         assert_eq!(
             board.failed(&cli).as_deref(),
-            Some("it ended without an answer (exit status: 0)")
+            Some("Probe Fake ended without an answer (exit status: 0)")
         );
 
         answers("account=one@example.com\nused=0.5\ndone\n");
@@ -1172,14 +1199,32 @@ mod tests {
 
     #[test]
     fn a_cli_with_no_free_read_has_no_failure_to_show() {
-        assert_eq!(failure_words(&ProbeError::NoProbe("OpenCode".into())), None);
+        let none = ProbeError::NoProbe("OpenCode".into());
+        assert_eq!(failure_words("OpenCode", &none), None);
         let timed_out = ProbeError::TimedOut {
-            program: "/usr/local/bin/claude".into(),
+            program: "/usr/local/bin/agy".into(),
             seconds: 15,
         };
         assert_eq!(
-            failure_words(&timed_out).as_deref(),
-            Some("no answer within 15s")
+            failure_words("Antigravity CLI", &timed_out).as_deref(),
+            Some("Antigravity CLI didn't answer within 15s")
+        );
+    }
+
+    /// A CLI's own words that say its read never got through say it couldn't be reached, with
+    /// the cause it gave; any other words stay its own.
+    #[test]
+    fn a_read_that_never_got_through_says_the_cli_couldnt_be_reached() {
+        assert_eq!(
+            own_words(
+                "Codex",
+                "failed to fetch codex rate limits: application network policy is unavailable"
+            ),
+            "Codex couldn't be reached (application network policy is unavailable)"
+        );
+        assert_eq!(
+            own_words("Codex", "failed to fetch codex rate limits"),
+            "failed to fetch codex rate limits"
         );
     }
 

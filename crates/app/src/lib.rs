@@ -12,6 +12,8 @@ mod conversation_store;
 mod env;
 mod example_prompt;
 mod git;
+#[cfg(test)]
+mod golden;
 mod hidden_git;
 mod host;
 mod keep_awake;
@@ -47,9 +49,9 @@ pub use adapters::builtin_adapters;
 pub use ancestry::refuse_inside_agent;
 pub use commands::{
     ApprovalsReport, DoctorExtras, StatusReport, WaitingReminder, approvals_report, auto_off,
-    config_schema, config_set, config_show, current_settings, doctor_adapters, doctor_details,
-    doctor_extras, doctor_version_checks, models, repo_root, settings_warnings, status,
-    waiting_runs,
+    cheapest_model, config_schema, config_set, config_show, current_settings, doctor_adapters,
+    doctor_details, doctor_extras, doctor_version_checks, models, repo_root, settings_warnings,
+    status, waiting_runs,
 };
 pub use learning::shell::{LearningShell, ShellOutput, learning, learning_proposals};
 pub use live_registry::{LiveRunHost, live_run_hosts};

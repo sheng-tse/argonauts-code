@@ -50,6 +50,64 @@ const SAME_PRICE_SUFFIXES: &[&str] = &["low", "medium", "high", "minimal"];
 
 /// What Anthropic charges to write the cache for five minutes, against its input price.
 const CLAUDE_CACHE_WRITE: f64 = 1.25;
+/// And for an hour, which is how long Claude Code keeps what it writes.
+const CLAUDE_CACHE_WRITE_HOUR: f64 = 2.0;
+
+/// Claude models whose prompts past a size cost more: the size in tokens, then the input and
+/// output prices past it. Anthropic's price list on 2026-10-06.
+const LONG_PROMPT_PRICES: &[(&str, u64, f64, f64)] = &[
+    ("haiku", 100_000, 0.50, 2.50),
+    ("claude-haiku-5-5", 100_000, 0.50, 2.50),
+];
+
+/// One request to Anthropic's API by its tokens: new input, cache reads, cache writes by how
+/// long they keep, and output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RequestTokens {
+    pub input: u64,
+    pub cache_read: u64,
+    pub cache_write_5m: u64,
+    pub cache_write_1h: u64,
+    pub output: u64,
+}
+
+impl RequestTokens {
+    /// Everything the request sent, which decides whether a long prompt's price applies.
+    pub fn prompt(&self) -> u64 {
+        self.input
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write_5m)
+            .saturating_add(self.cache_write_1h)
+    }
+}
+
+/// What Anthropic bills for one request to a Claude model at list price, in dollars. A prompt
+/// past the model's long-prompt size has all its tokens at that price, and cache writes cost
+/// 1.25 times the input price for five minutes and twice it for an hour. `None` for a model
+/// that isn't Claude or that the table doesn't price.
+pub fn claude_request_cost(model: &str, tokens: &RequestTokens) -> Option<f64> {
+    let model = model.trim().to_ascii_lowercase();
+    if !(model.contains("claude") || model == "haiku") {
+        return None;
+    }
+    let base = builtin_price(&model)?;
+    let read = base.cached_input_per_mtok.unwrap_or(base.input_per_mtok);
+    let long = LONG_PROMPT_PRICES
+        .iter()
+        .find(|(id, ..)| names_model(id, &model))
+        .filter(|&&(_, size, ..)| tokens.prompt() > size);
+    let (input, output, read) = match long {
+        // A cache read keeps its share of the input price.
+        Some(&(_, _, input, output)) => (input, output, read * input / base.input_per_mtok),
+        None => (base.input_per_mtok, base.output_per_mtok, read),
+    };
+    let usd = tokens.input as f64 * input
+        + tokens.cache_read as f64 * read
+        + tokens.cache_write_5m as f64 * input * CLAUDE_CACHE_WRITE
+        + tokens.cache_write_1h as f64 * input * CLAUDE_CACHE_WRITE_HOUR
+        + tokens.output as f64 * output;
+    Some(usd / 1e6)
+}
 
 /// Matches the exact id, a dated snapshot such as `claude-haiku-4-5-20251001`, or a thinking
 /// level such as `gemini-3.8-flash-low`.
@@ -67,7 +125,7 @@ pub fn builtin_price(model: &str) -> Option<TokenPrice> {
 
 /// A snapshot's date is eight digits, so `claude-opus-5-5` is never read as a snapshot of
 /// `claude-opus-5`.
-fn names_model(id: &str, model: &str) -> bool {
+pub(crate) fn names_model(id: &str, model: &str) -> bool {
     let Some(rest) = model.strip_prefix(id) else {
         return false;
     };
@@ -151,6 +209,8 @@ pub struct PriceList {
     public: BTreeMap<String, ListPrice>,
     /// CLIs and endpoints that run their models on this computer.
     local: BTreeSet<String>,
+    /// The model each CLI runs when a session names none, as the CLI's own list says.
+    defaults: BTreeMap<String, String>,
 }
 
 impl PriceList {
@@ -172,16 +232,30 @@ impl PriceList {
             yours: clean(yours),
             public: clean(public),
             local: local.into_iter().collect(),
+            defaults: BTreeMap::new(),
         }
     }
 
-    /// The price of `model` as `agent` runs it, or of the agent's usual model when it names
-    /// none.
+    /// A session that names no model is priced as the model its CLI's own list says it runs,
+    /// as `(cli, model)`, rather than as the table's guess.
+    pub fn with_cli_defaults(
+        mut self,
+        defaults: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        self.defaults = defaults.into_iter().collect();
+        self
+    }
+
+    /// The price of `model` as `agent` runs it, or when it names none, of the model the
+    /// agent's own list says it runs, else of its usual model.
     pub fn price(&self, agent: &str, model: Option<&str>) -> ListPrice {
         if self.local.contains(agent) {
             return ListPrice::FREE;
         }
-        let model = bare(model.unwrap_or_else(|| usual_model(agent)));
+        let model = model
+            .or_else(|| self.defaults.get(agent).map(String::as_str))
+            .unwrap_or_else(|| usual_model(agent));
+        let model = bare(model);
         let listed = |prices: &BTreeMap<String, ListPrice>| {
             prices
                 .iter()
@@ -302,6 +376,62 @@ mod tests {
         assert!(builtin_price("claude-opus-5-1").is_none());
     }
 
+    /// Claude Code's own totals for recorded sessions, priced as Anthropic bills them: past
+    /// 100K tokens of prompt Haiku 5.5 costs five times as much, and Claude Code writes the cache
+    /// for an hour.
+    #[test]
+    fn claude_requests_price_as_anthropic_bills_them() {
+        let cost =
+            |tokens: RequestTokens| claude_request_cost("claude-haiku-5-5", &tokens).unwrap();
+        let close = |got: f64, want: f64| assert!((got - want).abs() < 1e-12, "{got} != {want}");
+        // A run session's first request, at 361,887 tokens of prompt.
+        let opening = RequestTokens {
+            input: 2,
+            cache_write_1h: 361_885,
+            output: 2,
+            ..RequestTokens::default()
+        };
+        close(cost(opening), 0.361891);
+        // That session's result.
+        close(
+            cost(RequestTokens {
+                output: 5_039,
+                ..opening
+            }),
+            0.3744835,
+        );
+        // A conversation turn's requests, each under 100K tokens.
+        close(
+            cost(RequestTokens {
+                input: 6,
+                cache_read: 66_295,
+                cache_write_1h: 18_330,
+                output: 652,
+                ..RequestTokens::default()
+            }),
+            0.00465555,
+        );
+        // Requests past 100K that read a cache another session wrote.
+        close(
+            cost(RequestTokens {
+                input: 8,
+                cache_read: 1_514_090,
+                cache_write_1h: 11_364,
+                output: 4_021,
+                ..RequestTokens::default()
+            }),
+            0.097125,
+        );
+        // Five minutes of cache at 1.25 times the input price.
+        let five = RequestTokens {
+            cache_write_5m: 10_000,
+            ..RequestTokens::default()
+        };
+        close(claude_request_cost("haiku", &five).unwrap(), 0.00125);
+        assert_eq!(claude_request_cost("gpt-6-luna", &five), None);
+        assert_eq!(claude_request_cost("claude-opus-9", &five), None);
+    }
+
     #[test]
     fn prices_estimate_cost() {
         let luna = builtin_price("gpt-5.6-luna").unwrap();
@@ -376,6 +506,36 @@ mod tests {
         assert_eq!(value("antigravity-cli", None), 2.0 + 12.0 + 0.2 + 2.0);
         assert!(value("someone-else", Some("unnamed")) > 0.0);
         assert_eq!(value("ollama", Some("llama3.2")), 0.0);
+    }
+
+    /// agy no longer lists Gemini 3.6 Pro, so once its list is read a session that names no
+    /// model is priced as the model agy runs.
+    #[test]
+    fn a_session_naming_no_model_is_priced_as_its_clis_own_default() {
+        let tokens = million_each();
+        let table = PriceList::default();
+        let listed = PriceList::default().with_cli_defaults([(
+            "antigravity-cli".to_owned(),
+            "gemini-3.8-flash-high".to_owned(),
+        )]);
+        assert_eq!(
+            listed.price("antigravity-cli", None).value(&tokens),
+            table
+                .price("antigravity-cli", Some("gemini-3.8-flash"))
+                .value(&tokens)
+        );
+        assert_eq!(
+            listed.price("codex", None).value(&tokens),
+            table.price("codex", None).value(&tokens)
+        );
+        assert_eq!(
+            listed
+                .price("antigravity-cli", Some("gemini-3.6-pro"))
+                .value(&tokens),
+            table
+                .price("antigravity-cli", Some("gemini-3.6-pro"))
+                .value(&tokens)
+        );
     }
 
     #[test]

@@ -75,10 +75,27 @@ pub fn task(state: &RunState, host: &Host) -> EngineResult<TaskSpec> {
                 .collect()
         })
         .unwrap_or_default();
+    // Named from the words the run's name comes from: your own may say how to run the work
+    // ("with Codex as the reviewer…") rather than what it is.
+    let words = crate::workflow::naming::words_of(started);
+    let title = words.lines().next().unwrap_or(words).trim().to_owned();
+    let item = crate::workflow::brief::item(state).or_else(|| {
+        let name = crate::workflow::brief::name_from(words);
+        Some(argonauts_core::labels::slug(&name, 3)).filter(|item| !item.is_empty())
+    });
+    // The review comes after the report, so the worker never sets out to ask for it.
+    let mut task = started.request.clone();
+    if !reviewers.is_empty() {
+        let names: Vec<String> = reviewers.iter().map(roles::display_name).collect();
+        task.push_str(&format!(
+            "\n\nArgonauts Code has {} review your change after you report.",
+            names.join(" and ")
+        ));
+    }
     Ok(TaskSpec {
         id: TaskId::numbered(1),
-        title: started.title.clone(),
-        task: started.request.clone(),
+        title,
+        task,
         kind: TaskKind::Captain,
         owned_paths: Vec::new(),
         read_only_paths: Vec::new(),
@@ -90,7 +107,7 @@ pub fn task(state: &RunState, host: &Host) -> EngineResult<TaskSpec> {
         reviewers,
         limit: TaskLimit::default(),
         predictions: None,
-        item: crate::workflow::brief::item(state),
+        item,
     })
 }
 

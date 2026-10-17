@@ -133,11 +133,25 @@ impl ConversationState {
                     self.queued.remove(at);
                 }
             }
+            // A resumed conversation's count, as its record kept it.
+            ConversationEvent::ContextLeft {
+                at,
+                usage: Some(usage),
+                ..
+            } => {
+                self.context = Some(ContextCount {
+                    usage: (**usage).clone(),
+                    counted: *at,
+                });
+            }
             ConversationEvent::TurnFinished { .. }
             | ConversationEvent::TurnFailed { .. }
             | ConversationEvent::TurnCancelled { .. }
             | ConversationEvent::FellBack { .. }
-            | ConversationEvent::AnswerRetried { .. } => {}
+            | ConversationEvent::AnswerRetried { .. }
+            | ConversationEvent::ContextLeft { .. }
+            | ConversationEvent::CommandTyped { .. }
+            | ConversationEvent::CommandReplied { .. } => {}
         }
     }
 

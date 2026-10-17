@@ -55,6 +55,10 @@ pub struct Composer {
     /// Built from recent commit subjects, never with a model. Without one,
     /// [`BUILT_IN_EXAMPLE`] shows.
     pub example: Option<String>,
+    /// `ui.suggestions` is off, so no example shows.
+    pub examples_off: bool,
+    /// `workflows.ultracode_trigger` is off, so the word `ultracode` asks for nothing.
+    pub workflow_word_off: bool,
     /// The main agent CLI's keywords, drawn as that CLI draws them.
     pub keywords: Vec<Keyword>,
     /// The main agent CLI's own commands, which are real commands beside Argonauts Code's.
@@ -280,7 +284,7 @@ impl Composer {
         if placeholder.is_some() {
             return placeholder;
         }
-        if !state.offer_example || self.started {
+        if !state.offer_example || self.started || self.examples_off {
             return None;
         }
         let example = self

@@ -450,7 +450,7 @@ mod tests {
                 "--permission-prompts",
                 "none",
                 "--tools",
-                "Read,Glob,Grep",
+                "Read,Glob,Grep,ToolSearch",
                 "--disallowedTools",
                 "SendMessage",
                 "ListAgents",
@@ -469,9 +469,35 @@ mod tests {
         assert_eq!(value_after(&spec, "--permission-mode"), Some("acceptEdits"));
         assert_eq!(
             value_after(&spec, "--tools"),
-            Some("Read,Glob,Grep,Edit,Write,Bash,TaskCreate,TaskGet,TaskUpdate,TaskList")
+            Some(
+                "Read,Glob,Grep,Edit,Write,Bash,ToolSearch,TaskCreate,TaskGet,TaskUpdate,TaskList"
+            )
         );
         assert_eq!(env(&spec, "CLAUDE_CODE_ENABLE_TODO_TOOLS"), Some("1"));
+    }
+
+    /// A `--tools` list without ToolSearch turns Claude Code's tool search off, and then every
+    /// MCP tool of your setup goes out in full with each request. A run's session keeps it, and
+    /// a read-only one still gets nothing that writes.
+    #[test]
+    fn run_sessions_keep_tool_search_and_a_read_only_one_still_cant_write() {
+        let named = |spec: &CommandSpec| -> Vec<String> {
+            let tools = value_after(spec, "--tools").expect("a tool list");
+            tools.split(',').map(str::to_owned).collect()
+        };
+        for role in [SessionRole::ReadOnly, SessionRole::Build] {
+            let tools = named(&command(&request(role)));
+            assert!(tools.iter().any(|tool| tool == "ToolSearch"), "{tools:?}");
+        }
+        let tools = named(&command(&request(SessionRole::ReadOnly)));
+        for writes in ["Edit", "Write", "Bash", "NotebookEdit"] {
+            assert!(!tools.iter().any(|tool| tool == writes), "{tools:?}");
+        }
+        // The conversation's own session names no tools, so its tool search was never off.
+        assert_eq!(
+            value_after(&command(&request(SessionRole::Direct)), "--tools"),
+            None
+        );
     }
 
     /// Ultracode is Claude Code's own setting, which leaves the effort alone, and the size
@@ -685,7 +711,10 @@ mod tests {
             value_after(&unapproved, "--permission-mode"),
             Some("dontAsk")
         );
-        assert_eq!(value_after(&unapproved, "--tools"), Some("Read,Glob,Grep"));
+        assert_eq!(
+            value_after(&unapproved, "--tools"),
+            Some("Read,Glob,Grep,ToolSearch")
+        );
     }
 
     #[test]
@@ -697,7 +726,10 @@ mod tests {
             };
             let spec = command(&unapproved);
             assert_eq!(value_after(&spec, "--permission-mode"), Some("dontAsk"));
-            assert_eq!(value_after(&spec, "--tools"), Some("Read,Glob,Grep"));
+            assert_eq!(
+                value_after(&spec, "--tools"),
+                Some("Read,Glob,Grep,ToolSearch")
+            );
             assert!(env(&spec, "CLAUDE_CODE_ENABLE_TODO_TOOLS").is_none());
         }
         // The default request is read-only too.
@@ -708,7 +740,7 @@ mod tests {
         };
         assert_eq!(
             value_after(&command(&default), "--tools"),
-            Some("Read,Glob,Grep")
+            Some("Read,Glob,Grep,ToolSearch")
         );
 
         let approved = command(&request(SessionRole::Build));
@@ -971,7 +1003,10 @@ mod tests {
             native_fanout: Some(NativeFanout::Switch(FanoutSwitch::On)),
             ..request(SessionRole::ReadOnly)
         });
-        assert_eq!(value_after(&reader, "--tools"), Some("Read,Glob,Grep"));
+        assert_eq!(
+            value_after(&reader, "--tools"),
+            Some("Read,Glob,Grep,ToolSearch")
+        );
     }
 
     /// A reviewer with the checks gets Bash, held by its settings to those commands; one with
@@ -987,7 +1022,10 @@ mod tests {
             })
         };
         let checks = reader(SessionShell::Only(vec!["node --test".to_owned()]));
-        assert_eq!(value_after(&checks, "--tools"), Some("Read,Glob,Grep,Bash"));
+        assert_eq!(
+            value_after(&checks, "--tools"),
+            Some("Read,Glob,Grep,ToolSearch,Bash")
+        );
         assert_eq!(value_after(&checks, "--permission-mode"), Some("dontAsk"));
         let settings = settings_file(&checks);
         assert_eq!(
@@ -995,10 +1033,16 @@ mod tests {
             json!(["Bash(node --test)", "Bash(node --test:*)"])
         );
         let any = reader(SessionShell::Any);
-        assert_eq!(value_after(&any, "--tools"), Some("Read,Glob,Grep,Bash"));
+        assert_eq!(
+            value_after(&any, "--tools"),
+            Some("Read,Glob,Grep,ToolSearch,Bash")
+        );
         assert!(settings_file(&any)["permissions"].is_null());
         let none = reader(SessionShell::None);
-        assert_eq!(value_after(&none, "--tools"), Some("Read,Glob,Grep"));
+        assert_eq!(
+            value_after(&none, "--tools"),
+            Some("Read,Glob,Grep,ToolSearch")
+        );
     }
 
     /// A crew agent gets no workflow or background agent of Claude Code's own, whatever its
@@ -1059,6 +1103,25 @@ mod tests {
             ..request(SessionRole::Build)
         }));
         assert!(kept.get("disableAllHooks").is_none());
+    }
+
+    /// What you set for the session you talk to reaches Claude Code in its `--settings` file.
+    #[test]
+    fn your_preferences_go_through_the_session_settings() {
+        let yours = settings_file(&command(&SessionRequest {
+            scratch_dir: Some("/tmp/state/s-001".into()),
+            preferences: argonauts_core::session_runner::SessionPreferences {
+                thinking_off: true,
+                fast: true,
+                language: Some("ja".into()),
+                workflow_word_off: true,
+            },
+            ..request(SessionRole::Direct)
+        }));
+        assert_eq!(yours["alwaysThinkingEnabled"], false);
+        assert_eq!(yours["fastMode"], true);
+        assert_eq!(yours["language"], "ja");
+        assert_eq!(yours["workflowKeywordTriggerEnabled"], false);
     }
 
     #[test]

@@ -1,24 +1,21 @@
 //! Earlier conversations, read back from their journals at no token cost: the `/resume` list,
-//! and the turns a resumed conversation reprints and primes a fresh session with.
+//! which runs each started, and the turns a resumed conversation primes a fresh session with.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-use argonauts_core::app::{ConversationEvent, ConversationSummary, ReplayTurn, TurnReply};
+use argonauts_core::app::{ConversationEvent, ConversationSummary, TurnReply};
 use argonauts_core::artifacts::{self, Artifact};
 use argonauts_core::event::AgentEvent;
-use argonauts_core::events::run::Party;
+use argonauts_core::events::context::ContextUsage;
 use argonauts_core::names::{ConversationId, ModelRef, SessionKey, TurnId};
+use argonauts_core::views::{ContextRow, RecordedContext};
+use argonauts_core::{RunId, Spend};
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use super::excerpt::reply_text;
 use crate::controller::recap::title_from_request;
 use crate::conversation_store::ConversationStore;
-
-/// How many of the last replay items a resumed conversation prints word for word, as a resumed
-/// run does. Older ones fold into the Ctrl+O history.
-pub(super) const SHOWN_TURNS: usize = 6;
 
 /// One turn of an earlier conversation.
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +45,123 @@ impl PastTurn {
 pub(super) struct PastConversation {
     pub summary: ConversationSummary,
     pub turns: Vec<PastTurn>,
+    /// The runs it started, oldest first.
+    pub runs: Vec<RunId>,
+}
+
+/// How a conversation's record left its session's context, counted as the live row counts it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct PastContext {
+    pub used: u64,
+    pub window: Option<u64>,
+    pub tool_calls: u32,
+    pub spent: Spend,
+    /// The CLI's own last count, where the record kept one.
+    pub usage: Option<Box<ContextUsage>>,
+    /// When the last turn ended, where the record says.
+    pub at: Option<OffsetDateTime>,
+}
+
+/// What the agents did that the row counts: most of a journal is the rest, which isn't parsed.
+const FILLS_AND_CALLS: [&str; 2] = [r#""type":"context_fill""#, r#""type":"tool_started""#];
+
+impl PastContext {
+    /// Every turn's fills, calls and spend in order, from the conversation's record. A turn
+    /// that compacted leaves the next session empty. `None` before any turn said.
+    pub(super) fn read(store: &ConversationStore) -> Option<Self> {
+        let mut left: Option<Self> = None;
+        let mut compacting: Vec<TurnId> = Vec::new();
+        store.each_line(|line| {
+            let counts = !ConversationStore::is_agent_line(line)
+                || FILLS_AND_CALLS.iter().any(|tag| line.contains(tag));
+            if counts && let Ok(event) = serde_json::from_str(line) {
+                Self::take(&mut left, &mut compacting, event);
+            }
+        });
+        left
+    }
+
+    fn take(left: &mut Option<Self>, compacting: &mut Vec<TurnId>, event: ConversationEvent) {
+        match event {
+            ConversationEvent::TurnStarted { turn, text, .. }
+                if super::side::is_compact_request(&text) =>
+            {
+                compacting.push(turn);
+            }
+            ConversationEvent::Agent { event, .. } => {
+                let context = left.get_or_insert_default();
+                match event {
+                    AgentEvent::ToolStarted { .. } => context.tool_calls += 1,
+                    AgentEvent::ContextFill { used, size, .. } => {
+                        context.used = used;
+                        context.window = size.or(context.window);
+                    }
+                    _ => {}
+                }
+            }
+            ConversationEvent::TurnFinished { turn, spend, .. } => {
+                let context = left.get_or_insert_default();
+                context.spent = context.spent.plus(&spend);
+                if compacting.contains(&turn) {
+                    context.used = 0;
+                    context.usage = None;
+                }
+            }
+            ConversationEvent::ContextLeft {
+                at,
+                used,
+                window,
+                usage,
+                ..
+            } => {
+                let context = left.get_or_insert_default();
+                context.used = used;
+                context.window = window.or(context.window);
+                context.usage = usage;
+                context.at = Some(at);
+            }
+            // The CLI's count was of the session that ran out.
+            ConversationEvent::FellBack { .. } => {
+                if let Some(context) = left.as_mut() {
+                    context.usage = None;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The conversation's row on the Context tab as its record left it, until a turn runs again:
+/// its last turn's session on the model it ran.
+pub(super) fn recorded_row(
+    store: &ConversationStore,
+    past: &PastConversation,
+) -> Option<ContextRow> {
+    let context = PastContext::read(store)?;
+    let last = past.turns.last()?;
+    let session = SessionKey::parse(&format!("{}-{}", past.summary.conversation, last.id))?;
+    let window = context
+        .window
+        .or(context.usage.as_ref().map(|usage| usage.window));
+    Some(ContextRow {
+        run: None,
+        session,
+        label: "conversation".to_owned(),
+        worker: last.ran(),
+        used: context.used,
+        window,
+        cap: None,
+        tool_calls: context.tool_calls,
+        spent: context.spent,
+        rotations: 0,
+        estimated: false,
+        counts: false,
+        categories: Vec::new(),
+        recorded: Some(RecordedContext {
+            at: context.at.unwrap_or(past.summary.updated),
+            turns: past.summary.turns,
+        }),
+    })
 }
 
 impl PastConversation {
@@ -77,38 +191,50 @@ impl PastConversation {
             .max()
             .unwrap_or(0)
     }
-
-    /// Each request and its answer as you saw them, oldest first. A stopped or failed turn
-    /// shows only the request.
-    pub(super) fn replay(&self) -> Vec<ReplayTurn> {
-        let mut items = Vec::new();
-        for turn in &self.turns {
-            items.push(ReplayTurn {
-                from: Party::User,
-                text: turn.request.clone(),
-                steps: Vec::new(),
-            });
-            if let Some(reply) = &turn.reply {
-                items.push(ReplayTurn {
-                    // Conversation turns have no run session; the turn names the answer instead.
-                    from: Party::Agent {
-                        session: SessionKey::parse(turn.id.as_str())
-                            .unwrap_or_else(|| SessionKey::numbered(0)),
-                        worker: turn.worker.clone(),
-                    },
-                    text: reply_text(reply).to_owned(),
-                    steps: Vec::new(),
-                });
-            }
-        }
-        items
-    }
 }
 
-/// Every conversation in `conversation_dir` with a turn or a run it started or opened, newest
-/// first.
-pub(crate) fn list(conversation_dir: &Path) -> Vec<ConversationSummary> {
-    let ids: BTreeSet<ConversationId> = std::fs::read_dir(conversation_dir)
+/// Every conversation in `conversation_dir` with a turn or a run it started, newest first. One
+/// that started a run in `waiting` is marked as waiting on you.
+pub(crate) fn list(conversation_dir: &Path, waiting: &[RunId]) -> Vec<ConversationSummary> {
+    let homes = run_homes(conversation_dir);
+    let mut conversations: Vec<ConversationSummary> = conversation_ids(conversation_dir)
+        .iter()
+        .filter_map(|conversation| load_with(conversation_dir, conversation, &homes))
+        .filter(|past| !past.is_empty())
+        .map(|past| {
+            let mut summary = past.summary;
+            summary.needs_you = past.runs.iter().any(|run| waiting.contains(run));
+            summary
+        })
+        .collect();
+    conversations.sort_by(|a, b| {
+        b.updated
+            .cmp(&a.updated)
+            .then(b.conversation.cmp(&a.conversation))
+    });
+    conversations
+}
+
+/// The conversation that started `run`: of those that list it, the first, since a conversation
+/// that opened another's run lists it after the one that started it.
+pub(crate) fn home_of(conversation_dir: &Path, run: &RunId) -> Option<ConversationId> {
+    run_homes(conversation_dir).remove(run)
+}
+
+/// Each run, by the conversation that started it.
+fn run_homes(conversation_dir: &Path) -> HashMap<RunId, ConversationId> {
+    let mut homes = HashMap::new();
+    for conversation in conversation_ids(conversation_dir) {
+        for run in ConversationStore::open(conversation_dir, &conversation).runs() {
+            homes.entry(run).or_insert_with(|| conversation.clone());
+        }
+    }
+    homes
+}
+
+/// The conversations that have a journal or runs, oldest first.
+fn conversation_ids(conversation_dir: &Path) -> Vec<ConversationId> {
+    let mut ids: Vec<ConversationId> = std::fs::read_dir(conversation_dir)
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
@@ -120,19 +246,20 @@ pub(crate) fn list(conversation_dir: &Path) -> Vec<ConversationSummary> {
             }
             ConversationId::parse(path.file_stem()?.to_str()?)
         })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect();
-    let mut conversations: Vec<ConversationSummary> = ids
-        .iter()
-        .filter_map(|conversation| load(conversation_dir, conversation))
-        .filter(|past| !past.is_empty())
-        .map(|past| past.summary)
-        .collect();
-    conversations.sort_by(|a, b| {
-        b.updated
-            .cmp(&a.updated)
-            .then(b.conversation.cmp(&a.conversation))
-    });
-    conversations
+    ids.sort_by_key(number);
+    ids
+}
+
+/// `conversation-012` is 12, so `conversation-1000` comes after it.
+fn number(conversation: &ConversationId) -> u32 {
+    conversation
+        .as_str()
+        .strip_prefix("conversation-")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(u32::MAX)
 }
 
 /// The conversation `conversation`, or `None` when it has neither a journal nor runs.
@@ -140,8 +267,22 @@ pub(super) fn load(
     conversation_dir: &Path,
     conversation: &ConversationId,
 ) -> Option<PastConversation> {
+    load_with(conversation_dir, conversation, &run_homes(conversation_dir))
+}
+
+/// [`load`], with each run's conversation read already. Only the runs it started are its own:
+/// one it only opened belongs to the conversation that started it.
+fn load_with(
+    conversation_dir: &Path,
+    conversation: &ConversationId,
+    homes: &HashMap<RunId, ConversationId>,
+) -> Option<PastConversation> {
     let store = ConversationStore::open(conversation_dir, conversation);
-    let runs = store.runs();
+    let runs: Vec<RunId> = store
+        .runs()
+        .into_iter()
+        .filter(|run| homes.get(run).is_none_or(|home| home == conversation))
+        .collect();
     let events = match store.read_events().ok()? {
         Some(events) => events,
         None if !runs.is_empty() => Vec::new(),
@@ -172,8 +313,13 @@ pub(super) fn load(
         worker: turns.last().map(PastTurn::ran),
         turns: count(turns.len()),
         runs: count(runs.len()),
+        needs_you: false,
     };
-    Some(PastConversation { summary, turns })
+    Some(PastConversation {
+        summary,
+        turns,
+        runs,
+    })
 }
 
 /// The pages the conversation `conversation` published with Claude Code's Artifact tool, oldest
@@ -250,7 +396,10 @@ fn fold(events: Vec<ConversationEvent>) -> Vec<PastTurn> {
             ConversationEvent::Agent { .. }
             | ConversationEvent::TurnFailed { .. }
             | ConversationEvent::TurnCancelled { .. }
-            | ConversationEvent::AnswerRetried { .. } => {}
+            | ConversationEvent::AnswerRetried { .. }
+            | ConversationEvent::ContextLeft { .. }
+            | ConversationEvent::CommandTyped { .. }
+            | ConversationEvent::CommandReplied { .. } => {}
         }
     }
     turns
@@ -428,27 +577,19 @@ mod tests {
         assert_eq!(past.summary.worker, Some("codex".parse().unwrap()));
         assert_eq!(past.last_turn_number(), 3);
         assert_eq!(past.turns[1].worker, "codex".parse().unwrap());
-        let replay = past.replay();
-        let replay: Vec<(bool, &str)> = replay
+        let requests: Vec<&str> = past
+            .turns
             .iter()
-            .map(|turn| (turn.from == Party::User, turn.text.as_str()))
+            .map(|turn| turn.request.as_str())
             .collect();
-        assert_eq!(
-            replay,
-            vec![
-                (true, "hi"),
-                (false, "Hi. Ask me anything."),
-                (true, "what does the export do?"),
-                (false, "It writes CSV."),
-                (true, "and json?"),
-            ]
-        );
+        assert_eq!(requests, ["hi", "what does the export do?", "and json?"]);
+        assert!(past.turns[2].reply.is_none());
     }
 
     #[test]
     fn the_list_is_newest_first_and_skips_empty_or_missing_journals() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(list(&dir.path().join("none")).is_empty());
+        assert!(list(&dir.path().join("none"), &[]).is_empty());
         write(
             dir.path(),
             1,
@@ -459,7 +600,7 @@ mod tests {
         // Written later, so newer.
         std::thread::sleep(std::time::Duration::from_millis(20));
         write(dir.path(), 3, &[started(1, "second conversation", "codex")]);
-        let conversations = list(dir.path());
+        let conversations = list(dir.path(), &[]);
         let ids: Vec<&str> = conversations
             .iter()
             .map(|conversation| conversation.conversation.as_str())
@@ -499,7 +640,7 @@ mod tests {
         touch(only_runs.runs_path(), 1);
         ConversationStore::claim(dir.path()).unwrap();
 
-        let conversations = list(dir.path());
+        let conversations = list(dir.path(), &[]);
         let shown: Vec<(&str, &str, u32, u32)> = conversations
             .iter()
             .map(|conversation| {
@@ -527,10 +668,46 @@ mod tests {
         chatted
             .keep_run(&kept("run-010", "rename the loader"))
             .unwrap();
-        let conversations = list(dir.path());
+        let conversations = list(dir.path(), &[]);
         assert_eq!(conversations[0].conversation.as_str(), "conversation-001");
         assert_eq!(conversations[0].title, "hi");
         assert_eq!(conversations[0].runs, 1);
+    }
+
+    /// A run belongs to the conversation that started it: one that only opened it lists none of
+    /// its own, and the run's home is the first that listed it.
+    #[test]
+    fn a_run_belongs_to_the_conversation_that_started_it() {
+        use crate::conversation_store::ConversationRun;
+
+        let dir = tempfile::tempdir().unwrap();
+        let run = RunId::new("run-009").unwrap();
+        let kept = ConversationRun {
+            run: run.clone(),
+            title: "fix the median".to_owned(),
+        };
+        write(
+            dir.path(),
+            1,
+            &[
+                started(1, "fix the median", "claude-code"),
+                finished(1, "On it."),
+            ],
+        );
+        for n in [1, 2] {
+            ConversationStore::open(dir.path(), &ConversationId::numbered(n))
+                .keep_run(&kept)
+                .unwrap();
+        }
+        assert_eq!(home_of(dir.path(), &run), Some(ConversationId::numbered(1)));
+        let listed = list(dir.path(), std::slice::from_ref(&run));
+        let ids: Vec<&str> = listed
+            .iter()
+            .map(|summary| summary.conversation.as_str())
+            .collect();
+        assert_eq!(ids, ["conversation-001"]);
+        assert!(listed[0].needs_you, "its run waits on you");
+        assert_eq!(listed[0].runs, 1);
     }
 
     #[test]
@@ -600,5 +777,123 @@ mod tests {
         );
         let past = load(dir.path(), &ConversationId::numbered(3)).unwrap();
         assert_eq!(past.summary.worker, Some("codex".parse().unwrap()));
+    }
+
+    /// The council session's own record, its home folder made neutral.
+    const COUNCIL: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tui/golden/resumed_council/conversation-001.jsonl"
+    ));
+
+    /// Claude Code's count of a session at 75% of 1M, as its adapter keeps it.
+    const COUNTED: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../adapters/claude-code/tests/data/context-usage-full.usage.json"
+    ));
+
+    /// An older record keeps no count of its own: the row comes from the fills, calls and
+    /// spend of its turns, as the live row added them up, at the time the record last changed.
+    #[test]
+    fn a_record_without_counts_rebuilds_the_row_from_its_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = ConversationId::numbered(1);
+        let store = ConversationStore::open(dir.path(), &id);
+        for line in COUNCIL.lines() {
+            store
+                .append(&serde_json::from_str::<ConversationEvent>(line).unwrap())
+                .unwrap();
+        }
+        let past = load(dir.path(), &id).unwrap();
+        let row = recorded_row(&store, &past).expect("the record says how full");
+        assert_eq!(
+            (row.used, row.window, row.tool_calls),
+            (25_517, Some(1_000_000), 2)
+        );
+        assert_eq!(
+            (row.spent.input_tokens, row.spent.output_tokens),
+            (73_708, 916)
+        );
+        assert!((row.spent.cost_usd - 0.004_032_7).abs() < 1e-9);
+        assert_eq!(row.worker, "claude-code/claude-haiku-5-5".parse().unwrap());
+        assert_eq!(row.run, None);
+        let recorded = row.recorded.expect("read from the record");
+        assert_eq!(recorded.turns, 1);
+        assert_eq!(recorded.at, past.summary.updated);
+    }
+
+    /// Where the record kept how a turn left the context, that is the count, with the CLI's
+    /// own; a later compact leaves the next session empty, and a fallback's session has no
+    /// count of its own yet.
+    #[test]
+    fn the_last_turn_s_count_is_what_the_row_reads() {
+        let usage: ContextUsage = serde_json::from_str(COUNTED).unwrap();
+        let at = OffsetDateTime::from_unix_timestamp(1_760_400_000).unwrap();
+        let left = |n: u32, used: u64| ConversationEvent::ContextLeft {
+            turn: TurnId::numbered(n),
+            at,
+            used,
+            window: Some(1_000_000),
+            usage: Some(Box::new(usage.clone())),
+        };
+        let fill = |n: u32, used: u64| ConversationEvent::Agent {
+            turn: TurnId::numbered(n),
+            event: AgentEvent::ContextFill {
+                used,
+                size: Some(1_000_000),
+                sent: None,
+            },
+        };
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            1,
+            &[
+                started(1, "hi", "claude-code/claude-opus-5-5"),
+                fill(1, 700_000),
+                left(1, usage.total_tokens),
+                finished(1, "Hi."),
+            ],
+        );
+        let store = |n: u32| ConversationStore::open(dir.path(), &ConversationId::numbered(n));
+        let context = PastContext::read(&store(1)).unwrap();
+        assert_eq!(context.usage.as_deref(), Some(&usage));
+        assert_eq!(context.at, Some(at));
+        let past = load(dir.path(), &ConversationId::numbered(1)).unwrap();
+        let row = recorded_row(&store(1), &past).unwrap();
+        assert_eq!(row.used, usage.total_tokens);
+        assert_eq!(row.recorded.unwrap().at, at);
+
+        write(
+            dir.path(),
+            2,
+            &[
+                started(1, "hi", "claude-code/claude-opus-5-5"),
+                left(1, usage.total_tokens),
+                finished(1, "Hi."),
+                started(2, "/compact", "claude-code/claude-opus-5-5"),
+                finished(2, "The summary."),
+            ],
+        );
+        let context = PastContext::read(&store(2)).unwrap();
+        assert_eq!((context.used, context.usage), (0, None));
+
+        write(
+            dir.path(),
+            3,
+            &[
+                started(1, "hi", "claude-code/claude-opus-5-5"),
+                left(1, usage.total_tokens),
+                ConversationEvent::FellBack {
+                    turn: TurnId::numbered(1),
+                    from: "claude-code".parse().unwrap(),
+                    to: "codex".parse().unwrap(),
+                    why: "hit its usage limit".to_owned(),
+                    told: "your request".to_owned(),
+                    signed_out: None,
+                },
+                finished(1, "Hi."),
+            ],
+        );
+        assert_eq!(PastContext::read(&store(3)).unwrap().usage, None);
     }
 }

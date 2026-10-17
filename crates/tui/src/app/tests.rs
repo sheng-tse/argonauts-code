@@ -432,8 +432,8 @@ fn with_vim_keys_esc_leaves_insert_before_it_interrupts() {
     );
 }
 
-/// A question that shows while you type takes the keys at once. The draft goes aside,
-/// the rest of the line lands on the question as stray typing, so neither the number in it nor the
+/// A question that shows while you type takes the keys at once. The draft goes aside, the rest
+/// of the line is dropped as a burst typed as it showed, so neither the number in it nor the
 /// Enter that ends it answers, and Esc brings the draft back as it was.
 #[test]
 fn a_question_that_shows_while_you_type_sets_the_draft_aside() {
@@ -460,17 +460,11 @@ fn a_question_that_shows_while_you_type_sets_the_draft_aside() {
         "{rows:#?}"
     );
     assert!(
-        rows.iter()
-            .any(|row| row == "  Typing waits while the question has the keys"),
-        "{rows:#?}"
-    );
-    assert!(
         !rows
             .iter()
             .any(|row| row.contains("to answer the question") || row.contains("CSV")),
         "no input waits under the question: {rows:#?}"
     );
-    assert!(press(&mut ui, KeyCode::Enter, at(600)).is_empty());
 
     assert_eq!(
         press(&mut ui, KeyCode::Esc, at(700)),
@@ -523,7 +517,7 @@ fn a_question_you_set_off_keeps_typing_and_slash_out_of_the_input() {
     assert!(press(&mut ui, KeyCode::Char('x'), t0).is_empty());
     assert!(ui.model().bottom.composer.is_empty());
     assert_eq!(
-        press(&mut ui, KeyCode::Esc, t0),
+        press(&mut ui, KeyCode::Esc, t0 + QUESTION_GUARD),
         [UiAction::Dismiss { question: 12 }]
     );
     assert!(ui.model().bottom.composer_has_focus());
@@ -564,7 +558,8 @@ fn a_question_that_needs_you_keeps_typing_out_until_passed_on() {
         "{rows:#?}"
     );
 
-    // Letters, a paste, and the Enter after them reach neither the input nor the question.
+    // Letters, a paste, and the Enter after them, typed as it shows, reach neither the input
+    // nor the question, and nothing on screen talks about them.
     for c in "keep it".chars() {
         assert!(press(&mut ui, KeyCode::Char(c), t0).is_empty());
     }
@@ -572,17 +567,16 @@ fn a_question_that_needs_you_keeps_typing_out_until_passed_on() {
     assert!(ui.model().bottom.composer.is_empty());
     ui.frame(t0 + Duration::from_millis(20)).unwrap();
     assert!(
-        screen(&ui).iter().any(|row| row
-            == "  Typing waits while the question has the keys · ↑↓ to choose · Esc to carry on without me"),
+        !screen(&ui).iter().any(|row| row.contains("Typing")),
         "{:#?}",
         screen(&ui)
     );
-    assert!(press(&mut ui, KeyCode::Enter, t0 + QUESTION_GUARD).is_empty());
+    assert!(press(&mut ui, KeyCode::Enter, t0 + QUESTION_GUARD / 2).is_empty());
     assert!(ui.model().bottom.question.is_some());
 
     // Passed on, it's off the screen for good, and the input takes typing and ↑ again.
     assert_eq!(
-        press(&mut ui, KeyCode::Esc, t0 + QUESTION_GUARD),
+        press(&mut ui, KeyCode::Esc, t0 + QUESTION_GUARD * 3),
         [UiAction::Dismiss { question: 9 }]
     );
     assert!(ui.model().bottom.composer_has_focus());
@@ -648,14 +642,14 @@ fn a_question_takes_the_keys_from_the_agent_panel() {
     assert!(press(&mut ui, KeyCode::Enter, at(50)).is_empty());
     assert!(press(&mut ui, KeyCode::Down, at(60)).is_empty());
     assert_eq!(
-        press(&mut ui, KeyCode::Enter, at(10) + QUESTION_GUARD),
+        press(&mut ui, KeyCode::Enter, at(50) + QUESTION_GUARD),
         answer(9, 1)
     );
     assert!(ui.model().bottom.composer_has_focus());
 }
 
 /// For a moment after a question takes the keys, only the arrows work on it: Enter, Esc, and a
-/// number meant for what had the keys do nothing, and the number counts as stray typing.
+/// number meant for what had the keys do nothing, and each holds the guard up a moment longer.
 #[test]
 fn keys_pressed_as_a_question_shows_never_answer_it() {
     let (mut ui, t0) = ui();
@@ -670,8 +664,7 @@ fn keys_pressed_as_a_question_shows_never_answer_it() {
     assert_eq!(selected(&ui), 1, "the arrows still move");
     assert!(press(&mut ui, KeyCode::Char('1'), at(200)).is_empty());
     assert!(press(&mut ui, KeyCode::Enter, t0 + QUESTION_GUARD).is_empty());
-    assert!(ui.model().bottom.question.as_ref().unwrap().stray_typing);
-    let past = t0 + QUESTION_GUARD + Duration::from_millis(100);
+    let past = t0 + QUESTION_GUARD * 2;
     assert!(press(&mut ui, KeyCode::Up, past).is_empty());
     assert_eq!(press(&mut ui, KeyCode::Enter, past), answer(9, 0));
 }
@@ -693,8 +686,9 @@ fn a_question_that_shows_mid_line_with_vim_keys_moves_but_never_answers() {
     for c in "let it".chars() {
         assert!(press(&mut ui, KeyCode::Char(c), at(30)).is_empty(), "{c:?}");
     }
-    assert!(press(&mut ui, KeyCode::Enter, at(600)).is_empty());
-    assert!(press(&mut ui, KeyCode::Char('l'), at(600)).is_empty());
+    // The rest of the line is dropped with the burst it came in.
+    assert!(press(&mut ui, KeyCode::Enter, at(40)).is_empty());
+    assert!(press(&mut ui, KeyCode::Char('l'), at(50)).is_empty());
     assert!(ui.model().bottom.focused_question().is_some());
     assert_eq!(
         press(&mut ui, KeyCode::Esc, at(700)),
@@ -872,10 +866,7 @@ fn a_focused_question_takes_keys_and_answers() {
     press(&mut ui, KeyCode::Down, t0);
     assert!(press(&mut ui, KeyCode::Char('y'), t0).is_empty());
     assert_eq!(ui.model().bottom.question.as_ref().unwrap().armed, None);
-    // After a letter a number waits for a key meant for the question.
-    assert!(press(&mut ui, KeyCode::Char('1'), t0).is_empty());
-    assert_eq!(ui.model().bottom.question.as_ref().unwrap().armed, None);
-    press(&mut ui, KeyCode::Up, t0);
+    // A letter does nothing, and the number after it picks.
     assert!(press(&mut ui, KeyCode::Char('1'), t0).is_empty());
     assert_eq!(ui.model().bottom.question.as_ref().unwrap().armed, Some(0));
     assert_eq!(
@@ -962,13 +953,11 @@ fn answer(question: u64, option: usize) -> Vec<UiAction> {
 
 #[test]
 fn a_question_moves_with_vim_keys_and_answers_by_number() {
-    // Without vim keys `k` is a letter, so a number waits for a key meant for the question.
+    // Without vim keys `k` is a letter, which does nothing, and a number answers.
     let (mut ui, t0) = ui();
     ui.model_mut().bottom.question = Some(question(20));
     press(&mut ui, KeyCode::Up, t0);
     assert!(press(&mut ui, KeyCode::Char('k'), t0).is_empty());
-    assert!(press(&mut ui, KeyCode::Char('2'), t0).is_empty());
-    press(&mut ui, KeyCode::Up, t0);
     assert_eq!(press(&mut ui, KeyCode::Char('2'), t0), answer(20, 1));
 
     let (mut ui, t0) = ui_at(80);
@@ -1021,6 +1010,36 @@ fn a_question_moves_with_vim_keys_and_answers_by_number() {
         [UiAction::Dismiss { question: 22 }]
     );
     assert!(ui.model().bottom.question.as_ref().unwrap().dismissed);
+}
+
+/// In NORMAL, `j` and `k` are ↓ and ↑ in full, as in Claude Code: `k` walks back through what
+/// you typed, `j` forward to the blank newest line, one more `j` into the list under the input,
+/// and `k` from its top comes back to the prompt.
+#[test]
+fn with_vim_keys_j_and_k_are_the_arrows_in_normal() {
+    let (mut ui, t0) = ui();
+    ui.model_mut().bottom.mode.vim = Some(VimMode::Insert);
+    ui.model_mut()
+        .bottom
+        .composer
+        .set_history(["fix the money rounding".to_owned()]);
+    ui.model_mut().bottom.agents.rows =
+        vec![AgentRow::new("claude-code", "task-2", AgentState::Working)];
+    press(&mut ui, KeyCode::Esc, t0);
+    press(&mut ui, KeyCode::Char('k'), t0);
+    assert_eq!(ui.model().bottom.composer.text(), "fix the money rounding");
+    press(&mut ui, KeyCode::Char('j'), t0);
+    assert_eq!(ui.model().bottom.composer.text(), "");
+    assert!(!ui.model().bottom.agents.has_focus());
+    press(&mut ui, KeyCode::Char('j'), t0);
+    assert!(ui.model().bottom.agents.has_focus(), "into the list, as ↓");
+    press(&mut ui, KeyCode::Char('k'), t0);
+    assert!(!ui.model().bottom.agents.has_focus(), "and back, as ↑");
+    assert!(ui.model().bottom.composer.is_empty());
+    // A command half typed keeps its own `j`: `dj` deletes, it never leaves for the list.
+    press(&mut ui, KeyCode::Char('d'), t0);
+    press(&mut ui, KeyCode::Char('j'), t0);
+    assert!(!ui.model().bottom.agents.has_focus());
 }
 
 #[test]
@@ -1937,9 +1956,12 @@ fn a_paste_goes_to_the_view_on_top() {
         allowed: Vec::new(),
         description: String::new(),
     };
-    ui.push_view(Box::new(crate::views::settings::config::ConfigView::new(
-        vec![row("ui.accent"), row("ui.theme")],
-    )));
+    ui.push_view(Box::new(
+        crate::views::settings::all_settings::AllSettingsView::new(vec![
+            row("ui.accent"),
+            row("ui.theme"),
+        ]),
+    ));
     assert!(
         ui.handle_event_in(Event::Paste("accent".into()), t0, &state)
             .is_empty()
@@ -2670,6 +2692,30 @@ fn a_views_notice_shows_over_its_footer_while_it_lasts() {
     ui.frame_in(t0 + Duration::from_secs(5), &state).unwrap();
     let rows = screen(&ui);
     assert!(rows[rows.len() - 1].contains("esc back"), "{rows:#?}");
+}
+
+/// The agent panel asks for the crew's rows each time it opens: from an agent's session with ←,
+/// and on its own after a take-over, as from the input.
+#[test]
+fn the_agent_panel_asks_for_its_rows_however_it_opens() {
+    use argonauts_core::app::ViewRequest;
+
+    let (mut ui, t0) = ui_at(80);
+    let state = crate::mentions::fixture::working_state();
+    let run = state.attached.clone().unwrap();
+    ui.push_view(Box::new(crate::views::session::SessionView::new(
+        run,
+        argonauts_core::names::SessionKey::numbered(1),
+    )));
+    assert!(ui.take_asked().is_empty());
+    let left = Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    ui.handle_event_in(left, t0, &state);
+    assert_eq!(ui.take_asked(), [ViewRequest::Crew]);
+    assert!(ui.take_asked().is_empty(), "asked once");
+
+    ui.close_views();
+    ui.push_view(Box::new(crate::views::crew::AgentPanelView::new(&state)));
+    assert_eq!(ui.take_asked(), [ViewRequest::Crew]);
 }
 
 use argonauts_core::app::UiCommand as Command;

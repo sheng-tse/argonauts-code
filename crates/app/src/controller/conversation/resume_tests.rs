@@ -1,13 +1,13 @@
 //! `/clear`, `/resume conversation-<n>`, the picker's conversations, and `argonauts -c`, through
 //! the real controller loop.
 
-use argonauts_core::Paths;
-use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, ReplayTurn, UiCommand, ViewData};
+use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, UiCommand, ViewData, ViewRequest};
 use argonauts_core::event::AgentEvent;
-use argonauts_core::events::run::Party;
+use argonauts_core::events::context::ContextUsage;
 use argonauts_core::input::{ResumeTarget, SlashCommand};
 use argonauts_core::names::ConversationId;
 use argonauts_core::session_runner::{RunnerEvent, SessionRunner as _};
+use argonauts_core::{Paths, Spend};
 use argonauts_testkit::{FakeRunner, FakeSession};
 use serde_json::json;
 
@@ -67,13 +67,6 @@ async fn notice(driver: &mut TestDriver, part: &str) -> String {
         AppEvent::Notice { text, .. } => text,
         _ => unreachable!(),
     }
-}
-
-fn texts(turns: &[ReplayTurn]) -> Vec<(bool, String)> {
-    turns
-        .iter()
-        .map(|turn| (turn.from == Party::User, turn.text.clone()))
-        .collect()
 }
 
 fn has_primer(driver: &TestDriver, index: usize) -> bool {
@@ -141,7 +134,6 @@ async fn clear_starts_a_new_conversation_and_resume_carries_the_old_one_on() {
         conversation,
         title,
         worker,
-        earlier,
         turns,
         artifacts,
     } = resumed
@@ -151,17 +143,18 @@ async fn clear_starts_a_new_conversation_and_resume_carries_the_old_one_on() {
     assert_eq!(conversation, ConversationId::numbered(1));
     assert_eq!(title, "hi");
     assert_eq!(worker, Some("claude-code".parse().unwrap()));
-    assert!(earlier.is_empty());
+    // Its own turns come from its record, drawn by the printers that drew them.
+    assert!(turns.is_empty());
     // The page it published comes back with it, for /artifacts and the key that opens it.
     let pages: Vec<(&str, &str)> = artifacts
         .iter()
         .map(|page| (page.name.as_str(), page.url.as_str()))
         .collect();
     assert_eq!(pages, [("weekly-usage-chart", page)]);
-    assert_eq!(
-        texts(&turns),
-        vec![(true, "hi".to_owned()), (false, "Hi.".to_owned())]
-    );
+    let drawn = driver
+        .until(|event| matches!(event, AppEvent::PastDrawn))
+        .await;
+    assert_eq!(drawn, AppEvent::PastDrawn);
     let status = driver
         .until(|event| matches!(event, AppEvent::Status { .. }))
         .await;
@@ -197,12 +190,12 @@ async fn the_resume_picker_lists_conversations_with_runs() {
         .send(slash(SlashCommand::Resume { target: None }))
         .await;
     let view = driver
-        .until(|event| matches!(event, AppEvent::View { data } if matches!(data.as_ref(), ViewData::Runs { .. })))
+        .until(|event| matches!(event, AppEvent::View { data } if matches!(data.as_ref(), ViewData::ResumeList { .. })))
         .await;
     let AppEvent::View { data } = view else {
         unreachable!()
     };
-    let ViewData::Runs { conversations, .. } = *data else {
+    let ViewData::ResumeList { conversations, .. } = *data else {
         unreachable!()
     };
     assert_eq!(conversations.len(), 1);
@@ -212,8 +205,78 @@ async fn the_resume_picker_lists_conversations_with_runs() {
     driver.exit().await;
 }
 
+/// A run comes back after the turn that started it, drawn from its own record, and the turns
+/// after it follow. The run is the conversation's own again, and nothing else lists it.
 #[tokio::test]
-async fn a_long_conversation_prints_its_last_turns_and_folds_the_rest() {
+async fn a_resumed_conversation_draws_its_run_after_the_turn_that_started_it() {
+    use argonauts_core::RunId;
+    use argonauts_core::events::RunEventKind;
+    use argonauts_core::events::run::{Party, RunLifecycle};
+    use argonauts_core::layout::run_files;
+    use argonauts_core::names::TurnId;
+
+    use crate::client::test_support as log;
+    use crate::conversation_store::ConversationRun;
+
+    let mut driver = TestDriver::start().await;
+    driver.agent.push(answer("Starting it."));
+    driver.agent.push(answer("Still going."));
+    turn(&mut driver, "make the limiter per key").await;
+    turn(&mut driver, "how is it going?").await;
+    let run = RunId::new("run-01").unwrap();
+    let mut started = log::run_started(0, "make the limiter per key", None);
+    if let RunEventKind::Run(RunLifecycle::Started(started)) = &mut started.kind {
+        started.conversation_turn = Some(TurnId::numbered(1));
+    }
+    let dir = driver.env.run_dir(&run);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut events = [started, log::queued(1, "keep the old header", Party::User)];
+    for event in &mut events {
+        event.run_id = run.clone();
+    }
+    log::write_journal(&dir.join(run_files::EVENTS), &events);
+    let conversation_dir = driver.env.conversation_dir();
+    ConversationStore::open(&conversation_dir, &ConversationId::numbered(1))
+        .keep_run(&ConversationRun {
+            run: run.clone(),
+            title: "make the limiter per key".to_owned(),
+        })
+        .unwrap();
+    driver.send(slash(SlashCommand::Clear)).await;
+    notice(&mut driver, "Started a new conversation").await;
+    let mark = driver.seen().len();
+    driver.send(resume("conversation-001")).await;
+    driver
+        .until(|event| matches!(event, AppEvent::PastDrawn))
+        .await;
+    let order: Vec<String> = driver.seen()[mark..]
+        .iter()
+        .skip_while(|event| !matches!(event, AppEvent::PastBegins))
+        .take_while(|event| !matches!(event, AppEvent::PastDrawn))
+        .filter_map(|event| match event {
+            AppEvent::Conversation {
+                event: ConversationEvent::TurnFinished { turn, .. },
+            } => Some(format!("{turn} finished")),
+            AppEvent::Run { event } => Some(format!("run event {}", event.seq)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "t-001 finished",
+            "run event 0",
+            "run event 1",
+            "t-002 finished"
+        ]
+    );
+    driver.exit().await;
+}
+
+/// A resumed conversation comes back whole, in order, between the past's two marks, with no
+/// turn cut and nothing summed up.
+#[tokio::test]
+async fn a_long_conversation_is_drawn_whole_from_its_record() {
     let mut driver = TestDriver::start().await;
     for n in 1..=5 {
         driver.agent.push(answer(&format!("answer {n}")));
@@ -223,17 +286,28 @@ async fn a_long_conversation_prints_its_last_turns_and_folds_the_rest() {
     }
     driver.send(slash(SlashCommand::Clear)).await;
     notice(&mut driver, "Started a new conversation").await;
+    let mark = driver.seen().len();
     driver.send(resume("conversation-001")).await;
-    let AppEvent::ConversationResumed { earlier, turns, .. } = driver
-        .until(|event| matches!(event, AppEvent::ConversationResumed { .. }))
-        .await
-    else {
-        unreachable!()
-    };
-    assert_eq!(earlier.len(), 4);
-    assert_eq!(turns.len(), 6);
-    assert_eq!(turns[0].text, "question 3");
-    assert_eq!(turns[5].text, "answer 5");
+    driver
+        .until(|event| matches!(event, AppEvent::PastDrawn))
+        .await;
+    let past: Vec<String> = driver.seen()[mark..]
+        .iter()
+        .skip_while(|event| !matches!(event, AppEvent::PastBegins))
+        .take_while(|event| !matches!(event, AppEvent::PastDrawn))
+        .filter_map(|event| match event {
+            AppEvent::Conversation {
+                event: ConversationEvent::TurnStarted { text, .. },
+            } => Some(text.clone()),
+            AppEvent::Conversation {
+                event: ConversationEvent::TurnFinished { reply, .. },
+            } => Some(format!("{reply:?}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(past.len(), 10, "{past:#?}");
+    assert_eq!(past[0], "question 1");
+    assert!(past[9].contains("answer 5"), "{past:#?}");
     driver.exit().await;
 }
 
@@ -519,4 +593,149 @@ async fn app_sessions_opened_together_never_share_a_conversation() {
     super::close(&mut parts.ctx, &mut first);
     assert!(!first.store.journal_path().exists());
     assert!(second.store.journal_path().exists());
+}
+
+/// Each turn keeps how it left its session's context in the record as it ends, the CLI's own
+/// count with it, so the conversation resumed counts its session at once, before a turn runs.
+#[tokio::test]
+async fn a_resumed_conversation_counts_its_context_at_once() {
+    let usage: ContextUsage = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../adapters/claude-code/tests/data/context-usage-full.usage.json"
+    )))
+    .unwrap();
+    let mut driver = TestDriver::start().await;
+    let events = [
+        AgentEvent::ToolStarted {
+            id: "t1".into(),
+            name: "Read".into(),
+            input: json!({"file_path": "README"}),
+            parent: None,
+        },
+        AgentEvent::ContextFill {
+            used: 700_000,
+            size: Some(1_000_000),
+            sent: None,
+        },
+        AgentEvent::ContextBreakdown {
+            usage: Box::new(usage.clone()),
+        },
+    ];
+    let spend = Spend {
+        input_tokens: 1_200,
+        output_tokens: 80,
+        cached_tokens: 0,
+        cost_usd: 0.02,
+        cost_partial: false,
+        cost_estimated: false,
+    };
+    let hi = events
+        .into_iter()
+        .fold(answer("Hi."), |session, event| {
+            session.with_event(RunnerEvent::Agent(event))
+        })
+        .with_spend(spend)
+        .with_cli_session("v-1");
+    driver.agent.push(hi);
+    turn(&mut driver, "hi").await;
+    let store =
+        ConversationStore::open(&driver.env.conversation_dir(), &ConversationId::numbered(1));
+    let kept: Vec<(u64, Option<Box<ContextUsage>>)> = store
+        .every_event()
+        .into_iter()
+        .filter_map(|event| match event {
+            ConversationEvent::ContextLeft { used, usage, .. } => Some((used, usage)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kept,
+        vec![(usage.total_tokens, Some(Box::new(usage.clone())))]
+    );
+
+    driver.send(slash(SlashCommand::Clear)).await;
+    notice(&mut driver, "Started a new conversation").await;
+    driver.send(resume("conversation-1")).await;
+    driver
+        .until(|event| matches!(event, AppEvent::PastDrawn))
+        .await;
+    driver
+        .send(UiCommand::Request {
+            view: ViewRequest::Context,
+        })
+        .await;
+    let shown = driver
+        .until(|event| matches!(event, AppEvent::View { data } if matches!(**data, ViewData::Context { .. })))
+        .await;
+    let AppEvent::View { data } = shown else {
+        unreachable!()
+    };
+    let ViewData::Context { view } = *data else {
+        unreachable!()
+    };
+    let row = &view.rows[0];
+    assert_eq!(
+        (row.used, row.window, row.tool_calls),
+        (usage.total_tokens, Some(1_000_000), 1)
+    );
+    assert_eq!(row.spent, spend);
+    assert_eq!(row.recorded.map(|recorded| recorded.turns), Some(1));
+}
+
+/// A slash command you typed is kept in the record where you typed it, with what it printed
+/// back after it, and the conversation drawn again brings both back there, after the turn
+/// before them.
+#[tokio::test]
+async fn a_typed_command_comes_back_where_it_was_typed() {
+    let mut driver = TestDriver::start().await;
+    driver.agent.push(answer("Hi.").with_cli_session("v-1"));
+    turn(&mut driver, "hi").await;
+    driver
+        .send(UiCommand::CommandTyped {
+            text: " /usage week ".to_owned(),
+        })
+        .await;
+    let reply = argonauts_core::app::CommandReply {
+        text: "Usage dialog dismissed".to_owned(),
+        value: None,
+        after: None,
+        dim: true,
+        error: false,
+    };
+    driver
+        .send(UiCommand::CommandReplied {
+            reply: reply.clone(),
+        })
+        .await;
+    driver.send(slash(SlashCommand::Clear)).await;
+    notice(&mut driver, "Started a new conversation").await;
+    let mark = driver.seen().len();
+    driver.send(resume("conversation-1")).await;
+    driver
+        .until(|event| matches!(event, AppEvent::PastDrawn))
+        .await;
+    let past: Vec<&ConversationEvent> = driver.seen()[mark..]
+        .iter()
+        .skip_while(|event| !matches!(event, AppEvent::PastBegins))
+        .take_while(|event| !matches!(event, AppEvent::PastDrawn))
+        .filter_map(|event| match event {
+            AppEvent::Conversation { event } => Some(event),
+            _ => None,
+        })
+        .collect();
+    let typed = past
+        .iter()
+        .position(|event| {
+            matches!(event, ConversationEvent::CommandTyped { text, .. } if text == "/usage week")
+        })
+        .expect("the command comes back");
+    let finished = past
+        .iter()
+        .position(|event| matches!(event, ConversationEvent::TurnFinished { .. }))
+        .unwrap();
+    assert!(finished < typed, "{past:#?}");
+    assert!(
+        matches!(past.get(typed + 1), Some(ConversationEvent::CommandReplied { reply: kept }) if *kept == reply),
+        "what it printed back comes right after it: {past:#?}"
+    );
 }

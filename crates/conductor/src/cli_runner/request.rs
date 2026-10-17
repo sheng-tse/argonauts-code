@@ -17,6 +17,7 @@ use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::layout::{self, session_files};
 use argonauts_core::names::{ModelRef, SessionKey};
 use argonauts_core::pictures::Picture;
+use argonauts_core::registry::listed::nearest_listed;
 use argonauts_core::registry::{
     LaunchHints, ModelAccess, ModelRegistry, RegistryKind, effort_to_run,
 };
@@ -24,7 +25,7 @@ use argonauts_core::session_runner::{Access, Asking, RunnerError, SessionSpec, S
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::UserHooks;
 use argonauts_core::settings::fallback::AppliedFallback;
-use argonauts_core::settings::sessions::Compaction;
+use argonauts_core::settings::sessions::{Compaction, FanoutSwitch, NativeFanout};
 use argonauts_core::steps::StepName;
 use argonauts_core::{
     Adapter, Asks, CommandSpec, PARENT_SESSION_ENV_VARS, PROVIDER_KEY_ENV_VARS, SessionRequest,
@@ -67,6 +68,20 @@ pub fn session_role(access: Access) -> SessionRole {
     }
 }
 
+/// What the session spends can go on after its turn where the meter doesn't see it: it works
+/// as its CLI's own workflow, or it builds and may start the CLI's own workflows or agents,
+/// which run on in the background and send no bill until a later result.
+pub fn spends_unseen(spec: &SessionSpec) -> bool {
+    let fans_out = match spec.native_fanout {
+        NativeFanout::Switch(switch) => switch == FanoutSwitch::On,
+        NativeFanout::Limit { max } => max > 0,
+    };
+    report_tool::reports_by_tool(spec)
+        || (session_role(spec.access) == SessionRole::Build
+            && fans_out
+            && !spec.cli_workflow.background_off)
+}
+
 /// Writes the MCP config where the CLI takes one per run (Claude Code), so the command is
 /// pure after this.
 pub fn session_request(
@@ -99,6 +114,7 @@ pub fn session_request(
                 report,
                 spec.asking.as_ref(),
                 &argonauts,
+                ToolLoading::for_role(session_role(spec.access)),
             )
             .map_err(io_error)?,
         )
@@ -196,6 +212,7 @@ pub fn session_request(
         typed_by_you: spec.cli_workflow.typed_keyword,
         background_off: spec.cli_workflow.background_off,
         shell: spec.shell.clone(),
+        preferences: spec.preferences.clone(),
         workflow_size: Some(settings.workflow_size),
         standing_note: standing.filter(|_| takes_a_note),
         autopilot: spec.autopilot,
@@ -278,6 +295,16 @@ fn model_to_run(
         let agent = settings.agents.get(&worker.agent)?;
         agent.model.clone()
     });
+    // A model its CLI no longer lists would only be refused, so the nearest it lists runs.
+    let model = match (registry, &model) {
+        (Some(registry), Some(_)) => {
+            let pinned = ModelRef::new(worker.agent.clone(), model.clone());
+            nearest_listed(registry, &pinned)
+                .and_then(|nearest| nearest.model)
+                .or(model)
+        }
+        _ => model,
+    };
     let hinted = launch.is_some_and(|launch| launch.provider_model.is_some());
     if model.is_some() || hinted || !runs_hosted_default(adapter) {
         return Ok(model);
@@ -396,7 +423,34 @@ pub fn write_mcp_config(
     status_file: &Path,
     argonauts: &Path,
 ) -> io::Result<PathBuf> {
-    write_session_mcp_config(session_dir, Some(status_file), None, None, argonauts)
+    write_session_mcp_config(
+        session_dir,
+        Some(status_file),
+        None,
+        None,
+        argonauts,
+        ToolLoading::Deferred,
+    )
+}
+
+/// Whether Claude Code may hold the status server's tools back behind ToolSearch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolLoading {
+    /// Loaded in full with every request. A run's session names its tools, ToolSearch among
+    /// them, and Claude Code then defers every MCP tool, while the run's own report, status and
+    /// asks must be in front of the model from its first turn.
+    Always,
+    /// As Claude Code chooses, as in the conversation's own session.
+    Deferred,
+}
+
+impl ToolLoading {
+    pub fn for_role(role: SessionRole) -> Self {
+        match role {
+            SessionRole::ReadOnly | SessionRole::Build => Self::Always,
+            SessionRole::Direct => Self::Deferred,
+        }
+    }
 }
 
 /// Like [`write_mcp_config`], with no servers at all when there is no status file, so a strict
@@ -407,6 +461,7 @@ pub fn write_session_mcp_config(
     report: Option<ReportFiles<'_>>,
     asking: Option<&Asking>,
     argonauts: &Path,
+    loading: ToolLoading,
 ) -> io::Result<PathBuf> {
     let mut servers = Map::new();
     if let Some(server) = session_server(argonauts, status_file, report, asking) {
@@ -417,6 +472,11 @@ pub fn write_session_mcp_config(
         });
         if let Some(asking) = asking {
             entry["env"] = json!({ APPROVE_TOKEN_ENV: asking.token });
+        }
+        // Claude Code also waits for such a server to start, at most five seconds, so its
+        // tools are there for the first turn.
+        if loading == ToolLoading::Always {
+            entry["alwaysLoad"] = json!(true);
         }
         servers.insert(server.name, entry);
     }
@@ -725,6 +785,33 @@ mod tests {
         }
     }
 
+    /// A model your settings pin that its CLI no longer lists runs as the nearest one it
+    /// does, in a session of its own as in a run's.
+    #[test]
+    fn a_pinned_model_its_cli_no_longer_lists_runs_the_nearest_listed_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let agy = TestAdapter::new("true").with_id("antigravity-cli");
+        let mut spec = spec_in(dir.path(), dir.path(), "fix it");
+        spec.model = "antigravity-cli/gemini-3.6-flash-low".parse().unwrap();
+        let registry = StaticRegistry::default();
+        for model in ["gemini-3.8-flash-high", "gemini-3.8-flash-low"] {
+            registry.add(local_entry(
+                "antigravity-cli",
+                model,
+                RegistryKind::Cli,
+                true,
+            ));
+        }
+        let settings = Settings::default();
+        let request = session_request(&spec, &agy, &settings, Some(&registry)).unwrap();
+        assert_eq!(request.model.as_deref(), Some("gemini-3.8-flash-low"));
+
+        // One it lists runs as it is.
+        spec.model = "antigravity-cli/gemini-3.8-flash-high".parse().unwrap();
+        let request = session_request(&spec, &agy, &settings, Some(&registry)).unwrap();
+        assert_eq!(request.model.as_deref(), Some("gemini-3.8-flash-high"));
+    }
+
     #[test]
     fn opencode_with_no_model_runs_a_local_one_or_refuses() {
         let dir = tempfile::tempdir().unwrap();
@@ -1026,6 +1113,33 @@ mod tests {
         assert!(spec.session_dir.join(session_files::SCHEMA).exists());
     }
 
+    /// A run's session names its tools, ToolSearch among them, and Claude Code then holds every
+    /// MCP tool back behind it. The status server's tools stay loaded there, while the
+    /// conversation's own session leaves that to Claude Code.
+    #[test]
+    fn a_run_session_keeps_the_status_tools_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = TestAdapter::new("true")
+            .with_id(CLAUDE_CODE)
+            .with_input_lines();
+        let mut spec = spec_in(dir.path(), dir.path(), "hi");
+        spec.status_file = Some(dir.path().join("status.json"));
+        for (access, always) in [
+            (Access::ReadOnly, Some(true)),
+            (Access::Build, Some(true)),
+            (Access::Direct, None),
+        ] {
+            spec.access = access;
+            let request = request_for(&adapter, &spec);
+            let written: Value = serde_json::from_str(
+                &std::fs::read_to_string(request.mcp_config.unwrap()).unwrap(),
+            )
+            .unwrap();
+            let server = &written["mcpServers"][STATUS_SERVER];
+            assert_eq!(server["alwaysLoad"].as_bool(), always, "{access:?}");
+        }
+    }
+
     #[test]
     fn an_acp_session_on_a_task_gets_the_tasks_home_folder() {
         let dir = tempfile::tempdir().unwrap();
@@ -1108,6 +1222,34 @@ mod tests {
                 .unwrap()
                 .user_hooks_off
         );
+    }
+
+    /// Only a session whose CLI may work on in the background spends where the meter can't
+    /// see it: one in its own workflow, or a build session offered the CLI's own workflows or
+    /// agents with its background on.
+    #[test]
+    fn a_session_spends_unseen_only_where_its_cli_works_in_the_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = spec_in(dir.path(), dir.path(), "hi");
+        assert!(
+            !spends_unseen(&spec),
+            "a reader has no background of its own"
+        );
+        spec.access = Access::Build;
+        assert!(spends_unseen(&spec));
+        spec.cli_workflow.background_off = true;
+        assert!(!spends_unseen(&spec));
+        spec.cli_workflow.background_off = false;
+        spec.native_fanout = NativeFanout::Switch(FanoutSwitch::Off);
+        assert!(!spends_unseen(&spec));
+        spec.native_fanout = NativeFanout::Limit { max: 0 };
+        assert!(!spends_unseen(&spec));
+        spec.native_fanout = NativeFanout::Switch(FanoutSwitch::On);
+        assert!(spends_unseen(&spec));
+        let mut own = spec_in(dir.path(), dir.path(), "hi");
+        own.json_schema = Some(json!({"type": "object"}));
+        own.cli_workflow.ultracode = true;
+        assert!(spends_unseen(&own));
     }
 
     #[test]

@@ -36,7 +36,22 @@ pub struct Picture {
 impl Picture {
     /// `pictures/<name>.txt` and its `.html`, which must hold the same characters.
     pub fn load(name: &str) -> Picture {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/overview/pictures");
+        Self::read(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/overview/pictures"),
+            name,
+        )
+    }
+
+    /// A whole screen's picture in the crate's `golden/`, of which a test compares the rows a
+    /// panel draws.
+    pub fn screen(name: &str) -> Picture {
+        Self::read(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("golden"),
+            name,
+        )
+    }
+
+    fn read(dir: &std::path::Path, name: &str) -> Picture {
         let text = std::fs::read_to_string(dir.join(format!("{name}.txt")))
             .unwrap_or_else(|err| panic!("{name}.txt: {err}"));
         let html = std::fs::read_to_string(dir.join(format!("{name}.html")))

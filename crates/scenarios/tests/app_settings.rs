@@ -26,6 +26,25 @@ struct ArgumentCase {
     value: &'static str,
 }
 
+impl ArgumentCase {
+    /// `/config key value` saves a key of yours at once, to your global file, as Claude Code's
+    /// `/config` does. Every other argument, and a key that changes safety or what the team
+    /// shares, asks where to save it.
+    fn saves_at_once(&self) -> bool {
+        self.line.starts_with("/config ") && !argonauts_core::settings::asks_where(self.key, false)
+    }
+
+    /// The line the change prints: one saved at once says it as Claude Code's `/config` does,
+    /// the key, its value and the file.
+    fn changed_line(&self) -> String {
+        if self.saves_at_once() {
+            format!("⎿  Set {} to", regex::escape(self.key))
+        } else {
+            changed_line(self.key)
+        }
+    }
+}
+
 const ARGUMENT_CASES: [ArgumentCase; 12] = [
     ArgumentCase {
         line: "/model reviewer codex",
@@ -186,7 +205,7 @@ fn changed_line(key: &str) -> String {
         "crew.main" => "⎿  Set model to".to_owned(),
         "roles.main.effort" => "⎿  Set effort to".to_owned(),
         "roles.reviewer.models" => "⎿  Set reviewer's model to".to_owned(),
-        key => format!("● Set {}", regex::escape(key)),
+        key => format!("[●⏺] Set {}", regex::escape(key)),
     }
 }
 
@@ -213,8 +232,10 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
     for case in &ARGUMENT_CASES {
         let before = setting_changes(&scenario)?.len();
         submit(&mut pty, case.line)?;
-        answer_scope(&scenario, &mut pty, 'e', None)
-            .with_context(|| format!("{}:\n{}", case.line, pty.screen().text()))?;
+        if !case.saves_at_once() {
+            answer_scope(&scenario, &mut pty, 'e', None)
+                .with_context(|| format!("{}:\n{}", case.line, pty.screen().text()))?;
+        }
         let (key, value) = next_change(&scenario, &mut pty, before)
             .with_context(|| format!("{}:\n{}", case.line, pty.screen().text()))?;
         assert_eq!(key, case.key, "{}", case.line);
@@ -232,7 +253,7 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
             .unwrap_or_else(|| panic!("{} wasn't written:\n{text}", case.key));
         assert!(same_toml(&entry.value, case.value), "{text}");
         assert!(entry.commented, "{} has no comment:\n{text}", case.key);
-        pty.wait_for(&changed_line(case.key), WAIT)?;
+        pty.wait_for(&case.changed_line(), WAIT)?;
         last.insert(key, value);
     }
 
@@ -243,7 +264,13 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
             .iter()
             .filter(|event| is_picker_for(command)(event))
             .count();
-        submit(&mut pty, &format!("/{command}"))?;
+        // Bare, `/config` opens Claude Code's shorter list on the Config tab; every key, with
+        // its picker, is All settings, which `/config all` opens.
+        let typed = match command {
+            "config" => "/config all".to_owned(),
+            command => format!("/{command}"),
+        };
+        submit(&mut pty, &typed)?;
         // `/limits` opens its tab of the Overview, where the limits are listed under what
         // counts toward them. Enter opens the picked one's picker on its values. The first
         // three limits take an amount; the fourth, what happens when one is reached, has
@@ -352,7 +379,7 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
         );
         // Another value can be the picker's Reset, which reads `● Reset key` for every key.
         pty.wait_for(
-            &format!("{}|● Reset {}", changed_line(&key), regex::escape(&key)),
+            &format!("{}|[●⏺] Reset {}", changed_line(&key), regex::escape(&key)),
             WAIT,
         )?;
         // A full-screen view such as /config stays open after an edit; Esc goes back to the
@@ -542,7 +569,7 @@ fn app_setting_reset_falls_back_a_layer() -> anyhow::Result<()> {
         "{text}"
     );
     assert!(toml_value(&text, "ui.theme").is_some(), "{text}");
-    pty.wait_for(r"● Reset roles\.main\.effort · just you · now", WAIT)?;
+    pty.wait_for(r"[●⏺] Reset roles\.main\.effort · just you · now", WAIT)?;
 
     submit(&mut pty, "/config roles.main.effort --reset")?;
     wait_until("the second reset", || {
@@ -561,7 +588,7 @@ fn app_setting_reset_falls_back_a_layer() -> anyhow::Result<()> {
         "{global}"
     );
     assert!(global.contains(KEPT_COMMENT), "{global}");
-    pty.wait_for(r"● Reset roles\.main\.effort · everywhere · now", WAIT)?;
+    pty.wait_for(r"[●⏺] Reset roles\.main\.effort · everywhere · now", WAIT)?;
     scenario.shot(&pty, "app_setting_reset_falls_back_a_layer")?;
     Ok(())
 }
@@ -695,7 +722,7 @@ fn app_setting_keeps_comments_and_logs_line() -> anyhow::Result<()> {
         .find(|e| e.key == "ui.theme")
         .expect("ui.theme wasn't written");
     assert!(entry.commented, "the new key has no description:\n{text}");
-    pty.wait_for(r#"● Set ui\.theme = "?light"? · everywhere · was"#, WAIT)?;
+    pty.wait_for(r#"[●⏺] Set ui\.theme = "?light"? · everywhere · was"#, WAIT)?;
 
     let run_dir = start_captain(&scenario, &mut pty, requests::SMALL_FIX)?;
     let settings = wait_until("the run's settings", || Ok(run_settings(&run_dir).ok()))?;

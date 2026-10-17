@@ -1,0 +1,15 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Fix the money rounding                                                                                               
+ Captain · Claude Code's workflow fix-money-rounding · Codex reviews, as you asked                9/10 agents · 2m39s 
+ › final: Codex has sent it back 7 times · Haiku 5.5 asks again in final-signoff-money-4                              
+                                                                                                                      
+ ╭ Phases ──────────┬ Final · 7 agents ─────────────────────────────────────────────────────────────────────────────╮ 
+ │   ✔ Build    1/1 │  ✔ review:final           GPT 6 Luna on Codex · 16.8k tok · sent it back · 1 finding       4s │ 
+ │   ✔ Review   2/2 │  ✔ sign-off:money         GPT 6 Luna on Codex · 17.6k tok · sent it back · 1 finding       5s │ 
+ │ ❯ 3 Final    6/7 │  ▸ final-signoff-money    Claude Code's workflow · 2/2 agents                             18s │ 
+ │   4 Merge        │  ▸ final-signoff-money-3  Claude Code's workflow · 2/2 agents                             16s │ 
+ │                  │  ▾ final-signoff-money-4  Claude Code's workflow · 0/1 agents                              3s │ 
+ │                  │    1 Review  0/1                                                                              │ 
+ │                  │      ⏺ review:final-4     GPT 6 Luna on Codex                                              1s │ 
+ │                  │    2 Judge                                                                                    │ 
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 

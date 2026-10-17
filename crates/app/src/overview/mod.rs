@@ -18,6 +18,7 @@ use std::sync::Arc;
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::overview::{ModelTokens, OverviewPeriod};
 use argonauts_core::pricing::{ListPrice, PriceList};
+use argonauts_core::registry::default_run;
 use argonauts_core::settings::endpoints::endpoint_settings;
 use argonauts_core::{NoteLevel, Paths};
 use argonauts_tui::format::WallClock;
@@ -120,7 +121,13 @@ fn price_list(ctx: &Ctx) -> PriceList {
         .chain(settings.endpoints.keys().cloned())
         .filter(|id| endpoint_settings(settings, id).is_some_and(|endpoint| endpoint.local))
         .collect();
-    PriceList::new(yours, public, local)
+    let registry = ctx.services.registry.as_ref();
+    let defaults: Vec<(String, String)> = settings
+        .agents
+        .keys()
+        .filter_map(|cli| Some((cli.clone(), default_run(registry, cli)?)))
+        .collect();
+    PriceList::new(yours, public, local).with_cli_defaults(defaults)
 }
 
 /// Keeps your answer, once.
@@ -144,7 +151,9 @@ pub(crate) fn all_time_models(usage_dir: &Path, lines: &[LedgerLine]) -> Vec<Mod
 
 /// Every line of the usage ledger and the work ledger.
 fn ledgers(paths: &Paths) -> (Vec<LedgerLine>, Vec<crate::work_ledger::WorkLine>) {
-    let lines = UsageLedger::new(paths).read_since(None);
+    let ledger = UsageLedger::new(paths);
+    ledger.rebuilt_once();
+    let lines = ledger.read_since(None);
     let work = WorkLedger::beside(&paths.usage_dir()).read_since(None);
     (lines, work)
 }

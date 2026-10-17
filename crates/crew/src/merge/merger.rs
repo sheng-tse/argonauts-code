@@ -161,6 +161,7 @@ pub async fn resolve_main(
             label: Some(SETTLE_CONFLICT.to_owned()),
             reviews: false,
             fresh: true,
+            independent_of: Vec::new(),
         };
         let end = run(host, plan, &worker).await?;
         if end.reason.is_agent_failure() {
@@ -232,6 +233,7 @@ pub async fn fix_after_main(
             label: Some(fix_after_move(target)),
             reviews: false,
             fresh: true,
+            independent_of: Vec::new(),
         };
         let end = run(host, plan, &worker).await?;
         if !end.reason.is_agent_failure() {

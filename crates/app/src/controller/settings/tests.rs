@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 
 use super::*;
 use crate::app_settings::AppSettings;
-use crate::controller::test_support::{CliOptions, FakeConductor, TestDriver};
+use crate::controller::test_support::{CliOptions, FakeConductor, SET_UP_GLOBAL, TestDriver};
 use crate::controller::{AppServices, Internal, Outbox};
 use crate::env::AppEnv;
 use crate::trace::Trace;
@@ -678,16 +678,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             "\"dark\"",
             Global,
         ),
-        (
-            SlashCommand::Config {
-                key: Some("ui.motion".to_owned()),
-                value: Some("reduced".to_owned()),
-                reset: false,
-            },
-            "ui.motion",
-            "\"reduced\"",
-            Global,
-        ),
     ];
     let mut driver = TestDriver::start_with(cli_options(|repo| {
         std::fs::write(repo.global_config(), GLOBAL_WITH_COMMENTS).unwrap();
@@ -1223,7 +1213,10 @@ async fn vim_is_held_for_the_session_when_the_project_file_sets_it() {
         notice.starts_with("This project's file sets ui.keys"),
         "{notice}"
     );
-    assert!(!driver.repo.global_config().exists());
+    assert_eq!(
+        std::fs::read_to_string(driver.repo.global_config()).unwrap(),
+        SET_UP_GLOBAL
+    );
 
     // The session holds it, and the next toggle still knows the project file is under it.
     slash(&driver, SlashCommand::Vim).await;
@@ -1557,7 +1550,10 @@ async fn a_safety_confirm_declined_changes_nothing() {
         .until(|event| matches!(event, AppEvent::ChoiceClosed { id, .. } if *id == confirm.id))
         .await;
     assert!(matches!(closed, AppEvent::ChoiceClosed { outcome, .. } if outcome == "Not changed."));
-    assert!(!driver.repo.global_config().exists());
+    assert_eq!(
+        std::fs::read_to_string(driver.repo.global_config()).unwrap(),
+        SET_UP_GLOBAL
+    );
 
     // Esc on the scope question closes it the same way.
     slash(
@@ -1745,6 +1741,30 @@ async fn a_command_outside_settings_drops_the_orchestrator_hold() {
     driver.exit().await;
 }
 
+/// With no settings file naming a workflow, Captain runs, and the row Config's Workflow row
+/// reads says so: the default nobody picked, though the settings it runs on are council's.
+#[test]
+fn the_workflow_row_names_captain_when_nothing_names_a_workflow() {
+    let fixture = Fixture::new(false, |_| {});
+    let row = super::rows::row(
+        &fixture.ctx.settings,
+        "workflow".to_owned(),
+        SettingScope::Global,
+    );
+    assert_eq!(row.value, "\"captain\"");
+}
+
+/// Each Config row reads a key the settings have, so no row hides for a misspelled key.
+#[test]
+fn every_config_row_names_a_real_key() {
+    for key in argonauts_tui::overview::config::row_keys() {
+        assert!(
+            argonauts_registry::setting_meta(key).is_some(),
+            "Config names {key}, which no setting is"
+        );
+    }
+}
+
 #[test]
 fn the_orchestrator_pick_carries_the_workflow() {
     let worker: ModelRef = "codex/gpt-5.6".parse().unwrap();
@@ -1839,15 +1859,17 @@ async fn safety_changes_are_refused_without_a_terminal() {
         })
     })
     .await;
+    // A typed `/config key=value` says it as the command's own answer, the rest as a notice.
     let refused = |event: &AppEvent| {
         matches!(
             event,
             AppEvent::Notice { level: NoteLevel::Error, text }
+                | AppEvent::SettingRefused { why: text, .. }
                 if text.contains("needs you at a terminal")
         )
     };
     let refusal = async |driver: &mut TestDriver| match driver.until(refused).await {
-        AppEvent::Notice { text, .. } => text,
+        AppEvent::Notice { text, .. } | AppEvent::SettingRefused { why: text, .. } => text,
         _ => unreachable!(),
     };
 
@@ -1897,7 +1919,10 @@ async fn safety_changes_are_refused_without_a_terminal() {
     .await;
     next_choice(&mut driver, ChoiceKind::SettingScope).await;
     let global = std::fs::read_to_string(driver.repo.global_config()).unwrap();
-    assert_eq!(global, "[sandbox]\nnetwork = true\n");
+    assert_eq!(
+        global,
+        format!("{SET_UP_GLOBAL}[sandbox]\nnetwork = true\n")
+    );
     let events = driver.exit().await;
     assert!(
         !events.iter().any(|event| match event {
@@ -2538,4 +2563,136 @@ async fn agents_lists_the_clis_that_are_not_installed_with_how_to_add_them() {
     };
     assert!(not_installed.is_empty());
     driver.exit().await;
+}
+
+/// `/config key=value` saves a key of yours at once to your global file, as Claude Code's does,
+/// with no question of where.
+#[tokio::test]
+async fn config_saves_a_key_of_yours_at_once() {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
+        std::fs::write(repo.global_config(), GLOBAL_WITH_COMMENTS).unwrap();
+    }))
+    .await;
+    slash(
+        &driver,
+        SlashCommand::Config {
+            key: Some("ui.motion".to_owned()),
+            value: Some("reduced".to_owned()),
+            reset: false,
+        },
+    )
+    .await;
+    let (changed, saved, scope, _, reset) = next_change(&mut driver).await;
+    assert_eq!(
+        (changed.as_str(), saved.as_str(), scope, reset),
+        ("ui.motion", "\"reduced\"", SettingScope::Global, false)
+    );
+    let text = std::fs::read_to_string(driver.repo.global_config()).unwrap();
+    assert!(text.contains("motion = \"reduced\""), "{text}");
+}
+
+/// `/config key=value` that can't be saved says why as the command's own answer, which the
+/// screen prints under the command and the conversation's record keeps there, and saves
+/// nothing.
+#[tokio::test]
+async fn config_answers_a_value_it_cant_save_with_why() {
+    let mut driver = TestDriver::start_with(cli_options(|_| {})).await;
+    for (key, value, why) in [
+        (
+            "ui.tips",
+            "maybe",
+            "ui.tips takes true, false, not \"maybe\"",
+        ),
+        (
+            "approvals.start_mode",
+            "sometimes",
+            "approvals.start_mode takes ",
+        ),
+        (
+            "no.such.key",
+            "1",
+            "no.such.key isn't a setting; /config lists them",
+        ),
+    ] {
+        slash(
+            &driver,
+            SlashCommand::Config {
+                key: Some(key.to_owned()),
+                value: Some(value.to_owned()),
+                reset: false,
+            },
+        )
+        .await;
+        let refused = driver
+            .until(|event| matches!(event, AppEvent::SettingRefused { .. }))
+            .await;
+        let AppEvent::SettingRefused {
+            key: said,
+            why: text,
+        } = refused
+        else {
+            unreachable!()
+        };
+        assert_eq!(said, key);
+        assert!(text.starts_with(why), "{text}");
+        let noticed = driver
+            .seen()
+            .iter()
+            .any(|event| matches!(event, AppEvent::Notice { text: n, .. } if *n == text));
+        assert!(!noticed, "said once, as the command's answer: {text}");
+    }
+    let text = std::fs::read_to_string(driver.repo.global_config()).unwrap();
+    for left_out in ["maybe", "sometimes", "no.such", "[no]"] {
+        assert!(!text.contains(left_out), "{text}");
+    }
+}
+
+#[tokio::test]
+async fn config_says_who_holds_a_key_of_yours_and_changes_nothing() {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
+        repo.write(".argonauts/config.toml", "[ui]\nrecaps = false\n")
+            .unwrap();
+    }))
+    .await;
+    slash(
+        &driver,
+        SlashCommand::Config {
+            key: Some("ui.recaps".to_owned()),
+            value: Some("true".to_owned()),
+            reset: false,
+        },
+    )
+    .await;
+    let said = next_notice(&mut driver).await;
+    assert!(
+        said.starts_with("ui.recaps is set by the project's .argonauts/config.toml"),
+        "{said}"
+    );
+}
+
+/// `/config all` lists every key in All settings, as `/config <key>` lists those under one.
+#[tokio::test]
+async fn config_all_lists_every_key() {
+    let mut driver = TestDriver::start_with(cli_options(|_| {})).await;
+    slash(
+        &driver,
+        SlashCommand::Config {
+            key: Some("all".to_owned()),
+            value: None,
+            reset: false,
+        },
+    )
+    .await;
+    let ViewData::Settings {
+        rows,
+        command,
+        section,
+        ..
+    } = next_view(&mut driver).await
+    else {
+        panic!("All settings");
+    };
+    assert_eq!((command.as_deref(), section), (Some("config"), None));
+    assert!(rows.len() > 400, "{}", rows.len());
+    assert!(rows.iter().any(|row| row.key == "approvals.start_mode"));
 }

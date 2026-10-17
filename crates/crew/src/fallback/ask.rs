@@ -15,7 +15,6 @@ use argonauts_core::events::task::TaskState;
 use argonauts_core::limits::{HealthState, ModelHealth, ModelState, Trouble};
 use argonauts_core::names::{AgentId, RoleName};
 use argonauts_core::policy::EvidenceFacts;
-use argonauts_core::{Note, NoteLevel};
 
 use crate::approvals::options::{self, FallbackCause};
 use crate::approvals::{self, ApprovalRequest, autopilot};
@@ -30,13 +29,13 @@ use crate::task::support::newest_worker_session;
 use crate::task::{pipeline, take_over};
 
 /// Opens the fallback question and acts on your answer. Autopilot never asks: with nobody to take
-/// the task, it waits for its agent and tries again on its own.
+/// the task, the run stops until you carry it on.
 pub async fn ask(host: &Host, task: &TaskId, plan: FallbackPlan) -> EngineResult<()> {
     if agent_down(host, task, &plan).await? == Asked::Settled {
         return Ok(());
     }
     if plan.candidates.is_empty() && autopilot::applies_now(host, ApprovalKind::Fallback) {
-        return wait_to_retry(host, task, &plan).await;
+        return stop_the_run(host, task, &plan).await;
     }
     per_task(host, task, plan).await
 }
@@ -174,7 +173,7 @@ async fn agent_down(host: &Host, task: &TaskId, plan: &FallbackPlan) -> EngineRe
         at: host.read(rules::current_step),
         kind: ApprovalKind::AgentDown,
         title: format!(
-            "{} is down · {} paused",
+            "{} is down · {} waits for it",
             DisplayNames::default().cli(&agent_id.0),
             plan.title.trim()
         ),
@@ -259,10 +258,10 @@ pub(super) fn models_out(models: &[ModelHealth]) -> Option<String> {
     (!out.is_empty()).then(|| out.join(", "))
 }
 
-/// Autopilot, and nobody may take the task: it waits for its agent, until the reset when one
-/// is known, else for a retry after a wait that grows with each, and one line says why and what
-/// fixes it.
-async fn wait_to_retry(host: &Host, task: &TaskId, plan: &FallbackPlan) -> EngineResult<()> {
+/// Autopilot, and nobody may take the task: the run stops fully, its work kept, as a step's
+/// job nobody can take stops it. Waiting can't bring a login or a model back, and only
+/// `/resume` carries the run on.
+async fn stop_the_run(host: &Host, task: &TaskId, plan: &FallbackPlan) -> EngineResult<()> {
     let ended = ended(host, task);
     let stopped = display_name(&plan.stopped);
     let logged_out = says_logged_out(host, task, plan).await;
@@ -275,7 +274,9 @@ async fn wait_to_retry(host: &Host, task: &TaskId, plan: &FallbackPlan) -> Engin
             )
         },
     );
-    let stall = Stall {
+    let (job, tried) =
+        job_fallback::stalled_task(host, &plan.title, &plan.stopped, ended.as_ref(), logged_out);
+    Err(EngineError::Stalled(Box::new(Stall {
         detail: format!("nobody to fall back to for {}", plan.title.trim()),
         line: format!(
             "Nobody to fall back to from {stopped} for \"{}\": {why}, and no other agent can \
@@ -289,22 +290,12 @@ async fn wait_to_retry(host: &Host, task: &TaskId, plan: &FallbackPlan) -> Engin
         },
         resets_at: plan.resets_at,
         kept: None,
-    };
-    let waits = host.read(|state| state.tasks.progress(task).agent_waits);
-    let retry = job_fallback::retry_after(host.settings(), waits);
-    let until = plan
-        .resets_at
-        .or_else(|| retry.map(|retry| host.now() + retry));
-    let line = job_fallback::wait_line(&stall, retry.filter(|_| plan.resets_at.is_none()));
-    host.record(
-        Some(task),
-        None,
-        RunEventKind::Note(Note {
-            level: NoteLevel::Warn,
-            text: line,
-        }),
-    )?;
-    wait(host, task, plan.stopped.agent_id(), until, None)
+        job,
+        tried,
+        in_step: Vec::new(),
+        stop: None,
+        beside: None,
+    })))
 }
 
 /// When a task with no reset to wait for tries again: after the breaker's cool-down, doubled for

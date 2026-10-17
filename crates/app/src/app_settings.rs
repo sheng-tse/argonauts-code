@@ -7,7 +7,7 @@ use argonauts_core::app::ConfigEntry;
 use argonauts_core::settings::layer;
 use argonauts_core::settings::{FILE_LAYERS, Settings};
 use argonauts_registry::clis::agents_turned_on;
-use argonauts_registry::{ResolvedSettings, SettingsError, SettingsSources, resolve};
+use argonauts_registry::{ResolvedSettings, SettingsError, SettingsSources, WarningAbout, resolve};
 use tokio::sync::watch;
 
 use crate::env::AppEnv;
@@ -173,12 +173,10 @@ impl AppSettings {
 
     /// The first key at or under one of `keys` that the last resolve ignored as unknown.
     pub(crate) fn unknown_among(&self, keys: &[String]) -> Option<String> {
-        // `resolve` reports these only as warnings, "unknown setting <key> in the <layer> ...".
         self.resolved.warnings.iter().find_map(|warning| {
-            let key = warning
-                .strip_prefix("unknown setting ")?
-                .split(' ')
-                .next()?;
+            let WarningAbout::Unknown { key } = &warning.about else {
+                return None;
+            };
             keys.iter()
                 .any(|written| {
                     key == written
@@ -309,5 +307,6 @@ pub(crate) fn sources(
         waiting: argonauts_crew::prompts::trust::waiting(&env.repo_root, &env.state_dir)
             .all()
             .collect(),
+        home: env.user_home.clone(),
     }
 }

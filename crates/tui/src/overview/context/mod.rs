@@ -31,7 +31,7 @@ use time::OffsetDateTime;
 
 use self::crew::Crew;
 use self::place::{Columns, at, ending, place};
-use self::usage::{Title, bold, level_role, tinted};
+use self::usage::{Title, bold, level_role};
 use super::shades::ModelColors;
 use crate::bridge::tools::Places;
 use crate::format;
@@ -207,7 +207,7 @@ impl ContextTab<'_> {
         };
         let own = self.model_style(kit, &row.worker);
         let level = crew::row_level(row);
-        let mut totals = vec![tinted(kit, crew::used_of(row), None), kit.dim(" tokens")];
+        let mut totals = vec![Span::styled(crew::used_of(row), own), kit.dim(" tokens")];
         if let Some(percent) = crew::percent(row) {
             totals.push(kit.dim(" ("));
             totals.push(match level_role(level) {
@@ -234,8 +234,13 @@ impl ContextTab<'_> {
             under.extend(afresh);
             under.push(Span::raw("   "));
         }
-        let room = columns.width.saturating_sub(indent + spans_width(&under));
-        under.extend(crew::filled_with(kit, row, self.names, room));
+        match &row.recorded {
+            Some(recorded) => under.push(kit.dim(words::as_left(recorded, &row.spent, self.now))),
+            None => {
+                let room = columns.width.saturating_sub(indent + spans_width(&under));
+                under.extend(crew::filled_with(kit, row, self.names, room));
+            }
+        }
         drawn.push(place([at(indent, under)]));
         drawn
     }

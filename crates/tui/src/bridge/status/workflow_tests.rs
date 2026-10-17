@@ -145,3 +145,73 @@ fn the_line_reads_as_its_picture_while_the_script_is_written() {
     assert_eq!(after, ")", "{drawn}");
     picture.assert_cells(5, 0..wanted.chars().count(), &buf, 0);
 }
+
+/// A Captain task whose agent's turn is over while the workflows its CLI started go on: the
+/// line under the conversation says it waits for them, dim and still, in the words of the
+/// picture's row under the two Workflow calls. Claude Code's own turn end says "dynamic
+/// workflow" and counts the session's background agents as well; the line keeps the picture's
+/// words and counts the workflows. The agent's next turn brings the working line back.
+#[test]
+fn a_task_whose_workflows_go_on_after_its_turn_waits_for_them() {
+    use argonauts_core::app::AppMode;
+    use serde_json::json;
+
+    use crate::views::waiting::fixture::{RunLog, run_id};
+
+    let mut picture = picture!("nested_captain_second");
+    // The input's rules keep their own grey, a step brighter than the picture's.
+    let rule = dark().style(crate::theme::Role::Rule).fg;
+    for row in [9, 11] {
+        for column in 0..118 {
+            picture.recolour(row, column, rule);
+        }
+    }
+    let mut log = RunLog::started_as("captain");
+    log.state.mode = Some(AppMode::Working { run: run_id() });
+    log.workflow("wf-001");
+    log.worker("s-001");
+    let workflow = |status: &str| {
+        json!({"type": "agent", "data": {"type": "workflow", "workflow": {
+            "id": "wf_2", "name": "final-signoff-money", "description": "",
+            "phases": [{"index": 1, "title": "Final"}], "agents": [], "status": status,
+            "tokens": 0, "tool_calls": 0, "duration_ms": 0}}})
+    };
+    log.send(Some("s-001"), workflow("running"));
+    log.send(
+        Some("s-001"),
+        json!({"type": "agent", "data": {"type": "result", "text": "Waiting for it.",
+            "structured": null, "is_error": false}}),
+    );
+
+    let mut bottom = BottomState::new();
+    let now = Instant::now();
+    sync_working(&log.state, &mut bottom, || "Rowing", now);
+    assert!(bottom.working.is_none(), "{:?}", bottom.working);
+    assert_eq!(
+        bottom.waits_for.as_deref(),
+        Some("Waiting for 1 workflow to finish")
+    );
+    // The run's row under the input, so the hint line names its key, and the picture's mode.
+    bottom.workflows.rows =
+        super::super::panel::run_rows(&log.state, time::OffsetDateTime::now_utc(), now);
+    bottom.mode.approval = crate::bottom::ApprovalMode::Auto;
+    let theme = dark();
+    let ctx = RenderCtx::new(118, &theme, Clock::still(now));
+    let lines = bottom.render(&ctx).lines;
+    // The agent's work goes on, so the input offers no example and the hint line no shortcuts.
+    picture.assert_drawn(7..13, &buffer_of(&lines[..6], 118), 0);
+
+    // The workflow ends and the agent goes on with its turn: the run's own line is back.
+    log.send(Some("s-001"), workflow("done"));
+    log.send(
+        Some("s-001"),
+        json!({"type": "agent", "data": {"type": "text_delta", "text": "It passed.",
+            "parent": null}}),
+    );
+    sync_working(&log.state, &mut bottom, || "Rowing", now);
+    assert_eq!(bottom.waits_for, None);
+    assert_eq!(
+        bottom.working.as_ref().map(|line| line.verb.as_str()),
+        Some("Rowing")
+    );
+}

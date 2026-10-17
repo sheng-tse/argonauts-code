@@ -105,6 +105,8 @@ pub enum ApprovalPacket {
     TakeOverReturn(TakeOverReturnPacket),
     Question(QuestionPacket),
     OriginalReturned(OriginalReturnedPacket),
+    /// Whether a CLI already at work in a step may take a job of it nothing else can.
+    SecondAgent(SecondAgentPacket),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -238,6 +240,22 @@ pub struct MergeRow {
     /// your `Merge`. The question then also offers `Wait` (w) and `UpgradeReview` (a).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub debt: Vec<QualityDebt>,
+    /// What the task's agent asked you that nothing waited on, or that was answered in your
+    /// place, so the merge question shows it beside the task.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<MergeQuestion>,
+}
+
+/// A question a task's agent asked you, as the merge question carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeQuestion {
+    pub text: String,
+    /// The answer given in your place; `None` while the question is still open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    /// The model that answered, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_by: Option<ModelRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -333,6 +351,18 @@ pub struct OriginalReturnedPacket {
     /// Whether the checks passed on the latest commit, when they ran.
     pub tests_passed: Option<bool>,
     pub debt: Vec<QualityDebt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SecondAgentPacket {
+    /// The job, by the label a workflow gave it: `propose:p3`.
+    pub job: String,
+    /// The model it was asked of, which nothing else could take it from.
+    pub stopped: ModelRef,
+    /// The other model of a CLI at work in the step that would take it.
+    pub taker: ModelRef,
+    /// Why, and what happens either way, as the question reads.
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

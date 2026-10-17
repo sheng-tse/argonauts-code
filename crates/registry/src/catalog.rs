@@ -146,6 +146,12 @@ const FALLBACK: &[(&str, &str, Choices)] = &[
         Choices::Bool,
     ),
     (
+        "same_step",
+        "When nothing else can take a job of a step, whether another model of a CLI already \
+         at work in it may: ask, allow, or never, when the run stops instead",
+        Choices::Words(&["ask", "allow", "never"]),
+    ),
+    (
         "retry.tries",
         "How many times the same model tries again before any fallback. 0 falls back at once",
         Choices::Any,
@@ -1164,8 +1170,8 @@ fn later_keys() -> Vec<SettingMeta> {
         ),
         meta(
             "workflows.max_depth",
-            "How deep workflows may nest, at most 2: with 2 a workflow's script may run another \
-             as a step, and with 1 none may",
+            "How many levels of workflows a run may hold inside its own, at most 2: with 1 a \
+             workflow's script may run another as a step, and with 0 none may",
             &[],
         ),
         meta(
@@ -1634,6 +1640,7 @@ mod tests {
             "fallback.unknown_tier",
             "fallback.max_fallbacks",
             "fallback.same_cli",
+            "fallback.same_step",
             "fallback.retry.tries",
             "fallback.retry.wait",
             "fallback.retry.backoff",

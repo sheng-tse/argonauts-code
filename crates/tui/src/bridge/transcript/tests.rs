@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use argonauts_core::api::{RunState as RunStatus, RunSummary};
-use argonauts_core::app::{AppEvent, ConversationEvent, ReplayTurn, TurnReply};
+use argonauts_core::app::{AppEvent, ConversationEvent, TurnReply};
 use argonauts_core::events::RunReviewEvent;
 use argonauts_core::events::run::{
     ChangedFile, CheckLine, ClosingAnswer, Party, PhaseChange, RunLifecycle, RunMode, RunOutcome,
@@ -224,7 +224,7 @@ fn conversation_turn(n: u32, question: &str, answer: &str) -> Vec<AppEvent> {
 }
 
 #[test]
-fn replay_prints_summaries_only() {
+fn an_attached_runs_history_only_joins_ctrl_o() {
     let mut driver = TestDriver::new();
     driver.send(AppEvent::Attached {
         summary: RunSummary {
@@ -241,6 +241,7 @@ fn replay_prints_summaries_only() {
             live: false,
             remind: false,
             name: None,
+            shape_known: true,
         },
         started_here: false,
     });
@@ -258,75 +259,57 @@ fn replay_prints_summaries_only() {
     assert!(kept > 800, "every replayed item stays for Ctrl+O: {kept}");
     assert_eq!(driver.printed(), "", "nothing prints while the run replays");
 
-    driver.send(AppEvent::CondensedReplay {
-        run: run_id(),
-        turns: vec![
-            ReplayTurn {
-                from: Party::User,
-                text: "add a --json flag".into(),
-                steps: Vec::new(),
-            },
-            ReplayTurn {
-                from: Party::Agent {
-                    session: argonauts_core::names::SessionKey::parse("s-1")
-                        .expect("a valid session key"),
-                    worker: ModelRef::new("claude-code", Some("opus".into())),
-                },
-                text: "I'll run it with the crew.".into(),
-                steps: Vec::new(),
-            },
-        ],
-        milestones: vec!["Goal approved · 3 criteria".into(), "Plan drafted".into()],
-        recap: "The plan waits for you.".into(),
-        recap_model: None,
-    });
     driver.send(AppEvent::ReplayDone {
         run: run_id(),
         seq: 1_200,
     });
-    let printed = driver.printed();
     assert_eq!(
-        printed,
-        "● Add a --json flag\n  ⎿  Waiting · plan approval, waiting for you · $0.00 spent · 2 sessions to\n     resume\n     ctrl+o shows the whole history\n\n❯ add a --json flag\n\n● I'll run it with the crew.\n\n● So far in this run\n  ⎿  Goal approved · 3 criteria\n     Plan drafted\n\n※ recap: The plan waits for you. (disable recaps in /config)"
+        driver.printed(),
+        "",
+        "what the run did before is on screen already, so nothing sums it up"
     );
-    assert!(!printed.contains("replayed note"));
-    assert!(driver.model.history.cells().len() > kept);
 
     // Live events print again.
     driver.send(paused());
-    assert!(driver.printed().contains("Paused the run"));
+    assert!(driver.printed().contains("You paused the run"));
 }
 
-/// A run with nobody to fall back to for a job says so, not that every agent is out, and
-/// promises to go on by itself only when a retry is set.
+/// A run that nothing can carry on says it stopped and how to carry it on, and never that it
+/// tries again by itself. An older run that waited on a timer instead shows the wait it made.
 #[test]
-fn a_wait_with_nobody_to_fall_back_to_says_so_and_when_it_tries_again() {
+fn a_run_with_nobody_to_fall_back_to_says_it_stopped() {
     let waiting = |until| {
         run_event(RunEventKind::Run(RunLifecycle::Waiting {
             reason: WaitReason::NoFallback {
                 detail: "nobody to fall back to as the main agent".into(),
                 until,
+                stop: None,
             },
             waiting_on: Vec::new(),
         }))
     };
     let mut driver = TestDriver::new();
     driver.send(started());
-    driver.send(waiting(Some(datetime!(2026-09-30 10:47 UTC))));
-    let retrying = driver.printed();
-    assert!(
-        retrying.contains("The run waits · nobody to fall back to as the main agent"),
-        "{retrying}"
-    );
-    assert!(retrying.contains("It tries again at "), "{retrying}");
-    assert!(retrying.contains("· /resume tries now"), "{retrying}");
-    assert!(!retrying.contains("every agent is out"), "{retrying}");
-    assert!(!retrying.contains("when one is back"), "{retrying}");
-
     driver.send(waiting(None));
-    let given_up = driver.printed();
-    assert!(given_up.contains("/resume tries again"), "{given_up}");
-    assert!(!given_up.contains("tries again at"), "{given_up}");
+    let stopped = driver.printed();
+    assert!(
+        stopped.contains("The run stopped · nobody to fall back to as the main agent"),
+        "{stopped}"
+    );
+    assert!(stopped.contains("/resume carries the run on"), "{stopped}");
+    assert!(!stopped.contains("tries again"), "{stopped}");
+    assert!(!stopped.contains("every agent is out"), "{stopped}");
+
+    let mut older = TestDriver::new();
+    older.send(started());
+    older.send(waiting(Some(datetime!(2026-09-30 10:47 UTC))));
+    let waited = older.printed();
+    assert!(
+        waited
+            .contains("The run waits · nothing could take a job the run needs · it tries again at"),
+        "{waited}"
+    );
+    assert!(!waited.contains("The run stopped"), "{waited}");
 }
 
 fn running_summary() -> RunSummary {
@@ -344,6 +327,7 @@ fn running_summary() -> RunSummary {
         live: true,
         remind: false,
         name: None,
+        shape_known: true,
     }
 }
 
@@ -361,7 +345,7 @@ fn a_run_started_here_prints_no_header() {
     // The prompt that started it is right above, so a `● <title>` row would only repeat it.
     assert_eq!(driver.printed().trim(), "");
 
-    // A run opened again with no history still gets its header.
+    // Nor does a run opened again: what it did is on screen already, drawn from its record.
     driver.send(AppEvent::Attached {
         summary: running_summary(),
         started_here: false,
@@ -370,11 +354,7 @@ fn a_run_started_here_prints_no_header() {
         run: run_id(),
         seq: 0,
     });
-    assert!(
-        driver
-            .printed()
-            .starts_with("● Add a --json flag\n  ⎿  Running · working · $0.00 spent"),
-    );
+    assert_eq!(driver.printed().trim(), "");
 }
 
 #[test]
@@ -866,7 +846,7 @@ fn quiet_shows_milestones_only() {
         quiet.send(event);
     }
     let printed = quiet.printed();
-    for shown in ["Checks(tests)", "Paused the run", "❯ hi", "Hello."] {
+    for shown in ["Checks(tests)", "You paused the run", "❯ hi", "Hello."] {
         assert!(printed.contains(shown), "{shown} missing from:\n{printed}");
     }
     for hidden in ["Worktree ready", "narrator:", "recap:", "Read 1 file"] {
@@ -1711,6 +1691,7 @@ fn merge_opened(tasks: usize, combined: argonauts_core::DiffStat) -> AppEvent {
             checks_passed: true,
             review: None,
             debt: Vec::new(),
+            questions: Vec::new(),
         })
         .collect();
     let packet = MergePacket {
@@ -2039,7 +2020,7 @@ fn a_crew_workflow_prints_its_start_and_its_end() {
         detail: None,
     })));
     let printed = driver.printed();
-    let call = "● Workflow(fix-slugify-median · council workflow)\n";
+    let call = "● Workflow(Fix slugify median · Council)\n";
     assert!(
         printed.contains(&format!(
             "{call}  ⎿  Running in background · /workflows to monitor and save"
@@ -2178,8 +2159,8 @@ fn a_workflow_ends_as_its_run_did() {
     }
 }
 
-/// A failed run is one block: the failure in one plain line under "The run failed", with its
-/// time and spend on the same row, and never the failure again in the run's last word.
+/// A failed run is one block: "The run ended" and the failure in one plain line, and never
+/// the failure again in the run's last word.
 #[test]
 fn a_failed_run_says_what_failed_once() {
     let mut driver = crew_workflow_driver();
@@ -2200,7 +2181,9 @@ fn a_failed_run_says_what_failed_once() {
         detail: Some(git.into()),
     })));
     let printed = driver.printed();
-    assert_eq!(printed.matches("The run failed").count(), 1, "{printed}");
+    assert_eq!(printed.matches("The run ended · ").count(), 1, "{printed}");
+    // The run's last word says no more than the line.
+    assert!(!printed.contains("The run failed"), "{printed}");
     assert_eq!(
         printed.matches("are ignored by one of your").count(),
         1,
@@ -2248,6 +2231,49 @@ fn a_failed_run_that_said_it_all_has_no_raw_hint() {
     assert!(printed.contains("the merge was refused"), "{printed}");
     assert!(!printed.contains("r shows"), "{printed}");
     assert_eq!(driver.model.raw_failure, None);
+}
+
+/// A run that ended without merging says why on its line, what held it under that, and that
+/// its work waits for `/resume`. In a folder without git it has no branch to keep.
+#[test]
+fn a_run_that_ended_without_merging_says_why_and_how_to_carry_it_on() {
+    let detail = "Nothing was merged: build:fix-the-money stopped before its checks passed\n\
+                  it was blocked on a question";
+    let finished = || {
+        run_event(RunEventKind::Run(RunLifecycle::Finished {
+            outcome: RunOutcome::Failed,
+            detail: Some(detail.into()),
+        }))
+    };
+    let mut driver = crew_workflow_driver();
+    driver.send(finished());
+    let printed = driver.printed_at(118);
+    assert!(
+        printed.contains(
+            "● The run ended · Nothing was merged: build:fix-the-money stopped before its checks \
+             passed\n  ⎿  it was blocked on a question · the branch is kept · /resume carries it on"
+        ),
+        "{printed}"
+    );
+    // Both lines are all it said, so nothing waits behind `r`.
+    assert_eq!(driver.model.raw_failure, None);
+
+    let mut driver = TestDriver::new();
+    if let AppEvent::Run { event } = &mut started()
+        && let RunEventKind::Run(RunLifecycle::Started(started)) = &mut event.kind
+    {
+        started.base_branch = Some(argonauts_core::hidden_git::BRANCH.into());
+        driver.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+            started.clone(),
+        ))));
+    }
+    driver.send(finished());
+    let printed = driver.printed_at(118);
+    assert!(
+        printed.contains("⎿  it was blocked on a question · the work is kept · /resume"),
+        "{printed}"
+    );
+    assert!(!printed.contains("branch"), "{printed}");
 }
 
 /// A crew run whose request named who orchestrates and who reviews: one quiet item says what
@@ -2350,13 +2376,13 @@ fn a_run_as_you_asked_says_so_then_prints_its_workflow_then_its_closing_answer()
     };
     let order = [
         at("As you asked: Codex orchestrates · Claude Code reviews"),
-        at("● Workflow(add-due-dates · orchestrator workflow)\n  ⎿  Running in background"),
-        at("● Workflow(add-due-dates · orchestrator workflow)\n  ⎿  ✔ Completed in"),
+        at("● Workflow(Add due dates · orchestrator workflow)\n  ⎿  Running in background"),
+        at("● Workflow(Add due dates · orchestrator workflow)\n  ⎿  ✔ Completed in"),
         at("Merged the run"),
         at("● Fixed parse()"),
     ];
     assert!(order.is_sorted(), "{order:?}\n{printed}");
-    assert_eq!(printed.matches("● Workflow(add-due-dates · ").count(), 2);
+    assert_eq!(printed.matches("● Workflow(Add due dates · ").count(), 2);
 }
 
 /// A run whose request said how to run it, with a long instruction
@@ -2893,17 +2919,68 @@ fn a_workflow_a_step_runs_prints_once_it_reports() {
     driver.send(run_event(report_of(&id, &titles)));
     let printed = driver.printed_at(100);
     assert_eq!(
-        printed.matches("Workflow(switch-reads)").count(),
+        printed.matches("Workflow(Switch reads)").count(),
         1,
         "{printed}"
     );
     assert!(
         printed.contains(
-            "● Workflow(switch-reads)\n  ⎿  Running in background · /workflows to monitor and save"
+            "● Workflow(Switch reads)\n  ⎿  Running in background · /workflows to monitor and save"
         ),
         "{printed}"
     );
     assert!(!printed.contains("Shelf 1"), "{printed}");
+}
+
+/// On Claude Code's own path no script reports: the task's session reports Claude Code's own
+/// workflow, and its first report with phases prints the start item then, not at the run's end.
+#[test]
+fn a_workflow_claude_code_runs_for_the_task_prints_once_its_phases_are_known() {
+    use argonauts_core::AgentEvent;
+    use argonauts_core::names::{RoleName, SessionKey};
+
+    let (mut driver, id) = handed_over_driver();
+    let host = SessionKey::numbered(1);
+    let mut session = crate::state::SessionState::new(
+        host.clone(),
+        "claude-code/haiku".parse().unwrap(),
+        "claude-code",
+        RoleName::Worker,
+        datetime!(2026-09-30 10:00 UTC),
+    );
+    session.task = Some(task_id());
+    let run = driver.state.runs.get_mut(&run_id()).unwrap();
+    run.session_order.push(host.clone());
+    run.sessions.insert(host.clone(), session);
+    let reported = |phases: &[&str]| {
+        let RunEventKind::Workflow(argonauts_core::events::workflow::WorkflowEvent::Reported(
+            report,
+        )) = report_of(&id, phases)
+        else {
+            unreachable!()
+        };
+        let mut event = run_event(RunEventKind::Agent(AgentEvent::Workflow {
+            workflow: Box::new(report.workflow),
+        }));
+        if let AppEvent::Run { event } = &mut event {
+            event.session = Some(host.clone());
+        }
+        event
+    };
+    driver.send(reported(&[]));
+    assert!(
+        !driver.printed().contains("Workflow("),
+        "{}",
+        driver.printed()
+    );
+    driver.send(reported(&["Build", "Review", "Final"]));
+    driver.send(reported(&["Build", "Review", "Final"]));
+    let printed = driver.printed_at(100);
+    assert_eq!(
+        printed.matches("Workflow(Switch reads · Captain)").count(),
+        1,
+        "{printed}"
+    );
 }
 
 /// The size your request asked for, which the orchestrator keeps to, is the first line under
@@ -2921,7 +2998,7 @@ fn the_size_you_asked_for_is_said_under_the_workflows_row() {
     let printed = driver.printed_at(100);
     assert!(
         printed.contains(
-            "● Workflow(switch-reads)\n  ⎿  Running in background · /workflows to monitor and save\n     \
+            "● Workflow(Switch reads)\n  ⎿  Running in background · /workflows to monitor and save\n     \
              As you asked: a small workflow, 5 agents at most"
         ),
         "{printed}"
@@ -2936,7 +3013,7 @@ fn a_workflow_of_one_phase_or_none_reported_still_prints_its_start() {
     driver.send(run_event(report_of(&id, &["Sort the boxes"])));
     let printed = driver.printed_at(100);
     assert!(
-        printed.contains("● Workflow(switch-reads)\n  ⎿  Running in background"),
+        printed.contains("● Workflow(Switch reads)\n  ⎿  Running in background"),
         "{printed}"
     );
 
@@ -2946,10 +3023,10 @@ fn a_workflow_of_one_phase_or_none_reported_still_prints_its_start() {
         detail: None,
     })));
     let printed = driver.printed_at(100);
-    let start = printed.find("● Workflow(switch-reads)\n").expect(&printed);
+    let start = printed.find("● Workflow(Switch reads)\n").expect(&printed);
     // A failed run is one block: no second row for its workflow.
     assert_eq!(
-        printed.matches("Workflow(switch-reads)").count(),
+        printed.matches("Workflow(Switch reads)").count(),
         1,
         "{printed}"
     );

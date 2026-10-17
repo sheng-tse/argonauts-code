@@ -214,6 +214,9 @@ impl Parser {
             "index ",
             "similarity index ",
             "dissimilarity index ",
+            // `git show --remerge-diff` names the conflict a merge settled, as in
+            // `remerge CONFLICT (content): Merge conflict in src/lib.rs`.
+            "remerge ",
         ]
         .iter()
         .any(|header| line.starts_with(header))

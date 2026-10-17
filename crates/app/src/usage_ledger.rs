@@ -13,6 +13,7 @@ use argonauts_core::api::{
 };
 use argonauts_core::events::RunEvent;
 use argonauts_core::limits::PlanUsageReading;
+use argonauts_core::model_catalog::ModelCatalog;
 use argonauts_core::names::ModelRef;
 use argonauts_core::settings::periods::WeekStart;
 use argonauts_core::{Paths, RunId, Spend, create_private_dir_all};
@@ -22,6 +23,8 @@ use time::{Date, Duration, OffsetDateTime};
 
 use crate::views::sessions::{RunFacts, add_spend};
 use crate::work_ledger::{self, WorkLedger};
+
+mod rebuild;
 
 /// The history card's days.
 const HISTORY_DAYS: i64 = 14;
@@ -121,12 +124,18 @@ impl LedgerLine {
 
 pub(crate) struct UsageLedger {
     dir: PathBuf,
+    /// Where the runs' own logs are, which the ledgers are rebuilt from once.
+    state: PathBuf,
+    /// What files each line's model under one spelling, as the work ledger files it.
+    catalog: &'static ModelCatalog,
 }
 
 impl UsageLedger {
     pub fn new(paths: &Paths) -> Self {
         Self {
             dir: paths.usage_dir(),
+            state: paths.home().join("state"),
+            catalog: argonauts_registry::models::shipped_catalog(),
         }
     }
 
@@ -142,7 +151,8 @@ impl UsageLedger {
         if spent.total_tokens() == 0 && spent.cost_usd == 0.0 {
             return;
         }
-        let mut line = LedgerLine::new(local_day(at), repo, None, worker, spent).at_hour(at);
+        let worker = work_ledger::filed_as(self.catalog, worker);
+        let mut line = LedgerLine::new(local_day(at), repo, None, &worker, spent).at_hour(at);
         line.conversation = turn.conversation.map(str::to_owned);
         line.took = turn.took;
         if let Err(err) = self.append(&[line]) {
@@ -161,23 +171,34 @@ impl UsageLedger {
         {
             return;
         }
-        let mut by_worker: BTreeMap<(String, Option<String>), (ModelRef, Spend)> = BTreeMap::new();
-        for session in RunFacts::of(events).sessions {
-            let key = (session.worker.agent.clone(), session.worker.model.clone());
-            let (_, spent) = by_worker
-                .entry(key)
-                .or_insert_with(|| (session.worker.clone(), Spend::default()));
-            add_spend(spent, &session.spent());
-        }
-        let lines: Vec<LedgerLine> = by_worker
-            .values()
-            .filter(|(_, spent)| spent.total_tokens() > 0 || spent.cost_usd > 0.0)
-            .map(|(worker, spent)| LedgerLine::new(day, repo, Some(run), worker, spent).at_hour(at))
-            .collect();
+        let lines = self.lines_of(repo, run, events, at);
         if let Err(err) = self.append(&lines) {
             tracing::warn!("couldn't add run {run} to the usage ledger: {err}");
         }
         WorkLedger::beside(&self.dir).run_ended(repo, run, events, at);
+    }
+
+    /// A run's lines from its log, ended at `at`: one for each model it ran, filed under the
+    /// model as the work ledger files its sessions.
+    pub(crate) fn lines_of(
+        &self,
+        repo: &Path,
+        run: &RunId,
+        events: &[RunEvent],
+        at: OffsetDateTime,
+    ) -> Vec<LedgerLine> {
+        let reported = work_ledger::Reported::of(events);
+        let mut by_worker: BTreeMap<ModelRef, Spend> = BTreeMap::new();
+        for (started, session) in RunFacts::of(events).sessions.iter().enumerate() {
+            let worker = work_ledger::filed_as(self.catalog, &reported.ran(started, session));
+            add_spend(by_worker.entry(worker).or_default(), &session.spent());
+        }
+        let day = local_day(at);
+        by_worker
+            .iter()
+            .filter(|(_, spent)| spent.total_tokens() > 0 || spent.cost_usd > 0.0)
+            .map(|(worker, spent)| LedgerLine::new(day, repo, Some(run), worker, spent).at_hour(at))
+            .collect()
     }
 
     /// Lines go to the file of their day's month, each in one write, so two processes
@@ -275,6 +296,7 @@ pub(crate) fn summary(
     plan_windows: Vec<PlanUsageReading>,
 ) -> UsageSummary {
     let first = period.first_day(today, week_starts.weekday());
+    ledger.rebuilt_once();
     // Every line, whatever the period: a model's color goes by its tokens in all.
     let lines = ledger.read_since(None);
     let counted: Vec<&LedgerLine> = lines
@@ -413,6 +435,7 @@ mod tests {
             waiting: Vec::new(),
             live: false,
             remind: false,
+            shape_known: true,
         }
     }
 

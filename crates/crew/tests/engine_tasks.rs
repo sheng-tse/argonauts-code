@@ -19,16 +19,21 @@ use argonauts_core::events::approval::{
 };
 use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
 use argonauts_core::events::plan::{LimitPlan, TaskGraph};
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunStarted};
-use argonauts_core::events::session::{EndReason, InputPartKind, SessionEvent};
+use argonauts_core::events::run::{
+    Party, ResumeCause, RunLifecycle, RunMode, RunResumed, RunStarted,
+};
+use argonauts_core::events::session::{EndReason, InputPartKind, LimitEvent, SessionEvent};
 use argonauts_core::events::task::{
     CheckKind, TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState, TryCause,
 };
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::limits::{Candidate, CostEstimate, RecoveryAction};
+use argonauts_core::meter::{MeterAction, MeterLimit, SpendStatus};
 use argonauts_core::names::{ApprovalId, ModelRef, WorkflowId};
 use argonauts_core::policy::StuckFacts;
-use argonauts_core::session_runner::{RunnerCapabilities, SessionRunner, SessionSpec};
+use argonauts_core::session_runner::{
+    Access, RunnerCapabilities, RunnerEvent, SessionRunner, SessionSpec,
+};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit, OnHit};
 use argonauts_core::settings::prompts::{RolePrompts, Writer};
@@ -36,6 +41,7 @@ use argonauts_core::settings::protocol::CheckCommand;
 use argonauts_core::steps::StepName;
 use argonauts_core::workflow::{StandardPhase, StepRef};
 use argonauts_core::{LimitDimension, NoteLevel, RunId, Spend, TaskId};
+use argonauts_crew::EngineError;
 use argonauts_crew::approvals;
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::shared::Shared;
@@ -802,6 +808,169 @@ async fn stop_ends_a_task_at_its_limit() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A task's session the run's limit has no room for never starts and leaves nothing in the
+/// log, so the run pauses with the task's try still open: nobody takes the task over, nothing
+/// asks about the task's own limit, and no try is counted. Once you raise the limit and
+/// resume, the task starts that try, fresh and with its whole prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_the_run_had_no_room_for_starts_its_try_once_the_limit_is_raised()
+-> anyhow::Result<()> {
+    let mut crew = Crew::new()?;
+    crew.settings.limits.spend.spend_per_run = Some(0.60);
+    // The first task's session opens at $0.3619 and ends at $0.3745, which leaves $0.2255, and
+    // the second's, on the same worker, would cost as much to open.
+    let builder = crew.services.workers.add(
+        FakeRunner::cli(WORKER_A, &provider_of(WORKER_A)).respond_with(|spec| {
+            let first = spec
+                .task
+                .as_ref()
+                .is_some_and(|task| task.as_str() == "task-001");
+            let file: &[(&str, &str)] = if first {
+                &[("src/a.rs", "pub fn a() {}\n")]
+            } else {
+                &[("src/b.rs", "pub fn b() {}\n")]
+            };
+            let mut session = work(spec, file, Duration::ZERO);
+            if first {
+                session.events.insert(0, spent(0.361891));
+                session.end.spend.cost_usd = 0.3745;
+            }
+            session
+        }),
+    );
+    crew.services.workers.add(reviewer(REVIEWER));
+    crew.services
+        .fallback
+        .set_candidates(vec![candidate(WORKER_B)]);
+    let tasks = [
+        spec("task-001", &[], WORKER_A, REVIEWER),
+        spec("task-002", &["task-001"], WORKER_A, REVIEWER),
+    ];
+    let bench = Bench::new(&crew, RunMode::Crew, &tasks).await?;
+
+    let built = tokio::time::timeout(Duration::from_secs(60), bench.spawn_build()).await??;
+    assert!(
+        matches!(built, Err(EngineError::Interrupted)),
+        "the build unwinds as a pause has it: {built:?}"
+    );
+    let mut paused = false;
+    for _ in 0..500 {
+        paused = bench
+            .sink
+            .events()
+            .iter()
+            .any(|event| matches!(&event.kind, RunEventKind::Run(RunLifecycle::Paused { .. })));
+        if paused {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(paused, "the run paused");
+    let history = bench.sink.events();
+    let said = "The run can't start another session under its $0.60 spend limit: a session of \
+                X on Claude Code costs about $0.36 to start here and $0.23 is left, so it pauses \
+                here with its work kept.";
+    assert!(
+        notes(&bench).iter().any(|note| note.starts_with(said)),
+        "{:?}",
+        notes(&bench)
+    );
+    assert_eq!(
+        builds(&builder).len(),
+        1,
+        "the second task's session started"
+    );
+    let second = TaskId::new("task-002")?;
+    let state = RunState::fold(&history);
+    assert!(
+        state
+            .sessions
+            .in_order()
+            .iter()
+            .all(|session| session.task.as_ref() != Some(&second)),
+        "the session it had no room for is in the log"
+    );
+    assert_eq!(
+        state.tasks.get(&second).map(|task| task.state),
+        Some(TaskState::Running)
+    );
+    assert_eq!(
+        tries(&history, "task-002"),
+        [(TryCause::First, worker(WORKER_A))]
+    );
+    let reassigned = task_events(&history, "task-002")
+        .into_iter()
+        .any(|event| matches!(event, TaskEvent::Reassigned { .. }));
+    assert!(!reassigned, "a fallback took the task");
+    let hit = history
+        .iter()
+        .any(|event| matches!(&event.kind, RunEventKind::Spend(SpendEvent::Hit { .. })));
+    assert!(!hit, "the task was said to reach its own limit");
+    assert_eq!(asked_while_building(&history), [], "something was asked");
+
+    crew.settings.limits.spend.spend_per_run = Some(1.00);
+    let resumed = Bench::over(&crew, history)?;
+    resumed.host.record(
+        None,
+        None,
+        RunEventKind::Run(RunLifecycle::Resumed(RunResumed {
+            cause: ResumeCause::User,
+            settings_changed: true,
+            cli_versions_changed: Vec::new(),
+            main_moved_by: None,
+            sessions: Vec::new(),
+        })),
+    )?;
+    let done = resumed.build().await?;
+    assert_eq!(done.summary.as_deref(), Some("2 tasks merged into the run"));
+    let built = builds(&builder);
+    assert_eq!(built.len(), 2, "the second task's session never started");
+    let started = &built[1];
+    assert!(started.resume.is_none(), "{:?}", started.resume);
+    let task = started
+        .prompt
+        .iter()
+        .find(|part| part.kind == InputPartKind::Task)
+        .context("the whole prompt, with its task")?;
+    assert!(
+        task.text.starts_with("task-002 · Build task-002"),
+        "{}",
+        task.text
+    );
+    assert_eq!(
+        tries(&resumed.sink.events(), "task-002"),
+        [(TryCause::First, worker(WORKER_A))],
+        "it went on with the try it had begun"
+    );
+    assert_eq!(state_of(&resumed, "task-002"), TaskState::Merged);
+    Ok(())
+}
+
+/// What a session has spent so far, as its CLI reports it.
+fn spent(usd: f64) -> RunnerEvent {
+    RunnerEvent::Session(SessionEvent::Limit(LimitEvent::Spend(SpendStatus {
+        level: MeterAction::Continue,
+        limit: MeterLimit::Usd(0.60),
+        spend: Spend {
+            cost_usd: usd,
+            ..Spend::default()
+        },
+        fraction_used: None,
+        work: Default::default(),
+        work_limits: Default::default(),
+        binding: None,
+    })))
+}
+
+/// The worker's build sessions, in the order they started.
+fn builds(worker: &FakeRunner) -> Vec<SessionSpec> {
+    worker
+        .specs()
+        .into_iter()
+        .filter(|spec| spec.access == Access::Build)
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn stuck_defer_and_split() -> anyhow::Result<()> {
     // Deferred: the task waits and the run goes on without it, and without the task that
@@ -1423,6 +1592,17 @@ impl Bench {
         Git::new()
             .add_detached_worktree(crew.repo.root(), &context.repo.base_worktree, &base)
             .await?;
+        let state = RunState::fold(&context.history);
+        let shared = Shared::new(&context, state)?;
+        Ok(Self {
+            host: Host::new(Arc::new(shared)),
+            sink,
+        })
+    }
+
+    /// The same run rebuilt from its log, as the engine builds it when the run resumes.
+    fn over(crew: &Crew, history: Vec<RunEvent>) -> anyhow::Result<Self> {
+        let (context, sink, _commands) = crew.context(history)?;
         let state = RunState::fold(&context.history);
         let shared = Shared::new(&context, state)?;
         Ok(Self {

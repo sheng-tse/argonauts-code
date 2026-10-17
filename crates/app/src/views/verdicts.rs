@@ -1,17 +1,20 @@
 //! What the run's reviews and checks decided, in the words the workflow view puts after a
 //! row's counts: `approved`, `sent it back · 2 findings`, `passed`, and for a session held
-//! where it was, `paused · work so far kept`. An opened agent gets the findings themselves: a
+//! where it was, `paused · work so far kept` or what else the run waits for. An opened agent gets the findings themselves: a
 //! reviewer the ones it raised, a worker the ones it was sent back with.
 
 use argonauts_core::TaskId;
+use argonauts_core::display_names::builtin_cli_name;
+use argonauts_core::events::run::WaitReason;
 use argonauts_core::events::session::EndReason;
-use argonauts_core::events::task::{ReviewEvent, TaskEvent, TryCause};
+use argonauts_core::events::task::{ReviewEvent, TaskEvent, TaskState, TryCause};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{RoleName, SessionKey};
+use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::session_runner::Access;
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::judgment::{ReviewOutput, ReviewVerdict};
-use argonauts_core::views::{Finding, Findings, ReviewGiven, RowNote, Tone};
+use argonauts_core::steps::plan::Severity;
+use argonauts_core::views::{EarlierFindings, Finding, Findings, ReviewGiven, RowNote, Tone};
 use argonauts_crew::claude_codes::review_of;
 use argonauts_crew::merge::merger::COMMIT_MESSAGE;
 use time::OffsetDateTime;
@@ -42,6 +45,10 @@ pub(crate) struct Verdicts {
     tries: Vec<(TaskId, u32, TryCause, OffsetDateTime)>,
     /// The tasks that have a worktree of their own.
     worktrees: Vec<TaskId>,
+    /// When each task went on without another round of work: to you, to an end, or merged.
+    went_on: Vec<(TaskId, OffsetDateTime)>,
+    /// The tasks that merged.
+    merged: Vec<TaskId>,
 }
 
 impl Verdicts {
@@ -51,6 +58,8 @@ impl Verdicts {
             checks: Vec::new(),
             tries: Vec::new(),
             worktrees: Vec::new(),
+            went_on: Vec::new(),
+            merged: Vec::new(),
         };
         for event in events {
             match (&event.kind, &event.task_id) {
@@ -82,6 +91,14 @@ impl Verdicts {
                 }
                 (RunEventKind::Task(TaskEvent::Worktree { .. }), Some(task)) => {
                     verdicts.worktrees.push(task.clone());
+                }
+                (RunEventKind::Task(TaskEvent::State { to, .. }), Some(task))
+                    if goes_on_without_a_round(*to) =>
+                {
+                    verdicts.went_on.push((task.clone(), event.ts));
+                    if *to == TaskState::Merged {
+                        verdicts.merged.push(task.clone());
+                    }
                 }
                 _ => {}
             }
@@ -117,19 +134,46 @@ impl Verdicts {
         asked.then(|| review_of(answer))
     }
 
+    /// What the row of a review handed over through a CLI's own workflow says: the verdict,
+    /// with what blocks it in the verdict's colour and its notes dim after. While the agent that
+    /// asked still has the answer, the verdict alone, and that it is passing it on.
+    pub(crate) fn handed_back(&self, session: &SessionFacts, passing_on: bool) -> Option<RowNote> {
+        let review = self.review_by(session)?;
+        let (verdict, tone) = verdict_words(review.verdict);
+        if passing_on {
+            return Some(RowNote::new(verdict, tone).then("passing it on"));
+        }
+        let blocking = review
+            .comments
+            .iter()
+            .filter(|comment| comment.severity == Severity::High)
+            .count();
+        let text = match blocking {
+            0 => verdict.to_owned(),
+            count => format!("{verdict} · {count} blocking"),
+        };
+        let note = RowNote::new(text, tone);
+        Some(match review.comments.len() - blocking {
+            0 => note,
+            1 => note.then("1 note"),
+            count => note.then(format!("{count} notes")),
+        })
+    }
+
     /// What `session`'s row says after its counts, when there is something to say.
     pub(crate) fn note(&self, facts: &RunFacts, session: &SessionFacts) -> Option<RowNote> {
         if let Some(end) = &session.ended {
             match end.reason {
-                EndReason::Paused => {
-                    return Some(RowNote::new("paused · work so far kept", Tone::Warn));
-                }
+                EndReason::Paused => return Some(cut_short(facts.held.as_ref(), &session.worker)),
                 EndReason::Stopped => return Some(RowNote::new("stopped", Tone::Plain)),
                 _ => {}
             }
         }
         if let Some(review) = self.review_by(session) {
             let (verdict, tone) = verdict_words(review.verdict);
+            if self.no_round_followed(facts, session) {
+                return Some(RowNote::new(format!("{verdict} · no rounds left"), tone));
+            }
             let text = match review.comments.len() {
                 0 => verdict.to_owned(),
                 1 => format!("{verdict} · 1 finding"),
@@ -191,6 +235,78 @@ impl Verdicts {
             from,
             round: sent_back.round,
             items: findings(&sent_back.review),
+        })
+    }
+
+    /// Whether `session` is one of the run's own reviewers whose latest word sent its task's
+    /// work back: its next round is coming, so it isn't done yet. A review a CLI's own workflow
+    /// asked for is done once given, since that workflow asks again with a new agent.
+    pub(crate) fn sent_back(&self, session: &SessionFacts) -> bool {
+        session.task.is_some()
+            && matches!(session.started.role, RoleName::Reviewer | RoleName::Judge)
+            && self
+                .review_by(session)
+                .is_some_and(|review| review.verdict == ReviewVerdict::RequestChanges)
+    }
+
+    /// Whether the latest review `session` gave sent its task's work back and no round followed
+    /// it: no worker took the task up again, and the task went on without one or the run ended.
+    pub(crate) fn no_round_followed(&self, facts: &RunFacts, session: &SessionFacts) -> bool {
+        let Some(task) = session.task.as_ref() else {
+            return false;
+        };
+        let Some(sent_back) = self
+            .reviews
+            .iter()
+            .rev()
+            .find(|review| review.session.as_ref() == Some(&session.key))
+            .filter(|review| review.review.verdict == ReviewVerdict::RequestChanges)
+        else {
+            return false;
+        };
+        let taken_up = facts.sessions.iter().any(|other| {
+            other.task.as_ref() == Some(task) && builds(other) && other.started_at >= sent_back.at
+        });
+        let went_on = facts.finished_at.is_some()
+            || self
+                .went_on
+                .iter()
+                .any(|(known, at)| known == task && *at >= sent_back.at);
+        matches!(session.started.role, RoleName::Reviewer | RoleName::Judge) && !taken_up && went_on
+    }
+
+    /// Whether `task` merged.
+    pub(crate) fn merged(&self, task: &TaskId) -> bool {
+        self.merged.contains(task)
+    }
+
+    /// For a reviewer or the judge, the latest earlier review of the same work that sent it
+    /// back, whose findings come with the change it is given.
+    pub(crate) fn earlier(
+        &self,
+        facts: &RunFacts,
+        session: &SessionFacts,
+    ) -> Option<EarlierFindings> {
+        if !matches!(session.started.role, RoleName::Reviewer | RoleName::Judge) {
+            return None;
+        }
+        let sent_back = self.reviews.iter().rev().find(|review| {
+            review.task == session.task
+                && review.at <= session.started_at
+                && review.session.as_ref() != Some(&session.key)
+                && review.review.verdict == ReviewVerdict::RequestChanges
+        })?;
+        let from = sent_back
+            .session
+            .as_ref()
+            .and_then(|key| facts.session(key))
+            .map_or_else(|| "its review".to_owned(), SessionFacts::label);
+        Some(EarlierFindings {
+            from,
+            round: sent_back.round,
+            answered_by: None,
+            items: findings(&sent_back.review),
+            answers: Vec::new(),
         })
     }
 
@@ -259,6 +375,21 @@ impl Verdicts {
             sent_back.round + 1
         ))
     }
+}
+
+/// Whether a task in state `to` goes on without another round of work: it came to you, ended,
+/// or merged.
+fn goes_on_without_a_round(to: TaskState) -> bool {
+    matches!(
+        to,
+        TaskState::NeedsDecision
+            | TaskState::NeedsYou
+            | TaskState::Failed
+            | TaskState::Deferred
+            | TaskState::Cancelled
+            | TaskState::TakenOver
+            | TaskState::Merged
+    )
 }
 
 /// Said of the merger's session on a clean merge: the change was in its prompt, so it read
@@ -358,4 +489,175 @@ fn findings(review: &ReviewOutput) -> Vec<Finding> {
             }
         })
         .collect()
+}
+
+/// The row of a session the run's wait cut short, by what the run waits for: only a pause you
+/// asked for reads "paused".
+fn cut_short(held: Option<&WaitReason>, worker: &ModelRef) -> RowNote {
+    match held {
+        Some(WaitReason::NoFallback { .. }) => {
+            RowNote::new("stopped with the run · work so far kept", Tone::Warn)
+        }
+        Some(WaitReason::AllAgentsOut { .. } | WaitReason::WaitingForAgent { .. }) => {
+            let cli = builtin_cli_name(&worker.agent).unwrap_or(worker.agent.as_str());
+            RowNote::new(format!("waits for {cli} · work so far kept"), Tone::Warn)
+        }
+        _ => RowNote::new("paused · work so far kept", Tone::Warn),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use argonauts_core::names::ModelRef;
+    use argonauts_core::steps::judgment::ReviewComment;
+
+    use super::*;
+    use crate::client::test_support::{event, session_started, task_event};
+    use argonauts_core::events::run::{RunLifecycle, RunOutcome};
+
+    fn sent_back(seq: u64, session: &SessionKey, task: Option<&TaskId>) -> RunEvent {
+        let review = ReviewOutput {
+            verdict: ReviewVerdict::RequestChanges,
+            summary: "Due dates can be in the past".to_owned(),
+            comments: vec![ReviewComment {
+                path: "src/cli.js".to_owned(),
+                line: Some(42),
+                severity: Severity::High,
+                text: "--due with no date isn't rejected".to_owned(),
+            }],
+            tamper_suspected: false,
+        };
+        let mut reviewed = event(
+            seq,
+            RunEventKind::Review(ReviewEvent::Reviewed {
+                reviewer: ModelRef::new("codex", None),
+                blind: false,
+                round: 1,
+                review,
+            }),
+        );
+        reviewed.session = Some(session.clone());
+        reviewed.task_id = task.cloned();
+        reviewed
+    }
+
+    /// A session the run's wait cut short reads "paused" only when you paused the run; one the
+    /// run's full stop cut reads "stopped with the run", and one an outage cut waits for its CLI.
+    #[test]
+    fn a_session_cut_short_says_what_the_run_waits_for() {
+        use argonauts_core::events::run::WaitReason;
+        use argonauts_core::events::session::EndReason;
+
+        let worker = SessionKey::numbered(1);
+        let said = |reason: WaitReason| {
+            let events = vec![
+                session_started(0, &worker, None, RoleName::Worker, "claude-code"),
+                event(
+                    1,
+                    RunEventKind::Run(RunLifecycle::Waiting {
+                        reason,
+                        waiting_on: Vec::new(),
+                    }),
+                ),
+                crate::client::test_support::session_ended(2, &worker, EndReason::Paused, 1000),
+            ];
+            let facts = RunFacts::of(&events);
+            let session = facts.session(&worker).unwrap();
+            facts.verdicts.note(&facts, session).map(|note| note.text)
+        };
+        assert_eq!(
+            said(WaitReason::Paused).as_deref(),
+            Some("paused · work so far kept")
+        );
+        let stopped = WaitReason::NoFallback {
+            detail: "nobody to fall back to as the task's worker".to_owned(),
+            until: None,
+            stop: None,
+        };
+        assert_eq!(
+            said(stopped).as_deref(),
+            Some("stopped with the run · work so far kept")
+        );
+        assert_eq!(
+            said(WaitReason::AllAgentsOut { until: None }).as_deref(),
+            Some("waits for Claude Code · work so far kept")
+        );
+    }
+
+    /// A review that sent the work back says no rounds are left once its task went on without
+    /// another round, or the run ended without one; once its worker takes the task up again,
+    /// it says what it found.
+    #[test]
+    fn a_send_back_that_no_round_follows_says_no_rounds_left() {
+        let task = TaskId::new("task-001").unwrap();
+        let (worker, reviewer) = (SessionKey::numbered(1), SessionKey::numbered(2));
+        let events = vec![
+            session_started(0, &worker, Some(&task), RoleName::Worker, "claude-code"),
+            session_started(1, &reviewer, Some(&task), RoleName::Reviewer, "codex"),
+            sent_back(2, &reviewer, Some(&task)),
+        ];
+        let said = |events: &[RunEvent]| {
+            let facts = RunFacts::of(events);
+            let session = facts.session(&reviewer).unwrap();
+            facts.verdicts.note(&facts, session).map(|note| note.text)
+        };
+        assert_eq!(said(&events).as_deref(), Some("sent it back · 1 finding"));
+
+        let mut to_you = events.clone();
+        to_you.push(task_event(
+            3,
+            &task,
+            TaskEvent::State {
+                from: Some(TaskState::InReview),
+                to: TaskState::NeedsYou,
+                reason: "review asked for changes again after 2 rounds".to_owned(),
+            },
+        ));
+        assert_eq!(
+            said(&to_you).as_deref(),
+            Some("sent it back · no rounds left")
+        );
+
+        let mut ended = events.clone();
+        ended.push(event(
+            3,
+            RunEventKind::Run(RunLifecycle::Finished {
+                outcome: RunOutcome::BranchLeft,
+                detail: None,
+            }),
+        ));
+        assert_eq!(
+            said(&ended).as_deref(),
+            Some("sent it back · no rounds left")
+        );
+
+        let mut again = events;
+        again.push(session_started(
+            3,
+            &SessionKey::numbered(3),
+            Some(&task),
+            RoleName::Worker,
+            "claude-code",
+        ));
+        again.extend(ended.pop());
+        assert_eq!(said(&again).as_deref(), Some("sent it back · 1 finding"));
+    }
+
+    /// One of the run's own reviewers that sent its task's work back has a round to come; one
+    /// a CLI's own workflow asked, with no task of its own, is done once it answered.
+    #[test]
+    fn only_the_runs_own_reviewer_waits_for_its_next_round() {
+        let task = TaskId::new("task-001").unwrap();
+        let (own, asked) = (SessionKey::numbered(1), SessionKey::numbered(2));
+        let events = vec![
+            session_started(0, &own, Some(&task), RoleName::Reviewer, "codex"),
+            sent_back(1, &own, Some(&task)),
+            session_started(2, &asked, None, RoleName::Reviewer, "codex"),
+            sent_back(3, &asked, None),
+        ];
+        let facts = RunFacts::of(&events);
+        let waits = |key: &SessionKey| facts.verdicts.sent_back(facts.session(key).unwrap());
+        assert!(waits(&own));
+        assert!(!waits(&asked));
+    }
 }

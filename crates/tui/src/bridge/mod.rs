@@ -13,11 +13,16 @@ pub mod input;
 pub mod keys;
 pub mod panel;
 pub mod plugin_output;
+mod pull_request;
 pub mod refusal;
+#[cfg(test)]
+mod resumed_golden;
 mod reviewed;
 #[cfg(test)]
 mod reviewed_golden;
 pub mod settings;
+#[cfg(test)]
+mod shape_golden;
 pub mod status;
 pub mod tools;
 pub mod transcript;
@@ -62,8 +67,19 @@ impl Cx<'_> {
         self.settings.verbosity
     }
 
+    /// Nothing the event says happens again: it is history, replayed or drawn from the record.
     pub fn replaying(&self) -> bool {
         self.state.replaying()
+    }
+
+    /// The event's items join the Ctrl+O history without printing.
+    pub fn history_only(&self) -> bool {
+        self.state.history_only()
+    }
+
+    /// The event is part of a past drawn again, which prints at once.
+    pub fn drawing_past(&self) -> bool {
+        self.state.drawing_past()
     }
 }
 
@@ -93,6 +109,12 @@ impl<'a> Cx<'a> {
 #[derive(Debug, Default)]
 pub struct Effects {
     pub commands: Vec<UiCommand>,
+    /// A slash command as you typed it, which the runtime sends ahead of the commands so the
+    /// conversation's record keeps it.
+    pub typed: Option<String>,
+    /// Lines a command you typed printed back, which the runtime sends after the commands so
+    /// the conversation's record keeps them after the command.
+    pub replies: Vec<argonauts_core::app::CommandReply>,
     pub bell: bool,
     /// Pushed on the view stack in this order.
     pub views: Vec<Box<dyn View>>,
@@ -101,6 +123,9 @@ pub struct Effects {
     pub views_as_panel: bool,
     /// Close every open view first, such as when a question from the agent panel gets the keys.
     pub close_views: bool,
+    /// Close the views a question would hide, down to one that stays up over it, as for the
+    /// question a setting change from a view asks.
+    pub views_make_way: bool,
     pub take_over: Option<TakeOverJob>,
     /// An agent CLI's own command, such as its login, to run with the terminal handed over.
     pub run_in_terminal: Option<TerminalJob>,
@@ -190,6 +215,12 @@ impl Bridge {
     }
 
     pub fn on_event(&mut self, model: &mut ViewModel, event: &AppEvent, now: Instant) -> Effects {
+        // A stream opened again repeats what this screen took in already.
+        if let AppEvent::Run { event } = event
+            && self.state.repeats(event)
+        {
+            return Effects::default();
+        }
         self.state.apply(event);
         if let AppEvent::UiSettings { ui: Some(ui), .. } = event {
             self.settings = (**ui).clone();
@@ -234,6 +265,7 @@ impl Bridge {
             self.agents.on_event(event, &mut cx);
             self.questions.on_event(event, &mut cx);
             self.input.on_event(event, &mut cx);
+            pull_request::on_event(event, &mut cx);
             if !unclaimed && !stale_tab {
                 views::on_event(event, &mut cx, &self.refresh);
             }
@@ -429,6 +461,82 @@ mod view_answer_tests {
             .collect()
     }
 
+    /// The rows `model` has printed since last asked, as plain text, and the colour of each
+    /// row's last character.
+    fn printed(model: &mut ViewModel) -> Vec<(String, Option<ratatui::style::Color>)> {
+        let theme = crate::theme::Theme::dark();
+        let ctx =
+            crate::render::RenderCtx::new(100, &theme, crate::render::Clock::still(Instant::now()));
+        model
+            .history
+            .drain_printable(&ctx)
+            .iter()
+            .map(|line| {
+                let text = crate::text::plain_text(std::slice::from_ref(line));
+                let last = line
+                    .spans
+                    .iter()
+                    .rev()
+                    .find(|span| !span.content.trim().is_empty());
+                (
+                    text.trim_end().to_owned(),
+                    last.and_then(|span| span.style.fg),
+                )
+            })
+            .filter(|(text, _)| !text.is_empty())
+            .collect()
+    }
+
+    /// A `/config key=value` the app can't save prints why under the command, in the error
+    /// colour, where a saved one prints where it went. The conversation's record keeps that line
+    /// after the command, so a resumed conversation draws the two rows as they were.
+    #[test]
+    fn a_config_value_left_as_it_was_says_why_under_the_command() {
+        use argonauts_core::app::ConversationEvent;
+
+        let why = "ui.tips takes true, false, not \"maybe\"";
+        let mut bridge = Bridge::new(&UiOptions::default());
+        let mut model = ViewModel::default();
+        let sent = submit(&mut bridge, &mut model, "/config ui.tips=maybe");
+        assert_eq!(sent.typed.as_deref(), Some("/config ui.tips=maybe"));
+        let refused = AppEvent::SettingRefused {
+            key: "ui.tips".to_owned(),
+            why: why.to_owned(),
+        };
+        let out = bridge.on_event(&mut model, &refused, Instant::now());
+        let red = crate::theme::Theme::dark()
+            .style(crate::theme::Role::Danger)
+            .fg;
+        let live = printed(&mut model);
+        let texts: Vec<&str> = live.iter().map(|(text, _)| text.as_str()).collect();
+        assert_eq!(
+            texts,
+            ["❯ /config ui.tips=maybe", &format!("  ⎿  {why}")],
+            "{live:?}"
+        );
+        assert_eq!(live[1].1, red, "{live:?}");
+        assert_eq!(out.replies.len(), 1);
+        assert!(out.replies[0].error, "{:?}", out.replies);
+
+        let mut resumed = Bridge::new(&UiOptions::default());
+        let mut past = ViewModel::default();
+        let now = Instant::now();
+        resumed.on_event(&mut past, &AppEvent::PastBegins, now);
+        for event in [
+            ConversationEvent::CommandTyped {
+                text: "/config ui.tips=maybe".to_owned(),
+                at: None,
+            },
+            ConversationEvent::CommandReplied {
+                reply: out.replies[0].clone(),
+            },
+        ] {
+            resumed.on_event(&mut past, &AppEvent::Conversation { event }, now);
+        }
+        resumed.on_event(&mut past, &AppEvent::PastDrawn, now);
+        assert_eq!(printed(&mut past), live);
+    }
+
     /// What a command typed mid-answer prints starts with a row of its own, so it never reads
     /// as part of the answer.
     #[test]
@@ -515,7 +623,7 @@ mod view_answer_tests {
             sent.commands,
             [UiCommand::Slash {
                 command: SlashCommand::Usage {
-                    period: None,
+                    period: Some("all".to_owned()),
                     action: ViewAction::Open
                 }
             }]

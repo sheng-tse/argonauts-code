@@ -4,11 +4,12 @@
 use std::time::{Duration, Instant};
 
 use argonauts_core::api::UsagePeriod;
-use argonauts_core::app::{AppEvent, AppMode, UiCommand, ViewRequest};
+use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, UiCommand, ViewRequest};
 use argonauts_core::events::run::Party;
 use argonauts_core::input::{
     Handler, MentionTarget, ParsedInput, SlashCommand, ViewAction, parse_input_with,
 };
+use argonauts_core::settings::Settings;
 use argonauts_core::settings::stats::StatsPeriod;
 use argonauts_core::settings::ui::{UiSettings, ViewOpen};
 use argonauts_core::{KeyScheme, Verbosity};
@@ -20,6 +21,7 @@ use crate::cell::{Cell, Tone, UserMessage};
 use crate::commands::{self, command_items};
 use crate::keymap::Keymap;
 use crate::mentions::{self, MentionPicker, Resolved};
+use crate::overview::config::ConfigTab;
 use crate::overview::{OverviewView, Tab};
 use crate::prompt_history::{PromptHistory, unix_now};
 use crate::views::help::HelpView;
@@ -46,6 +48,12 @@ pub struct InputRouter {
     /// starts with this as its own row, so it reads as yours and not as part of the answer,
     /// and a view it opens is a panel under the working line.
     typed_mid_answer: Option<(String, Instant)>,
+    /// The first welcome came, which opens the agent panel with `ui.agents_view`. Later ones,
+    /// after the setup saves, leave the screen as it is.
+    welcomed: bool,
+    /// What you typed in a conversation being drawn again, oldest first, which ↑ brings back
+    /// once it is drawn.
+    past_prompts: Option<Vec<String>>,
 }
 
 /// How long a command typed mid-answer waits for its answer. What comes later isn't its.
@@ -66,10 +74,7 @@ impl InputRouter {
             Err(error) => Self {
                 history: PromptHistory::unread(file),
                 load_error: Some(error.to_string()),
-                prepared: false,
-                status_view: false,
-                context_all: false,
-                typed_mid_answer: None,
+                ..Self::default()
             },
         }
     }
@@ -98,19 +103,46 @@ impl InputRouter {
             // The composer drops it again at the first prompt.
             AppEvent::Welcome { example_prompt, .. } => {
                 cx.model.bottom.composer.example.clone_from(example_prompt);
+                if !std::mem::replace(&mut self.welcomed, true) && cx.settings.agents_view {
+                    super::keys::open_agent_panel(cx);
+                }
+            }
+            AppEvent::SettingChanged { key, value, .. } if key == Settings::ULTRACODE_TRIGGER => {
+                cx.model.bottom.composer.workflow_word_off = value.trim() == "false";
             }
             AppEvent::TakenBack { texts } => {
                 cx.model.bottom.composer.restore(texts);
                 cx.model.bottom.menus.text_changed();
             }
             AppEvent::ConversationCleared => cx.model.bottom.composer.start_conversation(),
-            AppEvent::ConversationResumed { earlier, turns, .. } => {
-                let yours = earlier
+            AppEvent::ConversationResumed { turns, .. } => {
+                let yours = turns
                     .iter()
-                    .chain(turns)
                     .filter(|turn| matches!(turn.from, Party::User))
                     .map(|turn| turn.text.as_str());
                 cx.model.bottom.composer.resume_conversation(yours);
+            }
+            // A conversation drawn again brings back what you typed in it, for ↑.
+            AppEvent::PastBegins => self.past_prompts = Some(Vec::new()),
+            AppEvent::Conversation {
+                event:
+                    ConversationEvent::TurnStarted {
+                        text,
+                        continues: false,
+                        ..
+                    },
+            } if self.past_prompts.is_some() => {
+                if let Some(prompts) = self.past_prompts.as_mut() {
+                    prompts.push(text.clone());
+                }
+            }
+            AppEvent::PastDrawn => {
+                if let Some(prompts) = self.past_prompts.take()
+                    && !prompts.is_empty()
+                {
+                    let yours = prompts.iter().map(String::as_str);
+                    cx.model.bottom.composer.resume_conversation(yours);
+                }
             }
             AppEvent::CliCommands { set } => {
                 cx.model.bottom.menus.commands = command_items(Some(set));
@@ -266,7 +298,10 @@ impl InputRouter {
     pub fn answers_mid_answer_command(&mut self, event: &AppEvent, cx: &mut Cx<'_>) {
         let prints = matches!(
             event,
-            AppEvent::Report { .. } | AppEvent::Notice { .. } | AppEvent::SettingChanged { .. }
+            AppEvent::Report { .. }
+                | AppEvent::Notice { .. }
+                | AppEvent::SettingChanged { .. }
+                | AppEvent::SettingRefused { .. }
         );
         let opens = matches!(event, AppEvent::View { .. });
         if !prints && !opens {
@@ -286,11 +321,23 @@ impl InputRouter {
     }
 }
 
-/// The period `/usage` names, by the words the CLIs' own commands take. `None` for a word
-/// the controller will refuse, which then says so.
-fn usage_period(word: Option<&str>) -> Option<UsagePeriod> {
+/// The panel on its Config tab, as `/config` or `/settings` (`name`) opens it.
+fn open_config(name: &str, cx: &mut Cx<'_>) {
+    let watch = cx.model.bottom.band.watch.clone();
+    let mut tab = ConfigTab::opened_by(name);
+    tab.set_mode_now(Some(cx.model.bottom.mode.approval.label().to_owned()));
+    cx.out
+        .open(OverviewView::new(Tab::Config, watch).with_config(tab));
+    cx.out.send(UiCommand::Request {
+        view: ViewRequest::Settings { section: None },
+    });
+}
+
+/// The period `/usage` names, by the words the CLIs' own commands take, `opens_on` when it
+/// names none. `None` for a word the controller will refuse, which then says so.
+fn usage_period(word: Option<&str>, opens_on: UsagePeriod) -> Option<UsagePeriod> {
     match word.map(str::to_ascii_lowercase).as_deref() {
-        None => Some(UsagePeriod::OPENS_ON),
+        None => Some(opens_on),
         Some("day" | "daily" | "today") => Some(UsagePeriod::Today),
         Some("week" | "weekly") => Some(UsagePeriod::Week),
         Some("month" | "monthly") => Some(UsagePeriod::Month),
@@ -450,6 +497,14 @@ fn as_its_tab_opens(command: SlashCommand, ui: &UiSettings) -> SlashCommand {
 }
 
 fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
+    // The conversation's record keeps it, except one that leaves the conversation.
+    let leaves = matches!(
+        command,
+        SlashCommand::Clear | SlashCommand::Resume { .. } | SlashCommand::Exit
+    );
+    if !leaves {
+        cx.out.typed = Some(typed.trim().to_owned());
+    }
     let name = typed
         .trim_start()
         .trim_start_matches('/')
@@ -486,7 +541,8 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
                 action: ViewAction::Open,
             },
         ) => {
-            if let Some(shown) = usage_period(period.as_deref()) {
+            let opens_on = cx.settings.views.usage.period.usage();
+            if let Some(shown) = usage_period(period.as_deref(), opens_on) {
                 let watch = cx.model.bottom.band.watch.clone();
                 cx.out
                     .open(OverviewView::new(Tab::Usage, watch).with_period(shown));
@@ -544,10 +600,39 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
         ) => {
             let watch = cx.model.bottom.band.watch.clone();
             cx.out.open(OverviewView::new(Tab::Limits, watch));
+            // The Limits tab opens on all, whatever period the Usage tab opens on.
             cx.out.send(UiCommand::Slash {
                 command: SlashCommand::Usage {
-                    period: None,
+                    period: Some("all".to_owned()),
                     action: ViewAction::Open,
+                },
+            });
+        }
+        // `/config` and `/settings` open the Config tab at once, the search box taking the keys;
+        // every key follows from the controller.
+        (
+            _,
+            SlashCommand::Config {
+                key: None,
+                value: None,
+                reset: false,
+            },
+        ) => open_config(name, cx),
+        // `/config key=value` prints what it saved under the command, once it is saved.
+        (
+            _,
+            SlashCommand::Config {
+                key: Some(key),
+                value: Some(value),
+                reset: false,
+            },
+        ) => {
+            cx.model.typed_config = Some((key.clone(), typed.trim().to_owned()));
+            cx.out.send(UiCommand::Slash {
+                command: SlashCommand::Config {
+                    key: Some(key),
+                    value: Some(value),
+                    reset: false,
                 },
             });
         }
@@ -739,6 +824,23 @@ mod tests {
 
     fn slash(command: SlashCommand) -> UiCommand {
         UiCommand::Slash { command }
+    }
+
+    /// A slash command goes in the conversation's record as you typed it, one handled on this
+    /// screen alone too, except one that leaves the conversation.
+    #[test]
+    fn a_typed_command_is_kept_as_typed() {
+        let mut screen = Screen::idle();
+        assert_eq!(
+            screen.submit("/usage  week").typed.as_deref(),
+            Some("/usage  week")
+        );
+        assert_eq!(
+            screen.submit("/artifacts").typed.as_deref(),
+            Some("/artifacts")
+        );
+        assert_eq!(screen.submit("/clear").typed, None);
+        assert_eq!(screen.submit("why?").typed, None);
     }
 
     /// `/artifacts` opens the list on this screen, and nothing goes to the controller.
@@ -1417,6 +1519,53 @@ mod tests {
         );
     }
 
+    /// `ui.agents_view` opens the agent panel with the first welcome only, as ← would: a
+    /// welcome after the setup saves leaves the screen as it is.
+    #[test]
+    fn the_agents_view_opens_at_start_when_asked() {
+        let welcome = || AppEvent::Welcome {
+            version: "0.1.0".into(),
+            repo: "~/argonauts".into(),
+            workflow: "council".into(),
+            agents: Vec::new(),
+            runs_going: 0,
+            runs_need_you: 0,
+            example_prompt: None,
+            main_agent: None,
+            effort: None,
+        };
+        let mut screen = Screen::idle();
+        assert!(screen.event(welcome()).views.is_empty(), "off by default");
+
+        let mut screen = Screen::idle();
+        screen.settings.agents_view = true;
+        let first = screen.event(welcome());
+        assert_eq!(first.views.len(), 1);
+        // It asks for its rows as it opens, as the panel does however it opens.
+        assert_eq!(
+            crate::views::View::asks_on_open(first.views[0].as_ref()),
+            Some(ViewRequest::Crew)
+        );
+        assert!(screen.event(welcome()).views.is_empty());
+    }
+
+    /// Saving `workflows.ultracode_trigger` changes what the word does in the input at once.
+    #[test]
+    fn the_workflow_word_follows_its_setting() {
+        let mut screen = Screen::idle();
+        let changed = |value: &str| AppEvent::SettingChanged {
+            key: argonauts_core::settings::Settings::ULTRACODE_TRIGGER.to_owned(),
+            value: value.to_owned(),
+            scope: argonauts_core::settings::SettingScope::Global,
+            previous: None,
+            reset: false,
+        };
+        screen.event(changed("false"));
+        assert!(screen.model.bottom.composer.workflow_word_off);
+        screen.event(changed("true"));
+        assert!(!screen.model.bottom.composer.workflow_word_off);
+    }
+
     #[test]
     fn copy_puts_an_answer_on_screen_on_the_clipboard() {
         let mut screen = Screen::idle();
@@ -1448,12 +1597,42 @@ mod tests {
         assert_eq!(screen.notice(), Some("There are only 2 answers on screen."));
     }
 
-    /// `/usage` with no word opens on All, as every tab does; a word still picks its period.
+    /// `/usage` with no word opens on the period the Usage tab opens on, All unless a setting
+    /// says otherwise; a word still picks its period.
     #[test]
     fn bare_usage_opens_on_all() {
-        assert_eq!(usage_period(None), Some(UsagePeriod::All));
-        assert_eq!(usage_period(Some("today")), Some(UsagePeriod::Today));
-        assert_eq!(usage_period(Some("WEEKLY")), Some(UsagePeriod::Week));
-        assert_eq!(usage_period(Some("yearly")), None);
+        let all = UsagePeriod::All;
+        assert_eq!(usage_period(None, all), Some(UsagePeriod::All));
+        assert_eq!(
+            usage_period(None, UsagePeriod::Week),
+            Some(UsagePeriod::Week)
+        );
+        assert_eq!(usage_period(Some("today"), all), Some(UsagePeriod::Today));
+        assert_eq!(usage_period(Some("WEEKLY"), all), Some(UsagePeriod::Week));
+        assert_eq!(usage_period(Some("yearly"), all), None);
+    }
+
+    /// `ui.views.usage.period` is the period a bare `/usage` opens the tab on, and the Limits
+    /// tab still opens on All.
+    #[test]
+    fn the_usage_tab_opens_on_the_period_its_setting_names() {
+        use argonauts_core::settings::ui::UsagePeriod as Setting;
+        let mut screen = Screen::idle();
+        screen.settings.views.usage.period = Setting::Week;
+        let out = screen.submit("/usage");
+        assert_eq!(out.views.len(), 1);
+        let opened = format!("{:?}", out.views[0]);
+        assert!(opened.contains("period: Week"), "{opened}");
+        let out = screen.submit("/limits");
+        let opened = format!("{:?}", out.views[0]);
+        assert!(opened.contains("period: All"), "{opened}");
+        assert!(
+            out.commands.contains(&slash(SlashCommand::Usage {
+                period: Some("all".to_owned()),
+                action: ViewAction::Open,
+            })),
+            "{:?}",
+            out.commands
+        );
     }
 }

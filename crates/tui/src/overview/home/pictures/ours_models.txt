@@ -1,4 +1,4 @@
- Overview    Status    Usage    Context    Limits    Stats 
+Settings   Overview    Status    Config    Usage    Context    Limits    Stats 
 
  Overview    Models 
 

@@ -91,6 +91,7 @@ fn packet() -> MergePacket {
         checks_passed: true,
         review: Some(ReviewVerdict::Approve),
         debt: Vec::new(),
+        questions: Vec::new(),
     };
     MergePacket {
         target: Some(argonauts_core::hidden_git::BRANCH.into()),

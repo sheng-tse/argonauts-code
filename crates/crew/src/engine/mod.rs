@@ -103,7 +103,16 @@ async fn drive(engine: CrewEngine, mut context: EngineContext) -> EngineResult<E
         }
         return Ok(EngineExit::Finished(outcome));
     }
-    let inbox = std::mem::replace(&mut context.inbox, mpsc::channel(1).1);
+    let mut inbox = std::mem::replace(&mut context.inbox, mpsc::channel(1).1);
+    // The requests the run host saved while the run waited are here already. Whether one of
+    // them answers an approval tells an answer's wake from one of your commands.
+    let mut queued = Vec::new();
+    while let Ok(command) = inbox.try_recv() {
+        queued.push(command);
+    }
+    let answers = queued
+        .iter()
+        .any(|command| matches!(command, EngineCommand::Answer { .. }));
     let fresh = context.agent_events.resubscribe();
     let agent_events = std::mem::replace(&mut context.agent_events, fresh);
     let mode = state.run.mode.unwrap_or(engine.mode);
@@ -117,7 +126,7 @@ async fn drive(engine: CrewEngine, mut context: EngineContext) -> EngineResult<E
         .ok_or_else(|| EngineError::Refused("the policy inbox was already taken".to_owned()))?;
 
     ensure_base_worktree(&host).await?;
-    recover::recover(&host).await?;
+    recover::recover(&host, answers).await?;
     change::apply_decided(&host)?;
     pursue::on_resume(&host)?;
 
@@ -131,7 +140,7 @@ async fn drive(engine: CrewEngine, mut context: EngineContext) -> EngineResult<E
         reenter: false,
         returned: returned.into_iter().collect(),
     };
-    let exit = driver.run(inbox, agent_events, policy).await;
+    let exit = driver.run(queued, inbox, agent_events, policy).await;
     driver.quiesce(Cut::ForGood).await;
     exit
 }
@@ -292,10 +301,14 @@ struct Loop {
 impl Loop {
     async fn run(
         &mut self,
+        queued: Vec<EngineCommand>,
         mut inbox: mpsc::Receiver<EngineCommand>,
         mut agent_events: broadcast::Receiver<AgentStatusEvent>,
         mut policy: mpsc::UnboundedReceiver<PolicyResult>,
     ) -> EngineResult<EngineExit> {
+        for command in queued {
+            self.command(command).await?;
+        }
         let host = self.host.clone();
         let shared = host.shared();
         let shutdown = shared.shutdown.clone();
@@ -356,8 +369,10 @@ impl Loop {
         let host = &self.host;
         let shared = host.shared();
         let all_out = shared.services.limits.all_out(&crew(host.settings()));
-        // A goal's check you asked for holds the wait the way a session at work does.
-        let at_work = shared.live.len() + lock(&shared.checking_goals).len();
+        // A goal's check you asked for holds the wait the way a session at work does, and so
+        // does an approval the policy is still weighing.
+        let at_work =
+            shared.live.len() + lock(&shared.checking_goals).len() + shared.desk.weighing();
         let (stopping, reason) = host.read(|state| {
             (
                 state.run.stop_requested,
@@ -412,7 +427,10 @@ impl Loop {
             }
         };
         match result {
-            Ok(outcome) => self.finish(outcome, None).await.map(Some),
+            Ok(outcome) => {
+                let detail = self.host.read(|state| why_it_ended(state, outcome));
+                self.finish(outcome, detail).await.map(Some)
+            }
             Err(EngineError::Interrupted) => {
                 self.reenter = !self.host.read(|state| state.run.stop_requested);
                 Ok(None)
@@ -421,24 +439,37 @@ impl Loop {
                 err @ (EngineError::NotBuilt(_) | EngineError::Journal(_) | EngineError::Io(_)),
             ) => Err(err),
             Err(EngineError::Git(GitError::NotBuilt(what))) => Err(EngineError::NotBuilt(what)),
-            // A CLI error never ends a run: it waits until an agent can take the job, tries
-            // again on its own after a wait that grows with each try, and its note says why.
+            // Nothing can take a job the run needs. Waiting can't bring a model or a login
+            // back, so the run stops fully, its work kept, and only `/resume` carries it on.
             Err(EngineError::Stalled(stall)) => {
-                let tries = self.host.read(|state| state.run.fallback_waits);
-                let retry = job_fallback::retry_after(self.host.settings(), tries);
-                let until = stall
-                    .resets_at
-                    .or_else(|| retry.map(|retry| self.host.now() + retry));
-                self.note(NoteLevel::Error, &job_fallback::wait_line(&stall, retry));
                 // Where a setting of yours is all that keeps the job on its CLI, the question
-                // about the CLI offers to move it. The run waits and tries again all the same.
+                // about the CLI offers to move it.
                 if let Some(kept) = &stall.kept {
                     crate::fallback::down::job_waits(&self.host, kept)?;
                 }
+                // A review or a ruling that only its builder's provider is left to take waits
+                // for the agent it was asked of instead, and its question asks you.
+                if let Some(agent_id) = stall.waits_for_its_agent() {
+                    self.note(NoteLevel::Error, &stall.line);
+                    let tries = self.host.read(|state| state.run.fallback_waits);
+                    let retry = job_fallback::retry_after(self.host.settings(), tries);
+                    let until = stall
+                        .resets_at
+                        .or_else(|| retry.map(|retry| self.host.now() + retry));
+                    return self
+                        .wait(WaitReason::WaitingForAgent { agent_id, until })
+                        .await
+                        .map(Some);
+                }
+                let stop = Some(Box::new(stall.run_stop()));
                 let detail = stall.detail.clone();
-                self.wait(WaitReason::NoFallback { detail, until })
-                    .await
-                    .map(Some)
+                self.wait(WaitReason::NoFallback {
+                    detail,
+                    until: None,
+                    stop,
+                })
+                .await
+                .map(Some)
             }
             Err(err) => self
                 .finish(RunOutcome::Failed, Some(err.run_detail()))
@@ -716,6 +747,23 @@ impl Loop {
 }
 
 /// Every worker the run may use: the crew and the main agent.
+/// Why a run that failed or was given up ended, in the words of the step that ended it, such
+/// as the merge's "Nothing was merged, since no task passed: …". `None` for any other ending,
+/// which says its own.
+fn why_it_ended(state: &RunState, outcome: RunOutcome) -> Option<String> {
+    if !matches!(outcome, RunOutcome::Failed | RunOutcome::Abandoned) {
+        return None;
+    }
+    state
+        .workflows
+        .by_id
+        .values()
+        .flat_map(|record| &record.steps)
+        .filter(|progress| progress.summary.is_some())
+        .max_by_key(|progress| progress.ended_at)
+        .and_then(|progress| progress.summary.clone())
+}
+
 fn crew(settings: &Settings) -> Vec<ModelRef> {
     let mut workers = settings.crew.members();
     if !workers.contains(&settings.crew.main) {

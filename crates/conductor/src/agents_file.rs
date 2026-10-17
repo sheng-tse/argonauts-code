@@ -53,6 +53,14 @@ pub struct AgentRecord {
     /// When the agent last left `Down`, which wakes runs waiting for it.
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub left_down_at: Option<OffsetDateTime>,
+    /// When a session of the agent that went straight out, not through the sandbox's proxy,
+    /// last finished its work.
+    #[serde(
+        default,
+        with = "time::serde::rfc3339::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub direct_success_at: Option<OffsetDateTime>,
     /// The session running the breaker's test task, while one runs.
     #[serde(default)]
     pub test_task: Option<Holder>,

@@ -77,6 +77,7 @@ mod tests {
             live: false,
             remind: false,
             name: None,
+            shape_known: true,
         }
     }
 

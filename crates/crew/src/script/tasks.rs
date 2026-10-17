@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
+use argonauts_core::events::session::CHILD_GROUP;
 use argonauts_core::events::task::{
     CheckOutcome, ReviewEvent, TaskKind, TaskLimit, TaskSpec, TaskState,
 };
@@ -159,12 +160,41 @@ pub(super) fn author(bridge: &Bridge<'_>, call: &AgentCall) -> Option<ModelRef> 
     Some(worker_of(bridge.host, &record))
 }
 
+/// Who built each of the script's tasks so far, once each.
+pub(super) fn authors(bridge: &Bridge<'_>) -> Vec<ModelRef> {
+    let tasks: Vec<TaskId> = lock(&bridge.tasks.entries)
+        .iter()
+        .filter(|entry| !entry.dropped)
+        .map(|entry| entry.task.clone())
+        .collect();
+    let mut authors = Vec::new();
+    for task in tasks {
+        let Ok(record) = record_of(bridge.host, &task) else {
+            continue;
+        };
+        let author = worker_of(bridge.host, &record);
+        if !authors.contains(&author) {
+            authors.push(author);
+        }
+    }
+    authors
+}
+
 fn name_of(call: &AgentCall) -> String {
     match &call.task {
         Some(task) => task.clone(),
         None if call.worktree => call.label.clone(),
         None => THE_REQUEST.to_owned(),
     }
+}
+
+/// Whether a worker whose call runs in `phase` may run a workflow of its own, a level of
+/// nesting `workflows.max_depth` allows: one further in than the worker, and a worker of a
+/// workflow inside the run's, whose calls run in a group named for that workflow, is a level
+/// in already.
+fn may_nest(phase: Option<&str>, max_depth: u32) -> bool {
+    let levels_in = u32::from(phase.is_some_and(|phase| phase.starts_with(CHILD_GROUP)));
+    levels_in < max_depth
 }
 
 /// One writer's turn at its task: the task's first build, or the next round on it.
@@ -178,13 +208,13 @@ pub(super) async fn work(
     let entry = bridge.tasks.entry(&name_of(call))?;
     let _turn = entry.turn.lock().await;
     let task = &entry.task;
-    // A worker's own workflow is a level of nesting, which `workflows.max_depth` allows.
     let nests = call.own_workflow
         || call
             .phase
             .as_ref()
             .is_some_and(|phase| bridge.own_workflow_in.contains(phase));
-    if nests && host.settings().workflows.max_depth > 1 {
+    let max_depth = host.settings().workflows.max_depth;
+    if nests && may_nest(call.phase.as_deref(), max_depth) {
         host.shared().let_run_its_own_workflow(task);
     }
     let already = entry.finished.contains(&call.index);
@@ -325,6 +355,38 @@ pub(super) async fn change_of(
     Ok(Some((tree.path, shown_change(change))))
 }
 
+/// What a reviewer or a judge about no one task reads: every task's change so far, each under
+/// its name, as they will merge into the run. `None` before any task has a change.
+pub(super) async fn combined_change(bridge: &Bridge<'_>) -> EngineResult<Option<String>> {
+    let entries: Vec<(String, TaskId)> = lock(&bridge.tasks.entries)
+        .iter()
+        .filter(|entry| !entry.dropped)
+        .map(|entry| (entry.name.clone(), entry.task.clone()))
+        .collect();
+    let host = bridge.host;
+    let mut parts = Vec::new();
+    for (name, task) in entries {
+        if host.read(|state| state.tasks.get(&task).is_none()) {
+            continue;
+        }
+        let tree = worktree::ensure(host, &task).await?;
+        let git = worktree::tree_git(host, &tree.path).await?;
+        let Some(head) = git.head_commit(&tree.path).await? else {
+            continue;
+        };
+        let change = git.review_diff(&tree.path, &tree.base, &head).await?;
+        if !change.trim().is_empty() {
+            let name = if name == THE_REQUEST {
+                "the request"
+            } else {
+                name.as_str()
+            };
+            parts.push(format!("# {name}\n{}", shown_change(change)));
+        }
+    }
+    Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
+}
+
 /// The task's worktree, once it has one.
 pub(super) async fn tree_of(
     bridge: &Bridge<'_>,
@@ -426,38 +488,48 @@ pub(super) fn judged(
     ran: &Ran,
     answer: &Value,
 ) -> EngineResult<()> {
-    let (Some(name), Some(accept)) = (
-        call.task.as_deref(),
-        answer.get("accept").and_then(Value::as_bool),
-    ) else {
+    let Some(accept) = answer.get("accept").and_then(Value::as_bool) else {
         return Ok(());
     };
-    let (task, round) = {
+    // A call about no one task, as a run-wide sign-off is, judged the run's whole change, so
+    // its verdict is every task's.
+    let judged: Vec<(TaskId, u32)> = {
         let mut entries = lock(&bridge.tasks.entries);
-        let Some(entry) = entries.iter_mut().find(|entry| entry.name == name) else {
+        let mut judged = Vec::new();
+        for entry in entries
+            .iter_mut()
+            .filter(|entry| match call.task.as_deref() {
+                Some(name) => entry.name == name,
+                None => !entry.dropped,
+            })
+        {
+            // One reviewer who asks for a change is enough to send it back.
+            entry.accepted = Some(accept && entry.accepted != Some(false));
+            // A review counts for the build it read, so its round is how often it was built.
+            let round = u32::try_from(entry.finished.len())
+                .unwrap_or(u32::MAX)
+                .max(1);
+            judged.push((entry.task.clone(), round));
+        }
+        if judged.is_empty() {
             return Ok(());
-        };
-        // One reviewer who asks for a change is enough to send it back.
-        entry.accepted = Some(accept && entry.accepted != Some(false));
-        // A review counts for the build it read, so its round is how often the task was built.
-        let round = u32::try_from(entry.finished.len())
-            .unwrap_or(u32::MAX)
-            .max(1);
-        let task = entry.task.clone();
+        }
         bridge.tasks.keep_on_disk(&entries)?;
-        (task, round)
+        judged
     };
     let host = bridge.host;
-    if host.read(|state| state.tasks.get(&task).is_none()) {
-        return Ok(());
+    for (task, round) in judged {
+        if host.read(|state| state.tasks.get(&task).is_none()) {
+            continue;
+        }
+        let review = ReviewEvent::Reviewed {
+            reviewer: ran.worker.clone(),
+            blind: false,
+            round,
+            review: review_of(accept, answer),
+        };
+        host.record(Some(&task), Some(&ran.key), RunEventKind::Review(review))?;
     }
-    let review = ReviewEvent::Reviewed {
-        reviewer: ran.worker.clone(),
-        blind: false,
-        round,
-        review: review_of(accept, answer),
-    };
-    host.record(Some(&task), Some(&ran.key), RunEventKind::Review(review))?;
     Ok(())
 }
 
@@ -615,6 +687,17 @@ mod tests {
             )
         );
         assert_eq!(checks_text(&[]), None);
+    }
+
+    /// A worker's own workflow is a level inside the run, and a worker already inside a
+    /// workflow inside the run's starts without one unless two levels are allowed.
+    #[test]
+    fn a_worker_runs_its_own_workflow_only_as_deep_as_the_settings_allow() {
+        assert!(may_nest(Some("Build"), 1));
+        assert!(may_nest(None, 1));
+        assert!(!may_nest(Some("Build"), 0));
+        assert!(!may_nest(Some("▸ lint"), 1));
+        assert!(may_nest(Some("▸ lint"), 2));
     }
 
     #[test]

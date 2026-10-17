@@ -49,7 +49,11 @@ pub fn title_from_task(task: &str) -> String {
         return line.to_owned();
     }
     let cut: String = line.chars().take(TITLE_MAX_CHARS - 1).collect();
-    format!("{}…", cut.trim_end())
+    let at_word = match cut.rfind(char::is_whitespace) {
+        Some(space) if space > 0 => &cut[..space],
+        _ => cut.as_str(),
+    };
+    format!("{}…", at_word.trim_end())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -185,6 +189,18 @@ mod tests {
         assert!(title.ends_with('…'));
         assert_eq!(title_from_task("  \n  hello  \n"), "hello");
         assert_eq!(title_from_task(""), "");
+    }
+
+    /// A long title is cut at its last whole word that fits.
+    #[test]
+    fn a_long_title_is_cut_at_a_word() {
+        let task = "Fix the money rounding so the three failing tests in tests/test_money.py pass";
+        let title = title_from_task(task);
+        assert_eq!(
+            title,
+            "Fix the money rounding so the three failing tests in…"
+        );
+        assert!(title.chars().count() <= TITLE_MAX_CHARS);
     }
 
     #[test]

@@ -3,12 +3,12 @@ source: crates/tui/tests/snap_overlays.rs
 expression: "screen(&mut view, width, height, &state)"
 ---
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Resume a run · in ~/code/export                                                                  │
+│ Resume a conversation · in ~/code/export                                                         │
 │                                                                                                  │
 │     from              first prompt or title                             last used     length     │
-│ ❯ ◆ Argonauts Code    Add a --json flag to export                       Sep 28        waiting    │
-│     Argonauts Code    Fix the flaky export test                         3h ago        stopped    │
-│     Argonauts Code    Rename the CSV writer                             just now      merged     │
+│ ❯ ◆ Argonauts Code    Add a --json flag to export                       1h ago        3 turns    │
+│     Argonauts Code    Fix the flaky export test                         3h ago        3 turns    │
+│     Argonauts Code    Rename the CSV writer                             Sep 28        3 turns    │
 │                                                                                                  │
-│ ↑↓ pick · enter resumes it · → agents · x stops it · d diff · r raw · / search · esc             │
+│ ↑↓ pick · enter continues it · b branches from it, the original untouched · / search · esc       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

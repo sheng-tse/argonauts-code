@@ -55,7 +55,30 @@ pub fn run_failure_line(detail: Option<&str>) -> String {
     }
 }
 
+/// What the sandbox's proxy refused a session that then failed on the network, as the first
+/// line of the session's error: `the sandbox's proxy couldn't reach api.anthropic.com`.
+pub const PROXY_SAID: &str = "the sandbox's proxy ";
+
+/// The error of a session that failed on the network after the sandbox's proxy refused it
+/// what `refused` says, as `couldn't reach api.anthropic.com`, over the CLI's own `message`.
+pub fn after_proxy_refusal(refused: &str, message: &str) -> String {
+    let said = format!("{PROXY_SAID}{refused}");
+    match message.trim() {
+        "" => said,
+        message => format!("{said}\n{message}"),
+    }
+}
+
 fn cli_error(cli: &str, category: ErrorCategory, message: &str) -> String {
+    // What the proxy refused is the likelier cause, and names the host.
+    if matches!(category, ErrorCategory::Network | ErrorCategory::Timeout)
+        && let Some(said) = message
+            .lines()
+            .next()
+            .filter(|line| line.starts_with(PROXY_SAID))
+    {
+        return format!("{cli} couldn't reach its service: {said}");
+    }
     match category {
         ErrorCategory::InvalidRequest if about_the_answer_format(message) => {
             format!("{cli} refused the answer format Argonauts Code asked for")
@@ -74,6 +97,9 @@ fn cli_error(cli: &str, category: ErrorCategory, message: &str) -> String {
             format!("{cli} couldn't reach its service")
         }
         ErrorCategory::ContextFull => format!("{cli}'s context window is full"),
+        ErrorCategory::SessionLost => {
+            format!("{cli} no longer had the session it was asked to resume")
+        }
         ErrorCategory::ModelUnavailable => format!("{cli}'s model isn't available"),
         ErrorCategory::Permission => format!("{cli} was refused permission for an action"),
         ErrorCategory::Limit => format!("{cli} reached its own spend cap"),
@@ -110,6 +136,44 @@ mod tests {
             Some("Codex refused the answer format Argonauts Code asked for")
         );
         assert!(!refused.may_pass());
+    }
+
+    /// A network error after the sandbox's proxy refused the session names what it refused.
+    #[test]
+    fn a_network_error_past_the_proxy_names_the_host_it_couldnt_reach() {
+        let message = after_proxy_refusal(
+            "couldn't reach api.anthropic.com",
+            "API Error: Connection error.",
+        );
+        assert_eq!(
+            message,
+            "the sandbox's proxy couldn't reach api.anthropic.com\nAPI Error: Connection error."
+        );
+        let failed = EndReason::CliError {
+            category: ErrorCategory::Network,
+            message,
+        };
+        assert_eq!(
+            failed.plain_line("Claude Code").as_deref(),
+            Some(
+                "Claude Code couldn't reach its service: the sandbox's proxy couldn't reach \
+                 api.anthropic.com"
+            )
+        );
+        assert!(failed.may_pass());
+
+        let plain = EndReason::CliError {
+            category: ErrorCategory::Network,
+            message: "API Error: Connection error.".to_owned(),
+        };
+        assert_eq!(
+            plain.plain_line("Claude Code").as_deref(),
+            Some("Claude Code couldn't reach its service")
+        );
+        assert_eq!(
+            after_proxy_refusal("couldn't reach api.anthropic.com", " "),
+            "the sandbox's proxy couldn't reach api.anthropic.com"
+        );
     }
 
     #[test]

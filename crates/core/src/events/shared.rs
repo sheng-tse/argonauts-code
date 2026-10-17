@@ -17,6 +17,29 @@ pub enum BlackboardEvent {
         message: MessageId,
         to: SessionKey,
     },
+    /// A question for you that was answered in your place on autopilot.
+    AnsweredForYou(AnsweredForYou),
+}
+
+/// Who answered a question in your place, in which part, what and why, and what the task does
+/// next.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnsweredForYou {
+    pub question: MessageId,
+    /// The asking task's label, such as `build:fix-the-money`.
+    pub asker: String,
+    /// The option's label, or the answer in one line.
+    pub answer: String,
+    pub by: Option<ModelRef>,
+    /// What the answerer is to the run, such as the main agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<RoleName>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// The asking report had finished its work, so its task goes on to its reviews instead of
+    /// carrying on with the answer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub finished: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

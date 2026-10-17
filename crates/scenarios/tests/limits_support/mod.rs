@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, bail};
 use argonauts_core::events::RunEvent;
 use argonauts_core::paths::Paths;
-use argonauts_scenarios::{Scenario, WAIT};
+use argonauts_scenarios::{Scenario, WAIT, as_set_up};
 use argonauts_testkit::Pty;
 
 pub use events::*;
@@ -89,7 +89,7 @@ impl Limits {
         if !settings.contains("[commit]") {
             settings.push_str("\n[commit]\nunclaimed = \"keep\"\n");
         }
-        write_file(&self.paths().global_config(), &settings)
+        write_file(&self.paths().global_config(), &as_set_up(&settings))
     }
 
     /// The interactive app, once its prompt is idle.

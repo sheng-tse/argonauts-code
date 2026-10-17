@@ -81,6 +81,35 @@ pub struct HealthMark {
     /// agent's Down.
     #[serde(default)]
     pub network: bool,
+    /// From a session that went out through the sandbox's proxy, whose network may fail where
+    /// the agent's own doesn't.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub proxied: bool,
+}
+
+/// The sessions of this process that go out through the sandbox's proxy.
+static PROXIED: Mutex<BTreeSet<SessionKey>> = Mutex::new(BTreeSet::new());
+
+/// Notes that `session` goes out through the sandbox's proxy, so its network errors are told
+/// apart from the agent's own.
+pub fn goes_through_proxy(session: &SessionKey) {
+    PROXIED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(session.clone());
+}
+
+fn through_proxy(signal: &HealthSignal) -> bool {
+    let session = match signal {
+        HealthSignal::Retry { session, .. }
+        | HealthSignal::Error { session, .. }
+        | HealthSignal::Success { session, .. } => session,
+        HealthSignal::AdapterBroken { .. } => return false,
+    };
+    PROXIED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(session)
 }
 
 /// One agent's breaker as plain state, so its rules are tested without files or clocks.
@@ -96,6 +125,8 @@ pub struct Breaker {
     marks: Vec<HealthMark>,
     /// A test task is running, while Testing.
     testing_task: bool,
+    /// When a session that went straight out last finished its work.
+    direct_success_at: Option<OffsetDateTime>,
 }
 
 impl Breaker {
@@ -110,6 +141,7 @@ impl Breaker {
             left_down_at: None,
             marks: Vec::new(),
             testing_task: false,
+            direct_success_at: None,
         }
     }
 
@@ -124,6 +156,7 @@ impl Breaker {
         }
         breaker.left_down_at = entry.left_down_at;
         breaker.marks = entry.marks.clone();
+        breaker.direct_success_at = entry.direct_success_at;
         breaker.testing_task = breaker.state == HealthState::Testing && entry.test_task.is_some();
         breaker
     }
@@ -173,6 +206,7 @@ impl Breaker {
         entry.health = Some(self.health(agent_id, disabled));
         entry.left_down_at = self.left_down_at;
         entry.marks = self.marks.clone();
+        entry.direct_success_at = self.direct_success_at;
     }
 
     /// The reset the agent reported, such as when its plan usage comes back. While it's down, the
@@ -186,18 +220,26 @@ impl Breaker {
 
     /// The new state, if the signal changed it.
     pub fn observe(&mut self, signal: &HealthSignal, now: OffsetDateTime) -> Option<HealthState> {
-        self.observe_from(signal, "", now)
+        self.observe_from(signal, "", false, now)
     }
 
     /// Like [`Breaker::observe`], with sessions counted as `<scope>/<session>`, so sessions
-    /// of different processes stay apart.
+    /// of different processes stay apart, and `proxied` when the session went out through the
+    /// sandbox's proxy. Its network errors don't count toward Down while sessions that go
+    /// straight out still finish their work.
     pub fn observe_from(
         &mut self,
         signal: &HealthSignal,
         scope: &str,
+        proxied: bool,
         now: OffsetDateTime,
     ) -> Option<HealthState> {
+        if matches!(signal, HealthSignal::Success { .. }) && !proxied {
+            self.direct_success_at = Some(now);
+        }
         let (session, outage, network) = match signal {
+            // Sign-in retries count as sign-in, not as trouble.
+            HealthSignal::Retry { reason, .. } if reason.is_sign_in() => return None,
             HealthSignal::Retry {
                 session, reason, ..
             } => (
@@ -213,10 +255,18 @@ impl Breaker {
                 matches!(category, ErrorCategory::Network | ErrorCategory::Timeout),
             ),
             HealthSignal::Success { .. } => {
-                return if self.state == HealthState::Degraded {
-                    self.recover_if_quiet(now)
-                } else {
-                    None
+                return match self.state {
+                    HealthState::Degraded => self.recover_if_quiet(now),
+                    // A session that finished its work is as good a test as the test task.
+                    HealthState::Down | HealthState::Testing => {
+                        self.marks.clear();
+                        self.set(
+                            HealthState::Healthy,
+                            now,
+                            Some(TEST_TASK_SUCCEEDED.to_owned()),
+                        )
+                    }
+                    HealthState::Healthy => None,
                 };
             }
             HealthSignal::Error { .. } | HealthSignal::AdapterBroken { .. } => return None,
@@ -234,10 +284,18 @@ impl Breaker {
             },
             outage,
             network,
+            proxied,
         });
         self.prune(now);
 
-        let unreachable: Vec<&HealthMark> = self.marks.iter().filter(|m| m.network).collect();
+        let direct_works = self.direct_success_at.is_some_and(|at| {
+            span(&self.settings.window, "health.window").is_none_or(|window| at > now - window)
+        });
+        let unreachable: Vec<&HealthMark> = self
+            .marks
+            .iter()
+            .filter(|mark| mark.network && !(mark.proxied && direct_works))
+            .collect();
         let sessions: BTreeSet<&str> = unreachable.iter().map(|m| m.session.as_str()).collect();
         if unreachable.len() >= at_least_one(self.settings.down_after)
             && sessions.len() >= at_least_one(self.settings.down_sessions)
@@ -911,10 +969,16 @@ impl HealthBoard for FileHealthBoard {
                         model.pass(now);
                     }
                 }
-                // Down waits for its test, so what its paused tasks say is not counted.
-                HealthState::Down => {}
+                // A session that finished its work shows the CLI answers again, as its test
+                // task would. Anything else its paused tasks say waits for that test.
+                HealthState::Down => {
+                    if matches!(signal, HealthSignal::Success { .. }) {
+                        breaker.observe_from(&signal, &self.scope, through_proxy(&signal), now);
+                        self.observe_model(breaker, entry, &signal, name, now);
+                    }
+                }
                 HealthState::Healthy | HealthState::Degraded => {
-                    breaker.observe_from(&signal, &self.scope, now);
+                    breaker.observe_from(&signal, &self.scope, through_proxy(&signal), now);
                     self.observe_model(breaker, entry, &signal, name, now);
                 }
             }
@@ -1060,6 +1124,59 @@ mod tests {
 
     fn t0() -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()
+    }
+
+    /// A session that finished its work while its CLI was down is as good as the test task:
+    /// the CLI is back at once, rather than after the cool-down.
+    #[test]
+    fn a_success_on_a_cli_marked_down_ends_its_down_state() {
+        let mut breaker = Breaker::new(&settings());
+        for session in 1..=3 {
+            breaker.observe(&error(session, ErrorCategory::Network), t0());
+        }
+        assert_eq!(breaker.state(), HealthState::Down);
+        assert_eq!(
+            breaker.observe(&success(4), t0()),
+            Some(HealthState::Healthy)
+        );
+        assert_eq!(breaker.reason(), Some(TEST_TASK_SUCCEEDED));
+        assert!(breaker.marks().is_empty());
+        assert_eq!(breaker.next_test_at(), None);
+    }
+
+    /// Sessions that go out through the sandbox's proxy fail on the network while the CLI's
+    /// direct sessions finish their work: the proxy's trouble doesn't take the CLI down. With
+    /// no direct success in the window, the same errors do.
+    #[test]
+    fn proxied_network_errors_dont_take_a_cli_down_while_direct_sessions_work() {
+        let mut breaker = Breaker::new(&settings());
+        breaker.observe_from(&success(1), "", false, t0());
+        for session in 2..=4 {
+            breaker.observe_from(&error(session, ErrorCategory::Network), "", true, t0());
+        }
+        assert_ne!(breaker.state(), HealthState::Down);
+        assert!(breaker.marks().iter().all(|mark| mark.proxied));
+
+        let mut later = Breaker::new(&settings());
+        later.observe_from(&success(1), "", false, t0());
+        let past_the_window = t0() + Delta::minutes(3);
+        for session in 2..=4 {
+            later.observe_from(
+                &error(session, ErrorCategory::Network),
+                "",
+                true,
+                past_the_window,
+            );
+        }
+        assert_eq!(later.state(), HealthState::Down);
+
+        // A proxied session's success says nothing of the agent's own network.
+        let mut proxied_only = Breaker::new(&settings());
+        proxied_only.observe_from(&success(1), "", true, t0());
+        for session in 2..=4 {
+            proxied_only.observe_from(&error(session, ErrorCategory::Network), "", true, t0());
+        }
+        assert_eq!(proxied_only.state(), HealthState::Down);
     }
 
     #[derive(Default)]
@@ -1212,6 +1329,32 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The board, unlike a bare breaker, used to drop every signal while the CLI was down, so
+    /// a CLI marked down stayed down while its sessions answered.
+    #[test]
+    fn a_success_ends_a_down_state_for_every_process() {
+        let home = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(t0());
+        let app = board(home.path(), &clock);
+        let run_host = board(home.path(), &clock);
+        let mut events = app.subscribe();
+
+        for session in 1..=3 {
+            run_host.observe(error(session, ErrorCategory::Network));
+        }
+        assert_eq!(app.state(&codex()).state, HealthState::Down);
+        drain(&mut events);
+
+        run_host.observe(success(9));
+        let health = app.state(&codex());
+        assert_eq!(health.state, HealthState::Healthy);
+        assert_eq!(health.reason.as_deref(), Some(TEST_TASK_SUCCEEDED));
+        assert_eq!(health.next_test_at, None);
+        assert_eq!(states(&drain(&mut events)), vec![HealthState::Healthy]);
+        let file = app.store().read().unwrap();
+        assert_eq!(file.agent_ids["codex"].test_task, None);
     }
 
     #[test]

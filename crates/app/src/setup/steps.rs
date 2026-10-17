@@ -49,6 +49,8 @@ pub(crate) struct Answers {
     pub telemetry: Option<bool>,
     pub trust_folder: bool,
     pub create_project_dir: bool,
+    /// Whether to write the guide pages into this repo's `.argonauts/`, when you were asked.
+    pub guides: Option<bool>,
 }
 
 impl Default for Answers {
@@ -57,13 +59,14 @@ impl Default for Answers {
             crew: Vec::new(),
             reviewers: Vec::new(),
             main_agent: None,
-            workflow: COUNCIL.to_owned(),
+            workflow: ORCHESTRATOR.to_owned(),
             orchestrator: None,
             roles: BTreeMap::new(),
             approvals: Some(ApprovalMode::Auto),
             telemetry: None,
             trust_folder: false,
             create_project_dir: false,
+            guides: None,
         }
     }
 }
@@ -218,7 +221,7 @@ mod tests {
         );
         assert_eq!(keys[0].1, r#""claude-code""#);
         assert_eq!(keys[1].1, r#"["claude-code", "codex"]"#);
-        assert_eq!(keys[4].1, r#""council""#);
+        assert_eq!(keys[4].1, r#""orchestrator""#);
         assert_eq!(keys[5].1, r#""auto""#);
         assert_eq!(keys[11].1, "false");
     }

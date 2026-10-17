@@ -19,6 +19,10 @@ use crate::views::workflow_rows::{scroll_mark, window};
 /// brings the rest into view.
 const OPTIONS_SHOWN: usize = 10;
 
+/// The fewest cells a description beside its option may wrap in on a framed question. Narrower,
+/// it goes under its option.
+const DESCRIPTION_ROOM: usize = 24;
+
 /// A description as it reads on one row.
 fn one_row(description: &str) -> String {
     sanitize_line(description).trim().to_owned()
@@ -44,6 +48,9 @@ enum Place {
     /// before the title, since the view above already says what waits. What the title is about
     /// sits beside it, and each option's explanation beside its label.
     UnderView,
+    /// Between two faint rules, one cell in, its title alone on its row, as the guided setup's
+    /// steps and the start's own questions draw.
+    Framed,
 }
 
 impl Place {
@@ -51,7 +58,7 @@ impl Place {
     fn margin(self) -> usize {
         match self {
             Place::Alone => 2,
-            Place::UnderView => 1,
+            Place::UnderView | Place::Framed => 1,
         }
     }
 
@@ -96,6 +103,11 @@ impl QuestionPrompt {
         if self.keys_only {
             return self.letters_layout(ctx);
         }
+        let place = if self.framed && place == Place::Alone {
+            Place::Framed
+        } else {
+            place
+        };
 
         let indent = [place.indent()];
         let mut details = self.detail.as_slice();
@@ -103,11 +115,33 @@ impl QuestionPrompt {
         match place {
             Place::Alone => {
                 lines.push(Line::from(decorative(glyphs.rule.repeat(width), question)));
+                // A warning reads in the warning colour from its mark to its last word.
+                let title = if self.warns {
+                    warning
+                } else {
+                    question.add_modifier(Modifier::BOLD)
+                };
                 lines.extend(wrap_text(
                     &sanitize_line(&self.title),
-                    question.add_modifier(Modifier::BOLD),
+                    title,
                     width,
                     &[Span::styled(format!("{} ", glyphs.question), warning)],
+                    &indent,
+                ));
+            }
+            Place::Framed => {
+                let faint = theme.style(Role::Faint);
+                lines.push(Line::from(decorative(glyphs.rule.repeat(width), faint)));
+                let title = if self.warns {
+                    warning
+                } else {
+                    theme.style(Role::Text)
+                };
+                lines.extend(wrap_text(
+                    sanitize_line(&self.title).trim(),
+                    title.add_modifier(Modifier::BOLD),
+                    width,
+                    &indent,
                     &indent,
                 ));
             }
@@ -168,8 +202,14 @@ impl QuestionPrompt {
         if self.body.is_empty() {
             lines.push(Line::default());
         } else {
-            // Dashed rules, as Claude Code frames the diff it asks about.
-            let dashed = Line::from(Span::styled(glyphs.dashed.repeat(width), dim));
+            // Dashed rules, as Claude Code frames the diff it asks about. Around a warning's
+            // words they step back further, so the words stand out.
+            let rule = if self.warns {
+                theme.style(Role::Faint)
+            } else {
+                dim
+            };
+            let dashed = Line::from(Span::styled(glyphs.dashed.repeat(width), rule));
             lines.push(dashed.clone());
             for row in &self.body {
                 lines.extend(wrap_text(
@@ -211,6 +251,10 @@ impl QuestionPrompt {
                 Span::styled(footer.trim().to_owned(), dim),
             ]);
             lines.push(truncate_line(&footer, width));
+        }
+        if place == Place::Framed {
+            let faint = theme.style(Role::Faint);
+            lines.push(Line::from(decorative(glyphs.rule.repeat(width), faint)));
         }
         let tail = lines.len() - tail_start;
         // Wrapping keeps an indent whole, which a terminal narrower than it can't show.
@@ -405,7 +449,7 @@ impl QuestionPrompt {
             .collect();
         // Under a view every explanation sits beside its label, when all of them fit.
         let under_view = match place {
-            Place::Alone => None,
+            Place::Alone | Place::Framed => None,
             Place::UnderView => column_beside(&labels, &explained, prefix_width, width),
         };
         let pointed = self.selected.min(self.options.len().saturating_sub(1));
@@ -422,11 +466,11 @@ impl QuestionPrompt {
                 "  ".to_owned()
             };
             let number = format!("{:<number_width$}", numbers[index]);
-            // Under a view the number reads with its label, as the view's own rows do.
+            // Under a view or framed, the number reads with its label, as the view's own rows do.
             let number_style = match place {
-                Place::Alone => dim,
-                Place::UnderView if here => question,
-                Place::UnderView => theme.style(Role::Text),
+                Place::Alone if !self.warns => dim,
+                _ if here => question,
+                _ => theme.style(Role::Text),
             };
             let first = [
                 place.indent(),
@@ -461,8 +505,8 @@ impl QuestionPrompt {
                 row.extend(labels[index].iter().cloned());
                 let gap = column - spans_width(&labels[index]);
                 row.push(Span::raw(" ".repeat(gap)));
-                row.push(Span::styled(one_row(description), dim));
-                lines.push(Line::from(row));
+                let hang = [Span::raw(" ".repeat(prefix_width + column))];
+                lines.extend(wrap_text(&one_row(description), dim, width, &row, &hang));
                 continue;
             } else {
                 lines.extend(wrap_spans(&labels[index], width, &first, &rest));
@@ -533,7 +577,13 @@ impl QuestionPrompt {
             .filter_map(|option| option.description.as_deref())
             .map(|description| str_width(&one_row(description)))
             .max()?;
-        (column + longest <= room).then_some(column)
+        // A framed question wraps a long one beside its option, as the setup's steps do.
+        let needs = if self.framed {
+            longest.min(DESCRIPTION_ROOM)
+        } else {
+            longest
+        };
+        (column + needs <= room).then_some(column)
     }
 
     /// A free-text option is dim, like the placeholder it is.
@@ -651,18 +701,6 @@ impl QuestionPrompt {
             } else {
                 hint("Enter to choose with the note", "Esc to close the note");
             }
-        } else if self.stray_typing {
-            // The input is hidden while the question has the keys, so this is where letters
-            // typed at it are told where they went.
-            parts.push(Part::new(
-                part("Typing waits while the question has the keys"),
-                KEEP,
-            ));
-            parts.push(Part::joined(dot(), part("↑↓ to choose"), 0));
-            let esc = sanitize_line(&self.esc_hint).trim().to_owned();
-            if !esc.is_empty() {
-                parts.push(Part::joined(dot(), part(&esc), 1));
-            }
         } else if let Some(armed) = self.armed.and_then(|index| self.options.get(index)) {
             let verb = lowercase_first(sanitize_line(&armed.label).trim());
             // "Enter to cancel the question · Esc to cancel" would offer one word for both ways.
@@ -683,7 +721,7 @@ impl QuestionPrompt {
                 Some(OptionKind::FreeText) => "Enter to type",
                 Some(OptionKind::Checklist) => "Enter to pick",
                 Some(OptionKind::Toggle) => "Enter to switch",
-                _ => "Enter to choose",
+                _ => self.enter_hint.as_deref().unwrap_or("Enter to choose"),
             };
             parts.push(Part::new(part(enter), KEEP));
             if self.can_note(self.selected)

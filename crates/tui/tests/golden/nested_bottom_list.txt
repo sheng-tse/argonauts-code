@@ -1,0 +1,23 @@
+  Orchestrator, while build:due-flag's own workflow runs                                                              
+  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱  3/5 · 2m52s · ↓ 91.4k tokens                                        
+    ⎿ ◯ add-due-flag        ▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱  2/3 · 1m58s · ↓ 25.9k tokens · run by build:due-flag                
+                                                                                                                      
+  the same run once add-due-flag has ended, one row whose 5/5 counts its 3 agents                                     
+  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  5/5 · 3m31s · ↓ 99.5k tokens                                        
+                                                                                                                      
+  Captain, while Claude Code's second workflow runs                                                                   
+  ◯ Fix the money rounding  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱  6/7 · 1m40s · ↓ 201k tokens                                         
+    ⎿ ◯ final-signoff-money ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 15s · ↓ 48.3k tokens                                          
+                                                                                                                      
+  Captain, merged, counting 5 + 2 agents in the two workflows and the commit message                                  
+  ✔ Fix the money rounding  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  8/8 · 2m06s · ↓ 226k tokens · merged onto main                      
+                                                                                                                      
+  the deepest, two levels inside the run, each one step further in                                                    
+  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  5/7 · 3m17s · ↓ 101k tokens                                         
+    ⎿ ◯ add-due-flag        ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱  4/5 · 2m23s · ↓ 35.1k tokens · run by build:due-flag                
+        ⎿ ◯ date-cases      ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 22s · ↓ 6.6k tokens                                           
+                                                                                                                      
+  ↓ onto a row inside, then Enter, opens the run's view on Build with add-due-flag open and the cursor on it          
+  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱  3/5 · 2m52s · ↓ 91.4k tokens                                        
+❯   ⎿ ◯ add-due-flag        ▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱  2/3 · 1m58s · ↓ 25.9k tokens · run by build:due-flag                
+  ◯ Per key rate limit      ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 1m02s · ↓ 25.2k tokens                                        

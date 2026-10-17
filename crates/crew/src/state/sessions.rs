@@ -58,6 +58,10 @@ pub struct SessionRecord {
     /// The files its edit tools wrote, as its CLI named them: from its folder, or absolute.
     #[serde(default)]
     pub written: BTreeSet<String>,
+    /// How many times its CLI retried after losing the network, which says why one that ran
+    /// out of time never answered.
+    #[serde(default)]
+    pub network_retries: u32,
     /// The workflow its own CLI ran, as it last reported it, which the steps you require are
     /// checked against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -125,6 +129,7 @@ impl Sessions {
                         asked: started.asked.clone(),
                         agent_failures: Vec::new(),
                         written: BTreeSet::new(),
+                        network_retries: 0,
                         workflow: None,
                     };
                     self.by_key.insert(key.clone(), record);
@@ -191,6 +196,10 @@ impl Sessions {
                 record.written.insert(path.clone());
             }
             AgentEvent::Workflow { workflow } => record.workflow = Some(workflow.clone()),
+            AgentEvent::Retry {
+                reason: argonauts_core::RetryReason::Network,
+                ..
+            } => record.network_retries += 1,
             _ => {}
         }
     }

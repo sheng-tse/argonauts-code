@@ -60,6 +60,9 @@ pub fn session_label(state: &RunState, asking: &Asking<'_>) -> String {
     if let Some(kept) = earlier_label(state, asking, round) {
         return kept;
     }
+    if let Some(named) = named_by_its_call(state, asking) {
+        return labels::unique(named, |candidate| taken(state, asking.key, candidate));
+    }
     let phase = asking.step.and_then(|step| {
         let record = state.workflows.by_id.get(&step.workflow)?;
         Some((
@@ -114,6 +117,17 @@ pub fn session_label(state: &RunState, asking: &Asking<'_>) -> String {
     };
     let label = labels::fill(&pattern, &parts);
     labels::unique(&label, |candidate| taken(state, asking.key, candidate))
+}
+
+/// The label a script's call gave the task `asking` works on, which the task's worker goes by,
+/// so the task has one name wherever it shows. A script titles its task with the call's
+/// label, where a planned task's title is a sentence, which is no label.
+fn named_by_its_call<'s>(state: &'s RunState, asking: &Asking<'_>) -> Option<&'s str> {
+    if asking.role != RoleName::Worker || asking.step_name != Some(StepName::Build) {
+        return None;
+    }
+    let title = state.tasks.get(asking.task?)?.spec.title.as_str();
+    labels::problem(title).is_none().then_some(title)
 }
 
 /// A label a session was given outright. It keeps the one it has when it resumes, and takes
@@ -243,6 +257,7 @@ mod tests {
     use super::*;
     use argonauts_core::events::RunEventKind;
     use argonauts_core::events::session::SessionEvent;
+    use argonauts_core::events::task::TaskEvent;
 
     use crate::state::tests as testing;
 
@@ -288,5 +303,49 @@ mod tests {
             ..asking
         };
         assert_eq!(session_label(&state, &second), "reader-2");
+    }
+
+    /// A task a script's call made goes by the call's label, so its worker's row and the merge
+    /// question name it alike; a planned task's worker is named from its item.
+    #[test]
+    fn a_scripts_task_goes_by_its_calls_label() {
+        let mut state = RunState::default();
+        let mut scripted = crate::testutil::task_spec("task-001", &[], Some("codex"));
+        scripted.title = "build:rate-limit".to_owned();
+        scripted.item = Some("per-api-key".to_owned());
+        let mut planned = crate::testutil::task_spec("task-002", &[], Some("codex"));
+        planned.title = "Limit each API key's requests".to_owned();
+        planned.item = Some("per-api-key".to_owned());
+        for (seq, spec) in [(1, scripted), (2, planned)] {
+            let task = spec.id.to_string();
+            state.apply(&testing::envelope(
+                seq,
+                Some(task.as_str()),
+                None,
+                RunEventKind::Task(TaskEvent::Created(Box::new(spec))),
+            ));
+        }
+        let codex = worker("codex");
+        let (one, two) = (SessionKey::numbered(1), SessionKey::numbered(2));
+        let (first, second) = (TaskId::numbered(1), TaskId::numbered(2));
+        let asking = |key, task| Asking {
+            key,
+            step: None,
+            round: 1,
+            role: RoleName::Worker,
+            step_name: Some(StepName::Build),
+            task: Some(task),
+            item: None,
+            worker: &codex,
+            provider: "openai",
+        };
+        assert_eq!(
+            session_label(&state, &asking(&one, &first)),
+            "build:rate-limit"
+        );
+        assert_eq!(
+            session_label(&state, &asking(&two, &second)),
+            "worker:per-api-key"
+        );
     }
 }

@@ -30,7 +30,7 @@ pub use decided::DecidedOnAutopilot;
 pub use diff::{DiffCell, DiffHunk, DiffKind, DiffLine, DiffParseError, DiffView};
 pub use group::CollapsedGroup;
 pub use header::{AgentReady, SessionHeader};
-pub use notice::{ExitNote, HungLine, Notice, ResultLine};
+pub use notice::{ExitNote, HungLine, Notice, ResultLine, Trailing};
 pub use record::Record;
 pub use shell::{ShellEnd, ShellRun};
 pub use templates::{TemplateFolder, TemplateRows};

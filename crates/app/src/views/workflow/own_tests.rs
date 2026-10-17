@@ -200,6 +200,28 @@ fn the_runs_view_is_the_one_the_terminal_draws() {
     assert_eq!(view, drawn, "{shown}");
 }
 
+/// Until Claude Code's workflow reports its phases the run's shape isn't known, so there is no
+/// view of it: not Argonauts Code's own Work and Merge, and not the session writing it.
+#[test]
+fn nothing_is_drawn_until_claude_codes_workflow_names_its_phases() {
+    let events = add_due_dates();
+    let reported = events
+        .iter()
+        .position(|event| matches!(event.kind, RunEventKind::Agent(AgentEvent::Workflow { .. })))
+        .expect("the workflow's report");
+    let writing = &events[..reported];
+    assert!(workflow_view(writing, &run_id(), None).is_none());
+    assert!(crate::views::being_written(writing));
+    let view = workflow_view(&events, &run_id(), None).expect("the run's view");
+    assert!(!crate::views::being_written(&events));
+    let phases: Vec<&str> = view
+        .phases
+        .iter()
+        .map(|phase| phase.name.as_str())
+        .collect();
+    assert!(!phases.contains(&"Work"), "{phases:?}");
+}
+
 fn agents(view: &WorkflowView) -> Vec<&AgentRow> {
     view.phases
         .iter()
@@ -263,4 +285,196 @@ fn claude_codes_own_agent_opens_as_itself() {
         index: 1,
     };
     assert!(inner_agent_view(&events, &run_id(), &other).is_none());
+}
+
+/// Once the run merged, its end line tells the whole story: who built it with Claude Code's
+/// own workflow, who reviewed it and who signed it off.
+#[test]
+fn a_merged_runs_end_line_names_who_did_its_work() {
+    use argonauts_core::events::run::RunOutcome;
+    use argonauts_core::views::StatusKind;
+
+    let mut events = add_due_dates();
+    events.push(event(
+        120,
+        RunEventKind::Run(RunLifecycle::Finished {
+            outcome: RunOutcome::Merged,
+            detail: None,
+        }),
+    ));
+    let view = workflow_view(&events, &run_id(), None).expect("the run's view");
+    let ended = view
+        .status_lines
+        .iter()
+        .find(|line| line.kind == StatusKind::Ended)
+        .expect("the end line");
+    assert_eq!(
+        ended.text,
+        "Merged · Haiku 4.5 built it, GPT 5.6 Luna reviewed, GPT 5.6 Luna signed off"
+    );
+}
+
+/// Claude Code's workflow asks for its review a second time under the same label, which the
+/// crew labels by its round: that ask fills the second row of the label, and its own row is no
+/// extra row beside them.
+#[test]
+fn a_review_asked_again_fills_the_row_of_its_round() {
+    let mut events = add_due_dates();
+    let again = SessionKey::numbered(4);
+    for event in &mut events {
+        if let RunEventKind::Agent(AgentEvent::Workflow { workflow }) = &mut event.kind {
+            workflow
+                .agents
+                .push(cli_agent(4, "review:due-dates", 2, CliAgentState::Running));
+        }
+    }
+    events.push(asked(
+        97,
+        &again,
+        RoleName::Reviewer,
+        "codex/gpt-5.6-luna",
+        "review:due-dates · round 2",
+    ));
+    let view = workflow_view(&events, &run_id(), None).unwrap();
+    let rows: Vec<(&str, &SessionKey)> = agents(&view)
+        .iter()
+        .map(|agent| (agent.label.as_str(), &agent.session))
+        .collect();
+    let reviews: Vec<&SessionKey> = rows
+        .iter()
+        .filter(|(label, _)| label.starts_with("review:"))
+        .map(|(_, session)| *session)
+        .collect();
+    assert_eq!(
+        reviews,
+        [&SessionKey::numbered(2), &again],
+        "each review row is its own round's: {rows:?}"
+    );
+}
+
+/// The one count rule holds through the recorded Captain run, where Claude Code's own workflow
+/// asks the crew's reviewers, some of them under labels none of its agents has: at every event
+/// the header, the sum of the phases and the run's row in the bottom list say the same.
+#[test]
+fn the_header_the_phases_and_the_bottom_row_count_alike_through_a_recorded_run() {
+    const RECORDED: &str =
+        include_str!("../../../../crew/tests/fixtures/runs/captain-review-loop.jsonl");
+    let text = [
+        ("{run}", "run-20261014-054425-0001"),
+        ("{repo}", "/repo"),
+        ("{run_dir}", "/state/run"),
+        ("{worktrees}", "/worktrees"),
+        ("{base_commit}", "eecdf983f2dfa422118f1a999438c399f3d446f8"),
+        ("{branch}", "argonauts/run"),
+        ("{item}", "money"),
+    ]
+    .iter()
+    .fold(RECORDED.to_owned(), |text, (from, to)| {
+        text.replace(from, to)
+    });
+    let events: Vec<RunEvent> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("a recorded event"))
+        .collect();
+    let run = events[0].run_id.clone();
+    let wall = events.last().expect("events").ts;
+    let mut state = argonauts_tui::state::AppState::default();
+    let mut unlike = Vec::new();
+    let mut compared = 0;
+    for at in 0..events.len() {
+        state.apply(&argonauts_core::app::AppEvent::Run {
+            event: Box::new(events[at].clone()),
+        });
+        let Some(view) = workflow_view(&events[..=at], &run, None) else {
+            continue;
+        };
+        let rows = argonauts_tui::bridge::panel::run_rows(&state, wall, std::time::Instant::now());
+        let Some(row) = rows.iter().find(|row| row.key == run.as_str()) else {
+            continue;
+        };
+        let phases = view
+            .phases
+            .iter()
+            .filter_map(|phase| phase.count.as_ref())
+            .fold((0, 0), |(done, total), count| {
+                (done + count.done, total + count.total)
+            });
+        let header = (view.agents_done, view.agents_total);
+        let bottom = (row.agents_done, row.agents_total);
+        compared += 1;
+        if header != phases || header != bottom {
+            unlike.push((events[at].seq, header, phases, bottom));
+        }
+    }
+    assert!(compared > 20, "{compared} moments compared");
+    assert!(
+        unlike.is_empty(),
+        "(seq, header, phases, bottom row): {unlike:?}"
+    );
+}
+
+/// A council's script names the run in its first report: the view's header goes by that name,
+/// drawn as words, and by what the script says it does, after the mode, never by a slug of your
+/// words.
+#[test]
+fn a_council_goes_by_the_name_its_script_reports() {
+    const RECORDED: &str = include_str!("../../../../tui/golden/resumed_council/events.jsonl");
+    let events: Vec<RunEvent> = RECORDED
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("a recorded event"))
+        .collect();
+    let run = events[0].run_id.clone();
+    let view = (0..events.len())
+        .find_map(|at| workflow_view(&events[..=at], &run, None))
+        .expect("the council's shape is known");
+    assert_eq!(view.name, "Per key rate limit");
+    assert_eq!(view.notes, ["Council"]);
+    assert_eq!(
+        view.description,
+        "Per-API-key token buckets, refill capped at capacity, integer Retry-After on 429"
+    );
+}
+
+/// The recorded council tried again and again, each try's proposer on Antigravity CLI finding
+/// its model gone with nothing to fall back to. What a try noted, such as the first try's fallback
+/// to opencode-acp, says nothing once the run goes on again, and the run that stopped says why
+/// under its header, as its item in the conversation does.
+#[test]
+fn a_stopped_council_says_why_it_stopped_and_no_earlier_tries_note() {
+    use argonauts_core::views::{StatusKind, Tone};
+
+    const RECORDED: &str = include_str!("../../../../tui/golden/resumed_council/events.jsonl");
+    let events: Vec<RunEvent> = RECORDED
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("a recorded event"))
+        .collect();
+    let run = events[0].run_id.clone();
+    let said = |upto: usize| {
+        let view = workflow_view(&events[..=upto], &run, None).expect("the council's view");
+        view.status_lines
+            .iter()
+            .map(|line| (line.kind, line.tone, line.text.clone()))
+            .collect::<Vec<_>>()
+    };
+    let resumed: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| matches!(event.kind, RunEventKind::Run(RunLifecycle::Resumed(_))))
+        .map(|(at, _)| at)
+        .collect();
+    assert!(resumed.len() >= 2, "the record holds later tries");
+    for at in resumed {
+        assert!(said(at).is_empty(), "{:?}", said(at));
+    }
+    assert_eq!(
+        said(events.len() - 1),
+        [(
+            StatusKind::Ended,
+            Tone::Bad,
+            "Stopped · nobody to fall back to as the task's worker".to_owned()
+        )]
+    );
 }

@@ -21,12 +21,19 @@ pub(crate) trait Launcher: Send + Sync {
     fn failed(&self, _run_dir: &Path) -> Option<String> {
         None
     }
+
+    /// Whether the run host last launched for `run_dir` exited cleanly, as one does that took
+    /// what it was launched for, such as a stop, did it, and had nothing left to run.
+    fn exited_cleanly(&self, _run_dir: &Path) -> bool {
+        false
+    }
 }
 
 /// Runs the `argonauts` binary. Tests can point it at a freshly built one.
 pub(crate) struct ProcessLauncher {
     binary: PathBuf,
-    failures: Arc<Mutex<HashMap<PathBuf, String>>>,
+    /// How each run host this app launched last exited: `None` cleanly, else how it failed.
+    exits: Arc<Mutex<HashMap<PathBuf, Option<String>>>>,
 }
 
 impl ProcessLauncher {
@@ -34,7 +41,7 @@ impl ProcessLauncher {
     pub(crate) fn current() -> anyhow::Result<Self> {
         Ok(Self {
             binary: std::env::current_exe()?,
-            failures: Arc::default(),
+            exits: Arc::default(),
         })
     }
 
@@ -42,12 +49,12 @@ impl ProcessLauncher {
     pub(crate) fn with_binary(binary: PathBuf) -> Self {
         Self {
             binary,
-            failures: Arc::default(),
+            exits: Arc::default(),
         }
     }
 
-    fn failures(&self) -> MutexGuard<'_, HashMap<PathBuf, String>> {
-        self.failures.lock().unwrap_or_else(PoisonError::into_inner)
+    fn exits(&self) -> MutexGuard<'_, HashMap<PathBuf, Option<String>>> {
+        self.exits.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn command(&self, repo_root: &Path, run: &RunId) -> Command {
@@ -85,32 +92,37 @@ impl Launcher for ProcessLauncher {
                     .map_err(std::io::Error::from)
             });
         }
-        self.failures().remove(run_dir);
+        self.exits().remove(run_dir);
         let mut child = command
             .spawn()
             .with_context(|| format!("starting {}", self.binary.display()))?;
-        // Reaped by a thread so an exited run host never lingers as a zombie of the app. A
-        // failed exit is kept, so a wait for its Welcome can stop at once.
-        let failures = self.failures.clone();
+        // Reaped by a thread so an exited run host never lingers as a zombie of the app. Its
+        // exit is kept, so a wait for its Welcome can stop at once: a failure says why, and a
+        // clean exit means it did what it was launched for without greeting anyone.
+        let exits = self.exits.clone();
         let run_dir = run_dir.to_owned();
         let _reaper = std::thread::Builder::new()
             .name("argonauts-run-host-reaper".to_owned())
             .spawn(move || {
-                let failure = match child.wait() {
-                    Ok(status) if status.success() => return,
-                    Ok(status) => format!("exited ({status})"),
-                    Err(err) => format!("was lost ({err})"),
+                let exit = match child.wait() {
+                    Ok(status) if status.success() => None,
+                    Ok(status) => Some(format!("exited ({status})")),
+                    Err(err) => Some(format!("was lost ({err})")),
                 };
-                failures
+                exits
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .insert(run_dir, failure);
+                    .insert(run_dir, exit);
             });
         Ok(())
     }
 
     fn failed(&self, run_dir: &Path) -> Option<String> {
-        self.failures().get(run_dir).cloned()
+        self.exits().get(run_dir).cloned().flatten()
+    }
+
+    fn exited_cleanly(&self, run_dir: &Path) -> bool {
+        matches!(self.exits().get(run_dir), Some(None))
     }
 }
 

@@ -129,6 +129,9 @@ pub struct Observer {
     wrap_up_stopped: bool,
     plan_limit_stopped: bool,
     context_watch: ContextWatch,
+    /// The parser's figure for the requests since the agent's last totals, as of the line
+    /// being read.
+    billed: Option<f64>,
 }
 
 impl Observer {
@@ -206,7 +209,21 @@ impl Observer {
             wrap_up_stopped: false,
             plan_limit_stopped: false,
             context_watch,
+            billed: None,
         }
+    }
+
+    /// What the parser made of the requests since the agent's last totals, after the line
+    /// whose events come next.
+    pub fn billed_since_totals(&mut self, usd: Option<f64>) {
+        self.billed = usd;
+    }
+
+    /// What the process said it spent at least, once it's gone and no totals can follow. Taken
+    /// any sooner, it would stop the session before a result that brings the exact figure.
+    pub fn spent_at_least(&mut self, usd: Option<f64>) {
+        // The process is gone, so the verdict has nothing left to stop.
+        let _ = self.meter.spent_at_least(usd);
     }
 
     /// Something started or stopped showing this session's context.
@@ -310,6 +327,9 @@ impl Observer {
         let verdict = self.meter.observe(&event);
         actions.extend(meter_action(verdict));
         if matches!(event, AgentEvent::Usage { .. }) {
+            // Before the reading goes out, so even the first one prices the request as billed.
+            let verdict = self.meter.bill_since_totals(self.billed);
+            actions.extend(meter_action(verdict));
             self.record_spend();
         }
         let verdict = self.watchdogs.observe(&event, Instant::now());
@@ -757,6 +777,7 @@ fn about_the_agent(category: ErrorCategory) -> bool {
     !matches!(
         category,
         ErrorCategory::ContextFull
+            | ErrorCategory::SessionLost
             | ErrorCategory::InvalidRequest
             | ErrorCategory::Permission
             | ErrorCategory::Limit

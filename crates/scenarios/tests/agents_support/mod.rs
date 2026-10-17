@@ -21,7 +21,7 @@ use argonauts_core::layout::{self, session_files};
 use argonauts_core::names::{ModelRef, SessionKey};
 use argonauts_core::paths::{Paths, project_config_path};
 use argonauts_core::steps::judgment::ReviewOutput;
-use argonauts_scenarios::{COLS, ROWS, Scenario, WAIT};
+use argonauts_scenarios::{COLS, ROWS, Scenario, WAIT, as_set_up};
 use argonauts_testkit::{Invocation, Pty, PtyCommand, argonauts_bin, journal};
 
 /// The prompt every task here gets. The recorded Claude Code build run answered this prompt.
@@ -67,7 +67,10 @@ pub fn paths(scenario: &Scenario) -> Paths {
 /// `~/.argonauts/config.toml`, the layer the app calls "everywhere". It needs no trust, so
 /// safety keys such as `endpoints.*.base_url` and `agents.*.binary` go here.
 pub fn write_global_config(scenario: &Scenario, text: &str) -> anyhow::Result<()> {
-    write_file(&paths(scenario).global_config(), &checked_captain(text))
+    write_file(
+        &paths(scenario).global_config(),
+        &as_set_up(&checked_captain(text)),
+    )
 }
 
 /// These scenarios follow Captain runs, so `/captain` runs in a checked worktree unless the

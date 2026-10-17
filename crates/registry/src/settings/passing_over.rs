@@ -94,8 +94,9 @@ impl PassedOver {
         }
     }
 
-    pub fn warnings(&self) -> Vec<String> {
-        self.keys.iter().map(|(_, notice)| notice.clone()).collect()
+    /// Each key left out, with its notice.
+    pub fn noticed(&self) -> &[(String, String)] {
+        &self.keys
     }
 }
 

@@ -94,7 +94,27 @@ pub struct Private {
     pub file_endings: Vec<String>,
     pub home_fix: String,
     pub mail_fix: String,
+    pub scratch_fix: String,
     pub banned: Vec<BannedText>,
+    pub setup: Setup,
+}
+
+/// The placeholders a recording has in place of the recording machine's own setup.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Setup {
+    /// What a synced skill's name starts with, `anthropic-skills:` included.
+    pub synced_skill: String,
+    pub plugin: String,
+    /// A claude.ai connector's name, `claude.ai ` included.
+    pub connector: String,
+    /// What a connector's tools start with.
+    pub connector_tool: String,
+    pub plan: String,
+    pub organization: String,
+    pub fix: String,
+    /// Every skill, command and agent an init message may list without its machine's setup.
+    pub known: Vec<String>,
 }
 
 /// A real name that must never be in a file, kept as its length and hash so the table

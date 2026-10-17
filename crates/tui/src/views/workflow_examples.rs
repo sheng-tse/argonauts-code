@@ -48,6 +48,7 @@ pub(crate) fn agent(
         tries: Vec::new(),
         note: None,
         inner: None,
+        left_out: false,
     }
 }
 
@@ -102,7 +103,6 @@ fn workflow(agents: (u32, u32), seconds: u64, phases: Vec<PhaseRow>) -> Workflow
         description: "add --due to the todo CLI, each part reviewed on another CLI".to_owned(),
         style: None,
         status_lines: Vec::new(),
-        breadcrumb: Vec::new(),
         agents_done: agents.0,
         agents_total: agents.1,
         elapsed_ms: seconds * 1000,
@@ -211,13 +211,13 @@ pub(crate) fn fallback() -> WorkflowData {
     )
 }
 
-/// Claude Code is down: its two tasks are paused with their work kept, and the run waits for
+/// Claude Code is down: its two tasks wait for it with their work kept, and the run waits for
 /// you.
 pub(crate) fn cli_down() -> WorkflowData {
     let builders = vec![
         noted(
             agent(1, "build:due-flag", SONNET, RowStatus::Paused, 44_000, 106),
-            "paused · work so far kept",
+            "waits for Claude Code · work so far kept",
             Tone::Warn,
         ),
         noted(
@@ -239,8 +239,11 @@ pub(crate) fn cli_down() -> WorkflowData {
     );
     data.state = WorkflowState::Paused;
     // Its next test is 4m48s away as the view is built, and the screen counts it down.
-    let waits = StatusLine::new(StatusKind::NeedsYou, "Claude Code is down · 2 tasks paused")
-        .counting("tried again in", 288_000);
+    let waits = StatusLine::new(
+        StatusKind::NeedsYou,
+        "Claude Code is down · 2 tasks wait for it",
+    )
+    .counting("tried again in", 288_000);
     data.status_lines = vec![waits];
     data
 }
@@ -462,6 +465,7 @@ fn call(tool: &str, summary: &str, ok: Option<bool>) -> ActivityLine {
         tool: tool.to_owned(),
         summary: summary.to_owned(),
         ok,
+        note: None,
     }
 }
 
@@ -488,6 +492,9 @@ fn opened(row: AgentRow, prompt: String, activity: Vec<ActivityLine>, calls: u32
         plan: None,
         facts: Vec::new(),
         to_fix: None,
+        asked_for: None,
+        earlier: None,
+        moved: None,
         review: None,
     }
 }

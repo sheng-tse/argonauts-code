@@ -55,7 +55,7 @@ impl StatusTabCards<'_> {
         )];
         if let Some(conversation) = &view.conversation {
             // As the panel's other tabs write a time of day: `7:12pm`.
-            let started = super::usage::twelve_hour(self.clock.to_local(conversation.started));
+            let started = super::usage::short_time(self.clock.to_local(conversation.started));
             facts.push((
                 "Conversation",
                 vec![
@@ -151,16 +151,12 @@ impl StatusTabCards<'_> {
     }
 
     /// `◆ settings in effect`: each file and how many keys it sets, the mods, the main
-    /// session's tools and its MCP servers. Opened, every key with where it came from.
-    pub fn settings(&self, kit: &Kit<'_>, frame: Frame, opened: bool) -> Drawn {
+    /// session's tools and its MCP servers. Enter opens All settings with every key.
+    pub fn settings(&self, kit: &Kit<'_>, frame: Frame) -> Drawn {
         let inner = frame.inner();
         let settings = &self.view.settings;
         let mut body = Drawn::new();
-        let right = if opened {
-            "esc closes the keys"
-        } else {
-            "enter shows each key and where it came from"
-        };
+        let right = "enter opens All settings: each key and where it came from";
         body.push(heading(kit, "settings in effect", right, inner));
         let mut row = |name: String, value: String| {
             let row = vec![
@@ -217,27 +213,6 @@ impl StatusTabCards<'_> {
             ),
         };
         row("MCP servers".to_owned(), servers);
-        if opened {
-            body.push(Vec::new());
-            if settings.keys.is_empty() {
-                body.push(vec![
-                    kit.dim("No key is set anywhere; each one is built in."),
-                ]);
-            }
-            for entry in &settings.keys {
-                let from = settings
-                    .files
-                    .iter()
-                    .find(|file| file.layer == entry.layer)
-                    .map_or(entry.layer.as_str(), |file| file.path.as_str());
-                let row = vec![
-                    kit.span(padded(&entry.key, SETTING_NAMES), Role::Text),
-                    kit.span(format::setting_value(&entry.value), Role::Bright),
-                    kit.dim(format!(" · {from}")),
-                ];
-                body.push(truncate_spans(&row, inner));
-            }
-        }
         frame.draw(kit, body)
     }
 

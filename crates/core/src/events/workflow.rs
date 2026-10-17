@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::events::session::CliWorkflowRun;
-use crate::names::{ApprovalId, SessionKey, WorkflowId};
+use crate::names::{ApprovalId, ModelRef, SessionKey, WorkflowId};
 use crate::workflow::{StandardPhase, StepKind, StepRef, Workflow, WorkflowRef};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,6 +43,9 @@ pub enum WorkflowEvent {
     /// One line on why the plan moved, by the main agent or by code, such as "review:median found
     /// median([]) returns None, so a second round".
     Note(RunNote),
+    /// A job nothing could take, which its workflow goes on without, as a council goes on
+    /// with the proposals it has. Its row is drawn grey and isn't counted.
+    LeftOut(AgentLeftOut),
     /// What the runner says a workflow is doing now: its name, its phases in the order it
     /// declares them, and its agents. It is the shape a CLI reports its own workflow in, and
     /// each report holds the whole state, replacing the last one of the same id.
@@ -113,6 +116,29 @@ pub struct PhaseMark {
     /// From 0.
     pub index: u32,
     pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentLeftOut {
+    /// The step whose agent it was.
+    pub step: StepRef,
+    /// The agent's label, as its row names it: `propose:p3`.
+    pub label: String,
+    /// The model the job was meant for.
+    pub meant_for: ModelRef,
+    /// What its CLI said, in a few words for its row: `signed out`.
+    pub why: String,
+    /// The same, whole, for its agent view: `Antigravity CLI is signed out`. Empty in a run
+    /// recorded before it was kept.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub said: String,
+    /// What the job was in its phase, for its agent view: `proposer`, `reviewer`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub acts_as: String,
+    /// What going on without it means, one line each, for its agent view: `a council can do
+    /// without one proposal, so it goes on with two`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub means: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

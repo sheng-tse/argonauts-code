@@ -8,6 +8,8 @@ use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent, Fall
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::plan::{DivideEvent, JudgingResult, MappedTopic, PlanEvent};
 use argonauts_core::events::run::{ClosingAnswer, RunLifecycle, RunMode, RunPhase};
+use argonauts_core::events::session::SessionEvent;
+use argonauts_core::events::shared::BlackboardEvent;
 use argonauts_core::events::task::{CheckOutcome, MergeEvent, TaskEvent, TaskState, TryCause};
 use argonauts_core::events::workflow::WorkflowEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
@@ -20,6 +22,7 @@ use time::OffsetDateTime;
 use crate::format::WallClock;
 
 use super::items::Items;
+use super::tries::Tries;
 use super::{Cx, checks, fallback, lifecycle, steps, workflows};
 
 #[derive(Debug, Default)]
@@ -31,6 +34,8 @@ pub(super) struct Milestones {
     model_health: BTreeMap<ModelRef, ModelHealth>,
     /// The models a line said went out on their own, so each one's return gets a line too.
     models_said_out: BTreeSet<ModelRef>,
+    /// The run whose past, drawn again, waits off scrollback until its wait says how it prints.
+    withheld_for: Option<RunId>,
 }
 
 /// What a run's later lines need from its earlier events.
@@ -51,6 +56,9 @@ pub(super) struct RunStory {
     /// check's.
     pub checks: BTreeMap<Option<TaskId>, Vec<CheckOutcome>>,
     pub run_merged: Option<String>,
+    /// The run works in a folder without git, where Argonauts Code's own history keeps its
+    /// work, so it has no branch of yours to speak of.
+    pub folder_without_git: bool,
     /// The copies removed when the run ended, as its note names them. Said on the run's last
     /// row.
     pub copies_removed: Option<String>,
@@ -64,10 +72,16 @@ pub(super) struct RunStory {
     pub workflow: Option<String>,
     /// Its start item, while it waits for the workflow a step runs to report its phases.
     pub workflow_start: Option<workflows::Start>,
+    /// The CLI workflows of the run's task whose Workflow item printed, the run's own first.
+    pub announced: Vec<String>,
+    /// The run's name as its start item printed it, which a later workflow names.
+    pub run_name: Option<String>,
     /// The reviewers the request named, said beside the workflow's phases.
     pub reviewers_asked: Option<String>,
     /// Printed at the run's end, after the merge line.
     pub closing: Option<ClosingAnswer>,
+    /// Its waits for nobody and its tries after each.
+    pub tries: Tries,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +98,15 @@ impl Milestones {
         clock: &WallClock,
         cx: &mut Cx<'_>,
     ) {
+        // What another run's past held back prints before this run's event.
+        if self
+            .withheld_for
+            .as_ref()
+            .is_some_and(|run| *run != event.run_id)
+            || ends_a_try(&event.kind)
+        {
+            self.print_withheld(cx);
+        }
         let story = self.runs.entry(event.run_id.clone()).or_default();
         let task = event.task_id.as_ref();
         match &event.kind {
@@ -91,19 +114,43 @@ impl Milestones {
                 RunLifecycle::Started(started) => {
                     story.started = Some(event.ts);
                     story.crew = started.mode == RunMode::Crew;
+                    story.folder_without_git =
+                        started.base_branch.as_deref() == Some(argonauts_core::hidden_git::BRANCH);
                     story.reviewers_asked = story
                         .crew
                         .then(|| workflows::reviewers_asked(started, &cx.state.names))
                         .flatten();
                     steps::run_started(started, story.reviewers_asked.is_some(), cx);
                 }
-                RunLifecycle::Resumed(resumed) => lifecycle::resumed(&event.run_id, resumed, cx),
+                RunLifecycle::Resumed(resumed) => {
+                    let (held, woke_unsaid) = story.tries.woke(event.ts, cx);
+                    if held {
+                        self.withheld_for = Some(event.run_id.clone());
+                    }
+                    let tried_at = woke_unsaid.then_some(event.ts);
+                    lifecycle::resumed(&event.run_id, resumed, tried_at, clock, cx);
+                }
                 RunLifecycle::PauseRequested { now, .. } => story.pause_now = *now,
                 RunLifecycle::Paused {
                     sessions_stopped,
                     committed,
-                } => lifecycle::paused(story.pause_now, *sessions_stopped, committed, cx),
-                RunLifecycle::Waiting { reason, .. } => lifecycle::waiting(reason, clock, cx),
+                } => lifecycle::paused(
+                    &event.run_id,
+                    story.pause_now,
+                    *sessions_stopped,
+                    committed,
+                    cx,
+                ),
+                RunLifecycle::Waiting { reason, .. } => {
+                    if story.tries.wait(reason, clock, cx) {
+                        self.withheld_for = None;
+                    } else {
+                        if self.withheld_for.take().is_some() {
+                            cx.model.history.print_withheld();
+                        }
+                        lifecycle::waiting(reason, clock, cx);
+                    }
+                }
                 RunLifecycle::ClosingAnswer(answer) => story.closing = Some((**answer).clone()),
                 RunLifecycle::Finished { outcome, detail } => {
                     let elapsed = story.started.map(|at| {
@@ -327,6 +374,9 @@ impl Milestones {
             RunEventKind::Workflow(WorkflowEvent::Reported(report)) => {
                 workflows::reported(report, story, cx);
             }
+            RunEventKind::Agent(argonauts_core::AgentEvent::Workflow { workflow }) => {
+                workflows::tasks_own_reported(event, workflow, story, cx);
+            }
             RunEventKind::RunReview(_) => story.run_review = true,
             // The engine's note repeats the line the failed phase printed, without the reason.
             RunEventKind::Note(note)
@@ -334,9 +384,49 @@ impl Milestones {
             RunEventKind::Note(note) if note.text.starts_with(COPIES_REMOVED) => {
                 story.copies_removed = Some(note.line().to_owned());
             }
-            RunEventKind::Note(note) => items.note(note, cx),
+            RunEventKind::Note(note) => {
+                if story.tries.note(note, cx) {
+                    self.withheld_for = Some(event.run_id.clone());
+                }
+                items.note(note, cx);
+            }
+            RunEventKind::Session(SessionEvent::Ended(end)) => {
+                if let Some(key) = &event.session {
+                    story.tries.session_ended(&event.run_id, key, end, cx);
+                }
+            }
+            RunEventKind::Blackboard(BlackboardEvent::AnsweredForYou(answered)) => {
+                let by = answered.by.as_ref().map(|by| cx.state.names.short(by));
+                super::answered::answered_for_you(answered, by.as_deref(), cx);
+            }
             _ => {}
         }
+    }
+}
+
+impl Milestones {
+    /// A past drawn again that waited off scrollback prints, in order, as something else
+    /// comes on screen.
+    pub(super) fn print_withheld(&mut self, cx: &mut Cx<'_>) {
+        if self.withheld_for.take().is_some() {
+            cx.model.history.print_withheld();
+        }
+    }
+}
+
+/// An event no try that failed the way the one before did has, so what a try held back prints
+/// before it.
+fn ends_a_try(kind: &RunEventKind) -> bool {
+    match kind {
+        RunEventKind::Run(lifecycle) => matches!(
+            lifecycle,
+            RunLifecycle::Finished { .. }
+                | RunLifecycle::Paused { .. }
+                | RunLifecycle::PauseRequested { .. }
+                | RunLifecycle::ClosingAnswer(_)
+        ),
+        RunEventKind::Merge(_) | RunEventKind::RunReview(_) => true,
+        _ => false,
     }
 }
 

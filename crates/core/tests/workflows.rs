@@ -278,7 +278,7 @@ fn the_workflow_agent_and_context_views_keep_their_wire_format() {
         "run": "run-01", "id": "wf-001", "name": "review-panel",
         "description": "Two reviewers", "style": "workflow",
         "status_lines": [{"kind": "note", "text": "review:median found a bug, so a second round"}],
-        "breadcrumb": [], "agents_done": 1,
+        "agents_done": 1,
         "agents_total": 3, "elapsed_ms": 72000, "spent": spend(),
         "phases": [{"name": "Review", "detail": "two reviewers from other providers",
             "standard": "check", "status": "running", "count": {"done": 1, "total": 3},
@@ -429,7 +429,7 @@ fn the_new_workflow_defaults_hold() {
         OrchestratorDesign::Size
     );
     assert!(workflows.allow_composed && workflows.adapt_at_phase_ends);
-    assert_eq!(workflows.max_depth, 2);
+    assert_eq!(workflows.max_depth, 1);
     let ui = &settings.ui;
     assert_eq!(ui.panel.subagents, CliInternals::Discovered);
     assert!(!ui.panel.agents);
@@ -446,7 +446,7 @@ workflow = "review-panel"
 [workflows]
 orchestrator_designs = false
 allow_composed = false
-max_depth = 1
+max_depth = 2
 adapt_at_phase_ends = false
 [ui]
 glyphs = "ascii"
@@ -459,7 +459,7 @@ max_rows = 8
     )
     .unwrap();
     assert_eq!(settings.workflow, "review-panel");
-    assert_eq!(settings.workflows.max_depth, 1);
+    assert_eq!(settings.workflows.max_depth, 2);
     assert_eq!(settings.ui.panel.subagents, CliInternals::Hidden);
     assert_eq!(settings.ui.glyphs, Glyphs::Ascii);
     let value = serde_json::to_value(&settings).unwrap();

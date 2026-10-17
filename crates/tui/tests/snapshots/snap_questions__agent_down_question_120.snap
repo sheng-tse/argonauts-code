@@ -12,7 +12,7 @@ expression: text(&lines)
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◆ Claude Code is down
   overload errors on 3 sessions in 2 min
-  Two tasks are paused, their work so far kept.
+  Two tasks wait for it, their work so far kept.
 
   ❯ 1. One agent for every paused task
     2. Choose per task

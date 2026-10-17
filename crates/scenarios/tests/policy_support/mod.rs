@@ -17,7 +17,7 @@ use argonauts_core::events::approval::{
 use argonauts_core::events::run::{RunLifecycle, RunStarted};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::ChoiceId;
-use argonauts_scenarios::{Scenario, WAIT};
+use argonauts_scenarios::{Scenario, WAIT, as_set_up, past_the_question_guard};
 use argonauts_testkit::{Invocation, Key, Pty, argonauts_bin};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation,
@@ -77,7 +77,7 @@ pub fn write_global_config(scenario: &Scenario, text: &str) -> anyhow::Result<()
     } else {
         format!("{text}\n[captain]\nkind = \"checked\"\n")
     };
-    fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
+    fs::write(&path, as_set_up(&text)).with_context(|| format!("writing {}", path.display()))
 }
 
 /// Runs `argonauts setup` with each step's recommended answer, except that it makes
@@ -95,6 +95,8 @@ pub fn trust_repo(scenario: &Scenario) -> anyhow::Result<()> {
                 .options
                 .iter()
                 .position(|option| PICKS.contains(&option.label.as_str()));
+            // A step drops the keys pressed in its first moment, as every question does.
+            past_the_question_guard();
             match pick.and_then(|index| char::from_digit(index as u32 + 1, 10)) {
                 Some(number) => pty.press(Key::Char(number))?,
                 None => pty.press(Key::Enter)?,

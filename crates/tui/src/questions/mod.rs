@@ -18,7 +18,7 @@ mod table;
 mod views;
 mod words;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use argonauts_core::app::{AnswerTarget, AppChoice, AppEvent, ChoiceKind, UiCommand};
 use argonauts_core::display_names::DisplayNames;
@@ -69,6 +69,9 @@ pub struct Questions {
     approvals: BTreeMap<(RunId, ApprovalId), Box<ApprovalOpened>>,
     /// Recent decisions, newest last, for the spot checks that follow auto decisions.
     decisions: VecDeque<Decision>,
+    /// Approvals Esc passed on from this screen, whose line printed then, so the decision that
+    /// follows prints no second one.
+    passed_on: BTreeSet<(RunId, ApprovalId)>,
 }
 
 /// What an answer to a question needs to become a `UiCommand`.
@@ -154,7 +157,7 @@ impl Questions {
                         Source::Choice(choice) => Some(choice.title),
                         _ => None,
                     });
-                if !cx.replaying() {
+                if !cx.history_only() {
                     cx.model
                         .history
                         .push(records::choice_closed_cell(title.as_deref(), outcome));
@@ -254,7 +257,7 @@ impl Questions {
                     .map(|opened| opened.title)
                     .or_else(|| held.map(|held| held.source.title()));
                 if let Some(title) = title
-                    && !cx.replaying()
+                    && !cx.history_only()
                 {
                     cx.model
                         .history
@@ -271,7 +274,7 @@ impl Questions {
         // An approval opened again replaces its question, such as after the evidence changed.
         let target = approval_target(run, &opened.id);
         self.close_target(&target, cx);
-        if !cx.replaying() {
+        if !cx.history_only() {
             let run_state = cx.state.runs.get(run);
             for cell in about_cells_local(opened, run_state, clock_offset(cx), &cx.state.names) {
                 cx.model.history.push(cell);
@@ -367,8 +370,11 @@ impl Questions {
         let opened = self.approvals.remove(&(run.clone(), decided.id.clone()));
         let target = approval_target(run, &decided.id);
         self.close_target(&target, cx);
+        // Esc's own line said it already: the question left to the agent prints once.
+        let passed_on = self.passed_on.remove(&(run.clone(), decided.id.clone()))
+            && decided.by == Party::Declined;
         if let Some(opened) = opened {
-            if !cx.replaying() {
+            if !cx.history_only() && !passed_on {
                 // The screen shows one run at a time, so the record says "the run", and its
                 // tasks go by their labels, as the rest of the transcript names them.
                 let shown = cx.state.runs.get(run);
@@ -486,12 +492,13 @@ impl Questions {
         if choice.bell {
             cx.out.ring();
         }
-        // A change you made in a view, such as /approvals, asks here; the view would hide it.
+        // A change you made in a view, such as /approvals, asks here; the view would hide it,
+        // unless it stays up over the question, as Config does for the change it sent.
         if matches!(
             choice.kind,
             ChoiceKind::ConfirmSafetySetting | ChoiceKind::SettingScope
         ) {
-            cx.out.close_views = true;
+            cx.out.views_make_way = true;
         }
         self.show(cx);
     }
@@ -717,6 +724,9 @@ impl Questions {
                     let at = OffsetDateTime::now_utc();
                     let cell = records::passed_on_cell(opened.kind, at, clock_offset(cx));
                     cx.model.history.push(cell);
+                    if let AnswerTarget::Approval { run, id } = to {
+                        self.passed_on.insert((run.clone(), id.clone()));
+                    }
                 }
             }
             QuestionTarget::SpotCheck { .. } | QuestionTarget::Local(_) => {

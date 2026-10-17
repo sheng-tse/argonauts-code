@@ -289,7 +289,7 @@ fn endpoint_rejected_in_cli_roles() {
          [endpoints.local]\nlocal = true\n",
     );
     let resolved = resolve(&repo.sources()).unwrap();
-    let said: Vec<&str> = resolved.warnings.iter().map(String::as_str).collect();
+    let said: Vec<&str> = resolved.warnings.iter().map(|w| w.text.as_str()).collect();
     assert_eq!(said.len(), 2, "{said:?}");
     assert!(said[0].starts_with("fallback.worker.order names local/some-model, an endpoint"));
     assert!(said[1].starts_with("fallback.worker.replace.codex.with names local/some-model"));

@@ -1,5 +1,6 @@
 //! The agents a request may name, and their models and efforts, as Argonauts Code knows them now.
 
+use argonauts_core::cheapest::cheapest_listed;
 use argonauts_core::input::EFFORT_LEVELS;
 use argonauts_core::names::ModelRef;
 use argonauts_core::registry::{RegistryKind, known_efforts};
@@ -113,12 +114,17 @@ impl Roster {
                         })
                     })
                     .collect();
-                let cheapest = adapters
-                    .iter()
-                    .find(|adapter| adapter.id() == id)
-                    .map(|adapter| {
-                        let (model, effort) = adapter.cheapest_model();
-                        (model.to_owned(), effort.map(str::to_owned))
+                // The CLI's own list decides, and the adapter's pick stands in until it's read.
+                let cheapest = cheapest_listed(registry.as_ref(), &id)
+                    .map(|cheapest| (cheapest.model, cheapest.effort))
+                    .or_else(|| {
+                        adapters
+                            .iter()
+                            .find(|adapter| adapter.id() == id)
+                            .map(|adapter| {
+                                let (model, effort) = adapter.cheapest_model();
+                                (model.to_owned(), effort.map(str::to_owned))
+                            })
                     });
                 Agent {
                     name: ctx.names.cli(&id),

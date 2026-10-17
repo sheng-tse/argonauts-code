@@ -120,7 +120,8 @@
     }
   ],
   "notes": [
-    "orchestrator workflow"
+    "Captain",
+    "Claude Code's workflow add-due-dates"
   ],
   "worker": "claude-code"
 }

@@ -20,4 +20,4 @@
  Enter to choose · Tab to add a note · Esc to set aside
 
   its row in the bottom list
-  ⏸ Add due dates         ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/3 · 2m46s · ↓ 84.2k tokens · needs you · Claude Code is down
+  ⏸ Add due dates           ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/3 · 2m46s · ↓ 84.2k tokens · needs you · Claude Code is down

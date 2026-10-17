@@ -24,6 +24,7 @@ use crate::roles;
 use crate::state::RunState;
 use crate::state::tasks::TaskEntry;
 use crate::task::scheduler::left_out;
+use crate::understand::materiality::one_line;
 
 /// Paths no task may touch, whatever the settings say.
 const ALWAYS_PROTECTED: &str = ".argonauts/**";
@@ -341,6 +342,8 @@ async fn row(host: &Host, record: &TaskEntry) -> EngineResult<MergeRow> {
         checks_passed: task_checks_passed(record),
         review: last_verdict(&record.reviews),
         debt: record.debt.iter().cloned().collect(),
+        questions: host
+            .read(|state| crate::blackboard::questions::for_the_merge(state, &record.spec.id)),
     })
 }
 
@@ -411,6 +414,21 @@ fn row_line(row: &MergeRow) -> String {
             ", needs review by {} (work by {} since fallback-{})",
             debt.needs, debt.by, debt.since
         ));
+    }
+    for question in &row.questions {
+        line.push_str(&format!(", asked you \"{}\"", one_line(&question.text)));
+        match (&question.answer, &question.answered_by) {
+            (Some(answer), Some(by)) => {
+                line.push_str(&format!(
+                    " ({by} answered in your place: {})",
+                    one_line(answer)
+                ));
+            }
+            (Some(answer), None) => {
+                line.push_str(&format!(" (answered in your place: {})", one_line(answer)));
+            }
+            (None, _) => line.push_str(" (still open)"),
+        }
     }
     line
 }

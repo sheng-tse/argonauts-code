@@ -50,7 +50,17 @@ pub fn sync(cx: &mut Cx<'_>) {
 
     let picker = &mut cx.model.verb_picker;
     let bottom = &mut cx.model.bottom;
+    let stretch = bottom.synced.work.clone();
     sync_working(state, bottom, || picker.working(verbs), now);
+    // A new stretch of work may get a tip, which stays while it goes on.
+    let fresh = bottom.synced.work != stretch;
+    if let Some(line) = bottom.working.as_mut() {
+        if !cx.settings.tips {
+            line.tip = None;
+        } else if fresh {
+            line.tip = picker.tip();
+        }
+    }
     bottom.narrator = narrator_live.then(|| live_narration(state)).flatten();
     let (queued, queued_where) = queued(state);
     bottom.queued = queued;
@@ -183,6 +193,10 @@ impl Work<'_> {
                     .iter()
                     .any(|(_, tool)| super::cli_workflow_run::is_call(cli, tool))
             }
+            // Once the run's agents have begun and until the shape is known, the workflow is
+            // being written: a CLI's Workflow call, a main agent's design, a script's planner
+            // and the runner that starts the script.
+            Work::Run(run) if !run.shape_known() => run.sessions_in_order().next().is_some(),
             Work::Run(run) => {
                 let mut running = run.running_sessions();
                 match (running.next(), running.next()) {
@@ -319,7 +333,12 @@ fn sync_working(
     pick: impl FnOnce() -> &'static str,
     now: Instant,
 ) {
-    let Some(work) = current_work(state) else {
+    let work = current_work(state);
+    bottom.waits_for = waits_for_workflows(state, work.as_ref()).map(|count| {
+        let noun = if count == 1 { "workflow" } else { "workflows" };
+        format!("Waiting for {count} {noun} to finish")
+    });
+    let Some(work) = work.filter(|_| bottom.waits_for.is_none()) else {
         bottom.working = None;
         bottom.synced.work = None;
         return;
@@ -387,6 +406,33 @@ fn sync_working(
     say_what_is_written(&mut line, work.writes_a_workflow());
     bottom.working = Some(line);
     bottom.synced.work = Some(key);
+}
+
+/// How many workflows the work waits for while nothing else of it goes on: its agents' turns
+/// are over and the workflows their CLIs run in the background haven't ended. The
+/// conversation's own CLI waits as a run's agents do.
+fn waits_for_workflows(state: &AppState, work: Option<&Work<'_>>) -> Option<usize> {
+    let count = match work {
+        Some(Work::Run(run)) => {
+            let mut waiting = 0;
+            for session in run.running_sessions() {
+                match session.waits_for_workflows() {
+                    0 => return None,
+                    count => waiting += count,
+                }
+            }
+            waiting
+        }
+        Some(Work::Conversation(_) | Work::Pausing(_)) => return None,
+        None if state.conversation.waits_on_background() => state
+            .conversation
+            .workflows
+            .iter()
+            .filter(|workflow| !workflow.ended())
+            .count(),
+        None => return None,
+    };
+    (count > 0).then_some(count)
 }
 
 /// While the agent writes a workflow's script the line says so in its word's place, and the
@@ -469,16 +515,28 @@ fn activity(previous: Option<&Activity>, doing: Doing, now: Instant) -> Activity
 }
 
 /// Phase, tasks, agents, and spend, as in `Build · 2/5 tasks · 3 agents · $0.21`. The phase is
-/// one the workflow view lists; only a run with no workflow names its own stage.
+/// one the workflow view lists: a run that is its task's CLI workflow names that workflow's
+/// phase at work, and neither the plan it carries out nor that plan's tasks. Only a run with
+/// no workflow names its own stage. A workflow still being written has none of these yet, so
+/// the line says only its time and tokens.
 fn run_details(run: &RunState) -> Vec<String> {
     let mut details = Vec::new();
-    let phase = match run.shown_workflow() {
-        Some(_) => run.workflow_phase().map(str::to_owned),
-        None => run.phase.map(|phase| phase_name(phase).to_owned()),
+    if !run.shape_known() {
+        return details;
+    }
+    let cli_own = super::panel::the_runs_own(run);
+    let phase = match (cli_own, run.shown_workflow()) {
+        (Some(own), _) => crate::state::phase_at_work(own),
+        (None, Some(_)) => run.workflow_phase(),
+        (None, None) => run.phase.map(phase_name),
     };
-    details.extend(phase.filter(|phase| !phase.trim().is_empty()));
+    details.extend(
+        phase
+            .filter(|phase| !phase.trim().is_empty())
+            .map(argonauts_core::text::shown_name),
+    );
     let (done, total) = run.tasks_done();
-    if total > 0 {
+    if total > 0 && cli_own.is_none() {
         details.push(format!("{done}/{total} tasks"));
     }
     match run.running_sessions().count() {
@@ -920,7 +978,18 @@ mod tests {
     fn the_working_line_names_only_the_phases_the_workflow_view_lists() {
         let mut run = RunState::new(RunId::new("run-01").unwrap());
         run.phase = Some(RunPhase::Contracts);
-        // No workflow yet: the run's own stage is all there is to name.
+        // A log from before runs declared their workflows, its reader done: the run's own
+        // stage is all there is to name.
+        let mut reader = crate::state::SessionState::new(
+            argonauts_core::names::SessionKey::numbered(1),
+            "claude-code".parse().unwrap(),
+            "claude-code",
+            argonauts_core::names::RoleName::Reader,
+            time::macros::datetime!(2026-09-30 10:00 UTC),
+        );
+        reader.status = crate::state::SessionStatus::Done;
+        run.session_order.push(reader.key.clone());
+        run.sessions.insert(reader.key.clone(), reader);
         assert_eq!(run_details(&run), ["Contracts"]);
 
         // Understand runs nested under the workflow to come.

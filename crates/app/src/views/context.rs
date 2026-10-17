@@ -28,6 +28,7 @@ pub(crate) fn context_rows(events: &[RunEvent], run: &RunId, cap: u64) -> Vec<Co
                 estimated: false,
                 counts: false,
                 categories: session.context_rows.clone(),
+                recorded: None,
             }
         })
         .collect()

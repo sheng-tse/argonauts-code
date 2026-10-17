@@ -32,8 +32,45 @@ pub struct ViewModel {
     pub agent_colors: AgentColors,
     /// Each mod's own chord, from the mods the controller last sent.
     pub mod_chords: crate::mods::keys::Chords,
+    /// Settings a view saved and sums up itself when it closes, such as Config's rows, so their
+    /// change prints nothing as it happens.
+    pub said_by_view: std::collections::BTreeSet<String>,
+    /// The key of the `/config key=value` typed last, and the command as typed, whose change
+    /// prints under it as `⎿  Set ui.tips to false (in ~/.argonauts/config.toml)`.
+    pub typed_config: Option<(String, String)>,
     /// The text behind the newest failure in the conversation, for `r` until something is typed.
     pub raw_failure: Option<crate::bridge::failure::RawFailure>,
+    /// What `[ui]` asks of the terminal while the screen runs.
+    pub screen: ScreenHabits,
+}
+
+/// The terminal's progress bar, copying a selection on release, and following new output in
+/// fullscreen, each as its `[ui]` key says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenHabits {
+    pub progress_bar: bool,
+    pub copy_on_select: bool,
+    pub autoscroll: bool,
+}
+
+impl Default for ScreenHabits {
+    fn default() -> Self {
+        Self {
+            progress_bar: true,
+            copy_on_select: true,
+            autoscroll: true,
+        }
+    }
+}
+
+impl ScreenHabits {
+    pub fn from_settings(ui: &argonauts_core::settings::ui::UiSettings) -> Self {
+        Self {
+            progress_bar: ui.progress_bar,
+            copy_on_select: ui.copy_on_select,
+            autoscroll: ui.autoscroll,
+        }
+    }
 }
 
 impl ViewModel {

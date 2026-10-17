@@ -15,7 +15,8 @@ use argonauts_core::events::approval::{
     ApprovalPacket, FreeText, PolicyCheck,
 };
 use argonauts_core::events::run::Party;
-use argonauts_core::names::{ApprovalId, ModelRef};
+use argonauts_core::events::shared::BlackboardEvent;
+use argonauts_core::names::{ApprovalId, ModelRef, RoleName};
 use argonauts_core::policy::{
     AutoPreviewRecord, DecisionPoint, EvidenceDocument, EvidenceFacts, EvidencePacket,
     EvidenceSubject, PolicyOutcome, UserDecision, Verdict, Violation,
@@ -112,6 +113,12 @@ impl Desk {
 
     fn point(&self, id: &ApprovalId) -> Option<DecisionPoint> {
         lock(&self.points).get(id).cloned()
+    }
+
+    /// How many approvals the policy is weighing now, which hold the run's wait as a session
+    /// at work does: autopilot may be about to settle one.
+    pub fn weighing(&self) -> usize {
+        lock(&self.evaluating).len()
     }
 }
 
@@ -319,15 +326,49 @@ fn open_with(
     Ok(Opening::Waiting { id, receiver })
 }
 
+/// Waits again on an open approval that an earlier process opened, such as the question a run
+/// waited on when something other than its answer relaunched it. Its decision point is rebuilt
+/// from the log, and on autopilot it is settled at once. A decided one returns at once.
+pub async fn wait_again(host: &Host, id: &ApprovalId) -> EngineResult<ApprovalDecided> {
+    let desk = &host.shared().desk;
+    let (receiver, kind) = {
+        let _deciding = lock(&desk.deciding);
+        let record = host
+            .read(|state| state.approvals.by_id.get(id).cloned())
+            .ok_or_else(|| EngineError::Refused(format!("There's no approval {id}")))?;
+        if let Some(decided) = record.decided {
+            return Ok(decided);
+        }
+        if desk.point(id).is_none() {
+            let point = recorded_point(host, &record);
+            lock(&desk.points).insert(id.clone(), point);
+        }
+        (desk.wait(id), record.opened.kind)
+    };
+    if autopilot::applies_now(host, kind) {
+        autopilot::settle_open(host)?;
+    }
+    Opening::Waiting {
+        id: id.clone(),
+        receiver,
+    }
+    .decided(host)
+    .await
+}
+
 /// Weighs an approval again in autopilot, which the policy weighed outside it, such as before
-/// Shift+Tab turned autopilot on. Its decision point comes from the step that opened it, so one
-/// this process doesn't know yet waits for that step to open it again, which weighs it then.
-/// The caller holds the desk's deciding lock.
+/// Shift+Tab turned autopilot on. Its decision point comes from the step that opened it. A
+/// worker's question an earlier process opened has its point rebuilt from the log, since it
+/// names no authors the judge must not be, so a relaunched run answers it at once; any other
+/// kind waits for its step to open it again, which weighs it then. The caller holds the desk's
+/// deciding lock.
 fn ask_again(host: &Host, record: &ApprovalRecord) -> EngineResult<()> {
     let desk = &host.shared().desk;
     let id = &record.opened.id;
-    let Some(point) = desk.point(id) else {
-        return Ok(());
+    let point = match desk.point(id) {
+        Some(point) => point,
+        None if record.opened.kind == ApprovalKind::Question => recorded_point(host, record),
+        None => return Ok(()),
     };
     if !lock(&desk.evaluating).insert(id.clone()) {
         return Ok(());
@@ -462,6 +503,33 @@ fn why_only_yours(packet: &ApprovalPacket) -> Option<String> {
     }
 }
 
+/// Why a merge waits for you whatever your rules or the judge say: a review or a ruling of a
+/// task in it went to a fallback from its builder's own provider, which only autopilot does
+/// when nobody else is left. `None` when every review stayed independent.
+pub fn builders_provider_reviewed(host: &Host, opened: &ApprovalOpened) -> Option<String> {
+    let ApprovalPacket::Merge(merge) = &opened.packet else {
+        return None;
+    };
+    let registry = &host.services().registry;
+    host.read(|state| {
+        merge.rows.iter().find_map(|row| {
+            let record = state.tasks.get(&row.task)?;
+            let builder = registry.provider(&crate::fallback::rules::worker(record)?);
+            let fallback = state.sessions.by_key.values().find(|session| {
+                matches!(session.started.role, RoleName::Reviewer | RoleName::Judge)
+                    && session.asked.is_some()
+                    && session.task.as_ref().is_none_or(|task| *task == row.task)
+                    && registry.provider(&session.started.worker) == builder
+            })?;
+            Some(format!(
+                "{}, a fallback from its builder's own provider, reviewed {}",
+                crate::roles::display_name(&fallback.started.worker),
+                row.task
+            ))
+        })
+    })
+}
+
 /// What your rules or the judge approved at approval `id` merged, so a spot check the policy
 /// drew for it joins your queue now.
 pub fn merged(host: &Host, id: &ApprovalId) -> EngineResult<()> {
@@ -586,9 +654,10 @@ fn record_opened(
         decide_with: configured.decide_with,
         options,
         free_text: request.free_text,
-        // Only auto can settle it without you; the policy's check says so once it's in.
-        // Autopilot settles what's left itself.
-        needs_you: !mode.goes_ahead() && !in_autopilot,
+        // Only auto can settle it without you, and only for a kind your rules decide; the
+        // policy's check says so once it's in. Autopilot settles what's left itself.
+        needs_you: (!mode.goes_ahead() || !policy_may_settle(host.settings(), request.kind))
+            && !in_autopilot,
     };
     host.record(
         request.task.as_ref(),
@@ -908,6 +977,15 @@ pub fn policy_outcome(host: &Host, id: &ApprovalId, outcome: PolicyOutcome) -> E
         && record.opened.mode != ApprovalMode::Autopilot;
     let late = !record.is_open() || (record.policy_check().is_some() && !asked_again);
     let in_autopilot = !late && autopilot::applies_now(host, record.opened.kind);
+    // No rule or judge merges what the builder's own provider reviewed: that merge is yours.
+    let not_independent = builders_provider_reviewed(host, &record.opened);
+    let outcome = match outcome {
+        PolicyOutcome::Decided { .. } if not_independent.is_some() => PolicyOutcome::AskUser {
+            violations: Vec::new(),
+            auto_preview: None,
+        },
+        outcome => outcome,
+    };
     match outcome {
         PolicyOutcome::AskUser {
             violations,
@@ -939,7 +1017,9 @@ pub fn policy_outcome(host: &Host, id: &ApprovalId, outcome: PolicyOutcome) -> E
                 _ if !violations.is_empty() => {
                     autopilot::Held::HardLimit(autopilot::at_hard_limit(host, &record, &violations))
                 }
-                _ if autopilot::kept_for_you(host.settings(), record.opened.kind) => {
+                _ if not_independent.is_some()
+                    || autopilot::kept_for_you(host.settings(), record.opened.kind) =>
+                {
                     autopilot::Held::Kept
                 }
                 Some(auto_preview) if auto_preview.would == Verdict::Reject => {
@@ -951,7 +1031,7 @@ pub fn policy_outcome(host: &Host, id: &ApprovalId, outcome: PolicyOutcome) -> E
                 let rules_alone = auto_preview.by == DecideWith::Rules;
                 unchecked_question(record.opened.kind, rules_alone, &auto_preview.reasons)
             });
-            let why = not_checked.or_else(because);
+            let why = not_independent.or(not_checked).or_else(because);
             let plan_in_auto = !late
                 && autopilot::settles_a_plan_in_auto(
                     &record.opened,
@@ -965,7 +1045,9 @@ pub fn policy_outcome(host: &Host, id: &ApprovalId, outcome: PolicyOutcome) -> E
                 // In auto the question says why it still came to you, in one line, and so does
                 // one autopilot left to you. One autopilot settled keeps what the policy found
                 // for you to review, recorded after the decision so it never shows as waiting.
-                let says_why = in_autopilot || record.opened.mode.goes_ahead();
+                let says_why = in_autopilot
+                    || (record.opened.mode.goes_ahead()
+                        && policy_may_settle(host.settings(), record.opened.kind));
                 checked(PolicyCheck {
                     id: id.clone(),
                     violations,
@@ -1042,6 +1124,38 @@ pub fn policy_outcome(host: &Host, id: &ApprovalId, outcome: PolicyOutcome) -> E
                 None,
                 RunEventKind::Approval(ApprovalEvent::Decided(decided.clone())),
             )?;
+            // A worker's question the judge answered in autopilot says who answered and why, as
+            // one autopilot answered by its own rule does.
+            if in_autopilot && record.opened.kind == ApprovalKind::Question {
+                let taken = record
+                    .opened
+                    .options
+                    .iter()
+                    .find(|option| option.action == decided.action)
+                    .map(|option| option.label.clone());
+                let judge = match &decided.by {
+                    Party::Judge { model } => Some(model.clone()),
+                    _ => None,
+                };
+                let why = host
+                    .read(|state| state.approvals.by_id.get(id).cloned())
+                    .and_then(|checked| why_asked_of(&checked));
+                if let Some(answered) = taken.and_then(|taken| {
+                    autopilot::asked_by_a_worker(
+                        host,
+                        &record.opened,
+                        &taken,
+                        why.as_deref(),
+                        judge,
+                    )
+                }) {
+                    host.record(
+                        task.as_ref(),
+                        None,
+                        RunEventKind::Blackboard(BlackboardEvent::AnsweredForYou(answered)),
+                    )?;
+                }
+            }
             if spot_check {
                 if record.opened.kind == ApprovalKind::Merge {
                     lock(&desk.spot_check_once_merged).insert(id.clone());
@@ -1159,7 +1273,8 @@ fn withdraw_locked(host: &Host, id: &ApprovalId, reason: &str) -> EngineResult<(
 }
 
 /// A kind's configured mode, who decides in auto, what a rejection does, and what a hard
-/// limit does in autopilot. Kinds without their own settings are yours to decide.
+/// limit does in autopilot. Kinds without their own settings are yours to decide, and open in
+/// the mode all your approvals share, the one the bottom line shows.
 pub struct Configured {
     pub mode: ApprovalMode,
     pub decide_with: DecideWith,
@@ -1169,11 +1284,17 @@ pub struct Configured {
 
 pub fn configured(settings: &Settings, kind: ApprovalKind) -> Configured {
     own_settings(settings, kind).unwrap_or(Configured {
-        mode: ApprovalMode::Supervised,
+        mode: settings.approvals.mode(),
         decide_with: DecideWith::default(),
         otherwise: Otherwise::Ask,
         at_hard_limit: AtHardLimit::default(),
     })
+}
+
+/// Whether your rules or the judge may settle an approval of `kind` in auto. The others wait
+/// for you in every mode but autopilot.
+fn policy_may_settle(settings: &Settings, kind: ApprovalKind) -> bool {
+    own_settings(settings, kind).is_some()
 }
 
 /// A kind's own settings, for the kinds that have them. The `autopilot` switch puts each one a
@@ -1248,6 +1369,35 @@ mod tests {
         assert_eq!(
             action_for(&limit, Verdict::Approve, Otherwise::Ask),
             Some(AnswerAction::RaiseLimit)
+        );
+    }
+
+    /// With every approval point on auto, the bottom line says auto, and an agent's question
+    /// opens in auto too, though no rule may settle it: it still waits for you.
+    #[test]
+    fn a_kind_without_settings_of_its_own_opens_in_the_shared_mode() {
+        let mut settings = Settings::default();
+        let approvals = &mut settings.approvals;
+        for point in [
+            &mut approvals.understand,
+            &mut approvals.plan,
+            &mut approvals.merge,
+            &mut approvals.stuck,
+            &mut approvals.limit,
+            &mut approvals.change_request,
+        ] {
+            point.mode = ApprovalMode::Auto;
+        }
+        assert_eq!(settings.approvals.mode(), ApprovalMode::Auto);
+        for kind in [ApprovalKind::Question, ApprovalKind::Fallback] {
+            assert_eq!(configured(&settings, kind).mode, ApprovalMode::Auto);
+            assert!(!policy_may_settle(&settings, kind));
+        }
+        assert!(policy_may_settle(&settings, ApprovalKind::Merge));
+        settings.approvals.autopilot = true;
+        assert_eq!(
+            configured(&settings, ApprovalKind::Question).mode,
+            ApprovalMode::Autopilot
         );
     }
 }

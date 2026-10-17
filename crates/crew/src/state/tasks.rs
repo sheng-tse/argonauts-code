@@ -14,7 +14,7 @@ use argonauts_core::events::task::{
 };
 use argonauts_core::fallback::QualityDebt;
 use argonauts_core::limits::START_CHECKS;
-use argonauts_core::names::{AgentId, ModelRef};
+use argonauts_core::names::{AgentId, ModelRef, SessionKey};
 use argonauts_core::steps::task::TaskReport;
 use argonauts_core::{CommitInfo, DiffStat, TaskId};
 
@@ -97,6 +97,10 @@ pub struct TaskProgress {
     /// Why the task moved to its current state, as the move said.
     #[serde(default)]
     pub why: String,
+    /// The session each of the record's reviews came from, in their order, so asks that
+    /// outlive a relaunch are counted again from the log.
+    #[serde(default)]
+    pub review_sessions: Vec<Option<SessionKey>>,
 }
 
 /// Progress of a task nothing has happened to yet.
@@ -118,6 +122,7 @@ static NO_PROGRESS: TaskProgress = TaskProgress {
     take_over_end: None,
     changes: 0,
     why: String::new(),
+    review_sessions: Vec::new(),
 };
 
 impl TaskEntry {
@@ -280,6 +285,13 @@ impl Tasks {
         if let Some(record) = self.record_mut(envelope) {
             record.reviews.push(event.clone());
             self.touch(envelope);
+            if let Some(task) = envelope.task_id.as_ref() {
+                self.progress
+                    .entry(task.clone())
+                    .or_default()
+                    .review_sessions
+                    .push(envelope.session.clone());
+            }
         }
     }
 

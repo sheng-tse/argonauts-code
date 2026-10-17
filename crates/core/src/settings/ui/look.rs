@@ -289,7 +289,7 @@ pub struct FormatSettings {
     pub tokens: TokenStyle,
     /// Plan usage says how much is used or how much is left, everywhere it shows
     pub plan_usage: PlanUsageWording,
-    /// Clock times: 12h (4:40pm) or 24h (16:40)
+    /// Clock times: auto, 12h (4:40pm) or 24h (16:40)
     pub clock: ClockStyle,
     /// When plan usage resets: a clock time, a countdown, or both
     pub reset: ResetStyle,
@@ -316,7 +316,10 @@ pub enum PlanUsageWording {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 pub enum ClockStyle {
+    /// As the terminal's locale writes times, as Claude Code's auto does.
     #[default]
+    #[serde(rename = "auto")]
+    Auto,
     #[serde(rename = "12h")]
     TwelveHour,
     #[serde(rename = "24h")]

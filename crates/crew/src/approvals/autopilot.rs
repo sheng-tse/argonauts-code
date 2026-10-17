@@ -13,6 +13,9 @@ use argonauts_core::events::approval::{
 };
 use argonauts_core::events::goal::{LET_THE_MAIN_AGENT_ANSWER, LET_THE_MAIN_AGENT_DECIDE};
 use argonauts_core::events::run::Party;
+use argonauts_core::events::shared::{AnsweredForYou, BlackboardEvent, BlackboardKind};
+use argonauts_core::events::task::TaskState;
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::policy::{HardLimit, StuckFacts, Violation};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{ApprovalMode, AtHardLimit, Presence};
@@ -302,15 +305,19 @@ pub(super) fn decide(
     } else {
         label(&option, text.as_deref())
     };
-    // What autopilot settled is one quiet line; only what it left to you is a warning.
-    host.record(
-        opened.task.as_ref(),
-        None,
-        RunEventKind::Note(Note {
+    // What autopilot settled is one quiet line; only what it left to you is a warning. A
+    // worker's question says who asked and what follows, as one answered by a model does.
+    let answered = (opened.kind == ApprovalKind::Question)
+        .then(|| asked_by_a_worker(host, opened, taken, why.as_deref(), None))
+        .flatten();
+    let said = match answered {
+        Some(answered) => RunEventKind::Blackboard(BlackboardEvent::AnsweredForYou(answered)),
+        None => RunEventKind::Note(Note {
             level: NoteLevel::Info,
             text: ending_line(opened, taken, why.as_deref()),
         }),
-    )?;
+    };
+    host.record(opened.task.as_ref(), None, said)?;
     // Sent back at a hard limit, the agents hear which limit stopped them.
     let text = text.or_else(|| {
         let at_limit = held == Held::HardLimit(AtHardLimit::SendBack) && sends_back(&option.action);
@@ -400,6 +407,46 @@ fn note(host: &Host, opened: &ApprovalOpened, text: String) -> EngineResult<()> 
         }),
     )?;
     Ok(())
+}
+
+/// A worker's question answered in your place with one of its options, by autopilot's rule or
+/// by the judge (`judge`): the question on the board, and whether its task had already gone on
+/// without it.
+pub(super) fn asked_by_a_worker(
+    host: &Host,
+    opened: &ApprovalOpened,
+    taken: &str,
+    why: Option<&str>,
+    judge: Option<ModelRef>,
+) -> Option<AnsweredForYou> {
+    let ApprovalPacket::Question(packet) = &opened.packet else {
+        return None;
+    };
+    let task = opened.task.as_ref()?;
+    host.read(|state| {
+        let board = &state.blackboard;
+        let question = board.messages.iter().rev().find(|message| {
+            message.kind == BlackboardKind::Question
+                && message.text == packet.text
+                && board.posted_from.get(&message.id) == Some(task)
+        })?;
+        let blocked = state
+            .tasks
+            .get(task)
+            .is_some_and(|record| record.state == TaskState::Blocked);
+        Some(AnsweredForYou {
+            question: question.id.clone(),
+            asker: crate::labels::task_label(state, task),
+            answer: taken.to_owned(),
+            role: judge.as_ref().map(|_| RoleName::Judge),
+            by: judge,
+            why: why
+                .map(first_sentence)
+                .filter(|why| !why.is_empty())
+                .map(clause_case),
+            finished: !blocked,
+        })
+    })
 }
 
 /// What the line calls the option taken: its label, or what the agent was told when no one

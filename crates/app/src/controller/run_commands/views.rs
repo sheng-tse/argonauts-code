@@ -50,7 +50,7 @@ fn show(ctx: &Ctx, data: ViewData) {
 /// `Runs`, `Status`, `Diff`, `Raw`, `Workflow`, `Agent`, and `AllRepos`.
 pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest) -> Handled {
     match view {
-        ViewRequest::Runs => runs::show_runs(ctx, false).await?,
+        ViewRequest::ResumeList => runs::show_runs(ctx, false).await?,
         ViewRequest::SessionsEverywhere => runs::show_runs(ctx, true).await?,
         ViewRequest::Status => return status(ctx, runs).await,
         ViewRequest::Context => return context(ctx, runs, None).await,
@@ -135,9 +135,6 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
         ViewRequest::ReadPlanUsage => anyhow::bail!("plan usage isn't one run's"),
         ViewRequest::Overview { .. } => anyhow::bail!("the Overview isn't one run's view"),
         ViewRequest::RepoFiles => anyhow::bail!("the repo's files aren't a run's"),
-        ViewRequest::AgentSessions { .. } => {
-            anyhow::bail!("a run's agents' sessions are the conversation's to list")
-        }
         ViewRequest::Learning { .. } => anyhow::bail!("the Learning pickers aren't run views"),
     }
     Ok(Vec::new())
@@ -464,6 +461,9 @@ fn show_workflow(
     let Some(mut view) = views::workflow_view(&events, run, workflow) else {
         return Some(match workflow {
             Some(workflow) => format!("This run has no workflow {workflow}."),
+            None if views::being_written(&events) => {
+                argonauts_core::views::BEING_WRITTEN.to_owned()
+            }
             None => NO_WORKFLOW_YET.to_owned(),
         });
     };

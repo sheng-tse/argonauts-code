@@ -1,0 +1,8 @@
+❯ /config
+  ⎿  Set Default approval mode to Last used · Set Editor mode to vim
+
+❯ /config ui.tips=false
+  ⎿  Set ui.tips to false (in ~/.argonauts/config.toml)
+
+❯ /config all
+  ⎿  opens All settings: every key, its value, where it came from, and what it does (the view /config opens today)

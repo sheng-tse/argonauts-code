@@ -6,6 +6,7 @@
 //! out is reported. A message sent mid-turn is a turn of its own unless the adapter says it
 //! joins the running one.
 
+use std::collections::BTreeSet;
 use std::io;
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -40,8 +41,9 @@ use crate::rawlog::RawLog;
 /// How long output may keep coming after the agent exits, from something it started.
 const EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 const AFTER_KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
-/// How long a finished turn's input stays open for what the CLI runs in the background, which
-/// closing it would stop.
+/// How long a finished turn's input stays open for what the CLI runs in the background. Once the
+/// input closes, the CLI waits for that work only a while (Claude Code ten minutes) and then
+/// stops it.
 const BACKGROUND_WAIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 pub async fn run(running: Running, launch: Launch) -> SessionEnd {
@@ -130,10 +132,13 @@ struct Live {
     exit: Option<ExitStatus>,
     drain_until: Option<TokioInstant>,
     leftovers_killed: bool,
-    /// Tasks the CLI reports running in the background, which end when the input closes.
+    /// Tasks the CLI reports running in the background, which it stops a while after the input
+    /// closes.
     background: usize,
     /// When a finished turn stops waiting on them.
     background_until: Option<TokioInstant>,
+    /// The CLI's own workflows that haven't ended, by id.
+    workflows: BTreeSet<String>,
 }
 
 impl Live {
@@ -151,6 +156,7 @@ impl Live {
             leftovers_killed: false,
             background: 0,
             background_until: None,
+            workflows: BTreeSet::new(),
         }
     }
 }
@@ -301,7 +307,10 @@ impl Lines {
                     vec![oversized_line(&line.text, line.dropped)]
                 } else {
                     self.obs.stdout_line(&line.text);
-                    self.live.parser.parse_stdout_line(&line.text)
+                    let events = self.live.parser.parse_stdout_line(&line.text);
+                    self.obs
+                        .billed_since_totals(self.live.parser.billed_since_totals());
+                    events
                 }
             }
             Stream::Stderr => {
@@ -318,6 +327,13 @@ impl Lines {
             }
             if let AgentEvent::BackgroundTasks { running, ended } = &event {
                 self.background_changed(running.len(), *ended);
+            }
+            if let AgentEvent::Workflow { workflow } = &event {
+                if workflow.ended() {
+                    self.live.workflows.remove(&workflow.id);
+                } else {
+                    self.live.workflows.insert(workflow.id.clone());
+                }
             }
             if self.holds_report(&event) {
                 continue;
@@ -368,6 +384,7 @@ impl Lines {
             // The process is gone, so limits have nothing left to act on.
             let _ = self.obs.event(event);
         }
+        self.obs.spent_at_least(self.live.parser.spent_at_least());
         // No tool call will finish now, so held steering waits for the next turn.
         for message in std::mem::take(&mut self.steer_after_tool) {
             self.queue_next_turn(message);
@@ -638,7 +655,8 @@ impl Lines {
         wall.map_or(wait, |wall| wall.min(wait))
     }
 
-    /// The turn ended long ago and the background still runs: closing the input stops it.
+    /// The turn ended long ago and the background still runs: closing the input has the CLI
+    /// stop it.
     fn background_wait_over(&mut self) {
         self.live.background_until = None;
         if self.live.background == 0 || !self.live.input_open || !self.turn_done() {
@@ -650,7 +668,7 @@ impl Lines {
         };
         self.out.notice(format!(
             "{} still ran {tasks} in the background when the wait for it ran out, so its input \
-             closed, and that stops them",
+             closed and it stops them",
             self.ctx.adapter.display_name()
         ));
         self.live.process.close_input();
@@ -660,6 +678,16 @@ impl Lines {
     /// Every turn sent so far has its result.
     fn turn_done(&self) -> bool {
         self.obs.facts.results >= self.live.turns_sent
+    }
+
+    /// The turn is done and so is the work it started. A turn that starts the CLI's own
+    /// workflow has its result as soon as the workflow runs in the background, so a session is
+    /// still at work while that workflow runs, or while it owes the report only the tool takes.
+    fn work_done(&self) -> bool {
+        let workflow_running = self.live.background > 0 && !self.live.workflows.is_empty();
+        let owes_its_report =
+            report_tool::reports_by_tool(&self.ctx.spec) && self.obs.facts.structured.is_none();
+        self.turn_done() && !workflow_running && !owes_its_report
     }
 
     /// Sends `items` through the open input: a turn of their own, or a part of the running turn
@@ -839,7 +867,7 @@ impl Lines {
         if self.stop_cause.is_some() {
             return;
         }
-        self.finished_before_stop = self.turn_done();
+        self.finished_before_stop = self.work_done();
         self.stop_cause = Some(cause.clone());
         if self.live.input_open {
             self.live.process.close_input();
@@ -888,7 +916,8 @@ impl Lines {
             if !self.next_turn.is_empty() {
                 self.flush_next_turn();
             } else if self.live.background > 0 {
-                // Closing the input would stop what runs in the background, so it waits.
+                // The CLI stops what runs in the background soon after its input closes, so
+                // the input stays open.
                 if self.live.input_open && self.live.background_until.is_none() {
                     self.live.background_until = Some(self.background_deadline());
                 }

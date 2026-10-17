@@ -34,6 +34,7 @@ fn picker() -> ResumePicker {
         worker: None,
         turns: 42,
         runs: 0,
+        needs_you: false,
     }];
     let sessions = vec![
         session(
@@ -58,7 +59,7 @@ fn picker() -> ResumePicker {
             9,
         ),
     ];
-    let mut view = ResumePicker::listing(Vec::new(), conversations, sessions);
+    let mut view = ResumePicker::listing(conversations, sessions);
     view.clock = WallClock::pinned(NOW);
     view
 }
@@ -127,7 +128,10 @@ fn b_branches_and_a_lists_every_folder() {
             .contains("a this folder")
     );
     let here = view.other_folders();
-    assert!(matches!(here, ViewOutcome::Request(ViewRequest::Runs)));
+    assert!(matches!(
+        here,
+        ViewOutcome::Request(ViewRequest::ResumeList)
+    ));
 }
 
 #[test]

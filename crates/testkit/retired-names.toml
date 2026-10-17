@@ -26,6 +26,7 @@ allowed_in = [
     # drawing
     "crates/tui/src/mods/**",
     "crates/tui/src/overview/**",
+    "crates/tui/golden/resumed_after.*",
     "crates/tui/src/kit/**",
     "crates/tui/src/bottom/band*.rs",
     "crates/tui/src/bottom/mod.rs",
@@ -410,6 +411,38 @@ neutral_mail_endings = ["example.com", "example.org", "example.net", "example", 
 file_endings = ["md", "txt", "rs", "toml", "json", "jsonl", "yaml", "yml", "sh", "py", "js", "ts", "lock", "log", "html", "css", "snap", "star"]
 home_fix = "a neutral folder, such as /Users/you"
 mail_fix = "a reserved address, such as you@example.com"
+# Claude Code's scratch folder sits under the temp folder, named "claude-" and the user's id,
+# and holds a folder named after the project's path, so a path inside it names the recording
+# machine's account and its folders. A placeholder in place of the id is fine.
+scratch_fix = "a neutral folder, such as /Users/you/scratch"
+
+# A recording keeps the CLI's words but none of the recording machine's own setup: the
+# skills its account synced, the plugins it installed, its claude.ai connectors, and the
+# account's plan and organization. Each stands as its placeholder, numbered by letter.
+[private.setup]
+synced_skill = "anthropic-skills:example-"
+plugin = "example-plugin-"
+connector = "claude.ai Example "
+connector_tool = "mcp__claude_ai_Example_"
+plan = "<plan>"
+organization = "<organization>"
+fix = "its placeholder, as every Claude Code recording has it"
+# The skills, commands and agents an init message may list: Claude Code's own in the recorded
+# versions, as they and its program name them, and the ones a recording makes in its
+# throwaway repo. Any other name came from the recording machine's own setup.
+known = [
+    "Explore", "Plan", "__remote-workflow", "advisor", "agents", "auto-mode-setup",
+    "autocompact", "batch", "claude", "claude-api", "clear", "code-review", "color", "compact",
+    "config", "context", "dataviz", "debug", "deep-research", "design", "design-consent",
+    "design-revoke", "design-sync", "doctor", "effort", "extra-usage", "fast",
+    "fewer-permission-prompts", "focus", "general-purpose", "goal", "heapdump", "import",
+    "init", "insights", "list-agents", "loop", "mcp", "model", "output-style",
+    "plugin-authoring", "recap", "reload-plugins", "reload-skills", "rename", "run",
+    "run-skill-generator", "schedule", "security-review", "simplify", "skill-doctor",
+    "statusline-setup", "team-onboarding", "ultrareview", "update-config", "usage",
+    "usage-credits", "verify", "workflow-authoring", "workflow-launch-exec",
+    "probe-cmd", "probe-late", "example-command",
+]
 
 # The names that were once in the code. Each is kept as its length and FNV-1a hash
 # (lowercased), so this file doesn't hold them either.
@@ -446,6 +479,7 @@ table = "crates/core/src/input.rs"
 [slash_commands.variant_of]
 learned = "LearnedWorkflows"
 pin = "Mods"
+settings = "Config"
 unpin = "Mods"
 
 # ── Recordings folders ───────────────────────────────────────────────────────────────────
@@ -497,6 +531,21 @@ word = "coordinates"
 # test, so the list can't outlive what it excuses.
 
 [[allow]]
+path = "crates/tui/tests/golden/waiting_rows.*"
+text = "If nothing can take the seats a run needs"
+why = "the picture's own caption"
+
+[[allow]]
+path = "crates/tui/tests/golden/moved_rows.*"
+text = "A seat left out"
+why = "the picture's own caption"
+
+[[allow]]
+path = "crates/tui/tests/golden/moved_agent.*"
+text = "in the left-out seat"
+why = "the picture's own caption"
+
+[[allow]]
 path = "crates/**"
 text = "--max-budget-usd"
 why = "Claude Code's own flag"
@@ -510,6 +559,11 @@ why = "Claude Code's own result subtype"
 path = "crates/adapters/claude-code/src/parser.rs"
 text = "Reached maximum budget"
 why = "Claude Code's own error text"
+
+[[allow]]
+path = "crates/**"
+text = "Budget limit reached ("
+why = "Claude Code's own words, on stderr when its cap stops background agents and to the model when it won't start another"
 
 [[allow]]
 path = "crates/adapters/claude-code/src/errors.rs"
@@ -601,11 +655,30 @@ path = "crates/tui/src/**"
 text = " Widget}"
 why = "ratatui's own trait"
 
+[[allow]]
+path = "crates/app/src/controller/settings/renamed.rs"
+text = 'workflow = "solo"'
+why = "a file an older build wrote, which the start question offers to rename"
+
+[[allow]]
+path = "crates/app/tests/golden/start_after.txt"
+text = 'workflow = "solo"'
+why = "the rename question's picture, naming an old value the file still uses"
+
+[[allow]]
+path = "crates/app/tests/golden/start_after.html"
+text = 'workflow = &quot;solo&quot;'
+why = "the rename question's picture, naming an old value the file still uses"
+
 # ── Files whose words aren't read ────────────────────────────────────────────────────────
 
 [[unread]]
 path = "crates/app/src/controller/instructions/request_words.rs"
 why = "the one table of words a person may type in a request; none is ever shown back"
+
+[[unread]]
+path = "crates/registry/src/settings/renamed.rs"
+why = "the one table of settings names that changed, old beside new, used only to word the start question that offers the edit and to make it"
 
 [[unread]]
 path = "Cargo.lock"

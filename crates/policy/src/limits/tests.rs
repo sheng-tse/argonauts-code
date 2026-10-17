@@ -31,6 +31,7 @@ const PROTECTED_PATH: &str = include_str!("../../tests/fixtures/diffs/protected_
 const FORBIDDEN_PATH: &str = include_str!("../../tests/fixtures/diffs/forbidden_path.diff");
 const INSTRUCTION_FILES: &str = include_str!("../../tests/fixtures/diffs/instruction_files.diff");
 const BINARY_FILES: &str = include_str!("../../tests/fixtures/diffs/binary_files.diff");
+const REMERGE_CONFLICT: &str = include_str!("../../tests/fixtures/diffs/remerge_conflict.diff");
 
 /// Settings with the OS sandbox on, so only the limit a test is about shows up. The default
 /// is off for now, and off makes every approval ask.
@@ -230,6 +231,25 @@ fn binary_files_the_scan_cannot_read_stop_the_task() {
         found[1].detail.contains("can't read"),
         "{}",
         found[1].detail
+    );
+}
+
+/// A task's merge that settled a conflict reads through `git show --remerge-diff`, which
+/// names the conflict in the file's header.
+#[test]
+fn a_merge_that_settled_a_conflict_reads_as_its_change() {
+    let changes = diff::parse(REMERGE_CONFLICT).unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].path, "ratelimit/bucket.py");
+    assert!(
+        changes[0]
+            .added()
+            .any(|line| line.contains("bucket.tokens < n"))
+    );
+    assert!(changes[0].removed().any(|line| line.starts_with("<<<<<<<")));
+    assert_eq!(
+        limits(sandboxed()).check_task_diff(&task(&[]), REMERGE_CONFLICT),
+        Vec::new()
     );
 }
 

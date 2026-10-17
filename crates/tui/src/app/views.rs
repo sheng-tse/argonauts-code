@@ -4,10 +4,11 @@
 use std::io::Write;
 use std::time::Instant;
 
-use argonauts_core::app::ViewData;
+use argonauts_core::app::{UiCommand, ViewData};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 
 use super::{Ui, UiAction};
+use crate::cell::{HistoryCell, ResultLine, Tone, UserMessage};
 use crate::keymap::{Action, Layer};
 use crate::state::AppState;
 use crate::views::{Follow, ViewCtx, ViewOutcome};
@@ -58,7 +59,7 @@ impl<W: Write> Ui<W> {
         self.views.pop();
         match next {
             Follow::Replace(view) => {
-                self.views.push(view);
+                self.stack_view(view);
                 Vec::new()
             }
             Follow::Request(request) => vec![UiAction::Request(request)],
@@ -118,10 +119,10 @@ impl<W: Write> Ui<W> {
                 self.views.pop();
             }
             ViewOutcome::CloseAll => self.views.clear(),
-            ViewOutcome::Open(view) => self.views.push(view),
+            ViewOutcome::Open(view) => self.stack_view(view),
             ViewOutcome::Replace(view) => {
                 self.views.pop();
-                self.views.push(view);
+                self.stack_view(view);
             }
             ViewOutcome::Send(command) => actions.push(UiAction::Command(command)),
             ViewOutcome::SendToConversation(command) => {
@@ -136,7 +137,34 @@ impl<W: Write> Ui<W> {
             ViewOutcome::Notice(text) => actions.push(UiAction::Notice(text)),
             ViewOutcome::Copy(text) => actions.push(UiAction::Copy(text)),
             ViewOutcome::OpenLink { url, name } => actions.push(UiAction::OpenLink { url, name }),
+            ViewOutcome::CloseSaying { command, line } => self.close_saying(command, line, actions),
+            ViewOutcome::CloseSayingThen {
+                command,
+                line,
+                then,
+            } => {
+                self.close_saying(command, line, actions);
+                actions.push(UiAction::Command(then));
+            }
+            ViewOutcome::SaveQuietly(command) => {
+                if let UiCommand::SetSetting { key, .. } = &command {
+                    self.model.said_by_view.insert(key.clone());
+                }
+                actions.push(UiAction::Command(command));
+            }
         }
+    }
+
+    /// Back to the conversation, leaving `line` under an echo of `command`.
+    fn close_saying(&mut self, command: String, line: String, actions: &mut Vec<UiAction>) {
+        self.views.clear();
+        let history = &mut self.model.history;
+        history.push(UserMessage::command(command));
+        let line = ResultLine::new(Tone::Dim, line);
+        // The conversation's record keeps it after the command that opened the view.
+        actions.push(UiAction::Replied(line.reply()));
+        let line: Box<dyn HistoryCell> = Box::new(line);
+        history.push(line);
     }
 
     /// Esc always goes back, and the quit keys work from any view. The prompt behind the view

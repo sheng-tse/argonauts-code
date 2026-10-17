@@ -660,22 +660,47 @@ fn own_transcript_dir(agent_id: &str, user_home: &Path, workdir: &Path) -> Optio
     }
 }
 
-/// Claude Code 2.1.285 keeps a working directory's transcripts in `~/.claude/projects/<name>`,
-/// where the name is the directory's real path with every UTF-16 unit but an ASCII letter or
-/// digit turned into `-`. Past 200 units it cuts the name and adds a hash, which isn't
-/// reproduced here, so such a session keeps no transcript rather than reading everyone's.
+/// Claude Code keeps a working directory's transcripts in `~/.claude/projects/<name>`, where
+/// the name is the directory's real path with every UTF-16 unit but an ASCII letter or digit
+/// turned into `-`. A longer name than 200 is cut there and gets `-` and a hash of the path, as
+/// 2.1.296 does, so a deep worktree's session can still be resumed.
 fn claude_project_dir(user_home: &Path, workdir: &Path) -> Option<PathBuf> {
     const LONGEST_NAME: usize = 200;
     let real = resolve_path(workdir);
-    let name: String = real
-        .to_string_lossy()
+    let path = real.to_string_lossy();
+    let mut name: String = path
         .encode_utf16()
         .map(|unit| match char::from_u32(u32::from(unit)) {
             Some(c) if c.is_ascii_alphanumeric() => c,
             _ => '-',
         })
         .collect();
-    (name.len() <= LONGEST_NAME).then(|| user_home.join(".claude/projects").join(name))
+    if name.len() > LONGEST_NAME {
+        name.truncate(LONGEST_NAME);
+        name.push('-');
+        name.push_str(&claude_path_hash(&path));
+    }
+    Some(user_home.join(".claude/projects").join(name))
+}
+
+/// Claude Code's hash of a path: `h = (h << 5) - h + unit | 0` over its UTF-16 units, then the
+/// absolute value in base 36.
+fn claude_path_hash(path: &str) -> String {
+    let hash = path.encode_utf16().fold(0i32, |hash, unit| {
+        hash.wrapping_shl(5)
+            .wrapping_sub(hash)
+            .wrapping_add(i32::from(unit))
+    });
+    let mut left = hash.unsigned_abs();
+    let mut digits = Vec::new();
+    loop {
+        digits.push(char::from_digit(left % 36, 36).unwrap_or('0'));
+        left /= 36;
+        if left == 0 {
+            break;
+        }
+    }
+    digits.iter().rev().collect()
 }
 
 /// Sockets that act for you outside the sandbox: the ssh agent and docker's. They can sit where
@@ -1292,8 +1317,24 @@ mod tests {
                 "/home/you/.claude/projects/-nowhere-my-app-v2--"
             ))
         );
+        // The names Claude Code's own code gives these.
         let deep = PathBuf::from("/nowhere").join("a".repeat(300));
-        assert_eq!(claude_project_dir(home, &deep), None);
+        assert_eq!(
+            claude_project_dir(home, &deep),
+            Some(home.join(format!(
+                ".claude/projects/-nowhere-{}-kkph48",
+                "a".repeat(191)
+            )))
+        );
+        let deep = PathBuf::from(
+            "/Users/you/.argonauts/worktrees/repo-0123456789abcdef/run-20261014-061849-64f1/\
+             task-give-each-x/üñí/",
+        )
+        .join(format!("{}long-folder-name", "long-folder-name/".repeat(7)));
+        let name = claude_project_dir(home, &deep).unwrap();
+        let name = name.file_name().unwrap().to_string_lossy();
+        assert!(name.ends_with("-long-folder-nam-omxo5n"), "{name}");
+        assert_eq!(name.len(), 200 + "-omxo5n".len());
     }
 
     #[test]

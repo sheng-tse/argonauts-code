@@ -17,6 +17,7 @@ use argonauts_core::events::approval::{
 use argonauts_core::events::goal::{GoalEvent, GoalFile};
 use argonauts_core::events::run::{Party, RunLifecycle, RunMode};
 use argonauts_core::events::session::EndReason;
+use argonauts_core::events::shared::{AnsweredForYou, BlackboardEvent};
 use argonauts_core::events::task::MergeEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::meter::LimitDimension;
@@ -2315,8 +2316,10 @@ impl Asking {
                 reason: String::new(),
             }),
         )?;
+        // A report that stopped for the answer, so outside autopilot its question waits for
+        // you; one that finished asks in passing.
         let report = TaskReport {
-            status: ReportStatus::Done,
+            status: ReportStatus::Blocked,
             summary: "Done.".to_owned(),
             files_changed: Vec::new(),
             tests_run: Vec::new(),
@@ -2507,12 +2510,22 @@ async fn in_autopilot_a_question_that_blocks_is_answered_elsewhere_with_no_appro
     assert!(open_kinds(&events).is_empty(), "{:?}", open_kinds(&events));
     assert!(decided(&events).is_empty(), "{:?}", decided(&events));
     let said = notes(&events);
-    assert!(
-        said.contains(
-            &"Decided on autopilot · GPT X on Codex answered the question from build:add-the \
-              (Opus on Claude Code): Log to stderr only; src/cli.rs already has --verbose."
-        ),
-        "{said:#?}"
+    let answered: Vec<&AnsweredForYou> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Blackboard(BlackboardEvent::AnsweredForYou(answered)) => Some(answered),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answered.len(), 1, "{answered:#?}");
+    assert_eq!(answered[0].asker, "build:add-the");
+    assert_eq!(
+        answered[0].answer,
+        "Log to stderr only; src/cli.rs already has --verbose."
+    );
+    assert_eq!(
+        answered[0].by.as_ref().map(|by| by.agent.as_str()),
+        Some("codex")
     );
     assert!(
         !said.iter().any(|note| note.contains("task-001")),

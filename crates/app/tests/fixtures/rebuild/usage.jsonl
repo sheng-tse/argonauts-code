@@ -1,0 +1,5 @@
+{"day":"2026-09-30","repo":"/repo","run":"run-20260930-101500-00ab","agent":"claude-code","model":"haiku","agent_id":"claude-code","input":1000,"cached":0,"output":100,"cost":0.01,"estimated":false,"partial":false,"hour":6}
+{"day":"2026-09-30","repo":"/repo","run":"run-20260930-101500-00ab","agent":"codex","agent_id":"codex","input":2000,"cached":0,"output":200,"cost":0.02,"estimated":false,"partial":false,"hour":6}
+{"day":"2026-09-30","repo":"/repo","run":"run-20260930-101500-00ab","agent":"codex","model":"gpt-6-luna","agent_id":"codex","input":400,"cached":0,"output":40,"cost":0.004,"estimated":false,"partial":false,"hour":6}
+{"day":"2026-09-30","repo":"/repo","agent":"claude-code","model":"haiku","agent_id":"claude-code","input":1000,"cached":0,"output":100,"cost":0.01,"estimated":false,"partial":false,"hour":6,"conversation":"conversation-1","took":12}
+{"day":"2026-09-30","repo":"/repo","run":"run-20260929-090000-0918","agent":"claude-code","model":"haiku","agent_id":"claude-code","input":1000,"cached":0,"output":100,"cost":0.01,"estimated":false,"partial":false,"hour":6}

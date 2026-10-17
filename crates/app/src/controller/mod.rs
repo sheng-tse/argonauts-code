@@ -25,7 +25,6 @@ mod fixture_replay;
 mod folder_git;
 mod header_and_bottom_line;
 pub(crate) mod instructions;
-mod journal_history;
 mod mod_places;
 pub(crate) mod names;
 mod narrator_host;
@@ -38,7 +37,9 @@ mod route;
 mod run_commands;
 pub(crate) mod runs;
 pub(crate) mod settings;
+mod setup_again;
 mod shell;
+mod start_mode;
 mod status_health;
 mod status_tab;
 mod templates;
@@ -54,7 +55,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand, ViewData, ViewRequest};
+use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand, ViewRequest};
 use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::events::context::ContextDetail;
 use argonauts_core::events::run::RunMode;
@@ -63,12 +64,11 @@ use argonauts_core::input::{
 };
 use argonauts_core::names::{ChoiceId, RoleName};
 use argonauts_core::session_runner::RunnerEvent;
-use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::settings::approvals::{AUTOPILOT_BACK, ApprovalMode, StartMode};
 use argonauts_core::settings::ui::Place;
 use argonauts_core::views::{LearningArea, LearningCommand, conversation_run};
-use argonauts_core::{AgentEvent, NoteLevel};
+use argonauts_core::{AgentEvent, NoteLevel, RunId};
 use tokio::sync::mpsc;
-use tokio::time::MissedTickBehavior;
 
 pub(crate) use ctx::{AppServices, Ctx, Effect, Internal, Outbox, ScopeRequest};
 pub(crate) use header_and_bottom_line::{agent_label, header_agent, plan_usage_chips};
@@ -104,6 +104,21 @@ fn send_repo_files(ctx: &Ctx, folder: &Path) {
     }
 }
 
+/// `/resume <run>`, or a run's row: the run comes on screen inside the conversation that
+/// started it, which comes back first when another is on screen.
+async fn open_run(
+    ctx: &mut Ctx,
+    conversation: &mut conversation::ConversationState,
+    runs: &mut runs::RunsState,
+    run: RunId,
+) -> anyhow::Result<Vec<Effect>> {
+    let Some(mut effects) = conversation::come_home(ctx, conversation, &run).await? else {
+        return Ok(Vec::new());
+    };
+    effects.extend(run_commands::resume(ctx, runs, Some(run)).await?);
+    Ok(effects)
+}
+
 /// What the controller does before it reads input.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Opening {
@@ -120,6 +135,8 @@ pub(crate) struct Controller {
     connect: connect::ConnectState,
     workflows: workflows::State,
     prompt_trust: prompt_trust::PromptTrustState,
+    renamed: settings::renamed::RenamedState,
+    setup_again: setup_again::SetupAgainState,
     git: folder_git::GitState,
     templates: templates::TemplatesState,
     needed_update: needed_update::NeededUpdateState,
@@ -143,6 +160,12 @@ impl Controller {
     ) -> anyhow::Result<Self> {
         let conversation = conversation::ConversationState::new(&ctx)?;
         let runs = runs::RunsState::new(&ctx);
+        // Autopilot coming back by itself says so once; supervised and auto show on the
+        // bottom line.
+        let last = ctx.settings().approvals.start_mode == StartMode::Last;
+        if last && runs.approval_mode == Some(ApprovalMode::Autopilot) {
+            ctx.notice(NoteLevel::Caution, AUTOPILOT_BACK);
+        }
         let settings = settings::SettingsState::new(&ctx);
         let mods = crate::mods::ModsState::new(&ctx);
         Ok(Self {
@@ -154,6 +177,8 @@ impl Controller {
             connect: connect::ConnectState::default(),
             workflows: workflows::State::default(),
             prompt_trust: prompt_trust::PromptTrustState::default(),
+            renamed: settings::renamed::RenamedState::default(),
+            setup_again: setup_again::SetupAgainState::default(),
             git: folder_git::GitState::default(),
             templates: templates::TemplatesState::default(),
             needed_update: needed_update::NeededUpdateState::default(),
@@ -179,10 +204,8 @@ impl Controller {
         self.keep_runs();
         self.follow_conversation();
         header_and_bottom_line::read_stale_at_start(&self.ctx);
-        let mut wake = tokio::time::interval(WAKE_EVERY);
-        wake.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        // The first tick fires at once, and opening already checked.
-        wake.tick().await;
+        // Opening already checked, so the first check comes a while later.
+        let mut next_wake = tokio::time::Instant::now() + WAKE_EVERY;
         loop {
             let attaches = runs::attaches(&self.runs);
             let conversation = conversation::id(&self.conversation).clone();
@@ -200,10 +223,11 @@ impl Controller {
                     let result = self.internal_message(message).await;
                     self.settle(result)
                 }
-                _ = wake.tick() => {
+                () = tokio::time::sleep_until(next_wake) => {
                     self.kick_replays();
                     runs::refresh_background(&self.ctx);
                     let result = runs::wake_waiting(&mut self.ctx, &mut self.runs).await;
+                    next_wake = tokio::time::Instant::now() + self.next_wake_in();
                     self.settle(result.map(|()| Vec::new()))
                 }
             };
@@ -260,6 +284,18 @@ impl Controller {
     }
 
     /// A run that came on screen is the conversation's, saved with it for `argonauts -c`.
+    /// How long until waiting runs are checked again: at the soonest retry one waits for, at
+    /// most [`WAKE_EVERY`] on, and a second at least, so a time just passed is checked once.
+    fn next_wake_in(&self) -> Duration {
+        let now = self.ctx.services.clock.now();
+        self.runs
+            .waiting_soonest(now)
+            .and_then(|at| Duration::try_from(at - now).ok())
+            .map_or(WAKE_EVERY, |left| {
+                left.clamp(Duration::from_secs(1), WAKE_EVERY)
+            })
+    }
+
     fn keep_runs(&mut self) {
         conversation::keep_runs(&self.conversation, runs::take_opened(&mut self.runs));
     }
@@ -318,8 +354,11 @@ impl Controller {
         if let Err(why) = crate::setup::reference::refresh(&self.ctx.env) {
             self.ctx.notice(NoteLevel::Warn, why);
         }
+        settings::renamed::ask_at_start(&mut self.ctx, &mut self.renamed);
         let result = if opening.guided_setup {
-            // The setup asks about the folder's settings itself.
+            // The bottom line shows the mode in force while the setup asks, and the setup asks
+            // about the folder's settings itself.
+            self.send_status();
             self.open_setup().await
         } else {
             settings::ask_trust_at_start(&mut self.ctx, &mut self.settings);
@@ -354,6 +393,10 @@ impl Controller {
                 FirstView::Continue => {
                     conversation::continue_newest(ctx, &mut self.conversation).await
                 }
+                // A run opens in the conversation that started it.
+                FirstView::Resume(run) => conversation::come_home(ctx, &mut self.conversation, run)
+                    .await
+                    .map(Option::unwrap_or_default),
                 _ => Ok(Vec::new()),
             };
             // A conversation that isn't there still leaves the app open on a new one.
@@ -389,6 +432,7 @@ impl Controller {
                 }
                 Effect::SettingsApplied { keys } => {
                     names::send(&mut self.ctx);
+                    conversation::saved(&self.ctx, &mut self.conversation, &keys);
                     let applied = runs::settings_applied(&mut self.ctx, &mut self.runs, &keys);
                     applied.await.map(|mut effects| {
                         effects.push(Effect::Status);
@@ -420,6 +464,9 @@ impl Controller {
                     sent
                 }
                 Effect::SetupDone => {
+                    if let Some(mode) = self.setup.as_ref().and_then(Setup::approval_mode) {
+                        runs::setup_answered(&mut self.runs, mode);
+                    }
                     self.setup = None;
                     prompt_templates::write_for_setup(&self.ctx);
                     // The setup asked about the folder's settings, not about its prompt files.
@@ -488,7 +535,12 @@ impl Controller {
     }
 
     fn send_status(&self) {
-        let parts = runs::status_parts(&self.runs);
+        let mut parts = runs::status_parts(&self.runs);
+        // The setup writes your answers at its end, so until then the line shows the mode its
+        // approvals step picked.
+        if let Some(mode) = self.setup.as_ref().and_then(Setup::approval_mode) {
+            parts.approval_mode = Some(mode);
+        }
         let status = header_and_bottom_line::header_and_bottom_line(
             &self.ctx,
             conversation::title(&self.conversation),
@@ -561,7 +613,10 @@ impl Controller {
             }
             UiCommand::Pause { now } => run_commands::pause(ctx, runs, now).await,
             UiCommand::CancelPause => run_commands::cancel_pause(ctx, runs).await,
-            UiCommand::Resume { run } => run_commands::resume(ctx, runs, run).await,
+            UiCommand::Resume { run: Some(run) } => {
+                open_run(ctx, &mut self.conversation, runs, run).await
+            }
+            UiCommand::Resume { run: None } => run_commands::resume(ctx, runs, None).await,
             UiCommand::Stop => run_commands::stop(ctx, runs, None).await,
             UiCommand::StopAgent { run, session } => {
                 run_commands::stop_agent(ctx, runs, run, session).await
@@ -647,6 +702,14 @@ impl Controller {
                 Ok(Vec::new())
             }
             UiCommand::Exit => Ok(vec![Effect::Exit]),
+            UiCommand::CommandTyped { text } => {
+                conversation::command_typed(ctx, &mut self.conversation, text);
+                Ok(Vec::new())
+            }
+            UiCommand::CommandReplied { reply } => {
+                conversation::command_replied(ctx, &mut self.conversation, reply);
+                Ok(Vec::new())
+            }
             UiCommand::RememberPick { run, id } => {
                 run_commands::remember_pick(ctx, runs, run, id).await
             }
@@ -654,10 +717,18 @@ impl Controller {
     }
 
     /// Plain text and mentions mean what the app mode says.
-    async fn route(&mut self, command: UiCommand) -> anyhow::Result<Vec<Effect>> {
+    async fn route(&mut self, mut command: UiCommand) -> anyhow::Result<Vec<Effect>> {
         // Each message's pictures go with its own turn, and a message without any clears them.
         if let UiCommand::Submit { pictures, .. } = &command {
             conversation::send_pictures(&mut self.conversation, pictures.clone());
+        }
+        // With the trigger off, `ultracode` in a prompt is only a word, whoever sent it.
+        if let UiCommand::Submit {
+            workflow_requested, ..
+        } = &mut command
+            && !self.ctx.settings().workflows.ultracode_trigger
+        {
+            *workflow_requested = false;
         }
         let root = self.conversation.folder(&self.ctx).to_path_buf();
         let ctx = &mut self.ctx;
@@ -715,7 +786,7 @@ impl Controller {
             SlashCommand::Resume { target: None } => run_commands::resume(ctx, runs, None).await,
             SlashCommand::Resume {
                 target: Some(ResumeTarget::Run(run)),
-            } => run_commands::resume(ctx, runs, Some(run)).await,
+            } => open_run(ctx, conversation, runs, run).await,
             SlashCommand::Resume {
                 target: Some(ResumeTarget::Conversation(id)),
             } => conversation::resume(ctx, conversation, &id).await,
@@ -846,7 +917,7 @@ impl Controller {
                 settings::verbosity(ctx, settings, level).await
             }
             SlashCommand::Vim => settings::toggle_vim(ctx, settings).await,
-            SlashCommand::Setup => Ok(vec![Effect::OpenSetup]),
+            SlashCommand::Setup => Ok(setup_again::ask(&mut self.ctx, &mut self.setup_again)),
             SlashCommand::Connect { outside_agent } => {
                 connect::connect(ctx, &mut self.connect, outside_agent)
             }
@@ -928,7 +999,8 @@ impl Controller {
                 action: ViewAction::Open,
             } => {
                 let spent = conversation::context_row(conversation).map(|row| row.spent);
-                let period = account::parse_period(period.as_deref())?;
+                let opens_on = ctx.settings().ui.views.usage.period.usage();
+                let period = account::parse_period(period.as_deref(), opens_on)?;
                 account::usage_view(ctx, spent, period).await
             }
             SlashCommand::Usage {
@@ -1037,13 +1109,6 @@ impl Controller {
                 send_repo_files(ctx, self.conversation.folder(ctx));
                 Ok(Vec::new())
             }
-            ViewRequest::AgentSessions { run } => {
-                let agents = conversation::run_agent_sessions(ctx, &run).await?;
-                ctx.send(AppEvent::View {
-                    data: Box::new(ViewData::AgentSessions { run, agents }),
-                });
-                Ok(Vec::new())
-            }
             ViewRequest::Learning { area } => {
                 settings::command(ctx, &mut self.settings, area_command(area)).await
             }
@@ -1080,6 +1145,17 @@ impl Controller {
         }
         if prompt_trust::owns_choice(&self.prompt_trust, &id) {
             return prompt_trust::answer_choice(ctx, &mut self.prompt_trust, id, action);
+        }
+        if settings::renamed::owns_choice(&self.renamed, &id) {
+            return settings::renamed::answer_choice(ctx, &mut self.renamed, id, action);
+        }
+        if setup_again::owns_choice(&self.setup_again, &id) {
+            return Ok(setup_again::answer_choice(
+                ctx,
+                &mut self.setup_again,
+                id,
+                &action,
+            ));
         }
         if folder_git::owns_choice(&self.git, &id) {
             return folder_git::answer_choice(ctx, &mut self.git, id, action);
@@ -1118,6 +1194,13 @@ impl Controller {
         }
         if prompt_trust::owns_choice(&self.prompt_trust, &id) {
             return prompt_trust::set_aside(ctx, &mut self.prompt_trust, id);
+        }
+        if settings::renamed::owns_choice(&self.renamed, &id) {
+            return settings::renamed::set_aside(ctx, &mut self.renamed, id);
+        }
+        if setup_again::owns_choice(&self.setup_again, &id) {
+            setup_again::set_aside(ctx, &mut self.setup_again, id);
+            return Ok(Vec::new());
         }
         if folder_git::owns_choice(&self.git, &id) {
             return folder_git::set_aside(ctx, &mut self.git, id);

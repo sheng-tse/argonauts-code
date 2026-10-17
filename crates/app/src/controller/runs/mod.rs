@@ -42,8 +42,8 @@ pub(crate) struct RunsState {
     /// Counts every attach, so the loop can tell that a run came on screen.
     pub(super) attaches: u64,
     focused: bool,
-    /// Shift+Tab's pick this app session. `None` until you press it, so each run's settings
-    /// decide.
+    /// Shift+Tab's pick this app session, or the one it starts in. `None` until either, so
+    /// each run's settings decide.
     pub(super) approval_mode: Option<ApprovalMode>,
     /// Guidance and mentions sent from here and not delivered yet, oldest first.
     pub(super) queued: HashMap<RunId, Vec<Queued>>,
@@ -142,14 +142,26 @@ pub(crate) enum RunUpdate {
 }
 
 impl RunsState {
+    /// The soonest time a run waiting out an outage tries again, after `now`.
+    pub(crate) fn waiting_soonest(
+        &self,
+        now: time::OffsetDateTime,
+    ) -> Option<time::OffsetDateTime> {
+        self.waiting.soonest(now)
+    }
+
     pub(crate) fn new(ctx: &Ctx) -> Self {
-        // Shift+Tab is per app session; the settings file never picks it.
-        let _ = ctx;
+        // The app at your terminal starts in the mode `approvals.start_mode` picks, such as
+        // Shift+Tab's last pick; anything else starts as each run's settings say.
+        let at_terminal = ctx.env.interactive && !ctx.env.agent_session;
+        let approval_mode = at_terminal
+            .then(|| super::start_mode::at_start(&ctx.env.state_dir, &ctx.settings().approvals))
+            .flatten();
         Self {
             attached: None,
             attaches: 0,
             focused: true,
-            approval_mode: None,
+            approval_mode,
             queued: HashMap::new(),
             choices: HashMap::new(),
             waking: HashSet::new(),
@@ -220,6 +232,13 @@ pub(crate) fn narrator_answers(runs: &RunsState, ctx: &Ctx) -> bool {
         })
 }
 
+/// The approval mode the guided setup's approvals step picked, which the setup has just
+/// written: the mode in force from now on, over Shift+Tab's pick and the one the start brought
+/// back from the last.
+pub(crate) fn setup_answered(runs: &mut RunsState, mode: ApprovalMode) {
+    runs.approval_mode = Some(mode);
+}
+
 pub(crate) fn status_parts(runs: &RunsState) -> RunStatusParts {
     let attached = runs.attached.as_ref();
     RunStatusParts {
@@ -272,6 +291,7 @@ pub(crate) async fn open(
         FirstView::Attach(run) => {
             runs.exit_when_done = Some(run.clone());
             let summary = summary_of(ctx, &run).await;
+            super::conversation::redraw::run(ctx, &run);
             attach::attach(ctx, runs, summary, Opening::Watch).await?;
         }
     }
@@ -506,16 +526,12 @@ pub(crate) fn follow_conversation(ctx: &Ctx, runs: &mut RunsState, theirs: Vec<R
 /// and the CLIs' own sessions, for this folder or for every folder.
 pub(super) async fn show_runs(ctx: &mut Ctx, every_folder: bool) -> anyhow::Result<()> {
     let runs = ctx.services.conductor.list().await?;
-    let conversations = super::conversation::list(ctx);
+    let conversations = super::conversation::list(ctx, &runs);
     let sessions = super::conversation::cli_sessions(ctx, every_folder).await;
-    let (agents, agents_read) = super::conversation::agent_sessions(ctx, &runs).await;
     ctx.send(AppEvent::View {
-        data: Box::new(argonauts_core::app::ViewData::Runs {
-            runs,
+        data: Box::new(argonauts_core::app::ViewData::ResumeList {
             conversations,
             sessions,
-            agents,
-            agents_read,
         }),
     });
     Ok(())
@@ -553,6 +569,7 @@ pub(super) async fn resume_and_attach(
             .is_some_and(|attached| &attached.run == run && !attached.ended);
         if !streaming {
             let summary = summary_of(ctx, run).await;
+            super::conversation::redraw::run(ctx, run);
             attach::attach(ctx, runs, summary, Opening::Reattach).await?;
         }
     }
@@ -718,6 +735,7 @@ fn new_summary(ctx: &Ctx, run: &RunId, title: String, mode: RunMode) -> RunSumma
         live: true,
         remind: false,
         name: None,
+        shape_known: true,
     }
 }
 
@@ -774,7 +792,7 @@ async fn on_event(
     attached.events.push(event);
     if history {
         if replay_ends {
-            attach::finish_replay(ctx, attached).await;
+            attach::finish_replay(ctx, attached);
             let mut effects = vec![Effect::Status];
             effects.extend(exit_if_done(runs, run));
             return effects;
@@ -926,7 +944,7 @@ async fn on_ended(ctx: &mut Ctx, runs: &mut RunsState, run: &RunId) -> Vec<Effec
     attached.ended = true;
     let mut effects = Vec::new();
     if !attached.replay_done {
-        attach::finish_replay(ctx, attached).await;
+        attach::finish_replay(ctx, attached);
         effects.push(Effect::Status);
     }
     if attached.crashed || attach::report_crash(ctx, attached) {
@@ -1008,7 +1026,8 @@ async fn on_woke(
     }
     let why = match cause {
         // Its agent is healthy again, or the time to try it once more has come.
-        WakeCause::AgentBack => "the agent it waited for is tried again",
+        WakeCause::AgentBack => "the agent it waited for is back",
+        WakeCause::Timer => "its wait ended, so it tries again",
         WakeCause::AskTimeout => "its fallback question timed out, so the role's fallback applies",
     };
     ctx.notice(NoteLevel::Info, format!("{called} woke up: {why}."));

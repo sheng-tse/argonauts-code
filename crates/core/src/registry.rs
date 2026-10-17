@@ -3,6 +3,7 @@
 
 pub mod acp;
 pub mod cli;
+pub mod listed;
 pub mod provider;
 
 pub use cli::CliManifest;
@@ -159,6 +160,19 @@ pub fn model_run(registry: &dyn ModelRegistry, worker: &ModelRef) -> Option<Stri
         });
     let id = ModelRef::new(worker.agent.clone(), named.clone());
     registry.catalog().runs(&id).or(named)
+}
+
+/// The model `cli` runs when a session names none, as its own list says: the one the list
+/// marks as the default, else the one the catalog's default runs, else the first model a list
+/// that marks none names, as agy's does. `None` before any list is known.
+pub fn default_run(registry: &dyn ModelRegistry, cli: &str) -> Option<String> {
+    model_run(registry, &ModelRef::new(cli, None)).or_else(|| {
+        registry
+            .list()
+            .into_iter()
+            .filter(|entry| entry.id.agent == cli && !entry.retired)
+            .find_map(|entry| entry.id.model)
+    })
 }
 
 pub trait ModelRegistry: Send + Sync {

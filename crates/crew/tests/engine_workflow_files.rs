@@ -15,7 +15,9 @@ use argonauts_core::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, FreeText,
 };
 use argonauts_core::events::plan::PlanEvent;
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::events::run::{
+    CaptainOrCrewDecision, Party, RunLifecycle, RunMode, RunOutcome,
+};
 use argonauts_core::events::task::{TaskEvent, TaskKind, TaskSpec};
 use argonauts_core::events::workflow::WorkflowEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
@@ -23,7 +25,7 @@ use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::policy::{PolicyOutcome, Verdict};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
-use argonauts_core::settings::protocol::{CheckCommand, JudgingMethod};
+use argonauts_core::settings::protocol::{CaptainKind, CheckCommand, JudgingMethod};
 use argonauts_core::steps::StepName;
 use argonauts_core::workflow::{Count, StandardPhase, Step, StepKind, Workflow, WorkflowRef};
 use argonauts_crew::state::RunState;
@@ -757,6 +759,49 @@ async fn plan_approval_switch_to_captain_finishes() -> anyhow::Result<()> {
     let tasks = created_tasks(&events);
     assert_eq!(tasks.len(), 1, "{tasks:?}");
     assert_eq!(tasks[0].kind, TaskKind::Captain);
+    Ok(())
+}
+
+/// A Captain run the rules started as Captain first, then crew, goes to Orchestrator once its
+/// task needs you, since that is the crew workflow setup recommends.
+#[tokio::test]
+async fn a_captain_task_that_needs_you_goes_to_orchestrator() -> anyhow::Result<()> {
+    let mut crew = crew_of_three("captain")?;
+    crew.settings.checks.run = vec![passing_check()];
+    // The checks fail for as many rounds of fixes as the task gets.
+    for _ in 0..10 {
+        crew.services.checks.fail_next("1 failed");
+    }
+    let mut started = crew.run_started(
+        RunMode::Captain,
+        "add per-key rate limiting to the public API",
+    )?;
+    let RunEventKind::Run(RunLifecycle::Started(run)) = &mut started.kind else {
+        anyhow::bail!("the first event starts the run");
+    };
+    run.captain_or_crew = Some(CaptainOrCrewDecision {
+        mode: RunMode::Captain,
+        move_to_crew: true,
+        rule: "captain_max_files".to_owned(),
+        reason: "Captain first, then crew if the task needs you".to_owned(),
+        captain: Some(CaptainKind::Checked),
+    });
+    let mut outcome = crew.resume(vec![started], Vec::new()).await?;
+    for _ in 0..30 {
+        if followed(&outcome.events).len() > 1 || !matches!(outcome.exit, EngineExit::Waiting(_)) {
+            break;
+        }
+        let Some((command, _reply)) = answer_with(&outcome.events, &|_| None) else {
+            break;
+        };
+        outcome = crew.resume(outcome.events.clone(), vec![command]).await?;
+    }
+    assert_eq!(
+        followed(&outcome.events),
+        ["captain", "orchestrator"],
+        "{:?}",
+        outcome.exit
+    );
     Ok(())
 }
 

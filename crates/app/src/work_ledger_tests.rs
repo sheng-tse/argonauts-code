@@ -637,3 +637,170 @@ fn records_that_name_no_model_are_filed_under_the_clis_default() {
     name_unnamed_models(&mut stats, &defaults);
     assert_eq!(stats.work[0].model.as_deref(), Some("claude-haiku-5-5"));
 }
+
+/// A session of `worker` started under `key`, on `model` when its start names one.
+fn started_on(
+    seq: u64,
+    key: &SessionKey,
+    task: &TaskId,
+    role: RoleName,
+    (worker, model): (&str, Option<&str>),
+) -> RunEvent {
+    let mut event = session_started(seq, key, Some(task), role, worker);
+    if let RunEventKind::Session(SessionEvent::Started(started)) = &mut event.kind {
+        started.worker = ModelRef::new(worker, model.map(str::to_owned));
+    }
+    event
+}
+
+/// A review the session `session` made, naming its reviewer by the CLI alone.
+fn reviewed_in(seq: u64, session: &SessionKey, task: &TaskId, verdict: ReviewVerdict) -> RunEvent {
+    RunEvent {
+        session: Some(session.clone()),
+        ..reviewed(seq, task, "codex", 1, verdict)
+    }
+}
+
+/// A Captain run as its log had it: the worker on Claude Code started with the alias
+/// `haiku`, which its CLI reported as `claude-haiku-5-5`, then going on with Codex under the
+/// same key, whose start reported no model; a Codex reviewer, and a Codex judge whose verdict
+/// was recorded as a review. Both reviews name only the CLI.
+fn a_captain_run() -> Vec<RunEvent> {
+    let (worker, reviewer, judge) = (
+        SessionKey::numbered(16),
+        SessionKey::numbered(17),
+        SessionKey::numbered(18),
+    );
+    let task = task_spec(1);
+    let id = &task.id;
+    vec![
+        task_event(0, id, TaskEvent::Created(Box::new(task.clone()))),
+        started_on(
+            1,
+            &worker,
+            id,
+            RoleName::Worker,
+            ("claude-code", Some("haiku")),
+        ),
+        init(2, &worker, "claude-haiku-5-5"),
+        usage(3, &worker, 1000, 100, 0.01),
+        started_on(4, &worker, id, RoleName::Worker, ("codex", None)),
+        usage(5, &worker, 2000, 200, 0.02),
+        started_on(6, &reviewer, id, RoleName::Reviewer, ("codex", None)),
+        init(7, &reviewer, "gpt-6-luna"),
+        usage(8, &reviewer, 300, 30, 0.003),
+        reviewed_in(9, &reviewer, id, ReviewVerdict::RequestChanges),
+        started_on(10, &judge, id, RoleName::Judge, ("codex", None)),
+        init(11, &judge, "gpt-6-luna"),
+        usage(12, &judge, 100, 10, 0.001),
+        reviewed_in(13, &judge, id, ReviewVerdict::Approve),
+        merged(14, id),
+    ]
+}
+
+/// Each session keeps the model it ran, a review goes to the session that made it, and the
+/// judge's verdict is a sign-off, so nothing lands on Codex under Claude Code's model.
+#[test]
+fn each_session_keeps_its_own_model_and_its_own_reviews() {
+    let home = tempfile::tempdir().unwrap();
+    let ledger = WorkLedger::beside(&Paths::new(home.path()).usage_dir());
+    let at = datetime!(2026-10-14 12:00 UTC);
+    ledger.run_ended(Path::new("/repo"), &run_id(), &a_captain_run(), at);
+    let lines = ledger.read_since(None);
+    let model = |agent: &str, model: Option<&str>| ModelRef::new(agent, model.map(str::to_owned));
+    let luna = model("codex", Some("gpt-6-luna"));
+    let sessions: Vec<&ModelRef> = lines
+        .iter()
+        .filter_map(|line| match &line.what {
+            Work::Session { by, .. } => Some(by),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sessions,
+        [
+            &model("claude-code", Some("claude-haiku-5-5")),
+            &model("codex", None),
+            &luna,
+            &luna,
+        ]
+    );
+    let reviews: Vec<(&ModelRef, bool)> = lines
+        .iter()
+        .filter_map(|line| match &line.what {
+            Work::Review { by, sent_back, .. } => Some((by, *sent_back)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reviews, [(&luna, true)]);
+    let signoffs: Vec<(&ModelRef, bool)> = lines
+        .iter()
+        .filter_map(|line| match &line.what {
+            Work::Signoff { by, refused } => Some((by, *refused)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(signoffs, [(&luna, false)]);
+
+    let stats = stats_of(&ledger);
+    let done = |role: StatsRole| -> Vec<(Option<&str>, u32)> {
+        (stats.work.iter())
+            .filter(|row| row.role == role && row.done > 0)
+            .map(|row| (row.model.as_deref(), row.done))
+            .collect()
+    };
+    assert_eq!(done(StatsRole::Reviewer), [(Some("gpt-6-luna"), 1)]);
+    assert_eq!(done(StatsRole::Judge), [(Some("gpt-6-luna"), 1)]);
+    let task = &stats.tasks[0];
+    assert_eq!(
+        (task.agent.as_str(), task.model.as_deref()),
+        ("codex", None)
+    );
+    assert!(task.reviewed);
+}
+
+/// The usage ledger files a run's models as the work ledger does, so the two agree on one
+/// spelling: the alias `haiku` a session started with is the catalog's `claude-haiku-5-5`, as
+/// is a turn of the conversation on it.
+#[test]
+fn both_ledgers_file_one_model_under_one_spelling() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::new(home.path());
+    let usage_ledger = UsageLedger::new(&paths);
+    let mut events = a_captain_run();
+    // This time the CLI didn't say which model it ran.
+    events.retain(|event| !matches!(event.kind, RunEventKind::Agent(AgentEvent::Init { .. })));
+    let at = datetime!(2026-10-14 12:00 UTC);
+    usage_ledger.run_ended(Path::new("/repo"), &run_id(), &events, at);
+    let haiku = ModelRef::new("claude-code", Some("haiku".to_owned()));
+    let spent = Spend {
+        input_tokens: 10,
+        ..Spend::default()
+    };
+    usage_ledger.turn_ended(Path::new("/repo"), &haiku, &spent, TurnNote::default(), at);
+
+    let spelled: BTreeSet<(String, Option<String>)> = usage_ledger
+        .read_since(None)
+        .into_iter()
+        .map(|line| (line.agent, line.model))
+        .collect();
+    let claude = (
+        "claude-code".to_owned(),
+        Some("claude-haiku-5-5".to_owned()),
+    );
+    assert!(spelled.contains(&claude), "{spelled:?}");
+    assert!(
+        spelled
+            .iter()
+            .all(|(_, model)| model.as_deref() != Some("haiku"))
+    );
+    let work = WorkLedger::beside(&paths.usage_dir());
+    let filed = work
+        .read_since(None)
+        .into_iter()
+        .find_map(|line| match line.what {
+            Work::Session { by, .. } if by.agent == "claude-code" => Some(by),
+            _ => None,
+        });
+    assert_eq!(filed.map(|by| (by.agent, by.model)), Some(claude));
+}

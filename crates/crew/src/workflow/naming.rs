@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use argonauts_core::events::run::{RunLifecycle, RunNamed, account_in};
+use argonauts_core::events::run::{RunLifecycle, RunNamed, RunStarted, account_in};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::layout;
 use argonauts_core::settings::workflows::RunStyle;
@@ -30,20 +30,26 @@ pub fn style(_host: &Host) -> RunStyle {
     RunStyle::Workflow
 }
 
+/// The words a run is named from: intake's estimate, else the main session's account of the
+/// work in a request it handed over, else your request. Your own words may say how to run the
+/// work rather than what it is ("with Codex as the reviewer…").
+pub fn words_of(started: &RunStarted) -> &str {
+    started
+        .estimate
+        .as_ref()
+        .map(|estimate| estimate.summary.as_str())
+        .filter(|summary| !summary.trim().is_empty())
+        .or_else(|| account_in(&started.request))
+        .unwrap_or(&started.request)
+}
+
 /// Names a new run from intake, or from your request, unless it's named already.
 pub fn name_from_intake(host: &Host) -> EngineResult<()> {
     let Some((name, description)) = host.read(|state| {
         if state.run.named.is_some() {
             return None;
         }
-        let started = state.run.started.as_ref()?;
-        let words = started
-            .estimate
-            .as_ref()
-            .map(|estimate| estimate.summary.as_str())
-            .filter(|summary| !summary.trim().is_empty())
-            .or_else(|| account_in(&started.request))
-            .unwrap_or(&started.request);
+        let words = words_of(state.run.started.as_ref()?);
         Some((brief::name_from(words), brief::fit_description(words)))
     }) else {
         return Ok(());

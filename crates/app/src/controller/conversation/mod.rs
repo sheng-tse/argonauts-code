@@ -51,6 +51,7 @@ mod past;
 #[cfg(test)]
 mod picture_tests;
 mod prefs;
+pub(crate) mod redraw;
 #[cfg(test)]
 mod request_tests;
 #[cfg(test)]
@@ -75,14 +76,15 @@ use anyhow::Context as _;
 
 use argonauts_core::NoteLevel;
 use argonauts_core::RunId;
-use argonauts_core::agent_sessions::{AgentSession, AgentSessionRef, Resume};
+use argonauts_core::agent_sessions::{AgentSessionRef, Resume};
 use argonauts_core::api::{RunSummary, StartRun};
 use argonauts_core::app::{
-    AppEvent, AppMode, ConversationEvent, ConversationSummary, ReplayTurn, UiCommand, ViewData,
+    AppEvent, AppMode, CommandReply, ConversationEvent, ConversationSummary, ReplayTurn, UiCommand,
+    ViewData,
 };
 use argonauts_core::cli_commands::CliCommand;
 use argonauts_core::cli_sessions::{CliSession, CliSessionRef};
-use argonauts_core::events::context::ContextDetail;
+use argonauts_core::events::context::{ContextDetail, ContextUsage};
 use argonauts_core::events::run::{Party, RunMode};
 use argonauts_core::events::session::CliWorkflowRun;
 use argonauts_core::input::SlashCommand;
@@ -107,7 +109,7 @@ use self::lifecycle::{begin, on_done, on_event, on_retried};
 use self::offer::Offer;
 use self::past::PastConversation;
 use self::prefs::Prefs;
-pub(crate) use self::prefs::{fast, output_style, plan};
+pub(crate) use self::prefs::{fast, output_style, plan, saved};
 pub(crate) use self::run_news::{
     hear as hear_runs, run_not_started, run_started as run_started_here,
 };
@@ -214,6 +216,10 @@ struct Turn {
     direct: Option<direct::Running>,
     /// What the session takes while it works: your messages, send now, and the screen.
     live: live::Live,
+    /// The CLI's last count of the session's context, which the record keeps as the turn ends.
+    counted: Option<Box<ContextUsage>>,
+    /// Its agent's CLI turned out signed out, so whoever carries it on says so.
+    signed_out: Option<argonauts_core::app::SignedOut>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,7 +302,7 @@ impl ConversationState {
             notice_warned: false,
             workflows: Vec::new(),
             sides: 0,
-            prefs: Prefs::default(),
+            prefs: Prefs::starting(ctx.settings()),
             goal: goal::Kept::default(),
             direct: direct::DirectState::default(),
             context_watch: None,
@@ -322,6 +328,7 @@ impl ConversationState {
             .iter()
             .filter_map(|turn| Some(Exchange::new(turn.request.clone(), turn.reply.as_ref()?)))
             .collect();
+        let context = past::recorded_row(&store, past);
         Self {
             id,
             store,
@@ -340,12 +347,12 @@ impl ConversationState {
             session,
             carried_model: None,
             place,
-            context: None,
+            context,
             journal_warned: false,
             notice_warned: false,
             workflows: Vec::new(),
             sides: 0,
-            prefs: Prefs::default(),
+            prefs: Prefs::starting(ctx.settings()),
             goal: goal::Kept::default(),
             direct: direct::DirectState::default(),
             context_watch: None,
@@ -513,26 +520,15 @@ pub(crate) async fn cli_sessions(ctx: &Ctx, every_folder: bool) -> Vec<CliSessio
     cli::list(ctx, every_folder).await
 }
 
-/// The sessions of the newest runs' agents, for `/resume` to list under each run, and which
-/// runs those are.
-pub(crate) async fn agent_sessions(
-    ctx: &Ctx,
-    runs: &[RunSummary],
-) -> (Vec<AgentSession>, Vec<RunId>) {
-    agent::list(ctx, runs).await
-}
-
-/// One run's agents' sessions, for a run `/resume` listed without them.
-pub(crate) async fn run_agent_sessions(
-    ctx: &Ctx,
-    run: &RunId,
-) -> anyhow::Result<Vec<AgentSession>> {
-    agent::list_run(ctx, run).await
-}
-
-/// Earlier conversations in this repo, newest first, for `/resume`.
-pub(crate) fn list(ctx: &Ctx) -> Vec<ConversationSummary> {
-    past::list(&ctx.env.conversation_dir())
+/// Earlier conversations in this repo, newest first, for `/resume`. One whose run waits on you
+/// is marked, since a run is found through the conversation that started it.
+pub(crate) fn list(ctx: &Ctx, runs: &[RunSummary]) -> Vec<ConversationSummary> {
+    let waiting: Vec<RunId> = runs
+        .iter()
+        .filter(|run| run.needs_you())
+        .map(|run| run.run.clone())
+        .collect();
+    past::list(&ctx.env.conversation_dir(), &waiting)
 }
 
 /// `/clear`: a new conversation with the main agent. The old one stays in `/resume`, open
@@ -563,8 +559,8 @@ pub(crate) fn clear(
     Ok(vec![Effect::Status])
 }
 
-/// `/resume conversation-<n>`, or Enter on a conversation in the picker: reprints it condensed and
-/// carries it on. The next turn resumes its CLI session, and a session another CLI wrote makes
+/// `/resume conversation-<n>`, or Enter on a conversation in the picker: draws it again as it
+/// printed live, the runs it started included, and carries it on. The next turn resumes its CLI session, and a session another CLI wrote makes
 /// that CLI the main agent, as picking the CLI's own session does. Where that CLI can't carry
 /// it on, the main agent starts a fresh session primed with the conversation so far. One that
 /// carries on an agent's session from a run is checked again first, since its run may be going
@@ -625,16 +621,14 @@ pub(crate) async fn resume(
         .as_ref()
         .map(|writer| who_takes_it(ctx, writer, taken_over.is_some()));
     conversation.succeed(ctx, resumed);
-    let mut replay = past.replay();
-    let shown = replay.split_off(replay.len().saturating_sub(past::SHOWN_TURNS));
     ctx.send(AppEvent::ConversationResumed {
         conversation: id,
         title: past.summary.title.clone(),
         worker: past.summary.worker.clone(),
-        earlier: replay,
-        turns: shown,
+        turns: Vec::new(),
         artifacts: past::artifacts(&ctx.env.conversation_dir(), &past.summary.conversation),
     });
+    redraw::conversation(ctx, &conversation.store, &past.runs);
     for text in where_it_works.into_iter().chain(who_takes_it) {
         ctx.notice(NoteLevel::Info, text);
     }
@@ -642,6 +636,31 @@ pub(crate) async fn resume(
     let mut effects = taken_over.unwrap_or_default();
     effects.push(Effect::Status);
     Ok(effects)
+}
+
+/// Before `run` comes on screen, the conversation that started it does, unless it is on screen
+/// already or the run has none. `None` when it can't come now, as while a turn runs, and then
+/// the run stays where it is too.
+pub(crate) async fn come_home(
+    ctx: &mut Ctx,
+    conversation: &mut ConversationState,
+    run: &RunId,
+) -> anyhow::Result<Option<Vec<Effect>>> {
+    let home = past::home_of(&ctx.env.conversation_dir(), run);
+    let Some(home) = home.filter(|home| *home != conversation.id) else {
+        return Ok(Some(Vec::new()));
+    };
+    if !settled(conversation) {
+        ctx.notice(
+            NoteLevel::Info,
+            format!(
+                "{run} opens in {home}, the conversation that started it. A turn is still \
+                 running here: Esc stops it, then open the run again."
+            ),
+        );
+        return Ok(None);
+    }
+    resume(ctx, conversation, &home).await.map(Some)
 }
 
 /// Who takes the next message of a conversation `writer`'s CLI wrote, once it is the main agent
@@ -711,16 +730,15 @@ pub(crate) async fn branch_from(
         None => BRANCH_STARTS.to_owned(),
     };
     conversation.succeed(ctx, next);
-    let mut replay = past.replay();
-    let shown = replay.split_off(replay.len().saturating_sub(past::SHOWN_TURNS));
     ctx.send(AppEvent::ConversationResumed {
         conversation: conversation.id.clone(),
         title: conversation.title.clone(),
         worker: past.summary.worker.clone(),
-        earlier: replay,
-        turns: shown,
+        turns: Vec::new(),
         artifacts: Vec::new(),
     });
+    let original = ConversationStore::open(&ctx.env.conversation_dir(), &id);
+    redraw::conversation(ctx, &original, &past.runs);
     ctx.notice(
         NoteLevel::Info,
         format!(
@@ -784,14 +802,11 @@ pub(crate) async fn branch_from_cli_session(
         next
     };
     conversation.succeed(ctx, next);
-    let mut replay = picked.replay(&picked.worker(&worker));
-    let shown = replay.split_off(replay.len().saturating_sub(past::SHOWN_TURNS));
     ctx.send(AppEvent::ConversationResumed {
         conversation: conversation.id.clone(),
         title: conversation.title.clone(),
-        worker: Some(worker),
-        earlier: replay,
-        turns: shown,
+        worker: Some(worker.clone()),
+        turns: picked.replay(&picked.worker(&worker)),
         artifacts: Vec::new(),
     });
     let short = cli::short_id(&picked.session.id);
@@ -854,14 +869,11 @@ pub(crate) async fn resume_cli_session(
     };
     let next = ConversationState::carrying(ctx, conversation, &picked, worker.clone())?;
     conversation.succeed(ctx, next);
-    let mut replay = picked.replay(&worker);
-    let shown = replay.split_off(replay.len().saturating_sub(past::SHOWN_TURNS));
     ctx.send(AppEvent::ConversationResumed {
         conversation: conversation.id.clone(),
         title: conversation.title.clone(),
         worker: Some(worker.clone()),
-        earlier: replay,
-        turns: shown,
+        turns: picked.replay(&worker),
         artifacts: Vec::new(),
     });
     let binary = picked.binary;
@@ -1031,7 +1043,6 @@ pub(crate) async fn resume_agent(
         conversation: conversation.id.clone(),
         title: conversation.title.clone(),
         worker: Some(worker.clone()),
-        earlier: Vec::new(),
         turns,
         artifacts: Vec::new(),
     });
@@ -1070,7 +1081,7 @@ pub(crate) async fn continue_newest(
     ctx: &mut Ctx,
     conversation: &mut ConversationState,
 ) -> anyhow::Result<Vec<Effect>> {
-    match list(ctx).first() {
+    match list(ctx, &[]).first() {
         Some(newest) => {
             let id = newest.conversation.clone();
             resume(ctx, conversation, &id).await
@@ -2098,17 +2109,55 @@ fn send_queued(conversation: &mut ConversationState) -> Vec<Effect> {
         .collect()
 }
 
+/// A slash command you typed goes in the record where you typed it, so the conversation drawn
+/// again prints it there.
+pub(crate) fn command_typed(ctx: &Ctx, conversation: &mut ConversationState, text: String) {
+    let text = text.trim();
+    if !text.is_empty() {
+        let typed = ConversationEvent::CommandTyped {
+            text: text.to_owned(),
+            at: Some(time::OffsetDateTime::now_utc()),
+        };
+        record(ctx, conversation, &typed);
+    }
+}
+
+/// A line a command you typed printed back goes in the record after the command, so the
+/// conversation drawn again prints it under it.
+pub(crate) fn command_replied(
+    ctx: &Ctx,
+    conversation: &mut ConversationState,
+    reply: CommandReply,
+) {
+    if !reply.text.trim().is_empty() {
+        record(
+            ctx,
+            conversation,
+            &ConversationEvent::CommandReplied { reply },
+        );
+    }
+}
+
 /// Sends the event and records it, except the streamed text, which the finished turn holds,
 /// and side questions, which stay out of the conversation.
 fn emit(ctx: &Ctx, conversation: &mut ConversationState, event: ConversationEvent) {
-    if carry::is_carry_turn(event_turn(&event)) {
+    if event_turn(&event).is_some_and(carry::is_carry_turn) {
         return;
     }
     let passing =
         matches!(&event, ConversationEvent::Agent { event, .. } if live::is_passing(event));
-    if !passing
-        && !side::is_side_turn(event_turn(&event))
-        && let Err(err) = conversation.store.append(&event)
+    if !passing {
+        record(ctx, conversation, &event);
+    }
+    ctx.send(AppEvent::Conversation { event });
+}
+
+/// Writes the event in the conversation's record, where a side question's never goes.
+fn record(ctx: &Ctx, conversation: &mut ConversationState, event: &ConversationEvent) {
+    let kept = event_turn(event)
+        .is_none_or(|turn| !side::is_side_turn(turn) && !carry::is_carry_turn(turn));
+    if kept
+        && let Err(err) = conversation.store.append(event)
         && !conversation.journal_warned
     {
         conversation.journal_warned = true;
@@ -2120,10 +2169,10 @@ fn emit(ctx: &Ctx, conversation: &mut ConversationState, event: ConversationEven
             ),
         );
     }
-    ctx.send(AppEvent::Conversation { event });
 }
 
-fn event_turn(event: &ConversationEvent) -> &TurnId {
+/// The turn the event belongs to. A command you typed belongs to none.
+fn event_turn(event: &ConversationEvent) -> Option<&TurnId> {
     match event {
         ConversationEvent::TurnStarted { turn, .. }
         | ConversationEvent::Agent { turn, .. }
@@ -2132,6 +2181,8 @@ fn event_turn(event: &ConversationEvent) -> &TurnId {
         | ConversationEvent::TurnCancelled { turn }
         | ConversationEvent::FellBack { turn, .. }
         | ConversationEvent::Joined { turn, .. }
-        | ConversationEvent::AnswerRetried { turn } => turn,
+        | ConversationEvent::AnswerRetried { turn }
+        | ConversationEvent::ContextLeft { turn, .. } => Some(turn),
+        ConversationEvent::CommandTyped { .. } | ConversationEvent::CommandReplied { .. } => None,
     }
 }

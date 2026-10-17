@@ -5,7 +5,7 @@
 
 use argonauts_core::events::session::{CliAgentState, CliWorkflowRun};
 use argonauts_core::names::WorkflowId;
-use argonauts_core::workflow::{Step, StepKind, StepRef, Workflow};
+use argonauts_core::workflow::{StepRef, Workflow};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StepWorkflows {
@@ -18,12 +18,7 @@ pub struct StepWorkflows {
 /// Whether one of `workflow`'s steps runs the steps of another workflow, so its own phases
 /// say only that they run.
 pub fn hands_over(workflow: &Workflow) -> bool {
-    fn any(steps: &[Step]) -> bool {
-        steps
-            .iter()
-            .any(|step| step.kind == StepKind::Script || any(&step.steps))
-    }
-    workflow.phases.iter().any(|phase| any(&phase.steps))
+    argonauts_core::views::writes_its_phases(workflow)
 }
 
 impl StepWorkflows {
@@ -36,6 +31,21 @@ impl StepWorkflows {
 
     pub fn expected_from(&self, workflow: &WorkflowId) -> bool {
         self.hand_over.contains(workflow)
+    }
+
+    /// Whether a step of `workflow` runs another whose report hasn't named its phases or agents
+    /// yet, so nothing of `workflow` draws until it does.
+    pub fn awaits_shape(&self, workflow: &WorkflowId) -> bool {
+        self.expected_from(workflow)
+            && !self.known.iter().any(|(step, reported)| {
+                step.workflow == *workflow
+                    && (!reported.phases.is_empty() || !reported.agents.is_empty())
+            })
+    }
+
+    /// Every workflow reported so far, as it last reported itself.
+    pub fn all(&self) -> impl Iterator<Item = &CliWorkflowRun> {
+        self.known.iter().map(|(_, workflow)| workflow)
     }
 
     /// Takes in a report, which is the whole state of its workflow and replaces the last one.

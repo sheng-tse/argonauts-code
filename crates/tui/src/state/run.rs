@@ -18,7 +18,8 @@ use argonauts_core::fallback::QualityDebt;
 use argonauts_core::names::{ApprovalId, MessageId, ModelRef, RoleName, SessionKey, WorkflowId};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::steps::StepName;
-use argonauts_core::views::is_workflow_agent;
+use argonauts_core::steps::judgment::ReviewVerdict;
+use argonauts_core::views::{is_workflow_agent, round_stem};
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
 use argonauts_core::{DiffStat, PhaseStatus, RunId, Spend, TaskId};
 use time::OffsetDateTime;
@@ -41,6 +42,12 @@ pub struct RunState {
     pub finished: Option<RunOutcome>,
     /// When it finished, so its time stops there everywhere it shows.
     pub ended: Option<OffsetDateTime>,
+    /// The time it spent waiting or stopped before it went on, which its clock leaves out.
+    pub idle: Duration,
+    /// Since when it waits or stopped, while it does.
+    pub idle_since: Option<OffsetDateTime>,
+    /// The agents its workflows went on without, as nothing could take them.
+    pub left_out: Vec<argonauts_core::events::workflow::AgentLeftOut>,
     /// What the latest merge question put up for the merge, so the line after the merge says the
     /// same.
     pub merge_totals: Option<MergeTotals>,
@@ -85,6 +92,14 @@ pub struct RunState {
 }
 
 impl RunState {
+    /// The run's own workflow waits for the report that names its phases, so nothing of it
+    /// draws yet: no row, no view, and no agent's item in the conversation.
+    pub fn awaits_its_shape(&self) -> bool {
+        self.workflows
+            .iter()
+            .any(|workflow| workflow.parent.is_none() && self.reported.awaits_shape(&workflow.id))
+    }
+
     pub fn new(id: RunId) -> Self {
         Self {
             id,
@@ -97,6 +112,9 @@ impl RunState {
             waiting: None,
             finished: None,
             ended: None,
+            idle: Duration::ZERO,
+            idle_since: None,
+            left_out: Vec::new(),
             merge_totals: None,
             merged_onto: None,
             sessions: BTreeMap::new(),
@@ -126,6 +144,37 @@ impl RunState {
         self.session_order
             .iter()
             .filter_map(|key| self.sessions.get(key))
+    }
+
+    /// Whether the run's workflow has its shape yet, so its row, its view and its line in the
+    /// conversation are drawn: from its start when its phases are fixed, else at the first
+    /// report that lists phases, the script's or the CLI's own workflow a task's session runs.
+    pub fn shape_known(&self) -> bool {
+        let Some(own) = self
+            .workflows
+            .iter()
+            .find(|workflow| workflow.parent.is_none())
+        else {
+            // A run starts its workflow right after it starts, or once the main agent has
+            // designed it, so until then there's nothing of it to draw. Understand may run
+            // first, under the workflow to come. A log whose agents started with no workflow
+            // is from before runs declared theirs, and a run seeded without its history may
+            // not hold it: neither has more to wait for.
+            let begun =
+                !self.workflows.is_empty() || !self.sessions.is_empty() || self.summary.is_some();
+            let designing = self
+                .sessions_in_order()
+                .any(|session| session.step == Some(StepName::DesignWorkflow));
+            return begun && !designing;
+        };
+        let tasks_own = self
+            .sessions_in_order()
+            .filter(|session| session.task.is_some())
+            .flat_map(|session| session.workflows.iter());
+        argonauts_core::views::shape_known(
+            self.reported.expected_from(&own.id),
+            self.reported.all().chain(tasks_own),
+        )
     }
 
     /// The session that carried on `key`'s work once it ended, such as the main agent's design that
@@ -218,11 +267,22 @@ impl RunState {
             + agents
                 .iter()
                 .filter(|session| session.status == SessionStatus::Done)
+                .filter(|session| !self.waits_for_its_round(session))
                 .count();
         (
             u32::try_from(done).unwrap_or(u32::MAX),
             u32::try_from(agents.len() + reported).unwrap_or(u32::MAX),
         )
+    }
+
+    /// Whether `session` is one of the run's own reviewers that sent its task's work back while
+    /// the run goes: its next round is still to come, so it isn't done yet. A review a CLI's own
+    /// workflow asked for has no task of the run's, and is done once given.
+    fn waits_for_its_round(&self, session: &SessionState) -> bool {
+        self.finished.is_none()
+            && session.sent_back
+            && session.task.is_some()
+            && matches!(session.role, RoleName::Reviewer | RoleName::Judge)
     }
 
     /// Whether `session` wrote the steps a workflow then ran: it worked in the phase that
@@ -236,8 +296,9 @@ impl RunState {
         })
     }
 
-    /// From its start to its end, or to `wall` while it goes. A run seeded without its end
-    /// stops at its last session's end. `None` before its start is known.
+    /// The time it worked: from its start to its end, or to `wall` while it goes, less the
+    /// time it waited or stopped. A run seeded without its end stops at its last session's
+    /// end. `None` before its start is known.
     pub fn elapsed(&self, wall: OffsetDateTime) -> Option<Duration> {
         let started = self.started?;
         let end = match (self.finished, self.ended) {
@@ -250,7 +311,9 @@ impl RunState {
                 .unwrap_or(wall),
             (None, None) => wall,
         };
-        Some(Duration::try_from(end - started).unwrap_or_default())
+        let end = self.idle_since.filter(|since| *since < end).unwrap_or(end);
+        let span = Duration::try_from(end - started).unwrap_or_default();
+        Some(span.saturating_sub(self.idle))
     }
 
     /// The workflow the run's views open on: its own, or before the main agent picks it, the one
@@ -296,10 +359,10 @@ impl RunState {
                     .find_map(|step| phase_in_shown(&step.step))
             })
             .or_else(|| last.and_then(phase_in_shown))?;
-        // A workflow that phase's step runs says which of its own phases it is in.
-        let reported = self.reported.in_phase(&shown.id, phase);
-        if let Some(own) = reported.and_then(super::reported::current_phase) {
-            return Some(own);
+        // A workflow that phase's step runs says which of its own phases it is in, and the
+        // declared phase only held their place.
+        if let Some(reported) = self.reported.in_phase(&shown.id, phase) {
+            return phase_at_work(reported);
         }
         shown
             .phases
@@ -398,10 +461,18 @@ impl RunState {
                 None
             }
             RunEventKind::Review(review) => {
-                if let ReviewEvent::Reviewed { .. } = review
-                    && let Some(task) = event.task_id.as_ref().and_then(|id| self.tasks.get_mut(id))
-                {
-                    task.reviews += 1;
+                if let ReviewEvent::Reviewed { review, .. } = review {
+                    if let Some(task) = event.task_id.as_ref().and_then(|id| self.tasks.get_mut(id))
+                    {
+                        task.reviews += 1;
+                    }
+                    if let Some(session) = event
+                        .session
+                        .as_ref()
+                        .and_then(|key| self.sessions.get_mut(key))
+                    {
+                        session.sent_back = review.verdict == ReviewVerdict::RequestChanges;
+                    }
                 }
                 None
             }
@@ -460,6 +531,11 @@ impl RunState {
             }
             RunLifecycle::Named(named) => self.named = Some(named.clone()),
             RunLifecycle::Resumed(_) => {
+                // A run counts the time it worked, never the hours it waited or Argonauts
+                // Code was closed.
+                if let Some(since) = self.idle_since.take().or(self.ended) {
+                    self.idle += Duration::try_from(at - since).unwrap_or_default();
+                }
                 self.waiting = None;
                 self.pausing = false;
                 self.stopping = false;
@@ -474,6 +550,7 @@ impl RunState {
             RunLifecycle::Waiting { reason, .. } => {
                 self.waiting = Some(reason.clone());
                 self.pausing = false;
+                self.idle_since.get_or_insert(at);
             }
             RunLifecycle::Snapshot(snapshot) => return self.seed(snapshot, at, replaying),
             // The transcript prints it with the run's end.
@@ -677,7 +754,10 @@ impl RunState {
             return;
         };
         match event {
-            SessionEvent::Input(input) => session.inputs.push((**input).clone()),
+            SessionEvent::Input(input) => {
+                session.launched(input.launch.model());
+                session.inputs.push((**input).clone());
+            }
             SessionEvent::CliSession { id, .. } => session.cli_session = Some(id.clone()),
             SessionEvent::FileDiff(diff) => session.apply_diff(diff),
             SessionEvent::Ended(end) => session.end(end, at),
@@ -845,6 +925,7 @@ impl RunState {
             | WorkflowEvent::PhaseAdded { .. }
             | WorkflowEvent::PhaseSkipped { .. }
             | WorkflowEvent::Note(_) => {}
+            WorkflowEvent::LeftOut(left) => self.left_out.push(left.clone()),
         }
     }
 
@@ -862,9 +943,13 @@ fn steps(sessions: Vec<&SessionState>) -> Vec<&SessionState> {
         let label = before.label.as_deref().map(str::trim).unwrap_or_default();
         !label.is_empty()
             && sessions[at + 1..].iter().any(|after| {
-                after.label.as_deref().map(str::trim) == Some(label)
+                let after_label = after.label.as_deref().map(str::trim).unwrap_or_default();
+                let same_step = after_label == label;
+                (same_step
                     && (before.status == SessionStatus::Failed
-                        || after.fallback_for.as_ref() == Some(&before.worker))
+                        || after.fallback_for.as_ref() == Some(&before.worker)))
+                    || (asked_again(before, after)
+                        && (same_step || round_stem(after_label) == Some(label)))
             })
     };
     sessions
@@ -873,6 +958,14 @@ fn steps(sessions: Vec<&SessionState>) -> Vec<&SessionState> {
         .filter(|(at, before)| !tried_again(*at, before))
         .map(|(_, session)| *session)
         .collect()
+}
+
+/// Whether `after` is the same reviewer asked again once `before`, its round, finished: one
+/// step across its rounds. Two reviewers of one round are two workers, and stay two.
+fn asked_again(before: &SessionState, after: &SessionState) -> bool {
+    matches!(before.role, RoleName::Reviewer | RoleName::Judge)
+        && before.status == SessionStatus::Done
+        && before.worker == after.worker
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1026,4 +1119,11 @@ pub struct StepState {
     /// `None` while it runs.
     pub end: Option<StepEnd>,
     pub summary: Option<String>,
+}
+
+/// The phase of a workflow its CLI or a script runs that is at work, by its own name: the one
+/// of the agent at work, else of the last that started, else its first, where none has yet.
+pub fn phase_at_work(workflow: &CliWorkflowRun) -> Option<&str> {
+    super::reported::current_phase(workflow)
+        .or_else(|| workflow.phases.first().map(|phase| phase.title.as_str()))
 }

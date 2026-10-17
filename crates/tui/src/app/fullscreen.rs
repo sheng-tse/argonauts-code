@@ -68,6 +68,12 @@ pub struct Scrollback {
     sticky: Option<usize>,
     /// The row of `wrapped` the next frame starts at, asked for by a jump to a prompt.
     jump_to: Option<usize>,
+    /// `ui.autoscroll` is off: scrolling back down to the bottom leaves the view there rather
+    /// than following new output, which only sending brings back, as in Claude Code.
+    pub holds_still: bool,
+    /// Scrolled back down with `holds_still`: at the bottom, but new output leaves the rows
+    /// in view where they are.
+    resting: bool,
 }
 
 impl Scrollback {
@@ -148,6 +154,7 @@ impl Scrollback {
         self.offset = target;
         if target == 0 {
             self.unseen = false;
+            self.resting = self.holds_still;
         }
         true
     }
@@ -157,6 +164,7 @@ impl Scrollback {
         let moved = self.offset > 0;
         self.offset = 0;
         self.unseen = false;
+        self.resting = false;
         moved
     }
 
@@ -188,14 +196,22 @@ impl Scrollback {
     ) -> Vec<Line<'static>> {
         self.rewrap(ctx.width);
         let total = self.wrapped.len() + trailing.len();
-        if self.offset > 0 && total > self.last_total {
-            self.offset += total - self.last_total;
-            self.unseen = true;
-        }
-        self.last_total = total;
         // Scrolled up, the last rows say what is below, under a blank row when there's room,
         // so the history above them can scroll as far as the top.
         let foot = if rows >= 4 { 2 } else { 1 };
+        if total > self.last_total {
+            if self.offset > 0 {
+                self.offset += total - self.last_total;
+                self.unseen = true;
+            } else if self.resting && self.held.is_none() && rows >= 2 {
+                // The rows in view stay put, as they would scrolled up.
+                let end = self.start + (rows - foot);
+                self.offset = total.saturating_sub(end);
+                self.unseen = self.offset > 0;
+                self.resting = self.offset == 0;
+            }
+        }
+        self.last_total = total;
         self.max_offset = if total <= rows || rows < 2 {
             0
         } else {
@@ -284,6 +300,16 @@ impl Scrollback {
     }
 }
 
+/// Ctrl+Shift+C, which terminals report with the letter in either case, or Cmd+C.
+fn is_copy_key(key: &KeyEvent) -> bool {
+    let c = matches!(key.code, KeyCode::Char('c' | 'C'));
+    let ctrl_shift = key
+        .modifiers
+        .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    let command = key.modifiers == KeyModifiers::SUPER;
+    c && (ctrl_shift || command)
+}
+
 /// A row wider than the screen, after the screen got narrower, goes on in the next rows.
 fn wrap_into(out: &mut Vec<Line<'static>>, line: &Line<'static>, width: u16) {
     if line.width() <= usize::from(width) {
@@ -355,6 +381,7 @@ impl<W: Write> Ui<W> {
         let Some(scrollback) = self.scrollback.as_mut() else {
             return Ok(());
         };
+        scrollback.holds_still = !self.model.screen.autoscroll;
         let conversation = scrollback.window(trailing, usize::from(top), &ctx);
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, screen.width, screen.height));
@@ -405,9 +432,11 @@ impl<W: Write> Ui<W> {
         true
     }
 
-    /// With text selected, Esc lets go of it and does nothing else. Any other key, Ctrl+C
-    /// too, lets go of it on its way, so Ctrl+C still stops a command or interrupts work: the
-    /// text was copied when the button came up. `None` when the key goes on.
+    /// With text selected, Esc lets go of it and does nothing else. Ctrl+Shift+C, or Cmd+C
+    /// where the terminal passes it on, copies it and keeps it, as Claude Code's do. Any other
+    /// key, Ctrl+C too, lets go of it on its way, so Ctrl+C still stops a command or interrupts
+    /// work: the text was copied when the button came up, unless `ui.copy_on_select` is off.
+    /// `None` when the key goes on.
     pub(super) fn selection_key(&mut self, event: &Event) -> Option<Vec<UiAction>> {
         let Event::Key(key) = event else {
             return None;
@@ -418,6 +447,11 @@ impl<W: Write> Ui<W> {
         let scrollback = self.scrollback.as_mut()?;
         // A release the terminal never reported can't keep the view from following.
         self.dirty |= scrollback.let_go();
+        if is_copy_key(key)
+            && let Some(text) = scrollback.selecting.text()
+        {
+            return Some(vec![UiAction::Copy(text.to_owned())]);
+        }
         if !scrollback.selecting.clear() {
             return None;
         }
@@ -491,6 +525,8 @@ impl<W: Write> Ui<W> {
             MouseEventKind::Up(MouseButton::Left) => {
                 let copied = screen.and_then(|screen| selecting.release(at, screen));
                 self.dirty |= scrollback.let_go();
+                // Without copy on select the text waits for Ctrl+Shift+C.
+                let copied = copied.filter(|_| self.model.screen.copy_on_select);
                 return copied.map(UiAction::Copy).into_iter().collect();
             }
             _ => return Vec::new(),
@@ -590,6 +626,43 @@ mod tests {
         assert_eq!(scrollback.offset(), 0);
         let shown = plain_text(&scrollback.window(&[], 5, &ctx));
         assert!(shown.ends_with("row 23"), "{shown}");
+    }
+
+    /// With `ui.autoscroll` off, scrolling back down leaves the view at the bottom without
+    /// following, and only sending follows new output again.
+    #[test]
+    fn without_autoscroll_the_bottom_holds_still_until_you_send() {
+        let theme = theme();
+        let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
+        let mut scrollback = Scrollback::new();
+        scrollback.holds_still = true;
+        scrollback.push(rows(0, 20), None);
+        scrollback.window(&[], 5, &ctx);
+        scrollback.push(rows(20, 22), None);
+        let shown = plain_text(&scrollback.window(&[], 5, &ctx));
+        assert!(
+            shown.ends_with("row 21"),
+            "it follows until you scroll: {shown}"
+        );
+
+        assert!(scrollback.scroll(3));
+        scrollback.window(&[], 5, &ctx);
+        assert!(scrollback.scroll(-3));
+        let shown = plain_text(&scrollback.window(&[], 5, &ctx));
+        assert!(shown.ends_with("row 21"), "{shown}");
+        scrollback.push(rows(22, 26), None);
+        let shown = plain_text(&scrollback.window(&[], 5, &ctx));
+        assert!(shown.starts_with("row 17\nrow 18\nrow 19\n\n"), "{shown}");
+        assert!(
+            shown.ends_with("New output below · pgdn to scroll"),
+            "{shown}"
+        );
+
+        assert!(scrollback.follow());
+        scrollback.window(&[], 5, &ctx);
+        scrollback.push(rows(26, 28), None);
+        let shown = plain_text(&scrollback.window(&[], 5, &ctx));
+        assert!(shown.ends_with("row 27"), "sending follows again: {shown}");
     }
 
     #[test]

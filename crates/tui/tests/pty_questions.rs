@@ -12,9 +12,6 @@ const MERGE_QUESTION: &str = "◆ Merge";
 /// The question's own key line while it has the keys.
 const QUESTION_KEYS: &str =
     "^  Enter to choose.* · Esc to carry on without me( · shift\\+tab to cycle modes)?$";
-/// The key line once something was typed at the question.
-const TYPED_AT: &str =
-    "^  Typing waits while the question has the keys · ↑↓ to choose · Esc to carry on without me$";
 
 /// The question has the keys and stands in for the input, whose rules are gone.
 fn question_holds_keys(driver: &TestDriver) {
@@ -63,21 +60,16 @@ fn a_question_that_needs_you_takes_the_keys_as_it_shows() {
 }
 
 #[test]
-fn conversation_typed_at_a_question_never_answers_it() {
+fn letters_typed_at_a_question_do_nothing() {
     let (_, script) = merge_waiting();
     let mut driver = TestDriver::start(script);
     driver.wait_visible("❯ 1\\. Merge");
-    // The pointer is on Merge, so the Enter that ends a conversation line must not confirm it, and
-    // neither may a number in the next line or another Enter.
-    driver.send("yes, let's merge");
-    driver.wait_visible(TYPED_AT);
-    driver.press(Key::Enter);
-    driver.send("also 2 more");
-    driver.press(Key::Enter);
-    driver.wait_visible(TYPED_AT);
+    past_the_question_guard();
+    // Letters reach neither the question nor the input under it, and the key line stays.
+    driver.send("yes");
+    question_holds_keys(&driver);
     driver.assert_no_command("answer");
     driver.assert_no_command("submit");
-    // A key meant for the question ends it.
     driver.press(Key::Down);
     question_holds_keys(&driver);
     driver.wait_visible("❯ 2\\. Open a pull request");
@@ -171,11 +163,6 @@ fn a_draft_typed_as_a_question_appears_comes_back_after() {
     driver.signal("question");
     driver.wait_visible("Keep a CSV fallback\\?");
     question_holds_keys(&driver);
-    // The rest of the line lands on the question as stray typing, and its Enter answers nothing.
-    driver.send("ing");
-    driver.press(Key::Enter);
-    driver.wait_visible(TYPED_AT);
-    driver.assert_no_command("answer");
     driver.assert_no_command("submit");
     // Set aside, the draft comes back as it was.
     past_the_question_guard();
@@ -467,10 +454,12 @@ fn guided_setup_steps() {
             choice_closed("ch-002", "Conversation goes to codex/gpt-5.6."),
         )
         .at(0, workflow_step);
-    // You set the setup off, so each step opens with the keys, as Claude Code's questions do.
+    // You set the setup off, so each step opens with the keys, as Claude Code's questions do,
+    // and drops the keys pressed in its first moment.
     let mut driver = TestDriver::start(script);
     driver.wait_visible("Before you start");
     driver.wait_visible("❯ 1\\. Continue");
+    past_the_question_guard();
     driver.press(Key::Enter);
     let first = driver.wait_command("answer");
     assert_eq!(first["to"], json!({"target": "choice", "id": "ch-001"}));
@@ -479,6 +468,7 @@ fn guided_setup_steps() {
     let screen = driver.wait_visible("Which agent answers your conversation\\?");
     assert_order(&screen, &["claude-code/haiku", "codex/gpt-5.6"]);
     driver.wait_visible("❯ 1\\. claude-code/haiku");
+    past_the_question_guard();
     // Letters and `/` never reach the input under it, and the number answers.
     driver.send("b/");
     driver.press(Key::Down);
@@ -491,6 +481,7 @@ fn guided_setup_steps() {
 
     driver.wait_visible("How should the crew work\\?");
     driver.wait_visible("❯ 1\\. council");
+    past_the_question_guard();
     driver.press(Key::Esc);
     let aside = driver.wait_command("set_aside");
     assert_eq!(

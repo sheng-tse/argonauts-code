@@ -189,34 +189,43 @@ fn nests(name: &str) -> Workflow {
 }
 
 #[test]
-fn nesting_stops_at_depth_two() {
+fn nesting_stops_at_the_levels_the_settings_allow() {
+    // One level inside the run's own workflow by default.
     let settings = Settings::default();
     let workflow = parse(NESTS);
     assert!(rules(&workflow, &settings, 0, None).is_empty());
-    assert!(rules(&workflow, &settings, 1, None).is_empty());
     assert_eq!(
-        rules(&workflow, &settings, 2, None),
+        rules(&workflow, &settings, 1, None),
         BTreeSet::from(["TooDeep".to_owned()])
     );
 
-    // A setting can lower the limit but never raise it past 2.
-    let mut shallow = settings.clone();
-    shallow.workflows.max_depth = 1;
-    assert!(rules(&workflow, &shallow, 1, None).contains("TooDeep"));
+    // Two levels at most, which a setting can allow but never raise past.
+    let mut two = settings.clone();
+    two.workflows.max_depth = 2;
+    assert!(rules(&workflow, &two, 1, None).is_empty());
+    assert_eq!(
+        rules(&workflow, &two, 2, None),
+        BTreeSet::from(["TooDeep".to_owned()])
+    );
     let mut deep = settings.clone();
     deep.workflows.max_depth = 5;
     assert!(rules(&workflow, &deep, 2, None).contains("TooDeep"));
     let plain = parse(
         "name: leaf\nphases:\n  - name: Look\n    standard: check\n    steps:\n      - kind: checks\n",
     );
-    assert!(rules(&plain, &settings, 3, None).contains("TooDeep"));
+    assert!(rules(&plain, &two, 3, None).contains("TooDeep"));
 
     // The chain is followed into each nested workflow: outer, middle, inner-look fits from
-    // the top, and one level lower it would reach depth 3.
+    // the top with two levels allowed, and one level lower it would reach depth 3. With the
+    // one level the default allows, it doesn't fit from the top.
     let chain = nests("middle");
-    assert!(rules(&chain, &settings, 0, None).is_empty());
+    assert!(rules(&chain, &two, 0, None).is_empty());
     assert_eq!(
-        rules(&chain, &settings, 1, None),
+        rules(&chain, &two, 1, None),
+        BTreeSet::from(["TooDeep".to_owned()])
+    );
+    assert_eq!(
+        rules(&chain, &settings, 0, None),
         BTreeSet::from(["TooDeep".to_owned()])
     );
     let mut flat = settings.clone();
@@ -231,7 +240,8 @@ fn nesting_stops_at_depth_two() {
         rules(&nests("nowhere"), &settings, 0, None),
         BTreeSet::from(["UnknownWorkflow".to_owned()])
     );
-    assert!(rules(&nests("loops"), &settings, 0, None).contains("UnknownWorkflow"));
+    // A workflow that runs itself is found out at the first level it would repeat.
+    assert!(rules(&nests("loops"), &two, 0, None).contains("UnknownWorkflow"));
     assert_eq!(
         rules(&nests("broken-inside"), &settings, 0, None),
         BTreeSet::from(["UnknownCondition".to_owned()])
@@ -718,7 +728,8 @@ fn refused_before_any_step(outcome: &support::Outcome, why: &str) {
 
 #[tokio::test]
 async fn nesting_past_depth_two_is_refused_before_the_run() -> anyhow::Result<()> {
-    let crew = quiet_crew("chain-top")?;
+    let mut crew = quiet_crew("chain-top")?;
+    crew.settings.workflows.max_depth = 2;
     for (name, next) in [("chain-top", "chain-b"), ("chain-b", "middle")] {
         crew.repo.write(
             &format!(".argonauts/workflows/{name}.yaml"),

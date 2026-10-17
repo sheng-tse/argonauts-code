@@ -6,9 +6,8 @@ mod common;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use argonauts_core::api::{RunState as RunStatus, RunSummary};
 use argonauts_core::app::{
-    AgentReady, AppEvent, ConversationEvent, HeaderAndBottomLine, ReplayTurn, TurnReply,
+    AgentReady, AppEvent, ConversationEvent, HeaderAndBottomLine, TurnReply,
 };
 use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent, FallbackPlan};
 use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
@@ -18,19 +17,16 @@ use argonauts_core::events::plan::{
 use argonauts_core::events::run::{
     Party, PhaseChange, RunLifecycle, RunMode, RunOutcome, RunPhase, RunStarted,
 };
-use argonauts_core::events::session::{EndReason, SessionEnd, SessionEvent, SessionStarted};
 use argonauts_core::events::task::{
     CheckKind, CheckOutcome, MergeEvent, TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState,
 };
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::limits::{AgentHealth, HealthState};
-use argonauts_core::names::{AgentId, DraftId, ModelRef, RoleName, SessionKey, TurnId};
-use argonauts_core::session_runner::{Access, RunnerKind};
+use argonauts_core::names::{AgentId, DraftId, ModelRef, TurnId};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::fallback::{FallbackContext, FallbackMode, FallbackStrategy};
 use argonauts_core::settings::protocol::JudgingMethod;
-use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::settings::ui::{NarratorMode, UiSettings, VerbTheme};
 use argonauts_core::steps::understand::Reading;
 use argonauts_core::{AgentEvent, DiffStat, PhaseStatus, RunId, Spend, TaskId, Verbosity};
@@ -784,136 +780,6 @@ fn recap_line() {
     });
 }
 
-fn session(ts: OffsetDateTime, key: &str, kind: SessionEvent) -> AppEvent {
-    let AppEvent::Run { mut event } = at(ts, Some(task(1)), RunEventKind::Session(kind)) else {
-        unreachable!("at builds run events");
-    };
-    event.session = SessionKey::parse(key);
-    AppEvent::Run { event }
-}
-
-/// A session that started and finished in the replayed history.
-fn replayed_session(key: &str) -> [AppEvent; 2] {
-    let started = SessionStarted {
-        agent_id: AgentId("claude-code".into()),
-        worker: worker("claude-code", "opus"),
-        provider: "test".into(),
-        kind: RunnerKind::Cli,
-        role: RoleName::Worker,
-        step: None,
-        access: Access::Build,
-        lifetime: SessionLifetime::Task,
-        resumed_from: None,
-        follow_key: None,
-        workflow_step: None,
-        label: None,
-        asked: None,
-    };
-    let ended = SessionEnd {
-        cli_session: None,
-        exit_code: Some(0),
-        signal: None,
-        duration_ms: 60_000,
-        reason: EndReason::Completed,
-        spend: Spend::default(),
-        tool_calls: 0,
-        result_text: Some("done".into()),
-        structured: None,
-        last_message: None,
-        raw_log: None,
-    };
-    [
-        session(
-            datetime!(2026-09-30 16:00 UTC),
-            key,
-            SessionEvent::Started(Box::new(started)),
-        ),
-        session(
-            datetime!(2026-09-30 16:01 UTC),
-            key,
-            SessionEvent::Ended(Box::new(ended)),
-        ),
-    ]
-}
-
-#[test]
-fn condensed_replay_layout() {
-    snapshot("condensed_replay_layout", resumed_run);
-    // Sessions that finished before are in the Ctrl+O history, not above the run's header.
-    let printed = text(&render(resumed_run, None, 80));
-    assert!(
-        printed.starts_with("● Add a --json flag to export\n"),
-        "{printed}"
-    );
-}
-
-fn resumed_run(driver: &mut TestDriver, text: Option<&str>) {
-    let title = text.unwrap_or("Add a --json flag to export");
-    driver.send(AppEvent::Attached {
-        summary: RunSummary {
-            run: run_id(),
-            title: title.into(),
-            mode: RunMode::Crew,
-            workflow: "council".into(),
-            state: RunStatus::Waiting,
-            stopped_at: "plan approval, waiting for you".into(),
-            updated: datetime!(2026-09-30 17:00 UTC),
-            spent: Spend {
-                cost_usd: 1.24,
-                ..Spend::default()
-            },
-            sessions_to_resume: 2,
-            waiting: vec![],
-            live: false,
-            remind: false,
-            name: None,
-        },
-        started_here: false,
-    });
-    driver.send_all(replayed_session("s-001"));
-    driver.send_all(replayed_session("s-002"));
-    for n in 0..50 {
-        driver.send(run_event(
-            Some(task(1)),
-            check("tests", CheckKind::Command, true, &format!("run {n}")),
-        ));
-        driver.send(run_event(Some(task(1)), checking_done()));
-    }
-    driver.send_all([
-        AppEvent::CondensedReplay {
-            run: run_id(),
-            turns: vec![
-                ReplayTurn {
-                    from: Party::User,
-                    text: title.into(),
-                    steps: Vec::new(),
-                },
-                ReplayTurn {
-                    from: Party::Agent {
-                        session: argonauts_core::names::SessionKey::parse("conversation-1")
-                            .expect("a valid session key"),
-                        worker: worker("claude-code", "opus"),
-                    },
-                    text: "That touches the CLI and the writer, so I'll run it with the crew."
-                        .into(),
-                    steps: Vec::new(),
-                },
-            ],
-            milestones: vec![
-                "Crew · 7 files, tests exist".into(),
-                "Goal approved · 3 criteria".into(),
-                "Plan 1 won · 5 tasks".into(),
-            ],
-            recap: "The plan waits for you at the plan approval.".into(),
-            recap_model: None,
-        },
-        AppEvent::ReplayDone {
-            run: run_id(),
-            seq: 100,
-        },
-    ]);
-}
-
 fn tool(n: u32, id: &str, name: &str, path: &str) -> [AppEvent; 2] {
     [
         agent(
@@ -1218,6 +1084,7 @@ fn a_direct_turn_fell_back_goes_on_under_one_line() {
                 why: "hit its usage limit".into(),
                 told: "your request, the transcript so far, and that invoice/money.py changed"
                     .into(),
+                signed_out: None,
             }));
             let test = serde_json::json!({ "command": "python -m pytest -q" });
             driver.send_all(call(1, "t2", "Bash", test, true, "6 passed in 0.04s"));

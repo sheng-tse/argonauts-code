@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use argonauts_core::app::AppEvent;
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::session::{
     CliWorkflowRun, EndReason, FileDiff, SessionEnd, SessionEvent, SubagentKind, SubagentStatus,
@@ -34,7 +35,7 @@ use crate::cell::{
 };
 use crate::format;
 use crate::history::CellId;
-use crate::state::task_label;
+use crate::state::{RunState, task_label};
 use crate::theme::Glyphs;
 
 /// Tool items a live block keeps, newest last. Quiet calls in a row count as one.
@@ -60,6 +61,9 @@ pub struct AgentBlocks {
     latest: Option<OffsetDateTime>,
     /// Each review's rounds so far.
     rounds: reviewed::Rounds,
+    /// What agents of a run printed before its workflow's shape was known, which prints once
+    /// its Workflow line has, as each cell and whether it prints or is only kept.
+    unshaped: Vec<(RunId, Vec<(Cell, bool)>)>,
 }
 
 #[derive(Debug, Default)]
@@ -127,7 +131,11 @@ impl AgentBlocks {
     pub fn on_event(&mut self, event: &AppEvent, cx: &mut Cx<'_>) {
         match event {
             AppEvent::Run { event } => self.on_run_event(event, cx),
-            AppEvent::Attached { summary, .. } => self.drop_run(&summary.run, cx),
+            // A run whose past the screen drew already keeps the blocks it drew, at work or not:
+            // the stream that follows repeats none of what made them.
+            AppEvent::Attached { summary, .. } if !cx.state.seen.contains_key(&summary.run) => {
+                self.drop_run(&summary.run, cx)
+            }
             AppEvent::Detached { run } => self.drop_run(run, cx),
             AppEvent::ReplayDone { run, .. } => self.after_replay(run, cx),
             _ => {}
@@ -136,6 +144,7 @@ impl AgentBlocks {
 
     fn on_run_event(&mut self, event: &RunEvent, cx: &mut Cx<'_>) {
         self.latest = Some(self.latest.map_or(event.ts, |latest| latest.max(event.ts)));
+        self.print_unshaped(event, cx);
         if !self.started.takes(event) {
             self.print_started(cx);
         }
@@ -209,7 +218,13 @@ impl AgentBlocks {
             }
             SessionEvent::Input(input) => {
                 if let Some(index) = self.index(&event.run_id, key) {
-                    self.sessions[index].given.add(&input.parts);
+                    let live = &mut self.sessions[index];
+                    live.given.add(&input.parts);
+                    // Named now by the model its command launched.
+                    let before = live.started_row();
+                    if live.rename(cx) {
+                        self.started.rename(&before, live.started_row());
+                    }
                 }
             }
             SessionEvent::FileDiff(diff) => {
@@ -405,9 +420,14 @@ impl AgentBlocks {
             .as_ref()
             .and_then(|task| self.checks.get(&(live.run.clone(), task.clone())).copied())
             .or_else(|| checks_from_task(live.task_state(cx)));
-        let cli = cx.state.names.cli(&live.agent_id);
         let decided = decided_alone(end, on_autopilot(cx, &live.run));
-        let mut detail = end_detail(end, checks, decided.as_deref(), &cli, glyphs(cx));
+        let mut detail = end_detail(
+            end,
+            checks,
+            decided.as_deref(),
+            (&live.agent_id, &cx.state.names),
+            glyphs(cx),
+        );
         let raw = raw_error(&end.reason).and_then(|text| {
             let title = format!("{} · the raw error", live.head.title.plain());
             failure::RawFailure::behind(&detail, title, text)
@@ -431,7 +451,7 @@ impl AgentBlocks {
             let hint = (raw.is_some() && !cx.replaying()).then_some(failure::RAW_ERROR_HINT);
             summary = ended::failed_row(
                 &live.whole,
-                reason_words(&end.reason, &cli),
+                reason_words(&end.reason, &live.agent_id, &cx.state.names),
                 hint,
                 Duration::from_millis(end.duration_ms),
             );
@@ -439,15 +459,19 @@ impl AgentBlocks {
         if cx.verbosity() == Verbosity::Quiet {
             return;
         }
-        if cx.replaying() {
+        if cx.history_only() {
             cx.model.history.keep(summary);
             return;
         }
-        if raw.is_some() {
+        // `r` opens the newest raw failure, which a past drawn again isn't.
+        if raw.is_some() && !cx.replaying() {
             cx.model.raw_failure = raw;
         }
+        let mut out: Vec<(Cell, bool)> = Vec::new();
         if state != ToolState::Stopped && !held_back {
-            live.flush(cx);
+            if let Some(batch) = live.take_batch() {
+                out.push((batch.into(), true));
+            }
         } else if live.printed && !held_back {
             // A stopped agent prints one line, and what it held back stays for the overlay.
             summary.full = (!live.outbox.body.is_empty())
@@ -460,15 +484,58 @@ impl AgentBlocks {
         if live.printed
             && let Some(own) = live.own_calls()
         {
-            cx.model.history.keep(own);
+            out.push((own.into(), false));
         }
-        cx.model.history.push(summary);
+        out.push((summary.into(), true));
+        // Nothing of a workflow draws before its shape is known, so an agent that ends sooner,
+        // as the one that writes it does, prints after the Workflow line.
+        if cx
+            .state
+            .runs
+            .get(&live.run)
+            .is_some_and(RunState::awaits_its_shape)
+        {
+            self.unshaped.push((live.run.clone(), out));
+            return;
+        }
+        print_all(out, cx);
+    }
+
+    /// What the run's agents printed before its shape was known, once it is, or once the run
+    /// waits or ends without one.
+    fn print_unshaped(&mut self, event: &RunEvent, cx: &mut Cx<'_>) {
+        if self.unshaped.is_empty() {
+            return;
+        }
+        let ends = matches!(
+            &event.kind,
+            RunEventKind::Run(
+                RunLifecycle::Finished { .. }
+                    | RunLifecycle::Waiting { .. }
+                    | RunLifecycle::Paused { .. }
+            )
+        );
+        let shaped = !cx
+            .state
+            .runs
+            .get(&event.run_id)
+            .is_some_and(RunState::awaits_its_shape);
+        if !(ends || shaped) {
+            return;
+        }
+        let (now, later) = std::mem::take(&mut self.unshaped)
+            .into_iter()
+            .partition(|(run, _)| *run == event.run_id);
+        self.unshaped = later;
+        for (_, out) in now {
+            print_all(out, cx);
+        }
     }
 
     fn print_started(&mut self, cx: &mut Cx<'_>) {
         let agents = std::mem::take(&mut self.started.agents);
         self.started.since = None;
-        if agents.len() > 1 && !cx.replaying() && cx.verbosity() != Verbosity::Quiet {
+        if agents.len() > 1 && !cx.history_only() && cx.verbosity() != Verbosity::Quiet {
             cx.model.history.push(AgentsStarted::new(agents));
         }
     }
@@ -950,7 +1017,7 @@ impl Live {
 
     /// At `full` each call goes out whole; at `normal` quiet ones fold into one line.
     fn send_out(&mut self, call: ToolCall, cx: &mut Cx<'_>) {
-        if cx.replaying() {
+        if cx.history_only() {
             return;
         }
         match cx.verbosity() {
@@ -981,13 +1048,20 @@ impl Live {
     }
 
     fn flush(&mut self, cx: &mut Cx<'_>) {
+        if let Some(batch) = self.take_batch() {
+            cx.model.history.push(batch);
+        }
+    }
+
+    /// The calls waiting to print, which count as printed from here on.
+    fn take_batch(&mut self) -> Option<ToolCall> {
         if self.outbox.body.is_empty() {
-            return;
+            return None;
         }
         let batch = self.outbox.clone();
         self.outbox.body.clear();
-        cx.model.history.push(batch);
         self.printed = true;
+        Some(batch)
     }
 
     /// The live preview, and the diff a call that changed the file was missing, as Codex's
@@ -1072,6 +1146,17 @@ impl Live {
             block.body.push(ToolItem::TodoLine(self.todos.clone()));
         }
         block
+    }
+}
+
+/// Each cell to scrollback, or only to the overlay where it was only kept.
+fn print_all(out: Vec<(Cell, bool)>, cx: &mut Cx<'_>) {
+    for (cell, prints) in out {
+        if prints {
+            cx.model.history.push(cell);
+        } else {
+            cx.model.history.keep(cell);
+        }
     }
 }
 
@@ -1200,7 +1285,7 @@ fn checks_from_task(state: Option<TaskState>) -> Option<bool> {
 fn glyphs(cx: &Cx<'_>) -> &'static Glyphs {
     match cx.settings.glyphs {
         GlyphChoice::Ascii => &Glyphs::ASCII,
-        GlyphChoice::Unicode => &Glyphs::UNICODE,
+        GlyphChoice::Unicode => Glyphs::unicode(),
     }
 }
 
@@ -1241,11 +1326,11 @@ fn end_detail(
     end: &SessionEnd,
     checks: Option<bool>,
     decided: Option<&str>,
-    cli: &str,
+    (agent, names): (&str, &DisplayNames),
     glyphs: &Glyphs,
 ) -> String {
     let mut parts = Vec::new();
-    if let Some(reason) = reason_words(&end.reason, cli) {
+    if let Some(reason) = reason_words(&end.reason, agent, names) {
         parts.push(reason);
     }
     let reported = end.structured.is_some() || end.result_text.is_some();
@@ -1271,7 +1356,13 @@ fn end_detail(
 
 /// Why it ended, in words. A failure the CLI explained is one plain line; its own text stays
 /// in the raw log.
-pub(crate) fn reason_words(reason: &EndReason, cli: &str) -> Option<String> {
+/// Why a session ended, in words, the model a CLI refused by its own name.
+pub(crate) fn reason_words(
+    reason: &EndReason,
+    agent: &str,
+    names: &DisplayNames,
+) -> Option<String> {
+    let cli = names.cli(agent);
     Some(match reason {
         EndReason::Completed | EndReason::Stopped => return None,
         EndReason::Paused => "paused".to_owned(),
@@ -1285,12 +1376,17 @@ pub(crate) fn reason_words(reason: &EndReason, cli: &str) -> Option<String> {
         EndReason::UsageLimit { .. } => "usage limit".to_owned(),
         EndReason::RateLimited => "rate limited".to_owned(),
         EndReason::ContextFull => "context full".to_owned(),
-        EndReason::ModelUnavailable { model } => format!("{model} unavailable"),
+        EndReason::ModelUnavailable { model } => format!(
+            "{} unavailable",
+            names
+                .model(agent, Some(model))
+                .unwrap_or_else(|| model.clone())
+        ),
         EndReason::CliError { message, .. }
         | EndReason::Auth { message }
         | EndReason::Billing { message }
         | EndReason::StartFailed { message }
-        | EndReason::Crashed { message } => failure::plain(cli, message),
+        | EndReason::Crashed { message } => failure::plain(&cli, message),
         EndReason::AdapterBroken { detail } => first_line(detail),
         EndReason::IsolationBroken { plugins, skills } => {
             format!("loaded {}", loaded_words(plugins, skills))

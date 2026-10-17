@@ -79,6 +79,7 @@ fn example(kept: &str, counted_ago: i64, crew: [ContextRow; 2]) -> Example {
         estimated: false,
         counts: true,
         categories: Vec::new(),
+        recorded: None,
     };
     let mut rows = vec![main];
     rows.extend(crew);
@@ -150,6 +151,7 @@ fn flag(used: u64, messages: u64, calls: u32, cost: f64) -> ContextRow {
         estimated: false,
         counts: true,
         categories,
+        recorded: None,
     }
 }
 
@@ -173,5 +175,6 @@ fn tests(used: u64, calls: u32, cost: f64) -> ContextRow {
         estimated: true,
         counts: false,
         categories: Vec::new(),
+        recorded: None,
     }
 }

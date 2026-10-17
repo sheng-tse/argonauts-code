@@ -479,8 +479,13 @@ pub(crate) mod tests {
             Some("--help lacks flags Argonauts Code passes: --output-schema")
         );
 
+        let dir = tempfile::tempdir().unwrap();
+        let next_minor = codex_like(dir.path(), "0.159.0", &all_flags);
+        let check = check_agent(&next_minor, VERSION_TIMEOUT).await;
+        assert_eq!(check.status, AgentStatus::Newer, "{check:?}");
+
         for (version, why) in [
-            ("0.159.0", "the next minor"),
+            ("1.0.0", "the next major"),
             ("0.157.9", "before the oldest"),
         ] {
             let dir = tempfile::tempdir().unwrap();
@@ -607,8 +612,8 @@ pub(crate) mod tests {
             tested: &["1.0.0"],
         };
         let dir = tempfile::tempdir().unwrap();
-        // 1.1.0 is past the tested range, which ends before the next minor after 1.0.0.
-        let present = VersionOnly::script(dir.path(), "echo 1.1.0", &["1.0.0"]);
+        // 2.0.0 is past the tested range, which ends before the next major after 1.0.0.
+        let present = VersionOnly::script(dir.path(), "echo 2.0.0", &["1.0.0"]);
         let adapters: Vec<Arc<dyn Adapter>> = vec![Arc::new(missing), Arc::new(present)];
         let report = doctor(&adapters, &Settings::default()).await;
         assert_eq!(report.agents[0].status, AgentStatus::NotInstalled);
@@ -623,7 +628,7 @@ pub(crate) mod tests {
         assert!(lines[0].starts_with("Fake  -"), "{text}");
         assert!(lines[0].contains("not installed"));
         assert!(!lines[0].contains("cheapest"));
-        assert!(lines[1].contains("1.1.0"));
+        assert!(lines[1].contains("2.0.0"));
         assert!(lines[1].contains("cheapest: tiny (effort low)"));
         assert!(lines[1].contains("checked with 1.0.0"));
         assert!(lines[2].starts_with("git "));

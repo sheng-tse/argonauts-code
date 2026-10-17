@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use app_support::*;
 use argonauts_core::app::{AppEvent, ChoiceKind};
-use argonauts_scenarios::Scenario;
+use argonauts_scenarios::{Scenario, as_set_up};
 use argonauts_testkit::Pty;
 
 /// Starts the app on a fresh trace and gives it a moment for its start-up notices.
@@ -176,7 +176,7 @@ fn app_needs_you_sends_conversation_notification() -> anyhow::Result<()> {
         run_config(),
         hermes.display()
     );
-    std::fs::write(scenario.repo.global_config(), config)?;
+    std::fs::write(scenario.repo.global_config(), as_set_up(&config))?;
 
     let mut pty = start(&scenario)?;
     // Focus out, as when you switch to another window.

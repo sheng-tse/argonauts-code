@@ -24,13 +24,16 @@ use super::{AgentPanel, PanelEvent};
 
 /// The name column's width, so every bar starts in one column. A longer name widens it only
 /// into room the row has to spare, so one long name can't push every bar off the row.
-const MAX_NAME_CELLS: usize = 20;
+const MAX_NAME_CELLS: usize = 22;
 
 /// Names give up cells down to this to keep the bar.
 const MIN_NAME_CELLS: usize = 12;
 
 /// Rows under a run's row sit this much further in.
 const AGENT_INDENT: usize = 2;
+
+/// Cells each level of a workflow inside steps further in than the one holding it.
+const INSIDE_STEP: usize = 4;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkflowPanel {
@@ -41,6 +44,8 @@ pub struct WorkflowPanel {
     pub show_agents: bool,
     /// While the panel has focus, the selected row counting runs and agents alike, top down.
     pub selected: Option<usize>,
+    /// The key of the row inside a run that Enter opened, whose run's view opens on it.
+    pub opening: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +68,9 @@ pub struct WorkflowRow {
     /// What Argonauts Code says at the row's end when there is something to say: why it needs
     /// you, or how it ended, such as `merged onto main`.
     pub said: Option<String>,
+    /// How a run that stopped or that you paused goes on, after what it says: `/resume carries
+    /// it on`.
+    pub carry_on: Option<String>,
     /// The model that fills in for another while the run goes on, such as `Sonnet 5.5 for
     /// Opus 5.5`, said after the fallback's mark.
     pub fallback: Option<String>,
@@ -70,9 +78,11 @@ pub struct WorkflowRow {
     pub outside_agent: Option<String>,
     /// Goals its agents still work toward, for `2 goals running`.
     pub goals_running: usize,
-    /// The key of the agent whose own CLI runs this workflow, so the row sits under that
-    /// agent's rather than beside the run as a second one.
-    pub parent: Option<String>,
+    /// How many workflows in it is: 0 for a run's own row, 1 for a workflow inside the run,
+    /// which follows the run's row on `⎿`, and 2 for one inside that.
+    pub depth: usize,
+    /// The worker whose own CLI runs it, for `run by build:due-flag`.
+    pub run_by: Option<String>,
     /// When the row of a run that ended leaves the list.
     pub leaves_at: Option<Instant>,
 }
@@ -91,10 +101,12 @@ impl WorkflowRow {
             tokens: 0,
             notice: None,
             said: None,
+            carry_on: None,
             fallback: None,
             outside_agent: None,
             goals_running: 0,
-            parent: None,
+            depth: 0,
+            run_by: None,
             leaves_at: None,
         }
     }
@@ -114,6 +126,8 @@ pub enum WorkflowRowState {
     Done,
     Failed,
     Paused,
+    /// It waits out an outage you chose to wait out, and tries again on its own.
+    Waiting,
     Stopped,
 }
 
@@ -136,6 +150,7 @@ impl WorkflowRowState {
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Paused => "paused",
+            Self::Waiting => "waiting",
             Self::Stopped => "stopped",
         }
     }
@@ -255,27 +270,19 @@ impl WorkflowPanel {
                 placed[j] = true;
             }
         }
-        // A workflow an agent's own CLI runs goes under that agent's row while it's listed.
-        // Session keys start again in every run, so the agent must be of the workflow's run,
-        // which its key names before the `#`.
-        let under = |i: usize| {
-            let row = &self.rows[i];
-            let parent = row.parent.as_deref()?;
-            let run = row.key.split_once('#').map(|(run, _)| run);
-            agents
-                .rows
-                .iter()
-                .position(|agent| {
-                    agent.key.as_deref() == Some(parent)
-                        && run.is_none_or(|run| agent.run.as_deref() == Some(run))
-                })
-                .filter(|_| self.show_agents)
-        };
+        // A workflow inside a run follows the run's row, and the run's agents come after.
         for (i, row) in self.rows.iter().enumerate() {
-            if under(i).is_some() {
+            if row.depth > 0 {
                 continue;
             }
             entries.push(Entry::Run(i));
+            entries.extend(
+                self.rows[i + 1..]
+                    .iter()
+                    .take_while(|inside| inside.depth > 0)
+                    .enumerate()
+                    .map(|(at, _)| Entry::Run(i + 1 + at)),
+            );
             if !self.show_agents {
                 continue;
             }
@@ -283,11 +290,6 @@ impl WorkflowPanel {
                 if !placed[j] && agent.run.as_deref() == Some(row.key.as_str()) {
                     entries.push(Entry::Agent(j));
                     placed[j] = true;
-                    entries.extend(
-                        (0..self.rows.len())
-                            .filter(|&inner| under(inner) == Some(j))
-                            .map(Entry::Run),
-                    );
                 }
             }
         }
@@ -549,7 +551,9 @@ fn run_line(
     let (glyph, role) = match row.state {
         WorkflowRowState::Running => (pick("◯", "o"), Role::Dim),
         WorkflowRowState::NeedsYou => (pick("⏸", "="), Role::Warn),
-        WorkflowRowState::Paused => (pick("⏸", "="), Role::Dim),
+        // Only a pause you asked for draws the pause mark.
+        WorkflowRowState::Paused => (pick("⏸", "="), Role::Text),
+        WorkflowRowState::Waiting => (pick("◯", "o"), Role::Dim),
         WorkflowRowState::Done => (pick("✔", "*"), Role::StateDone),
         WorkflowRowState::Failed | WorkflowRowState::Stopped => (pick("✘", "x"), Role::StateFailed),
     };
@@ -561,14 +565,20 @@ fn run_line(
     } else {
         vec![Span::raw("  ")]
     };
-    // Under its agent's row, a step further in than the agent.
-    let inner = if row.parent.is_some() {
-        AGENT_INDENT * 2
+    // A workflow inside steps in on `⎿`, a step a level, its name column shorter by as much,
+    // so every bar starts in one column.
+    let step_in = if row.depth > 0 {
+        format!(
+            "{}  {} ",
+            " ".repeat(INSIDE_STEP * (row.depth - 1)),
+            theme.glyphs.result
+        )
     } else {
-        0
+        String::new()
     };
+    let inner = str_width(&step_in);
     if inner > 0 {
-        spans.push(Span::raw(" ".repeat(inner)));
+        spans.push(Span::styled(step_in, theme.style(Role::Dim)));
     }
     spans.push(Span::styled(format!("{glyph} "), theme.style(role)));
     // The row is dim unless it is the one selected.
@@ -577,13 +587,12 @@ fn run_line(
     } else {
         theme.style(Role::Dim)
     };
-    spans.push(Span::styled(
-        left(&cells.name, columns.name_width.saturating_sub(inner)),
-        name_style,
-    ));
+    // A name inside may take the first of the cells between it and the bar.
+    let room = columns.name_width.saturating_sub(inner) + usize::from(inner > 0);
+    spans.push(Span::styled(left(&cells.name, room), name_style));
     if columns.bar_cells > 0 {
         let agents = (row.agents_total > 0).then_some((row.agents_done, row.agents_total));
-        spans.push(Span::raw("  "));
+        spans.push(Span::raw(if inner > 0 { " " } else { "  " }));
         spans.extend(bar(agents, columns.bar_cells, theme));
     }
     spans.push(Span::raw("  "));
@@ -627,8 +636,19 @@ fn run_stats(row: &WorkflowRow, ctx: &RenderCtx<'_>) -> Vec<Part> {
     if let Some(outside_agent) = &row.outside_agent {
         push(sanitize_line(outside_agent).trim().to_owned(), dim, 4);
     }
+    if let Some(worker) = &row.run_by {
+        push(format!("run by {}", sanitize_line(worker).trim()), dim, 2);
+    }
     if let Some((said, role)) = said(row, marks.fallback) {
         push(said, theme.style(role), 6);
+    }
+    if let Some(carry_on) = row.carry_on.as_deref().map(sanitize_line) {
+        // A stop says it in the stop's color, a pause of yours quietly.
+        let role = match row.state {
+            WorkflowRowState::Stopped | WorkflowRowState::Failed => Role::StateFailed,
+            _ => Role::Dim,
+        };
+        push(carry_on.trim().to_owned(), theme.style(role), 6);
     }
     if let Some(notice) = &row.notice {
         push(
@@ -658,7 +678,8 @@ fn said(row: &WorkflowRow, mark: &str) -> Option<(String, Role)> {
         WorkflowRowState::NeedsYou | WorkflowRowState::Running => Role::Warn,
         WorkflowRowState::Done => Role::StateDone,
         WorkflowRowState::Failed | WorkflowRowState::Stopped => Role::StateFailed,
-        WorkflowRowState::Paused => Role::Dim,
+        WorkflowRowState::Paused => Role::Text,
+        WorkflowRowState::Waiting => Role::Warn,
     };
     let words = match (row.state, own) {
         (WorkflowRowState::NeedsYou, Some(why)) => format!("needs you · {why}"),
@@ -1022,6 +1043,104 @@ mod tests {
         row
     }
 
+    /// A run at work, one that stopped fully, and one you paused, as the bottom list draws each
+    /// with the cursor on it at the width of 118: only /resume carries the last two on.
+    #[test]
+    fn a_stopped_run_and_one_you_paused_read_as_their_pictures() {
+        use crate::views::workflow_pictures::{buffer_of, dark, picture};
+        let theme = dark();
+        let ctx = RenderCtx::new(118, &theme, Clock::still(Instant::now()));
+        let row = |state, (done, total): (u32, u32), seconds: u64, tokens: u64| {
+            let mut row = pictured(done, total, seconds, tokens);
+            row.name = "Per key rate limit".to_owned();
+            row.state = state;
+            row
+        };
+        let stopped = WorkflowRow {
+            said: Some("stopped".to_owned()),
+            carry_on: Some("/resume carries it on".to_owned()),
+            ..row(WorkflowRowState::Stopped, (0, 3), 41, 6_600)
+        };
+        let paused = WorkflowRow {
+            said: Some("paused by you".to_owned()),
+            carry_on: Some("/resume carries it on".to_owned()),
+            ..row(WorkflowRowState::Paused, (1, 3), 62, 31_400)
+        };
+        let cases = [
+            (28, row(WorkflowRowState::Running, (1, 3), 62, 31_400)),
+            (40, stopped),
+            (48, paused),
+        ];
+        let picture = picture!("waiting_rows");
+        for (at, row) in cases {
+            let panel = WorkflowPanel {
+                rows: vec![row],
+                max_rows: 5,
+                selected: Some(0),
+                ..WorkflowPanel::default()
+            };
+            let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
+            picture.assert_drawn(at..at + 1, &buffer_of(&lines, 118), 0);
+        }
+    }
+
+    /// Every case of a workflow inside in the bottom list, as one list: a worker's workflow at
+    /// work, then ended; Captain's second workflow at work, then merged; the deepest, with two
+    /// `⎿` rows a step apart; and the cursor on a row inside, with another run below. Every bar
+    /// starts in one column.
+    #[test]
+    fn the_rows_inside_read_as_their_picture() {
+        let theme = crate::views::workflow_pictures::dark();
+        let row = |name: &str, (done, total): (u32, u32), seconds: u64, tokens: u64| {
+            let mut row = pictured(done, total, seconds, tokens);
+            row.name = name.to_owned();
+            row
+        };
+        let inside = |mut row: WorkflowRow, depth: usize, by: Option<&str>| {
+            row.depth = depth;
+            row.run_by = by.map(str::to_owned);
+            row
+        };
+        let mut merged = row("Fix the money rounding", (8, 8), 126, 226_000);
+        merged.state = WorkflowRowState::Done;
+        merged.said = Some("merged onto main".to_owned());
+        let by = Some("build:due-flag");
+        let rows = vec![
+            row("Add due dates", (3, 5), 172, 91_400),
+            inside(row("add-due-flag", (2, 3), 118, 25_900), 1, by),
+            row("Add due dates", (5, 5), 211, 99_500),
+            row("Fix the money rounding", (6, 7), 100, 201_000),
+            inside(row("final-signoff-money", (1, 2), 15, 48_300), 1, None),
+            merged,
+            row("Add due dates", (5, 7), 197, 101_000),
+            inside(row("add-due-flag", (4, 5), 143, 35_100), 1, by),
+            inside(row("date-cases", (1, 2), 22, 6_600), 2, None),
+            row("Add due dates", (3, 5), 172, 91_400),
+            inside(row("add-due-flag", (2, 3), 118, 25_900), 1, by),
+            row("Per key rate limit", (1, 2), 62, 25_200),
+        ];
+        let panel = WorkflowPanel {
+            rows,
+            max_rows: 20,
+            selected: Some(10),
+            ..WorkflowPanel::default()
+        };
+        let ctx = RenderCtx::new(124, &theme, Clock::still(Instant::now()));
+        let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
+        let picture = crate::views::workflow_pictures::picture!("nested_bottom_list");
+        let drawn = crate::views::workflow_pictures::buffer_of(&lines, 124);
+        for (rows, at) in [
+            (1..3, 0),
+            (5..6, 2),
+            (8..10, 3),
+            (12..13, 5),
+            (15..18, 6),
+            (20..23, 9),
+        ] {
+            picture.assert_drawn(rows, &drawn, at);
+        }
+    }
+
     /// The rows as their picture draws them, cell for cell and colour for colour: Claude Code's
     /// row, and at its end who fills in, why it needs you, or how it ended.
     #[test]
@@ -1088,11 +1207,11 @@ mod tests {
         let empty = "▱".repeat(BAR_CELLS);
         assert_eq!(
             read(t0),
-            format!("  ◯ Add due dates         {empty}  0/4 · 2s")
+            format!("  ◯ Add due dates           {empty}  0/4 · 2s")
         );
         assert_eq!(
             read(t0 + Duration::from_secs(1)),
-            format!("  ◯ Add due dates         {empty}  0/4 · 3s")
+            format!("  ◯ Add due dates           {empty}  0/4 · 3s")
         );
     }
 
@@ -1142,6 +1261,43 @@ mod tests {
                     Some("Claude Code is down"),
                 ),
             ),
+        ];
+        for (picture, at, row) in cases {
+            let panel = WorkflowPanel {
+                rows: vec![row],
+                max_rows: 5,
+                ..WorkflowPanel::default()
+            };
+            let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
+            picture.assert_drawn(at..at + 1, &buffer_of(&lines, 124), 0);
+        }
+    }
+
+    /// A Captain run's row the moment its phases are known, and once it merged.
+    #[test]
+    fn a_captain_runs_row_reads_as_its_pictures() {
+        use crate::views::workflow_pictures::{buffer_of, dark, picture};
+        let theme = dark();
+        let ctx = RenderCtx::new(124, &theme, Clock::still(Instant::now()));
+        let captain = |done: u32, total: u32, seconds: u64, tokens: u64| {
+            let mut row =
+                WorkflowRow::new("run-0", "Fix the money rounding", WorkflowRowState::Running);
+            row.agents_done = done;
+            row.agents_total = total;
+            row.elapsed_ms = seconds * 1000;
+            row.tokens = tokens;
+            row
+        };
+        let mut merged = captain(6, 6, 91, 157_000);
+        merged.state = WorkflowRowState::Done;
+        merged.said = Some("merged onto main".to_owned());
+        let cases = [
+            (
+                picture!("workflow_shape_known"),
+                27,
+                captain(0, 1, 15, 2_200),
+            ),
+            (picture!("captain_done"), 24, merged),
         ];
         for (picture, at, row) in cases {
             let panel = WorkflowPanel {
@@ -1324,8 +1480,10 @@ mod tests {
         }
     }
 
+    /// A workflow inside a run follows the run's row on `⎿`, its bar in the run's column and
+    /// who runs it after its numbers, and the run's agents come after it.
     #[test]
-    fn a_workflow_an_agents_cli_runs_sits_under_that_agent_counted_in_its_agents() {
+    fn a_workflow_inside_follows_its_runs_row() {
         let mut theme = Theme::dark().with_level(ColorLevel::None);
         theme.glyphs = Glyphs::UNICODE;
         let t0 = Instant::now();
@@ -1337,7 +1495,8 @@ mod tests {
             "add-due-dates",
             WorkflowRowState::Running,
         );
-        inner.parent = Some("s-002".into());
+        inner.depth = 1;
+        inner.run_by = Some("build:add-due-dates".into());
         inner.agents_done = 1;
         inner.agents_total = 3;
         panel.rows.push(inner);
@@ -1357,42 +1516,39 @@ mod tests {
         let text = plain_text(&panel_lines(&panel, &agents, &ctx));
         let rows: Vec<&str> = text.lines().collect();
         assert!(rows[1].starts_with("  ◯ workflow-0"), "{text}");
-        assert!(rows[1].contains("  1/3 · "), "{text}");
-        assert!(rows[3].starts_with("    ○ build:add-due-dates"), "{text}");
-        assert!(
-            rows[4].starts_with("      ◯ add-due-dates") && rows[4].contains("  1/3 · "),
-            "the agent's own workflow is under it: {text}"
+        assert!(rows[2].starts_with("    ⎿ ◯ add-due-dates"), "{text}");
+        assert!(rows[2].contains("  1/3 · "), "{text}");
+        assert!(rows[2].contains("run by build:add-due-dates"), "{text}");
+        let bar = |row: &str| row.chars().position(|cell| cell == '▰' || cell == '▱');
+        assert_eq!(
+            bar(rows[1]),
+            bar(rows[2]),
+            "one column for every bar: {text}"
         );
+        assert!(rows[4].starts_with("    ○ build:add-due-dates"), "{text}");
         assert_eq!(rows.len(), 5, "and listed once: {text}");
     }
 
-    /// Two runs at once both have an `s-002`: a CLI's own workflow sits under its own run's.
+    /// Two runs at once: a workflow inside follows its own run's row.
     #[test]
-    fn a_cli_workflow_sits_under_the_agent_of_its_own_run() {
+    fn a_workflow_inside_follows_its_own_run() {
         let mut theme = Theme::dark().with_level(ColorLevel::None);
         theme.glyphs = Glyphs::UNICODE;
         let t0 = Instant::now();
         let mut panel = runs(2);
-        panel.show_agents = true;
         panel.max_rows = 12;
         let mut inner =
             WorkflowRow::new("run-1#fix-median", "fix-median", WorkflowRowState::Running);
-        inner.parent = Some("s-002".into());
+        inner.depth = 1;
         panel.rows.push(inner);
-        let mut agents = AgentPanel::default();
-        agents.rows.push(AgentRow::main());
-        for (run, label) in [("run-0", "build:due-dates"), ("run-1", "build:median")] {
-            let mut row = AgentRow::new("claude-code", "Working", AgentState::Working)
-                .with_label(label, label);
-            row.run = Some(run.into());
-            row.key = Some("s-002".into());
-            agents.rows.push(row);
-        }
         let ctx = RenderCtx::new(100, &theme, Clock::still(t0));
-        let text = plain_text(&panel_lines(&panel, &agents, &ctx));
+        let text = plain_text(&panel_lines(&panel, &AgentPanel::default(), &ctx));
         let rows: Vec<&str> = text.lines().collect();
         let at = |part: &str| rows.iter().position(|row| row.contains(part));
-        let median = at("build:median").expect("run-1's agent is listed");
-        assert_eq!(at("fix-median"), Some(median + 1), "{text}");
+        assert_eq!(
+            at("fix-median"),
+            at("workflow-1").map(|run| run + 1),
+            "{text}"
+        );
     }
 }

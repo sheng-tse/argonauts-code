@@ -1915,35 +1915,46 @@ async fn a_session_says_nothing_of_a_newer_cli_and_keeps_its_unread_kinds() {
     assert!(!std::fs::read_to_string(&path).unwrap().contains("secret"));
 }
 
+/// A new Claude Code session is given its id at launch, but counts as one only once the CLI
+/// says it started: one cut off before that saved nothing a resume could find.
 #[tokio::test]
-async fn claude_sessions_announce_their_cap_and_id() {
-    let dirs = Dirs::new();
-    let script = format!("IFS= read -r first; {}", echo(&result("ok")));
-    let adapter = TestAdapter::new(&script)
-        .with_id(super::capabilities::CLAUDE_CODE)
-        .with_input_lines();
-    let h = TestDriver::new(adapter);
-    let mut spec = dirs.spec("hi");
-    spec.limits.limit = Some(LimitAmount {
-        unit: LimitUnit::Usd,
-        amount: 2.0,
-    });
-    let (events, end) = collect(h.worker.start(spec).await.unwrap()).await;
+async fn claude_sessions_announce_their_cap_and_count_once_started() {
+    let run = |script: String| async move {
+        let dirs = Dirs::new();
+        let adapter = TestAdapter::new(&script)
+            .with_id(super::capabilities::CLAUDE_CODE)
+            .with_input_lines();
+        let h = TestDriver::new(adapter);
+        let mut spec = dirs.spec("hi");
+        spec.limits.limit = Some(LimitAmount {
+            unit: LimitUnit::Usd,
+            amount: 2.0,
+        });
+        let (events, end) = collect(h.worker.start(spec).await.unwrap()).await;
+        assert!(dirs.session.join(session_files::MCP_CONFIG).exists());
+        assert_eq!(end.reason, EndReason::Completed);
+        (events, end)
+    };
+
+    let (events, end) = run(format!("IFS= read -r first; {}", echo(&result("ok")))).await;
     let order = names(&events);
-    assert_eq!(
-        order[..3],
-        ["input", "limit:native_cap", "cli_session"],
-        "{order:?}"
+    assert_eq!(order[..2], ["input", "limit:native_cap"], "{order:?}");
+    assert!(!order.iter().any(|name| name == "cli_session"), "{order:?}");
+    assert_eq!(end.cli_session, None);
+
+    let started = "2c1f0a9e-1b2c-4d5e-8f90-123456789abc";
+    let script = format!(
+        "IFS= read -r first; {}; {}",
+        echo(&init(started)),
+        echo(&result("ok"))
     );
-    let chosen = session_events(&events).into_iter().find_map(|e| match e {
+    let (events, end) = run(script).await;
+    let announced = session_events(&events).into_iter().find_map(|e| match e {
         SessionEvent::CliSession { id, .. } => Some(id.clone()),
         _ => None,
     });
-    let chosen = chosen.unwrap();
-    assert!(uuid::Uuid::parse_str(&chosen).is_ok());
-    assert_eq!(end.cli_session, Some(chosen));
-    assert!(dirs.session.join(session_files::MCP_CONFIG).exists());
-    assert_eq!(end.reason, EndReason::Completed);
+    assert_eq!(announced.as_deref(), Some(started));
+    assert_eq!(end.cli_session.as_deref(), Some(started));
 }
 
 #[tokio::test]
@@ -2277,7 +2288,7 @@ fn a_cli_that_bills_an_api_key_gets_no_plan_usage_prober() {
 }
 
 #[test]
-fn plan_usage_prober_names_the_model_sessions_use() {
+fn plan_usage_prober_names_only_the_configured_model() {
     use argonauts_core::Adapter;
     use argonauts_core::settings::agents::AgentSettings;
 
@@ -2297,7 +2308,7 @@ fn plan_usage_prober_names_the_model_sessions_use() {
     let prober = registered_prober(&worker.agent_id()).unwrap();
     assert_eq!(prober.model.as_deref(), Some("cheap-model"));
 
-    // The runner's own model wins, as it does for a session.
+    // A runner built for another model, such as a cheap judge, leaves the probe on yours.
     let worker = ModelRef::new("prober-model-from-worker", Some("picked".to_owned()));
     settings.agents.insert(
         worker.agent.clone(),
@@ -2305,7 +2316,16 @@ fn plan_usage_prober_names_the_model_sessions_use() {
     );
     super::register_plan_usage_prober(&adapter, &worker, &settings);
     let prober = registered_prober(&worker.agent_id()).unwrap();
-    assert_eq!(prober.model.as_deref(), Some("picked"));
+    assert_eq!(prober.model.as_deref(), Some("cheap-model"));
+
+    // With none set, the CLI probes on the model it picks itself.
+    let worker = ModelRef::new("prober-model-unset", Some("picked".to_owned()));
+    settings
+        .agents
+        .insert(worker.agent.clone(), AgentSettings::default());
+    super::register_plan_usage_prober(&adapter, &worker, &settings);
+    let prober = registered_prober(&worker.agent_id()).unwrap();
+    assert_eq!(prober.model, None);
 }
 
 fn leak_line() -> String {
@@ -2515,4 +2535,321 @@ async fn a_session_in_its_own_workflow_reports_once_its_work_is_done() {
         .collect();
     assert_eq!(reports, ["final"]);
     assert!(dirs.work.join("input-closed").exists());
+}
+
+/// What Claude Code writes on stderr as its spend cap stops a session's background agents.
+const CAP_NOTE: &str = "Budget limit reached ($0.68 of $0.66); stopping background agents.";
+
+/// Claude Code 2.1.301's lines for a workflow it starts and then stops, as its spend limit
+/// stops one: the turn's result comes at once, it says on stderr that the cap stops the
+/// workflow, and the stopped workflow is never told to the model, so no turn follows it.
+fn stopped_workflow_lines() -> String {
+    let stopped = [
+        r#"{"type":"system","subtype":"task_updated","task_id":"w1","patch":{"status":"killed","end_time":1},"session_id":"cc-1"}"#,
+        r#"{"type":"system","subtype":"task_notification","task_id":"w1","tool_use_id":"toolu_1","status":"stopped","summary":"Fix the rounding","session_id":"cc-1"}"#,
+        r#"{"type":"system","subtype":"background_tasks_changed","tasks":[],"session_id":"cc-1"}"#,
+    ];
+    let note = format!("{} >&2", echo(CAP_NOTE));
+    [started_workflow_lines(), note, stopped.map(echo).join("; ")].join("; ")
+}
+
+/// Claude Code 2.1.301's lines for a turn that starts its own workflow: the turn's result comes
+/// as soon as the workflow runs in the background.
+fn started_workflow_lines() -> String {
+    [
+        r#"{"type":"system","subtype":"init","session_id":"cc-1","tools":["Read","Workflow","mcp__argonauts_status__argonauts_report"],"mcp_servers":[{"name":"argonauts_status","status":"connected"}],"model":"claude-haiku-5-5","claude_code_version":"2.1.301"}"#,
+        r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"w1","task_type":"local_workflow","description":"Fix the rounding"}],"session_id":"cc-1"}"#,
+        r#"{"type":"system","subtype":"task_started","task_id":"w1","tool_use_id":"toolu_1","description":"Fix the rounding","task_type":"local_workflow","workflow_name":"fix-money-rounding","session_id":"cc-1"}"#,
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"The workflow is running in the background.","stop_reason":"end_turn","terminal_reason":"completed","num_turns":3,"total_cost_usd":0.4274356,"usage":{"input_tokens":10,"output_tokens":5},"session_id":"cc-1"}"#,
+    ]
+    .map(echo)
+    .join("; ")
+}
+
+/// Stops a session once its first turn has its result, while the workflow that turn started
+/// runs on in the background.
+async fn stop_while_its_workflow_runs(
+    control: SessionControl,
+    own_workflow: bool,
+) -> argonauts_core::events::session::SessionEnd {
+    let dirs = Dirs::new();
+    let script = format!(
+        "IFS= read -r first; {}; while IFS= read -r line; do :; done",
+        started_workflow_lines(),
+    );
+    let adapter = TestAdapter::new(&script)
+        .with_send_now()
+        .with_parser(|| ClaudeCodeAdapter.parser());
+    let h = TestDriver::new(adapter);
+    let mut spec = dirs.spec("fix the rounding");
+    if own_workflow {
+        spec.json_schema = Some(serde_json::json!({"type": "object"}));
+        spec.cli_workflow.ultracode = true;
+    }
+    let mut handle = h.worker.start(spec).await.unwrap();
+    let seen = read_until(&mut handle.events, |e| {
+        matches!(e, RunnerEvent::Agent(AgentEvent::Result { .. }))
+    })
+    .await;
+    handle.control.send(control).await.unwrap();
+    finish(seen, handle).await.1
+}
+
+/// A turn that starts the CLI's own workflow has its result while the workflow runs on, so a
+/// pause or a stop then cuts the work off: the session ends paused or stopped, to carry on
+/// when resumed, never completed.
+#[tokio::test]
+async fn a_session_stopped_while_its_own_workflow_runs_ends_paused_or_stopped() {
+    let paused = stop_while_its_workflow_runs(SessionControl::StopAfterTool, true).await;
+    assert_eq!(paused.reason, EndReason::Paused);
+    assert_eq!(paused.structured, None);
+    let stopped = stop_while_its_workflow_runs(SessionControl::Stop, true).await;
+    assert_eq!(stopped.reason, EndReason::Stopped);
+}
+
+/// A session that owes no report is cut off all the same while its CLI's workflow runs.
+#[tokio::test]
+async fn a_session_stopped_while_its_cli_workflow_runs_is_stopped() {
+    let end = stop_while_its_workflow_runs(SessionControl::Stop, false).await;
+    assert_eq!(end.reason, EndReason::Stopped);
+}
+
+/// Claude Code 2.1.301's lines for a command it ran in the background and stopped at its
+/// deadline: the notification says stopped, yet the command is told to the model, in a turn of
+/// Claude Code's own that comes after the runner took the task as untold.
+fn stopped_command_lines() -> [String; 2] {
+    let started = [
+        r#"{"type":"system","subtype":"init","session_id":"cc-1","tools":["Read","Bash"],"mcp_servers":[],"model":"claude-haiku-5-5","claude_code_version":"2.1.301"}"#,
+        r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1","task_type":"local_bash","description":"Run the tests"}],"session_id":"cc-1"}"#,
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"The tests run in the background.","num_turns":2,"total_cost_usd":0.21,"usage":{"input_tokens":10,"output_tokens":5},"session_id":"cc-1"}"#,
+        r#"{"type":"system","subtype":"task_notification","task_id":"b1","status":"stopped","summary":"Run the tests","session_id":"cc-1"}"#,
+        r#"{"type":"system","subtype":"background_tasks_changed","tasks":[],"session_id":"cc-1"}"#,
+    ];
+    let told = [
+        r#"{"type":"system","subtype":"init","session_id":"cc-1","tools":["Read","Bash"],"mcp_servers":[],"model":"claude-haiku-5-5","claude_code_version":"2.1.301"}"#,
+        r#"{"type":"assistant","message":{"model":"claude-haiku-5-5","id":"msg_2","type":"message","role":"assistant","content":[{"type":"text","text":"The test run was stopped."}],"usage":{"input_tokens":5,"output_tokens":7}},"parent_tool_use_id":null,"session_id":"cc-1"}"#,
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"The test run was stopped.","num_turns":1,"total_cost_usd":0.23,"usage":{"input_tokens":5,"output_tokens":7},"session_id":"cc-1"}"#,
+    ];
+    [started.map(echo).join("; "), told.map(echo).join("; ")]
+}
+
+/// A command Claude Code stopped at its deadline is told to the model after all. Its turn comes
+/// after the input closed, and the session ends with that turn's words.
+#[tokio::test]
+async fn a_command_stopped_at_its_deadline_and_told_after_the_input_closed_completes() {
+    let dirs = Dirs::new();
+    let [started, told] = stopped_command_lines();
+    let script = format!(
+        "IFS= read -r first; {started}; while IFS= read -r line; do :; done; : > input-closed; \
+         {told}"
+    );
+    let adapter = TestAdapter::new(&script)
+        .with_send_now()
+        .with_parser(|| ClaudeCodeAdapter.parser());
+    let h = TestDriver::new(adapter);
+    let (_, end) = collect(h.worker.start(dirs.spec("run the tests")).await.unwrap()).await;
+
+    assert!(dirs.work.join("input-closed").exists());
+    assert_eq!(end.reason, EndReason::Completed);
+    assert_eq!(
+        end.result_text.as_deref(),
+        Some("The test run was stopped.")
+    );
+}
+
+/// A session that owes its report is asked for it once when the stopped command leaves, and
+/// the told turn that comes before the answer neither asks again nor takes the report's place.
+#[tokio::test]
+async fn a_session_owing_its_report_is_asked_once_around_a_told_command() {
+    let dirs = Dirs::new();
+    let report = dirs.session.join("report.json");
+    let report = report.display();
+    let [started, told] = stopped_command_lines();
+    let script = format!(
+        "IFS= read -r first; {started}; IFS= read -r asked; printf '%s\\n' \"$asked\" >> got-input; \
+         {told}; while IFS= read -r line; do printf '%s\\n' \"$line\" >> got-input; done; \
+         : > input-closed; echo '{{\"status\":\"done\"}}' > '{report}'; {}",
+        echo(
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"Reported.","num_turns":1,"total_cost_usd":0.25,"usage":{"input_tokens":5,"output_tokens":3},"session_id":"cc-1"}"#
+        ),
+    );
+    let adapter = TestAdapter::new(&script)
+        .with_send_now()
+        .with_parser(|| ClaudeCodeAdapter.parser());
+    let h = TestDriver::new(adapter);
+    let mut spec = dirs.spec("fix the rounding");
+    spec.json_schema = Some(serde_json::json!({"type": "object"}));
+    spec.cli_workflow.ultracode = true;
+    let (_, end) = collect(h.worker.start(spec).await.unwrap()).await;
+
+    assert!(dirs.work.join("input-closed").exists());
+    assert_eq!(
+        dirs.read("got-input").matches("argonauts_report").count(),
+        1
+    );
+    assert_eq!(end.reason, EndReason::Completed);
+    assert_eq!(end.structured, Some(serde_json::json!({"status": "done"})));
+}
+
+/// A session whose turn is done with nothing left in the background finished before the stop.
+#[tokio::test]
+async fn a_session_stopped_after_its_work_is_done_completed() {
+    let dirs = Dirs::new();
+    let script = format!("{}; exec sleep 30", echo(&result("Done.")));
+    let h = TestDriver::new(TestAdapter::new(&script));
+    let mut handle = h.worker.start(dirs.spec("fix the rounding")).await.unwrap();
+    let seen = read_until(&mut handle.events, |e| {
+        matches!(e, RunnerEvent::Agent(AgentEvent::Result { .. }))
+    })
+    .await;
+    handle.control.send(SessionControl::Stop).await.unwrap();
+    let (_, end) = finish(seen, handle).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    assert_eq!(end.result_text.as_deref(), Some("Done."));
+}
+
+/// The result of a turn that Claude Code ended at its own spend cap. Its totals are the
+/// session's whole, with what the agents of the workflow it stopped spent after the first
+/// result.
+const PAST_THE_CAP: &str = r#"{"type":"result","subtype":"error_max_budget_usd","is_error":true,"num_turns":1,"total_cost_usd":0.69,"usage":{"input_tokens":0,"output_tokens":0},"modelUsage":{"claude-haiku-5-5":{"inputTokens":24,"outputTokens":3100,"cacheReadInputTokens":1093000,"cacheCreationInputTokens":366000,"costUSD":0.69}},"session_id":"cc-1"}"#;
+
+/// A session in its own workflow whose workflow Claude Code stopped is asked for its report at
+/// once rather than waiting for a turn that never comes, and ends with its input closed. Claude
+/// Code checks its cap before each request, so the ask costs nothing, and its result brings
+/// all the session spent: the session ends at its spend limit with that.
+#[tokio::test]
+async fn a_session_whose_own_workflow_was_stopped_is_asked_for_its_report_and_ends() {
+    let dirs = Dirs::new();
+    let script = format!(
+        "IFS= read -r first; {}; IFS= read -r asked; printf '%s\\n' \"$asked\" >> got-input; \
+         {}; while IFS= read -r line; do :; done; : > input-closed",
+        stopped_workflow_lines(),
+        echo(PAST_THE_CAP),
+    );
+    let adapter = TestAdapter::new(&script)
+        .with_send_now()
+        .with_parser(|| ClaudeCodeAdapter.parser());
+    let h = TestDriver::new(adapter);
+    let mut spec = dirs.spec("fix the rounding");
+    spec.json_schema = Some(serde_json::json!({"type": "object"}));
+    spec.cli_workflow.ultracode = true;
+    let (events, end) = collect(h.worker.start(spec).await.unwrap()).await;
+
+    assert!(dirs.read("got-input").contains("argonauts_report"));
+    assert!(dirs.work.join("input-closed").exists());
+    let results = agent_events(&events)
+        .into_iter()
+        .filter(|e| matches!(e, AgentEvent::Result { .. }))
+        .count();
+    assert_eq!(results, 2);
+    assert_eq!(
+        end.reason,
+        EndReason::LimitHit {
+            dimension: LimitDimension::Spend
+        }
+    );
+    // Claude Code's own total stands over the lesser figure its note on stderr gives.
+    assert!((end.spend.cost_usd - 0.69).abs() < 1e-9, "{:?}", end.spend);
+    assert!(!end.spend.cost_estimated, "{:?}", end.spend);
+}
+
+/// A session that owes no report closes its input as soon as the stopped workflow is gone.
+#[tokio::test]
+async fn a_session_whose_workflow_was_stopped_closes_its_input_at_once() {
+    let dirs = Dirs::new();
+    let script = format!(
+        "IFS= read -r first; {}; while IFS= read -r line; do :; done; : > input-closed",
+        stopped_workflow_lines(),
+    );
+    let adapter = TestAdapter::new(&script)
+        .with_send_now()
+        .with_parser(|| ClaudeCodeAdapter.parser());
+    let h = TestDriver::new(adapter);
+    let (_events, end) =
+        collect(h.worker.start(dirs.spec("fix the rounding")).await.unwrap()).await;
+
+    assert!(dirs.work.join("input-closed").exists());
+    assert_eq!(end.reason, EndReason::Completed);
+    assert_eq!(
+        end.result_text.as_deref(),
+        Some("The workflow is running in the background.")
+    );
+}
+
+/// What a session's background work spent after its last result is in no result when Claude
+/// Code's cap stops that work and the session ends with no turn after it. The session is
+/// counted what Claude Code's note on stderr says, not the $0.43 of its last result, and the
+/// last reading the run takes says so too.
+#[tokio::test]
+async fn a_session_whose_cap_stopped_its_background_work_counts_what_the_cap_says() {
+    let dirs = Dirs::new();
+    let script = format!(
+        "IFS= read -r first; {}; while IFS= read -r line; do :; done; : > input-closed",
+        stopped_workflow_lines(),
+    );
+    let adapter = TestAdapter::new(&script)
+        .with_send_now()
+        .with_parser(|| ClaudeCodeAdapter.parser());
+    let h = TestDriver::new(adapter);
+    let (events, end) = collect(h.worker.start(dirs.spec("fix the rounding")).await.unwrap()).await;
+
+    assert_eq!(end.reason, EndReason::Completed);
+    assert!((end.spend.cost_usd - 0.675).abs() < 1e-9, "{:?}", end.spend);
+    assert!(end.spend.cost_estimated, "{:?}", end.spend);
+    let last = session_events(&events)
+        .into_iter()
+        .rev()
+        .find_map(|event| match event {
+            SessionEvent::Limit(LimitEvent::Spend(status)) => Some(status.spend.cost_usd),
+            _ => None,
+        });
+    assert!(
+        last.is_some_and(|usd| (usd - 0.675).abs() < 1e-9),
+        "{last:?}"
+    );
+}
+
+/// A request billed past the session's limit stops the session at that request, before its
+/// turn's result. This is Claude Code 2.1.301's first request of a run session: 361,887 tokens
+/// of prompt, written to the cache for an hour, which a flat price puts at a tenth of its bill.
+#[tokio::test]
+async fn a_request_billed_past_the_limit_stops_the_session_at_that_request() {
+    let dirs = Dirs::new();
+    let init = r#"{"type":"system","subtype":"init","session_id":"cc-1","tools":["Read"],"mcp_servers":[],"model":"claude-haiku-5-5","claude_code_version":"2.1.301"}"#;
+    let start = r#"{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-haiku-5-5","id":"msg_1","type":"message","role":"assistant","content":[],"usage":{"input_tokens":2,"cache_creation_input_tokens":361885,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":361885},"output_tokens":2}}},"session_id":"cc-1"}"#;
+    let script = format!(
+        "IFS= read -r first; {}; {}; while IFS= read -r line; do :; done; : > input-closed",
+        echo(init),
+        echo(start),
+    );
+    let adapter = TestAdapter::new(&script)
+        .with_send_now()
+        .with_parser(|| ClaudeCodeAdapter.parser());
+    let h = TestDriver::new(adapter);
+    let mut spec = dirs.spec("plan the change");
+    spec.limits.limit = Some(LimitAmount {
+        unit: LimitUnit::Usd,
+        amount: 0.2255,
+    });
+    let (events, end) = collect(h.worker.start(spec).await.unwrap()).await;
+
+    assert_eq!(
+        end.reason,
+        EndReason::LimitHit {
+            dimension: LimitDimension::Spend
+        }
+    );
+    assert!(dirs.work.join("input-closed").exists());
+    // The reading the run learns what such a session costs to open from.
+    let first = session_events(&events)
+        .into_iter()
+        .find_map(|event| match event {
+            SessionEvent::Limit(LimitEvent::Spend(status)) if status.spend.cost_usd > 0.0 => {
+                Some(status.spend)
+            }
+            _ => None,
+        });
+    let first = first.expect("a spend reading");
+    assert!((first.cost_usd - 0.361891).abs() < 1e-9, "{first:?}");
+    assert!(first.cost_estimated);
 }

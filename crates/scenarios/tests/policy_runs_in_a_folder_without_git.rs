@@ -66,13 +66,13 @@ fn a_run_keeps_a_hidden_history_and_writes_its_work_back() -> anyhow::Result<()>
     scenario.shot(&pty, "policy_runs_in_a_folder_without_git")?;
 
     // The conversation says where the work went and what it changed, and the run that ended
-    // keeps its row under the input for a while, saying the same of where.
+    // keeps its row under the input for a while, its name in words, saying the same of where.
     pty.wait_for(
         r"Written into your folder · 1 file \+1 \u{2212}0 · history kept by Argonauts",
         WAIT,
     )?;
     pty.wait_for(
-        r"\u{2714} \S+ +\u{25b0}+  2/2 · \S+ · \u{2193} \S+ tokens · written into your folder",
+        r"\u{2714} \S+(?: \S+)* +\u{25b0}+  2/2 · \S+ · \u{2193} \S+ tokens · written into your folder",
         WAIT,
     )?;
     Ok(())

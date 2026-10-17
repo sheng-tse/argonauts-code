@@ -359,7 +359,8 @@ async fn the_status_tab_counts_each_settings_file_and_says_how_the_folder_is_set
         .iter()
         .find(|file| file.layer == "global")
         .unwrap_or_else(|| panic!("{:#?}", view.settings));
-    assert_eq!(global.keys, 1);
+    // The key the test wrote, and the workflow a setup names.
+    assert_eq!(global.keys, 2);
     assert!(global.path.ends_with("config.toml"), "{}", global.path);
     assert!(
         view.settings

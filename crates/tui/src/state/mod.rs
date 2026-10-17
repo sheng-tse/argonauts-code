@@ -17,8 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use argonauts_core::agent_panel::AgentPanelRows;
 use argonauts_core::api::RunSummary;
 use argonauts_core::app::{
-    AgentReady, AppChoice, AppEvent, AppMode, ConversationEvent, HeaderAndBottomLine, ShellEvent,
-    UiCommand, ViewData,
+    AgentReady, AppChoice, AppEvent, AppMode, ChoiceKind, ConversationEvent, HeaderAndBottomLine,
+    NOT_CHANGED, ShellEvent, UiCommand, ViewData,
 };
 use argonauts_core::cli_commands::CliCommandSet;
 use argonauts_core::display_names::DisplayNames;
@@ -42,7 +42,7 @@ pub use goals::GoalBoard;
 pub use plan_usage::binding_reading;
 pub use run::{
     AgentWait, CheckBrief, MergeTotals, OpenApproval, RunState, RunTotals, StepState, TaskRow,
-    WorkflowState,
+    WorkflowState, phase_at_work,
 };
 pub use session::{Doing, Retrying, SessionState, SessionStatus, ToolRecord, task_label};
 
@@ -75,9 +75,14 @@ pub struct AppState {
     pub talk: talk_time::TalkTime,
     /// Open app choices, oldest first.
     pub choices: Vec<AppChoice>,
+    /// What became of each setting change a view sent, in order: saved, or left as it was at
+    /// its question. A view that waits to say a change reads it here.
+    pub setting_outcomes: Vec<SettingOutcome>,
     /// The `!` command that runs now, by its id, so Ctrl+C stops it.
     pub shell: Option<u32>,
     pub replay: Replay,
+    /// The last event of each run this screen took in, live, replayed or drawn from its record.
+    pub seen: BTreeMap<RunId, u64>,
     /// The event at hand is no part of the replay going on: another run's, streaming beside
     /// the one replaying, or a recap, which no replay sends. It prints as it comes.
     pub(crate) beside_replay: bool,
@@ -143,7 +148,8 @@ pub struct TerminalInfo {
 }
 
 /// Events between `Attached` and `ReplayDone` rebuild the screen quietly: no bell, no
-/// commands, and only collapsed summaries in scrollback.
+/// commands, and nothing new in scrollback. Those between `PastBegins` and `PastDrawn` print as
+/// they did live, and nothing they say happens again.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Replay {
     #[default]
@@ -151,6 +157,16 @@ pub enum Replay {
     Replaying {
         run: RunId,
     },
+    Past,
+}
+
+/// What became of a setting change a view sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingOutcome {
+    /// Saved, with the value it now has.
+    Changed { key: String, value: String },
+    /// Its question was answered or set aside with nothing changed.
+    NotChanged,
 }
 
 /// A question that waits on you, from a run's approval or an app choice.
@@ -231,8 +247,16 @@ impl AppState {
                 self.follow_off_screen();
             }
             AppEvent::Run { event } => {
+                let seen = self.seen.entry(event.run_id.clone()).or_insert(event.seq);
+                *seen = (*seen).max(event.seq);
                 self.apply_run(event);
                 self.note_run_artifact(event);
+            }
+            AppEvent::PastBegins => self.replay = Replay::Past,
+            AppEvent::PastDrawn => {
+                if self.replay == Replay::Past {
+                    self.replay = Replay::Live;
+                }
             }
             AppEvent::Conversation { event } => {
                 // A conversation turn's plan usage reading is as good as a run's, so the bottom
@@ -267,10 +291,26 @@ impl AppState {
                 self.choices.push(choice.clone());
                 self.wait_on(Waiting::Choice(choice.id.clone()));
             }
-            AppEvent::ChoiceClosed { id, .. } => {
+            AppEvent::ChoiceClosed { id, outcome } => {
+                let asked_of_a_setting = self.choices.iter().any(|choice| {
+                    choice.id == *id
+                        && matches!(
+                            choice.kind,
+                            ChoiceKind::SettingScope | ChoiceKind::ConfirmSafetySetting
+                        )
+                });
+                if asked_of_a_setting && outcome == NOT_CHANGED {
+                    self.setting_outcomes.push(SettingOutcome::NotChanged);
+                }
                 self.choices.retain(|choice| choice.id != *id);
                 self.waiting
                     .retain(|waiting| *waiting != Waiting::Choice(id.clone()));
+            }
+            AppEvent::SettingChanged { key, value, .. } => {
+                self.setting_outcomes.push(SettingOutcome::Changed {
+                    key: key.clone(),
+                    value: value.clone(),
+                });
             }
             AppEvent::Narrator { line } => {
                 self.saw(line.ts);
@@ -337,9 +377,7 @@ impl AppState {
             AppEvent::TakeOver { .. }
             | AppEvent::RunInTerminal { .. }
             | AppEvent::Recap { .. }
-            | AppEvent::SettingChanged { .. }
             | AppEvent::RepoFiles { .. }
-            | AppEvent::CondensedReplay { .. }
             | AppEvent::Report { .. }
             | AppEvent::Switched { .. }
             | AppEvent::Templates { .. }
@@ -347,12 +385,39 @@ impl AppState {
             | AppEvent::Record { .. }
             | AppEvent::Continued { .. }
             | AppEvent::Hint { .. }
+            | AppEvent::SettingRefused { .. }
             | AppEvent::Exit => {}
         }
     }
 
+    /// Nothing the event at hand says happens again: no question opens, no view, no bell.
     pub fn replaying(&self) -> bool {
+        matches!(self.replay, Replay::Replaying { .. } | Replay::Past) && !self.beside_replay
+    }
+
+    /// The event at hand is part of a past drawn again, between `PastBegins` and `PastDrawn`.
+    pub fn drawing_past(&self) -> bool {
+        self.replay == Replay::Past && !self.beside_replay
+    }
+
+    /// The event at hand is one this screen drew already, so its items only join the history.
+    pub fn history_only(&self) -> bool {
         matches!(self.replay, Replay::Replaying { .. }) && !self.beside_replay
+    }
+
+    /// `event` is history this screen took in already, as a stream opened again or a record
+    /// drawn again repeats. Live events never repeat.
+    pub fn repeats(&self, event: &argonauts_core::events::RunEvent) -> bool {
+        let history = match &self.replay {
+            Replay::Replaying { run } => *run == event.run_id,
+            Replay::Past => true,
+            Replay::Live => false,
+        };
+        history
+            && self
+                .seen
+                .get(&event.run_id)
+                .is_some_and(|seen| event.seq <= *seen)
     }
 
     pub fn attached_run(&self) -> Option<&RunState> {
@@ -487,10 +552,12 @@ impl AppState {
         }
     }
 
-    /// Agents running in every run.
+    /// Agents running in every run, but one whose workflow is still being written, which
+    /// shows nothing of itself but the working line.
     pub fn agents_running(&self) -> usize {
         self.runs
             .values()
+            .filter(|run| run.shape_known())
             .map(|run| run.running_sessions().count())
             .sum()
     }
@@ -538,6 +605,7 @@ impl AppState {
                 .and_then(|run| run.sessions.get_mut(key))
         {
             session.model_assumed = self.names.by_default(&session.worker);
+            session.model_guessed = session.worker.model.is_none();
             session.worker = self.names.running(&session.worker);
         }
         if let Some(id) = opened {
