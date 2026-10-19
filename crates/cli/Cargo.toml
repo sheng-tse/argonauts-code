@@ -1,6 +1,8 @@
 [package]
 name = "argonauts-code"
-description = "The argonauts command line tool."
+description = "Orchestrate any mix of coding agents and models, from Claude Code and Codex to open-weight models on your own machine."
+repository.workspace = true
+homepage.workspace = true
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +12,10 @@ publish.workspace = true
 [[bin]]
 name = "argonauts"
 path = "src/main.rs"
+
+# Released by dist even though the workspace isn't published to crates.io.
+[package.metadata.dist]
+dist = true
 
 [dependencies]
 anyhow.workspace = true

@@ -29,6 +29,8 @@ edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
 publish = false
+repository = "https://github.com/sheng-tse/argonauts-code"
+homepage = "https://github.com/sheng-tse/argonauts-code"
 
 [workspace.dependencies]
 argonauts-core = { path = "crates/core", version = "0.0.1" }
@@ -141,3 +143,8 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.vt100]
 opt-level = 3
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
