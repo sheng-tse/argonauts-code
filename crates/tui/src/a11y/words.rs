@@ -139,11 +139,18 @@ pub fn duration(ms: u64) -> String {
     }
 }
 
+/// A token count as the screen writes it, so a million is heard as `1M tokens`.
 pub fn tokens(count: u64) -> String {
-    match count {
-        0..1000 => format!("{count} tokens"),
-        _ => format!("{:.1}k tokens", count as f64 / 1000.0),
-    }
+    format!("{} tokens", crate::format::tokens(count))
+}
+
+/// A count beside a window and the window, in the window's divisor: `9.3k tokens of 64k`.
+pub fn tokens_of_window(count: u64, window: u64) -> String {
+    format!(
+        "{} tokens of {}",
+        crate::format::tokens_beside(count, window),
+        crate::format::window(window)
+    )
 }
 
 /// The verbosity in effect: the latest `[ui]` section, or normal before one arrives.
@@ -185,6 +192,9 @@ mod tests {
         assert_eq!(duration(3_900_000), "1h05m");
         assert_eq!(tokens(950), "950 tokens");
         assert_eq!(tokens(18_100), "18.1k tokens");
+        assert_eq!(tokens(212_000), "212k tokens");
+        assert_eq!(tokens(1_000_000), "1M tokens");
+        assert_eq!(tokens_of_window(9_551, 65_536), "9.3k tokens of 64k");
     }
 
     #[test]

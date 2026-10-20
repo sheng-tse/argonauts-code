@@ -119,6 +119,8 @@ pub struct UiSettings {
     pub workflow: WorkflowViewSettings,
     /// `ascii` for fonts that draw `●`, `◇`, `✔`, `⏎`, or `⏺` at the wrong width.
     pub glyphs: Glyphs,
+    /// How the welcome header draws the mode's mascot.
+    pub mascot: MascotDrawing,
     /// Cells for East Asian ambiguous-width characters, 1 or 2, like vim's `ambiwidth`.
     pub ambiguous_width: u8,
     /// Say once at start-up when an installed agent CLI is newer than the one Argonauts Code
@@ -247,6 +249,19 @@ pub enum Glyphs {
     Ascii,
 }
 
+/// How the welcome header draws the mode's mascot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MascotDrawing {
+    /// A picture where the terminal draws one (Ghostty, Kitty, WezTerm, iTerm2), block cells
+    /// elsewhere.
+    Auto,
+    /// Block cells in every terminal.
+    Blocks,
+    /// No mascot.
+    Off,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VerbTheme {
@@ -292,6 +307,7 @@ impl Default for UiSettings {
             panel: PanelSettings::default(),
             workflow: WorkflowViewSettings::default(),
             glyphs: Glyphs::Unicode,
+            mascot: MascotDrawing::Auto,
             ambiguous_width: 1,
             newer_cli_notice: true,
             plugin_output: PluginOutput::Show,

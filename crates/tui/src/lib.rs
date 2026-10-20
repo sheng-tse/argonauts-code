@@ -14,6 +14,7 @@ pub mod history;
 pub mod keywords;
 pub mod kit;
 pub mod markdown;
+pub mod mascot;
 pub mod model;
 pub mod render;
 pub mod terminal;

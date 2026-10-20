@@ -8,11 +8,11 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 
+use argonauts_core::answer_format::mended;
 use jsonschema::Validator;
 use rmcp::model::JsonObject;
 use serde_json::{Value, json};
 
-use super::leaked;
 use crate::ReportTool;
 
 /// Invalid calls answered with their errors. Later invalid calls are refused, but a valid
@@ -71,7 +71,7 @@ impl ReportState {
         if problems.is_empty() {
             return self.write(report);
         }
-        if let Some(mended) = leaked::mended(report, &self.tool.schema)
+        if let Some(mended) = mended(report, &self.tool.schema)
             && self.problems(&mended).is_empty()
         {
             return self.write(&mended);

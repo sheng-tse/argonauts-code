@@ -316,7 +316,12 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "endpoints.*.max_concurrency",
-        "Most requests to this endpoint at once",
+        "Most requests to this server at once, across every model on it. Unset, a local \
+         server takes its own number",
+    ),
+    (
+        "endpoints.*.free_memory",
+        "Free the local models Argonauts Code loaded here once no run or conversation uses them",
     ),
     (
         "endpoints.*.timeout",
@@ -1203,13 +1208,15 @@ fn later_keys() -> Vec<SettingMeta> {
         meta(
             "sessions.context",
             "How much context a session may hold: \"largest\" is the largest window each CLI \
-             offers for the model, and a token count such as \"200k\" lowers it for cheaper turns",
+             offers for the model, and a token count such as \"200k\" lowers it for cheaper \
+             turns. A typed k is a thousand, so \"64k\" is 64,000",
             &[],
         ),
         meta(
             "sessions.rotate_at",
             "When a session starts fresh with a fallback note: a share of its context window \
-             such as 0.9, which is near its end, or a token count such as \"200k\"",
+             such as 0.9, which is near its end, or a token count such as \"200k\". A typed k \
+             is a thousand, so \"64k\" is 64,000",
             &[],
         ),
         // The panel under the bottom line
@@ -1237,6 +1244,12 @@ fn later_keys() -> Vec<SettingMeta> {
             "ui.ambiguous_width",
             "Cells for East Asian ambiguous-width characters",
             &["1", "2"],
+        ),
+        words(
+            "ui.mascot",
+            "The welcome header's mascot: a picture where the terminal draws one and block cells \
+             elsewhere, block cells always, or none",
+            &["auto", "blocks", "off"],
         ),
         meta(
             "approvals.rules.merge.allow_debt",

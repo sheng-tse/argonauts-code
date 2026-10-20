@@ -86,6 +86,10 @@ impl Adapter for AntigravityCli {
         "agy"
     }
 
+    fn holds_answer_format(&self) -> bool {
+        true
+    }
+
     fn command(&self, req: &SessionRequest) -> anyhow::Result<CommandSpec> {
         build_command(self.binary(), req)
     }
@@ -161,8 +165,9 @@ impl Adapter for AntigravityCli {
         tweaks::user_hooks_off()
     }
 
-    fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
-        command::interactive_resume_command(self.binary(), session_id, workdir)
+    fn interactive_resume(&self, req: &SessionRequest) -> Option<CommandSpec> {
+        let session_id = req.resume_session.as_deref()?;
+        command::interactive_resume_command(self.binary(), session_id, &req.workdir)
     }
 
     /// agy reads the project's AGENTS.md as its rules.
@@ -379,7 +384,10 @@ mod tests {
     #[test]
     fn take_over_resumes_the_conversation_in_the_worktree() {
         let spec = AntigravityCli
-            .interactive_resume("055a398f", Path::new("/work/task-001"))
+            .interactive_resume(&SessionRequest::reopening(
+                "055a398f",
+                Path::new("/work/task-001"),
+            ))
             .unwrap();
         assert_eq!(spec.program, "agy");
         assert_eq!(spec.args, ["--conversation", "055a398f"]);

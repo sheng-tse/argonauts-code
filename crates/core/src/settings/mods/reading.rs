@@ -95,11 +95,12 @@ impl ModPart {
     }
 }
 
-/// `7` for 7.0, `0.5` for 0.5, `1.2k` for 1234, `3.4M` for 3,400,000.
+/// `7` for 7.0, `0.5` for 0.5, `1.2k` for 1234, `3.4M` for 3,400,000, `1M` for a million.
 pub fn plain_number(value: f64) -> String {
     let abs = value.abs();
     if abs >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
+        let millions = format!("{:.1}", value / 1_000_000.0);
+        format!("{}M", millions.strip_suffix(".0").unwrap_or(&millions))
     } else if abs >= 10_000.0 {
         format!("{:.0}k", value / 1_000.0)
     } else if abs >= 1_000.0 {
@@ -260,7 +261,7 @@ impl ModReading {
             ModSource::Builtin {
                 source: BuiltinSource::Context,
             } => Self {
-                summary: "212k of 1.0M".to_owned(),
+                summary: "212k of 1M".to_owned(),
                 parts: vec![
                     part("used", 212_000.0, "212k").colored(ModColor::Blue),
                     part("free", 788_000.0, "788k").colored(ModColor::Grey),
@@ -454,6 +455,8 @@ mod tests {
             (1234.0, "1.2k"),
             (840_000.0, "840k"),
             (3_400_000.0, "3.4M"),
+            (1_000_000.0, "1M"),
+            (12_000_000.0, "12M"),
         ] {
             assert_eq!(plain_number(value), words);
         }
@@ -466,7 +469,7 @@ mod tests {
         let sample = |name: &str| {
             ModReading::sample_for(cards.iter().find(|card| card.name == name).unwrap())
         };
-        assert_eq!(sample("context").summary, "212k of 1.0M");
+        assert_eq!(sample("context").summary, "212k of 1M");
         assert_eq!(sample("plan-usage").parts[1].label, "Claude 7d");
         assert_eq!(sample("spend").summary, "~$1.86 today");
         assert_eq!(sample("tokens").parts.len(), 3);

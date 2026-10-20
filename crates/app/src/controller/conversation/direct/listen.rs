@@ -103,7 +103,7 @@ async fn answer(
         Ok(asked) if asked.token == token => {
             let (reply, answered) = oneshot::channel();
             let update = TurnUpdate::Asked {
-                turn,
+                turn: turn.clone(),
                 asked: Asked {
                     ask: asked.ask,
                     reply,
@@ -113,9 +113,11 @@ async fn answer(
                 return Ok(());
             }
             // The question closed without an answer, such as when the turn ended: a no.
-            answered
+            let reply = answered
                 .await
-                .unwrap_or_else(|_| AskReply::deny("The turn ended before the user answered."))
+                .unwrap_or_else(|_| AskReply::deny("The turn ended before the user answered."));
+            let _ = internal.send(Internal::Conversation(TurnUpdate::Answered { turn }));
+            reply
         }
         Ok(_) => AskReply {
             text: "That token doesn't belong to this turn.".to_owned(),
@@ -168,6 +170,11 @@ mod tests {
             .unwrap();
         let answer = client.await.unwrap();
         assert!(answer.text.contains("\"allow\""), "{answer:?}");
+        let Some(Internal::Conversation(TurnUpdate::Answered { turn })) = updates.recv().await
+        else {
+            panic!("the answer wasn't told to the loop");
+        };
+        assert_eq!(turn, TurnId::numbered(1));
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@ mod raw_log;
 mod replay;
 mod request;
 mod run;
+pub mod runtime_api;
 mod session;
 mod sse;
 mod stream;
@@ -17,8 +18,10 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use argonauts_core::CommandSpec;
+use argonauts_core::Paths;
 use argonauts_core::future::BoxFuture;
 use argonauts_core::limits::{HealthBoard, PlanUsageBoard};
+use argonauts_core::model_memory::{ModelMemory, NoModelMemory};
 use argonauts_core::names::{AgentId, ModelRef};
 use argonauts_core::registry::ModelRegistry;
 use argonauts_core::session_runner::{
@@ -26,7 +29,6 @@ use argonauts_core::session_runner::{
     SteerSupport, SubagentVisibility,
 };
 use argonauts_core::settings::agents::{EndpointSettings, StructuredMode};
-use tokio::sync::Semaphore;
 
 pub struct EndpointRunner {
     id: String,
@@ -38,8 +40,10 @@ pub struct EndpointRunner {
     health: Arc<dyn HealthBoard>,
     /// Built on first use and shared, so sessions reuse connections.
     client: OnceLock<reqwest::Client>,
-    /// `max_concurrency` requests at a time, across every session of this worker.
-    slots: Arc<Semaphore>,
+    /// What a local server holds for the run or conversation of each session.
+    memory: Arc<dyn ModelMemory>,
+    /// Where the server's request count is kept. `None` keeps it under `ARGONAUTS_HOME`.
+    home: Option<Paths>,
 }
 
 impl EndpointRunner {
@@ -64,8 +68,27 @@ impl EndpointRunner {
             plan_usage,
             health,
             client: OnceLock::new(),
-            slots: Arc::new(Semaphore::new(settings.max_concurrency.max(1) as usize)),
+            memory: Arc::new(NoModelMemory),
+            home: None,
         }
+    }
+
+    /// Notes what a local server holds before a session's first request, so a model Argonauts
+    /// loaded can be freed when its run or conversation ends.
+    pub fn with_memory(mut self, memory: Arc<dyn ModelMemory>) -> Self {
+        self.memory = memory;
+        self
+    }
+
+    /// Keeps the server's request count under this home instead of `ARGONAUTS_HOME`, as tests
+    /// do.
+    pub fn with_home(mut self, home: Paths) -> Self {
+        self.home = Some(home);
+        self
+    }
+
+    fn home(&self) -> Option<Paths> {
+        self.home.clone().or_else(|| Paths::from_env().ok())
     }
 
     pub fn settings(&self) -> &EndpointSettings {

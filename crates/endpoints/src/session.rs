@@ -8,12 +8,16 @@ use argonauts_core::events::session::{
     EndReason, InputPartKind, LaunchRecord, PromptVia, SessionInput, SessionStarted,
 };
 use argonauts_core::layout::session_files::RAW_STDOUT;
+use argonauts_core::model_memory::{Holder, Server};
 use argonauts_core::names::ModelRef;
+use argonauts_core::server_requests::ServerRequests;
 use argonauts_core::session_runner::{
     Access, RunnerError, RunnerKind, SessionControl, SessionHandle, SessionSpec,
 };
 use argonauts_core::settings::Span;
 use argonauts_core::settings::agents::{EndpointApi, StructuredMode};
+use argonauts_core::settings::endpoints::requests_at_once;
+use argonauts_core::window_size::{tokens_beside, window_words};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -61,6 +65,14 @@ pub(crate) async fn start(
         parts.push(part);
     }
     let url = request::url(&worker.id, settings);
+    let home = worker.home();
+    let requests = settings
+        .base_url
+        .as_deref()
+        .zip(home.as_ref())
+        .map(|(base_url, home)| {
+            ServerRequests::new(home, base_url, requests_at_once(&worker.id, settings, None))
+        });
     let effort = effort(worker, model.as_deref(), spec.effort.as_deref());
     let credentials = request::credentials(&worker.id, settings, &spec.env);
 
@@ -109,11 +121,18 @@ pub(crate) async fn start(
         queued: Vec::new(),
     };
 
+    let window = Window::of(worker, model.as_deref());
+    let brief: u64 = input
+        .parts
+        .iter()
+        .map(|part| u64::from(part.approx_tokens))
+        .sum();
     let plan = (|| {
         let url = url.map_err(|message| EndReason::StartFailed { message })?;
         let model = model.clone().ok_or_else(|| EndReason::StartFailed {
             message: format!("{} names no model", spec.model),
         })?;
+        window.check(brief, &model)?;
         let headers = headers(credentials?)?;
         let client = worker
             .client()
@@ -137,7 +156,7 @@ pub(crate) async fn start(
             api: settings.api,
             model,
             schema: spec.json_schema.clone(),
-            slots: worker.slots.clone(),
+            slots: requests,
             limits: limits(clock, &settings.timeout, spec.limits.max_minutes)?,
         })
     })();
@@ -152,12 +171,35 @@ pub(crate) async fn start(
         registry: worker.registry.clone(),
         events: events_tx,
         secrets,
+        window: window.held,
+        brief,
     };
     let (control, control_rx) = mpsc::channel::<SessionControl>(16);
     let (ended_tx, ended) = oneshot::channel();
+    // A local server says what it held before this session's first request, and llama-server
+    // how many requests it takes at once.
+    let mut plan = plan;
+    let local = Server::local(&worker.id, settings)
+        .zip(session.pricing.model.clone())
+        .filter(|_| plan.is_ok())
+        .map(|(server, model)| (server, model, Holder::of(spec.run.as_ref())));
+    let memory = worker.memory.clone();
+    let (id, settings) = (worker.id.clone(), settings.clone());
     tokio::spawn(async move {
+        if let Some((server, model, holder)) = &local {
+            let hold = memory.hold(server, model, holder).await;
+            if let (Some(reported), Ok(exchange), Some(home)) =
+                (hold.slots, plan.as_mut(), home.as_ref())
+            {
+                let number = requests_at_once(&id, &settings, Some(reported));
+                exchange.slots = Some(ServerRequests::new(home, &server.base_url, number));
+            }
+        }
         // `run` owns the events sender and drops it on return, so the end follows the last event.
         let end = run::run(session, started, input, plan, raw, control_rx, clock).await;
+        if let Some((server, model, _)) = &local {
+            memory.touch(server, model).await;
+        }
         let _ = ended_tx.send(end);
     });
     Ok(SessionHandle {
@@ -166,6 +208,43 @@ pub(crate) async fn start(
         control,
         ended,
     })
+}
+
+/// The windows the registry knows for the session's model.
+struct Window {
+    /// What a session on it is held to.
+    held: Option<u64>,
+    /// The most it takes, for a model its server sizes as it loads it.
+    most: Option<u64>,
+}
+
+impl Window {
+    fn of(worker: &EndpointRunner, model: Option<&str>) -> Self {
+        let entry = worker.registry.get(&ModelRef::new(
+            worker.worker.agent.clone(),
+            model.map(str::to_owned),
+        ));
+        let held = entry.as_ref().and_then(|entry| entry.session_window());
+        Self {
+            held,
+            most: held.or(entry.and_then(|entry| entry.context_window)),
+        }
+    }
+
+    /// A brief larger than the window is refused before it's sent, since the server would cut
+    /// it short.
+    fn check(&self, brief: u64, model: &str) -> Result<(), EndReason> {
+        match self.most {
+            Some(window) if brief > window => Err(EndReason::StartFailed {
+                message: format!(
+                    "the brief is about {} tokens, more than the {} window of {model}",
+                    tokens_beside(brief, window),
+                    window_words(window)
+                ),
+            }),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// Names the endpoint, the address, the model, and the variables the key and headers come
@@ -399,7 +478,7 @@ mod tests {
     fn one_at_a_time(server: &FakeOpenAi, timeout: &str, health: Arc<Signals>) -> EndpointRunner {
         let settings = EndpointSettings {
             base_url: Some(server.base_url()),
-            max_concurrency: 1,
+            max_concurrency: Some(1),
             timeout: Span::new(timeout),
             ..EndpointSettings::default()
         };
@@ -575,5 +654,34 @@ mod tests {
                 assert!(!detail.contains(KEY), "{detail}");
             }
         }
+    }
+
+    #[test]
+    fn a_brief_over_the_window_is_refused_before_it_is_sent() {
+        let window = Window {
+            held: Some(32_768),
+            most: Some(32_768),
+        };
+        assert_eq!(window.check(32_768, "gemma3:12b-32k"), Ok(()));
+        assert_eq!(
+            window.check(41_984, "gemma3:12b-32k"),
+            Err(EndReason::StartFailed {
+                message: "the brief is about 41k tokens, more than the 32k window of \
+                          gemma3:12b-32k"
+                    .to_owned()
+            })
+        );
+        // Sized as it loads: held to the most the model takes.
+        let open = Window {
+            held: None,
+            most: Some(262_144),
+        };
+        assert!(open.check(300_000, "qwen3-coder:30b").is_err());
+        assert_eq!(open.check(100_000, "qwen3-coder:30b"), Ok(()));
+        let unknown = Window {
+            held: None,
+            most: None,
+        };
+        assert_eq!(unknown.check(10_000_000, "m"), Ok(()));
     }
 }

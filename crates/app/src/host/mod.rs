@@ -4,6 +4,7 @@
 pub(crate) mod clis;
 mod door;
 pub(crate) mod log_views;
+pub(crate) mod memory;
 mod orphans;
 mod relay;
 mod reloader;
@@ -20,6 +21,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, anyhow, bail};
 use argonauts_core::control::{ControlReply, ControlRequest};
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::engine::{
     EngineContext, EngineExit, EventSink as _, RepoContext, RunEngine, Services,
 };
@@ -28,6 +30,7 @@ use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::hidden_git::CLEARED_STALE_LOCK;
 use argonauts_core::journal::{Journal, RunLock, read_all, read_since_snapshot};
 use argonauts_core::layout::run_files;
+use argonauts_core::model_memory::Holder;
 use argonauts_core::paths::write_private_file;
 use argonauts_core::settings::Settings;
 use argonauts_core::{Note, NoteLevel, Paths, RunId};
@@ -45,6 +48,7 @@ use self::sink::JournalSink;
 use crate::ancestry::{self, AgentMarkers};
 use crate::env::{AppEnv, FolderGit};
 use crate::live_registry::{self, LiveRunHost};
+use crate::model_memory::{ServerMemory, freed_line};
 use crate::run_files::{self as files, SettingsRecord, StartRecord};
 use crate::usage_ledger::UsageLedger;
 
@@ -160,8 +164,14 @@ pub(crate) async fn host_with(
     // the start failed first.
     let failed = HostExit::Crashed(String::new());
     host.settle(&mut queue, exit.as_ref().unwrap_or(&failed));
-    if let Ok(HostExit::Finished(_)) = &exit {
-        host.record_usage();
+    match &exit {
+        Ok(HostExit::Finished(_)) => {
+            host.record_usage();
+            host.free_models().await;
+        }
+        // The run goes on with a later host, which lets its models go as the run ends.
+        Ok(HostExit::Waiting(_)) => host.keep_models(),
+        _ => {}
     }
     if let Ok(serving) = serving {
         serving.stop().await;
@@ -640,6 +650,22 @@ impl Host {
                 NoteLevel::Warn,
                 format!("Couldn't check earlier auto-merges for reverts: {err:#}"),
             ),
+        }
+    }
+
+    /// A run that waits for you keeps the local models it used for the host that carries it
+    /// on.
+    fn keep_models(&self) {
+        ServerMemory::new(&self.options.paths).wait(&Holder::run(&self.run));
+    }
+
+    /// A finished run lets go of the local models it used. Each one it loaded that no other run
+    /// or conversation uses is freed, and the run's log says so.
+    async fn free_models(&self) {
+        let memory = ServerMemory::new(&self.options.paths);
+        let names = DisplayNames::default();
+        for freed in memory.release(&Holder::run(&self.run)).await {
+            self.note(NoteLevel::Info, freed_line(&names, &freed));
         }
     }
 
@@ -1175,6 +1201,47 @@ mod tests {
             "a resume writes no second RunStarted"
         );
         assert!(*seen.lock().unwrap() >= 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_run_frees_the_model_it_loaded_and_says_so() {
+        use argonauts_core::model_memory::{ModelMemory, Server};
+        use argonauts_testkit::{FakeKind, FakeModelServer};
+
+        let test = TestRun::new();
+        let ollama = FakeModelServer::start(FakeKind::Ollama, &["qwen3-coder:30b-64k"]).unwrap();
+        ollama.set_load(25_311_000_000, 65_536);
+        let server = Server {
+            endpoint: "ollama".to_owned(),
+            base_url: ollama.base_url(),
+            api_key_env: None,
+            free_memory: true,
+        };
+        let memory = ServerMemory::new(&test.paths);
+        memory
+            .hold(&server, "qwen3-coder:30b-64k", &Holder::run(&test.run))
+            .await;
+        memory.load(&server, "qwen3-coder:30b-64k").await;
+        memory.touch(&server, "qwen3-coder:30b-64k").await;
+
+        let exit = test
+            .host(test.options(Duration::from_secs(5), finish(RunOutcome::Merged)))
+            .await;
+        assert_eq!(exit, HostExit::Finished(RunOutcome::Merged));
+        assert!(ollama.loaded().is_empty());
+        let said: Vec<String> = test
+            .events()
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                RunEventKind::Note(note) => Some(note.text),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            said.iter()
+                .any(|text| text == "Freed Qwen3 Coder 30B 64K from Ollama (25 GB of RAM)"),
+            "{said:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

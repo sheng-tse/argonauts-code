@@ -59,8 +59,13 @@ pub fn from_error(
 
 /// A driven session's end: `end_turn` completes, `cancelled` is paused or stopped by who
 /// cancelled, `max_turn_requests` hit the tool-call limit, `max_tokens` and `refusal` are agent
-/// errors, a failure keeps its category, and closed pipes mid-turn are a crash.
-pub fn from_driver(stop: &DriverStop, cancelled: Option<CancelledBy>) -> EndReason {
+/// errors, a failure keeps its category, and closed pipes mid-turn are a crash. `model` is the
+/// model the session ran, which a refused model's reason names.
+pub fn from_driver(
+    stop: &DriverStop,
+    cancelled: Option<CancelledBy>,
+    model: Option<&str>,
+) -> EndReason {
     match stop {
         DriverStop::EndTurn => EndReason::Completed,
         DriverStop::Cancelled => match cancelled {
@@ -78,7 +83,7 @@ pub fn from_driver(stop: &DriverStop, cancelled: Option<CancelledBy>) -> EndReas
             category: ErrorCategory::Unknown,
             message: "refusal: the model refused to go on".to_owned(),
         },
-        DriverStop::Failed { category, message } => from_error(*category, message, None, None),
+        DriverStop::Failed { category, message } => from_error(*category, message, None, model),
         DriverStop::Disconnected => EndReason::Crashed {
             message: "the agent's pipes closed in the middle of a turn".to_owned(),
         },
@@ -244,7 +249,7 @@ mod tests {
             message: "no valid report".into(),
         };
         assert_eq!(
-            from_driver(&no_report, None),
+            from_driver(&no_report, None, None),
             EndReason::Crashed {
                 message: "no valid report".into()
             }
@@ -272,24 +277,35 @@ mod tests {
                 model: String::new()
             }
         );
+        // An ACP agent that refuses the model the session set.
+        let refused = DriverStop::Failed {
+            category: ErrorCategory::ModelUnavailable,
+            message: "the agent refused the model ollama/llama3.2: model not found".into(),
+        };
+        assert_eq!(
+            from_driver(&refused, None, Some("ollama/llama3.2")),
+            EndReason::ModelUnavailable {
+                model: "ollama/llama3.2".into()
+            }
+        );
     }
 
     #[test]
     fn driver_stops_map_to_reasons() {
         assert_eq!(
-            from_driver(&DriverStop::EndTurn, None),
+            from_driver(&DriverStop::EndTurn, None, None),
             EndReason::Completed
         );
         assert_eq!(
-            from_driver(&DriverStop::Cancelled, Some(CancelledBy::Pause)),
+            from_driver(&DriverStop::Cancelled, Some(CancelledBy::Pause), None),
             EndReason::Paused
         );
         assert_eq!(
-            from_driver(&DriverStop::Cancelled, Some(CancelledBy::Stop)),
+            from_driver(&DriverStop::Cancelled, Some(CancelledBy::Stop), None),
             EndReason::Stopped
         );
         assert_eq!(
-            from_driver(&DriverStop::MaxTurnRequests, None),
+            from_driver(&DriverStop::MaxTurnRequests, None, None),
             EndReason::LimitHit {
                 dimension: LimitDimension::ToolCalls
             }
@@ -299,17 +315,17 @@ mod tests {
             message: "run hermes login".into(),
         };
         assert_eq!(
-            from_driver(&failed, None),
+            from_driver(&failed, None, None),
             EndReason::Auth {
                 message: "run hermes login".into()
             }
         );
         assert!(matches!(
-            from_driver(&DriverStop::Refusal, None),
+            from_driver(&DriverStop::Refusal, None, None),
             EndReason::CliError { .. }
         ));
         assert!(matches!(
-            from_driver(&DriverStop::Disconnected, None),
+            from_driver(&DriverStop::Disconnected, None, None),
             EndReason::Crashed { .. }
         ));
     }
@@ -317,14 +333,18 @@ mod tests {
     #[test]
     fn own_stop_wins_until_the_work_finished() {
         let mut facts = EndFacts {
-            stopped_by: Some(StopCause::Stuck(Watchdog::Inactivity)),
+            stopped_by: Some(StopCause::Stuck {
+                watchdog: Watchdog::Inactivity,
+                calls: None,
+            }),
             result_is_error: Some(false),
             ..EndFacts::default()
         };
         assert_eq!(
             classify(&facts),
             EndReason::Stuck {
-                watchdog: Watchdog::Inactivity
+                watchdog: Watchdog::Inactivity,
+                calls: None
             }
         );
         facts.finished_before_stop = true;

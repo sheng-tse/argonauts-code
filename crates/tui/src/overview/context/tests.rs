@@ -26,6 +26,17 @@ fn rows_titled(
     width: usize,
     title: &str,
 ) -> Vec<String> {
+    drawn_rows(example, count, width, title, false)
+}
+
+/// [`rows_titled`], a long list of MCP tools shown whole where `whole_tools`.
+fn drawn_rows(
+    example: &Example,
+    count: Option<&ContextCount>,
+    width: usize,
+    title: &str,
+    whole_tools: bool,
+) -> Vec<String> {
     let theme = plain();
     let kit = Kit::new(&theme);
     let run_title = |_: &RunId| title.to_owned();
@@ -35,10 +46,12 @@ fn rows_titled(
         count,
         main: None,
         per_turn: Some(example::PER_TURN),
+        last_step: crate::state::LastStep::default(),
         places: &example.places,
         now: example.now,
         run_title: &run_title,
         ranked: &[],
+        whole_tools,
     };
     let mut rows = Vec::new();
     for section in tab.sections(&kit, width) {
@@ -72,7 +85,7 @@ fn row<'a>(rows: &'a [String], part: &str) -> &'a str {
 }
 
 #[test]
-fn every_list_shows_in_full_under_a_header_with_its_count_and_total() {
+fn every_list_shows_in_full_but_a_long_one_of_mcp_tools() {
     let mut example = example::at_three_quarters();
     let skills = example.count.usage.skills.as_mut().unwrap();
     skills.items = (0..40)
@@ -100,9 +113,33 @@ fn every_list_shows_in_full_under_a_header_with_its_count_and_total() {
     for n in 0..40 {
         row(&shown, &format!("skill-{n:02}"));
     }
-    for n in 0..30 {
+    // Past 12 rows, the tools not loaded fold into a row a server. Those loaded stay.
+    for n in (0..30).step_by(2) {
         row(&shown, &format!("tool_{n:02}"));
     }
+    assert!(
+        !shown.iter().any(|row| row.contains("tool_01")),
+        "{shown:#?}"
+    );
+    assert_eq!(
+        row(&shown, "docs \u{b7} 15 tools").trim(),
+        "\u{2514} docs \u{b7} 15 tools \u{b7} 3k on demand"
+    );
+    // Shown whole, as Enter on the list asks, every tool has its row.
+    let whole = drawn_rows(
+        &example,
+        Some(&example.count),
+        118,
+        example::RUN_TITLE,
+        true,
+    );
+    for n in 0..30 {
+        row(&whole, &format!("tool_{n:02}"));
+    }
+    assert!(
+        !whole.iter().any(|row| row.contains("15 tools")),
+        "{whole:#?}"
+    );
     assert!(!shown.iter().any(|row| row.contains(" more")), "{shown:#?}");
     // The largest first inside a group, and the last closes the tree.
     assert!(row(&shown, "skill-39").contains("User"), "{shown:#?}");
@@ -214,7 +251,10 @@ fn a_session_its_cli_has_not_counted_draws_as_one_bar() {
     assert!(shown[0].contains("Context Usage"), "{shown:#?}");
     assert!(shown[0].contains("Opus 5.5 on Claude Code"), "{shown:#?}");
     assert!(shown[0].ends_with("750k/1M tokens (75%)"), "{shown:#?}");
-    assert!(shown[2].contains("not counted yet"), "{shown:#?}");
+    assert!(
+        shown[2].contains("counted when an answer ends"),
+        "{shown:#?}"
+    );
     assert!(shown[2].contains('━'), "{shown:#?}");
     // A CLI that never says what fills its sessions is named for it.
     let mut silent = example::at_three_quarters();
@@ -232,7 +272,10 @@ fn a_session_its_cli_has_not_counted_draws_as_one_bar() {
     alone.view.rows.clear();
     let shown = rows_with(&alone, None, 118);
     assert_eq!(shown.len(), 2, "{shown:#?}");
-    assert!(shown[1].contains("Not counted yet"), "{shown:#?}");
+    assert!(
+        shown[1].contains("The main session is counted when an answer ends."),
+        "{shown:#?}"
+    );
 }
 
 #[test]
@@ -368,6 +411,90 @@ fn every_grid_glyph_and_bar_has_a_blank_after_it() {
             }
         }
     }
+}
+
+/// A recorded Claude Code turn, asked for its count as it ended: once the turn is over, the
+/// screen keeps the count and the tab draws the session's grid and legend from it.
+#[test]
+fn a_recorded_claude_code_turn_leaves_its_grid_on_the_tab_after_it_ends() {
+    use argonauts_core::Adapter as _;
+    use argonauts_core::app::{AppEvent, ConversationEvent, TurnReply};
+    use argonauts_core::names::TurnId;
+
+    let stream = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../adapters/claude-code/fixtures/context_usage_summary.stdout.jsonl"
+    ));
+    let turn = TurnId::numbered(1);
+    let worker: ModelRef = "claude-code/haiku".parse().expect("a model");
+    let mut state = crate::state::AppState::default();
+    let mut said = |event| state.apply(&AppEvent::Conversation { event });
+    said(ConversationEvent::TurnStarted {
+        turn: turn.clone(),
+        text: "Reply with only the word: ready".to_owned(),
+        worker: worker.clone(),
+        read_only: true,
+        commit: "abc".to_owned(),
+        uncommitted: Vec::new(),
+        settings_sha256: None,
+        continues: false,
+    });
+    let mut parser = argonauts_adapter_claude_code::ClaudeCodeAdapter.parser();
+    for line in stream.lines() {
+        for event in parser.parse_stdout_line(line) {
+            said(ConversationEvent::Agent {
+                turn: turn.clone(),
+                event,
+            });
+        }
+    }
+    said(ConversationEvent::TurnFinished {
+        turn,
+        reply: TurnReply::Answer {
+            markdown: "ready".to_owned(),
+        },
+        spend: argonauts_core::Spend::default(),
+        elapsed_ms: 6_910,
+    });
+    let count = state
+        .conversation
+        .context
+        .clone()
+        .expect("the turn left its count");
+    assert_eq!(count.usage.total_tokens, 24_010);
+    let mut example = example::at_three_quarters();
+    example.view.rows.truncate(1);
+    example.view.rows[0].worker = worker;
+    let shown = rows_with(&example, Some(&count), 118);
+    assert!(
+        row(&shown, "Context Usage").contains("24k/200k tokens"),
+        "{shown:#?}"
+    );
+    row(&shown, "Estimated usage by category");
+    let grid: Vec<&String> = shown
+        .iter()
+        .filter(|row| {
+            row.trim_start()
+                .starts_with(['\u{26c1}', '\u{26c0}', '\u{26f6}', '\u{26dd}'])
+        })
+        .collect();
+    assert_eq!(grid.len(), 10, "{shown:#?}");
+    row(&shown, "Memory files");
+    assert!(
+        !shown
+            .iter()
+            .any(|row| row.contains("counted when an answer ends")),
+        "{shown:#?}"
+    );
+}
+
+#[test]
+fn the_tab_counts_the_live_sessions_and_says_how_many_ended() {
+    let example = example::after_run();
+    assert_eq!(
+        summary(&example.view.rows),
+        "1 session \u{b7} 27.8k in context \u{b7} 9 ended"
+    );
 }
 
 #[test]

@@ -73,8 +73,8 @@ pub struct TaskReport {
     pub tests_run: Vec<String>,
     /// Risks and follow-ups.
     pub concerns: Vec<String>,
-    // The lists below came after 0.0.1's report. The strict schema still asks for them, but a
-    // report without them, from a CLI that doesn't enforce the schema, still counts.
+    // The lists below came after 0.0.1's report, and each has a default. Codex's strict format
+    // asks for them; Claude Code may leave them out, and a report without them still counts.
     /// Questions for the worker of another piece, or for you. Posted to the blackboard.
     #[serde(default)]
     pub questions: Vec<String>,

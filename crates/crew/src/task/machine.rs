@@ -22,6 +22,8 @@ pub enum Trigger {
     GiveBack,
     /// You said done after taking over.
     SaidDone,
+    /// You kept what a stopped session committed, so the checks decide.
+    KeptWork,
     ReportedDone,
     /// Crash, stuck, or looping.
     Broke,
@@ -86,6 +88,7 @@ pub const TABLE: &[(TaskState, Trigger, TaskState)] = &[
     (Failed, Trigger::AskYou, NeedsYou),
     (NeedsYou, Trigger::NewWorker, Ready),
     (NeedsYou, Trigger::TakeOver, TakenOver),
+    (NeedsYou, Trigger::KeptWork, Checking),
     (NeedsYou, Trigger::Defer, Deferred),
     (NeedsYou, Trigger::Split, Cancelled),
     (NeedsYou, Trigger::Drop, Cancelled),
@@ -167,6 +170,7 @@ mod tests {
             (Failed, Trigger::AskYou, NeedsYou),
             (NeedsYou, Trigger::NewWorker, Ready),
             (NeedsYou, Trigger::TakeOver, TakenOver),
+            (NeedsYou, Trigger::KeptWork, Checking),
             (NeedsYou, Trigger::Defer, Deferred),
             (NeedsYou, Trigger::Split, Cancelled),
             (NeedsYou, Trigger::Drop, Cancelled),

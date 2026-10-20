@@ -50,6 +50,14 @@ impl Next {
         Self::Resume { cause, parts }
     }
 
+    /// What a try on the task's own session is told, which its log entry keeps.
+    pub(crate) fn told(&self) -> &[InputPart] {
+        match self {
+            Self::Fresh { .. } => &[],
+            Self::Resume { parts, .. } => parts,
+        }
+    }
+
     pub(crate) fn cause(&self) -> TryCause {
         match self {
             Self::Fresh { cause, .. } | Self::Resume { cause, .. } => *cause,
@@ -173,13 +181,23 @@ pub(crate) fn report_of(end: &SessionEnd) -> Option<TaskReport> {
                 .flatten()
                 .find_map(|text| last_json_object(text))
         })?;
-    // A report in the 0.0.1 shape leaves out the lists added since, and an empty list says
-    // the same thing.
+    // A report in the 0.0.1 shape leaves out the lists added since, and a model with nothing
+    // to list may write null, as Qwen3 Coder on OpenCode does: an empty list says the same.
     if let Some(report) = value.as_object_mut() {
-        for list in ["questions", "change_requests", "memory_proposals"] {
-            report
-                .entry(list)
-                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        for list in [
+            "files_changed",
+            "tests_run",
+            "concerns",
+            "questions",
+            "change_requests",
+            "memory_proposals",
+        ] {
+            if report.get(list).is_none_or(serde_json::Value::is_null) {
+                report.insert(list.to_owned(), serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if report.get("answer").is_some_and(serde_json::Value::is_null) {
+            report.remove("answer");
         }
     }
     serde_json::from_value(value).ok()
@@ -231,6 +249,17 @@ mod tests {
         let mut in_text = end(EndReason::Completed, None);
         in_text.result_text = Some(format!("Built it.\n\n```json\n{first_shape}\n```"));
         assert_eq!(report_of(&in_text).unwrap().summary, "built it");
+        // Qwen3 Coder on OpenCode writes null for the lists it has nothing in.
+        let with_nulls = json!({
+            "status": "done", "summary": "fixed slugify", "files_changed": ["slug.py"],
+            "tests_run": ["python3 -m unittest -q (OK)"], "concerns": [], "questions": null,
+            "change_requests": null, "memory_proposals": null, "answer": null
+        });
+        let mut qwen = end(EndReason::Completed, None);
+        qwen.result_text = Some(format!("## Report\n\n```json\n{with_nulls:#}\n```"));
+        let report = report_of(&qwen).expect("the report");
+        assert_eq!(report.files_changed, ["slug.py"]);
+        assert!(report.questions.is_empty() && report.change_requests.is_empty());
     }
 
     #[test]

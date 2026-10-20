@@ -178,6 +178,56 @@ pub(crate) fn running() -> WorkflowData {
     )
 }
 
+/// The run of Claude Code's own picture of its workflow view: Scaffold, Build and Merge done,
+/// Look at three of its four agents, and Build's three agents.
+pub(crate) fn ui_kit() -> WorkflowData {
+    let builders = [
+        "build:a-terminal-bottom",
+        "build:b-history-cells",
+        "build:c-demo-tests",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(at, label)| {
+        let session = u32::try_from(at).unwrap_or(0) + 2;
+        WorkflowRow::Agent(agent(session, label, OPUS, RowStatus::Done, 0, 0))
+    })
+    .collect();
+    let done_one = |name: &str, session: u32| {
+        let row = agent(
+            session,
+            &format!("{}:all", name.to_lowercase()),
+            OPUS,
+            RowStatus::Done,
+            0,
+            0,
+        );
+        phase(
+            name,
+            RowStatus::Done,
+            Some((1, 1)),
+            vec![WorkflowRow::Agent(row)],
+        )
+    };
+    let mut data = workflow(
+        (8, 9),
+        2 * 3600 + 47 * 60,
+        vec![
+            done_one("Scaffold", 1),
+            phase("Build", RowStatus::Done, Some((3, 3)), builders),
+            done_one("Merge", 5),
+            phase("Look", RowStatus::Running, Some((3, 4)), Vec::new()),
+        ],
+    );
+    data.name = "argonauts-ui-kit".to_owned();
+    data.description =
+        "Build a standalone Rust UI kit prototype that matches the user's Claude Code \
+                        screenshot (inline conversation, cells, bottom region, agent"
+            .to_owned();
+    data.notes = Vec::new();
+    data
+}
+
 /// Opus 5.5 is overloaded, so Sonnet 5.5 reviews in its place.
 pub(crate) fn fallback() -> WorkflowData {
     let mut reviewer = agent(3, "review:due-tests", SONNET, RowStatus::Running, 9_300, 38);
@@ -505,7 +555,8 @@ pub(crate) fn worker_opened() -> AgentData {
     let mut row = agent(1, "build:due-flag", SONNET, RowStatus::Running, 57_800, 160);
     row.context = Some(ContextUse {
         used: 62_000,
-        cap: 200_000,
+        window: Some(200_000),
+        cap: Some(200_000),
     });
     let activity = vec![
         call("Read", "src/cli.js", Some(true)),

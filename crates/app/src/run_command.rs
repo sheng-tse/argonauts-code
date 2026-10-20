@@ -252,7 +252,9 @@ async fn follow(
                     bail!("stopped watching; {run} is stopping on its own · argonauts resume {run}");
                 }
                 stopping = true;
-                writeln!(out, "Stopping {run}. Its agents wrap up and their work is kept.")?;
+                // Each agent stops once its tool call ends, with no wrap-up, and its work is
+                // committed then.
+                writeln!(out, "Stopping {run}. Work so far is committed to each task's branch.")?;
                 conductor.stop(run).await?;
             }
         }

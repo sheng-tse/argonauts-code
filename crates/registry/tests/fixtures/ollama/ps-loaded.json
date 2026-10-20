@@ -1,0 +1,19 @@
+{
+ "models": [
+  {
+   "name": "llama3.2:latest",
+   "model": "llama3.2:latest",
+   "size": 23779979264,
+   "digest": "a80c4f17acd55265feec403c7aef86be0c25983ab279d83f3bcd3abbcb5b8b72",
+   "details": {
+    "parent_model": "",
+    "format": "gguf",
+    "parameter_size": "3.2B",
+    "quantization_level": "Q4_K_M"
+   },
+   "expires_at": "2026-10-19T01:59:06.100092Z",
+   "size_vram": 23779979264,
+   "context_length": 131072
+  }
+ ]
+}

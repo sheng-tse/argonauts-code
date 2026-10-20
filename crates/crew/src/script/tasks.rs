@@ -355,16 +355,23 @@ pub(super) async fn change_of(
     Ok(Some((tree.path, shown_change(change))))
 }
 
-/// What a reviewer or a judge about no one task reads: every task's change so far, each under
-/// its name, as they will merge into the run. `None` before any task has a change.
-pub(super) async fn combined_change(bridge: &Bridge<'_>) -> EngineResult<Option<String>> {
+/// A task of the script's with committed work: its worktree, its newest commit and its change.
+struct Changed {
+    name: String,
+    tree: worktree::TaskTree,
+    head: String,
+    change: String,
+}
+
+/// Every task with a change so far, in the order the script made them.
+async fn changed_tasks(bridge: &Bridge<'_>) -> EngineResult<Vec<Changed>> {
     let entries: Vec<(String, TaskId)> = lock(&bridge.tasks.entries)
         .iter()
         .filter(|entry| !entry.dropped)
         .map(|entry| (entry.name.clone(), entry.task.clone()))
         .collect();
     let host = bridge.host;
-    let mut parts = Vec::new();
+    let mut changed = Vec::new();
     for (name, task) in entries {
         if host.read(|state| state.tasks.get(&task).is_none()) {
             continue;
@@ -376,15 +383,118 @@ pub(super) async fn combined_change(bridge: &Bridge<'_>) -> EngineResult<Option<
         };
         let change = git.review_diff(&tree.path, &tree.base, &head).await?;
         if !change.trim().is_empty() {
-            let name = if name == THE_REQUEST {
-                "the request"
-            } else {
-                name.as_str()
-            };
-            parts.push(format!("# {name}\n{}", shown_change(change)));
+            changed.push(Changed {
+                name,
+                tree,
+                head,
+                change,
+            });
         }
     }
+    Ok(changed)
+}
+
+/// What a reviewer or a judge about no one task reads: every task's change so far, each under
+/// its name, as they will merge into the run. `None` before any task has a change.
+pub(super) async fn combined_change(bridge: &Bridge<'_>) -> EngineResult<Option<String>> {
+    let parts: Vec<String> = changed_tasks(bridge)
+        .await?
+        .into_iter()
+        .map(|changed| {
+            let name = if changed.name == THE_REQUEST {
+                "the request"
+            } else {
+                changed.name.as_str()
+            };
+            format!("# {name}\n{}", shown_change(changed.change))
+        })
+        .collect();
     Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
+}
+
+/// The folder a reader or a check about no one task works in, so the files it reads and the
+/// tests it runs hold the change it judges.
+pub(super) struct WholeTree {
+    pub(super) path: PathBuf,
+    /// Made for this one use, so it goes when the use is over.
+    made: bool,
+}
+
+impl WholeTree {
+    /// Takes away a worktree made for the use. A task's own worktree stays.
+    pub(super) async fn done(self, bridge: &Bridge<'_>) {
+        if self.made {
+            remove_tree(bridge.host, &self.path).await;
+        }
+    }
+}
+
+/// What a reader or a check about no one task works on.
+pub(super) enum Whole {
+    /// No task has a change yet.
+    Nothing,
+    Tree(WholeTree),
+    /// The tasks' changes don't merge cleanly, so no one folder holds them all. Says which
+    /// tasks and files.
+    Conflict(String),
+}
+
+/// The run's whole change on disk: the worktree of the one task with a change, else a fresh
+/// worktree off the run with every changed task merged in, named for the call (`index`).
+pub(super) async fn whole_tree(bridge: &Bridge<'_>, index: u32) -> EngineResult<Whole> {
+    let changed = changed_tasks(bridge).await?;
+    let (first, rest) = match changed.as_slice() {
+        [] => return Ok(Whole::Nothing),
+        [only] => {
+            return Ok(Whole::Tree(WholeTree {
+                path: only.tree.path.clone(),
+                made: false,
+            }));
+        }
+        [first, rest @ ..] => (first, rest),
+    };
+    let host = bridge.host;
+    let path = host.repo().worktrees.join(format!("whole-change-{index}"));
+    // A folder left by a run that stopped mid-call is made again from the newest work.
+    remove_tree(host, &path).await;
+    host.git()
+        .add_detached_worktree(&host.repo().root, &path, &first.head)
+        .await?;
+    let tree = WholeTree { path, made: true };
+    let git = worktree::tree_git(host, &tree.path).await?;
+    let mut taken = vec![first.name.as_str()];
+    for task in rest {
+        let message = format!("Take in {}", task.name);
+        let merged = git.merge_no_ff(&tree.path, &task.head, &message).await;
+        match merged {
+            Ok(crate::git::MergeOutcome::Merged(_)) => taken.push(&task.name),
+            Ok(crate::git::MergeOutcome::Conflict(files)) => {
+                tree.done(bridge).await;
+                return Ok(Whole::Conflict(format!(
+                    "{} and {} don't merge cleanly: {}",
+                    taken.join(", "),
+                    task.name,
+                    files.join(", ")
+                )));
+            }
+            Err(err) => {
+                tree.done(bridge).await;
+                return Err(err.into());
+            }
+        }
+    }
+    Ok(Whole::Tree(tree))
+}
+
+async fn remove_tree(host: &Host, path: &std::path::Path) {
+    if host
+        .git()
+        .remove_worktree(&host.repo().root, path)
+        .await
+        .is_err()
+    {
+        let _ = std::fs::remove_dir_all(path);
+    }
 }
 
 /// The task's worktree, once it has one.

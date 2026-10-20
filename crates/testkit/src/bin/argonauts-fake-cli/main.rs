@@ -53,6 +53,14 @@ fn run(argv0: &str, args: &[String]) -> anyhow::Result<i32> {
     if args.first().is_some_and(|arg| arg == "acp") {
         return acp::serve(&scenario.acp, &base, argv0, args);
     }
+    // OpenCode's server for a run of calls says where it answers, then lives until its input
+    // closes, as `opencode serve --stdio` does. The calls to it find no rule.
+    if argv0 == "opencode" && args.first().is_some_and(|arg| arg == "serve") {
+        log_invocation(argv0, args, None, None);
+        println!(r#"{{"url":"http://127.0.0.1:9"}}"#);
+        let _ = io::copy(&mut io::stdin(), &mut io::sink());
+        return Ok(0);
+    }
     let mut stdin = Stdin::new();
 
     let matched = scenario

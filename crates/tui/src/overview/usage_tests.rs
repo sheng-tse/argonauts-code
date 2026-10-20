@@ -360,7 +360,7 @@ fn a_wide_panel_draws_the_three_cards_side_by_side_as_the_picture() {
     );
     assert!(
         rows.last().unwrap().starts_with(
-            " r to cycle dates · tab · ←→ tabs · ↓ CLIs · ctrl+r reads again · esc closes"
+            " r to cycle dates · tab · ← → tabs · ↓ CLIs · ctrl+r reads again · esc closes"
         ),
         "{rows:#?}"
     );
@@ -414,7 +414,7 @@ fn a_cli_sub_tab_lays_out_like_claude_codes_usage() {
     assert!(
         page.last()
             .unwrap()
-            .starts_with(" r to cycle dates · tab · ←→ CLIs · ↓ into the cards · ↑ tabs"),
+            .starts_with(" r to cycle dates · tab · ← → CLIs · ↓ into the cards · ↑ tabs"),
         "{page:#?}"
     );
     // ←→ wrap around the sub-tabs.

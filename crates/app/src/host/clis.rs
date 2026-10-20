@@ -14,11 +14,12 @@ use argonauts_core::layout::user_files;
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::registry::{CliManifest, ModelRegistry};
 use argonauts_core::settings::Settings;
-use argonauts_core::{Adapter, Paths};
+use argonauts_core::{Adapter, Paths, project_config_path};
 use argonauts_registry::clis::{builtin_home_template, check_manifest};
 use argonauts_registry::models::discovery::ClaudeSource;
 use argonauts_registry::models::{
-    CatalogSource, ProjectModels, project_models_path, registry_with_trust,
+    AskOpenCode, CatalogSource, FileRegistry, ProjectModels, project_models_path,
+    registry_with_trust,
 };
 
 use crate::trust::TrustStore;
@@ -43,6 +44,13 @@ impl RepoModels {
         &self.root
     }
 
+    /// Whether you trusted the repo: it was set up with `argonauts setup`, or saved into, and
+    /// its `.argonauts/config.toml` holds what you trusted. Only then do OpenCode's own
+    /// commands outside a session start in it with the network.
+    pub(crate) fn trusted(&self) -> bool {
+        TrustStore::load(&self.state_dir).was_trusted(&project_config_path(&self.root))
+    }
+
     /// The hash `trusted.json` holds for the file, read fresh, since you can trust it any time.
     pub(crate) fn trusted_hashes(&self) -> Vec<String> {
         TrustStore::load(&self.state_dir)
@@ -64,17 +72,30 @@ impl RepoModels {
 }
 
 /// The model registry, with the repo's `models.toml` once you trust it, starting from the
-/// model list `cache` keeps when given. With a cache, as the app keeps one, Claude Code's
-/// models also come from Anthropic once a day, and the model catalog from Argonauts Code's
-/// repository; without one nothing is fetched.
+/// model list `cache` keeps when given, and asking OpenCode inside the sandbox. With a cache,
+/// as the app keeps one, Claude Code's models also come from Anthropic once a day, and the
+/// model catalog from Argonauts Code's repository; without one nothing is fetched.
 pub(crate) fn registry(
     settings: &Settings,
     repo: Option<&RepoModels>,
     cache: Option<&Path>,
 ) -> Arc<dyn ModelRegistry> {
+    file_registry(settings, repo, cache)
+}
+
+/// [`registry`] whole, so what discovery skipped can be shown.
+pub(crate) fn file_registry(
+    settings: &Settings,
+    repo: Option<&RepoModels>,
+    cache: Option<&Path>,
+) -> Arc<FileRegistry> {
     let trusted = repo.map(RepoModels::trusted_hashes).unwrap_or_default();
     let claude = cache.map(|_| ClaudeSource::for_settings(settings));
     let catalog = cache.map(|_| CatalogSource::argonauts());
+    let opencode = AskOpenCode {
+        confine: crate::confine::read_only(settings, repo),
+        in_repo: repo.is_some_and(RepoModels::trusted),
+    };
     registry_with_trust(
         settings,
         repo.map(RepoModels::root),
@@ -82,6 +103,7 @@ pub(crate) fn registry(
         cache,
         claude,
         catalog,
+        Some(opencode),
     )
 }
 

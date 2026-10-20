@@ -12,9 +12,11 @@ use argonauts_conductor::cli_versions::{
     CliVersions, Installed, builtins_line, new_command, startup_warnings, unread_line,
     version_check,
 };
-use argonauts_conductor::doctor::update::{UPDATE_TIMEOUT, update_clis, update_lines};
+use argonauts_conductor::doctor::update::{
+    UPDATE_TIMEOUT, UpdateColumns, UpdateLimits, each_once, update_each, update_lines_in,
+};
 use argonauts_core::Adapter;
-use argonauts_core::app::AppEvent;
+use argonauts_core::app::{AppEvent, CommandWork};
 use argonauts_core::log::NoteLevel;
 use argonauts_core::settings::Settings;
 use argonauts_core::status_tab::{VERSION_ROW_NAMES, VERSION_ROW_STATES, version_row};
@@ -58,9 +60,10 @@ fn settings_lines(warnings: &[SettingsWarning]) -> Vec<String> {
         .collect()
 }
 
-/// `/update`: each installed CLI updated in turn the way it was installed, with its version
-/// before and after, then Doctor. Off the loop, since an updater downloads, and never while a
-/// run is going.
+/// `/update`: each installed CLI updated once, side by side, the way it was installed, with its
+/// version before and after, then Doctor. The working line says which of the two goes on, and
+/// the Update report gains its rows in order as the CLIs from the first on are done, in columns
+/// set from the start. Off the loop, since an updater downloads, and never while a run is going.
 pub(crate) fn update(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
     if super::cli_updates::a_run_is_going(ctx) {
         ctx.notice(NoteLevel::Info, super::cli_updates::UPDATE_WAITS);
@@ -70,19 +73,35 @@ pub(crate) fn update(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
     let settings = ctx.settings.shared();
     let out = ctx.out.clone();
     let versions = ctx.env.paths.cli_versions();
+    let working = |work| AppEvent::CommandWorking { work };
+    out.send(working(Some(CommandWork::Updating)));
     tokio::spawn(async move {
-        let updates = update_clis(&adapters, &settings, UPDATE_TIMEOUT).await;
+        let clis = each_once(&adapters, &settings);
+        let columns = UpdateColumns::of(&clis, &settings).await;
+        let limits = UpdateLimits::within(UPDATE_TIMEOUT);
+        let updates = update_each(&clis, &settings, limits, |so_far| {
+            out.send(AppEvent::ReportSoFar {
+                title: UPDATE.to_owned(),
+                lines: update_lines_in(columns, so_far),
+            });
+        })
+        .await;
         out.send(AppEvent::Report {
-            title: "Update".to_owned(),
-            lines: update_lines(&updates),
+            title: UPDATE.to_owned(),
+            lines: update_lines_in(columns, &updates),
         });
+        out.send(working(Some(CommandWork::Checking)));
         out.send(AppEvent::Report {
             title: "Doctor".to_owned(),
             lines: doctor_lines(&adapters, &settings, &versions).await,
         });
+        out.send(working(None));
     });
     Ok(Vec::new())
 }
+
+/// The Update report's title, which its rows so far and the whole report share.
+const UPDATE: &str = "Update";
 
 /// Doctor's report, each version read now, with how it stands and what there is to update to,
 /// what each version sent that Argonauts Code doesn't read yet from `versions`, and how many
@@ -92,6 +111,12 @@ async fn doctor_lines(
     settings: &Settings,
     versions: &Path,
 ) -> Vec<String> {
+    // A second way into a CLI, such as OpenCode over ACP, is that CLI: one row, counted once.
+    let adapters: Vec<Arc<dyn Adapter>> = each_once(adapters, settings)
+        .into_iter()
+        .map(|cli| cli.adapter)
+        .collect();
+    let adapters = adapters.as_slice();
     let (mut agents, git) = check(adapters, settings).await;
     let seen = CliVersions::load(versions);
     for agent in &mut agents {
@@ -456,21 +481,36 @@ mod tests {
                 command: SlashCommand::Update,
             })
             .await;
+        let working = |work| move |event: &AppEvent| matches!(event, AppEvent::CommandWorking { work: w } if *w == work);
+        driver.until(working(Some(CommandWork::Updating))).await;
+        // The CLIs update side by side, and the rows come from the first on, Claude Code's
+        // first, in columns as wide as the rows after it will be.
+        let so_far = |event: &AppEvent| matches!(event, AppEvent::ReportSoFar { .. });
+        let AppEvent::ReportSoFar { title, lines } = driver.until(so_far).await else {
+            unreachable!()
+        };
+        assert_eq!(title, "Update");
+        assert!(
+            lines[0].starts_with("Claude Code       2.1.292 →  2.1.295"),
+            "{lines:?}"
+        );
         let report = |event: &AppEvent| matches!(event, AppEvent::Report { .. });
         let AppEvent::Report { title, lines } = driver.until(report).await else {
             unreachable!()
         };
         assert_eq!(title, "Update");
         assert!(
-            lines[0].starts_with("Claude Code ") && lines[0].ends_with("2.1.292 → 2.1.295"),
+            lines[0].starts_with("Claude Code ") && lines[0].ends_with("2.1.292 →  2.1.295"),
             "{lines:?}"
         );
         assert!(lines[1].contains("couldn't update"), "{lines:?}");
+        driver.until(working(Some(CommandWork::Checking))).await;
         let AppEvent::Report { title, lines } = driver.until(report).await else {
             unreachable!()
         };
         assert_eq!(title, "Doctor");
         assert!(lines[0].starts_with("Claude Code 2.1.295 "), "{lines:?}");
+        driver.until(working(None)).await;
         driver.exit().await;
     }
 

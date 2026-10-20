@@ -15,8 +15,11 @@ test = false
 [dependencies]
 anyhow.workspace = true
 argonauts-core.workspace = true
+base64.workspace = true
 crossterm = { workspace = true, features = ["event-stream"] }
 dirs.workspace = true
+# The mascot's pictures: reading, fitting and writing PNGs.
+flate2 = "1.1.10"
 futures.workspace = true
 nix = { workspace = true, features = ["poll", "term"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }

@@ -14,7 +14,7 @@ mod workflow;
 
 pub(crate) use agent::agent_view;
 pub(crate) use checkpoints::checkpoint_rows;
-pub(crate) use context::context_rows;
+pub(crate) use context::{context_rows, finished_at};
 pub(crate) use goal::goal_view;
 pub(crate) use sessions::{add_spend, crew_rows};
 pub(crate) use workflow::{being_written, inner_agent_view, saved_workflow, workflow_view};

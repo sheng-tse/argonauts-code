@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model_catalog::{ModelCatalog, display_name_from_id, spelled_one_way};
+use crate::model_catalog::{ModelCatalog, display_name_from_id, shown_name};
 use crate::names::ModelRef;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -49,7 +49,7 @@ impl DisplayNames {
         let entry = self.catalog.entry(&id);
         let named = entry
             .and_then(|entry| entry.name.as_deref())
-            .map(spelled_one_way);
+            .map(|name| shown_name(cli, name));
         let resolved = entry.and_then(|entry| entry.id.model.as_deref());
         Some(named.unwrap_or_else(|| display_name_from_id(resolved.unwrap_or(model))))
     }
@@ -213,8 +213,7 @@ pub fn builtin_cli_name(id: &str) -> Option<&'static str> {
         "antigravity-cli" => "Antigravity CLI",
         "opencode" => "OpenCode",
         "openrouter" => "OpenRouter",
-        "ollama" => "Ollama",
-        _ => return None,
+        _ => return crate::runtimes::runtime(id).map(|runtime| runtime.name),
     })
 }
 
@@ -388,7 +387,10 @@ mod tests {
         let names = DisplayNames::default();
         assert_eq!(names.worker(&id("claude-code")), "Claude Code");
         assert_eq!(names.agent("codex", Some("  ")), "Codex");
-        assert_eq!(names.agent(" vllm ", None), "vllm");
+        assert_eq!(names.agent(" gpu-box ", None), "gpu-box");
+        // The local runtimes are known by the names they go by.
+        assert_eq!(names.agent("vllm", None), "vLLM");
+        assert_eq!(names.agent("llamacpp", None), "llama-server");
         assert_eq!(
             names.worker(&id("ollama/qwen3-coder:30b")),
             "Qwen3 Coder 30B on Ollama"

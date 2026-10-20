@@ -15,7 +15,7 @@ use super::bodies;
 use super::legend::Entry;
 use super::words::spoken;
 use super::{Badge, Drawn, Form, Frame, Header, Kit, Level, Levels, Toggle, spread};
-use crate::format::{UNKNOWN, percent, tokens};
+use crate::format::{self, UNKNOWN, percent, tokens, tokens_beside};
 use crate::text::{spans_width, truncate_spans};
 use crate::theme::Role;
 
@@ -153,8 +153,16 @@ impl ContextCard {
     fn amount(&self, tokens_count: Option<u64>) -> String {
         match tokens_count {
             None => String::from(UNKNOWN),
-            Some(n) if self.estimated => format!("~{}", tokens(n)),
-            Some(n) => tokens(n),
+            Some(n) if self.estimated => format!("~{}", self.sized(n)),
+            Some(n) => self.sized(n),
+        }
+    }
+
+    /// A count in this window's divisor, so the parts of a 64k window add up to 64k.
+    fn sized(&self, count: u64) -> String {
+        match self.window {
+            Some(window) => tokens_beside(count, window),
+            None => tokens(count),
         }
     }
 
@@ -174,14 +182,16 @@ impl ContextCard {
 
     /// ` of 1M · compacts at 950k`.
     fn tail(&self) -> String {
-        let window = self.window.map_or_else(|| String::from(UNKNOWN), tokens);
+        let window = self
+            .window
+            .map_or_else(|| String::from(UNKNOWN), format::window);
         let mut tail = format!(" of {window}");
         if let Some(limit) = self.limit {
             let verb = match limit.kind {
                 LimitKind::Compacts => "compacts",
                 LimitKind::Rotates => "rotates",
             };
-            tail.push_str(&format!(" · {verb} at {}", tokens(limit.at)));
+            tail.push_str(&format!(" · {verb} at {}", self.sized(limit.at)));
         }
         tail
     }
@@ -190,8 +200,8 @@ impl ContextCard {
         // The amount is the CLI's own count, never an estimate.
         let amount = match self.reading() {
             None => String::from(UNKNOWN),
-            Some((used, _)) if self.stale => format!("~{}", tokens(used)),
-            Some((used, _)) => tokens(used),
+            Some((used, _)) if self.stale => format!("~{}", self.sized(used)),
+            Some((used, _)) => self.sized(used),
         };
         Header {
             subject: self.subject.clone(),
@@ -320,8 +330,9 @@ impl ContextCard {
                     self.badge().text,
                     kit.bold(level.strong_role()),
                 ));
-                details.push(kit.dim(format!(" · {}", tokens(used))));
-                details.push(kit.span(format!(" of {}", tokens(window)), Role::Denominator));
+                details.push(kit.dim(format!(" · {}", self.sized(used))));
+                details
+                    .push(kit.span(format!(" of {}", format::window(window)), Role::Denominator));
                 if let Some((_, rest)) = self.tail().split_once(" · ") {
                     details.push(kit.dim(format!(" · {rest}")));
                 }
@@ -387,7 +398,7 @@ impl ContextCard {
         let Some((used, window)) = self.reading() else {
             return vec![String::from("context: no reading yet")];
         };
-        let mut head = format!("{} of {}", tokens(used), tokens(window));
+        let mut head = format!("{} of {}", self.sized(used), format::window(window));
         if self.compacting {
             head.push_str(", compacting");
         } else {

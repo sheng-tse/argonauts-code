@@ -179,6 +179,7 @@ mod tests {
             counts: true,
             categories: Vec::new(),
             recorded: None,
+            ended: None,
         }
     }
 

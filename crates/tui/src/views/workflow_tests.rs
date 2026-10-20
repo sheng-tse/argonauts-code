@@ -519,13 +519,13 @@ fn an_agent_on_a_goal_carries_its_squares_its_try_and_the_lines_met() {
     let text = draw(&mut view, 120, 30);
     let store = row_of(&text, "build:store");
     assert!(
-        store.contains("✔ build:store        GPT 5.6 · ▪▪ goal met in 2 tries"),
+        store.contains("✔ build:store  GPT 5.6 · ▪▪ goal met in 2 tries"),
         "{text}"
     );
     assert!(store.trim_end().ends_with("4m10s │"), "{text}");
     let cli = row_of(&text, "build:cli");
     assert!(
-        cli.contains("❯⏺ build:cli          GPT 5.6 · ▪▪▪ try 3 · 2 of 3 lines met"),
+        cli.contains("❯⏺ build:cli    GPT 5.6 · ▪▪▪ try 3 · 2 of 3 lines met"),
         "{text}"
     );
     assert!(cli.trim_end().ends_with("6m02s │"), "{text}");

@@ -58,6 +58,8 @@ fn codex_and_agy(fixture: &mut Fixture, dir: &Path) {
     let mut settings = Settings::default();
     settings.agents.get_mut("codex").unwrap().binary = Some(fake_codex(dir));
     settings.agents.get_mut("antigravity-cli").unwrap().binary = Some(fake_agy(dir));
+    settings.agents.get_mut("opencode").unwrap().enabled = false;
+    settings.registry.local_servers = false;
     fixture.ctx.services.registry =
         Arc::new(FileRegistry::from_files(&settings, None, None).with_cache(&cache));
     let directory = Arc::new(FakeDirectory::new());
@@ -91,12 +93,19 @@ fn two_installed(fixture: &mut Fixture, dir: &Path) -> PathBuf {
     cache
 }
 
-/// agy is off here, so discovery never runs a real one.
+/// agy, OpenCode and the model servers here are off, so discovery never asks a real one.
 fn registry(dir: &Path, cache: &Path) -> Arc<FileRegistry> {
     let mut settings = Settings::default();
     settings.agents.get_mut("codex").unwrap().binary = Some(fake_codex(dir));
-    settings.agents.get_mut("antigravity-cli").unwrap().enabled = false;
+    discovers_codex_alone(&mut settings);
     Arc::new(FileRegistry::from_files(&settings, None, None).with_cache(cache))
+}
+
+fn discovers_codex_alone(settings: &mut Settings) {
+    for cli in ["antigravity-cli", "opencode"] {
+        settings.agents.get_mut(cli).unwrap().enabled = false;
+    }
+    settings.registry.local_servers = false;
 }
 
 fn workers(choices: &[ModelChoice]) -> Vec<String> {
@@ -185,6 +194,8 @@ async fn a_refresh_brings_the_open_model_list_up_to_date() {
             refreshed: Some(refreshed),
             refreshing: false,
             update: true,
+            sources: _,
+            memory: _,
         },
     ] = updates.as_slice()
     else {
@@ -233,6 +244,7 @@ fn cache_with_claude_models(cache: &Path) {
         skipped: Vec::new(),
         claude_listed: Some(now),
         catalog: None,
+        sources: Vec::new(),
     }
     .write(cache)
     .unwrap();
@@ -520,7 +532,7 @@ async fn codex_names_its_models_and_your_models_toml_wins() {
     .unwrap();
     let mut settings = Settings::default();
     settings.agents.get_mut("codex").unwrap().binary = Some(fake_codex(dir.path()));
-    settings.agents.get_mut("antigravity-cli").unwrap().enabled = false;
+    discovers_codex_alone(&mut settings);
     fixture.ctx.services.registry =
         Arc::new(FileRegistry::from_files(&settings, Some(&yours), None).with_cache(&cache));
 

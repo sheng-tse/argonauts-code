@@ -13,6 +13,48 @@ fn plain() -> Theme {
     theme
 }
 
+/// Ollama reports no cached tokens, so every step of a local model counts its whole prompt
+/// again: the tokens card says why its input reads so large.
+#[test]
+fn the_tokens_card_says_a_local_server_reports_no_cache() {
+    use argonauts_core::Spend;
+    use argonauts_core::api::UsageShare;
+    let mut usage = sample::usage();
+    let local = |agent: &str, model: &str| UsageShare {
+        agent: agent.to_owned(),
+        model: Some(model.to_owned()),
+        agent_id: agent.to_owned(),
+        spent: Spend {
+            input_tokens: 490_538,
+            output_tokens: 3_100,
+            ..Spend::default()
+        },
+        pays_per_token: false,
+        local: true,
+        this_week: Vec::new(),
+    };
+    usage
+        .by_agent
+        .push(local("opencode", "ollama/qwen3-coder:30b-64k"));
+    usage.by_agent.push(local("ollama", "gemma3:12b-32k"));
+    let names = sample::names();
+    let note = |usage: &UsageSummary| {
+        let cards = UsageCards {
+            usage,
+            names: &names,
+            now: sample::now(),
+            left: false,
+        };
+        cards.no_cache_note()
+    };
+    assert_eq!(
+        note(&usage).as_deref(),
+        Some("Ollama reports no cache, so local input counts in full")
+    );
+    usage.by_agent.retain(|share| !share.local);
+    assert_eq!(note(&usage), None);
+}
+
 fn rows(usage: &UsageSummary, card: UsageCard, form: Form, width: usize) -> Vec<String> {
     let theme = plain();
     let kit = Kit::new(&theme);
@@ -406,4 +448,16 @@ fn before_any_reading_the_card_says_so() {
         rows[2].contains("No CLI in the crew reports a plan yet"),
         "{rows:#?}"
     );
+}
+
+#[test]
+fn opencode_is_green_and_a_model_on_a_server_pink() {
+    let theme = Theme::dark().with_level(ColorLevel::TrueColor);
+    assert_eq!(cli_role("opencode"), Role::AgentGreen);
+    assert_eq!(
+        theme.style(cli_role("opencode")).fg,
+        Some(ratatui::style::Color::Rgb(0x4a, 0xde, 0x80))
+    );
+    assert_eq!(cli_role("ollama"), Role::AgentPink);
+    assert_eq!(cli_role("claude-code"), Role::CliClaude);
 }

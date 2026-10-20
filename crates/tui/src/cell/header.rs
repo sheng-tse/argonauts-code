@@ -1,14 +1,19 @@
+use argonauts_core::app::UltraColour;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
 use super::HistoryCell;
+use crate::mascot::{self, Look, Mascot};
 use crate::render::RenderCtx;
 use crate::text::{sanitize_line, str_width, truncate_line};
-use crate::theme::Role;
+use crate::theme::{Brightness, MascotDrawing, Role};
 
-const MARK_COL: usize = 1;
-const TEXT_COL: usize = 11;
-const MARK_MIN_WIDTH: usize = 36;
+/// Where the mascot starts, and where the three lines beside it start.
+pub const MARK_COL: usize = 1;
+pub const TEXT_COL: usize = 11;
+/// The narrowest screen the header draws its mascot on. Narrower, its words start where the
+/// mascot would.
+pub const MARK_MIN_WIDTH: usize = 36;
 
 /// Printed once at startup. Plan usage and spend stay live in the bottom line instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,7 +26,11 @@ pub struct SessionHeader {
     pub model: Option<String>,
     /// Shown as `with <effort> effort` after the agent, like Claude Code's header.
     pub effort: Option<String>,
+    /// Picks the mascot: the argonaut for Captain, the medusa for Orchestrator, the hydra for
+    /// Council.
     pub workflow: String,
+    /// The main agent's own ultra mode while it is on, which the mascot shows in its colour.
+    pub ultra: Option<UltraColour>,
     /// Already shortened with `~`. It is cut from the left when it doesn't fit.
     pub folder: String,
     /// The ones that aren't ready each get a note under the header.
@@ -31,6 +40,8 @@ pub struct SessionHeader {
     /// Runs whose questions wait on you. The app opens a new conversation all the same, and
     /// `/resume` opens one of them.
     pub runs_need_you: u32,
+    /// The conversation `/clear` left, which `/resume` picks up again.
+    pub way_back: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,8 +80,8 @@ impl HistoryCell for SessionHeader {
             .filter(|part| !part.is_empty())
             .collect();
 
-        let with_mark = width >= MARK_MIN_WIDTH;
-        let text_col = if with_mark { TEXT_COL } else { 2 };
+        let mark = self.mascot_rows(ctx);
+        let text_col = if mark.is_some() { TEXT_COL } else { 2 };
         let room = width.saturating_sub(text_col);
         let folder = shorten_folder(&sanitize_line(&self.folder), room);
         let beside = [
@@ -83,15 +94,13 @@ impl HistoryCell for SessionHeader {
         let mut lines = vec![Line::default()];
         for (row, text) in beside.into_iter().enumerate() {
             let mut spans = Vec::new();
-            if with_mark {
-                spans.push(Span::raw(" ".repeat(MARK_COL)));
-                spans.push(Span::styled(
-                    theme.glyphs.mark[row],
-                    theme.style(Role::Accent),
-                ));
-                spans.push(Span::raw(" ".repeat(TEXT_COL - MARK_COL - 8)));
-            } else {
-                spans.push(Span::raw(" ".repeat(text_col)));
+            match &mark {
+                Some(mark) => {
+                    spans.push(Span::raw(" ".repeat(MARK_COL)));
+                    spans.extend(mark[row].iter().cloned());
+                    spans.push(Span::raw(" ".repeat(TEXT_COL - MARK_COL - mascot::WIDTH)));
+                }
+                None => spans.push(Span::raw(" ".repeat(text_col))),
             }
             spans.extend(text);
             lines.push(truncate_line(&Line::from(spans), width));
@@ -114,6 +123,40 @@ impl HistoryCell for SessionHeader {
 }
 
 impl SessionHeader {
+    /// The workflow's mascot and the look it takes now.
+    pub fn mascot(&self, light: bool) -> (Mascot, Look) {
+        (
+            Mascot::for_workflow(&self.workflow),
+            Look::new(self.ultra, light),
+        )
+    }
+
+    /// The mascot's three rows of cells beside the lines: blank where its picture covers them,
+    /// and none when it isn't drawn (`ui.mascot = "off"`, a terminal too narrow, or the ASCII
+    /// glyphs without a picture). An ultra look's frame follows the clock, so a still clock
+    /// draws its first.
+    fn mascot_rows(&self, ctx: &RenderCtx<'_>) -> Option<[Vec<Span<'static>>; mascot::ROWS]> {
+        let theme = ctx.theme;
+        let drawn = theme.mascot != MascotDrawing::Off
+            && usize::from(ctx.width) >= MARK_MIN_WIDTH
+            && (theme.mascot_pictures || !theme.glyphs.is_ascii());
+        if !drawn {
+            return None;
+        }
+        if theme.mascot_pictures {
+            return Some(std::array::from_fn(|_| {
+                vec![Span::raw(" ".repeat(mascot::WIDTH))]
+            }));
+        }
+        let (mascot, look) = self.mascot(theme.brightness == Brightness::Light);
+        let frame = if look.is_ultra() && !theme.reduced_motion {
+            ctx.clock.frame(mascot.frame_time(), mascot::FRAMES)
+        } else {
+            0
+        };
+        Some(mascot::rows(mascot, look, frame, theme))
+    }
+
     /// `Claude Code · Opus 5.5 with xhigh effort`, leaving out what isn't known.
     fn agent_line(&self) -> Option<String> {
         let known = |part: &Option<String>| {
@@ -164,6 +207,13 @@ impl SessionHeader {
                 Span::styled("/resume", theme.style(Role::Code)),
             ]);
         }
+        if let Some(old) = &self.way_back {
+            let old = sanitize_line(old);
+            notes.push(vec![Span::styled(
+                format!("/resume {old} picks the last one up again"),
+                dim,
+            )]);
+        }
         notes
     }
 }
@@ -202,8 +252,14 @@ fn shorten_folder(folder: &str, room: usize) -> String {
 }
 
 #[cfg(test)]
+#[path = "header_golden.rs"]
+mod golden;
+
+#[cfg(test)]
 mod tests {
     use std::time::Instant;
+
+    use ratatui::style::Color;
 
     use super::*;
     use crate::render::Clock;
@@ -218,6 +274,7 @@ mod tests {
             model: Some("Opus 5.5".into()),
             effort: Some("xhigh".into()),
             workflow: "council".into(),
+            ultra: None,
             folder: "~/github/argonauts".into(),
             agents: vec![
                 AgentReady {
@@ -233,6 +290,7 @@ mod tests {
             ],
             runs_going: 2,
             runs_need_you: 0,
+            way_back: None,
         }
     }
 
@@ -243,28 +301,99 @@ mod tests {
     }
 
     #[test]
-    fn a_mark_with_three_lines_beside_it_and_quiet_notes_under_it() {
+    fn a_mascot_with_three_lines_beside_it_and_quiet_notes_under_it() {
         let theme = theme();
         let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
         let lines = header().lines(&ctx);
         assert_eq!(
             plain_text(&lines),
-            "\n    ▟▙     Argonauts Code v0.0.1\n   \
-             ▟██▙    Claude Code · Opus 5.5 with xhigh effort · Council\n \
-             ▝▀▀▀▀▀▀▘  ~/github/argonauts\n\
+            "\n    ▗█▖ ▗▘ Argonauts Code v0.0.1\n \
+             ▗▙  █ ▗▛▘ Claude Code · Opus 5.5 with xhigh effort · Council\n  \
+             ▀█████▄▘ ~/github/argonauts\n\
              \n  \
              Codex: logged out · run codex login\n  \
              2 runs going · /resume\n"
         );
-        assert_eq!(lines[1].spans[1].style, theme.style(Role::Accent));
-        assert!(
-            lines[1].spans[3]
+        let span = |line: usize, text: &str| {
+            lines[line]
+                .spans
+                .iter()
+                .find(|span| span.content.trim() == text)
+                .unwrap_or_else(|| panic!("{text:?} on line {line}"))
                 .style
+        };
+        assert_eq!(span(1, "█").fg, Some(Color::Rgb(0xe8, 0xa3, 0x3d)));
+        assert!(
+            span(1, "Argonauts Code")
                 .add_modifier
                 .contains(Modifier::BOLD)
         );
-        assert_eq!(lines[1].spans[4].style, theme.style(Role::Dim));
+        assert_eq!(span(1, "v0.0.1"), theme.style(Role::Dim));
         assert_eq!(lines[6].spans[2].style, theme.style(Role::Code));
+    }
+
+    #[test]
+    fn the_mascot_follows_the_workflow_and_its_look_the_ultra_mode_and_the_background() {
+        let first_row = |header: &SessionHeader, theme: &Theme| {
+            let ctx = RenderCtx::new(80, theme, Clock::still(Instant::now()));
+            header.lines(&ctx)[1].clone()
+        };
+        let mut captain = header();
+        captain.workflow = "captain".into();
+        let row = first_row(&captain, &theme());
+        assert!(plain_text(&[row]).starts_with("  ▗███▖▐▀▖ Argonauts Code"));
+        // Claude Code's ultracode turns it purple, and the shell it holds up gold.
+        captain.ultra = Some(UltraColour::Purple);
+        let row = first_row(&captain, &theme());
+        assert_eq!(row.spans[2].style.fg, Some(Color::Rgb(0xaf, 0x87, 0xff)));
+        assert_eq!(row.spans[8].style.fg, Some(Color::Rgb(0xe8, 0xa3, 0x3d)));
+        captain.ultra = None;
+        let mut light = Theme::light();
+        light.glyphs = Glyphs::UNICODE;
+        let row = first_row(&captain, &light);
+        assert_eq!(row.spans[2].style.fg, Some(Color::Rgb(0xb0, 0x70, 0x20)));
+    }
+
+    #[test]
+    fn a_picture_leaves_the_cells_blank_and_off_or_ascii_draws_none() {
+        let draw = |theme: &Theme| {
+            let ctx = RenderCtx::new(80, theme, Clock::still(Instant::now()));
+            plain_text(&header().lines(&ctx)[1..2])
+        };
+        let mut pictures = theme();
+        pictures.mascot_pictures = true;
+        assert_eq!(draw(&pictures), "           Argonauts Code v0.0.1");
+        let mut off = theme();
+        off.mascot = MascotDrawing::Off;
+        assert_eq!(draw(&off), "  Argonauts Code v0.0.1");
+        let mut ascii = theme();
+        ascii.glyphs = Glyphs::ASCII;
+        assert_eq!(draw(&ascii), "  Argonauts Code v0.0.1");
+        ascii.mascot_pictures = true;
+        assert_eq!(draw(&ascii), "           Argonauts Code v0.0.1");
+    }
+
+    #[test]
+    fn an_ultra_look_sweeps_its_light_with_the_clock_unless_motion_is_reduced() {
+        let mut header = header();
+        header.ultra = Some(UltraColour::Blue);
+        let start = Instant::now();
+        let lit = Some(Color::Rgb(0xbf, 0xd8, 0xff));
+        let lit_at = |theme: &Theme, after: std::time::Duration| {
+            let ctx = RenderCtx::new(80, theme, Clock::new(start, start + after));
+            header.lines(&ctx)[1..4]
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .filter(|span| span.style.fg == lit)
+                .count()
+        };
+        let theme = theme();
+        assert_eq!(lit_at(&theme, std::time::Duration::ZERO), 0);
+        // Halfway through the Hydra's 3.6 s the light is on its middle.
+        assert!(lit_at(&theme, std::time::Duration::from_millis(1800)) > 0);
+        let mut still = theme.clone();
+        still.reduced_motion = true;
+        assert_eq!(lit_at(&still, std::time::Duration::from_millis(1800)), 0);
     }
 
     #[test]
@@ -305,7 +434,7 @@ mod tests {
         let lines = long.lines(&ctx);
         assert_eq!(
             plain_text(&lines[3..4]),
-            " ▝▀▀▀▀▀▀▘  /…/work/ui-tests/repo-a"
+            "  ▀█████▄▘ /…/work/ui-tests/repo-a"
         );
         for line in &lines {
             assert!(line.width() <= 40, "{line:?}");
@@ -334,8 +463,9 @@ mod tests {
         let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
         let second = |header: &SessionHeader| {
             plain_text(&header.lines(&ctx)[2..3])
-                .trim_start_matches([' ', '▟', '█', '▙'])
-                .to_owned()
+                .chars()
+                .skip(TEXT_COL)
+                .collect::<String>()
         };
         let mut header = header();
         header.model = None;
@@ -362,6 +492,7 @@ mod tests {
             model: Some("Haiku 4.5".to_owned()),
             effort: None,
             workflow: "captain".to_owned(),
+            ultra: None,
             agents: Vec::new(),
             runs_going: 0,
             ..header()

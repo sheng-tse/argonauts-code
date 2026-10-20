@@ -30,6 +30,7 @@ use crate::bridge::settings::theme_for;
 use crate::bridge::{Bridge, Effects, TakeOverJob, TerminalJob};
 use crate::cell::{Notice, Tone};
 use crate::keymap::Keymap;
+use crate::mascot::Graphics;
 use crate::model::{VerbPicker, ViewModel};
 use crate::state::TerminalInfo;
 use crate::terminal::InlineTerminal;
@@ -126,6 +127,11 @@ impl<W: Write> Screen<W> {
         };
         screen.refresh_keymap();
         screen
+    }
+
+    /// The terminal draws pictures through `graphics`, at `cell` pixels a cell.
+    pub(super) fn use_pictures(&mut self, graphics: Option<Graphics>, cell: Option<(u16, u16)>) {
+        self.ui.use_pictures(graphics, cell);
     }
 
     /// The process's own terminal: its modes go back on after a child program, stop signals

@@ -51,6 +51,108 @@ impl ModelsLevel {
     }
 }
 
+/// One model list `/model` draws from, by the CLI or endpoint whose list it is: when it was
+/// read last, and whether it's being asked again or its last answer couldn't be read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSource {
+    pub cli: String,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub listed: Option<time::OffsetDateTime>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub asking: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub failed: bool,
+    /// What its list leaves out here and why, as a sentence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// What a CLI that lists its models by provider says of one, as OpenCode's `model.list` does,
+/// for its row on the CLI's level.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ListedFacts {
+    /// The heading over its provider's group, such as "Ollama" or "OpenCode Zen".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Its context window in tokens: the least of what its CLI and its server say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
+    /// It can't use tools, so on its CLI it reads and edits no file.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_tools: bool,
+    /// It thinks before it answers, where its server says.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub thinking: bool,
+    /// Where it runs, for a hosted model: "OpenCode Zen".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosted_by: Option<String>,
+    /// What it takes of this machine's memory, for a model that runs here, when that's known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<ModelMemory>,
+}
+
+/// What a model on this machine takes of its memory, at its window, and whether that fits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelMemory {
+    /// In bytes: its weights and what its window needs, as measured once it loaded.
+    pub ram: u64,
+    pub fit: Fit,
+    /// For one not installed: its download size, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download: Option<u64>,
+}
+
+/// Whether a model fits the memory models may use here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "fit")]
+pub enum Fit {
+    /// Loaded now.
+    Loaded,
+    /// Room beside the loaded models and free now.
+    Fits,
+    /// Room beside the loaded models, but more than is free now, so other apps get squeezed.
+    Tight {
+        /// A smaller window it would fit at, and what it takes there, in bytes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<(u64, u64)>,
+    },
+    /// Under the most models may use only once the other models are freed.
+    FitsAlone,
+    /// Over the most models may use here.
+    TooBig {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<(u64, u64)>,
+    },
+}
+
+/// What this machine gives models, in bytes: the most they may use, its memory, what loaded
+/// models hold now, and what is free beside the other apps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineMemory {
+    pub limit: u64,
+    pub total: u64,
+    pub in_use: u64,
+    pub free: u64,
+    /// A Mac, as the line names it.
+    #[serde(default)]
+    pub mac: bool,
+}
+
+impl MachineMemory {
+    /// Where a model taking `ram` bytes stands here.
+    pub fn fit(&self, ram: u64) -> Fit {
+        if ram > self.limit {
+            Fit::TooBig { at: None }
+        } else if ram > self.limit.saturating_sub(self.in_use) {
+            Fit::FitsAlone
+        } else if ram > self.free {
+            Fit::Tight { at: None }
+        } else {
+            Fit::Fits
+        }
+    }
+}
+
 /// The line under the models list for the highlighted model, such as "xhigh effort". It shows
 /// only the levels that model supports.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

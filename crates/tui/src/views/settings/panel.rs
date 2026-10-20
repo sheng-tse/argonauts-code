@@ -26,6 +26,7 @@ pub fn edit_key(editor: &mut Option<Picker>, key: KeyEvent) -> Option<ViewOutcom
     Some(match flow::advance(picker, event) {
         Step::Stay | Step::Preview { .. } => ViewOutcome::Consumed,
         Step::Ask(view) => ViewOutcome::Request(view),
+        Step::Send(command) => ViewOutcome::Send(command),
         Step::Done(command) => {
             *editor = None;
             ViewOutcome::Send(command)

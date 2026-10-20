@@ -105,10 +105,10 @@ pub fn render_profile(profile: &SandboxProfile) -> String {
     if !profile.network {
         sbpl.push_str(NETWORK_OFF);
         match profile.proxy_port {
-            Some(port) => sbpl.push_str(&format!(
+            Some(port) if !profile.loopback => sbpl.push_str(&format!(
                 "(allow network-outbound (remote ip \"localhost:{port}\"))\n"
             )),
-            None => sbpl.push_str(LOOPBACK),
+            _ => sbpl.push_str(LOOPBACK),
         }
         // A direct turn's questions go to the app, which may be asked before an edit.
         if let Some(port) = profile.ask_port.filter(|_| profile.proxy_port.is_some()) {
@@ -125,6 +125,7 @@ fn push_rule(sbpl: &mut String, rule: &PathRule, network: bool) {
         RuleKind::Write => (&["allow file-write*"], "subpath"),
         RuleKind::Deny => (&["deny file-read* file-write*"], "subpath"),
         RuleKind::Stat => (&["allow file-read-metadata"], "literal"),
+        RuleKind::List => (&["allow file-read-metadata file-read-data"], "literal"),
         RuleKind::Read => (&["allow file-read*"], "subpath"),
         RuleKind::ReadOnly => (&["allow file-read*", "deny file-write*"], "subpath"),
     };
@@ -151,7 +152,9 @@ fn push_rule(sbpl: &mut String, rule: &PathRule, network: bool) {
     let sockets = match rule.kind {
         RuleKind::Deny => "deny network-outbound",
         RuleKind::Write if network => "allow network-outbound",
-        RuleKind::Write | RuleKind::Stat | RuleKind::Read | RuleKind::ReadOnly => return,
+        RuleKind::Write | RuleKind::Stat | RuleKind::List | RuleKind::Read | RuleKind::ReadOnly => {
+            return;
+        }
     };
     let remote: Vec<String> = filters("subpath")
         .iter()
@@ -276,6 +279,8 @@ mod tests {
             proxy_port: None,
             ask_port: None,
             closed: Vec::new(),
+            listable: Vec::new(),
+            loopback: false,
         }
     }
 
@@ -655,6 +660,52 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         ] {
             assert_eq!(make(protected), "blocked\n", "{protected}");
         }
+    }
+
+    /// OpenCode finds the real path of Claude Code's folder before it serves anything, which
+    /// opens the folder. That works in its sessions, while the files in it stay unreadable, and
+    /// another CLI's sessions can't open the folder at all.
+    #[test]
+    fn opencode_finds_claude_codes_folder_but_reads_nothing_in_it() {
+        let (_temp, root) = scratch();
+        let home = root.join("home");
+        let argonauts = home.join(".argonauts");
+        let session = argonauts.join("state/repo/conversations/conversation-1/turn-1");
+        let checkout = root.join("checkout");
+        let claude = home.join(".claude");
+        for dir in [&session, &checkout, &claude] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let settings = claude.join("settings.json");
+        std::fs::write(&settings, "{}").unwrap();
+        let profile_of = |agent_id| {
+            let input = ProfileInput {
+                access: Access::Direct,
+                agent_id,
+                workdir: &checkout,
+                session_dir: &session,
+                argonauts_home: &argonauts,
+                user_home: &home,
+                base_worktree: None,
+                status_file: None,
+                extra_writable: &[],
+                sees_other_worktrees: false,
+                commits: false,
+            };
+            SandboxProfile {
+                mode: SandboxMode::Os,
+                ..session_profile(&SandboxProfile::default(), &input)
+            }
+        };
+        let opens = r#"if /bin/realpath "$1" >/dev/null 2>&1 && /bin/ls "$1" >/dev/null 2>&1; then echo opened; else echo blocked; fi"#;
+        let opencode = profile_of("opencode");
+        assert_eq!(run(&opencode, &checkout, opens, &[&claude]), "opened\n");
+        assert_eq!(
+            run(&opencode, &checkout, TRY_READ, &[&settings]),
+            "blocked\n"
+        );
+        let codex = profile_of("codex");
+        assert_eq!(run(&codex, &checkout, opens, &[&claude]), "blocked\n");
     }
 
     #[test]

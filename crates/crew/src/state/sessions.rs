@@ -66,6 +66,9 @@ pub struct SessionRecord {
     /// checked against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<Box<CliWorkflowRun>>,
+    /// The folder its CLI last worked in, as its launch says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<PathBuf>,
 }
 
 impl SessionRecord {
@@ -85,9 +88,23 @@ impl SessionRecord {
         self.asked.as_ref().unwrap_or(&self.started.worker)
     }
 
-    /// Still running, paused, or stopped with the run, so its step resumes it when re-entered.
+    /// Still running, paused, stopped with the run, or cut by a spend limit with its CLI
+    /// session kept, so its step resumes it when re-entered: one a limit cut carries on once
+    /// you raise the limit, rather than being asked again from the start.
     pub fn resumable(&self) -> bool {
-        self.end.is_none() || self.paused() || self.stopped_with_run
+        self.end.is_none() || self.paused() || self.stopped_with_run || self.cut_by_limit()
+    }
+
+    /// Ended at a spend limit, such as its CLI's own cap, with a CLI session to carry on.
+    fn cut_by_limit(&self) -> bool {
+        matches!(
+            self.end,
+            Some(SessionEnd {
+                reason: EndReason::LimitHit { .. },
+                cli_session: Some(_),
+                ..
+            })
+        )
     }
 }
 
@@ -131,6 +148,7 @@ impl Sessions {
                         written: BTreeSet::new(),
                         network_retries: 0,
                         workflow: None,
+                        workdir: None,
                     };
                     self.by_key.insert(key.clone(), record);
                 }
@@ -162,10 +180,12 @@ impl Sessions {
                     record.written.insert(diff.path.clone());
                 }
             }
-            SessionEvent::Input(_)
-            | SessionEvent::Queued(_)
-            | SessionEvent::Delivered { .. }
-            | SessionEvent::Limit(_) => {}
+            SessionEvent::Input(input) => {
+                if let Some(record) = self.by_key.get_mut(key) {
+                    record.workdir = Some(input.launch.cwd.clone());
+                }
+            }
+            SessionEvent::Queued(_) | SessionEvent::Delivered { .. } | SessionEvent::Limit(_) => {}
         }
     }
 

@@ -1,0 +1,10 @@
+{
+  "synthetic": true,
+  "why": "none of these servers is installed on the machine the fixtures were written on, so nothing was called",
+  "lmstudio-models.json": "written by hand in the shape of LM Studio's GET /api/v1/models as its REST docs describe it (https://lmstudio.ai/docs/developer/rest/list): key, display_name, max_context_length, loaded_instances[].config.context_length, capabilities.trained_for_tool_use and reasoning; models and numbers made up",
+  "llama-server-models.json": "written by hand in the shape of llama-server's GET /v1/models from its README: data[].meta.n_ctx_train",
+  "llama-server-props.json": "written by hand in the shape of llama-server's GET /props from its README: default_generation_settings.n_ctx, which its example shows per slot, and total_slots",
+  "llama-server-slots.json": "written by hand in the shape of llama-server's GET /slots from its README: one object a slot, each with its n_ctx",
+  "vllm-models.json": "written by hand in the shape of vLLM's GET /v1/models: data[].max_model_len, the window it serves the model at",
+  "written": "2026-10-19"
+}

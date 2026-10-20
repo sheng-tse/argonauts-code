@@ -321,7 +321,7 @@ async fn a_turn_that_wont_join_and_clear_take_the_notice_away() {
         })
         .await;
     driver
-        .until(|event| matches!(event, AppEvent::ConversationCleared))
+        .until(|event| matches!(event, AppEvent::ConversationCleared { .. }))
         .await;
     driver.exit().await;
 

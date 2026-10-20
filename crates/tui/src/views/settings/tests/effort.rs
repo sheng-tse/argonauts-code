@@ -53,7 +53,7 @@ fn the_arrows_set_the_highlighted_models_effort_and_enter_saves_both() {
     let line = effort(&screen).expect("Default takes the CLI's levels");
     assert_eq!(line.level(), None, "the CLI decides until you choose");
     assert!(
-        shown(&screen, 80).contains("◉ the CLI's own effort  ←/→ to adjust"),
+        shown(&screen, 80).contains("◉ the CLI's own effort  ←/→  to adjust"),
         "{}",
         shown(&screen, 80)
     );
@@ -67,7 +67,7 @@ fn the_arrows_set_the_highlighted_models_effort_and_enter_saves_both() {
     assert_eq!(line.level(), Some("xhigh"));
     let text = shown(&screen, 80);
     assert!(
-        text.contains("◉ xhigh effort (default)  ←/→ to adjust"),
+        text.contains("◉ xhigh effort (default)  ←/→  to adjust"),
         "{text}"
     );
     let lines: Vec<&str> = text.lines().collect();
@@ -90,12 +90,15 @@ fn the_arrows_set_the_highlighted_models_effort_and_enter_saves_both() {
         "max is the end"
     );
 
-    // The level carries over to the next model, and a model without levels hides the line.
+    // The level carries over to the next model, and a model without levels says it takes
+    // none, as Claude Code's line does.
     screen.press(KeyCode::Down);
     assert_eq!(pointed_label(&screen), "Opus 4.8");
     assert_eq!(effort(&screen).unwrap().level(), Some("max"));
     screen.press(KeyCode::Down);
-    assert_eq!(effort(&screen), None);
+    assert!(effort(&screen).unwrap().levels.is_empty());
+    let none = format!("○ Effort not supported for {}", pointed_label(&screen));
+    assert!(shown(&screen, 80).contains(&none), "{}", shown(&screen, 80));
     assert!(!shown(&screen, 80).contains("to adjust"));
     screen.press(KeyCode::Up);
     screen.press(KeyCode::Left);
@@ -178,7 +181,7 @@ fn without_vim_keys_no_hint_names_h_or_l() {
     screen.press(KeyCode::Enter);
     screen.press(KeyCode::Down);
     let text = shown(&screen, 120);
-    assert!(text.contains("←/→ to adjust") && text.contains("↑↓ to move"));
+    assert!(text.contains("←/→  to adjust") && text.contains("↑↓ to move"));
     assert!(!text.contains("h/l") && !text.contains("j/k"), "{text}");
 }
 
@@ -338,7 +341,7 @@ fn the_effort_slider_adjusts_and_sends_the_level() {
         "Smarter",
         "▲",
         "What xhigh means. The model's default",
-        "←/→ to adjust · Enter to confirm · Esc to cancel",
+        "←/→  to adjust · Enter to confirm · Esc to cancel",
     ] {
         assert!(text.contains(part), "{part:?} in\n{text}");
     }
@@ -558,7 +561,7 @@ fn a_model_fixed_at_one_level_shows_it_with_nothing_to_adjust() {
     }
     let text = shown(&screen, 80);
     assert!(
-        text.contains("◉ the CLI's own effort  ←/→ to adjust"),
+        text.contains("◉ the CLI's own effort  ←/→  to adjust"),
         "{text}"
     );
     screen.press(KeyCode::Down);

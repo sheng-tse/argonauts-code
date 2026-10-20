@@ -18,6 +18,9 @@ fn past_the_question_guard() {
     std::thread::sleep(Duration::from_millis(500));
 }
 
+/// No model server on this computer is asked, so the setup finds none of yours.
+const NO_LOCAL_SERVERS: [&str; 2] = ["--set", "registry.local_servers=false"];
+
 fn argonauts(repo: &TempRepo, dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_argonauts"))
         .args(args)
@@ -226,6 +229,7 @@ fn a_first_start_with_argonauts_home_set_writes_nothing_under_your_home() {
     // Answers every call with its version, so nothing can reach an agent.
     script(&bin, "claude", "echo '2.1.284 (Claude Code)'");
     let command = PtyCommand::new(env!("CARGO_BIN_EXE_argonauts"))
+        .args(NO_LOCAL_SERVERS)
         .cwd(repo.root())
         .envs(repo.envs())
         .env("PATH", bin.clone().into_os_string())
@@ -275,6 +279,7 @@ fn at_lists_the_repos_files_and_completes_one() {
     // Answers every call with its version, so nothing can reach an agent.
     script(&bin, "claude", "echo '2.1.284 (Claude Code)'");
     let command = PtyCommand::new(env!("CARGO_BIN_EXE_argonauts"))
+        .args(NO_LOCAL_SERVERS)
         .cwd(repo.root())
         .envs(repo.envs())
         .env("PATH", bin.clone().into_os_string())
@@ -527,7 +532,11 @@ fn auto_off_leaves_its_marker_in_your_home() {
 #[test]
 fn models_says_how_to_discover_some() {
     let repo = TempRepo::new().unwrap();
-    let output = argonauts(&repo, &elsewhere(&repo), &["models"]);
+    let output = argonauts(
+        &repo,
+        &elsewhere(&repo),
+        &["models", NO_LOCAL_SERVERS[0], NO_LOCAL_SERVERS[1]],
+    );
     assert!(output.status.success(), "{}", describe(&output));
     assert!(
         stdout(&output).contains("--discover"),

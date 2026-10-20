@@ -10,6 +10,7 @@ use argonauts_core::events::task::{TaskEvent, TaskState};
 use argonauts_core::layout::run_files;
 use argonauts_core::limits::{CandidateQuery, RecoveryAction, StopContext};
 use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::steps::StepName;
 
 use crate::engine::host::Host;
 use crate::engine::job_fallback;
@@ -236,18 +237,36 @@ pub(crate) fn retry_on_other_provider(
     Ok(Some(to))
 }
 
-/// The first valid candidate from another model provider than the worker's and the reviewers',
-/// leaving out any the run knows is out, such as a CLI that crashed twice in a row.
+/// The model providers that have built the task: every build session's, and its worker's as
+/// the model it runs.
+pub(crate) fn providers_tried(host: &Host, record: &TaskEntry) -> Vec<String> {
+    let task = &record.spec.id;
+    let mut tried: Vec<String> = host.read(|state| {
+        state
+            .sessions
+            .by_key
+            .values()
+            .filter(|s| s.task.as_ref() == Some(task) && s.started.step == Some(StepName::Build))
+            .map(|s| s.started.provider.clone())
+            .collect()
+    });
+    let worker = roles::runs(host, &worker_of(host, record));
+    tried.push(roles::provider(host, &worker));
+    tried.sort();
+    tried.dedup();
+    tried
+}
+
+/// The first valid candidate from a model provider that hasn't tried the task and isn't a
+/// reviewer's, leaving out any the run knows is out, such as a CLI that crashed twice in a row.
+/// Each counts as the model it runs, so a bare CLI set to the worker's own model is never
+/// another.
 pub(crate) fn other_provider(host: &Host, record: &TaskEntry) -> Option<ModelRef> {
     let worker = worker_of(host, record);
-    let mut exclude = vec![roles::provider(host, &worker)];
-    exclude.extend(
-        record
-            .spec
-            .reviewers
-            .iter()
-            .map(|r| roles::provider(host, r)),
-    );
+    let runs = |model: &ModelRef| roles::runs(host, model);
+    let provider = |model: &ModelRef| roles::provider(host, &runs(model));
+    let mut exclude = providers_tried(host, record);
+    exclude.extend(record.spec.reviewers.iter().map(provider));
     exclude.sort();
     exclude.dedup();
     let query = CandidateQuery {
@@ -265,22 +284,19 @@ pub(crate) fn other_provider(host: &Host, record: &TaskEntry) -> Option<ModelRef
         .into_iter()
         .map(|candidate| candidate.worker)
         .find(|model| {
-            *model != worker
-                && !exclude.contains(&roles::provider(host, model))
+            runs(model) != runs(&worker)
+                && !exclude.contains(&provider(model))
                 && !job_fallback::known_out(host, model)
         })
 }
 
 /// Another worker for a limit fallback, of any provider but the reviewers', and none the run
-/// knows is out.
+/// knows is out. One that runs the worker's own model is no other.
 pub(crate) fn any_other(host: &Host, record: &TaskEntry) -> Option<ModelRef> {
     let worker = worker_of(host, record);
-    let reviewers: Vec<String> = record
-        .spec
-        .reviewers
-        .iter()
-        .map(|r| roles::provider(host, r))
-        .collect();
+    let runs = |model: &ModelRef| roles::runs(host, model);
+    let provider = |model: &ModelRef| roles::provider(host, &runs(model));
+    let reviewers: Vec<String> = record.spec.reviewers.iter().map(provider).collect();
     let query = CandidateQuery {
         task: record.spec.clone(),
         role: RoleName::Worker,
@@ -296,8 +312,8 @@ pub(crate) fn any_other(host: &Host, record: &TaskEntry) -> Option<ModelRef> {
         .into_iter()
         .map(|candidate| candidate.worker)
         .find(|model| {
-            *model != worker
-                && !reviewers.contains(&roles::provider(host, model))
+            runs(model) != runs(&worker)
+                && !reviewers.contains(&provider(model))
                 && !job_fallback::known_out(host, model)
         })
 }
@@ -326,7 +342,8 @@ mod tests {
     #[test]
     fn crashes_and_stuck_sessions_are_failures_and_agent_stops_are_not() {
         assert!(is_failure(&EndReason::Stuck {
-            watchdog: Watchdog::Inactivity
+            watchdog: Watchdog::Inactivity,
+            calls: None
         }));
         assert!(is_failure(&EndReason::Crashed {
             message: "exit 1".into()

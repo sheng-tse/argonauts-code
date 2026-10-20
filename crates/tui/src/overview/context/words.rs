@@ -70,6 +70,17 @@ pub(super) fn as_left(recorded: &RecordedContext, spent: &Spend, now: OffsetDate
     parts.join(" \u{b7} ")
 }
 
+/// `3:02 AM` for a time today, else with its day as [`day_and_time`] writes it, in the zone
+/// `now` is in.
+pub(super) fn time_of(at: OffsetDateTime, now: OffsetDateTime) -> String {
+    let local = at.to_offset(now.offset());
+    if local.date() == now.date() {
+        ClockTime::from(local).to_string()
+    } else {
+        day_and_time(at, now)
+    }
+}
+
 /// `today at 1:52 AM`, `yesterday at 1:52 AM`, then the day, `Oct 8 at 1:52 AM`, with its year
 /// when that isn't this one, in the zone `now` is in.
 fn day_and_time(at: OffsetDateTime, now: OffsetDateTime) -> String {

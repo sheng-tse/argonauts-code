@@ -232,7 +232,7 @@ mod tests {
 
         // An answer nobody asked for from here is somebody else's.
         let context = ViewData::Context {
-            view: argonauts_core::views::ContextView { rows: Vec::new() },
+            view: argonauts_core::views::ContextView::default(),
         };
         assert!(!watch.answered(&context, t0));
     }

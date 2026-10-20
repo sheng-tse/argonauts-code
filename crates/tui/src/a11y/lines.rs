@@ -56,8 +56,19 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
         | AppEvent::RepoFiles { .. }
         | AppEvent::BackgroundRuns { .. }
         | AppEvent::PastBegins
-        | AppEvent::PastDrawn
-        | AppEvent::ConversationCleared => Vec::new(),
+        | AppEvent::PastDrawn => Vec::new(),
+        // The screen starts over, which these modes never do, so a line says so.
+        AppEvent::ConversationCleared { way_back } => labeled(
+            "notice",
+            &match way_back {
+                Some(old) => {
+                    format!(
+                        "Started a new conversation. /resume {old} picks the last one up again."
+                    )
+                }
+                None => "Started a new conversation.".to_owned(),
+            },
+        ),
         AppEvent::SettingChanged {
             key,
             value,
@@ -101,6 +112,8 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             said.extend(lines.iter().cloned());
             said
         }
+        // Said once, whole, when its report comes.
+        AppEvent::ReportSoFar { .. } | AppEvent::CommandWorking { .. } => Vec::new(),
         AppEvent::Templates { list } => {
             let said = |label: &str, entries: &[argonauts_core::template_list::TemplateEntry]| {
                 let names: Vec<String> = entries
@@ -305,6 +318,7 @@ fn conversation_lines(event: &ConversationEvent, state: &AppState) -> Vec<String
         },
         ConversationEvent::TurnFailed { error, .. } => labeled(&format!("{agent_id} error"), error),
         ConversationEvent::TurnCancelled { .. } => vec![format!("{agent_id}: stopped")],
+        ConversationEvent::TurnStopped { why, .. } => vec![format!("{agent_id}: {why}")],
         ConversationEvent::FellBack {
             from,
             to,

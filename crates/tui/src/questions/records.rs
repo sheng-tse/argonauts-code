@@ -153,6 +153,7 @@ pub fn outcome(
         (A::Cancel, K::Stuck) => format!("Cancelled {task}"),
         (A::Cancel, _) => format!("{title} · declined"),
         (A::Defer, _) => format!("Deferred {task}"),
+        (A::KeepWork, _) => format!("Kept {task}'s work for the checks"),
         (A::LetContinue, _) => match &opened.packet {
             ApprovalPacket::TakeOverReturn(back) => {
                 format!("{} continues {task}", names.worker(&back.worker))

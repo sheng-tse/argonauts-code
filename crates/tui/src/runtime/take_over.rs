@@ -8,6 +8,7 @@ use std::process::Stdio;
 
 use argonauts_core::adapter::KNOWN_AGENT_IDS;
 use argonauts_core::api::TakeOverTicket;
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::session::CommandSpec;
 use argonauts_core::settings::ui::TakeOverWhere;
 use tokio::process::Command;
@@ -41,16 +42,12 @@ pub enum TakeOverPlan {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TermEnv {
     pub in_tmux: bool,
-    /// `$SHELL`, for working in the worktree when the CLI's own UI can't run.
-    pub shell: Option<String>,
 }
 
 impl TermEnv {
     pub fn from_process() -> Self {
-        let set = |key: &str| std::env::var(key).ok().filter(|value| !value.is_empty());
         Self {
-            in_tmux: set("TMUX").is_some(),
-            shell: set("SHELL"),
+            in_tmux: std::env::var("TMUX").is_ok_and(|value| !value.is_empty()),
         }
     }
 }
@@ -65,8 +62,8 @@ pub fn plan_take_over_in(
     place: TakeOverWhere,
     env: &TermEnv,
 ) -> TakeOverPlan {
-    let Some(child) = child_argv(ticket, env) else {
-        return TakeOverPlan::Refused(ENDPOINT_REFUSAL.to_owned());
+    let Some(child) = ticket.command.as_ref().map(command_argv) else {
+        return TakeOverPlan::Refused(no_way_in(&ticket.agent_id));
     };
     let cwd = ticket
         .command
@@ -95,21 +92,17 @@ pub fn plan_take_over_in(
     }
 }
 
-/// The agent's own UI, with its environment changes through `env`. Without one, an agent
-/// with a UI of its own is out of plan usage, and you get your shell in the worktree; an endpoint
-/// has nothing to hand over.
-fn child_argv(ticket: &TakeOverTicket, env: &TermEnv) -> Option<Vec<String>> {
-    match &ticket.command {
-        Some(spec) => Some(command_argv(spec)),
-        None if has_own_ui(&ticket.agent_id) => Some(vec![
-            env.shell.clone().unwrap_or_else(|| "/bin/sh".to_owned()),
-        ]),
-        None => None,
+/// Why there's nothing to hand over: an endpoint has no screen at all, and a CLI either can't
+/// open a session in its own or has none for the task yet. Never a plain shell, which would
+/// look like the CLI's screen and say nothing.
+fn no_way_in(agent_id: &str) -> String {
+    if !KNOWN_AGENT_IDS.contains(&agent_id) && agent_id != "opencode" {
+        return ENDPOINT_REFUSAL.to_owned();
     }
-}
-
-fn has_own_ui(agent_id: &str) -> bool {
-    KNOWN_AGENT_IDS.contains(&agent_id) || agent_id == "opencode"
+    format!(
+        "{} has no session it can open in its own screen for this task. /reassign the task instead.",
+        DisplayNames::default().cli(agent_id)
+    )
 }
 
 fn command_argv(spec: &CommandSpec) -> Vec<String> {
@@ -261,10 +254,7 @@ mod tests {
 
     #[test]
     fn take_over_plan_is_argv_only() {
-        let tmux = TermEnv {
-            in_tmux: true,
-            shell: Some("/bin/zsh".into()),
-        };
+        let tmux = TermEnv { in_tmux: true };
         let child = [
             "env",
             "-u",
@@ -366,23 +356,21 @@ mod tests {
     }
 
     #[test]
-    fn an_endpoint_is_refused_and_an_out_of_plan_usage_agent_gets_a_shell() {
-        let env = TermEnv {
-            in_tmux: false,
-            shell: Some("/bin/zsh".into()),
-        };
+    fn an_endpoint_or_a_cli_with_no_way_in_is_refused_and_never_given_a_shell() {
+        let env = TermEnv { in_tmux: false };
         assert_eq!(
             plan_take_over_in(&ticket(None, "ollama"), TakeOverWhere::Here, &env),
             TakeOverPlan::Refused(ENDPOINT_REFUSAL.into())
         );
-        assert_eq!(
-            plan_take_over_in(&ticket(None, "codex"), TakeOverWhere::Here, &env),
-            TakeOverPlan::Here {
-                argv: vec!["/bin/zsh".into()],
-                cwd: "/work/task-002".into(),
-                notice: None,
-            }
-        );
+        for (id, name) in [("codex", "Codex"), ("opencode", "OpenCode")] {
+            assert_eq!(
+                plan_take_over_in(&ticket(None, id), TakeOverWhere::Here, &env),
+                TakeOverPlan::Refused(format!(
+                    "{name} has no session it can open in its own screen for this task. \
+                     /reassign the task instead."
+                ))
+            );
+        }
     }
 
     #[test]

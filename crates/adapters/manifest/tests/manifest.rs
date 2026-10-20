@@ -613,7 +613,7 @@ fn take_over_and_stop_come_from_the_manifest() {
     };
     let adapter = manifest_adapter(manifest);
     let spec = adapter
-        .interactive_resume("s-7", Path::new("/work"))
+        .interactive_resume(&SessionRequest::reopening("s-7", Path::new("/work")))
         .unwrap();
     assert_eq!(spec.args, ["--resume", "s-7", "--cwd", "/work"]);
     assert_eq!(spec.cwd, Path::new("/work"));
@@ -623,7 +623,7 @@ fn take_over_and_stop_come_from_the_manifest() {
 
     assert!(
         manifest_adapter(jsonl_plugin())
-            .interactive_resume("s-7", Path::new("/work"))
+            .interactive_resume(&SessionRequest::reopening("s-7", Path::new("/work")))
             .is_none()
     );
 }

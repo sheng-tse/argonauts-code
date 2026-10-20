@@ -29,7 +29,7 @@ use tokio::time::{Instant as TokioInstant, sleep_until};
 use super::context::{Context, Launch};
 use super::end::{CancelledBy, from_driver};
 use super::group::Group;
-use super::launch::input_event;
+use super::launch::{input_event, keep_launch};
 use super::observe::{Action, Observer};
 use super::outbox::Outbox;
 use super::request::{ReportFiles, session_server};
@@ -83,6 +83,7 @@ pub async fn run(running: Running, launch: Launch, driver: Arc<dyn SessionDriver
         prompt_via: PromptVia::StreamInput,
         ..launch.record.clone()
     };
+    keep_launch(&ctx.spec.session_dir, &record);
     out.session(input_event(
         record.clone(),
         ctx.spec.prompt.clone(),
@@ -336,16 +337,17 @@ impl Driven {
     /// driver acknowledged reads from its end.
     fn reason(&self) -> EndReason {
         let end = self.driver_end.as_ref();
+        let model = self.obs.facts.model.as_deref();
         match (&self.stop_cause, end) {
             (Some(cause), end) if !self.finished_before_stop => match (cause, end) {
                 (StopCause::Paused | StopCause::Stopped, Some(end))
                     if end.stop != DriverStop::Disconnected =>
                 {
-                    from_driver(&end.stop, self.cancelled_by)
+                    from_driver(&end.stop, self.cancelled_by, model)
                 }
                 _ => cause.reason(),
             },
-            (_, Some(end)) => from_driver(&end.stop, self.cancelled_by),
+            (_, Some(end)) => from_driver(&end.stop, self.cancelled_by, model),
             (Some(cause), None) => cause.reason(),
             (None, None) => EndReason::Crashed {
                 message: "the session driver never finished".to_owned(),
@@ -481,6 +483,8 @@ impl Driven {
             Some(SessionControl::Stop | SessionControl::StopTurn) => {
                 self.cancel(StopCause::Stopped);
             }
+            Some(SessionControl::Asking) => self.obs.asking(true),
+            Some(SessionControl::Answered) => self.obs.asking(false),
             // Only a CLI that says it can take these gets them, and none driven here does.
             Some(SessionControl::Send { uuid, .. }) => self.out.agent(AgentEvent::MessageState {
                 uuid,
@@ -593,6 +597,11 @@ impl Driven {
     }
 
     fn wrap_up(&mut self, dimension: Option<LimitDimension>) {
+        self.send_wrap_up(|via| Pending::wrap_up(dimension, via));
+    }
+
+    /// The one wrap-up a session gets, whichever asked for it.
+    fn send_wrap_up(&mut self, wrap_up: impl FnOnce(WrapUpVia) -> Pending) {
         if self.wrap_up_sent {
             return;
         }
@@ -603,7 +612,7 @@ impl Driven {
                 WrapUpVia::InterruptResume
             }
         };
-        self.send(Pending::wrap_up(dimension, via), true);
+        self.send(wrap_up(via), true);
     }
 
     fn act(&mut self, actions: Vec<Action>) {
@@ -611,9 +620,10 @@ impl Driven {
         let idle = self.driver_end.is_some();
         for action in actions {
             match action {
-                Action::WrapUp(_) | Action::Nudge { .. } if idle => {}
+                Action::WrapUp(_) | Action::CheckAndReport | Action::Nudge { .. } if idle => {}
                 Action::Stop(StopCause::Limit(_) | StopCause::Rotate { .. }) if idle => {}
                 Action::WrapUp(dimension) => self.wrap_up(dimension),
+                Action::CheckAndReport => self.send_wrap_up(|_| Pending::check_and_report()),
                 Action::Nudge { call, times } => self.send(Pending::note(call, times), true),
                 Action::Stop(cause) => self.cancel(cause),
                 Action::AskContext(_) => {}

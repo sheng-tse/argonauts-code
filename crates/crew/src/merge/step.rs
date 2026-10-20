@@ -93,7 +93,7 @@ pub async fn merge_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> 
         let (decided, approved) = match answer {
             Answer::Given(given) => *given,
             Answer::Pending(check) => {
-                match ask(host, call, &check, &blocked, &notices, &again).await? {
+                match ask(host, call, &check, &blocked, &notices, &again, &seen).await? {
                     Ok(asked) => asked,
                     // Something changed under the question, such as a task you rewound, so it opens
                     // again on what's true now.
@@ -353,14 +353,23 @@ async fn ask(
     blocked: &[(TaskId, QualityDebt)],
     notices: &[String],
     again: &Option<Again>,
+    seen: &[ApprovalId],
 ) -> EngineResult<Result<(ApprovalDecided, EvidenceSubject), String>> {
     let mut evidence = merge_packet::build(host, check).await?;
     // The merger writes the change's message while the question is open, and what that
     // costs is no new evidence: asked again after a pause, the question keeps the spend it
     // was first asked with, so an answer given to it still holds.
-    if let Some(spent) = host.read(asked_with) {
-        evidence.packet.spent = spent;
-        evidence.facts.spent = spent;
+    match host.read(asked_with) {
+        Some(spent) => {
+            evidence.packet.spent = spent;
+            evidence.facts.spent = spent;
+        }
+        // Answered while this question was being built, so that answer is the one to act on.
+        None => {
+            if let Some(answer) = answered(host, call, seen).await? {
+                return Ok(Ok(answer));
+            }
+        }
     }
     let Some(approved) = evidence.subject().cloned() else {
         return Err(EngineError::Refused(

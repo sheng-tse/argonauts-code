@@ -2,7 +2,7 @@
 //! model, and the known endpoints are the only concrete names.
 
 use argonauts_core::AuthMode;
-use argonauts_core::input::EFFORT_LEVELS;
+use argonauts_core::input::REASONING_LEVELS;
 use argonauts_core::names::ModelRef;
 use argonauts_core::registry::{CostModel, CostUnit, ModelAccess, ModelEntry, RegistryKind};
 use argonauts_core::settings::Settings;
@@ -77,13 +77,13 @@ pub fn usual_efforts(cli: &str) -> &'static [&'static str] {
     match cli {
         "claude-code" | "codex" => &["low", "medium", "high", "xhigh", "max"],
         "antigravity-cli" => &["low", "medium", "high", "max"],
-        _ => EFFORT_LEVELS,
+        _ => REASONING_LEVELS,
     }
 }
 
 /// A CLI model reached through `adapter`: your plan's usage, or dollars when
 /// `agents.<adapter>.auth = "api-key"`, priced by `agents.<adapter>.price` when you set one.
-pub(crate) fn cli_entry(settings: &Settings, adapter: &str, model: Option<&str>) -> ModelEntry {
+pub fn cli_entry(settings: &Settings, adapter: &str, model: Option<&str>) -> ModelEntry {
     let provider = model
         .and_then(super::provider_from_model_id)
         .or_else(|| cli_default_provider(adapter))
@@ -110,6 +110,11 @@ pub(crate) fn cli_entry(settings: &Settings, adapter: &str, model: Option<&str>)
         tier: None,
         name: None,
         description: None,
+        window: None,
+        ram_bytes: None,
+        thinking: None,
+        variants: None,
+        listed_cost: false,
     }
 }
 
@@ -240,9 +245,13 @@ mod tests {
             usual_efforts("antigravity-cli"),
             ["low", "medium", "high", "max"]
         );
-        assert_eq!(usual_efforts("ollama"), EFFORT_LEVELS);
+        assert_eq!(usual_efforts("ollama"), REASONING_LEVELS);
         for cli in ["claude-code", "codex", "antigravity-cli"] {
-            assert!(usual_efforts(cli).iter().all(|l| EFFORT_LEVELS.contains(l)));
+            assert!(
+                usual_efforts(cli)
+                    .iter()
+                    .all(|l| argonauts_core::input::EFFORT_LEVELS.contains(l))
+            );
         }
     }
 }

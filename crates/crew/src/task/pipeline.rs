@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use tokio_util::sync::CancellationToken;
 
-use argonauts_core::events::session::{EndReason, SessionEnd, loaded_words};
+use argonauts_core::events::session::{
+    EndReason, InputPart, SessionEnd, loaded_words, stuck_words,
+};
 use argonauts_core::events::task::{TaskEvent, TaskKind, TaskState, TryCause};
 use argonauts_core::limits::{FallbackNote, RecoveryAction};
 use argonauts_core::names::ModelRef;
@@ -34,6 +36,7 @@ use crate::task::machine::{self, Trigger};
 use crate::task::prompt;
 use crate::task::recovery;
 use crate::task::session::{self, Ended, Next, SessionCall, same_session};
+use crate::task::stopped_work::{self, Verdict};
 use crate::task::stuck::{self, Decision};
 use crate::task::support::{
     newest_worker_session, progress_of, record_of, record_task, record_task_in, state_of,
@@ -316,6 +319,8 @@ enum Carry {
     Action(RecoveryAction),
     /// Why the worker stopped for a decision.
     Ask(String),
+    /// The checks already ran on the work, so the checking step takes their verdict.
+    Checked(CheckVerdict),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -478,6 +483,7 @@ async fn running(
             try_number,
             worker: worker.clone(),
             cause,
+            told: next.told().to_vec(),
         };
         record_task(host, task, event)?;
     }
@@ -517,7 +523,7 @@ fn next_session(
     worker: &ModelRef,
     carry: Option<Carry>,
 ) -> (Next, bool) {
-    let (open, cause, newest_worker) = host.read(|state| {
+    let (open, cause, told, newest_worker) = host.read(|state| {
         let newest = newest_worker_session(state, task);
         let progress = state.tasks.progress(task);
         let open = progress.try_seq.is_some_and(|seq| {
@@ -527,6 +533,7 @@ fn next_session(
         (
             open,
             cause,
+            progress.last_told.clone(),
             newest.map(|session| session.started.worker.clone()),
         )
     });
@@ -537,7 +544,7 @@ fn next_session(
     if open {
         let next = carried
             .filter(|next| next.cause() == cause)
-            .unwrap_or_else(|| after_restart(cause));
+            .unwrap_or_else(|| after_restart(cause, told));
         return (next, true);
     }
     if let Some(next) = carried {
@@ -553,9 +560,16 @@ fn next_session(
     (next, false)
 }
 
-fn after_restart(cause: TryCause) -> Next {
+/// The try a restart found open, on its own session told again what it was told, or to
+/// continue when the log doesn't say.
+fn after_restart(cause: TryCause, told: Vec<InputPart>) -> Next {
     if same_session(cause) {
-        Next::resume(cause, vec![continue_part()])
+        let told = if told.is_empty() {
+            vec![continue_part()]
+        } else {
+            told
+        };
+        Next::resume(cause, told)
     } else if cause == TryCause::First {
         Next::fresh(cause, "")
     } else {
@@ -563,7 +577,7 @@ fn after_restart(cause: TryCause) -> Next {
     }
 }
 
-fn continue_part() -> argonauts_core::events::session::InputPart {
+fn continue_part() -> InputPart {
     prompt::message_part("continue", "Continue the task where you left off.")
 }
 
@@ -604,6 +618,21 @@ async fn after_session(
             Ok(Step::Moved)
         }
         reason => {
+            match stopped_work::check(host, task, reason).await? {
+                Some(Verdict::Passed) => {
+                    let why = stopped_work::passed_reason(reason);
+                    transition(host, task, Trigger::ReportedDone, &why)?;
+                    *carry = Some(Carry::Checked(CheckVerdict::Passed));
+                    return Ok(Step::Moved);
+                }
+                Some(Verdict::Unchecked) => {
+                    transition(host, task, Trigger::Broke, &end_text(reason))?;
+                    let reason = stopped_work::unchecked_reason(reason);
+                    *carry = Some(Carry::Action(RecoveryAction::AskYou { reason }));
+                    return Ok(Step::Moved);
+                }
+                Some(Verdict::Failed) | None => {}
+            }
             match recovery::decide(host, task, &ended.end).await? {
                 RecoveryAction::ResumeSame { message } => {
                     let parts = vec![prompt::message_part("message", message)];
@@ -624,6 +653,9 @@ async fn after_session(
                         extra: Vec::new(),
                     }));
                 }
+                // Your fallback mode leaves who takes it to you, even after a failure, so the
+                // fallback question asks before the retry ladder could pick.
+                action @ RecoveryAction::Ask(_) => recovery::apply(host, task, action).await?,
                 action if recovery::is_failure(reason) => {
                     transition(host, task, Trigger::Broke, &end_text(reason))?;
                     *carry = Some(Carry::Action(action));
@@ -750,7 +782,13 @@ async fn checking(
     at: &StepAt,
     carry: &mut Option<Carry>,
 ) -> EngineResult<Step> {
-    let verdict = checks::run(host, task).await?;
+    let verdict = match carry.take() {
+        Some(Carry::Checked(verdict)) => verdict,
+        other => {
+            *carry = other;
+            checks::run(host, task).await?
+        }
+    };
     // A task worked as a goal is checked against its lines after every try, and what still
     // fails goes back to the same session, with no fixed number of tries.
     if !matches!(verdict, CheckVerdict::Stopped { .. })
@@ -1035,7 +1073,9 @@ fn end_text(reason: &EndReason) -> String {
         EndReason::LimitHit { dimension } => format!("hit its {dimension:?} limit"),
         EndReason::Paused => "paused".to_owned(),
         EndReason::Stopped => "stopped".to_owned(),
-        EndReason::Stuck { watchdog } => format!("stuck ({watchdog:?})"),
+        EndReason::Stuck { watchdog, calls } => {
+            format!("stuck: it {}", stuck_words(*watchdog, calls.as_ref()))
+        }
         EndReason::UsageLimit { .. } => "usage limit".to_owned(),
         EndReason::RateLimited => "rate limited".to_owned(),
         EndReason::CliError { message, .. } => format!("agent error: {message}"),

@@ -448,6 +448,7 @@ impl LimitsService for TableLimits {
             max_tool_calls: task.and_then(|task| task.limit.max_tool_calls),
             inactivity_min: task.and_then(|task| task.limit.inactivity_min),
             repeat_limit: Some(3),
+            no_progress_calls: None,
             native_cap_usd: None,
             run_left: None,
             spends_unseen: false,

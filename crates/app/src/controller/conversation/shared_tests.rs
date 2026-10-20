@@ -658,7 +658,9 @@ async fn clear_leaves_the_goal_with_its_conversation() {
     .await;
     notice(&mut driver, "Goal set").await;
     slash(&driver, SlashCommand::Clear).await;
-    notice(&mut driver, "Started a new conversation").await;
+    driver
+        .until(|event| matches!(event, AppEvent::ConversationCleared { .. }))
+        .await;
     slash(&driver, SlashCommand::Goal { text: None }).await;
     notice(&mut driver, "No goal is set").await;
     driver.exit().await;

@@ -88,13 +88,15 @@ impl WorkflowState {
     }
 }
 
-/// How words Argonauts Code adds to a row or a line read: dim, or in the color of good news,
-/// of something to look at, or of a failure.
+/// How words Argonauts Code adds to a row or a line read: dim, in the text's own color for an
+/// outcome that is neither good nor bad news, such as the proposal a judge chose, or in the
+/// color of good news, of something to look at, or of a failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tone {
     #[default]
     Plain,
+    Text,
     Good,
     Warn,
     Bad,
@@ -392,12 +394,31 @@ pub struct NestedWorkflowRow {
     pub rows: Vec<WorkflowRow>,
 }
 
-/// In tokens.
+/// How full a session's context is, in tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextUse {
     pub used: u64,
-    /// Where it rotates, from `sessions.rotate_at`.
-    pub cap: u64,
+    /// Its window, once its CLI or server has said. Screens show `used` against it, and the
+    /// count alone while it isn't known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
+    /// Where it rotates, from `sessions.rotate_at`, once that can be worked out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap: Option<u64>,
+}
+
+impl ContextUse {
+    /// How full its window is, as a share of it.
+    pub fn of_window(&self) -> Option<f64> {
+        let window = self.window.filter(|window| *window > 0)?;
+        Some(self.used as f64 / window as f64)
+    }
+
+    /// How close it is to rotating, as a share of where it rotates.
+    pub fn of_cap(&self) -> Option<f64> {
+        let cap = self.cap.filter(|cap| *cap > 0)?;
+        Some(self.used as f64 / cap as f64)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1027,10 +1048,74 @@ pub struct SubagentsSection {
     pub children: Vec<SubagentUpdate>,
 }
 
-/// Every live session's context, for `/context`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Every live session's context, for `/context`, and the sessions of the run you follow that
+/// ended, as each left its window.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ContextView {
     pub rows: Vec<ContextRow>,
+    /// Runs listed though they finished, with when each did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finished: Vec<RunFinishedAt>,
+    /// The servers on this machine by endpoint id, such as `ollama`. A session runs on one
+    /// when its CLI is one, or its model's route names one, as `ollama/qwen3-coder:30b` does
+    /// on OpenCode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local: Vec<String>,
+    /// What holds the main session's window to its size, where its server and CLI have said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_window: Option<WindowFigures>,
+}
+
+impl ContextView {
+    /// The sessions, with nothing known of where they run.
+    pub fn of(rows: Vec<ContextRow>) -> Self {
+        Self {
+            rows,
+            ..Self::default()
+        }
+    }
+
+    /// Whether `worker` runs on a server on this machine.
+    pub fn runs_locally(&self, worker: &crate::names::ModelRef) -> bool {
+        let routed = worker
+            .model
+            .as_deref()
+            .and_then(|model| model.split_once('/'))
+            .map(|(provider, _)| provider);
+        self.local
+            .iter()
+            .any(|id| *id == worker.agent || Some(id.as_str()) == routed)
+    }
+}
+
+/// When a run listed on the Context tab finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunFinishedAt {
+    pub run: RunId,
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
+}
+
+/// What holds a session's window to its size, each figure where something has said it: the
+/// most the model can take, the cap its server holds it to, and its CLI's own. The window is
+/// the smallest of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowFigures {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<ServerCap>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli: Option<u64>,
+}
+
+/// A server's cap on a model's window, such as the 65,536 Ollama's `qwen3-coder:30b-64k` tag
+/// sets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerCap {
+    /// The server by name, such as `Ollama`.
+    pub name: String,
+    pub tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1063,6 +1148,32 @@ pub struct ContextRow {
     /// Read from a resumed conversation's record, until a turn of it runs again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recorded: Option<RecordedContext>,
+    /// How a run's session ended. `None` while it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<SessionLeft>,
+}
+
+/// How a run's session ended, for its row once it has.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionLeft {
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
+    pub how: EndedHow,
+    /// The model it stood in for, where it is a fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_for: Option<ModelRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "how")]
+pub enum EndedHow {
+    Done,
+    /// In a few words, such as `no valid report in 2 tries`.
+    Failed {
+        why: String,
+    },
+    /// You stopped it, or the run paused.
+    Stopped,
 }
 
 /// What a conversation's record says of its session, for a row read from it.

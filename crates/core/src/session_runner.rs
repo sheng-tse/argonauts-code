@@ -205,6 +205,9 @@ pub struct SessionLimits {
     pub inactivity_min: Option<f64>,
     /// The same call this many times in a row gets a nudge.
     pub repeat_limit: Option<u32>,
+    /// Tool calls in a row that change no file before the wrap-up, for a later try on work an
+    /// earlier session committed. `None` for every other session.
+    pub no_progress_calls: Option<u32>,
     /// The agent's native cap as a backstop, set a little above `limit`, such as
     /// `--max-budget-usd`.
     pub native_cap_usd: Option<f64>,
@@ -227,6 +230,7 @@ impl Default for SessionLimits {
             max_tool_calls: None,
             inactivity_min: None,
             repeat_limit: None,
+            no_progress_calls: None,
             native_cap_usd: None,
             run_left: None,
             spends_unseen: false,
@@ -259,6 +263,13 @@ pub struct SandboxProfile {
     /// Paths no write may make or change even where they don't exist yet, inside a writable
     /// folder: a direct turn's protected paths, which every later session and your own CLI load.
     pub closed: Vec<PathBuf>,
+    /// Folders inside a denied area a session may open and list, though nothing under them
+    /// opens: the folders above its worktree, for a CLI that opens each of them to find its
+    /// real path.
+    pub listable: Vec<PathBuf>,
+    /// With `network` off, every loopback port stays open, not only the proxy's: the CLI talks
+    /// to a server of its own on a port it picks as it starts.
+    pub loopback: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -331,6 +342,12 @@ pub enum SessionControl {
     /// its subagents and workflows, goes on, and the session stays open for them. A CLI that
     /// can't stop a turn alone is stopped whole, as by `Stop`.
     StopTurn,
+    /// A call from the session to Argonauts Code opened, such as a permission question that
+    /// waits on you. The session is quiet for that, not inactive, so the inactivity watchdog
+    /// counts none of the time until the call is `Answered`.
+    Asking,
+    /// A call that `Asking` opened was answered, so the inactivity clock starts from now.
+    Answered,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -397,6 +414,12 @@ pub trait SessionRunner: Send + Sync {
     fn start_refusal(&self) -> Option<String> {
         None
     }
+    /// The model its sessions run, as their requests name it: its own, else your setting for
+    /// its CLI, and for a CLI whose own default runs hosted, the local model it runs instead.
+    /// One whose CLI picks its own default stays as it is.
+    fn model_run(&self) -> ModelRef {
+        self.model_ref().clone()
+    }
     /// Opens the session in the CLI's own UI, for take-over.
     fn take_over_command(&self, cli_session: &str, workdir: &Path) -> Option<CommandSpec>;
     /// The cheapest model its CLI offers, for small read-only steps such as a fallback
@@ -440,6 +463,12 @@ pub trait RunnerDirectory: Send + Sync {
     fn get(&self, model: &ModelRef) -> Result<Arc<dyn SessionRunner>, RunnerError>;
     /// Every configured model that is installed and enabled.
     fn available(&self) -> Vec<ModelRef>;
+    /// The model a session of `model` runs, as its own runner names it. `None` where no runner
+    /// of `model` itself can be had.
+    fn model_run(&self, model: &ModelRef) -> Option<ModelRef> {
+        let runner = self.get(model).ok()?;
+        (runner.model_ref() == model).then(|| runner.model_run())
+    }
     /// The CLI behind `model` keeps a read-only session from changing files with its own
     /// flags and sandbox. False when that isn't known, so callers keep their own sandbox.
     fn enforces_read_only(&self, model: &ModelRef) -> bool {
@@ -460,4 +489,17 @@ pub trait RunnerDirectory: Send + Sync {
         let _ = model;
         false
     }
+}
+
+/// The model a session of `model` runs: as its runner names it, so a bare CLI counts as the
+/// model it runs, else as your settings name it.
+pub fn model_run(
+    workers: Option<&dyn RunnerDirectory>,
+    settings: &crate::settings::Settings,
+    model: &ModelRef,
+) -> ModelRef {
+    workers
+        .and_then(|workers| workers.model_run(model))
+        .filter(|runs| runs.model.is_some())
+        .unwrap_or_else(|| settings.model_run_by(model))
 }

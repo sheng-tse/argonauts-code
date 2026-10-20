@@ -3,6 +3,7 @@
 //! each report is recorded for the views.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use argonauts_core::events::RunEventKind;
@@ -63,6 +64,8 @@ pub(super) struct Bridge<'a> {
     phases: Mutex<BTreeMap<(Option<String>, CrewRole), PhaseAgents>>,
     /// The jobs that went to a second agent of a CLI in their step, or were asked to, by label.
     second_tried: Mutex<BTreeSet<String>>,
+    /// An agent that writes has started, so the reading before the building is over.
+    wrote: AtomicBool,
 }
 
 /// One phase's agents of one role, by label.
@@ -80,13 +83,6 @@ struct LeftOut {
     said: String,
     cli: String,
     tried: Vec<String>,
-}
-
-/// Whether `call` is in the step where a council's agents propose.
-fn proposes(call: &AgentCall) -> bool {
-    call.phase
-        .as_deref()
-        .is_some_and(|phase| phase.trim().eq_ignore_ascii_case("propose"))
 }
 
 /// What a job that can be left out is in its phase, and what it gives: a proposer a
@@ -140,6 +136,7 @@ impl<'a> Bridge<'a> {
             ran: Mutex::default(),
             phases: Mutex::default(),
             second_tried: Mutex::default(),
+            wrote: AtomicBool::new(false),
         }
     }
 
@@ -307,9 +304,19 @@ impl<'a> Bridge<'a> {
     fn fewest_answers(&self, call: &AgentCall) -> Option<usize> {
         match call.role {
             CrewRole::Reviewer => Some(1),
-            CrewRole::Worker if !call.writes && self.is_council() && proposes(call) => Some(2),
+            CrewRole::Worker if self.is_council() && self.proposes(call) => Some(2),
             _ => None,
         }
+    }
+
+    /// Whether `call` proposes: a worker that only reads, works on no task, and starts before any
+    /// agent writes. A council's phases are named for each request, so this is told by what
+    /// the agent does.
+    fn proposes(&self, call: &AgentCall) -> bool {
+        call.role == CrewRole::Worker
+            && !call.writes
+            && call.task.is_none()
+            && !self.wrote.load(Ordering::Relaxed)
     }
 
     /// The workflow in use is a council, whose proposals the stop and its lines name.
@@ -386,14 +393,25 @@ impl<'a> Bridge<'a> {
         if call.writes {
             return tasks::work(self, call, &worker).await;
         }
+        let mut whole = None;
         let (workdir, change) = match tasks::change_of(self, call).await? {
             Some((tree, change)) => (tree, Some(change)),
-            // A reviewer or a judge about no one task reads the run's whole change, never the
-            // untouched base.
-            None if call.task.is_none() && !self.builders(call).is_empty() => (
-                self.host.repo().base_worktree.clone(),
-                tasks::combined_change(self).await?,
-            ),
+            // A reviewer or a judge about no one task reads the run's whole change, as text and
+            // in its folder, so the files it opens and the tests it runs are the ones it judges.
+            None if call.task.is_none() && !self.builders(call).is_empty() => {
+                let workdir = match tasks::whole_tree(self, call.index).await? {
+                    tasks::Whole::Tree(tree) => {
+                        let path = tree.path.clone();
+                        whole = Some(tree);
+                        path
+                    }
+                    tasks::Whole::Nothing => self.host.repo().base_worktree.clone(),
+                    // Judging the base in place of a change it can't hold would judge the wrong
+                    // files, so the call fails, saying why.
+                    tasks::Whole::Conflict(why) => return Ok(AgentEnd::failed(why)),
+                };
+                (workdir, tasks::combined_change(self).await?)
+            }
             None => (self.host.repo().base_worktree.clone(), None),
         };
         let reviews = change.is_some();
@@ -440,7 +458,11 @@ impl<'a> Bridge<'a> {
         let ran = self
             .host
             .run_session_in_turn(plan, known.as_ref(), Fallbacks::Allowed, &keep)
-            .await?;
+            .await;
+        if let Some(whole) = whole {
+            whole.done(self).await;
+        }
+        let ran = ran?;
         // It may have fallen back to another agent, under a session of its own.
         self.ran(call, &ran.key)?;
         let end = answer(call, &ran);
@@ -500,6 +522,9 @@ impl<'a> Bridge<'a> {
 impl argonauts_runner::Host for Bridge<'_> {
     fn agent<'b>(&'b self, call: &'b AgentCall) -> BoxFuture<'b, AgentEnd> {
         Box::pin(async move {
+            if call.writes {
+                self.wrote.store(true, Ordering::Relaxed);
+            }
             if let Some(phase) = &call.phase {
                 lock(&self.ran).insert((phase.clone(), call.role));
             }
@@ -549,8 +574,33 @@ impl argonauts_runner::Host for Bridge<'_> {
 
     fn check<'b>(&'b self, check: &'b Check) -> BoxFuture<'b, Checked> {
         Box::pin(async move {
+            // A check about no one task, as a whole run's goal is, runs on the whole change.
+            let mut whole = None;
             let workdir = match tasks::tree_of(self, check.task.as_deref()).await {
                 Ok(Some(tree)) => tree,
+                _ if check.task.is_none() => match tasks::whole_tree(self, check.index).await {
+                    Ok(tasks::Whole::Tree(tree)) => {
+                        let path = tree.path.clone();
+                        whole = Some(tree);
+                        path
+                    }
+                    Ok(tasks::Whole::Nothing) => self.host.repo().base_worktree.clone(),
+                    Ok(tasks::Whole::Conflict(why)) => {
+                        return Checked {
+                            holds: false,
+                            failed: format!("the check couldn't run: {why}"),
+                            stop: true,
+                        };
+                    }
+                    Err(err) => {
+                        let why = self.failed(err).result.err().unwrap_or_default();
+                        return Checked {
+                            holds: false,
+                            failed: format!("the check couldn't run: {why}"),
+                            stop: true,
+                        };
+                    }
+                },
                 _ => self.host.repo().base_worktree.clone(),
             };
             let task = tasks::task_of(self, check.task.as_deref());
@@ -563,7 +613,11 @@ impl argonauts_runner::Host for Bridge<'_> {
                 max_rounds,
                 &workdir,
             );
-            match checked.await {
+            let checked = checked.await;
+            if let Some(whole) = whole {
+                whole.done(self).await;
+            }
+            match checked {
                 Ok(checked) => checked,
                 Err(err) => {
                     let why = self.failed(err).result.err().unwrap_or_default();
@@ -583,6 +637,9 @@ impl argonauts_runner::Host for Bridge<'_> {
     }
 
     fn replayed(&self, call: &AgentCall) {
+        if call.writes {
+            self.wrote.store(true, Ordering::Relaxed);
+        }
         lock(&self.rows).insert(call.row, call.index);
         // It answered before the run stopped, which counts as its phase goes on without one.
         lock(&self.phases)

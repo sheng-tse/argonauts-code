@@ -311,6 +311,11 @@ mod tests {
             tier: None,
             name: None,
             description: None,
+            window: None,
+            ram_bytes: None,
+            thinking: None,
+            variants: None,
+            listed_cost: false,
         }
     }
 

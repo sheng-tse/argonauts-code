@@ -1,4 +1,4 @@
-//! The settings names that changed, each old name beside its new one. The table words the start
+//! The settings names that changed, each old line beside the line it becomes. The table words the start
 //! question that offers to edit a file still using old names, and makes that edit. It never
 //! reads an old name as its new one: until the file says the new name, its line does nothing.
 
@@ -90,16 +90,18 @@ const CREW_LISTS: [&str; 3] = ["worker", "reviewer", "judge"];
 /// One old name a settings file still uses, and the name the edit gives it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rename {
-    /// As the file says it, such as `main_agent`, `[approvals.goal] mode` or
-    /// `workflow = "solo"`.
+    /// The whole line as the file has it, such as `main_agent = "claude-code"` or
+    /// `[approvals.goal] mode = "ask"`.
     pub old: String,
-    /// As the file will say it.
+    /// The line as the edit writes it.
     pub new: String,
-    /// What else the edit does, said beside it.
+    /// What else the edit does, said under it.
     pub note: Option<String>,
     /// The dotted key the file sets now, and the one it will set.
     pub from: String,
     pub to: String,
+    /// The value the edit writes, when the value's own name changed too.
+    pub value_now: Option<String>,
     /// A safety setting, whose value starts to count once it has its new name.
     pub safety: bool,
 }
@@ -131,7 +133,14 @@ pub(crate) fn old_keys(table: &Table) -> BTreeMap<String, String> {
     renames_of(table, &paths)
         .into_iter()
         .filter(|rename| rename.from != rename.to)
-        .map(|rename| (rename.from, rename.new))
+        .map(|rename| {
+            // A name that changed alone is said by itself; one whose value changed too, with it.
+            let new = match rename.value_now {
+                Some(_) => rename.new,
+                None => shown_key(&parts(&rename.to)),
+            };
+            (rename.from, new)
+        })
         .collect()
 }
 
@@ -183,27 +192,18 @@ fn renames_of(table: &Table, paths: &[Vec<String>]) -> Vec<Rename> {
             if (to == *path && value_now.is_none()) || taken {
                 return None;
             }
-            let note = if *path == [MAIN_AGENT] && crew_is_a_list {
-                Some("your crew list joins it as worker, reviewer and judge".to_owned())
-            } else if is_safety_key(&to.join(".")) {
-                Some("the value is kept, and shown before and after".to_owned())
-            } else {
-                None
-            };
-            let (old, new) = match (value.as_str(), value_now) {
-                (Some(was), Some(now)) => (
-                    format!("{} = {}", shown_key(path), quoted(was)),
-                    format!("{} = {}", shown_key(&to), quoted(now)),
-                ),
-                _ => (shown_key(path), shown_key(&to)),
-            };
+            let note = (*path == [MAIN_AGENT] && crew_is_a_list)
+                .then(|| "your crew list joins it as worker, reviewer and judge".to_owned());
+            let was = value.to_string();
+            let now = value_now.map_or_else(|| was.clone(), quoted);
             Some(Rename {
-                old,
-                new,
+                old: format!("{} = {was}", shown_key(path)),
+                new: format!("{} = {now}", shown_key(&to)),
                 note,
                 safety: is_safety_key(&to.join(".")),
                 from: path.join("."),
                 to: to.join("."),
+                value_now: value_now.map(str::to_owned),
             })
         })
         .collect();
@@ -333,15 +333,12 @@ fn edited(text: &str, renames: &[Rename]) -> Result<String, String> {
                 .ok_or_else(|| format!("{} isn't where the file said it was", rename.from))?;
             put(doc.as_table_mut(), &to, item)?;
         }
-        if let Some((_, now)) = rename.new.rsplit_once(" = ")
-            && let Ok(Value::String(value)) = format!("v = {now}")
-                .parse::<Table>()
-                .map(|mut table| table.remove("v").unwrap_or(Value::Boolean(false)))
+        if let Some(value) = &rename.value_now
             && let Some(item) = item_at(doc.as_table_mut(), &to)
             && let Some(old) = item.as_value_mut()
         {
             let decor = old.decor().clone();
-            *old = toml_edit::Value::from(value);
+            *old = toml_edit::Value::from(value.as_str());
             *old.decor_mut() = decor;
         }
     }
@@ -528,13 +525,16 @@ mode = "supervised" # read it back to me
     }
 
     #[test]
-    fn an_older_file_lists_each_old_name_with_its_new_one() {
+    fn an_older_file_lists_each_old_line_with_the_line_it_becomes() {
         let renames = renames_in(OLDER);
         assert_eq!(
             names(&renames),
             [
-                ("main_agent", "[crew] main"),
-                ("[approvals.goal] mode", "[approvals.understand] mode"),
+                ("main_agent = \"codex\"", "[crew] main = \"codex\""),
+                (
+                    "[approvals.goal] mode = \"supervised\"",
+                    "[approvals.understand] mode = \"supervised\""
+                ),
                 ("workflow = \"solo\"", "workflow = \"captain\""),
             ]
         );
@@ -543,10 +543,7 @@ mode = "supervised" # read it back to me
             Some("your crew list joins it as worker, reviewer and judge")
         );
         assert!(renames[1].safety);
-        assert_eq!(
-            renames[1].note.as_deref(),
-            Some("the value is kept, and shown before and after")
-        );
+        assert_eq!(renames[1].note, None);
     }
 
     #[test]
@@ -595,11 +592,11 @@ mode = "supervised" # read it back to me
         assert_eq!(
             names(&renames),
             [
-                ("[solo] attempts", "[captain] tries"),
-                ("[solo] kind", "[captain] kind"),
+                ("[solo] attempts = 2", "[captain] tries = 2"),
+                ("[solo] kind = \"checked\"", "[captain] kind = \"checked\""),
                 (
-                    "[solo_or_crew] solo_max_files",
-                    "[captain_or_crew] captain_max_files"
+                    "[solo_or_crew] solo_max_files = 4",
+                    "[captain_or_crew] captain_max_files = 4"
                 ),
                 (
                     "[solo_or_crew] otherwise = \"solo_then_crew\"",

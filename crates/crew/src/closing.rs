@@ -39,6 +39,8 @@ const MOST_TESTS: usize = 8;
 const MOST_LEFT: usize = 6;
 /// What the agents did, when no merged task speaks for the run, so the sentence stays short.
 const MOST_DONE: usize = 6;
+/// The tasks, and the files of each, that the sentence names before it counts the rest.
+const MOST_NAMED: usize = 3;
 
 /// Writes the closing answer once the run's result is settled, after the merge, the run review, and
 /// any wait to merge. Only an interruption unwinds, so the answer is written again on resume.
@@ -111,6 +113,12 @@ async fn gather(host: &Host, outcome: RunOutcome, detail: Option<&str>) -> Closi
             Agents::of(state),
         )
     });
+    let mut agents = agents;
+    for unchecked in &mut agents.unchecked {
+        if let Some(task) = tasks.iter().find(|task| task.spec.id == unchecked.task) {
+            unchecked.files = task_files(host, std::slice::from_ref(task)).await;
+        }
+    }
     let files = match diff_path {
         Some(path) => match merged_files(&path).await {
             Some(files) => files,
@@ -219,6 +227,16 @@ struct Agents {
     /// What the workflows' notes said is left, such as a step you require that Claude Code's
     /// own workflow didn't have.
     left: Vec<String>,
+    /// Tasks with work committed on their branch that no agent reported and no check ran on,
+    /// as when a stopped session's work was committed, so the end never says nothing was done.
+    unchecked: Vec<Unchecked>,
+}
+
+/// A task's committed work that nobody checked, and the files it changed on its branch.
+#[derive(Debug)]
+struct Unchecked {
+    task: TaskId,
+    files: Vec<ChangedFile>,
 }
 
 impl Agents {
@@ -251,11 +269,26 @@ impl Agents {
             .values()
             .flat_map(|workflow| workflow.left.iter().cloned())
             .collect();
+        let unchecked = state
+            .tasks
+            .by_id
+            .values()
+            .filter(|task| !run_merged.contains(&task.spec.id))
+            .filter(|task| task.state != TaskState::TakenOver)
+            .filter(|task| {
+                !task.commits.is_empty() && task.reports.is_empty() && task.checks.is_empty()
+            })
+            .map(|task| Unchecked {
+                task: task.spec.id.clone(),
+                files: Vec::new(),
+            })
+            .collect();
         Self {
             total: sessions.count(),
             reported,
             did,
             left,
+            unchecked,
         }
     }
 }
@@ -789,7 +822,10 @@ fn ending_words(outcome: RunOutcome) -> &'static str {
 /// and what they did, so a run that failed late never reads as one that did nothing.
 fn ending_sentence(outcome: RunOutcome, agents: &Agents) -> String {
     if agents.reported == 0 {
-        return nobody_reported(outcome);
+        return match unchecked_words(outcome, &agents.unchecked) {
+            Some(words) => words,
+            None => nobody_reported(outcome),
+        };
     }
     let who = match (agents.reported, agents.total) {
         (1, 1) => "its one agent".to_owned(),
@@ -837,6 +873,72 @@ fn lowercase_first(text: &str) -> String {
         }
         _ => text.to_owned(),
     }
+}
+
+/// A run that stopped or failed with work committed that nobody reported or checked says
+/// where it is: `Stopped before anything merged. task-001 has work no one has checked, on its
+/// branch (slug.py +13 −1).` `None` when there's none, or for a run that got further.
+fn unchecked_words(outcome: RunOutcome, unchecked: &[Unchecked]) -> Option<String> {
+    let ended = match outcome {
+        RunOutcome::Stopped => "Stopped",
+        RunOutcome::Failed => "Failed",
+        _ => return None,
+    };
+    let named = |task: &Unchecked| match files_words(&task.files) {
+        Some(files) => format!("{} ({files})", task.task),
+        None => task.task.to_string(),
+    };
+    let whose = match unchecked {
+        [] => return None,
+        [one] => {
+            let files =
+                files_words(&one.files).map_or_else(String::new, |files| format!(" ({files})"));
+            return Some(format!(
+                "{ended} before anything merged. {} has work no one has checked, on its \
+                 branch{files}.",
+                one.task
+            ));
+        }
+        many => {
+            let mut names: Vec<String> = many.iter().take(MOST_NAMED).map(named).collect();
+            let more = many.len().saturating_sub(MOST_NAMED);
+            if more > 0 {
+                names.push(format!("{more} more"));
+            }
+            let last = names.pop().unwrap_or_default();
+            format!("{} and {last}", names.join(", "))
+        }
+    };
+    Some(format!(
+        "{ended} before anything merged. {whose} have work no one has checked, on their branches."
+    ))
+}
+
+/// The files a task changed with their lines, such as `slug.py +13 −1`, the first few named.
+fn files_words(files: &[ChangedFile]) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
+    let mut named: Vec<String> = files
+        .iter()
+        .take(MOST_NAMED)
+        .map(|file| {
+            format!(
+                "{} +{} \u{2212}{}",
+                file.path, file.insertions, file.deletions
+            )
+        })
+        .collect();
+    let more = files.len().saturating_sub(MOST_NAMED);
+    if more > 0 {
+        let files = if more == 1 { "file" } else { "files" };
+        named.push(format!("{more} more {files}"));
+    }
+    let last = named.pop().unwrap_or_default();
+    Some(match named.as_slice() {
+        [] => last,
+        rest => format!("{} and {last}", rest.join(", ")),
+    })
 }
 
 /// Code's words when no agent reported anything.
@@ -1284,6 +1386,79 @@ diff --git a/my notes.md b/my notes.md
         assert_eq!(
             ending_sentence(RunOutcome::Stopped, &all),
             "The run stopped after all 2 of its agents reported."
+        );
+    }
+
+    /// The local Qwen run: its stuck session's fix was committed, nobody reported and no check
+    /// ran, and the end said the run "stopped before any agent reported". It names the work.
+    #[test]
+    fn a_stopped_run_names_the_work_it_committed() {
+        let mut record = task("task-001", "Fix slugify", TaskState::Running, "qwen");
+        record.reports.clear();
+        record.commits.push(argonauts_core::CommitInfo {
+            branch: "argonauts/run-01/task-001".into(),
+            sha: Some("58721bae".into()),
+            message: "task-001: work from s-001".into(),
+            stat: argonauts_core::DiffStat {
+                files_changed: 1,
+                insertions: 13,
+                deletions: 1,
+            },
+            by: None,
+        });
+        let mut agents = Agents::of(&state_of(vec![record.clone()]));
+        assert_eq!(agents.reported, 0);
+        agents.unchecked[0].files = vec![ChangedFile {
+            path: "slug.py".into(),
+            insertions: 13,
+            deletions: 1,
+        }];
+        assert_eq!(
+            ending_sentence(RunOutcome::Stopped, &agents),
+            "Stopped before anything merged. task-001 has work no one has checked, on its \
+             branch (slug.py +13 \u{2212}1)."
+        );
+        assert_eq!(
+            ending_sentence(RunOutcome::Merged, &agents),
+            "The run merged.",
+            "a run that merged says so"
+        );
+
+        // Work a check already ran on, or that an agent reported, isn't unchecked.
+        let mut checked = record.clone();
+        checked.checks.push(CheckOutcome {
+            name: "tests".into(),
+            kind: argonauts_core::events::task::CheckKind::Command,
+            passed: false,
+            command: None,
+            exit_code: Some(1),
+            duration_ms: 40,
+            summary: "1 failed".into(),
+            output_tail: String::new(),
+            violations: Vec::new(),
+            sandboxed: true,
+            skipped: false,
+        });
+        assert!(Agents::of(&state_of(vec![checked])).unchecked.is_empty());
+
+        let second = |id: &str| Unchecked {
+            task: TaskId::new(id).unwrap(),
+            files: Vec::new(),
+        };
+        let mut two = Agents::of(&state_of(vec![record]));
+        two.unchecked.push(second("task-002"));
+        two.unchecked[0].files = (1..=4)
+            .map(|n| ChangedFile {
+                path: format!("f{n}.py"),
+                insertions: n,
+                deletions: 0,
+            })
+            .collect();
+        assert_eq!(
+            ending_sentence(RunOutcome::Failed, &two),
+            "Failed before anything merged. task-001 (f1.py +1 \u{2212}0, f2.py +2 \u{2212}0, \
+             f3.py +3 \u{2212}0 and 1 more file) and task-002 have work no one has checked, on \
+             their branches."
         );
     }
 

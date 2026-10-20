@@ -81,6 +81,21 @@ fn unescape(text: &str) -> String {
         .replace("&amp;", "&")
 }
 
+/// A color the picture spells out, `#rrggbb`, as the theme's color level draws it. `None` for
+/// any other color, and where the terminal shows no color at all.
+fn spelled_out(var: &str, theme: &Theme) -> Option<Option<Color>> {
+    use crate::theme::color::{ColorLevel, nearest_ansi16, nearest_ansi256};
+
+    let digits = var.strip_prefix('#').filter(|digits| digits.len() == 6)?;
+    let [_, r, g, b] = u32::from_str_radix(digits, 16).ok()?.to_be_bytes();
+    Some(match theme.level {
+        ColorLevel::TrueColor => Some(Color::Rgb(r, g, b)),
+        ColorLevel::Ansi256 => Some(Color::Indexed(nearest_ansi256((r, g, b)))),
+        ColorLevel::Ansi16 => Some(nearest_ansi16((r, g, b))),
+        ColorLevel::None => None,
+    })
+}
+
 /// The theme roles a picture's color stands for. Empty for the colors only a highlighter or
 /// a chart picks, which are checked for being there at all. The working color has its
 /// lighter shade too, which sweeps across the verb and which a still picture can't show, and
@@ -210,11 +225,21 @@ fn rows_match(
             };
             let at = format!("{name}: row {row} col {col} ({:?})", cell.ch);
             match cell.color.as_deref() {
+                // A color spelled out is that color, or the text's own where it is the text's.
+                Some(var) if let Some(want) = spelled_out(var, theme) => assert!(
+                    want.is_none()
+                        || style.fg == want
+                        || (plain(want, theme) && plain(style.fg, theme)),
+                    "{at}: {var}, the screen {:?}",
+                    style.fg
+                ),
                 Some(var) => match roles_of(var) {
-                    // The picture's foreground is the text's own colour or a colour of its own.
-                    [] if var == "var(--term-fg)" => {
-                        assert!(style.fg.is_some() || plain(style.fg, theme), "{at}: {var}")
-                    }
+                    // The terminal's own foreground, as the text draws it, plain or bright.
+                    [] if var == "var(--term-fg)" => assert!(
+                        plain(style.fg, theme),
+                        "{at}: {var}, the screen {:?}",
+                        style.fg
+                    ),
                     [] => assert!(style.fg.is_some(), "{at}: {var} is a color"),
                     roles => assert!(
                         roles.iter().any(|role| theme.style(*role).fg == style.fg),

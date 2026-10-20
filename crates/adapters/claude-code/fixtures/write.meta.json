@@ -1,5 +1,9 @@
 {
   "adapter": "claude-code",
+  "cli_version": "2.1.304",
+  "also_matches": [],
+  "date": "2026-10-20T02:36:30.403765Z",
+  "program": "claude",
   "args": [
     "-p",
     "--output-format",
@@ -11,33 +15,48 @@
     "--permission-prompts",
     "none",
     "--tools",
-    "Read,Grep,Glob,Edit,Write,Bash",
-    "--strict-mcp-config",
+    "Read,Glob,Grep,Edit,Write,Bash,ToolSearch,TaskCreate,TaskGet,TaskUpdate,TaskList",
+    "--disallowedTools",
+    "SendMessage",
+    "ListAgents",
+    "--settings",
+    "/tmp/argonauts-live/claude-code/sessions/write/claude-settings.json",
+    "--name",
+    "argonauts write",
     "--model",
     "haiku",
     "--effort",
     "low",
     "--json-schema",
-    "{\"additionalProperties\":false,\"properties\":{\"concerns\":{\"description\":\"Risks, open questions, or follow-ups. Empty if none.\",\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"files_changed\":{\"description\":\"Paths you changed, relative to the working directory.\",\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"status\":{\"description\":\"done if the task is complete, blocked if you can't continue, failed if you tried and couldn't, needs_decision if the user must choose something.\",\"enum\":[\"done\",\"blocked\",\"failed\",\"needs_decision\"],\"type\":\"string\"},\"summary\":{\"description\":\"What you did, in a few sentences.\",\"type\":\"string\"},\"tests_run\":{\"description\":\"Test commands you ran and whether they passed.\",\"items\":{\"type\":\"string\"},\"type\":\"array\"}},\"required\":[\"status\",\"summary\",\"files_changed\",\"tests_run\",\"concerns\"],\"type\":\"object\"}",
+    "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"status\",\"summary\",\"files_changed\",\"tests_run\",\"concerns\"],\"properties\":{\"status\":{\"type\":\"string\",\"enum\":[\"done\",\"blocked\",\"failed\",\"needs_decision\"],\"description\":\"done if the task is complete, blocked if you can't continue, failed if you tried and couldn't, needs_decision if the user must choose something.\"},\"summary\":{\"type\":\"string\",\"description\":\"What you did, in a few sentences.\"},\"files_changed\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Paths you changed, relative to the working directory.\"},\"tests_run\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Test commands you ran and whether they passed.\"},\"concerns\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Risks, open questions, or follow-ups. Empty if none.\"}}}",
     "--max-budget-usd",
     "0.5"
   ],
-  "cli_version": "2.1.284",
-  "also_matches": [],
-  "date": "2026-09-29T08:32:01.983444Z",
-  "duration_ms": 8047,
-  "effort": "low",
+  "stdin": "You are working on one task in a git worktree that Argonauts Code created for you.\n\n# Task\n\nCreate a file named hello.txt containing the word hi. Then reply with: done\n\n# Rules\n\n- The current working directory is your worktree. Don't change files outside it.\n- You may edit any file in the working directory.\n- Don't change anything under `.argonauts/`.\n- Don't run git commands that change history or branches, such as commit, push, checkout, reset, rebase, merge, or stash. Argonauts Code commits your changes when you finish.\n- Keep the change focused on the task. Run the project's tests if they are quick.\n- End your final message with your report: one JSON object that matches the schema below. Use status \"blocked\" or \"needs_decision\" instead of guessing when you can't continue.\n\n# Report schema\n\n```json\n{\n  \"type\": \"object\",\n  \"additionalProperties\": false,\n  \"required\": [\n    \"status\",\n    \"summary\",\n    \"files_changed\",\n    \"tests_run\",\n    \"concerns\"\n  ],\n  \"properties\": {\n    \"status\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"done\",\n        \"blocked\",\n        \"failed\",\n        \"needs_decision\"\n      ],\n      \"description\": \"done if the task is complete, blocked if you can't continue, failed if you tried and couldn't, needs_decision if the user must choose something.\"\n    },\n    \"summary\": {\n      \"type\": \"string\",\n      \"description\": \"What you did, in a few sentences.\"\n    },\n    \"files_changed\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      },\n      \"description\": \"Paths you changed, relative to the working directory.\"\n    },\n    \"tests_run\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      },\n      \"description\": \"Test commands you ran and whether they passed.\"\n    },\n    \"concerns\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      },\n      \"description\": \"Risks, open questions, or follow-ups. Empty if none.\"\n    }\n  }\n}\n```\n",
+  "session_id": null,
+  "resume_session": null,
+  "keep_input_open": false,
+  "files": [
+    {
+      "path": "/tmp/argonauts-live/claude-code/sessions/write/claude-settings.json",
+      "contents": "{\"crossSessionInbound\":\"refuse\",\"attribution\":{\"commit\":\"\",\"pr\":\"\"},\"sandbox\":{\"enabled\":true,\"failIfUnavailable\":true,\"allowUnsandboxedCommands\":false}}"
+    }
+  ],
   "env_removed": [
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
+    "CODEX_ACCESS_TOKEN",
+    "AZURE_OPENAI_API_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
     "XAI_API_KEY",
     "OPENROUTER_API_KEY",
     "GH_TOKEN",
     "GITHUB_TOKEN",
-    "ANTHROPIC_AUTH_TOKEN",
     "CLAUDECODE",
     "CLAUDE_CODE_CHILD_SESSION",
     "CLAUDE_CODE_SESSION_ID",
@@ -45,19 +64,25 @@
     "CLAUDE_CODE_MESSAGING_TOKEN",
     "CLAUDE_PID",
     "CLAUDE_EFFORT",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ATTENDED",
     "CLAUDE_CODE_EFFORT_LEVEL"
   ],
   "env_set": [
-    "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"
+    "DISABLE_AUTOUPDATER=1",
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1",
+    "ENABLE_CLAUDEAI_MCP_SERVERS=false",
+    "CLAUDE_CODE_ENABLE_TODO_TOOLS=1"
   ],
+  "model": "haiku",
+  "effort": "low",
+  "role": "build",
   "exit_code": 0,
+  "duration_ms": 6103,
   "files_after": [
     "README.md",
     "hello.txt",
     "notes.txt"
-  ],
-  "model": "haiku",
-  "program": "claude",
-  "role": "build",
-  "stdin": "You are working on one task in a git worktree that Argonauts created for you.\n\n# Task\n\nCreate a file named hello.txt containing the word hi. Then reply with: done\n\n# Rules\n\n- The current working directory is your worktree. Don't change files outside it.\n- You may edit any file in the working directory.\n- Don't change anything under `.argonauts/`.\n- Don't run git commands that change history or branches, such as commit, push, checkout, reset, rebase, merge, or stash. Argonauts commits your changes when you finish.\n- Keep the change focused on the task. Run the project's tests if they are quick.\n- End your final message with your report: one JSON object that matches the schema below. Use status \"blocked\" or \"needs_decision\" instead of guessing when you can't continue.\n\n# Report schema\n\n```json\n{\n  \"additionalProperties\": false,\n  \"properties\": {\n    \"concerns\": {\n      \"description\": \"Risks, open questions, or follow-ups. Empty if none.\",\n      \"items\": {\n        \"type\": \"string\"\n      },\n      \"type\": \"array\"\n    },\n    \"files_changed\": {\n      \"description\": \"Paths you changed, relative to the working directory.\",\n      \"items\": {\n        \"type\": \"string\"\n      },\n      \"type\": \"array\"\n    },\n    \"status\": {\n      \"description\": \"done if the task is complete, blocked if you can't continue, failed if you tried and couldn't, needs_decision if the user must choose something.\",\n      \"enum\": [\n        \"done\",\n        \"blocked\",\n        \"failed\",\n        \"needs_decision\"\n      ],\n      \"type\": \"string\"\n    },\n    \"summary\": {\n      \"description\": \"What you did, in a few sentences.\",\n      \"type\": \"string\"\n    },\n    \"tests_run\": {\n      \"description\": \"Test commands you ran and whether they passed.\",\n      \"items\": {\n        \"type\": \"string\"\n      },\n      \"type\": \"array\"\n    }\n  },\n  \"required\": [\n    \"status\",\n    \"summary\",\n    \"files_changed\",\n    \"tests_run\",\n    \"concerns\"\n  ],\n  \"type\": \"object\"\n}\n```\n"
+  ]
 }

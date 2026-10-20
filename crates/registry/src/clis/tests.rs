@@ -304,6 +304,8 @@ fn builtin_profiles_pass_their_checks() {
 #[test]
 fn opencode_acp_matches_what_it_did() {
     let opencode = builtin_clis(&[]).pop().unwrap();
+    // `opencode acp` talks to the server it starts over HTTP on loopback.
+    assert!(opencode.own_server);
     let acp = opencode.acp.unwrap();
     assert_eq!(acp.usage, [UsageSource::EndTurn]);
     assert_eq!(acp.resume, ResumeRoute::Resume);

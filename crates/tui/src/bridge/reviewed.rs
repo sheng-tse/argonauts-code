@@ -7,9 +7,16 @@
 //!   ⎿  Read 3 files · used the checks' result: 12 passed
 //!      Accepted. Per-key buckets and the refill clamp are right.
 //!
-//! ● sign-off:per-key · Haiku 4.5 on Claude Code
-//!   ⎿  Accepted · the change holds 3 files: bucket.py, middleware.py, test_middleware.py
+//! ● review:per-key · GPT 6 Luna on Codex
+//!   ⎿  Accepted · used the checks' result: 5 passed
+//!
+//! ● signoff:per-key · Haiku 5.5 on Claude Code
+//!   ⎿  Accepted · read in the task's worktree, the change holds 2 files +17 −4: bucket.py,
+//!      middleware.py · tests: 5 passed
 //! ```
+//!
+//! A sign-off about no one task works in a folder that holds the change it reads: the task's
+//! worktree when one task changed, else one with every task merged in.
 
 use argonauts_core::events::session::{InputPart, InputPartKind, SessionEnd};
 use std::collections::BTreeMap;
@@ -27,6 +34,10 @@ pub(super) struct Given {
     pub checks: Option<String>,
     /// The files of the change it read, in the order the diff has them.
     pub change: Vec<String>,
+    /// The lines the change adds and takes away.
+    pub lines: (u32, u32),
+    /// How many tasks' changes it read together, each under its name. 0 for one task's alone.
+    pub tasks: usize,
 }
 
 impl Given {
@@ -39,6 +50,12 @@ impl Given {
                 }
                 InputPartKind::Evidence if self.change.is_empty() => {
                     self.change = changed_files(&part.text);
+                    self.lines = changed_lines(&part.text);
+                    self.tasks = part
+                        .text
+                        .lines()
+                        .filter(|line| line.starts_with("# "))
+                        .count();
                 }
                 _ => {}
             }
@@ -59,33 +76,47 @@ pub(super) fn row(
     let word = if accepted { "Accepted" } else { "Sent back" };
     let mut body = Vec::new();
     if role == RoleName::Judge {
-        let mut line = word.to_owned();
+        let mut parts = vec![word.to_owned()];
         if !given.change.is_empty() {
             let count = given.change.len();
             let noun = if count == 1 { "file" } else { "files" };
-            line.push_str(&format!(
-                " · the change holds {count} {noun}: {}",
+            let (added, removed) = given.lines;
+            let place = if given.tasks > 1 {
+                "read in a worktree with every task merged in"
+            } else {
+                "read in the task's worktree"
+            };
+            parts.push(format!(
+                "{place}, the change holds {count} {noun} +{added} \u{2212}{removed}: {}",
                 given.change.join(", ")
             ));
         }
-        body.push(dim(line));
+        if let Some(checks) = &given.checks {
+            parts.push(format!("tests: {checks}"));
+        }
+        body.push(dim(parts.join(" · ")));
     } else {
         let mut read = vec![tools_used(whole)];
         if let Some(checks) = &given.checks {
             read.push(format!("used the checks' result: {checks}"));
         }
         let read: Vec<String> = read.into_iter().filter(|part| !part.is_empty()).collect();
-        if !read.is_empty() {
-            body.push(dim(read.join(" · ")));
+        match summary.as_deref().map(str::trim) {
+            Some(summary) if !summary.is_empty() => {
+                if !read.is_empty() {
+                    body.push(dim(read.join(" · ")));
+                }
+                body.push(ToolItem::Text {
+                    text: format!("{word}. {summary}"),
+                    tone: Tone::Normal,
+                });
+            }
+            // With nothing more to say, the verdict comes first on the line of what it read.
+            _ => body.push(dim(std::iter::once(word.to_owned())
+                .chain(read)
+                .collect::<Vec<_>>()
+                .join(" · "))),
         }
-        let said = match summary.as_deref().map(str::trim) {
-            Some(summary) if !summary.is_empty() => format!("{word}. {summary}"),
-            _ => format!("{word}."),
-        };
-        body.push(ToolItem::Text {
-            text: said,
-            tone: Tone::Normal,
-        });
     }
     let mut row = whole.summarized(None);
     row.state = ToolState::Done;
@@ -184,6 +215,22 @@ fn checks_result(text: &str) -> Option<String> {
         })
         .collect();
     (!results.is_empty()).then(|| results.join(", "))
+}
+
+/// The lines a unified diff adds and takes away, its file headers left out.
+fn changed_lines(diff: &str) -> (u32, u32) {
+    let mut lines = (0, 0);
+    for line in diff.lines() {
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        if line.starts_with('+') {
+            lines.0 += 1;
+        } else if line.starts_with('-') {
+            lines.1 += 1;
+        }
+    }
+    lines
 }
 
 /// The paths a unified diff changes, each once.

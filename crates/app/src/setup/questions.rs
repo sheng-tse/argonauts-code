@@ -650,6 +650,11 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
         }
         Step::Servers => String::new(),
         Step::Server(server) => {
+            if server.needs_its_table() {
+                answers
+                    .confirmed
+                    .push((server.id.clone(), server.base_url.clone()));
+            }
             if value == NOT_NOW {
                 return format!("{} won't review your crew's work for now.", server.name());
             }
@@ -1049,6 +1054,44 @@ mod tests {
         let mut answers = Answers::default();
         apply(&Step::Server(server), "m3", &view(Vec::new()), &mut answers);
         assert_eq!(answers.reviewers[0].model, "m3");
+    }
+
+    #[test]
+    fn a_found_llama_server_is_confirmed_whatever_the_answer() {
+        let server = LocalServer {
+            id: "llamacpp".to_owned(),
+            base_url: "http://127.0.0.1:9931/v1".to_owned(),
+            models: vec!["qwen3-8b-q4.gguf".to_owned()],
+        };
+        let question = server_question(&server, &view(Vec::new()));
+        assert_eq!(question.title, "A local model server: llama-server");
+        let mut answers = Answers::default();
+        let said = apply(
+            &Step::Server(server.clone()),
+            NOT_NOW,
+            &view(Vec::new()),
+            &mut answers,
+        );
+        assert_eq!(said, "llama-server won't review your crew's work for now.");
+        assert_eq!(
+            answers.confirmed,
+            [("llamacpp".to_owned(), "http://127.0.0.1:9931/v1".to_owned())]
+        );
+        assert!(answers.reviewers.is_empty());
+
+        // Ollama's port is its own, so finding it writes nothing.
+        let ollama = LocalServer {
+            id: "ollama".to_owned(),
+            ..server
+        };
+        let mut answers = Answers::default();
+        apply(
+            &Step::Server(ollama),
+            NOT_NOW,
+            &view(Vec::new()),
+            &mut answers,
+        );
+        assert!(answers.confirmed.is_empty());
     }
 
     #[test]

@@ -13,7 +13,7 @@ use argonauts_core::layout::user_files;
 use argonauts_core::names::ModelRef;
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::policy::{ApprovalPolicy, ApprovalsView};
-use argonauts_core::registry::ModelEntry;
+use argonauts_core::registry::{ModelEntry, ModelRegistry as _, RegistryKind};
 use argonauts_core::sanitize::sanitize_for_terminal;
 use argonauts_core::session_runner::{RunnerDirectory, RunnerError, SessionRunner};
 use argonauts_core::settings::layer;
@@ -27,7 +27,7 @@ use argonauts_registry::{
 use serde::Serialize;
 use time::OffsetDateTime;
 
-use crate::adapters::builtin_adapters;
+use crate::adapters::{builtin_adapters, builtin_adapters_for};
 use crate::app_settings::AppSettings;
 use crate::env::{AppEnv, SESSION_ENV};
 use crate::host::clis::{self, CliAdapters, RepoModels};
@@ -145,7 +145,7 @@ pub(crate) fn adapters_turning_on(
     turned_on.extend(also_on.iter().cloned());
     let manifests = clis::manifests(&resolved.settings, &paths, repo.as_ref(), &turned_on);
     let builtins = builtin_adapters();
-    let mut adapters = builtins.clone();
+    let mut adapters = builtin_adapters_for(&resolved.settings, repo.as_ref());
     adapters.extend(CliAdapters::default().adapters(manifests, &builtins, &paths));
     Ok(adapters)
 }
@@ -334,20 +334,52 @@ impl RunnerDirectory for NoRunners {
     }
 }
 
+/// What `argonauts models` lists.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelList {
+    pub models: Vec<ModelEntry>,
+    /// Each source the latest discovery skipped, with why, such as "LM Studio: not running".
+    pub skipped: Vec<String>,
+}
+
 /// The registry's models with what discovery last found, after a fresh discovery when asked,
-/// which also updates the list `/model` starts from. Discovery never calls a model.
-pub async fn models(repo: Option<&Path>, discover: bool) -> anyhow::Result<Vec<ModelEntry>> {
-    let (env, resolved) = resolve_here(repo, Vec::new())?;
+/// which also updates the list `/model` starts from, and the sources discovery skipped.
+/// Discovery never calls a model.
+pub async fn models(
+    repo: Option<&Path>,
+    overrides: Vec<String>,
+    discover: bool,
+) -> anyhow::Result<ModelList> {
+    let (env, resolved) = resolve_here(repo, overrides)?;
     let repo = env
         .as_ref()
         .map(|env| RepoModels::new(&env.repo_root, &env.state_dir));
     let cache = home()?.models_cache();
-    let registry = crate::host::clis::registry(&resolved.settings, repo.as_ref(), Some(&cache));
-    Ok(if discover {
+    let settings = &resolved.settings;
+    let registry = crate::host::clis::file_registry(settings, repo.as_ref(), Some(&cache));
+    let models = if discover {
         registry.discover().await
     } else {
         registry.list()
+    };
+    Ok(ModelList {
+        models: of_clis_on(settings, models),
+        skipped: registry.discovery_skipped(),
     })
+}
+
+/// `models` but those of a CLI that is off, which the skipped sources name instead.
+fn of_clis_on(settings: &Settings, models: Vec<ModelEntry>) -> Vec<ModelEntry> {
+    models
+        .into_iter()
+        .filter(|entry| {
+            entry.kind != RegistryKind::Cli
+                || settings
+                    .agents
+                    .get(&entry.id.agent)
+                    .is_none_or(|agent| agent.enabled)
+        })
+        .collect()
 }
 
 /// The cheapest model and effort `agent` lists, from the list discovery last kept, else the
@@ -678,6 +710,32 @@ mod tests {
     use argonauts_testkit::TempRepo;
 
     use super::*;
+
+    #[test]
+    fn a_cli_that_is_off_lists_no_models() {
+        let mut settings = Settings::default();
+        settings
+            .agents
+            .entry("codex".to_owned())
+            .or_default()
+            .enabled = false;
+        let entry = |id: &str| {
+            let worker: argonauts_core::names::ModelRef = id.parse().unwrap();
+            argonauts_registry::models::cli_entry(&settings, &worker.agent, worker.model.as_deref())
+        };
+        let mut endpoint = entry("ollama/llama3.2");
+        endpoint.kind = RegistryKind::Endpoint;
+        let models = vec![
+            entry("codex/gpt-6-luna"),
+            entry("claude-code/haiku"),
+            endpoint,
+        ];
+        let kept: Vec<String> = of_clis_on(&settings, models)
+            .iter()
+            .map(|entry| entry.id.to_string())
+            .collect();
+        assert_eq!(kept, ["claude-code/haiku", "ollama/llama3.2"]);
+    }
 
     fn env_for(repo: &TempRepo, interactive: bool) -> AppEnv {
         let mut env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), interactive).unwrap();

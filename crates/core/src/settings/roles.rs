@@ -20,7 +20,8 @@ pub struct RoleSettings {
     pub count: Option<u32>,
     /// Blind to the others in the same role (reviewers, drafting agents).
     pub blind: Option<bool>,
-    /// Always a fresh session (the judge defaults to yes).
+    /// Always a fresh session, never one carried on from an earlier task, run or main session
+    /// (the judge defaults to yes). A blind role starts fresh whatever this says.
     pub fresh_session: Option<bool>,
     /// Only when asked (consultant).
     pub on_demand: bool,

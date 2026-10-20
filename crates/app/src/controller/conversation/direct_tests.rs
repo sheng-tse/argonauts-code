@@ -13,9 +13,9 @@ use argonauts_core::asking::{Ask, AskLine, AskReply};
 use argonauts_core::event::AgentEvent;
 use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::events::run::{InstructionOutcome, RunMode};
-use argonauts_core::events::session::{EndReason, InputPartKind};
+use argonauts_core::events::session::{CallCount, EndReason, InputPartKind, Watchdog};
 use argonauts_core::input::SlashCommand;
-use argonauts_core::session_runner::{Access, RunnerEvent, SessionSpec};
+use argonauts_core::session_runner::{Access, RunnerEvent, SessionControl, SessionSpec};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::{Asks, sha256_hex};
 use argonauts_testkit::{FakeRunner, FakeSession};
@@ -223,6 +223,54 @@ async fn slash_captain_is_direct_and_checked_captain_is_a_run() {
         assert!(driver.agent.specs().is_empty());
         driver.exit().await;
     }
+}
+
+/// The turn's controls that say a question from its CLI waits on you, or was answered.
+fn asking_controls(driver: &TestDriver) -> Vec<SessionControl> {
+    driver
+        .agent
+        .controls()
+        .into_iter()
+        .map(|(_, control)| control)
+        .filter(|control| matches!(control, SessionControl::Asking | SessionControl::Answered))
+        .collect()
+}
+
+/// A permission question waits on you however long you take, and the CLI sends nothing
+/// meanwhile, so the turn's session is told it waits: its inactivity watchdog counts none of
+/// that time, and the clock starts again once you answer.
+#[tokio::test]
+async fn a_question_waiting_on_you_holds_the_turns_inactivity_clock() {
+    let mut driver = TestDriver::start_with(captain_workflow_options(SUPERVISED)).await;
+    driver
+        .agent
+        .push(FakeSession::completed(ANSWER).with_delay(Duration::from_secs(2)));
+    driver.submit(TASK).await;
+    let spec = first_spec(&driver).await;
+    let command = Ask::Permission {
+        tool_name: "Bash".into(),
+        input: json!({"command": "python -m pytest -q"}),
+        tool_use_id: None,
+    };
+    let answered = tokio::spawn({
+        let spec = spec.clone();
+        async move { ask(&spec, command).await }
+    });
+    let question = driver
+        .until(|event| matches!(event, AppEvent::Choice { choice } if choice.kind == ChoiceKind::Permission))
+        .await;
+    let AppEvent::Choice { choice } = question else {
+        unreachable!()
+    };
+    driver.send(choose(choice.id, "yes")).await;
+    assert!(answered.await.unwrap().text.contains("\"allow\""));
+    driver.until(turn_ended).await;
+    // The fake session reads its controls as it ends, in the order they were sent.
+    assert_eq!(
+        asking_controls(&driver),
+        [SessionControl::Asking, SessionControl::Answered]
+    );
+    driver.exit().await;
 }
 
 /// Supervised mode asks what Claude Code asks: an edit becomes a question, Yes lets it through,
@@ -574,6 +622,91 @@ async fn with_fallback_off_the_turn_ends_and_says_what_changed() {
     );
 }
 
+/// A turn that loops is stopped by the repeat watchdog, as a run's session is: one line says
+/// what it repeated, its edits stay, and no fallback takes the request.
+#[tokio::test]
+async fn a_looping_turn_is_stopped_with_a_line_and_no_fallback() {
+    let mut options = captain_workflow_options("");
+    options.flags = vec![r#"fallback.main.order=["codex"]"#.to_owned()];
+    let mut driver = TestDriver::start_with(options).await;
+    let root = driver.repo.root().to_owned();
+    let codex = driver
+        .directory
+        .add(FakeRunner::cli("codex", "openai").then(FakeSession::completed(ANSWER)));
+    driver.agent.respond(|spec: &SessionSpec| {
+        std::fs::write(spec.workdir.join("invoice/money.py"), "half\n").unwrap();
+        FakeSession::ended(EndReason::Stuck {
+            watchdog: Watchdog::Repeat,
+            calls: Some(CallCount {
+                name: "execute".into(),
+                times: 12,
+            }),
+        })
+    });
+    driver.submit(TASK).await;
+    let ended = driver
+        .until(|event| {
+            matches!(
+                conversation(event),
+                Some(ConversationEvent::TurnStopped { .. } | ConversationEvent::TurnFailed { .. })
+            )
+        })
+        .await;
+    let kept = driver
+        .until(|event| matches!(event, AppEvent::Notice { text, .. } if text.contains("/rewind")))
+        .await;
+    let spec = driver.agent.specs().remove(0);
+    let money = read(&root, "invoice/money.py");
+    let events = driver.exit().await;
+    assert_eq!(money, "half\n", "its edit stays");
+    assert_eq!(spec.limits.repeat_limit, Some(10));
+    assert_eq!(spec.limits.inactivity_min, Some(15.0));
+    let Some(ConversationEvent::TurnStopped { why, .. }) = conversation(&ended) else {
+        panic!("the turn ends stopped, not failed: {ended:?}");
+    };
+    assert_eq!(
+        why,
+        "Stopped: Opus 5.5 repeated the same execute call 12 times. Its edits stay in your \
+         checkout."
+    );
+    assert!(matches!(
+        kept,
+        AppEvent::Notice { text, .. } if text == "invoice/money.py (+1 -1) changed · /rewind puts it back"
+    ));
+    assert!(codex.specs().is_empty(), "no fallback");
+    let fell_back = events.iter().any(|event| {
+        matches!(
+            conversation(event),
+            Some(ConversationEvent::FellBack { .. })
+        )
+    });
+    assert!(!fell_back);
+}
+
+/// A scratch file the turn made and left untracked is named at its end, so it doesn't hide
+/// in your checkout. One that was there before the turn isn't the turn's.
+#[tokio::test]
+async fn a_turn_names_the_files_it_left_untracked() {
+    let mut driver = TestDriver::start_with(captain_workflow_options("")).await;
+    let root = driver.repo.root().to_owned();
+    std::fs::write(root.join("notes.txt"), "yours\n").unwrap();
+    driver.agent.respond(|spec: &SessionSpec| {
+        std::fs::write(spec.workdir.join("invoice/money.py"), "negative = True\n").unwrap();
+        std::fs::write(spec.workdir.join("test_money_fix.py"), "print(1)\n").unwrap();
+        FakeSession::completed(ANSWER)
+    });
+    driver.submit(TASK).await;
+    driver.until(turn_ended).await;
+    let left = driver
+        .until(|event| matches!(event, AppEvent::Notice { text, .. } if text.starts_with("Left")))
+        .await;
+    driver.exit().await;
+    assert!(matches!(
+        left,
+        AppEvent::Notice { text, .. } if text == "Left untracked: test_money_fix.py"
+    ));
+}
+
 /// `/rewind` lists the messages whose turns changed files and puts back what you pick.
 #[tokio::test]
 async fn rewind_puts_back_a_direct_turns_files() {
@@ -903,7 +1036,7 @@ async fn in_captain_a_reviewer_you_name_is_told_to_the_session_that_can_start_a_
 /// "Use a workflow for this, with Codex as the reviewer" in Captain starts the orchestrator's
 /// workflow with Codex reviewing and the main agent planning and building, even when the
 /// call puts the role in `who` and the CLI in `value`; the session hears what started and with
-/// whom.
+/// whom: Captain, as Claude Code's own, since Claude Code plans and builds.
 #[tokio::test]
 async fn in_captain_a_workflow_with_codex_as_the_reviewer_starts_with_codex_reviewing() {
     let mut driver = TestDriver::start_with(captain_workflow_options("")).await;
@@ -938,7 +1071,7 @@ async fn in_captain_a_workflow_with_codex_as_the_reviewer_starts_with_codex_revi
     assert!(
         asked
             .text
-            .contains("Starting a workflow: Orchestrator, with **")
+            .contains("Starting a workflow: Captain, as Claude Code's own, with **")
             && asked.text.contains("Codex** reviewing as you asked; **")
             && asked.text.contains("Claude Code** plans and builds."),
         "{asked:?}"

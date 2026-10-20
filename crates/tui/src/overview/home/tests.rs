@@ -185,7 +185,7 @@ fn shift_r_cycles_back_and_the_key_line_starts_with_the_periods_key() {
     let keys = |view: &mut OverviewView| rows(view, &state, 118).last().cloned().unwrap();
     assert_eq!(
         keys(&mut view).trim(),
-        "r to cycle dates · tab · ←→ tabs · ↓ Overview or Models · ctrl+s to copy · esc closes"
+        "r to cycle dates · tab · ← → tabs · ↓ Overview or Models · ctrl+s to copy · esc closes"
     );
     key(&mut view, &state, KeyCode::Down);
     assert_eq!(

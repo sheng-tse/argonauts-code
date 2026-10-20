@@ -63,11 +63,10 @@ pub(crate) struct RunsState {
     shown: HashSet<RunId>,
     /// This conversation's runs: started or opened here, or brought back with the conversation,
     /// and replaced when another conversation comes on screen. Only they get panel rows and
-    /// count in the bottom line, as Claude Code's panel holds only its own session's tasks
-    ///. Any other run in the repo, from an earlier conversation, another terminal,
-    /// or an outside agent over MCP, is counted under the header at start, listed in /resume, and
-    /// said in one line instead: when it needs you, wakes, or ends, and at start when it
-    /// crashed.
+    /// count in the bottom line, as Claude Code's panel holds only its own session's tasks.
+    /// Any other run in the repo, from an earlier conversation, another terminal, or an outside
+    /// agent over MCP, is counted under the header at start, listed in /resume, and said in one
+    /// line instead: when it needs you, wakes, or ends, and at start when it crashed.
     pub(super) ours: BTreeSet<RunId>,
     /// Runs that came on screen since the conversation last saved its runs.
     pub(super) opened: Vec<ConversationRun>,
@@ -204,6 +203,16 @@ pub(super) fn came_on_screen(runs: &mut RunsState, run: &RunId) {
 
 pub(crate) fn attached(runs: &RunsState) -> Option<&RunId> {
     runs.attached.as_ref().map(|attached| &attached.run)
+}
+
+/// The run the Context tab lists: the one on screen, going or finished, until another
+/// conversation comes on screen after it finished. Before any comes on screen, the newest of
+/// the conversation's own, so carrying a conversation on lists the run it ended with.
+pub(crate) fn followed(runs: &RunsState) -> Option<&RunId> {
+    match &runs.attached {
+        Some(attached) => (!attached.left_behind).then_some(&attached.run),
+        None => runs.ours.last(),
+    }
 }
 
 pub(crate) fn attaches(runs: &RunsState) -> u64 {
@@ -506,9 +515,15 @@ fn send_rows(ctx: &Ctx, runs: &mut RunsState) {
 
 /// Another conversation came on screen, by `/clear`, `/resume <conversation>`, `/branch`, or
 /// carrying on a session: its own runs take the panel, and the ones it left go to the header and
-/// /resume. The run on screen stays, as it's this conversation's too now.
+/// /resume. The run on screen stays, as it's this conversation's too now. One that has finished
+/// stays the last conversation's to look back on, and leaves the Context tab.
 pub(crate) fn follow_conversation(ctx: &Ctx, runs: &mut RunsState, theirs: Vec<RunId>) {
     runs.ours = theirs.into_iter().collect();
+    if let Some(attached) = runs.attached.as_mut()
+        && matches!(attached.stage, Stage::Finished(_))
+    {
+        attached.left_behind = true;
+    }
     if let Some(attached) = &runs.attached
         && runs.ours.insert(attached.run.clone())
     {

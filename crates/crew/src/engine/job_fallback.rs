@@ -16,7 +16,7 @@ use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::agent_status::{JobKeeper, JobRef, JobWait};
 use argonauts_core::events::run::RunMode;
-use argonauts_core::events::session::{EndReason, loaded_words};
+use argonauts_core::events::session::{EndReason, loaded_words, stuck_words};
 use argonauts_core::events::workflow::{RunNote, WorkflowEvent};
 use argonauts_core::limits::{AgentHealth, HealthState, ModelState, TEST_TASK_SUCCEEDED, Trouble};
 use argonauts_core::log::{NO_SECOND_TRY, NOBODY_TO_FALL_BACK_TO, SAME_CLI_IS_ON};
@@ -596,6 +596,11 @@ pub(crate) async fn again(host: &Host, record: &SessionRecord) -> EngineResult<O
     if failed.is_empty() {
         return Ok(Some(record.asked_worker().clone()));
     }
+    // Its task resumes it to ask for the report alone. Started over here, it would do the work
+    // again and could miss the format again.
+    if missed_only_the_report(record) {
+        return Ok(None);
+    }
     let current = &record.started.worker;
     // Once for each session's end: `next` asks here first.
     remember_startup_crash(host, current, record)?;
@@ -813,6 +818,22 @@ fn failures<'r>(host: &Host, record: &'r SessionRecord) -> Vec<&'r ModelRef> {
         .filter(|(_, seq)| *seq > since)
         .map(|(worker, _)| worker)
         .collect()
+}
+
+/// A task's build session that worked, then missed its answer format, and can be resumed.
+fn missed_only_the_report(record: &SessionRecord) -> bool {
+    record.task.is_some()
+        && record.started.step == Some(StepName::Build)
+        && record.end.as_ref().is_some_and(|end| {
+            matches!(
+                end.reason,
+                EndReason::CliError {
+                    category: ErrorCategory::AnswerMissed,
+                    ..
+                }
+            ) && end.tool_calls > 0
+                && end.cli_session.is_some()
+        })
 }
 
 fn end_reason(record: &SessionRecord) -> EndReason {
@@ -1424,7 +1445,9 @@ fn in_the_view(from_name: &str, taker_name: &str, why: Option<&Why>, same_cli: b
 
 /// The same line for a task that fell back to another worker, from how its last session with
 /// the one that stopped ended. A session that finished, or that you, a pause or the task's own
-/// limit ended, is no failure of its agent, so the line gives no reason for it.
+/// limit ended, is no failure of its agent, so the line gives no reason for it. Each is named
+/// by the model it runs, and a taker that runs the very model that stopped says so: `fell back
+/// to Qwen3 Coder 30B on OpenCode (the same model)`.
 pub(crate) fn task_in_the_view(
     from: &ModelRef,
     taker: &ModelRef,
@@ -1434,12 +1457,13 @@ pub(crate) fn task_in_the_view(
     let why = ended
         .filter(|reason| reason.is_agent_failure())
         .map(|reason| Why::Ended(reason.clone()));
-    in_the_view(
-        &display_name(from),
-        &display_name(taker),
-        why.as_ref(),
-        same_cli,
-    )
+    let same_model = taker.model.is_some() && taker == from;
+    let taker_name = if same_model {
+        format!("{} (the same model)", display_name(taker))
+    } else {
+        display_name(taker)
+    };
+    in_the_view(&display_name(from), &taker_name, why.as_ref(), same_cli)
 }
 
 /// Who stopped and why, in one clause, such as `Opus 5.5 on Claude Code is signed out`.
@@ -1767,7 +1791,9 @@ pub(crate) fn in_words(reason: &EndReason) -> String {
             "a sign-in error".to_owned()
         }
         EndReason::CliError { .. } => "an agent error".to_owned(),
-        EndReason::Stuck { .. } => "it stopped responding".to_owned(),
+        EndReason::Stuck { watchdog, calls } => {
+            format!("it {}", stuck_words(*watchdog, calls.as_ref()))
+        }
         EndReason::AdapterBroken { .. } => "its output changed".to_owned(),
         EndReason::IsolationBroken { plugins, skills } => format!(
             "it loaded {}, which a blind role mustn't see",
@@ -2123,6 +2149,42 @@ mod tests {
                 format!("{from} stopped · fell back to {elsewhere}")
             );
         }
+    }
+
+    /// The local Qwen run's note said its stuck session "stopped responding" and that the task
+    /// "fell back to OpenCode", which ran the same Qwen. It says what the watchdog saw and
+    /// names the model, and that it's the same one.
+    #[test]
+    fn a_fallback_to_the_same_model_says_so() {
+        use argonauts_core::events::session::{CallCount, Watchdog};
+
+        let qwen: ModelRef = "opencode/ollama/qwen3-coder:30b-64k"
+            .parse()
+            .expect("a model");
+        let name = display_name(&qwen);
+        let repeated = EndReason::Stuck {
+            watchdog: Watchdog::Repeat,
+            calls: Some(CallCount {
+                name: "execute".into(),
+                times: 12,
+            }),
+        };
+        assert_eq!(
+            task_in_the_view(&qwen, &qwen, Some(&repeated), false),
+            format!(
+                "{name}'s session ended early (it repeated the same execute call 12 times) · \
+                 fell back to {name} (the same model)"
+            )
+        );
+        let bare: ModelRef = "opencode".parse().expect("a CLI");
+        assert_eq!(
+            task_in_the_view(&qwen, &bare, Some(&repeated), false),
+            format!(
+                "{name}'s session ended early (it repeated the same execute call 12 times) · \
+                 fell back to OpenCode"
+            ),
+            "a CLI that names no model may run another"
+        );
     }
 
     /// A token revoked on the server reads as signed out from the error's own words, which the

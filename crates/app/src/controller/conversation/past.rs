@@ -161,6 +161,7 @@ pub(super) fn recorded_row(
             at: context.at.unwrap_or(past.summary.updated),
             turns: past.summary.turns,
         }),
+        ended: None,
     })
 }
 
@@ -396,6 +397,7 @@ fn fold(events: Vec<ConversationEvent>) -> Vec<PastTurn> {
             ConversationEvent::Agent { .. }
             | ConversationEvent::TurnFailed { .. }
             | ConversationEvent::TurnCancelled { .. }
+            | ConversationEvent::TurnStopped { .. }
             | ConversationEvent::AnswerRetried { .. }
             | ConversationEvent::ContextLeft { .. }
             | ConversationEvent::CommandTyped { .. }

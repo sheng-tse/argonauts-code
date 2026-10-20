@@ -293,6 +293,8 @@ pub(super) async fn run_tests(
         proxy_port: None,
         ask_port: None,
         closed: Vec::new(),
+        listable: Vec::new(),
+        loopback: false,
     };
     let request = |name: &str, command: &[String], setup: bool| CheckRequest {
         run: entry.run.clone(),

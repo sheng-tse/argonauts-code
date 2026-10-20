@@ -4,14 +4,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, ensure};
 use argonauts_core::registry::LaunchHints;
+use argonauts_core::runtimes::runtime;
 use argonauts_core::{AuthMode, CommandSpec, SessionRequest, SessionRole, SpecFile};
 use argonauts_core::{env_remove_except, settings::sessions::NativeFanout};
 use serde_json::Value;
 
 use crate::adapter::{API_KEY_ENV_VARS, OUTPUT_SCHEMA_FILE, SUBSCRIPTION_ENV_VARS};
 use crate::tweaks;
-
-pub const LOCAL_PROVIDERS: &[&str] = &["ollama", "lmstudio"];
 
 /// Flags that would loosen the sandbox or approvals, move the session out of its worktree, or
 /// pick a session by recency. The adapter sets these itself or never passes them.
@@ -126,6 +125,19 @@ fn session_model(req: &SessionRequest) -> anyhow::Result<Option<&str>> {
         .transpose()
 }
 
+/// `--oss --local-provider <provider> --model <model>` for a session on a local model, and
+/// nothing for a hosted one, as the interactive `codex resume` takes them too.
+pub fn local_mode_args(req: &SessionRequest) -> anyhow::Result<Vec<String>> {
+    let mut args = local_provider_args(req.launch.as_ref())?;
+    if args.is_empty() {
+        return Ok(args);
+    }
+    if let Some(model) = session_model(req)? {
+        args.extend(["--model".to_owned(), model.to_owned()]);
+    }
+    Ok(args)
+}
+
 /// `codex exec --oss` fails without a local provider, so one is always named.
 fn local_provider_args(launch: Option<&LaunchHints>) -> anyhow::Result<Vec<String>> {
     let Some(launch) = launch else {
@@ -142,7 +154,7 @@ fn local_provider_args(launch: Option<&LaunchHints>) -> anyhow::Result<Vec<Strin
     let provider =
         provider.context("a local Codex model needs local_provider \"ollama\" or \"lmstudio\"")?;
     ensure!(
-        LOCAL_PROVIDERS.contains(&provider),
+        runtime(provider).is_some_and(|runtime| runtime.codex_local),
         "Codex can't use the local provider {provider:?}; use ollama or lmstudio"
     );
     Ok(vec![

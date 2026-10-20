@@ -97,12 +97,7 @@ fn context_card(state: &AppState) -> Option<ContextCard> {
         return Some(conversation_context(breakdown));
     }
     let run = state.followed_run()?;
-    let share = |session: &&crate::state::SessionState| {
-        session
-            .context
-            .filter(|context| context.cap > 0)
-            .map(|context| context.used as f64 / context.cap as f64)
-    };
+    let share = |session: &&crate::state::SessionState| session.context?.of_cap();
     let fullest = run
         .running_sessions()
         .filter(|session| share(session).is_some())
@@ -115,8 +110,8 @@ fn context_card(state: &AppState) -> Option<ContextCard> {
     Some(session_context(
         subject,
         context.used,
-        context.cap,
-        fullest.context_window,
+        context.cap?,
+        context.window,
     ))
 }
 

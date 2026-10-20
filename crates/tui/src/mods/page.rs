@@ -526,7 +526,7 @@ impl ModPage {
         };
         let mut hints = if self.closed {
             vec![
-                ("←→ place", 2),
+                ("← → place", 2),
                 ("space tick", 1),
                 ("r reset", 1),
                 (save_to, 3),
@@ -534,7 +534,7 @@ impl ModPage {
         } else {
             vec![
                 ("↑↓ setting", 2),
-                ("←→ change", 2),
+                ("← → change", 2),
                 ("space tick", 1),
                 ("r reset", 1),
                 (save_to, 3),

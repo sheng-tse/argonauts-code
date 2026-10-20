@@ -69,6 +69,7 @@ pub(super) fn glyph(status: RowStatus, fallback: bool, theme: &Theme) -> (&'stat
 pub(super) fn tone_role(tone: Tone) -> Role {
     match tone {
         Tone::Plain => Role::Dim,
+        Tone::Text => Role::Text,
         Tone::Good => Role::Success,
         Tone::Warn => Role::Warn,
         Tone::Bad => Role::Danger,
@@ -522,11 +523,11 @@ pub(super) fn row_label(row: &WorkflowRow) -> String {
     sanitize_line(label).trim().to_owned()
 }
 
-/// The label column: the widest label of any row in any phase, a row inside a workflow inside
-/// with its level's cells, so the models stay in one column as you move from phase to phase and
-/// open or fold what a phase holds.
-pub(super) fn label_width(data: &WorkflowData) -> usize {
-    workflow_outline::label_column(&data.phases).min(MAX_LABEL)
+/// The label column: the widest label of any row in the shown phase, a row inside a workflow
+/// inside with its level's cells, so the models stay in one column as you open or fold what the
+/// phase holds. Each phase is laid out by its own labels, as Claude Code lays out its own.
+pub(super) fn label_width(phase: &PhaseRow) -> usize {
+    workflow_outline::label_column(std::slice::from_ref(phase)).min(MAX_LABEL)
 }
 
 /// The agents pane's columns, as Claude Code's rows: a pointer, the glyph, the label padded to

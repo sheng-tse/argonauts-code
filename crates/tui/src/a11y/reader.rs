@@ -399,7 +399,8 @@ impl Reader {
                         ends: false,
                     }),
                     ConversationEvent::TurnFailed { .. }
-                    | ConversationEvent::TurnCancelled { .. } => Some(Close::Tail {
+                    | ConversationEvent::TurnCancelled { .. }
+                    | ConversationEvent::TurnStopped { .. } => Some(Close::Tail {
                         key,
                         who,
                         ends: true,

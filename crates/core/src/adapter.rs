@@ -56,6 +56,21 @@ pub trait StreamParser: Send {
     fn spent_at_least(&self) -> Option<f64> {
         None
     }
+    /// A command to run once the process has ended and its output is read, before
+    /// [`StreamParser::finish`], whose output [`StreamParser::read_after_end`] reads: OpenCode's
+    /// export of a session whose last step its stream never printed. It gets the session's
+    /// own `command`, so it runs the same program with the same environment. `None`, the
+    /// default, when there's nothing to fetch.
+    fn after_end(&mut self, command: &CommandSpec) -> Option<CommandSpec> {
+        let _ = command;
+        None
+    }
+    /// What [`StreamParser::after_end`]'s command printed, or `None` when it failed or took
+    /// too long.
+    fn read_after_end(&mut self, stdout: Option<&str>) -> Vec<AgentEvent> {
+        let _ = stdout;
+        Vec::new()
+    }
 }
 
 /// One CLI, described well enough to run it headlessly.
@@ -75,6 +90,26 @@ pub trait Adapter: Send + Sync {
     }
     fn version_args(&self) -> &'static [&'static str];
     fn parse_version(&self, output: &str) -> Option<String>;
+    /// Whether `command` needs the installed version, so the runner reads it once before the
+    /// first session and passes it in [`SessionRequest::cli_version`]. Every other CLI is never
+    /// run an extra time.
+    fn launch_reads_version(&self) -> bool {
+        false
+    }
+    /// Whether `req`'s session talks to a server of its CLI's own, on a loopback port the CLI
+    /// picks as it starts, as OpenCode 2's private server is. A session with the network off
+    /// then reaches loopback straight, not only the proxy.
+    fn talks_to_own_server(&self, req: &SessionRequest) -> bool {
+        let _ = req;
+        false
+    }
+    /// A command that has the CLI say what its own config holds in `req.workdir`, asked once
+    /// before a session's first launch, in the session's sandbox, its output passed in
+    /// [`SessionRequest::cli_config`]. `None` when `command` needs nothing of it.
+    fn config_query(&self, req: &SessionRequest) -> Option<CommandSpec> {
+        let _ = req;
+        None
+    }
     /// CLI versions whose recorded output the tests replay.
     fn tested_versions(&self) -> &'static [&'static str];
     /// Model and effort for live tests and recordings, and for cheap work while the CLI's own
@@ -87,6 +122,19 @@ pub trait Adapter: Send + Sync {
     fn wrap_up_input(&self, message: &str) -> Option<String> {
         let _ = message;
         None
+    }
+
+    /// The CLI's own ultra mode, if it has one. Models on a server and CLIs without one keep the
+    /// mascot's normal look at any effort.
+    fn ultra_mode(&self) -> Option<UltraMode> {
+        None
+    }
+
+    /// Its CLI holds a session to the answer format it's given, as Claude Code's
+    /// `--json-schema` does, so the report comes as the answer and no other way. A CLI told the
+    /// format only in its prompt can't, and its model may hand the report in through a tool.
+    fn holds_answer_format(&self) -> bool {
+        false
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -229,10 +277,12 @@ pub trait Adapter: Send + Sync {
         }
     }
 
-    /// The agent's interactive UI on the same session, for take-over:
-    /// `claude --resume <id>`, `codex resume <id>`, `agy --conversation <id>`.
-    fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
-        let _ = (session_id, workdir);
+    /// The agent's interactive UI on `req.resume_session` in `req.workdir`, for take-over:
+    /// `claude --resume <id>`, `codex resume <id>`, `agy --conversation <id>`,
+    /// `opencode --session <id>`. `req` also has the session's model and launch hints, for a
+    /// CLI that must be given them again, as Codex's local mode must.
+    fn interactive_resume(&self, req: &SessionRequest) -> Option<CommandSpec> {
+        let _ = req;
         None
     }
 
@@ -487,6 +537,39 @@ pub enum TweakEffect {
     EnforcedByConductor,
 }
 
+/// A CLI's own ultra mode, which the welcome mascot shows in the CLI's colour while it is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UltraMode {
+    pub on: UltraOn,
+    pub colour: crate::app::UltraColour,
+}
+
+/// When a CLI's ultra mode is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UltraOn {
+    /// While `ultracode` is on, as Claude Code runs its own.
+    Ultracode,
+    /// While the main session runs at this effort, as Codex's `ultra`.
+    Effort(&'static str),
+}
+
+impl UltraMode {
+    /// The colour to show, when this mode is on for a session with `ultracode` and `effort`.
+    pub fn colour_when(
+        &self,
+        ultracode: bool,
+        effort: Option<&str>,
+    ) -> Option<crate::app::UltraColour> {
+        let on = match self.on {
+            UltraOn::Ultracode => ultracode,
+            UltraOn::Effort(level) => {
+                effort.is_some_and(|effort| effort.eq_ignore_ascii_case(level))
+            }
+        };
+        on.then_some(self.colour)
+    }
+}
+
 /// What a CLI reports and enforces. The defaults describe a CLI that streams its usage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Capabilities {
@@ -681,7 +764,11 @@ mod tests {
         assert!(adapter.input_line("hi").is_none());
         assert!(adapter.plan_usage_probe(dir, None).is_none());
         assert!(adapter.parse_plan_usage_probe("{}").is_none());
-        assert!(adapter.interactive_resume("s1", dir).is_none());
+        assert!(
+            adapter
+                .interactive_resume(&SessionRequest::reopening("s1", dir))
+                .is_none()
+        );
         assert_eq!(adapter.default_provider(), "unknown");
         assert_eq!(
             adapter.compaction(Compaction::Inherit),

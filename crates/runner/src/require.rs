@@ -51,6 +51,7 @@ impl Required {
                     count: None,
                     independent: false,
                     not_the_author: false,
+                    keep: false,
                     send_back_to: None,
                     then: None,
                     until: None,

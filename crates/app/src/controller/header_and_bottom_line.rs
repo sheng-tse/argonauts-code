@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use argonauts_core::RunId;
 use argonauts_core::Spend;
-use argonauts_core::app::{HeaderAndBottomLine, LineFacts, PlanUsageChip};
+use argonauts_core::app::{HeaderAndBottomLine, LineFacts, PlanUsageChip, UltraColour};
 use argonauts_core::limits::{HealthBoard, PlanUsageBoard, PlanUsageReading};
 use argonauts_core::names::{AgentId, ModelRef};
 use argonauts_core::plan_usage::{LiveUsage, UNNAMED_SHOWN_FOR, current_live};
@@ -51,6 +51,11 @@ pub(crate) fn header_and_bottom_line(
         &ASKED,
     );
     let (main_agent, main_effort) = header_agent(ctx);
+    let ultra = ultra_look(
+        &main_agent.agent,
+        settings.ultracode,
+        main_effort.as_deref(),
+    );
     let mut line = line_facts(&ctx.env, OffsetDateTime::now_utc());
     line.main_effort = main_effort;
     HeaderAndBottomLine {
@@ -58,6 +63,7 @@ pub(crate) fn header_and_bottom_line(
         repo: ctx.env.display_repo(),
         workflow: settings.workflow.clone(),
         ultracode: settings.ultracode,
+        ultra,
         run: run.run,
         main_agent,
         plan_chips: plan_usage_chips(
@@ -74,6 +80,16 @@ pub(crate) fn header_and_bottom_line(
             .unwrap_or_else(|| settings.approvals.mode()),
         awake: ctx.awake.held(),
     }
+}
+
+/// The look of the main agent's own ultra mode while it is on, which only a CLI that has one
+/// declares: Claude Code's ultracode, Codex's ultra effort.
+fn ultra_look(agent: &str, ultracode: bool, effort: Option<&str>) -> Option<UltraColour> {
+    crate::adapters::builtin_adapters()
+        .into_iter()
+        .find(|adapter| adapter.id() == agent)?
+        .ultra_mode()?
+        .colour_when(ultracode, effort)
 }
 
 /// The bottom line's settings, and the facts of the parts they put on it. A part that isn't
@@ -360,6 +376,22 @@ pub(crate) fn agent_label(agent_id: &AgentId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_claude_codes_ultracode_and_codexs_ultra_effort_take_an_ultra_look() {
+        let purple = Some(UltraColour::Purple);
+        assert_eq!(ultra_look("claude-code", true, Some("xhigh")), purple);
+        assert_eq!(ultra_look("claude-code", false, Some("ultra")), None);
+        assert_eq!(ultra_look("codex", true, Some("xhigh")), None);
+        assert_eq!(
+            ultra_look("codex", false, Some("ultra")),
+            Some(UltraColour::Blue)
+        );
+        // A top effort or a model named Ultra elsewhere keeps the normal look.
+        assert_eq!(ultra_look("antigravity-cli", true, Some("ultra")), None);
+        assert_eq!(ultra_look("opencode", true, Some("max")), None);
+        assert_eq!(ultra_look("ollama", true, Some("ultra")), None);
+    }
 
     /// A board that counts what it was asked to read again.
     #[derive(Default)]

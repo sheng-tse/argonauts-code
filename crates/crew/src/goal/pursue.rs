@@ -863,15 +863,22 @@ pub fn try_task_id(n: u32) -> TaskId {
     TaskId::new(format!("try-{n}")).unwrap_or_else(|_| TaskId::numbered(n))
 }
 
-/// The first crew member from another provider than `worker`.
+/// The first crew member from another provider than `worker` that can build. A model on a
+/// server has no tools, so a round of building never goes to it.
 fn other_provider(host: &Host, worker: Option<&ModelRef>) -> Option<ModelRef> {
     let worker = worker?;
     let provider = roles::provider(host, worker);
+    let workers = &host.services().workers;
     host.settings()
         .crew
         .members()
         .into_iter()
-        .find(|model| model != worker && roles::provider(host, model) != provider)
+        .filter(|model| model != worker && roles::provider(host, model) != provider)
+        .find(|model| {
+            workers
+                .get(model)
+                .is_ok_and(|runner| runner.capabilities().can_build)
+        })
 }
 
 /// What a question is about: one the crew's answerer takes, or a hard limit, which comes to you

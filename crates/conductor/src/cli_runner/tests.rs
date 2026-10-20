@@ -7,8 +7,8 @@ use std::time::Duration;
 use argonauts_adapter_claude_code::ClaudeCodeAdapter;
 use argonauts_core::events::context::ContextDetail;
 use argonauts_core::events::session::{
-    Delivery, EndReason, InputPartKind, LimitEvent, PromptVia, SessionEvent, SessionInput,
-    Watchdog, WrapUpVia,
+    CallCount, Delivery, EndReason, InputPartKind, LimitEvent, PromptVia, SessionEvent,
+    SessionInput, Watchdog, WrapUpVia,
 };
 use argonauts_core::layout::session_files;
 use argonauts_core::names::{ModelRef, RoleName};
@@ -1428,10 +1428,37 @@ async fn inactivity_stops_a_silent_process() {
     assert_eq!(
         end.reason,
         EndReason::Stuck {
-            watchdog: Watchdog::Inactivity
+            watchdog: Watchdog::Inactivity,
+            calls: None
         }
     );
     assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+/// A CLI waiting on a question of yours sends nothing and uses no CPU, so while the question is
+/// open the silence isn't inactivity; once it's answered the clock runs again.
+#[tokio::test]
+async fn an_open_question_holds_the_inactivity_stop_until_answered() {
+    for answered in [false, true] {
+        let dirs = Dirs::new();
+        let h = TestDriver::new(TestAdapter::new("exec sleep 2"));
+        let mut spec = dirs.spec("hi");
+        spec.limits.inactivity_min = Some(0.01);
+        let handle = h.worker.start(spec).await.unwrap();
+        handle.control.send(SessionControl::Asking).await.unwrap();
+        if answered {
+            handle.control.send(SessionControl::Answered).await.unwrap();
+        }
+        let (_, end) = collect(handle).await;
+        let inactive = matches!(
+            end.reason,
+            EndReason::Stuck {
+                watchdog: Watchdog::Inactivity,
+                ..
+            }
+        );
+        assert_eq!(inactive, answered, "{:?}", end.reason);
+    }
 }
 
 #[tokio::test]
@@ -1454,7 +1481,11 @@ async fn repeat_gets_a_note_then_stuck() {
     assert_eq!(
         end.reason,
         EndReason::Stuck {
-            watchdog: Watchdog::Repeat
+            watchdog: Watchdog::Repeat,
+            calls: Some(CallCount {
+                name: "Bash".into(),
+                times: 5
+            })
         }
     );
     let nudged = session_events(&events)
@@ -1467,6 +1498,53 @@ async fn repeat_gets_a_note_then_stuck() {
     assert!(note);
     let got = dirs.read("got-input");
     assert!(got.contains("same tool call"), "the note went in: {got}");
+}
+
+/// A later try on committed work whose calls change nothing gets its own wrap-up, then stops.
+#[tokio::test]
+async fn a_later_try_that_changes_nothing_is_asked_for_the_checks_then_stopped() {
+    let dirs = Dirs::new();
+    let mut calls = String::new();
+    for n in 0..30 {
+        let started = event_line(&AgentEvent::ToolStarted {
+            id: format!("t{n}"),
+            name: "Bash".into(),
+            input: serde_json::json!({ "command": format!("cat file-{n}") }),
+            parent: None,
+        });
+        calls.push_str(&format!(
+            "{}; {}; sleep 0.05; ",
+            echo(&started),
+            echo(&tool(&format!("t{n}"), false))
+        ));
+    }
+    let script = format!("IFS= read -r first; cat <&0 >> got-input & {calls} exec sleep 30");
+    let h = TestDriver::new(TestAdapter::new(&script).with_input_lines());
+    let mut spec = dirs.spec("hi");
+    spec.limits.no_progress_calls = Some(4);
+    let (events, end) = collect(h.worker.start(spec).await.unwrap()).await;
+    assert_eq!(
+        end.reason,
+        EndReason::Stuck {
+            watchdog: Watchdog::NoProgress,
+            calls: Some(CallCount {
+                name: "Bash".into(),
+                times: 7
+            })
+        }
+    );
+    let wrap_ups: Vec<String> = inputs(&events)
+        .into_iter()
+        .flat_map(|input| input.parts.iter())
+        .filter(|part| part.kind == InputPartKind::WrapUp)
+        .map(|part| part.text.clone())
+        .collect();
+    assert_eq!(wrap_ups, [crate::watchdogs::NO_PROGRESS_WRAP_UP]);
+    let got = dirs.read("got-input");
+    assert!(
+        got.contains("Run the checks once"),
+        "the wrap-up went in: {got}"
+    );
 }
 
 #[tokio::test]
@@ -1567,6 +1645,11 @@ fn registry_entry(context_window: u64) -> ModelEntry {
         tier: None,
         name: None,
         description: None,
+        window: None,
+        ram_bytes: None,
+        thinking: None,
+        variants: None,
+        listed_cost: false,
     }
 }
 
@@ -1644,7 +1727,12 @@ async fn a_watched_session_is_asked_for_its_context_after_a_fill_and_counts_what
         .lines()
         .filter(|line| line.contains("context"))
         .collect();
-    assert_eq!(asks, [r#"{"context":"full"}"#], "{got}");
+    // The watched ask, then the short count every turn is asked for as it ends.
+    assert_eq!(
+        asks,
+        [r#"{"context":"full"}"#, r#"{"context":"summary"}"#],
+        "{got}"
+    );
     let sent: Vec<u64> = agent_events(&events)
         .into_iter()
         .filter_map(|e| match e {
@@ -1660,7 +1748,8 @@ async fn a_watched_session_is_asked_for_its_context_after_a_fill_and_counts_what
 }
 
 /// A run's agent is asked for the short count after a fill though nothing shows its session,
-/// and what goes on to the run's journal is its rows without the grid and the lists.
+/// and what goes on to the run's journal is its rows without the grid and the lists. The whole
+/// count stays in the session's folder.
 #[tokio::test]
 async fn a_crew_agents_session_is_counted_in_short_and_keeps_only_its_rows() {
     use argonauts_core::events::context::{
@@ -1716,10 +1805,21 @@ async fn a_crew_agents_session_is_counted_in_short_and_keeps_only_its_rows() {
     );
     let mut spec = dirs.spec("start");
     spec.run = Some(argonauts_core::RunId::new("run-20261010-140000-1a2b").unwrap());
+    let session_dir = spec.session_dir.clone();
     let handle = h.worker.start(spec).await.unwrap();
     let (events, end) = collect(handle).await;
     assert_eq!(end.reason, EndReason::Completed);
-    assert_eq!(dirs.read("got-input").trim(), r#"{"context":"summary"}"#);
+    let whole: ContextUsage = serde_json::from_slice(
+        &std::fs::read(session_dir.join(session_files::CONTEXT)).expect("context.json"),
+    )
+    .expect("a whole count");
+    let AgentEvent::ContextBreakdown { usage: sent } = &counted else {
+        unreachable!()
+    };
+    assert_eq!(whole, **sent);
+    // The first fill's ask, then the turn's end's.
+    let asks: Vec<String> = dirs.read("got-input").lines().map(str::to_owned).collect();
+    assert_eq!(asks, [r#"{"context":"summary"}"#; 2]);
     let kept: Vec<&ContextUsage> = agent_events(&events)
         .into_iter()
         .filter_map(|event| match event {
@@ -1733,6 +1833,115 @@ async fn a_crew_agents_session_is_counted_in_short_and_keeps_only_its_rows() {
     assert_eq!(kept.categories, [row]);
     assert_eq!((kept.total_tokens, kept.window), (36_200, 200_000));
     assert!(kept.grid.is_empty() && kept.memory_files.is_empty());
+}
+
+/// The count every turn is asked for as it ends, in short: one ask after the result, and the
+/// input closes as soon as the count comes.
+#[tokio::test]
+async fn a_turn_is_counted_as_it_ends_and_its_input_closes_on_the_count() {
+    use argonauts_core::events::context::ContextUsage;
+
+    let dirs = Dirs::new();
+    let counted = AgentEvent::ContextBreakdown {
+        usage: Box::new(ContextUsage {
+            total_tokens: 27_755,
+            window: 1_000_000,
+            ..ContextUsage::default()
+        }),
+    };
+    let script = format!(
+        "IFS= read -r first; {}; IFS= read -r ask; printf '%s\\n' \"$ask\" >> got-input; {}; \
+         while IFS= read -r line; do printf '%s\\n' \"$line\" >> got-input; done",
+        echo(&result("done")),
+        echo(&event_line(&counted)),
+    );
+    let h = TestDriver::new(
+        TestAdapter::new(&script)
+            .with_input_lines()
+            .with_context_asks(),
+    );
+    let started = std::time::Instant::now();
+    let handle = h.worker.start(dirs.spec("start")).await.unwrap();
+    let (events, end) = collect(handle).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    assert_eq!(dirs.read("got-input").trim(), r#"{"context":"summary"}"#);
+    let totals: Vec<u64> = agent_events(&events)
+        .into_iter()
+        .filter_map(|event| match event {
+            AgentEvent::ContextBreakdown { usage } => Some(usage.total_tokens),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(totals, [27_755]);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the input closed on the count, not when the wait for it ran out"
+    );
+}
+
+/// A recorded Claude Code turn, whose count was asked just after its result and came 10 ms
+/// later: the runner asks as the turn ends, and the reply, grid and all, closes the input.
+#[tokio::test]
+async fn a_recorded_claude_code_turn_ends_with_its_count() {
+    let stream = recorded("context_usage_summary");
+    let script = format!(
+        "IFS= read -r first; sed -n '1,9p' {stream}; \
+         IFS= read -r ask; printf '%s\\n' \"$ask\" >> got-input; sed -n '10p' {stream}; \
+         while IFS= read -r line; do :; done"
+    );
+    let adapter = TestAdapter::new(&script)
+        .with_input_lines()
+        .with_context_asks()
+        .with_parser(|| ClaudeCodeAdapter.parser());
+    let h = TestDriver::new(adapter);
+    let dirs = Dirs::new();
+    let started = std::time::Instant::now();
+    let handle = h
+        .worker
+        .start(dirs.spec("Reply with only the word: ready"))
+        .await
+        .unwrap();
+    let (events, end) = collect(handle).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    assert_eq!(dirs.read("got-input").trim(), r#"{"context":"summary"}"#);
+    let counts: Vec<(u64, usize)> = agent_events(&events)
+        .into_iter()
+        .filter_map(|event| match event {
+            AgentEvent::ContextBreakdown { usage } => Some((usage.total_tokens, usage.grid.len())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(counts, [(24_010, 10)], "the recorded count, its grid whole");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the input closed on the count"
+    );
+}
+
+/// A count that never comes holds the input open only a short while.
+#[tokio::test]
+async fn a_turn_whose_count_never_comes_closes_its_input_after_a_short_wait() {
+    let dirs = Dirs::new();
+    let script = format!(
+        "IFS= read -r first; {}; \
+         while IFS= read -r line; do printf '%s\\n' \"$line\" >> got-input; done",
+        echo(&result("done")),
+    );
+    let h = TestDriver::new(
+        TestAdapter::new(&script)
+            .with_input_lines()
+            .with_context_asks(),
+    );
+    let started = std::time::Instant::now();
+    let handle = h.worker.start(dirs.spec("start")).await.unwrap();
+    let (_, end) = collect(handle).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    assert_eq!(dirs.read("got-input").trim(), r#"{"context":"summary"}"#);
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_millis(1_900),
+        "it waited for the count: {waited:?}"
+    );
 }
 
 #[tokio::test]
@@ -2852,4 +3061,55 @@ async fn a_request_billed_past_the_limit_stops_the_session_at_that_request() {
     let first = first.expect("a spend reading");
     assert!((first.cost_usd - 0.361891).abs() < 1e-9, "{first:?}");
     assert!(first.cost_estimated);
+}
+
+/// Reads agent events as they are and, once the process has ended, asks for one more command,
+/// whose output it reads as a message: the way OpenCode's export fills in a step its stream
+/// left out.
+struct AfterEndParser;
+
+impl argonauts_core::adapter::StreamParser for AfterEndParser {
+    fn parse_stdout_line(&mut self, line: &str) -> Vec<AgentEvent> {
+        vec![serde_json::from_str(line).unwrap_or_else(|_| AgentEvent::unknown_line(line))]
+    }
+    fn parse_stderr_line(&mut self, _line: &str) -> Vec<AgentEvent> {
+        Vec::new()
+    }
+    fn finish(&mut self, _exit_code: Option<i32>) -> Vec<AgentEvent> {
+        Vec::new()
+    }
+    fn after_end(
+        &mut self,
+        command: &argonauts_core::CommandSpec,
+    ) -> Option<argonauts_core::CommandSpec> {
+        let mut after = argonauts_core::CommandSpec::new("/bin/sh", &command.cwd)
+            .args(["-c", "printf 'after the end in %s' \"${PWD##*/}\""]);
+        after.env_set.clone_from(&command.env_set);
+        Some(after)
+    }
+    fn read_after_end(&mut self, stdout: Option<&str>) -> Vec<AgentEvent> {
+        vec![AgentEvent::Message {
+            text: stdout.unwrap_or("nothing came").to_owned(),
+            parent: None,
+        }]
+    }
+}
+
+/// What a parser asks to run once its process has ended runs where the session ran, and what it
+/// prints is read before the session ends.
+#[tokio::test]
+async fn what_a_parser_asks_for_after_the_end_is_read_before_the_session_ends() {
+    let dirs = Dirs::new();
+    let adapter = TestAdapter::new(&echo(&result("done"))).with_parser(|| Box::new(AfterEndParser));
+    let h = TestDriver::new(adapter);
+    let handle = h.worker.start(dirs.spec("start")).await.unwrap();
+    let (events, end) = collect(handle).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    assert!(
+        events
+            .iter()
+            .any(|event| is_agent_message(event, "after the end in work")),
+        "{:?}",
+        names(&events)
+    );
 }

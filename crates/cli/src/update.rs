@@ -1,5 +1,5 @@
-//! `argonauts update`: each installed agent CLI updated in turn the way it was installed, with
-//! its version before and after, then the doctor. Never while a run is going, so that no run
+//! `argonauts update`: each installed agent CLI updated side by side the way it was installed,
+//! with its version before and after, then the doctor. Never while a run is going, so that no run
 //! switches versions halfway.
 
 use std::process::ExitCode;

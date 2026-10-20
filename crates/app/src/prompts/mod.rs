@@ -82,6 +82,9 @@ pub(crate) fn conversation_answer(input: &ConversationAnswerInput) -> String {
         &catalog::text(&catalog::ANSWER),
         &[
             ("run_status", run_status),
+            // The CLI holds the answer to its schema, or the adapter adds it to the prompt of
+            // one that can't, so the built-in prompt leaves it out. A prompt file of your own
+            // may still ask for it.
             ("schema", schema::<ConversationAnswer>()),
             ("question", input.question.trim().to_owned()),
         ],
@@ -295,7 +298,9 @@ mod tests {
         assert!(prompt.contains("sent without `/ask` makes the change in a run"));
         assert!(prompt.contains("A run is going. Its status now:\n\ntask-002 running · 6m"));
         assert!(prompt.ends_with("why is task-002 slow?\n"));
-        assert!(prompt.contains("\"answer_markdown\""));
+        // The schema reaches the CLI on its own, so the answer has no JSON to end with.
+        assert!(!prompt.contains("answer_markdown"), "{prompt}");
+        assert!(prompt.contains("Write your answer in Markdown, so it streams as you write."));
     }
 
     #[test]

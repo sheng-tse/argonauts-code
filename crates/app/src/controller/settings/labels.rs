@@ -104,7 +104,8 @@ impl<'a> Labels<'a> {
     pub(super) fn order(&self, a: &ModelChoice, b: &ModelChoice) -> Ordering {
         let place = place_in_group(a);
         place.cmp(&place_in_group(b)).then_with(|| {
-            if self.endpoints.contains(&a.worker.agent) {
+            // OpenCode's list comes in its groups, in the order they show.
+            if self.endpoints.contains(&a.worker.agent) || a.listed.is_some() {
                 return Ordering::Equal;
             }
             let newest = || self.catalog.newest_first(&a.worker, &b.worker);
@@ -148,6 +149,11 @@ impl<'a> Labels<'a> {
         }
         let described = target.and_then(|target| self.catalog.entry(target));
         let listed = target.and_then(|target| self.listed_entry(target));
+        // A CLI that lists each model's variants, as OpenCode does, says which levels it
+        // takes, and that one with none takes none. It names no default.
+        if let Some(variants) = listed.and_then(|entry| entry.variants.clone()) {
+            return (variants, None);
+        }
         let efforts = described
             .and_then(|entry| entry.efforts.clone())
             .or_else(|| {

@@ -20,6 +20,7 @@ use argonauts_core::events::session::{
 use argonauts_core::events::task::TaskState;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::session_runner::Access;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::ui::{AgentsInConversation, Glyphs as GlyphChoice};
 use argonauts_core::steps::StepName;
@@ -28,15 +29,19 @@ use argonauts_core::{AgentEvent, ErrorCategory, RunId, TaskId, TodoItem, TodoSta
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use super::{Cx, cli_workflow_run, ended, failure, plugin_output, reviewed, tools};
+use super::{Cx, cli_workflow_run, ended, failure, gave, plugin_output, reviewed, tools};
 use crate::cell::{
-    AgentsStarted, Cell, DiffView, StartedAgent, Todo, TodoState, Tone, ToolCall, ToolItem,
-    ToolKind, ToolState, ToolStats, ToolTitle,
+    AgentsStarted, Cell, DiffView, ModelShade, StartedAgent, Todo, TodoState, Tone, ToolCall,
+    ToolItem, ToolKind, ToolState, ToolStats, ToolTitle,
 };
 use crate::format;
 use crate::history::CellId;
-use crate::state::{RunState, task_label};
+use crate::overview::shades::ModelColors;
+use crate::state::{AppState, RunState, task_label};
 use crate::theme::Glyphs;
+
+/// The built-in workflow whose agents propose, challenge and decide.
+const COUNCIL: &str = "council";
 
 /// Tool items a live block keeps, newest last. Quiet calls in a row count as one.
 const LIVE_CALLS: usize = 3;
@@ -117,6 +122,8 @@ struct Live {
     workflows_unseen: Vec<(String, Option<String>, serde_json::Value)>,
     /// Its role, so a reviewer or a sign-off ends with its verdict.
     role: Option<argonauts_core::names::RoleName>,
+    /// It may only read, as a council's proposals and challenges do.
+    reads_only: bool,
     /// What it was given to judge.
     given: reviewed::Given,
 }
@@ -213,6 +220,7 @@ impl AgentBlocks {
                 live.role =
                     (!matches!(started.step, Some(StepName::Settle | StepName::ModelJudge)))
                         .then_some(started.role);
+                live.reads_only = started.access == Access::ReadOnly;
                 self.started.add(live.started_row(), event.ts);
                 self.sessions.push(live);
             }
@@ -421,10 +429,24 @@ impl AgentBlocks {
             .and_then(|task| self.checks.get(&(live.run.clone(), task.clone())).copied())
             .or_else(|| checks_from_task(live.task_state(cx)));
         let decided = decided_alone(end, on_autopilot(cx, &live.run));
+        let who = gave::Who {
+            role: live.role,
+            reads_only: live.reads_only,
+            has_task: live.task.is_some(),
+            in_council: cx
+                .state
+                .runs
+                .get(&live.run)
+                .is_some_and(|run| run.workflow.as_deref() == Some(COUNCIL)),
+        };
+        let gave = (end.reason == EndReason::Completed)
+            .then(|| gave::of(who, end.structured.as_ref()))
+            .flatten();
         let mut detail = end_detail(
             end,
             checks,
             decided.as_deref(),
+            gave.as_ref().and_then(gave::Gave::report_word),
             (&live.agent_id, &cx.state.names),
             glyphs(cx),
         );
@@ -438,6 +460,12 @@ impl AgentBlocks {
             detail.push_str(failure::RAW_ERROR_HINT);
         }
         let mut summary = live.whole.summarized(Some(&detail));
+        if let Some(line) = gave
+            .as_ref()
+            .and_then(|gave| gave.line(live.whole.tool_uses(), &took(end)))
+        {
+            summary.body = vec![ToolItem::text(line)];
+        }
         // A verdict says what the agent read, so what it held back stays for the overlay.
         let verdict = raw
             .is_none()
@@ -469,8 +497,10 @@ impl AgentBlocks {
         }
         let mut out: Vec<(Cell, bool)> = Vec::new();
         if state != ToolState::Stopped && !held_back {
+            // One row for the agent, as Claude Code draws a finished subagent: the tool lines
+            // it held back above its Done line, under its one header.
             if let Some(batch) = live.take_batch() {
-                out.push((batch.into(), true));
+                summary.body.splice(0..0, batch.body);
             }
         } else if live.printed && !held_back {
             // A stopped agent prints one line, and what it held back stays for the overlay.
@@ -715,7 +745,9 @@ impl Live {
         let started = format::ClockTime::from(place.at.to_offset(cx.state.clock_offset()));
         let agent = cx.state.names.worker(worker);
         let head = match &named.label {
-            Some(label) => ToolCall::agent(label.clone(), Some(color), agent, String::new()),
+            // A label reads in the text's colour, with no colour of its own.
+            Some(label) => ToolCall::agent(label.clone(), None, agent, String::new())
+                .with_model(shaded(worker, cx.state)),
             None => ToolCall::agent(agent, Some(color), named.task, title.unwrap_or_default()),
         }
         .with_key(place.key.to_string())
@@ -748,6 +780,7 @@ impl Live {
             last_push: None,
             retries: 0,
             role: None,
+            reads_only: false,
             given: reviewed::Given::default(),
         };
         // By default an agent at work shows in the list under the input with what it's doing
@@ -769,11 +802,15 @@ impl Live {
             .state
             .names
             .worker(&cx.state.names.running(&session.worker));
+        let running = cx.state.names.running(&session.worker);
         let mut changed = false;
         for call in [&mut self.head, &mut self.whole, &mut self.outbox] {
-            // A labeled block names its agent after the label.
+            // A labeled block names its agent after the label, its model in its shade.
             let shown = match &mut call.title {
-                ToolTitle::Agent { role, .. } if self.labeled => role,
+                ToolTitle::Agent { role, model, .. } if self.labeled => {
+                    *model = Some(shaded(&running, cx.state));
+                    role
+                }
                 ToolTitle::Agent { name, .. } => name,
                 _ => continue,
             };
@@ -792,6 +829,7 @@ impl Live {
             color,
             role,
             task,
+            ..
         } = &self.head.title
         else {
             return StartedAgent::new(self.head.title.plain(), None, "");
@@ -1320,12 +1358,31 @@ fn decided_alone(end: &SessionEnd, on_autopilot: bool) -> Option<String> {
     })
 }
 
-/// `report ✓ · checks ✓ · 9m 40s · 61k tokens`, or why it ended first. What the agent decided
+/// The shade `worker`'s model draws in: its place among its CLI's models, as every tab ranks
+/// them by the tokens they ran here.
+fn shaded(worker: &ModelRef, state: &AppState) -> ModelShade {
+    let names = &state.names;
+    let (cli, name) = names.shown_as(&worker.agent, worker.model.as_deref());
+    let ranked = state
+        .usage
+        .as_ref()
+        .map_or(&[][..], |usage| usage.all_time_models.as_slice());
+    let place = ModelColors::new(ranked, names)
+        .with_named([(cli.as_str(), name.as_str())])
+        .place_named(&cli, &name);
+    ModelShade {
+        cli: crate::overview::cli_role(&cli),
+        place: u8::try_from(place % crate::overview::shades::SHADES).unwrap_or_default(),
+    }
+}
+
+/// `report ✓ · checks ✓ · 9m 40s · 61.0k tokens`, or why it ended first. What the agent decided
 /// in your place comes right before how long it took.
 fn end_detail(
     end: &SessionEnd,
     checks: Option<bool>,
     decided: Option<&str>,
+    gave: Option<&str>,
     (agent, names): (&str, &DisplayNames),
     glyphs: &Glyphs,
 ) -> String {
@@ -1335,7 +1392,7 @@ fn end_detail(
     }
     let reported = end.structured.is_some() || end.result_text.is_some();
     if end.reason == EndReason::Completed && reported {
-        parts.push(format!("report {}", glyphs.ready));
+        parts.push(gave.map_or_else(|| format!("report {}", glyphs.ready), str::to_owned));
     }
     if let Some(passed) = checks {
         let mark = if passed {
@@ -1346,10 +1403,17 @@ fn end_detail(
         parts.push(format!("checks {mark}"));
     }
     parts.extend(decided.map(str::to_owned));
-    parts.push(format::duration(Duration::from_millis(end.duration_ms)));
+    parts.push(took(end));
+    parts.join(" · ")
+}
+
+/// How long the session took and what it spent, as Claude Code writes its own agents' rows:
+/// `9m 40s · 61.0k tokens`.
+fn took(end: &SessionEnd) -> String {
+    let mut parts = vec![format::duration(Duration::from_millis(end.duration_ms))];
     let tokens = end.spend.input_tokens + end.spend.output_tokens;
     if tokens > 0 {
-        parts.push(format!("{} tokens", format::tokens(tokens)));
+        parts.push(format!("{} tokens", format::tokens_as_claude_code(tokens)));
     }
     parts.join(" · ")
 }
@@ -1369,10 +1433,16 @@ pub(crate) fn reason_words(
         EndReason::LimitHit { .. } => "limit reached".to_owned(),
         EndReason::Stuck {
             watchdog: Watchdog::Inactivity,
+            ..
         } => "stuck, no activity".to_owned(),
         EndReason::Stuck {
             watchdog: Watchdog::Repeat,
+            ..
         } => "stuck, repeating a call".to_owned(),
+        EndReason::Stuck {
+            watchdog: Watchdog::NoProgress,
+            ..
+        } => "stuck, changing nothing".to_owned(),
         EndReason::UsageLimit { .. } => "usage limit".to_owned(),
         EndReason::RateLimited => "rate limited".to_owned(),
         EndReason::ContextFull => "context full".to_owned(),

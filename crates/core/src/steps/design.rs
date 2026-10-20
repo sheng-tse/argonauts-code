@@ -93,6 +93,7 @@ pub struct WorkflowExample {
 /// each phase's name and detail, every agent's label, and the done-when list. Code validates it
 /// like any workflow and sends the errors back.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(transform = says_what_runs)]
 pub struct DesignOutput {
     /// Two to four task words, lowercase, joined with `-`, at most 32 cells, such as
     /// `fix-slugify-median`. Never an example's name.
@@ -124,6 +125,18 @@ pub struct DesignOutput {
     /// In a goal run, the first try, planned with the goal so the start question can estimate
     /// it.
     pub first_try: Option<TryPlan>,
+}
+
+/// A brief must say what runs, so `based_on` and `workflow` are both asked for, either of them
+/// `null`. Normalizing fills in the one left out when the other is there.
+fn says_what_runs(schema: &mut schemars::Schema) {
+    if let Some(Value::Array(required)) = schema.get_mut("required") {
+        for key in ["based_on", "workflow"] {
+            if !required.iter().any(|name| name == key) {
+                required.push(Value::from(key));
+            }
+        }
+    }
 }
 
 impl DesignOutput {

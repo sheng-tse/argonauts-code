@@ -9,6 +9,7 @@
 use argonauts_core::NoteLevel;
 use argonauts_core::app::AppEvent;
 use argonauts_core::names::{ModelRef, TurnId};
+use argonauts_core::session_runner::RunnerKind;
 use argonauts_core::settings::switch::Carry;
 use argonauts_core::steps::{StepError, StepOutcome};
 
@@ -208,15 +209,26 @@ pub(super) fn forget_summary(conversation: &mut ConversationState) {
     conversation.carry.summary = None;
 }
 
-/// The conversation so far, for a session that can't resume it.
-pub(super) fn primer(ctx: &Ctx, conversation: &ConversationState) -> Option<InputPart> {
+/// The conversation so far, for a session that can't resume it, written for the runner that
+/// reads it: a model on a server hears nothing of sessions or files.
+pub(super) fn primer(
+    ctx: &Ctx,
+    conversation: &ConversationState,
+    kind: RunnerKind,
+) -> Option<InputPart> {
     let settings = &ctx.settings().switch;
     let recent = (settings.carry != Carry::All).then_some(settings.recent);
+    let reader = match kind {
+        RunnerKind::Cli => excerpt::Reader::Session {
+            transcript: conversation.store.journal_path(),
+        },
+        RunnerKind::Endpoint => excerpt::Reader::Model,
+    };
     excerpt::excerpt(
         &conversation.history,
         conversation.carry.summary(),
         recent,
-        conversation.store.journal_path(),
+        reader,
     )
 }
 

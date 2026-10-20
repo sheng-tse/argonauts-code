@@ -614,6 +614,8 @@ impl View for ApprovalsView {
                 refreshed,
                 refreshing,
                 update,
+                sources: _,
+                memory: _,
             } => {
                 let role = role.filter(|role| *role != RoleName::Main);
                 let Some(editor) = self.editor.as_mut() else {
@@ -943,6 +945,7 @@ mod tests {
             effort: None,
             alias: false,
             runs: None,
+            listed: None,
         }
     }
 
@@ -1232,6 +1235,8 @@ mod tests {
             refreshed: None,
             refreshing: false,
             update: false,
+            sources: Vec::new(),
+            memory: None,
         };
         assert!(!view.accept(&other));
         let listed = ViewData::Models {
@@ -1240,6 +1245,8 @@ mod tests {
             refreshed: None,
             refreshing: false,
             update: false,
+            sources: Vec::new(),
+            memory: None,
         };
         assert!(view.accept(&listed));
         assert_eq!(editor_rows(&view).len(), 2, "one row per CLI");
@@ -1289,6 +1296,8 @@ mod tests {
             refreshed: None,
             refreshing: false,
             update: false,
+            sources: Vec::new(),
+            memory: None,
         };
         assert!(view.accept(&listed));
         let editor = view.editor.as_ref().expect("the editor");

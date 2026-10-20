@@ -50,7 +50,7 @@ fn started(id: &str, name: &str) -> AgentEvent {
 }
 
 fn synced(state: &AppState, bottom: &mut BottomState, now: Instant) -> WorkingLine {
-    sync_working(state, bottom, || "Rowing", now);
+    sync_working(state, bottom, |_| "Rowing", now);
     bottom.working.clone().expect("a working line")
 }
 
@@ -185,7 +185,7 @@ fn a_task_whose_workflows_go_on_after_its_turn_waits_for_them() {
 
     let mut bottom = BottomState::new();
     let now = Instant::now();
-    sync_working(&log.state, &mut bottom, || "Rowing", now);
+    sync_working(&log.state, &mut bottom, |_| "Rowing", now);
     assert!(bottom.working.is_none(), "{:?}", bottom.working);
     assert_eq!(
         bottom.waits_for.as_deref(),
@@ -208,7 +208,7 @@ fn a_task_whose_workflows_go_on_after_its_turn_waits_for_them() {
         json!({"type": "agent", "data": {"type": "text_delta", "text": "It passed.",
             "parent": null}}),
     );
-    sync_working(&log.state, &mut bottom, || "Rowing", now);
+    sync_working(&log.state, &mut bottom, |_| "Rowing", now);
     assert_eq!(bottom.waits_for, None);
     assert_eq!(
         bottom.working.as_ref().map(|line| line.verb.as_str()),

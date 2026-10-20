@@ -97,8 +97,8 @@ pub fn choice_question(id: u64, choice: &AppChoice) -> QuestionPrompt {
         }
         ChoiceKind::RenamedSettings => {
             question.noted_rows = choice.body.iter().take(MAX_SETUP_ROWS).cloned().collect();
+            question.two_columns = true;
             question.framed = true;
-            question.warns = true;
             question.descriptions_beside = Some(RENAMED_GAP);
         }
         // Many names to pick from, so each takes one row with its kind beside it.

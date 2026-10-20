@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::RunId;
 use argonauts_core::api::{RunState, StatusSummary, UsagePeriod, UsageSummary};
-use argonauts_core::app::{AppMode, UiCommand, ViewData, ViewRequest};
+use argonauts_core::app::{AppMode, SessionCounted, UiCommand, ViewData, ViewRequest};
 use argonauts_core::input::{ModPlaceChange, ModsAction, SlashCommand, ViewAction};
+use argonauts_core::names::SessionKey;
 use argonauts_core::overview::{ModelTokens, OverviewPeriod};
 use argonauts_core::settings::mods::ModPlace;
 use argonauts_core::settings::stats::StatsGroup;
@@ -174,6 +175,16 @@ enum Follow {
     Last,
 }
 
+/// A run session the Context tab shows whole.
+#[derive(Debug)]
+struct Opened {
+    run: RunId,
+    session: SessionKey,
+    counted: Option<SessionCounted>,
+    /// Where the tab was among every session, as it comes back.
+    every_session: ContextPane,
+}
+
 #[derive(Debug)]
 pub struct OverviewView {
     tab: Tab,
@@ -199,6 +210,13 @@ pub struct OverviewView {
     context: Option<ContextData>,
     /// Where the Context tab is scrolled to, and the block its keys are on.
     pane: ContextPane,
+    /// The Context tab's long MCP list shows every tool, not a row a server.
+    whole_tools: bool,
+    /// The run session whose whole count the Context tab asked for, until it comes.
+    asked_session: Option<(RunId, SessionKey)>,
+    /// The run session the Context tab shows whole, with the tab's place among every session
+    /// to come back to.
+    opened: Option<Opened>,
     /// Fixed places to show paths from, for tests. Otherwise the conversation's folder and
     /// your home.
     places: Option<Places>,
@@ -237,6 +255,9 @@ impl OverviewView {
             setup: None,
             context: None,
             pane: ContextPane::default(),
+            whole_tools: false,
+            asked_session: None,
+            opened: None,
             places: None,
             task: 0,
             limit: 0,
@@ -815,6 +836,12 @@ impl OverviewView {
         let Some(view) = &self.context else {
             return vec![Section::of(note(kit, "Reading context…"))];
         };
+        let opened = self.opened.as_ref().and_then(|opened| {
+            let row = view.rows.iter().find(|row| {
+                row.run.as_ref() == Some(&opened.run) && row.session == opened.session
+            })?;
+            Some((row, opened.counted.as_ref()))
+        });
         let state = ctx.state;
         let places = match &self.places {
             Some(places) => places.clone(),
@@ -833,11 +860,16 @@ impl OverviewView {
             count: state.conversation.context.as_ref(),
             main: state.conversation.worker.as_ref(),
             per_turn: state.conversation.growth.per_turn(),
+            last_step: state.conversation.last_step,
             places: &places,
             now: self.wall(),
             run_title: &run_title,
             ranked: self.ranked(ctx),
+            whole_tools: self.whole_tools,
         };
+        if let Some((row, counted)) = opened {
+            return tab.session(kit, width, row, counted);
+        }
         let mut sections = tab.sections(kit, width);
         if let (Some(view), Some(place)) = (state.mods.as_ref(), self.tab.mod_place()) {
             let yours = crate::mods::on_tab(kit, view, place, width);
@@ -1203,8 +1235,18 @@ impl OverviewView {
             Tab::Context => {
                 if in_cards {
                     keys.push("↑↓ section".to_owned());
-                    if self.pane.agent().is_some() {
+                    if self.opened.is_some() {
+                        keys.push("\u{2190}  every session".to_owned());
+                    } else if self.pane.agent().is_some() {
                         keys.push("enter agent view".to_owned());
+                        if self.counting_agent().is_some() {
+                            keys.push("\u{2192}  its context".to_owned());
+                        }
+                    }
+                    match self.pane.fold() {
+                        Some(context::Fold::Folded) => keys.push("enter every tool".to_owned()),
+                        Some(context::Fold::Whole) => keys.push("enter fold by server".to_owned()),
+                        None => {}
                     }
                     keys.push(along);
                 }
@@ -1234,13 +1276,13 @@ impl OverviewView {
         fit_keys(with_hint(keys), close, width)
     }
 
-    /// What Tab does on the row with the keys: `tab · ←→ tabs` on the tabs, and from the
+    /// What Tab does on the row with the keys: `tab · ← → tabs` on the tabs, and from the
     /// sub-tabs down the sub-tabs it goes along, such as `tab By CLI, By model, By role`.
     fn tab_words(&self, ctx: &ViewCtx<'_>) -> String {
         let sub_tabs = self.sub_tabs(ctx).map(|(names, _)| names);
         match (self.level(), sub_tabs) {
-            (Level::Tabs, _) => "tab · ←→ tabs".to_owned(),
-            (Level::SubTabs, Some(names)) => format!("tab · ←→ {}", along_words(self.tab, &names)),
+            (Level::Tabs, _) => "tab · ← → tabs".to_owned(),
+            (Level::SubTabs, Some(names)) => format!("tab · ← → {}", along_words(self.tab, &names)),
             (Level::Cards, Some(names)) => format!("tab {}", along_words(self.tab, &names)),
             (_, None) => "tab tabs".to_owned(),
         }
@@ -1256,6 +1298,9 @@ impl OverviewView {
         self.tab = tab;
         self.focus = 0;
         self.scroll = 0;
+        // Another tab leaves the session opened on Context.
+        self.close_session();
+        self.asked_session = None;
         match tab {
             Tab::Status => ViewOutcome::Request(ViewRequest::StatusTab),
             Tab::Config => ViewOutcome::Request(ViewRequest::Settings { section: None }),
@@ -1521,8 +1566,11 @@ impl View for OverviewView {
             (Level::Tabs, KeyCode::Left) => return self.open(self.tab.step(-1)),
             (Level::SubTabs, KeyCode::Right) => return self.step_sub_tab(1, ctx),
             (Level::SubTabs, KeyCode::Left) => return self.step_sub_tab(-1, ctx),
-            // In the cards ←→ do nothing, except where the Overview's own rows take them.
-            (Level::Cards, KeyCode::Left | KeyCode::Right) if self.tab != Tab::Overview => {
+            // In the cards ←→ do nothing, except where the Overview's own rows take them and
+            // where the Context tab opens a session and comes back.
+            (Level::Cards, KeyCode::Left | KeyCode::Right)
+                if !matches!(self.tab, Tab::Overview | Tab::Context) =>
+            {
                 return ViewOutcome::Consumed;
             }
             (Level::Tabs, KeyCode::Down) if self.tab == Tab::Config => {
@@ -1567,6 +1615,23 @@ impl View for OverviewView {
                 self.setup = Some((**view).clone());
             }
             ViewData::Context { view } => self.context = Some(view.clone()),
+            ViewData::SessionContext {
+                run,
+                session,
+                counted,
+            } => {
+                if self.asked_session.as_ref() != Some(&(run.clone(), session.clone())) {
+                    return false;
+                }
+                self.asked_session = None;
+                self.opened = Some(Opened {
+                    run: run.clone(),
+                    session: session.clone(),
+                    counted: counted.clone(),
+                    every_session: std::mem::take(&mut self.pane),
+                });
+                return true;
+            }
             ViewData::Overview { overview } => self.home.accept(overview),
             // Every key, which the Config tab asked for when it opened.
             ViewData::Settings {
@@ -1588,12 +1653,15 @@ impl View for OverviewView {
 }
 
 impl OverviewView {
-    /// The Config tab: a quiet rule, the tabs, and the tab's own rows under them.
+    /// The Config tab: the rule in the question colour, as every tab's is, as Claude Code draws
+    /// each Settings tab, then the tabs, and the tab's own rows under them.
     fn render_config(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
         let kit = Kit::new(ctx.theme);
         let width = usize::from(area.width);
-        let rule = ctx.theme.glyphs.rule.repeat(width);
-        let rule = Line::from(Span::styled(rule, ctx.theme.style(Role::Rule)));
+        let rule = Line::from(marks::decorative(
+            ctx.theme.glyphs.rule.repeat(width),
+            ctx.theme.style(Role::Question),
+        ));
         buf.set_line(area.x, area.y, &rule, area.width);
         let tabs = Line::from(self.tabs(&kit, width));
         buf.set_line(area.x, area.y + 1, &tabs, area.width);
@@ -1802,13 +1870,60 @@ impl OverviewView {
         buf.set_line(area.x, area.bottom() - 1, &keys, area.width);
     }
 
+    /// The crew agent the keys are on, where its CLI says what fills its session.
+    fn counting_agent(&self) -> Option<(RunId, SessionKey)> {
+        let (run, session) = self.pane.agent()?;
+        let counts = self
+            .context
+            .as_ref()?
+            .rows
+            .iter()
+            .any(|row| row.run.as_ref() == Some(&run) && row.session == session && row.counts);
+        counts.then_some((run, session))
+    }
+
+    /// Back from one session to every session, where the keys were.
+    fn close_session(&mut self) {
+        if let Some(opened) = self.opened.take() {
+            self.pane = opened.every_session;
+        }
+    }
+
     /// In the cards ↑ and ↓ step through the tab's blocks and Enter opens the agent they are
-    /// on. A page at a time works from the tabs too.
+    /// on, → its session whole. A page at a time works from the tabs too.
     fn context_key(&mut self, key: KeyEvent, _ctx: &ViewCtx<'_>) -> ViewOutcome {
+        if self.opened.is_some() {
+            return match key.code {
+                KeyCode::Left => {
+                    self.close_session();
+                    ViewOutcome::Consumed
+                }
+                KeyCode::Char('q') => ViewOutcome::Close,
+                code => {
+                    self.pane.key(code);
+                    ViewOutcome::Consumed
+                }
+            };
+        }
         match key.code {
-            KeyCode::Enter => match self.pane.agent() {
-                Some((run, session)) => ViewOutcome::Request(ViewRequest::Agent { run, session }),
+            // → or c opens the agent's session whole, from its last count.
+            KeyCode::Right | KeyCode::Char('c') => match self.counting_agent() {
+                Some((run, session)) => {
+                    self.asked_session = Some((run.clone(), session.clone()));
+                    ViewOutcome::Request(ViewRequest::SessionContext { run, session })
+                }
                 None => ViewOutcome::Consumed,
+            },
+            KeyCode::Left => ViewOutcome::Consumed,
+            KeyCode::Enter => match (self.pane.agent(), self.pane.fold()) {
+                (Some((run, session)), _) => {
+                    ViewOutcome::Request(ViewRequest::Agent { run, session })
+                }
+                (None, Some(fold)) => {
+                    self.whole_tools = fold == context::Fold::Folded;
+                    ViewOutcome::Consumed
+                }
+                (None, None) => ViewOutcome::Consumed,
             },
             KeyCode::Char('q') => ViewOutcome::Close,
             code if self.pane.key(code) => ViewOutcome::Consumed,

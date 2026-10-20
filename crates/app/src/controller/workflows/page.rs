@@ -336,6 +336,13 @@ fn field(key: &str, table: &Table, others: &[&str], of_file: bool) -> PageField 
             false,
             "Its workers may each run a workflow of their own, where their CLI has one.",
         ),
+        "keep" => (
+            "Keep",
+            FLAG,
+            false,
+            "A script the orchestrator writes for a request keeps this step, with its role, its \
+             access and its agents, whatever it calls the phase.",
+        ),
         other => (other, &[], true, ""),
     };
     let mut value = written(table, key);

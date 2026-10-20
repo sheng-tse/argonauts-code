@@ -8,6 +8,7 @@ pub mod all_settings;
 pub mod approvals;
 mod fallback;
 pub mod flow;
+mod memory_rows;
 mod models;
 mod panel;
 pub mod permissions;
@@ -17,13 +18,16 @@ pub mod words;
 pub(crate) use panel::{draw_editor, edit_key};
 
 #[cfg(test)]
+mod picker_pictures;
+#[cfg(test)]
 mod tests;
 
 use argonauts_core::app::{MissingCli, ModelChoice, SettingRow, UiCommand, ViewData, ViewRequest};
+use argonauts_core::model_picker::{MachineMemory, ModelSource};
 use argonauts_core::names::RoleName;
 use argonauts_core::settings::ui::UiSettings;
 use serde_json::Value;
-use time::OffsetDateTime;
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::bottom::{Picker, PickerEvent};
 use crate::bridge::Cx;
@@ -61,13 +65,21 @@ pub fn open_for(data: &ViewData, cx: &mut Cx<'_>) {
             refreshed,
             refreshing,
             update,
+            sources,
+            memory,
         } => {
-            let note = words::freshness(*refreshed, *refreshing, OffsetDateTime::now_utc());
+            let now = OffsetDateTime::now_utc();
+            let note = words::freshness(*refreshed, *refreshing, now);
             let role = role.filter(|role| *role != RoleName::Main);
+            let told = Told {
+                sources,
+                memory: *memory,
+                at: (now, cx.state.clock_offset()),
+            };
             if *update {
-                models_update(choices, role, note.as_deref(), cx);
+                models_update(choices, role, note.as_deref(), told, cx);
             } else {
-                models_answer(choices, role, note.as_deref(), cx);
+                models_answer(choices, role, note.as_deref(), told, cx);
             }
         }
         ViewData::Effort { slider } => {
@@ -152,14 +164,31 @@ fn command_for(section: &str) -> &str {
     }
 }
 
+/// Each list a model answer came from, and when it came, in the terminal's zone.
+struct Told<'a> {
+    sources: &'a [ModelSource],
+    memory: Option<MachineMemory>,
+    at: (OffsetDateTime, UtcOffset),
+}
+
+impl Told<'_> {
+    fn onto(&self, picker: &mut Picker) {
+        picker.flow.sources = self.sources.to_vec();
+        picker.flow.memory = self.memory;
+        picker.flow.told_at = Some(self.at);
+    }
+}
+
 fn models_answer(
     choices: &[ModelChoice],
     role: Option<RoleName>,
     freshness: Option<&str>,
+    told: Told<'_>,
     cx: &mut Cx<'_>,
 ) {
     let asked = Asked::Models(role);
     if let Some(picker) = waiting_for(cx, &asked) {
+        told.onto(picker);
         flow::fill_models(picker, role, choices);
         flow::show_freshness(picker, freshness);
         return;
@@ -180,6 +209,8 @@ fn models_answer(
         Some(role) => format!("model {}", role.as_str()),
     };
     let mut picker = flow::models_picker(&command, role, choices);
+    told.onto(&mut picker);
+    flow::fill_models(&mut picker, role, choices);
     flow::show_freshness(&mut picker, freshness);
     open_picker(picker, cx);
 }
@@ -190,6 +221,7 @@ fn models_update(
     choices: &[ModelChoice],
     role: Option<RoleName>,
     freshness: Option<&str>,
+    told: Told<'_>,
     cx: &mut Cx<'_>,
 ) {
     let Some(picker) = cx.model.bottom.picker.as_mut() else {
@@ -205,6 +237,7 @@ fn models_update(
         return;
     }
     picker.flow.freshness = freshness.map(str::to_owned);
+    told.onto(picker);
     models::refresh(picker, choices);
 }
 
@@ -216,11 +249,27 @@ fn waiting_for<'a>(cx: &'a mut Cx<'_>, asked: &Asked) -> Option<&'a mut Picker> 
         .filter(|picker| picker.flow.waiting.as_ref() == Some(asked))
 }
 
+/// `/model`'s picker, while it's open, has the local servers asked every few seconds.
+fn watches_models(picker: &Picker) -> bool {
+    picker.flow.command.split_whitespace().next() == Some("model")
+}
+
+/// Tells the controller when `/model`'s picker opens or closes.
+fn watch_models(was: Option<&Picker>, now: Option<&Picker>, cx: &mut Cx<'_>) {
+    let (was, now) = (
+        was.is_some_and(watches_models),
+        now.is_some_and(watches_models),
+    );
+    if was != now {
+        cx.out.send(UiCommand::WatchModels { watching: now });
+    }
+}
+
 /// Opens a picker under the input, with the command's echo above it in the conversation.
 fn open_picker(mut picker: Picker, cx: &mut Cx<'_>) {
-    if let Some(old) = cx.model.bottom.picker.take()
-        && old.flow.previewing
-    {
+    let old = cx.model.bottom.picker.take();
+    watch_models(old.as_ref(), Some(&picker), cx);
+    if old.is_some_and(|old| old.flow.previewing) {
         restore_palette(cx);
     }
     cx.model
@@ -232,7 +281,7 @@ fn open_picker(mut picker: Picker, cx: &mut Cx<'_>) {
 }
 
 /// Acts on a key the open picker took: moves on to the next question, previews a palette,
-/// asks the controller, or sends the change and closes.
+/// asks the controller, sends a command and stays, or sends the change and closes.
 pub fn on_picker(event: &PickerEvent, cx: &mut Cx<'_>) {
     let Some(picker) = cx.model.bottom.picker.as_mut() else {
         return;
@@ -249,13 +298,15 @@ pub fn on_picker(event: &PickerEvent, cx: &mut Cx<'_>) {
             }
         }
         Step::Ask(view) => cx.out.send(UiCommand::Request { view }),
+        Step::Send(command) => cx.out.send(command),
         Step::Done(command) => {
             let keeps_preview = matches!(&command, UiCommand::SetSetting { key, .. }
                 if PALETTE_KEYS.contains(&key.as_str()));
             if previewing && !keeps_preview {
                 restore_palette(cx);
             }
-            cx.model.bottom.picker = None;
+            let closed = cx.model.bottom.picker.take();
+            watch_models(closed.as_ref(), None, cx);
             cx.out.send(command);
         }
         Step::Cancel { kept } => {
@@ -263,6 +314,7 @@ pub fn on_picker(event: &PickerEvent, cx: &mut Cx<'_>) {
                 restore_palette(cx);
             }
             if let Some(picker) = cx.model.bottom.picker.take() {
+                watch_models(Some(&picker), None, cx);
                 leave_kept_line(&picker, kept, cx);
             }
         }

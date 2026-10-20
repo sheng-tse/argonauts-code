@@ -297,6 +297,10 @@ pub enum EndReason {
     Stopped,
     Stuck {
         watchdog: Watchdog,
+        /// The calls the watchdog counted, for its words. `None` for a session that went quiet,
+        /// and in records from before they were kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        calls: Option<CallCount>,
     },
     /// The plan's usage limit.
     UsageLimit {
@@ -428,6 +432,40 @@ pub enum Watchdog {
     Inactivity,
     /// The same call repeated after a nudge.
     Repeat,
+    /// A later try on work an earlier session committed, making tool calls that change nothing
+    /// and never reporting, even after its wrap-up.
+    NoProgress,
+}
+
+/// The tool calls a watchdog stopped a session on: the call repeated and how many times in a
+/// row, or the last of the calls that changed nothing and how many there were.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallCount {
+    /// The tool's name, as the agent's CLI calls it, such as `execute`.
+    pub name: String,
+    pub times: u32,
+}
+
+/// What a watchdog saw, with no subject, so a line can start with the agent's name or `it`:
+/// `repeated the same execute call 12 times`.
+pub fn stuck_words(watchdog: Watchdog, calls: Option<&CallCount>) -> String {
+    match (watchdog, calls) {
+        (Watchdog::Inactivity, _) => "went quiet, with no output or activity".to_owned(),
+        (Watchdog::Repeat, Some(calls)) => {
+            format!(
+                "repeated the same {} call {} times",
+                calls.name, calls.times
+            )
+        }
+        (Watchdog::Repeat, None) => "kept repeating the same call".to_owned(),
+        (Watchdog::NoProgress, Some(calls)) => {
+            format!(
+                "made {} tool calls with no change and no report",
+                calls.times
+            )
+        }
+        (Watchdog::NoProgress, None) => "made tool calls with no change and no report".to_owned(),
+    }
 }
 
 /// An agent's subagent, workflow, or thread changed state. Added to `AgentEvent` as

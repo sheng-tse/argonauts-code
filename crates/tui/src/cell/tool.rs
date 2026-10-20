@@ -16,7 +16,7 @@ use crate::text::marks;
 use crate::text::{
     fit_lines, sanitize_line, spans_width, str_width, truncate_line, truncate_spans, wrap_spans,
 };
-use crate::theme::{AgentColor, ColorLevel, Role};
+use crate::theme::{AgentColor, ColorLevel, Role, Theme};
 
 pub use stats::ToolStats;
 
@@ -95,7 +95,19 @@ pub enum ToolTitle {
         /// Such as `worker · task-002`.
         role: String,
         task: String,
+        /// How the model `role` names before ` on ` is drawn.
+        model: Option<ModelShade>,
     },
+}
+
+/// The shade an agent's header draws its model in, as every tab draws it: its CLI's own colour
+/// for the CLI's first model, a shade of it for each one after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModelShade {
+    /// Its CLI's colour.
+    pub cli: Role,
+    /// Its place among its CLI's models, 0 for the CLI's own colour.
+    pub place: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
@@ -295,8 +307,17 @@ impl ToolCall {
                 color,
                 role: role.into(),
                 task: task.into(),
+                model: None,
             },
         )
+    }
+
+    /// An agent's header whose role names its model first, which draws in `shade`.
+    pub fn with_model(mut self, shade: ModelShade) -> Self {
+        if let ToolTitle::Agent { model, .. } = &mut self.title {
+            *model = Some(shade);
+        }
+        self
     }
 
     fn new(kind: ToolKind, title: ToolTitle) -> Self {
@@ -552,7 +573,7 @@ impl ToolCall {
         }
     }
 
-    fn tool_uses(&self) -> usize {
+    pub(crate) fn tool_uses(&self) -> usize {
         let count = |call: &ToolCall| 1 + call.tool_uses();
         self.body
             .iter()
@@ -732,21 +753,18 @@ impl ToolCall {
             }
             ToolTitle::Agent {
                 name,
-                color: _,
                 role,
                 task,
+                model,
+                ..
             } => {
-                // The label reads bold and who runs it dim, as Claude Code heads an agent's row.
-                fixed.push(Span::styled(
-                    sanitize_line(name).trim().to_owned(),
-                    text.add_modifier(Modifier::BOLD),
-                ));
+                // The label reads in the text's colour and who runs it dim, the model in its
+                // shade.
+                fixed.push(Span::styled(sanitize_line(name).trim().to_owned(), text));
                 let role = sanitize_line(role);
-                if !role.trim().is_empty() {
-                    fixed.push(Span::styled(
-                        format!(" · {}", role.trim()),
-                        theme.style(Role::Dim),
-                    ));
+                let role = role.trim();
+                if !role.is_empty() {
+                    fixed.extend(who_runs_it(role, *model, theme));
                 }
                 (sanitize_line(task).trim().to_owned(), " (", ")")
             }
@@ -791,6 +809,23 @@ impl ToolCall {
         }
         truncate_line(&Line::from(row(Some(0), &[])), width)
     }
+}
+
+/// ` · Haiku 5.5 on Claude Code`, dim but for the model, which takes its shade.
+fn who_runs_it(role: &str, shade: Option<ModelShade>, theme: &Theme) -> Vec<Span<'static>> {
+    let dim = theme.style(Role::Dim);
+    let Some((shade, (model, cli))) =
+        shade.and_then(|shade| Some((shade, role.split_once(" on ")?)))
+    else {
+        return vec![Span::styled(format!(" · {role}"), dim)];
+    };
+    let kit = crate::kit::Kit::new(theme);
+    let style = crate::overview::shades::shade(&kit, shade.cli, usize::from(shade.place));
+    vec![
+        Span::styled(" · ", dim),
+        Span::styled(model.to_owned(), style),
+        Span::styled(format!(" on {cli}"), dim),
+    ]
 }
 
 /// The fewest columns a cut task keeps before the stats give way instead. Kept small, so

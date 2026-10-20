@@ -266,6 +266,11 @@ pub enum UiCommand {
     WatchContext {
         detail: Option<ContextDetail>,
     },
+    /// `/model`'s picker opened or closed. While it's open, the local model servers are asked
+    /// every few seconds, so a model pulled meanwhile shows up in it.
+    WatchModels {
+        watching: bool,
+    },
     /// Closes the screen. Runs keep going.
     Exit,
     /// A slash command as you typed it, which the conversation's record keeps where you typed
@@ -359,6 +364,12 @@ pub enum ViewRequest {
     },
     /// Every live session's context, cap, tool calls, and spend.
     Context,
+    /// One run session's context as its CLI last counted it, whole. Answered with
+    /// `SessionContext`.
+    SessionContext {
+        run: RunId,
+        session: SessionKey,
+    },
     /// The Usage tab's numbers for a period: plan usage, spend, tokens, history and
     /// workflows. Answered with `Usage`.
     Usage {
@@ -410,6 +421,15 @@ impl ViewRequest {
 /// The outcome of a choice closed with nothing changed. The transcript marks it as neutral
 /// rather than answered.
 pub const NOT_CHANGED: &str = "Not changed.";
+
+/// The background work of a command you typed, each kind with its own words on the working
+/// line: `/update` updates the CLIs, then checks them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandWork {
+    Updating,
+    Checking,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -533,9 +553,12 @@ pub enum AppEvent {
         /// Oldest first.
         texts: Vec<String>,
     },
-    /// `/clear` started a new conversation, so what the last one's session drew above the
-    /// input goes with it.
-    ConversationCleared,
+    /// `/clear` started a new conversation: the screen starts over under its header, and what
+    /// the last one's session drew above the input goes with it.
+    ConversationCleared {
+        /// The conversation left, when it had turns, which `/resume` picks up again.
+        way_back: Option<ConversationId>,
+    },
     /// The main agent's own commands, for the `/` menu, `/help`, and the parser. Sent at start
     /// and whenever the main agent changes.
     CliCommands {
@@ -612,10 +635,21 @@ pub enum AppEvent {
         caveat: Option<String>,
     },
     /// What a command found, such as `/doctor`'s checks. It prints at every verbosity, since you
-    /// asked for it.
+    /// asked for it. A report of the same title filling in takes this one's place.
     Report {
         title: String,
         lines: Vec<String>,
+    },
+    /// A report still filling in, such as `/update`'s with a row for each CLI done so far. It
+    /// shows live until its `Report` of the same title comes.
+    ReportSoFar {
+        title: String,
+        lines: Vec<String>,
+    },
+    /// What a command does in the background now, which the working line says, or `None` once
+    /// it's done.
+    CommandWorking {
+        work: Option<CommandWork>,
     },
     /// Text shown folded, such as the summary a main model on another CLI starts from: the
     /// title, `lines` under it, and `more` after them only when Ctrl+O expands it.
@@ -722,6 +756,10 @@ pub struct HeaderAndBottomLine {
     /// `ultracode`, which the input rule's label shows beside the workflow.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ultracode: bool,
+    /// The main agent's own ultra mode, while it is on, in the colour its CLI shows it in: the
+    /// welcome header's mascot takes that look.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ultra: Option<UltraColour>,
     pub run: Option<RunId>,
     pub main_agent: ModelRef,
     /// One chip per agent, in `crew` order.
@@ -738,6 +776,15 @@ pub struct HeaderAndBottomLine {
     /// line shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub awake: Option<AwakeHold>,
+}
+
+/// The colour a CLI shows its ultra mode in: Claude Code's ultracode purple, Codex's ultra
+/// effort blue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UltraColour {
+    Purple,
+    Blue,
 }
 
 /// How long `/awake` keeps the computer awake.
@@ -852,6 +899,14 @@ pub enum ConversationEvent {
     },
     TurnCancelled {
         turn: TurnId,
+    },
+    /// A watchdog stopped the turn, since it repeated one call or went quiet. Nothing falls
+    /// back: another agent would get the same request.
+    TurnStopped {
+        turn: TurnId,
+        /// The line under the turn: `Stopped: Qwen3 Coder 30B repeated the same execute call
+        /// 12 times.`
+        why: String,
     },
     /// A turn's agent ran out, and `to` carries on the same request in the same folder.
     FellBack {
@@ -1061,6 +1116,14 @@ pub enum ChoiceKind {
     NeededUpdate,
 }
 
+/// A run session's last whole count and when its CLI gave it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionCounted {
+    pub usage: Box<ContextUsage>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "data", rename_all = "snake_case")]
 pub enum ViewData {
@@ -1131,6 +1194,14 @@ pub enum ViewData {
         /// A newer list for a picker already showing this role's models. It opens no picker.
         #[serde(default)]
         update: bool,
+        /// Each list the choices come from, with when it was read and whether it's being
+        /// asked again, so each level of the picker says how fresh its own list is.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        sources: Vec<crate::model_picker::ModelSource>,
+        /// What this machine gives models, when it can be read, for the level of a CLI that
+        /// runs models here.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        memory: Option<crate::model_picker::MachineMemory>,
     },
     /// `/effort` with no level: the slider for the main agent's or the role's model. Enter
     /// sends `Slash { Effort }` with the level.
@@ -1153,6 +1224,13 @@ pub enum ViewData {
     /// `/context print`: the same sessions, to go into the conversation as rows.
     ContextPrint {
         view: ContextView,
+    },
+    /// One run session's last whole count, as its folder keeps it, and when it was counted.
+    /// `None` for a session never counted.
+    SessionContext {
+        run: RunId,
+        session: SessionKey,
+        counted: Option<SessionCounted>,
     },
     /// What `/usage` shows, and what the cards pinned above the input draw from.
     Usage {
@@ -1302,6 +1380,10 @@ pub struct ModelChoice {
     /// For the CLI's default or an alias: the display name of the model it runs now, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runs: Option<String>,
+    /// What a CLI that lists its models by provider, as OpenCode does, says of this one: its
+    /// group, its window, whether it can use tools, and where it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listed: Option<crate::model_picker::ListedFacts>,
 }
 
 impl ModelChoice {

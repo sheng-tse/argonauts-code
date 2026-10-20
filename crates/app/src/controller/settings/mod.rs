@@ -13,6 +13,7 @@ mod args;
 mod checks;
 mod confirm;
 mod labels;
+pub(crate) mod memory_facts;
 mod models;
 mod pickers;
 mod refresh;
@@ -25,7 +26,11 @@ mod toggles;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_live;
+#[cfg(test)]
 mod tests_models;
+#[cfg(test)]
+mod tests_opencode;
 
 pub(crate) use args::{check_known, workflow_list};
 pub(crate) use models::choices as model_choices;
@@ -73,6 +78,8 @@ pub(crate) struct SettingsState {
     refreshing: bool,
     /// The model list last sent, for the refresh to bring up to date.
     shown: Option<refresh::ModelsShown>,
+    /// Each source asked again one by one, and the watch while `/model` is open.
+    sources: refresh::Asking,
 }
 
 impl SettingsState {
@@ -86,6 +93,7 @@ impl SettingsState {
             autopilot: ctx.settings().approvals.mode() == ApprovalMode::Autopilot,
             refreshing: false,
             shown: None,
+            sources: refresh::Asking::default(),
         }
     }
 }
@@ -207,7 +215,7 @@ fn write_or_pick(ctx: &mut Ctx, settings: &mut SettingsState, command: &SlashCom
                 role, worker: None, ..
             } = command
             {
-                refresh::start(ctx, settings);
+                refresh::ask_each(ctx, settings);
                 if role.is_some() {
                     let data = refresh::view(ctx, settings, *role);
                     ctx.send(AppEvent::View {
@@ -269,6 +277,30 @@ pub(crate) fn refresh_models(ctx: &Ctx, settings: &mut SettingsState) {
 /// A model list refresh merged.
 pub(crate) fn models_refreshed(ctx: &Ctx, settings: &mut SettingsState) -> Handled {
     refresh::merged(ctx, settings)
+}
+
+/// One source's list was read again.
+pub(crate) fn model_source_listed(ctx: &Ctx, settings: &mut SettingsState, cli: &str) -> Handled {
+    refresh::source_listed(ctx, settings, cli)
+}
+
+/// `/model`'s picker opened or closed.
+pub(crate) fn watch_models(ctx: &Ctx, settings: &mut SettingsState, watching: bool) {
+    refresh::watch(ctx, settings, watching);
+}
+
+/// The local servers are due to be asked again.
+pub(crate) fn models_tick(ctx: &Ctx, settings: &mut SettingsState) -> Handled {
+    refresh::tick(ctx, settings)
+}
+
+/// A reading of this machine's memory came back.
+pub(crate) fn memory_read(
+    ctx: &Ctx,
+    settings: &mut SettingsState,
+    reading: Option<Box<memory_facts::Reading>>,
+) -> Handled {
+    refresh::memory_read(ctx, settings, reading)
 }
 
 /// `Config`, `Settings`, `Models`, and `Approvals`.

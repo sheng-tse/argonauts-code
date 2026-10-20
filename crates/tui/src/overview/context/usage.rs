@@ -15,17 +15,17 @@ use crate::text::{sanitize_line, spans_width, str_width, truncate_spans};
 use crate::theme::Role;
 
 /// The legend's columns: a row's name, its tokens, and its share.
-const NAME_CELLS: usize = 25;
-const TOKENS_CELLS: usize = 7;
-const SHARE_CELLS: usize = 8;
+pub(super) const NAME_CELLS: usize = 25;
+pub(super) const TOKENS_CELLS: usize = 7;
+pub(super) const SHARE_CELLS: usize = 8;
 /// The columns beside the legend: whose a group of rows is, and what the group comes to.
 const GROUP_CELLS: usize = 17;
 const SUBTOTAL_CELLS: usize = 6;
 /// The columns of the lines under the grid: what a line is about, then its number.
-const LABEL_CELLS: usize = 22;
-const VALUE_CELLS: usize = 20;
+pub(super) const LABEL_CELLS: usize = 22;
+pub(super) const VALUE_CELLS: usize = 20;
 /// A cell this full of its category draws whole, as Claude Code draws it.
-const WHOLE_FROM: f64 = 0.7;
+pub(super) const WHOLE_FROM: f64 = 0.7;
 
 /// The grid's glyphs: a cell mostly full, one partly full, free space, and the room held
 /// back for compacting.
@@ -98,6 +98,12 @@ pub(super) struct Title<'a> {
     pub model_id: Option<&'a str>,
 }
 
+/// A count measured in the session's window, which takes the window's divisor, so the parts
+/// of a 64k window add up to 64k.
+pub(super) fn in_window(usage: &ContextUsage, tokens: u64) -> String {
+    format::tokens_beside(tokens, usage.raw_window)
+}
+
 /// `Context Usage  counted 6s ago`, the model, and `750k/1M tokens (75%)` flush right, with
 /// the percent in the colour of how close the session is to compacting. Where the three don't
 /// fit one row, the model takes the next.
@@ -130,8 +136,8 @@ pub(super) fn title(
         },
     );
     let totals = vec![
-        bold(kit, format::tokens(usage.total_tokens)),
-        kit.dim(format!("/{} tokens (", format::tokens(usage.raw_window))),
+        bold(kit, in_window(usage, usage.total_tokens)),
+        kit.dim(format!("/{} tokens (", format::window(usage.raw_window))),
         percent,
         kit.dim(")"),
     ];
@@ -163,8 +169,8 @@ pub(super) fn over_limit(usage: &ContextUsage, no_compacting: bool) -> Option<St
     if usage.total_tokens <= usage.raw_window {
         return None;
     }
-    let over = format::tokens(usage.total_tokens - usage.raw_window);
-    let window = format::tokens(usage.raw_window);
+    let over = in_window(usage, usage.total_tokens - usage.raw_window);
+    let window = format::window(usage.raw_window);
     Some(if usage.auto_compact_source == "auto" {
         let run = if no_compacting {
             "/clear"
@@ -286,7 +292,7 @@ fn legend(kit: &Kit<'_>, usage: &ContextUsage, groups: bool) -> Vec<Vec<Span<'st
             Span::raw(ljust(&name, NAME_CELLS)),
             tinted(
                 kit,
-                rjust(&format::tokens(entry.row.tokens), TOKENS_CELLS),
+                rjust(&in_window(usage, entry.row.tokens), TOKENS_CELLS),
                 entry.amount,
             ),
             kit.dim(rjust(
@@ -315,7 +321,10 @@ fn legend(kit: &Kit<'_>, usage: &ContextUsage, groups: bool) -> Vec<Vec<Span<'st
                     .map(|row| row.row.tokens)
                     .sum();
                 line.push(kit.dim(ljust(entry.group.label(), GROUP_CELLS)));
-                line.push(Span::raw(rjust(&format::tokens(subtotal), SUBTOTAL_CELLS)));
+                line.push(Span::raw(rjust(
+                    &in_window(usage, subtotal),
+                    SUBTOTAL_CELLS,
+                )));
             }
         }
         out.push(line);
@@ -420,7 +429,7 @@ pub(super) fn window_lines(
         }
     };
 
-    let window = format::tokens(usage.raw_window);
+    let window = format::window(usage.raw_window);
     let value = match usage.auto_compact_source.as_str() {
         "auto" => "auto".to_owned(),
         "experiment" | "clientdata" => format!("auto ({window} tokens)"),
@@ -445,13 +454,13 @@ pub(super) fn window_lines(
                 format!(
                     "{} {}",
                     deferred_name(&row.name),
-                    format::tokens(row.tokens)
+                    in_window(usage, row.tokens)
                 )
             })
             .collect();
         line(
             "Loaded on demand:",
-            format::tokens(usage.tokens_of(ContextKind::Deferred)),
+            in_window(usage, usage.tokens_of(ContextKind::Deferred)),
             vec![kit.dim(format!(
                 "{} \u{b7} out of the window until used",
                 parts.join(" \u{b7} ")
@@ -463,12 +472,12 @@ pub(super) fn window_lines(
         let cached = (last.cache_read_input_tokens as f64 / last.sent() as f64 * 100.0).round();
         line(
             "Last request:",
-            format!("{} in", format::tokens(last.sent())),
+            format!("{} in", in_window(usage, last.sent())),
             vec![kit.dim(format!(
                 "{} from cache ({cached:.0}%) \u{b7} {} written to cache \u{b7} {} out",
-                format::tokens(last.cache_read_input_tokens),
-                format::tokens(last.cache_creation_input_tokens),
-                format::tokens(last.output_tokens),
+                in_window(usage, last.cache_read_input_tokens),
+                in_window(usage, last.cache_creation_input_tokens),
+                in_window(usage, last.output_tokens),
             ))],
         );
     }
@@ -483,12 +492,12 @@ fn compacting(kit: &Kit<'_>, usage: &ContextUsage, per_turn: Option<u64>) -> Vec
     let distance = level_role(level(usage)).unwrap_or(Role::Dim);
     let mut note = match usage.compacts_at() {
         Some(at) => vec![
-            kit.dim(format!("compacts at {} \u{b7} ", format::tokens(at))),
-            kit.span(format!("{} from now", format::tokens(left)), distance),
+            kit.dim(format!("compacts at {} \u{b7} ", in_window(usage, at))),
+            kit.span(format!("{} from now", in_window(usage, left)), distance),
         ],
         None => vec![
             kit.dim("never compacts by itself \u{b7} "),
-            kit.span(format!("{} left", format::tokens(left)), distance),
+            kit.span(format!("{} left", in_window(usage, left)), distance),
         ],
     };
     if let Some(per_turn) = per_turn.filter(|tokens| *tokens > 0) {
@@ -499,7 +508,7 @@ fn compacting(kit: &Kit<'_>, usage: &ContextUsage, per_turn: Option<u64>) -> Vec
         };
         note.push(kit.dim(format!(
             " \u{b7} {turns} at {} a turn",
-            format::tokens(per_turn)
+            in_window(usage, per_turn)
         )));
     }
     note

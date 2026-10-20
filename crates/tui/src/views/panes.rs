@@ -1,7 +1,9 @@
-//! The frame the workflow, agent, and context views share: a two-row header, one rounded box
-//! holding a left and a right pane with a divider, and a footer of key hints. ratatui lays it
-//! out from the screen size, so borders stay in one column at any width. Also the marks every
-//! row uses for its state, so a state reads the same in the panel and in the views.
+//! The frame the full-screen views share, such as help, settings and the workflow page: a
+//! two-row header, one rounded box holding a left and a right pane with a divider, and a footer
+//! of key hints. The box is in the bright text colour, as the workflow view's is, so every boxed
+//! view has one frame colour. ratatui lays it out from the screen size, so borders stay in one
+//! column at any width. Also the marks every row uses for its state, so a state reads the same
+//! in the panel and in the views.
 //!
 //! With the ASCII glyph set the box is `+`, `-`, and `|`. That set is also the one for
 //! terminals that draw ambiguous glyphs two cells wide, and every box-drawing glyph is
@@ -95,7 +97,7 @@ pub fn draw_box(buf: &mut Buffer, panes: &Panes, titles: [&str; 2], focus: Side,
     if panes.body.width < 2 || panes.body.height < 2 {
         return;
     }
-    let rule = marks::decoration(theme.style(Role::Rule));
+    let rule = marks::decoration(theme.style(Role::Bright));
     let frame = Frame::for_theme(theme);
     Block::bordered()
         .border_set(frame.border)

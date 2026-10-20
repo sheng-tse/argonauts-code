@@ -19,7 +19,7 @@ use argonauts_core::limits::{
 };
 use argonauts_core::names::{AgentId, ModelRef, RoleName};
 use argonauts_core::registry::{ModelEntry, ModelRegistry};
-use argonauts_core::session_runner::{RunnerDirectory, SessionLimits};
+use argonauts_core::session_runner::{RunnerDirectory, SessionLimits, model_run};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::fallback::{
     AppliedFallback, FallbackMode, FallbackStrategy, OnReturn,
@@ -186,11 +186,11 @@ impl Limits {
         }
     }
 
-    /// The provider of the model that stopped: the registry's, else what its session recorded,
-    /// else the agent's own name.
+    /// The provider of the model that stopped: the registry's for the model it ran, else what
+    /// its session recorded, else the agent's own name.
     fn provider(&self, events: &[RunEvent], worker: &ModelRef) -> String {
         if let Some(registry) = &self.registry {
-            return registry.provider(worker);
+            return registry.provider(&self.runs(worker));
         }
         events
             .iter()
@@ -204,6 +204,11 @@ impl Limits {
                 _ => None,
             })
             .unwrap_or_else(|| worker.agent.clone())
+    }
+
+    /// The model `worker` runs, as its runner names it where there are runners.
+    fn runs(&self, worker: &ModelRef) -> ModelRef {
+        model_run(self.workers.as_deref(), &self.settings, worker)
     }
 
     /// The model the stopped agent ran: its own, else `agents.<id>.model`, else the one its
@@ -446,7 +451,9 @@ impl Limits {
     }
 
     /// Stuck, crashed, or failed to start: one fresh session on another provider, then you.
-    /// With `same_cli` the fresh session is another model on the same CLI.
+    /// With `same_cli` the fresh session is another model on the same CLI. Who takes it is
+    /// yours to say unless `fallback.mode` is auto, as for a signed-out agent, and waiting
+    /// can't help an agent that is still there, so it asks too.
     fn ladder(&self, stop: &Stop<'_>) -> RecoveryAction {
         let why = stop.reason();
         if stop.context.reassigned_once {
@@ -464,6 +471,9 @@ impl Limits {
         } else {
             self.shortlist(stop, true, vec![stop.provider.clone()])
         };
+        if stop.mode() != FallbackMode::Auto && !shortlist.candidates.is_empty() {
+            return self.ask(stop, why, None, shortlist);
+        }
         match shortlist
             .candidates
             .iter()
@@ -503,10 +513,9 @@ impl Limits {
             if same_cli {
                 return !whole_cli;
             }
-            let fails_too = self
-                .registry
-                .as_ref()
-                .is_some_and(|registry| failing.contains(&registry.provider(&candidate.worker)));
+            let fails_too = self.registry.as_ref().is_some_and(|registry| {
+                failing.contains(&registry.provider(&self.runs(&candidate.worker)))
+            });
             !stop.rules.same_cli && !fails_too
         });
         shortlist
@@ -520,7 +529,7 @@ impl Limits {
         let fails_too = |worker: &ModelRef| {
             self.registry
                 .as_ref()
-                .is_some_and(|registry| failing.contains(&registry.provider(worker)))
+                .is_some_and(|registry| failing.contains(&registry.provider(&self.runs(worker))))
         };
         self.shortlist(stop, true, Vec::new())
             .candidates
@@ -894,6 +903,9 @@ impl LimitsService for Limits {
                 .or(Some(watchdogs.inactivity_min))
                 .filter(|minutes| *minutes > 0.0),
             repeat_limit: Some(watchdogs.repeat_limit).filter(|limit| *limit > 0),
+            // The crew keeps it only for a later try on committed work, which it alone knows.
+            no_progress_calls: Some(watchdogs.no_progress_calls)
+                .filter(|calls| *calls > 0 && task.is_some()),
             native_cap_usd: limit
                 .filter(|limit| limit.unit == LimitUnit::Usd)
                 .map(|limit| limit.amount * NATIVE_CAP_MARGIN),

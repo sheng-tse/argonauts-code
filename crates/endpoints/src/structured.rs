@@ -2,6 +2,7 @@
 //! schema, `json_object` for any JSON, and `prompt` puts the schema in the prompt. Each is
 //! validated here; the step runner retries once on a mismatch.
 
+use argonauts_core::answer_format;
 use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::settings::agents::{EndpointApi, StructuredMode};
 use serde_json::{Value, json};
@@ -18,15 +19,20 @@ pub(crate) fn response_format(
     let format = match mode {
         StructuredMode::Prompt => return None,
         StructuredMode::JsonObject => json!({"type": "json_object"}),
-        StructuredMode::JsonSchema => match api {
-            EndpointApi::ChatCompletions => json!({
-                "type": "json_schema",
-                "json_schema": {"name": SCHEMA_NAME, "strict": true, "schema": schema},
-            }),
-            EndpointApi::Responses => json!({
-                "type": "json_schema", "name": SCHEMA_NAME, "strict": true, "schema": schema,
-            }),
-        },
+        // Strict mode wants every field required, an optional one allowed to be null, which
+        // `read` leaves out again.
+        StructuredMode::JsonSchema => {
+            let schema = answer_format::strict(schema);
+            match api {
+                EndpointApi::ChatCompletions => json!({
+                    "type": "json_schema",
+                    "json_schema": {"name": SCHEMA_NAME, "strict": true, "schema": schema},
+                }),
+                EndpointApi::Responses => json!({
+                    "type": "json_schema", "name": SCHEMA_NAME, "strict": true, "schema": schema,
+                }),
+            }
+        }
     };
     Some(match api {
         EndpointApi::ChatCompletions => ("response_format", format),
@@ -55,11 +61,13 @@ pub(crate) fn schema_part(mode: StructuredMode, schema: &Value) -> Option<InputP
     })
 }
 
-/// The reply's JSON, validated against `schema`. The error lists what didn't match.
+/// The reply's JSON, read as an answer to `schema` as written, validated against it. The error
+/// lists what didn't match.
 pub(crate) fn read(schema: &Value, text: &str) -> Result<Value, String> {
     let validator =
         jsonschema::validator_for(schema).map_err(|err| format!("the schema is invalid: {err}"))?;
     let value = json_in(text).ok_or_else(|| "the reply held no JSON object".to_owned())?;
+    let value = answer_format::as_written(schema, value);
     let errors: Vec<String> = validator
         .iter_errors(&value)
         .map(|err| {
@@ -125,6 +133,18 @@ mod tests {
     fn schema() -> Value {
         json!({"type": "object", "additionalProperties": false, "required": ["verdict"],
                "properties": {"verdict": {"type": "string", "enum": ["pass", "fail"]}}})
+    }
+
+    /// A strict reply's null for a field the schema left optional reads as the field left out.
+    #[test]
+    fn a_null_for_an_optional_field_is_left_out() {
+        let schema = json!({"type": "object", "required": ["verdict"],
+                            "properties": {"verdict": {"type": "string"},
+                                           "notes": {"type": "array", "items": {"type": "string"}}}});
+        assert_eq!(
+            read(&schema, r#"{"verdict": "pass", "notes": null}"#),
+            Ok(json!({"verdict": "pass"}))
+        );
     }
 
     #[test]

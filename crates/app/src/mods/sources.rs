@@ -8,6 +8,7 @@ use argonauts_core::limits::PlanUsageStatus;
 use argonauts_core::settings::mods::reading::plain_number;
 use argonauts_core::settings::mods::{BuiltinSource, ModColor, ModLevel, ModPart, ModReading};
 use argonauts_core::views::ContextRow;
+use argonauts_core::window_size;
 use time::OffsetDateTime;
 
 /// The most workflows the list shows, newest first.
@@ -51,13 +52,13 @@ fn context(numbers: &Numbers) -> Result<ModReading, String> {
     let part = |label: &str, tokens: u64, color| {
         ModPart::new(label, tokens as f64)
             .colored(color)
-            .reading(plain_number(tokens as f64))
+            .reading(window_size::tokens_beside(tokens, window))
     };
     Ok(ModReading {
         summary: format!(
             "{} of {}",
-            plain_number(row.used as f64),
-            plain_number(window as f64)
+            window_size::tokens_beside(row.used, window),
+            window_size::window_words(window)
         ),
         parts: vec![
             part("used", row.used, ModColor::Blue),
@@ -399,16 +400,15 @@ mod tests {
         assert_eq!(amounts, ["900k", "400k", "100k"]);
     }
 
-    #[test]
-    fn context_is_used_and_free() {
-        let numbers = Numbers {
+    fn main_session(used: u64, window: u64) -> Numbers {
+        Numbers {
             context: Some(ContextRow {
                 run: None,
                 session: SessionKey::numbered(1),
                 label: "main".to_owned(),
                 worker: ModelRef::new("claude-code", None),
-                used: 212_000,
-                window: Some(1_000_000),
+                used,
+                window: Some(window),
                 cap: None,
                 tool_calls: 0,
                 spent: Spend::default(),
@@ -417,12 +417,29 @@ mod tests {
                 counts: false,
                 categories: Vec::new(),
                 recorded: None,
+                ended: None,
             }),
             ..Numbers::default()
-        };
-        let reading = reading(BuiltinSource::Context, &numbers).unwrap();
-        assert_eq!(reading.summary, "212k of 1.0M");
-        assert_eq!(reading.parts[1].value, 788_000.0);
+        }
+    }
+
+    #[test]
+    fn context_is_used_and_free() {
+        let read = reading(BuiltinSource::Context, &main_session(212_000, 1_000_000)).unwrap();
+        assert_eq!(read.summary, "212k of 1M");
+        assert_eq!(read.parts[1].value, 788_000.0);
+    }
+
+    /// A 64k window reads 64k, and what is used and free of it reads in the same divisor, so
+    /// the two parts add up to the window.
+    #[test]
+    fn a_window_of_1024s_reads_by_1024() {
+        let read = reading(BuiltinSource::Context, &main_session(9_551, 65_536)).unwrap();
+        assert_eq!(read.summary, "9.3k of 64k");
+        let amounts: Vec<String> = read.parts.iter().map(ModPart::amount).collect();
+        assert_eq!(amounts, ["9.3k", "54.7k"]);
+        let full = reading(BuiltinSource::Context, &main_session(65_536, 65_536)).unwrap();
+        assert_eq!(full.summary, "64k of 64k");
     }
 
     #[test]

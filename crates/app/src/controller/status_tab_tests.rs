@@ -470,8 +470,8 @@ async fn opencode_is_asked_for_its_providers_by_its_own_commands() {
     std::fs::write(
         &opencode,
         format!(
-            "#!/bin/sh\necho \"$*\" >> '{asked}'\ncase \"$*\" in\n  'auth list') cat \
-             '{f}/providers_auth_list.stdout.txt' ;;\n  'models') cat \
+            "#!/bin/sh\necho \"$*\" >> '{asked}'\ncase \"$*\" in\n  'auth list --standalone --format json') \
+             cat '{f}/providers_2_auth_list.stdout.json' ;;\n  'models --standalone') cat \
              '{f}/providers_models.stdout.txt' ;;\n  'debug config') cat \
              '{f}/providers_config.stdout.json' ;;\n  *) exit 2 ;;\nesac\n",
             asked = dir.path().join("asked").display(),
@@ -482,7 +482,14 @@ async fn opencode_is_asked_for_its_providers_by_its_own_commands() {
     std::fs::set_permissions(&opencode, std::fs::Permissions::from_mode(0o755)).unwrap();
     let adapter: std::sync::Arc<dyn argonauts_core::Adapter> =
         std::sync::Arc::new(argonauts_adapter_opencode::OpenCodeAdapter::new());
-    let found = super::providers(&opencode, adapter).await.unwrap();
+    let asked = super::Asked {
+        program: opencode.clone(),
+        cwd: dir.path().to_owned(),
+        confine: std::sync::Arc::new(argonauts_core::confine::Unconfined),
+    };
+    let found = super::providers(&asked, std::sync::Arc::clone(&adapter))
+        .await
+        .unwrap();
     let providers = found.providers.unwrap();
     let listed: Vec<(&str, ProviderBilling)> = providers
         .iter()
@@ -497,6 +504,34 @@ async fn opencode_is_asked_for_its_providers_by_its_own_commands() {
     );
     assert_eq!(found.default_model.as_deref(), Some("GLM 5 on OpenRouter"));
     assert!(found.account.is_none() && !found.signed_out);
-    let asked = std::fs::read_to_string(dir.path().join("asked")).unwrap();
-    assert_eq!(asked, "auth list\nmodels\ndebug config\n");
+    let asked_for = std::fs::read_to_string(dir.path().join("asked")).unwrap();
+    // Each on a private server, never OpenCode 2's shared service.
+    assert_eq!(
+        asked_for,
+        "auth list --standalone --format json\nmodels --standalone\ndebug config\n"
+    );
+
+    // A sandbox that can't start runs none of them, and the tab says so.
+    let refused = super::Asked {
+        confine: std::sync::Arc::new(Refusing),
+        ..asked
+    };
+    let found = super::providers(&refused, adapter).await.unwrap();
+    assert!(found.providers_unread && found.providers.is_none());
+    let asked_for = std::fs::read_to_string(dir.path().join("asked")).unwrap();
+    assert_eq!(asked_for.lines().count(), 3);
+}
+
+/// A sandbox that can't start here.
+#[derive(Debug)]
+struct Refusing;
+
+impl argonauts_core::confine::Confine for Refusing {
+    fn confine<'a>(
+        &'a self,
+        _cli: &'a str,
+        _command: argonauts_core::CommandSpec,
+    ) -> argonauts_core::future::BoxFuture<'a, Result<argonauts_core::CommandSpec, String>> {
+        Box::pin(async { Err("no working sandbox: sandbox-exec is missing".to_owned()) })
+    }
 }

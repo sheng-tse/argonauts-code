@@ -17,7 +17,6 @@ use argonauts_core::settings::bottom_line::{
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::mods::ModPlace;
 use argonauts_core::settings::ui::{NarratorMode, PluginOutput, UiSettings};
-use argonauts_core::views::ContextUse;
 use time::{OffsetDateTime, UtcOffset};
 
 use super::status::{agent_for_label, focus_run, label_for_agent};
@@ -308,13 +307,9 @@ impl Source<'_> {
             let limit = count.usage.limit();
             (limit > 0).then(|| count.usage.total_tokens as f64 / limit as f64)
         });
-        let share = |context: ContextUse| context.used as f64 / context.cap as f64;
         let busiest = focus_run(self.state).and_then(|run| {
             run.running_sessions()
-                .filter_map(|session| {
-                    let context = session.context.filter(|context| context.cap > 0)?;
-                    Some((session, share(context)))
-                })
+                .filter_map(|session| Some((session, session.context?.of_cap()?)))
                 .max_by(|a, b| a.1.total_cmp(&b.1))
         });
         let level = |ratio: f64| Levels::CONTEXT.level(ratio * 100.0);

@@ -1,0 +1,11 @@
+{
+  "adapter": "opencode",
+  "synthetic": false,
+  "program": "opencode",
+  "cli_version": "2.0.32",
+  "date": "2026-10-20",
+  "commands": [["auth", "list", "--standalone", "--format", "json"]],
+  "files": ["providers_2_auth_list.stdout.json", "providers_2_none_auth_list.stdout.json"],
+  "note": "Printed by OpenCode 2.0.32 in a throwaway home with nothing connected, and again with a made-up OPENROUTER_API_KEY in the environment. No account or real key is in them",
+  "how": "HOME set to an empty temp folder, OPENCODE_DISABLE_AUTOUPDATE=1, no network and no model call"
+}

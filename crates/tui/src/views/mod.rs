@@ -10,6 +10,8 @@
 pub mod agent;
 pub mod artifacts;
 pub mod columns;
+#[cfg(test)]
+mod council_golden_tests;
 pub mod crew;
 pub mod dock;
 pub mod follow;
@@ -438,6 +440,8 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         ViewData::Agent { view } => cx
             .out
             .open(agent::AgentView::new((**view).clone()).following(refresh.follower())),
+        // For the Context tab that asked, which has closed.
+        ViewData::SessionContext { .. } => {}
         // Under its tab of the usage panel, beside Status and Usage.
         ViewData::Context { view } => cx.out.open(
             crate::overview::OverviewView::new(

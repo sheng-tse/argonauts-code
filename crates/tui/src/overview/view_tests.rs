@@ -114,7 +114,7 @@ fn the_usage_tab_draws_a_card_per_cli_under_the_tabs_and_takes_only_their_rows()
     );
     assert!(
         rows.last().unwrap().starts_with(
-            " r to cycle dates · tab · ←→ tabs · ↓ CLIs · ctrl+r reads again · esc closes"
+            " r to cycle dates · tab · ← → tabs · ↓ CLIs · ctrl+r reads again · esc closes"
         ),
         "{rows:#?}"
     );
@@ -242,7 +242,7 @@ fn status_shows_its_cards_under_its_tab_once_its_answer_comes() {
     assert!(at(" Recent  ") > at("◆ needs you"), "{shown:#?}");
     let keys = shown.last().unwrap();
     assert!(
-        keys.contains("tab · ←→ tabs · ↓ into the cards · esc closes"),
+        keys.contains("tab · ← → tabs · ↓ into the cards · esc closes"),
         "{keys}"
     );
     // Your CLIs, their health, the settings and the runs come first, then the run's own cards.
@@ -438,7 +438,7 @@ fn context_shows_the_main_session_then_the_crew_and_the_arrows_step_through_it()
         "{shown:#?}"
     );
     assert!(
-        shown[4].contains("Context Usage  counted 0s ago"),
+        shown[4].contains("Context Usage  counted just now"),
         "{shown:#?}"
     );
     assert!(shown[4].contains("Opus 5.5  claude-opus-5-5"), "{shown:#?}");
@@ -457,7 +457,7 @@ fn context_shows_the_main_session_then_the_crew_and_the_arrows_step_through_it()
         "Custom agents · .claude/agents/",
         "Memory files · /memory",
         "Crew agents · ",
-        "build:report-endpo",
+        "build:report-endp",
         "build:docs",
     ]
     .map(at);
@@ -501,6 +501,146 @@ fn context_shows_the_main_session_then_the_crew_and_the_arrows_step_through_it()
         ViewOutcome::Consumed
     ));
     assert_eq!(overview.level(), Level::Tabs, "↑ on the first block leaves");
+}
+
+/// → on a crew agent asks for its session's whole count and shows it as the main session's
+/// blocks; ← comes back to every session, the keys where they were.
+#[test]
+fn right_on_an_agent_opens_its_session_whole_and_left_comes_back() {
+    use argonauts_core::app::SessionCounted;
+
+    let mut state = state(sample::usage());
+    state.conversation.context = Some(sample::counted());
+    // Claude Code says what fills its sessions, and Codex doesn't.
+    let mut context = sample::context();
+    context.rows[1].counts = true;
+    let mut overview = view(Tab::Context).with_context(context);
+    into_the_cards(&mut overview, &state);
+    rows(&mut overview, &state, 120, 80);
+    key(&mut overview, &state, KeyCode::End);
+    let shown = rows(&mut overview, &state, 120, 80);
+    let keys = shown.last().unwrap();
+    assert!(
+        keys.contains("enter agent view") && !keys.contains("its context"),
+        "{shown:#?}"
+    );
+    assert!(matches!(
+        key(&mut overview, &state, KeyCode::Right),
+        ViewOutcome::Consumed
+    ));
+    key(&mut overview, &state, KeyCode::Up);
+    let shown = rows(&mut overview, &state, 120, 80);
+    assert!(
+        shown
+            .last()
+            .unwrap()
+            .contains("enter agent view \u{b7} \u{2192}  its context"),
+        "{shown:#?}"
+    );
+    let ViewOutcome::Request(ViewRequest::SessionContext { run, session }) =
+        key(&mut overview, &state, KeyCode::Right)
+    else {
+        panic!("→ asks for the session's count");
+    };
+    assert_eq!(session, argonauts_core::names::SessionKey::numbered(2));
+    let counted = SessionCounted {
+        usage: Box::new(sample::counted().usage),
+        at: sample::now(),
+    };
+    // An answer for another session is not this tab's.
+    assert!(!overview.accept(&ViewData::SessionContext {
+        run: run.clone(),
+        session: argonauts_core::names::SessionKey::numbered(3),
+        counted: None,
+    }));
+    assert!(overview.accept(&ViewData::SessionContext {
+        run,
+        session,
+        counted: Some(counted),
+    }));
+    let opened = rows(&mut overview, &state, 120, 80);
+    assert!(
+        opened
+            .iter()
+            .any(|row| row.contains("build:report-endpoint \u{b7} Opus 5.5 on Claude Code")),
+        "{opened:#?}"
+    );
+    assert!(
+        opened
+            .iter()
+            .any(|row| row.contains("Estimated usage by category")),
+        "{opened:#?}"
+    );
+    assert!(
+        !opened.iter().any(|row| row.contains("Crew agents")),
+        "{opened:#?}"
+    );
+    assert!(
+        opened.last().unwrap().contains("\u{2190}  every session"),
+        "{opened:#?}"
+    );
+    key(&mut overview, &state, KeyCode::Left);
+    let back = rows(&mut overview, &state, 120, 80);
+    assert!(
+        back.iter()
+            .any(|row| row.contains("\u{276f} \u{25d0} build:report-endp")),
+        "{back:#?}"
+    );
+}
+
+/// A long list of MCP tools folds those not loaded into a row a server, and Enter on the list
+/// shows every tool, then folds them again.
+#[test]
+fn enter_on_a_long_list_of_mcp_tools_shows_every_tool_and_folds_them_again() {
+    use argonauts_core::events::context::{ContextCategory, ContextKind, McpTool};
+
+    let mut state = state(sample::usage());
+    let mut counted = sample::counted();
+    counted.usage.categories.push(ContextCategory {
+        name: "MCP tools (deferred)".to_owned(),
+        tokens: 3_000,
+        color: "inactive".to_owned(),
+        kind: ContextKind::Deferred,
+    });
+    counted.usage.mcp_tools = (0..30)
+        .map(|n| McpTool {
+            name: format!("mcp__crm__tool_{n:02}"),
+            server: "crm".to_owned(),
+            tokens: 200,
+            loaded: n < 2,
+        })
+        .collect();
+    state.conversation.context = Some(counted);
+    let mut overview = view(Tab::Context).with_context(sample::context());
+    into_the_cards(&mut overview, &state);
+    let folded = "crm \u{b7} 28 tools \u{b7} 5.6k on demand";
+    let mut shown = rows(&mut overview, &state, 120, 200);
+    while !shown.iter().any(|row| row.contains("\u{276f} MCP tools")) {
+        key(&mut overview, &state, KeyCode::Down);
+        shown = rows(&mut overview, &state, 120, 200);
+    }
+    assert!(shown.iter().any(|row| row.contains(folded)), "{shown:#?}");
+    assert!(
+        shown.last().unwrap().contains("enter every tool"),
+        "{shown:#?}"
+    );
+    assert!(matches!(
+        key(&mut overview, &state, KeyCode::Enter),
+        ViewOutcome::Consumed
+    ));
+    let whole = rows(&mut overview, &state, 120, 200);
+    assert!(
+        whole.iter().any(|row| row.contains("tool_29")),
+        "{whole:#?}"
+    );
+    assert!(!whole.iter().any(|row| row.contains(folded)), "{whole:#?}");
+    assert!(
+        whole.last().unwrap().contains("enter fold by server"),
+        "{whole:#?}"
+    );
+    key(&mut overview, &state, KeyCode::Enter);
+    let again = rows(&mut overview, &state, 120, 200);
+    assert!(again.iter().any(|row| row.contains(folded)), "{again:#?}");
 }
 
 /// Every list shows in full, so the tab is often taller than the panel. It scrolls by rows:
@@ -1197,7 +1337,7 @@ fn tab_moves_the_overview_sub_tabs_as_it_does_every_tabs() {
         .unwrap();
     assert!(
         keys.trim_start()
-            .starts_with("r to cycle dates · tab · ←→ tabs · ↓ Overview or Models"),
+            .starts_with("r to cycle dates · tab · ← → tabs · ↓ Overview or Models"),
         "on the tabs the line says what r and Tab do: {keys}"
     );
     key(&mut overview, &state, KeyCode::Down);

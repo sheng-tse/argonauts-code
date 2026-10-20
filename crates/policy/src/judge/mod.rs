@@ -1163,7 +1163,8 @@ mod tests {
         assert!(reason.chars().count() <= REASON_MAX + 1, "{reason}");
         assert_eq!(
             end_kind(&EndReason::Stuck {
-                watchdog: argonauts_core::events::session::Watchdog::Repeat
+                watchdog: argonauts_core::events::session::Watchdog::Repeat,
+                calls: None
             }),
             "it got stuck"
         );

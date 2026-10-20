@@ -344,6 +344,15 @@ impl Live {
         self.ask(SessionControl::WatchContext(detail));
     }
 
+    /// A question from the session opened (`open`) or was answered.
+    pub(super) fn asking(&self, open: bool) {
+        self.ask(if open {
+            SessionControl::Asking
+        } else {
+            SessionControl::Answered
+        });
+    }
+
     fn ask(&self, control: SessionControl) -> bool {
         self.control.try_send(control).is_ok()
     }

@@ -32,6 +32,20 @@ pub struct ModelCache {
     /// The model catalog last fetched from Argonauts Code's repository, which happens once a day.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<FetchedCatalog>,
+    /// When each source last listed its models, since `/model` asks them one by one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<SourceListed>,
+}
+
+/// When one source, by CLI or endpoint id, last listed its models, and whether it failed
+/// the latest time it was asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceListed {
+    pub cli: String,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub at: Option<OffsetDateTime>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub failed: bool,
 }
 
 impl ModelCache {
@@ -83,6 +97,7 @@ mod tests {
                 sha256: "0".repeat(64),
                 text: "version = 1\n".to_owned(),
             }),
+            sources: Vec::new(),
         };
         cache.write(&path).unwrap();
         assert_eq!(ModelCache::read(&path), Some(cache));

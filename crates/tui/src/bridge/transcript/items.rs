@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use argonauts_core::app::{AppEvent, HeaderAndBottomLine};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::log::{NO_LONGER_OFFERS, NO_SECOND_TRY, SAME_CLI_IS_ON};
-use argonauts_core::names::ModelRef;
+use argonauts_core::names::{ConversationId, ModelRef};
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::Settings;
@@ -28,6 +28,8 @@ pub(super) struct Items {
     shown: Option<SessionHeader>,
     /// The controller repeats some warnings, such as the always-on agent's, and each shows once.
     warnings_seen: BTreeSet<String>,
+    /// A report still filling in, by its title, live under the conversation until it's whole.
+    growing: Option<(String, CellId)>,
 }
 
 /// The controller sends the bottom line with the main agent just after the welcome, so the
@@ -70,6 +72,7 @@ impl Items {
             model: main_agent.and_then(|agent| names.model(&agent.agent, agent.model.as_deref())),
             effort: effort.clone(),
             workflow: workflow.clone(),
+            ultra: cx.state.status.as_ref().and_then(|status| status.ultra),
             folder: repo.clone(),
             agents: agents
                 .iter()
@@ -85,6 +88,7 @@ impl Items {
                 .collect(),
             runs_going: *runs_going,
             runs_need_you: *runs_need_you,
+            way_back: None,
         };
         match self.header {
             Header::NotYet if main_agent.is_none() => {
@@ -113,19 +117,64 @@ impl Items {
         }
     }
 
-    /// Fills in the main agent and prints the header waiting for it.
-    pub(super) fn status(&mut self, status: &HeaderAndBottomLine, cx: &mut Cx<'_>) {
-        let Header::Waiting(id) = self.header else {
+    /// `/clear`: the screen starts over under the header, as a start prints it with the agent
+    /// you talk to now, and the way back to the old conversation under it when it had turns.
+    /// The runs a start found are the old screen's news, so they go from it.
+    pub(super) fn start_over(&mut self, way_back: Option<&ConversationId>, cx: &mut Cx<'_>) {
+        let Some(mut header) = self.shown.clone() else {
             return;
         };
-        let agent = &status.main_agent;
-        let cli = cx.state.names.cli(&agent.agent);
-        let model = cx.state.names.model(&agent.agent, agent.model.as_deref());
-        if let Some(Cell::Header(header)) = cx.model.history.active_mut(id) {
-            header.main_agent = Some(cli);
-            header.model = model;
+        if let Some(status) = cx.state.status.as_ref() {
+            let agent = &status.main_agent;
+            let names = &cx.state.names;
+            header.main_agent = Some(names.cli(&agent.agent));
+            header.model = names.model(&agent.agent, agent.model.as_deref());
+            header.effort = status.line.main_effort.clone().or(header.effort);
+            // The mascot is the one the workflow and the agent's ultra look call for now.
+            header.workflow.clone_from(&status.workflow);
+            header.ultra = status.ultra;
         }
-        self.print_header(cx);
+        header.runs_going = 0;
+        header.runs_need_you = 0;
+        header.way_back = way_back.map(ToString::to_string);
+        cx.model.history.start_over();
+        cx.model.history.push(header.clone());
+        self.shown = Some(header);
+    }
+
+    /// Fills in the main agent and prints the header waiting for it. Once it printed, a new
+    /// workflow, the main agent's ultra mode coming or going, or a new effort redraws it where it
+    /// still shows, mascot and all.
+    pub(super) fn status(&mut self, status: &HeaderAndBottomLine, cx: &mut Cx<'_>) {
+        match self.header {
+            Header::NotYet => {}
+            Header::Waiting(id) => {
+                let agent = &status.main_agent;
+                let cli = cx.state.names.cli(&agent.agent);
+                let model = cx.state.names.model(&agent.agent, agent.model.as_deref());
+                if let Some(Cell::Header(header)) = cx.model.history.active_mut(id) {
+                    header.main_agent = Some(cli);
+                    header.model = model;
+                    header.ultra = status.ultra;
+                }
+                self.print_header(cx);
+            }
+            Header::Printed => {
+                let Some(shown) = &self.shown else {
+                    return;
+                };
+                let mut header = shown.clone();
+                header.workflow.clone_from(&status.workflow);
+                header.ultra = status.ultra;
+                if let Some(effort) = &status.line.main_effort {
+                    header.effort = Some(effort.clone());
+                }
+                if header != *shown {
+                    self.shown = Some(header.clone());
+                    cx.model.history.replace_header(header);
+                }
+            }
+        }
     }
 
     /// Prints a header still waiting for the bottom line, so nothing prints above it.
@@ -210,14 +259,47 @@ impl Items {
     }
 }
 
-/// A command's findings, such as `/doctor`'s: the title, then one dim line each under `⎿`.
-/// You asked for it, so it prints even at `quiet`.
-pub(super) fn report(title: &str, lines: &[String], cx: &mut Cx<'_>) {
+impl Items {
+    /// A command's findings, such as `/doctor`'s: the title, then one dim line each under `⎿`.
+    /// You asked for it, so it prints even at `quiet`. The report filling in under the same
+    /// title becomes this one where it stands.
+    pub(super) fn report(&mut self, title: &str, lines: &[String], cx: &mut Cx<'_>) {
+        let notice = report_notice(title, lines);
+        match self.growing.take_if(|(growing, _)| growing == title) {
+            Some((_, id)) => {
+                if let Some(cell) = cx.model.history.active_mut(id) {
+                    *cell = notice.into();
+                }
+                cx.model.history.finish_active(id);
+            }
+            None => emit(cx, notice),
+        }
+    }
+
+    /// A report still filling in, such as `/update`'s as each CLI is done: live, its rows
+    /// added where it stands until the whole report comes.
+    pub(super) fn report_so_far(&mut self, title: &str, lines: &[String], cx: &mut Cx<'_>) {
+        let notice = report_notice(title, lines);
+        match &self.growing {
+            Some((growing, id)) if growing == title => {
+                if let Some(cell) = cx.model.history.active_mut(*id) {
+                    *cell = notice.into();
+                }
+            }
+            _ => {
+                let id = cx.model.history.push_active(notice);
+                self.growing = Some((title.to_owned(), id));
+            }
+        }
+    }
+}
+
+fn report_notice(title: &str, lines: &[String]) -> Notice {
     let mut notice = Notice::new(Tone::Normal, title.trim());
     for line in lines {
         notice = notice.with_detail(line.trim_end());
     }
-    emit(cx, notice);
+    notice
 }
 
 /// A switch you flipped, such as `/awake`: what's on, how to undo it, and what it can't do.

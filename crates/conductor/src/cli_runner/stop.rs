@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::time::Duration;
 
-use argonauts_core::events::session::{EndReason, Watchdog};
+use argonauts_core::events::session::{CallCount, EndReason, Watchdog};
 use argonauts_core::{ErrorCategory, LimitDimension, StopPlan, StopSignal, StopStep};
 use time::OffsetDateTime;
 use tokio::time::Instant;
@@ -17,39 +17,35 @@ use crate::process::AgentProcess;
 pub enum StopCause {
     /// The meter reached 100% of a limit.
     Limit(LimitDimension),
-    Stuck(Watchdog),
-    /// The context reached `sessions.rotate_at`.
-    Rotate {
-        used: u64,
-        cap: u64,
+    Stuck {
+        watchdog: Watchdog,
+        calls: Option<CallCount>,
     },
+    /// The context reached `sessions.rotate_at`.
+    Rotate { used: u64, cap: u64 },
     /// `StopAfterTool`.
     Paused,
     /// `Stop`, or every control sender dropped.
     Stopped,
     /// The CLI ran more subagents than its cap, where only counting can enforce it.
-    Fanout {
-        running: u32,
-        max: u32,
-    },
+    Fanout { running: u32, max: u32 },
     /// The group couldn't be recorded, registered, or guarded, so it must not run.
     Unsafe(String),
     /// The CLI is finishing on its wrap-up allowance, and `fallback.wrap_up = "fallback"` saves
     /// it for later: the turn ends here and the task moves on at once.
-    WrapUp {
-        resets_at: Option<OffsetDateTime>,
-    },
+    WrapUp { resets_at: Option<OffsetDateTime> },
     /// The provider's plan window is as full as your `limits.plan_usage` lets it get, and
     /// `limits.when_reached` is `fallback`: the turn ends as if the plan had run out, so the
     /// task falls back.
-    PlanLimit {
-        resets_at: Option<OffsetDateTime>,
-    },
+    PlanLimit { resets_at: Option<OffsetDateTime> },
     /// An isolated session loaded what its role mustn't see.
     IsolationBroken {
         plugins: Vec<String>,
         skills: Vec<String>,
     },
+    /// The agent handed its report in through a tool call, so its work is done though its turn
+    /// would go on.
+    Reported,
 }
 
 impl StopCause {
@@ -58,8 +54,9 @@ impl StopCause {
             Self::Limit(dimension) => EndReason::LimitHit {
                 dimension: *dimension,
             },
-            Self::Stuck(watchdog) => EndReason::Stuck {
+            Self::Stuck { watchdog, calls } => EndReason::Stuck {
                 watchdog: *watchdog,
+                calls: calls.clone(),
             },
             Self::Rotate { .. } => EndReason::ContextFull,
             Self::Paused => EndReason::Paused,
@@ -80,6 +77,7 @@ impl StopCause {
                 plugins: plugins.clone(),
                 skills: skills.clone(),
             },
+            Self::Reported => EndReason::Completed,
         }
     }
 }
@@ -176,6 +174,7 @@ mod tests {
     fn causes_become_reasons() {
         assert_eq!(StopCause::Stopped.reason(), EndReason::Stopped);
         assert_eq!(StopCause::Paused.reason(), EndReason::Paused);
+        assert_eq!(StopCause::Reported.reason(), EndReason::Completed);
         assert_eq!(
             StopCause::Rotate { used: 9, cap: 8 }.reason(),
             EndReason::ContextFull

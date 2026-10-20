@@ -6,7 +6,7 @@ use ratatui::text::Span;
 
 use super::messages::mark;
 use super::place::{Columns, at, ending, place};
-use super::usage::{bold, level, level_role};
+use super::usage::{bold, in_window, level, level_role};
 use super::words::whole_percent;
 use crate::bridge::tools::Places;
 use crate::format;
@@ -334,7 +334,7 @@ pub(super) fn blocks(
                 kit.dim(format!("   {}", fill_after(usage, saved))),
             ],
             None if suggestion.near_full => {
-                let left = format::tokens(usage.limit().saturating_sub(usage.total_tokens));
+                let left = in_window(usage, usage.limit().saturating_sub(usage.total_tokens));
                 let words = match usage.compacts_at() {
                     Some(_) => format!("compacts in {left}"),
                     None => format!("{left} left"),

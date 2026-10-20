@@ -540,12 +540,15 @@ pub fn action_note(action: &Action) -> Note {
 }
 
 /// Every `evolution.propose_every` runs that reached the run review; 0 means only when you ask. At
-/// stage `record` the loop only saves what worked, so the run review isn't asked for a change.
+/// stage `record` the loop only saves what worked, so the run review isn't asked for a change. A
+/// change can only be made to a learned workflow that ran, so a run without one isn't asked
+/// either.
 fn process_change_due(host: &Host, settings: &Settings) -> EngineResult<bool> {
     let every = settings.evolution.propose_every as usize;
     if every == 0
         || settings.evolution.evolvable.is_empty()
         || evolution::stage(settings) == Stage::Record
+        || learned_workflow::read(&host.repo().run_dir).is_none()
     {
         return Ok(false);
     }

@@ -244,22 +244,35 @@ fn tables_draw_in_a_box_and_stack_as_records_when_narrow() {
     let lines = render_with(source, 60, &Indent::default());
     assert_eq!(
         plain_text(&lines),
-        "┌───────────┬──────────────┐\n│ Stream    │       Status │\n├───────────┼──────────────┤\n│ Contracts │ Starting now │\n│ Docs      │            3 │\n└───────────┴──────────────┘"
+        "┌───────────┬──────────────┐\n│  Stream   │    Status    │\n├───────────┼──────────────┤\n│ Contracts │ Starting now │\n├───────────┼──────────────┤\n│ Docs      │            3 │\n└───────────┴──────────────┘"
     );
+    // Headers aren't bold, and the borders take the text's own colour.
     assert!(
-        style_of(&lines, "Stream")
+        !style_of(&lines, "Stream")
             .add_modifier
             .contains(Modifier::BOLD)
     );
-    assert_eq!(style_of(&lines, "┌───"), theme().style(Role::Dim));
+    assert_eq!(style_of(&lines, "┌───"), theme().style(Role::Text));
+    // A cell would need five lines, so each row is a record.
     let narrow = render(
         "| Name | Notes |\n|---|---|\n| supercalifragilistic | expialidocious |\n| agy | ok |",
         20,
     );
     assert_eq!(
         narrow,
-        "Name:\n  supercalifragilist\n  ic\nNotes:\n  expialidocious\n\nName: agy\nNotes: ok"
+        "Name: supercalifrag\nilistic\nNotes: expialidocio\nus\n───────────────────\nName: agy\nNotes: ok"
     );
+    let records = render_with(
+        "| Name | Notes |\n|---|---|\n| supercalifragilistic | expialidocious |\n| agy | ok |",
+        20,
+        &Indent::default(),
+    );
+    assert!(
+        style_of(&records, "Name:")
+            .add_modifier
+            .contains(Modifier::BOLD)
+    );
+    assert_eq!(style_of(&records, "────"), theme().style(Role::Text));
 }
 
 #[test]
@@ -267,8 +280,74 @@ fn tables_wrap_cells_before_giving_up() {
     let source = "| Name | Notes |\n|---|---|\n| agy | not installed on this machine yet |";
     assert_eq!(
         render(source, 28),
-        "┌──────┬──────────────────┐\n│ Name │ Notes            │\n├──────┼──────────────────┤\n│ agy  │ not installed on │\n│      │ this machine yet │\n└──────┴──────────────────┘"
+        "┌──────┬───────────────┐\n│ Name │     Notes     │\n├──────┼───────────────┤\n│      │ not installed │\n│ agy  │ on this       │\n│      │ machine yet   │\n└──────┴───────────────┘"
     );
+}
+
+#[test]
+fn every_row_has_a_rule_under_it_and_a_short_cell_sits_in_its_middle() {
+    let source =
+        "| # | Do this |\n|---|---|\n| 3 | one two three four five six seven |\n| 8 | short |";
+    assert_eq!(
+        render(source, 24),
+        "┌─────┬────────────┐\n│  #  │  Do this   │\n├─────┼────────────┤\n│     │ one two    │\n│ 3   │ three four │\n│     │ five six   │\n│     │ seven      │\n├─────┼────────────┤\n│ 8   │ short      │\n└─────┴────────────┘"
+    );
+}
+
+#[test]
+fn headers_centre_over_left_and_right_aligned_columns() {
+    let source = "| Left | Right |\n|:---|---:|\n| a | 1234567 |";
+    assert_eq!(
+        render(source, 40),
+        "┌──────┬─────────┐\n│ Left │  Right  │\n├──────┼─────────┤\n│ a    │ 1234567 │\n└──────┴─────────┘"
+    );
+}
+
+#[test]
+fn a_table_wider_than_the_screen_less_four_is_drawn_as_records() {
+    // Three columns of at least three cells make a box 19 cells wide: wider than 22 less 4.
+    let source = "| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |";
+    assert_eq!(render(source, 22), "a: 1\nb: 2\nc: 3");
+    // At 23 the box fits.
+    let text = render(source, 23);
+    assert!(text.starts_with("┌─────┬─────┬─────┐"), "{text}");
+}
+
+#[test]
+fn the_ascii_set_draws_the_box_in_plus_minus_and_bars() {
+    let theme = {
+        let mut theme = theme();
+        theme.glyphs = Glyphs::ASCII;
+        theme
+    };
+    let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
+    let lines = render_markdown("| a | b |\n|---|---|\n| 1 | 2 |", &ctx, &Indent::default());
+    assert_eq!(
+        plain_text(&lines),
+        "+-----+-----+\n|  a  |  b  |\n+-----+-----+\n| 1   | 2   |\n+-----+-----+"
+    );
+}
+
+#[test]
+fn past_two_hundred_rows_the_rest_are_counted() {
+    let mut source = String::from("| n |\n|---|\n");
+    for row in 0..1205 {
+        source.push_str(&format!("| {row} |\n"));
+    }
+    let text = render(&source, 40);
+    assert!(
+        text.ends_with("└─────┘\n… 1,005 more rows not shown"),
+        "{}",
+        &text[text.len() - 80..]
+    );
+    assert!(text.contains("│ 199 │") && !text.contains("│ 200 │"));
+}
+
+#[test]
+fn a_markdown_rule_crosses_the_width_in_the_text_colour() {
+    let lines = render_with("Above\n\n---\n\nBelow", 20, &Indent::default());
+    assert_eq!(plain_text(&lines), "Above\n\n────────────────────\n\nBelow");
+    assert_eq!(style_of(&lines, "────"), theme().style(Role::Text));
 }
 
 #[test]

@@ -5,7 +5,7 @@
 
 use argonauts_core::TaskId;
 use argonauts_core::display_names::builtin_cli_name;
-use argonauts_core::events::run::WaitReason;
+use argonauts_core::events::run::{RunLifecycle, WaitReason};
 use argonauts_core::events::session::EndReason;
 use argonauts_core::events::task::{ReviewEvent, TaskEvent, TaskState, TryCause};
 use argonauts_core::events::{RunEvent, RunEventKind};
@@ -17,6 +17,7 @@ use argonauts_core::steps::plan::Severity;
 use argonauts_core::views::{EarlierFindings, Finding, Findings, ReviewGiven, RowNote, Tone};
 use argonauts_crew::claude_codes::review_of;
 use argonauts_crew::merge::merger::COMMIT_MESSAGE;
+use serde_json::Value;
 use time::OffsetDateTime;
 
 use super::sessions::{RunFacts, SessionFacts};
@@ -49,6 +50,8 @@ pub(crate) struct Verdicts {
     went_on: Vec<(TaskId, OffsetDateTime)>,
     /// The tasks that merged.
     merged: Vec<TaskId>,
+    /// The run is a council's, whose agents that only read propose and challenge.
+    council: bool,
 }
 
 impl Verdicts {
@@ -60,9 +63,13 @@ impl Verdicts {
             worktrees: Vec::new(),
             went_on: Vec::new(),
             merged: Vec::new(),
+            council: false,
         };
         for event in events {
             match (&event.kind, &event.task_id) {
+                (RunEventKind::Run(RunLifecycle::Started(started)), _) => {
+                    verdicts.council = started.workflow == COUNCIL;
+                }
                 (RunEventKind::Review(ReviewEvent::Reviewed { round, review, .. }), task) => {
                     verdicts.reviews.push(Reviewed {
                         task: task.clone(),
@@ -131,7 +138,55 @@ impl Verdicts {
         let asked = matches!(session.started.role, RoleName::Reviewer | RoleName::Judge)
             && session.task.is_none();
         let answer = session.ended.as_ref()?.structured.as_ref()?;
-        asked.then(|| review_of(answer))
+        // Only an answer with a yes or no is a verdict: a judge that decides answers with a plan.
+        let verdict = answer.get("accept").is_some_and(Value::is_boolean);
+        (asked && verdict).then(|| review_of(answer))
+    }
+
+    /// What one of a council's agents gave, by its answer: the proposal a judge chose, what a
+    /// challenge argued against, or a proposal. A judge's choice reads so in any workflow.
+    fn gave(&self, session: &SessionFacts) -> Option<RowNote> {
+        let end = session.ended.as_ref()?;
+        if end.reason != EndReason::Completed {
+            return None;
+        }
+        let answer = end.structured.as_ref();
+        let text = |key: &str| {
+            answer?
+                .get(key)?
+                .as_str()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+        };
+        if let Some(chose) = text("chose") {
+            return Some(RowNote::new(format!("chose {chose}"), Tone::Text));
+        }
+        let started = &session.started;
+        let proposes = self.council
+            && started.role == RoleName::Worker
+            && started.access == Access::ReadOnly
+            && session.task.is_none();
+        if !proposes {
+            return None;
+        }
+        let against: Vec<&str> = answer
+            .and_then(|answer| answer.get("against")?.as_array())
+            .map(|names| names.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if against.is_empty() {
+            return Some(RowNote::new("proposal ready", Tone::Good));
+        }
+        let points = answer
+            .and_then(|answer| answer.get("points")?.as_array())
+            .map_or(0, Vec::len);
+        let points = match points {
+            1 => "1 point".to_owned(),
+            points => format!("{points} points"),
+        };
+        Some(RowNote::new(
+            format!("against {} · {points}", and_list(&against)),
+            Tone::Plain,
+        ))
     }
 
     /// What the row of a review handed over through a CLI's own workflow says: the verdict,
@@ -174,12 +229,25 @@ impl Verdicts {
             if self.no_round_followed(facts, session) {
                 return Some(RowNote::new(format!("{verdict} · no rounds left"), tone));
             }
+            // A sign-off about no one task read the change in a folder that holds it.
+            let signs_off = session.started.role == RoleName::Judge && session.task.is_none();
+            if signs_off && review.verdict == ReviewVerdict::Approve && review.comments.is_empty() {
+                let read = if self.worktrees.len() > 1 {
+                    "read every task's change"
+                } else {
+                    "read the task's change"
+                };
+                return Some(RowNote::new(read, Tone::Good));
+            }
             let text = match review.comments.len() {
                 0 => verdict.to_owned(),
                 1 => format!("{verdict} · 1 finding"),
                 count => format!("{verdict} · {count} findings"),
             };
             return Some(RowNote::new(text, tone));
+        }
+        if let Some(gave) = self.gave(session) {
+            return Some(gave);
         }
         if wrote_only_the_message(facts, session) {
             return Some(RowNote::new(GIVEN_THE_DIFF, Tone::Plain));
@@ -462,6 +530,18 @@ fn acts_as(session: &SessionFacts) -> RoleName {
 /// Whether `session` is a worker at its own work, which has tries, rounds and a worktree.
 fn builds(session: &SessionFacts) -> bool {
     session.started.role == RoleName::Worker && acts_as(session) == RoleName::Worker
+}
+
+/// The built-in workflow whose agents propose, challenge and decide.
+const COUNCIL: &str = "council";
+
+/// `p2`, `p2 and p3`, `p1, p2 and p3`.
+fn and_list(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 fn verdict_words(verdict: ReviewVerdict) -> (&'static str, Tone) {

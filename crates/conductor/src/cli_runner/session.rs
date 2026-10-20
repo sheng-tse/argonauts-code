@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::events::failure::after_proxy_refusal;
 use argonauts_core::events::session::{EndReason, LimitEvent, SessionEnd, SessionEvent};
+use argonauts_core::model_memory::Hold;
 use argonauts_core::session_runner::{
     RunnerError, SandboxMode, SessionControl, SessionHandle, SessionLimits, SessionRunner,
     SessionSpec,
@@ -17,6 +18,7 @@ use argonauts_core::{ErrorCategory, create_private_dir_all};
 use tokio::sync::mpsc;
 
 use super::context::{Context, Launch};
+use super::local_server::LocalModel;
 use super::observe::Observer;
 use super::outbox::{self, Outbox};
 use super::{CliRunner, driven, lines, refuse};
@@ -53,6 +55,7 @@ pub async fn start(
         )));
     }
     refuse::check(&spec, &rules, &health, &self_test)?;
+    worker.launch_version().await;
     let ctx = worker
         .home()
         .map(|home| Arc::new(Context::new(worker, spec.clone(), home)))
@@ -119,7 +122,7 @@ async fn session(
         Err(err) => return failed(format!("could not open the session's raw log: {err}")),
     };
     let raw_path = Some(raw.stdout_path());
-    let launch = match ctx.launch(&ctx.spec) {
+    let mut launch = match ctx.first_launch().await {
         Ok(launch) => launch,
         Err(message) => return not_started(EndReason::StartFailed { message }, started, raw_path),
     };
@@ -138,6 +141,44 @@ async fn session(
             return not_started(reason, started, raw_path);
         }
     };
+    // A model a local server runs: noted for the run or conversation, one of the server's
+    // request places held (taken after the CLI's slot, as every session takes them, so two
+    // sessions never wait on each other's), then loaded where the server loads on an empty
+    // request, so the launch knows the window it got.
+    let local = LocalModel::of(&ctx.settings, &ctx.spec, &launch.request);
+    let mut _request = None;
+    if let Some(local) = &local {
+        let mut hold = match &local.server {
+            Some(server) => ctx.memory.hold(server, &local.model, &local.holder).await,
+            None => Hold::default(),
+        };
+        if let Some(requests) = local.requests(&ctx.home, hold.slots) {
+            _request = tokio::select! {
+                slot = requests.take() => match slot {
+                    Ok(slot) => Some(slot),
+                    Err(message) => return not_started(
+                        EndReason::StartFailed { message },
+                        started,
+                        raw_path,
+                    ),
+                },
+                reason = stopped_while_waiting(&mut control, &mut early) => {
+                    return not_started(reason, started, raw_path);
+                }
+            };
+        }
+        if let Some(server) = local.server.as_ref().filter(|_| local.loads_first()) {
+            hold.window = ctx.memory.load(server, &local.model).await.or(hold.window);
+        }
+        if hold.window.is_some() {
+            match ctx.launch_with_window(&ctx.spec, hold.window) {
+                Ok(with_window) => launch = with_window,
+                Err(message) => {
+                    return not_started(EndReason::StartFailed { message }, started, raw_path);
+                }
+            }
+        }
+    }
     let obs = Observer::new(ctx.clone(), out.clone(), started);
     let running = Running {
         ctx: ctx.clone(),
@@ -155,6 +196,14 @@ async fn session(
     };
     if proxied {
         name_proxy_refusal(&ctx, &mut end, started);
+    }
+    if let Some(LocalModel {
+        server: Some(server),
+        model,
+        ..
+    }) = &local
+    {
+        ctx.memory.touch(server, model).await;
     }
     end
 }

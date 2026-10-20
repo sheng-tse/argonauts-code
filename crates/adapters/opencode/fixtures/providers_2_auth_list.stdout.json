@@ -1,0 +1,12 @@
+[
+  {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "connections": [
+      {
+        "type": "env",
+        "name": "OPENROUTER_API_KEY"
+      }
+    ]
+  }
+]

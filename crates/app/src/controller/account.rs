@@ -22,6 +22,7 @@ use argonauts_core::names::ModelRef;
 use argonauts_core::plan_usage::LiveUsage;
 use argonauts_core::session_runner::RunnerDirectory;
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::endpoints::endpoint_settings;
 use argonauts_core::settings::fallback::FallbackEntry;
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit, SpendLimits};
 use argonauts_core::settings::stats::{STATS_FILE, StatsPeriod, StatsSettings};
@@ -242,7 +243,9 @@ async fn usage_summary(
     let span = (period, ctx.settings().periods.week_starts);
     let mut summary = usage_ledger::summary(&ledger, span, local_day(now), runs, plan_windows);
     for share in &mut summary.by_agent {
-        share.pays_per_token = pays_per_token(settings, &AgentId(share.agent_id.clone()));
+        share.local = runs_locally(settings, &share.agent_id, share.model.as_deref());
+        share.pays_per_token =
+            !share.local && pays_per_token(settings, &AgentId(share.agent_id.clone()));
     }
     if let Some(stats) = &mut summary.stats {
         let clis: Vec<String> = stats.work.iter().map(|row| row.agent.clone()).collect();
@@ -393,12 +396,16 @@ fn plan_usage_cards(
         if plans.iter().any(|plan| plan.agent == agent_id.0) {
             continue;
         }
-        let pays_per_token = pays_per_token(settings, &agent_id);
+        let local = crew
+            .iter()
+            .filter(|other| other.agent == worker.agent)
+            .all(|other| runs_locally(settings, &other.agent, other.model.as_deref()));
+        let pays_per_token = !local && pays_per_token(settings, &agent_id);
         // Only the CLI's own live reading of the account signed in now. One a failed read or
         // a sign-in has cast doubt on is kept apart, to be drawn as from before.
         let kept = plan_usage
             .live(&agent_id)
-            .filter(|live| live.shown_at(now) && !pays_per_token);
+            .filter(|live| live.shown_at(now) && !pays_per_token && !local);
         let (live, last) = match kept {
             Some(kept) if kept.current_at(now, plan_usage.doubted_at(&agent_id)) => {
                 (Some(kept), None)
@@ -426,6 +433,7 @@ fn plan_usage_cards(
             in_use: plans.is_empty(),
             down,
             pays_per_token,
+            local,
             moved_to: (down || out || at_limit)
                 .then(|| fallback_of(settings, &agent_id))
                 .flatten()
@@ -441,9 +449,21 @@ fn plan_usage_cards(
     plans
 }
 
-/// The agent bills for each token: an endpoint, or a CLI signed in with an API key.
+/// The agent bills for each token: an endpoint, or a CLI signed in with an API key. A server
+/// on this machine never does.
 fn pays_per_token(settings: &Settings, agent_id: &AgentId) -> bool {
-    settings.endpoints.contains_key(&agent_id.0) || bills_api_key(settings, agent_id)
+    let local = endpoint_settings(settings, &agent_id.0).is_some_and(|endpoint| endpoint.local);
+    !local && (settings.endpoints.contains_key(&agent_id.0) || bills_api_key(settings, agent_id))
+}
+
+/// The model runs on a server on this machine: an endpoint marked local, or a CLI's model
+/// whose route names one, as `ollama/qwen3-coder:30b` does on OpenCode.
+fn runs_locally(settings: &Settings, agent: &str, model: Option<&str>) -> bool {
+    let local = |id: &str| endpoint_settings(settings, id).is_some_and(|endpoint| endpoint.local);
+    let routed = model
+        .and_then(|model| model.split_once('/'))
+        .is_some_and(|(provider, _)| local(provider));
+    local(agent) || routed
 }
 
 /// The CLI bills an API key rather than a plan, so there's no plan to read.
@@ -505,7 +525,10 @@ fn read_again(
 ) -> Vec<PlanUsage> {
     static RESET_ASKED: Mutex<BTreeMap<String, std::time::Instant>> = Mutex::new(BTreeMap::new());
     let started = std::time::Instant::now();
-    for plan in plans.iter_mut().filter(|plan| !plan.pays_per_token) {
+    for plan in plans
+        .iter_mut()
+        .filter(|plan| !plan.pays_per_token && !plan.local)
+    {
         let reset = plan
             .live
             .as_ref()
@@ -1478,6 +1501,43 @@ mod tests {
             &AgentId("claude-code".to_owned())
         ));
         assert!(!pays_per_token(&settings, &AgentId("codex".to_owned())));
+    }
+
+    /// A model on a server on this machine charges nothing and no plan covers it: OpenCode on
+    /// Ollama has no plan to read, and Ollama's own endpoint never pays per token, table or not.
+    #[test]
+    fn a_local_model_has_no_plan_and_pays_nothing() {
+        use argonauts_core::settings::agents::EndpointSettings;
+        use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
+        let mut settings = Settings::default();
+        settings.crew.main = ModelRef::new("opencode", Some("ollama/qwen3-coder:30b-64k".into()));
+        settings.endpoints.insert(
+            "ollama".into(),
+            EndpointSettings {
+                local: true,
+                ..EndpointSettings::default()
+            },
+        );
+        let plans = plans_of(
+            &settings,
+            &MemoryPlanUsageBoard::default(),
+            &MemoryHealthBoard::default(),
+        );
+        let opencode = plans.iter().find(|plan| plan.agent == "opencode").unwrap();
+        assert!(opencode.local && !opencode.pays_per_token);
+        assert!(!pays_per_token(&settings, &AgentId("ollama".to_owned())));
+        assert!(runs_locally(&settings, "ollama", Some("gemma3:12b-32k")));
+        assert!(runs_locally(
+            &settings,
+            "opencode",
+            Some("ollama/qwen3-coder:30b-64k")
+        ));
+        assert!(!runs_locally(
+            &settings,
+            "opencode",
+            Some("openrouter/qwen3-coder")
+        ));
+        assert!(!runs_locally(&settings, "codex", Some("gpt-6-luna")));
     }
 
     /// A CLI's probe is registered when its worker is built, so a live read on a fresh start,

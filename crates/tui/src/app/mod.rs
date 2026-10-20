@@ -7,12 +7,15 @@ mod frames;
 mod fullscreen;
 mod input;
 mod live;
+mod mascot;
 mod overlay;
 mod run;
 mod selection;
 mod sticky;
 mod views;
 
+#[cfg(test)]
+mod command_goldens;
 #[cfg(test)]
 mod tests;
 
@@ -190,6 +193,8 @@ pub struct Ui<W: Write> {
     /// Only set on a real terminal, for handing it to child programs.
     modes: Option<TerminalModes>,
     next_animation: Option<Instant>,
+    /// The header's mascot as a picture, and its frames.
+    mascot: mascot::HeaderMascot,
     keymap: Keymap,
     /// Keys come with the time they arrived, so a paste a terminal types out key by key reads
     /// as one paste. Tests that hand keys over at one made-up time leave it off.
@@ -232,6 +237,7 @@ impl<W: Write> Ui<W> {
             chord: None,
             modes: None,
             next_animation: None,
+            mascot: mascot::HeaderMascot::default(),
             keymap,
             key_times: false,
         }
@@ -268,6 +274,7 @@ impl<W: Write> Ui<W> {
 
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
+        self.fit_mascot_to_theme();
         self.dirty = true;
     }
 
@@ -446,14 +453,28 @@ impl<W: Write> Ui<W> {
             {
                 self.draw_fullscreen(now, state)?;
             } else {
+                // A view or the transcript covers the conversation, and the header's picture
+                // goes with it.
+                let placing = if self.scrollback.is_some() {
+                    self.place_mascot(now, None)
+                } else {
+                    None
+                };
                 self.draw_alternate(now, state)?;
+                self.send_placing(placing)?;
             }
             self.frame_done(now);
             return Ok(wrote || self.terminal.frame_bytes() != before);
         }
 
         let printed = self.drain_history(now);
-        if !self.dirty && !printed && !due && self.terminal.pending_history().is_empty() {
+        let animated = self.animate_mascot(now);
+        if !self.dirty
+            && !printed
+            && !animated
+            && !due
+            && self.terminal.pending_history().is_empty()
+        {
             return Ok(wrote);
         }
         self.draw_inline(now, state)?;
@@ -680,6 +701,7 @@ impl<W: Write> Ui<W> {
             }
         }
         self.terminal.invalidate();
+        self.mascot_given_back();
         Ok(())
     }
 
@@ -758,29 +780,64 @@ impl<W: Write> Ui<W> {
         // History prints with a still clock, so its printed form never depends on frame timing.
         let ctx =
             RenderCtx::new(screen.width, &self.theme, Clock::still(now)).with_rows(screen.height);
-        let rows = self.model.history.drain_printable(&ctx);
-        let header = self.model.history.take_header_rows();
+        let mut rows = self.model.history.drain_printable(&ctx);
+        let mut header = self.model.history.take_header_rows();
         let redrawn = self.model.history.take_header_redrawn();
-        let prompts = self.model.history.take_prompt_rows();
-        if rows.is_empty() && redrawn.is_none() {
+        let mut prompts = self.model.history.take_prompt_rows();
+        if let Some(at) = self.model.history.take_started_over() {
+            let fresh = rows.split_off(at.min(rows.len()));
+            self.start_over(rows);
+            rows = fresh;
+            header = header.map(|rows| rows.start - at..rows.end - at);
+            for (rows, _) in &mut prompts {
+                *rows = rows.start - at..rows.end - at;
+            }
+        } else if rows.is_empty() && redrawn.is_none() {
             return false;
         }
         if let Some(scrollback) = self.scrollback.as_mut() {
+            let printed_header = header.is_some();
+            let changed = redrawn.is_some();
             scrollback.mark_prompts(prompts);
             scrollback.push(rows, header);
             if let Some(lines) = redrawn {
                 scrollback.replace_header(lines);
             }
+            if printed_header {
+                self.header_printed(now);
+            } else if changed {
+                self.header_changed(now);
+            }
             return true;
         }
         match header {
-            Some(header) => self.terminal.insert_marked_history(rows, header),
+            Some(header) => {
+                self.terminal.insert_marked_history(rows, header);
+                self.header_printed(now);
+            }
             None => self.terminal.insert_history(rows),
         }
         if let Some(lines) = redrawn {
             self.terminal.redraw_marked(lines);
+            self.header_changed(now);
         }
         true
+    }
+
+    /// `/clear` starts the screen over after `last`, the old screen's last rows. The full
+    /// screen forgets what it printed; the inline one sends what it showed up into the
+    /// terminal's scrollback, as a start does, and keeps the scrollback.
+    fn start_over(&mut self, last: Vec<Line<'static>>) {
+        if let Some(scrollback) = self.scrollback.as_mut() {
+            let holds_still = scrollback.holds_still;
+            *scrollback = Scrollback::new();
+            scrollback.holds_still = holds_still;
+            return;
+        }
+        if !last.is_empty() {
+            self.terminal.insert_history(last);
+        }
+        self.terminal.turn_page();
     }
 
     fn draw_inline(&mut self, now: Instant, state: Option<&AppState>) -> io::Result<()> {
@@ -859,6 +916,9 @@ impl<W: Write> Ui<W> {
         } else {
             self.model.bottom.next_change(&ctx)
         };
+        if let Some(frame) = self.next_mascot_frame(now) {
+            next = Some(next.map_or(frame, |at| at.min(frame)));
+        }
         if self.model.history.is_animating() {
             // A running call's bullet blinks on this beat; held still, only seconds tick.
             let period = if self.theme.reduced_motion {

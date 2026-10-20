@@ -30,7 +30,7 @@ pub fn capabilities_for(adapter: &dyn Adapter) -> RunnerCapabilities {
         },
         native_limit_cap: id == CLAUDE_CODE,
         take_over: adapter
-            .interactive_resume("probe-session", Path::new("/"))
+            .interactive_resume(&SessionRequest::reopening("probe-session", Path::new("/")))
             .is_some(),
         can_build: builds(adapter),
         status_tool: id == CLAUDE_CODE || driven,
@@ -62,24 +62,33 @@ pub fn steer_support(adapter: &dyn Adapter) -> SteerSupport {
     }
 }
 
-fn probe_request() -> SessionRequest {
-    SessionRequest {
+/// A launch the adapter accepts, to ask it what else it can do: with the CLI's own default
+/// model, else with the model its live tests use, since a CLI may take a model only in a form
+/// of its own (OpenCode's `provider/model`) and refuse an invented one. It also has what a real
+/// launch has: agy a scratch directory for its agent file, and Claude Code one outside the
+/// worktree.
+fn probe_request(adapter: &dyn Adapter) -> SessionRequest {
+    let with = |model: Option<&str>| SessionRequest {
         workdir: PathBuf::from("/probe/work"),
         prompt: "x".to_owned(),
-        // What a real launch has, since adapters refuse one without: Codex a model, agy a
-        // scratch directory for its agent file, and Claude Code one outside the worktree.
-        model: Some("probe-model".to_owned()),
+        model: model.map(str::to_owned),
         scratch_dir: Some(PathBuf::from("/probe/scratch")),
         ..SessionRequest::default()
+    };
+    let default = with(None);
+    if adapter.command(&default).is_ok() {
+        return default;
     }
+    with(Some(adapter.cheapest_model().0))
 }
 
 /// `Adapter::command` is pure, so asking it for a resumed launch shows whether it can resume.
 fn resumes(adapter: &dyn Adapter) -> bool {
-    let fresh = adapter.command(&probe_request());
+    let probe = probe_request(adapter);
+    let fresh = adapter.command(&probe);
     let resumed = adapter.command(&SessionRequest {
         resume_session: Some("probe-session".to_owned()),
-        ..probe_request()
+        ..probe
     });
     match (fresh, resumed) {
         (Ok(fresh), Ok(resumed)) => fresh.args != resumed.args || fresh.stdin != resumed.stdin,
@@ -91,7 +100,7 @@ fn resumes(adapter: &dyn Adapter) -> bool {
 fn forks(adapter: &dyn Adapter) -> bool {
     let resumed = SessionRequest {
         resume_session: Some("probe-session".to_owned()),
-        ..probe_request()
+        ..probe_request(adapter)
     };
     let forked = SessionRequest {
         fork_session: true,
@@ -108,7 +117,7 @@ fn builds(adapter: &dyn Adapter) -> bool {
         .command(&SessionRequest {
             role: SessionRole::Build,
             goal_hash: Some("probe".to_owned()),
-            ..probe_request()
+            ..probe_request(adapter)
         })
         .is_ok()
 }
@@ -136,14 +145,34 @@ mod tests {
         assert!(!capabilities_for(&one_shot).resume);
     }
 
+    /// Each built-in CLI resumes its sessions, builds, and opens its own screen to take one
+    /// over, OpenCode included, whose models are named only as `provider/model`.
     #[test]
-    fn agents_resume_their_sessions() {
-        let agy = capabilities_for(&argonauts_adapter_antigravity_cli::AntigravityCli);
-        assert!(agy.resume);
-        let claude = capabilities_for(&argonauts_adapter_claude_code::ClaudeCodeAdapter);
-        assert!(claude.resume);
-        let codex = capabilities_for(&argonauts_adapter_codex::CodexAdapter);
-        assert!(codex.resume);
+    fn every_built_in_cli_passes_the_checks_it_should() {
+        let opencode = argonauts_adapter_opencode::OpenCodeAdapter::new();
+        let clis: [(&str, &dyn Adapter); 4] = [
+            ("agy", &argonauts_adapter_antigravity_cli::AntigravityCli),
+            (
+                "Claude Code",
+                &argonauts_adapter_claude_code::ClaudeCodeAdapter,
+            ),
+            ("Codex", &argonauts_adapter_codex::CodexAdapter),
+            ("OpenCode", &opencode),
+        ];
+        for (name, adapter) in clis {
+            let can = capabilities_for(adapter);
+            assert!(can.resume, "{name} resumes");
+            assert!(can.can_build, "{name} builds");
+            assert!(can.take_over, "{name} can be taken over");
+            assert_ne!(can.steer, SteerSupport::NextTurnOnly, "{name} steers");
+        }
+    }
+
+    #[test]
+    fn an_invented_model_never_decides_what_a_cli_can_do() {
+        let opencode = argonauts_adapter_opencode::OpenCodeAdapter::new();
+        assert!(opencode.command(&probe_request(&opencode)).is_ok());
+        assert_eq!(probe_request(&opencode).model, None);
     }
 
     /// Claude Code and Codex copy a session with a flag or a subcommand of their own. A CLI

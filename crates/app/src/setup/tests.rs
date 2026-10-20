@@ -39,7 +39,8 @@ impl Fixture {
         env.agent_session = false;
         env.user_home = Some(repo.user_home().to_owned());
         let env = Arc::new(env);
-        let settings = AppSettings::load(&env, Vec::new(), interactive).unwrap();
+        let flags = crate::controller::test_support::quiet_local_servers(Vec::new());
+        let settings = AppSettings::load(&env, flags, interactive).unwrap();
         let (plan_usage, health) = argonauts_conductor::boards(&paths);
         let services = AppServices {
             conductor: Arc::new(FakeConductor::default()),

@@ -21,6 +21,7 @@ use argonauts_core::registry::listed::nearest_listed;
 use argonauts_core::registry::{
     LaunchHints, ModelAccess, ModelRegistry, RegistryKind, effort_to_run,
 };
+use argonauts_core::runtimes::runtime;
 use argonauts_core::session_runner::{Access, Asking, RunnerError, SessionSpec, SteerSupport};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::UserHooks;
@@ -157,6 +158,7 @@ pub fn session_request(
             extra_args.extend([FALLBACK_MODEL.to_owned(), models.join(",")]);
         }
     }
+    let window = server_window(&runs, launch.as_ref(), registry);
     Ok(SessionRequest {
         workdir: spec.workdir.clone(),
         prompt,
@@ -165,12 +167,20 @@ pub fn session_request(
         effort,
         role: session_role(spec.access),
         auth: agent.map(|agent| agent.auth).unwrap_or_default(),
-        // Codex refuses any other shape, and every CLI takes this one.
+        // Claude Code checks the answer itself and gives up after a few misses, so it gets the
+        // format as written, a field with a default left optional. Codex refuses any shape but
+        // the strict one, and the other CLIs take it too.
         json_schema: spec
             .json_schema
             .as_ref()
             .filter(|_| !by_tool)
-            .map(answer_format::strict),
+            .map(|format| {
+                if id == CLAUDE_CODE {
+                    answer_format::written(format)
+                } else {
+                    answer_format::strict(format)
+                }
+            }),
         resume_session: spec.resume.clone(),
         fork_session: spec.fork,
         // Claude Code's cap ignores what earlier runs of a resumed session spent, so it gets only
@@ -213,9 +223,32 @@ pub fn session_request(
         background_off: spec.cli_workflow.background_off,
         shell: spec.shell.clone(),
         preferences: spec.preferences.clone(),
+        // The launch reads the installed version and asks for the config where the adapter
+        // needs them, and sets these.
+        cli_version: None,
+        cli_config: None,
+        window,
         workflow_size: Some(settings.workflow_size),
         standing_note: standing.filter(|_| takes_a_note),
         autopilot: spec.autopilot,
+    })
+}
+
+/// The window the model's server holds it to: the registry's word on the model itself, else on
+/// the server's own model a CLI's route names, as OpenCode's `ollama/<model>` names Ollama's.
+fn server_window(
+    runs: &ModelRef,
+    launch: Option<&LaunchHints>,
+    registry: Option<&dyn ModelRegistry>,
+) -> Option<u64> {
+    let registry = registry?;
+    let window = |model: &ModelRef| registry.get(model).and_then(|entry| entry.window);
+    window(runs).or_else(|| {
+        let route = launch
+            .and_then(|launch| launch.provider_model.clone())
+            .or_else(|| runs.model.clone())?;
+        let (server, model) = route.split_once('/')?;
+        window(&ModelRef::new(server, Some(model.to_owned())))
     })
 }
 
@@ -274,6 +307,34 @@ fn is_main_session(spec: &SessionSpec) -> bool {
         )
 }
 
+/// The request a take-over opens `cli_session` with: the model the worker's sessions run and its
+/// launch hints, for a CLI that must be given them again.
+pub fn take_over_request(
+    worker: &ModelRef,
+    cli_session: &str,
+    workdir: &Path,
+    adapter: &dyn Adapter,
+    settings: &Settings,
+    registry: Option<&dyn ModelRegistry>,
+) -> SessionRequest {
+    let launch = launch_hints(worker, registry);
+    let model = model_to_run(worker, launch.as_ref(), adapter, settings, registry)
+        .ok()
+        .flatten();
+    let runs = ModelRef::new(worker.agent.clone(), model.clone());
+    SessionRequest {
+        model,
+        auth: settings
+            .agents
+            .get(&worker.agent)
+            .map(|agent| agent.auth)
+            .unwrap_or_default(),
+        window: server_window(&runs, launch.as_ref(), registry),
+        launch,
+        ..SessionRequest::reopening(cli_session, workdir)
+    }
+}
+
 fn launch_hints(worker: &ModelRef, registry: Option<&dyn ModelRegistry>) -> Option<LaunchHints> {
     registry
         .and_then(|registry| registry.get(worker))
@@ -309,6 +370,11 @@ fn model_to_run(
     if model.is_some() || hinted || !runs_hosted_default(adapter) {
         return Ok(model);
     }
+    // Default is named when it runs a model here, so the session runs what /model says it
+    // does and a level set with it has a model to go inside. A hosted one never runs unnamed.
+    if let Some(default) = local_default(id, registry) {
+        return Ok(Some(default));
+    }
     let local = local_model(id, registry).ok_or_else(|| {
         RunnerError::Refused(format!(
             "{} has no model set, and its own default runs on a hosted service, so the code \
@@ -318,6 +384,36 @@ fn model_to_run(
         ))
     })?;
     Ok(Some(local))
+}
+
+/// The model `cli`'s own Default runs, as its list marks it, when that model runs on this
+/// machine.
+fn local_default(cli: &str, registry: Option<&dyn ModelRegistry>) -> Option<String> {
+    let entry = registry?
+        .list()
+        .into_iter()
+        .find(|entry| entry.id.agent == cli && entry.cli_default)
+        .filter(|entry| entry.access == ModelAccess::Local && !entry.retired)?;
+    entry
+        .launch
+        .and_then(|launch| launch.provider_model)
+        .or(entry.id.model)
+}
+
+/// The model a session of `worker` runs, as [`session_request`] names it: a bare OpenCode as
+/// the local model it runs in place of its hosted default. A CLI left to pick its own, or one
+/// that would be refused, stays as it is.
+pub(super) fn model_run(
+    worker: &ModelRef,
+    adapter: &dyn Adapter,
+    settings: &Settings,
+    registry: Option<&dyn ModelRegistry>,
+) -> ModelRef {
+    let launch = launch_hints(worker, registry);
+    match model_to_run(worker, launch.as_ref(), adapter, settings, registry) {
+        Ok(Some(model)) => ModelRef::new(worker.agent.clone(), Some(model)),
+        _ => worker.clone(),
+    }
 }
 
 /// Why a session of `worker` would be refused before it starts, as [`session_request`]
@@ -342,10 +438,9 @@ fn runs_hosted_default(adapter: &dyn Adapter) -> bool {
 }
 
 /// The first local model OpenCode can run, as its `provider/model`: one of its own entries
-/// marked local, else a model on your Ollama or LM Studio endpoint. Models with tools come
+/// marked local, else a model on one of your local runtimes' endpoints. Models with tools come
 /// first, since most sessions edit files.
 fn local_model(cli: &str, registry: Option<&dyn ModelRegistry>) -> Option<String> {
-    const OPENCODE_LOCAL_PROVIDERS: &[&str] = &["ollama", "lmstudio"];
     let mut found: Vec<(bool, bool, String)> = registry?
         .list()
         .into_iter()
@@ -358,9 +453,7 @@ fn local_model(cli: &str, registry: Option<&dyn ModelRegistry>) -> Option<String
                     .as_ref()
                     .and_then(|launch| launch.provider_model.clone())
                     .unwrap_or_else(|| model.to_owned())
-            } else if entry.kind == RegistryKind::Endpoint
-                && OPENCODE_LOCAL_PROVIDERS.contains(&entry.id.agent.as_str())
-            {
+            } else if entry.kind == RegistryKind::Endpoint && runtime(&entry.id.agent).is_some() {
                 format!("{}/{model}", entry.id.agent)
             } else {
                 return None;
@@ -689,6 +782,31 @@ mod tests {
         );
     }
 
+    /// Claude Code gets the format as written: what it requires, in the order it declares it,
+    /// and an optional field left out of `required` rather than made nullable.
+    #[test]
+    fn claude_code_gets_the_answer_format_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = TestAdapter::new("true").with_id(CLAUDE_CODE);
+        let mut spec = spec_in(dir.path(), dir.path(), "build it");
+        spec.json_schema = Some(argonauts_core::steps::output_schema::<
+            argonauts_core::steps::task::Build,
+        >());
+        let sent = request_for(&claude, &spec).json_schema.unwrap();
+        assert_eq!(
+            sent["required"],
+            json!([
+                "status",
+                "summary",
+                "files_changed",
+                "tests_run",
+                "concerns"
+            ])
+        );
+        assert_eq!(sent["properties"]["answer"]["type"], json!("string"));
+        assert_eq!(sent["additionalProperties"], json!(false));
+    }
+
     /// The main session's tools go to its server by name, and the standing lines go where the
     /// CLI takes such a note. A CLI that gets no tools hears nothing of them.
     #[test]
@@ -782,6 +900,11 @@ mod tests {
             tier: None,
             name: None,
             description: None,
+            window: None,
+            ram_bytes: None,
+            thinking: None,
+            variants: None,
+            listed_cost: false,
         }
     }
 
@@ -835,12 +958,18 @@ mod tests {
         let err = session_request(&spec("opencode-acp"), &opencode, &settings, None).unwrap_err();
         assert!(matches!(err, RunnerError::Refused(_)), "{err}");
 
-        // A local endpoint's model, preferring one with tools; hosted entries never count.
+        // A local runtime's model, preferring one with tools; hosted entries never count, nor
+        // does a server of yours OpenCode has no provider for.
         let registry = StaticRegistry::default();
         let mut hosted = local_entry("openrouter", "z-ai/glm-5", RegistryKind::Endpoint, true);
         hosted.access = ModelAccess::ApiKey;
         registry.add(hosted);
-        registry.add(local_entry("vllm", "qwen3", RegistryKind::Endpoint, true));
+        registry.add(local_entry(
+            "gpu-box",
+            "qwen3",
+            RegistryKind::Endpoint,
+            true,
+        ));
         registry.add(local_entry(
             "ollama",
             "gemma4:e2b",
@@ -894,6 +1023,110 @@ mod tests {
         let other = TestAdapter::new("true");
         let request = session_request(&spec("fake"), &other, &settings, Some(&empty)).unwrap();
         assert_eq!(request.model, None);
+    }
+
+    /// OpenCode's own Default is named when it runs a model here, so the session runs what
+    /// `/model` says Default runs, at a level that model takes. A hosted Default still gives
+    /// way to a local model.
+    #[test]
+    fn opencode_default_is_named_when_it_runs_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = spec_in(dir.path(), dir.path(), "fix it");
+        spec.model = "opencode-acp".parse().unwrap();
+        spec.effort = Some("max".to_owned());
+        let opencode = TestAdapter::new("true")
+            .with_id("opencode-acp")
+            .with_binary("opencode");
+        let settings = Settings::default();
+        let first_local = || {
+            local_entry(
+                "opencode-acp",
+                "ollama/devstral:24b",
+                RegistryKind::Cli,
+                true,
+            )
+        };
+
+        let registry = StaticRegistry::default();
+        registry.add(first_local());
+        let mut default = local_entry(
+            "opencode-acp",
+            "ollama/qwen3-coder:30b-64k",
+            RegistryKind::Cli,
+            true,
+        );
+        default.cli_default = true;
+        default.variants = Some(vec!["low".to_owned(), "high".to_owned()]);
+        registry.add(default);
+        let request = session_request(&spec, &opencode, &settings, Some(&registry)).unwrap();
+        assert_eq!(request.model.as_deref(), Some("ollama/qwen3-coder:30b-64k"));
+        assert_eq!(
+            request.effort.as_deref(),
+            Some("high"),
+            "a level Default's model lacks moves to its nearest"
+        );
+
+        let registry = StaticRegistry::default();
+        registry.add(first_local());
+        let mut hosted = local_entry(
+            "opencode-acp",
+            "opencode/nemotron-3.5-super-vl-free",
+            RegistryKind::Cli,
+            true,
+        );
+        hosted.access = ModelAccess::Subscription;
+        hosted.cli_default = true;
+        registry.add(hosted);
+        let request = session_request(&spec, &opencode, &settings, Some(&registry)).unwrap();
+        assert_eq!(request.model.as_deref(), Some("ollama/devstral:24b"));
+    }
+
+    #[test]
+    fn a_bare_cli_counts_as_the_model_it_runs() {
+        let opencode = TestAdapter::new("true")
+            .with_id("opencode-acp")
+            .with_binary("opencode");
+        let bare: ModelRef = "opencode-acp".parse().unwrap();
+        let registry = StaticRegistry::default();
+        let mut default = local_entry(
+            "opencode-acp",
+            "ollama/qwen3-coder:30b-64k",
+            RegistryKind::Cli,
+            true,
+        );
+        default.cli_default = true;
+        registry.add(default);
+        let settings = Settings::default();
+        assert_eq!(
+            model_run(&bare, &opencode, &settings, Some(&registry)).to_string(),
+            "opencode-acp/ollama/qwen3-coder:30b-64k"
+        );
+
+        // Your setting wins, and one that would be refused stays as it is.
+        let mut chosen = Settings::default();
+        chosen.agents.insert(
+            "opencode-acp".into(),
+            AgentSettings {
+                model: Some("ollama/llama3.2".into()),
+                ..AgentSettings::default()
+            },
+        );
+        assert_eq!(
+            model_run(&bare, &opencode, &chosen, Some(&registry)).to_string(),
+            "opencode-acp/ollama/llama3.2"
+        );
+        let empty = StaticRegistry::default();
+        assert_eq!(model_run(&bare, &opencode, &settings, Some(&empty)), bare);
+
+        // A CLI that picks its own default is left to it.
+        let codex = TestAdapter::new("true")
+            .with_id("codex")
+            .with_binary("codex");
+        let bare_codex: ModelRef = "codex".parse().unwrap();
+        assert_eq!(
+            model_run(&bare_codex, &codex, &settings, Some(&registry)),
+            bare_codex
+        );
     }
 
     /// A fallback reads the refusal before starting anything, in the words a start would give.

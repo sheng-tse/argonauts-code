@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+argonauts-adapter-opencode.workspace = true
 argonauts-core.workspace = true
 regex.workspace = true
 reqwest.workspace = true

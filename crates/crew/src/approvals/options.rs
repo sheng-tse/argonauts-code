@@ -114,6 +114,26 @@ pub fn standard(kind: ApprovalKind) -> Vec<AnswerOption> {
     }
 }
 
+/// The stuck question's options. `keep` offers to keep what a stopped session committed, first,
+/// beside what that work is. Where no other model can take the task, the fallback is the same
+/// model trying again, and says so.
+pub fn stuck(keep: Option<&str>, no_other_model: bool) -> Vec<AnswerOption> {
+    let mut options: Vec<AnswerOption> = keep
+        .map(|detail| AnswerOption {
+            detail: Some(detail.trim().to_owned()).filter(|detail| !detail.is_empty()),
+            ..option('k', "Keep its work", AnswerAction::KeepWork)
+        })
+        .into_iter()
+        .collect();
+    options.extend(standard(ApprovalKind::Stuck).into_iter().map(|mut option| {
+        if no_other_model && option.action == AnswerAction::Fallback {
+            option.label = "Try again on the same model".to_owned();
+        }
+        option
+    }));
+    options
+}
+
 /// One goal question: its answers `a`, `b`, `c`, the recommended one first and marked, then
 /// "Let the main agent decide this and the rest" on the next letter. No answer is typed.
 pub fn goal_question(question: &GoalQuestion) -> Vec<AnswerOption> {

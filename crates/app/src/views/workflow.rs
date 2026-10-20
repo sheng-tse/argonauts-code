@@ -41,7 +41,9 @@ const DEEPEST: usize = 2;
 
 /// The run's own workflow when `workflow` is `None`, else that nested one, or a workflow an
 /// agent's own CLI runs. Before the main agent picks the run's own workflow,
-/// `None` gives the one that runs first, Understand. `None` when the events hold no such workflow.
+/// `None` gives the one that runs first, Understand; a run that switched workflows, as a goal's
+/// rounds or Captain at the plan approval do, shows the newest, as the engine follows it. `None`
+/// when the events hold no such workflow.
 pub(crate) fn workflow_view(
     events: &[RunEvent],
     run: &RunId,
@@ -54,10 +56,8 @@ pub(crate) fn workflow_view(
 /// known yet, so there's no view of it to open.
 pub(crate) fn being_written(events: &[RunEvent]) -> bool {
     let log = WorkflowLog::of(events);
-    log.order
-        .iter()
-        .filter_map(|id| log.workflows.get(id))
-        .find(|facts| facts.parent.is_none())
+    log.newest_top()
+        .and_then(|id| log.workflows.get(id))
         .is_some_and(|facts| !log.shape_known(facts))
 }
 
@@ -87,16 +87,7 @@ fn view_from(
     }
     let id = match workflow {
         Some(id) => id.clone(),
-        None => log
-            .order
-            .iter()
-            .find(|id| {
-                log.workflows
-                    .get(*id)
-                    .is_some_and(|facts| facts.parent.is_none())
-            })
-            .or_else(|| log.order.first())?
-            .clone(),
+        None => log.newest_top().or_else(|| log.order.first())?.clone(),
     };
     let facts = log.workflows.get(&id)?;
     // Nothing of a workflow still being written is drawn.
@@ -299,10 +290,10 @@ pub(crate) fn saved_workflow(
     let log = WorkflowLog::of(events);
     let (id, facts) = match workflow {
         Some(id) => (id, log.workflows.get(id)?),
-        None => log
-            .workflows
-            .iter()
-            .find(|(_, facts)| facts.parent.is_none())?,
+        None => {
+            let id = log.newest_top()?;
+            (id, log.workflows.get(id)?)
+        }
     };
     let name = match (&log.named, facts.parent.is_none()) {
         (Some(named), true) => named.name.clone(),
@@ -857,6 +848,15 @@ impl WorkflowLog {
 
     /// Whether `facts` is the top of what the log holds: the run's own workflow, or before the
     /// main agent picks it, Understand, which runs ahead of it.
+    /// The run's own workflow: the newest that started with no parent.
+    fn newest_top(&self) -> Option<&WorkflowId> {
+        self.order.iter().rev().find(|id| {
+            self.workflows
+                .get(*id)
+                .is_some_and(|facts| facts.parent.is_none())
+        })
+    }
+
     fn is_top(&self, facts: &WorkflowFacts) -> bool {
         facts
             .parent
@@ -1406,6 +1406,65 @@ mod tests {
         event
     }
 
+    /// A run that switched workflows, as a goal's rounds do after the plan, is drawn as the
+    /// newest one: its builds and checks, not the workflow whose plan came before them.
+    #[test]
+    fn a_run_that_switched_workflows_shows_the_newest() {
+        let first = WorkflowId::numbered(1);
+        let rounds = WorkflowId::numbered(2);
+        let session = SessionKey::numbered(1);
+        let events = vec![
+            started(
+                0,
+                &first,
+                None,
+                definition(serde_json::json!({
+                    "name": "fix-slugify",
+                    "phases": [
+                        {"name": "Plan", "standard": "plan", "steps": [{"kind": "draft"}]},
+                        {"name": "Build", "standard": "do", "steps": [{"kind": "build"}]},
+                        {"name": "Merge", "standard": "decide", "steps": [{"kind": "merge"}]}
+                    ]
+                })),
+            ),
+            step_started(1, step(&first, 0, 0), StepKind::Draft, StandardPhase::Plan),
+            step_finished(2, step(&first, 0, 0), StepKind::Draft, StandardPhase::Plan),
+            started(
+                3,
+                &rounds,
+                None,
+                definition(serde_json::json!({
+                    "name": "fix-slugify",
+                    "phases": [
+                        {"name": "Build", "standard": "do", "steps": [{"kind": "build"}]},
+                        {"name": "Check", "standard": "check", "steps": [{"kind": "review"}]}
+                    ]
+                })),
+            ),
+            step_started(4, step(&rounds, 0, 0), StepKind::Build, StandardPhase::Do),
+            placed(
+                5,
+                &session,
+                RoleName::Worker,
+                "opencode",
+                step(&rounds, 0, 0),
+            ),
+        ];
+        let view = workflow_view(&events, &run_id(), None).expect("the run's view");
+        assert_eq!(view.id, rounds);
+        let phases: Vec<&str> = view
+            .phases
+            .iter()
+            .map(|phase| phase.name.as_str())
+            .collect();
+        assert_eq!(phases, ["Build", "Check"]);
+        assert_eq!(view.phases[0].status, RowStatus::Running);
+        assert!(!being_written(&events));
+        // The first one is still there by its id.
+        let earlier = workflow_view(&events, &run_id(), Some(&first)).expect("the first one");
+        assert_eq!(earlier.id, first);
+    }
+
     #[test]
     fn workflow_view_built_from_events() {
         let top = WorkflowId::numbered(1);
@@ -1914,7 +1973,7 @@ mod tests {
         );
     }
 
-    /// A default crew run as the engine records it (`crates/crew/tests/engine_goals.rs`
+    /// A default crew run as the engine records it (`crates/crew/tests/it/engine_goals.rs`
     /// writes it with `ARGONAUTS_RECORD_FIXTURES=1`).
     const DEFAULT_CREW_RUN: &str = include_str!("../../tests/fixtures/runs/default-crew-run.jsonl");
 

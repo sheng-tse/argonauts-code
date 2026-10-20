@@ -18,6 +18,10 @@ use crate::render::RenderCtx;
 use crate::text::{spans_width, str_width, wrap_spans};
 use crate::theme::{Role, Theme};
 
+/// Cells of the screen a table leaves free, as Claude Code leaves them: the answer's 2-cell
+/// indent and 2 at the right.
+const TABLE_SPARE: usize = 4;
+
 /// Renders already sanitized Markdown.
 pub(super) fn render(
     src: &str,
@@ -652,6 +656,7 @@ impl<'a, 'c> Writer<'a, 'c> {
         self.flush_line();
     }
 
+    /// A `---` keeps its line across the width, in the text colour, as table borders are.
     fn rule(&mut self, range: Range<usize>) {
         self.begin_block(range.start);
         let (mut first, _) = self.prefixes();
@@ -660,7 +665,7 @@ impl<'a, 'c> Writer<'a, 'c> {
         let count = cols / str_width(glyph).max(1);
         first.push(Span::styled(
             glyph.repeat(count),
-            self.theme().style(Role::Dim),
+            self.theme().style(Role::Text),
         ));
         self.push_rows([Line::from(first)], range.start);
     }
@@ -723,7 +728,9 @@ impl<'a, 'c> Writer<'a, 'c> {
         let (first, rest) = self.prefixes();
         let at = table.source().start;
         let avail = self.width().saturating_sub(spans_width(&rest));
-        match table.layout(avail, self.theme()) {
+        // As Claude Code leaves 4 cells of the screen spare, the 2-cell indent among them.
+        let room = self.width().saturating_sub(TABLE_SPARE).min(avail);
+        match table.layout(avail, room, self.theme()) {
             Some(rows) => {
                 for (i, row) in rows.into_iter().enumerate() {
                     let mut spans = if i == 0 { first.clone() } else { rest.clone() };

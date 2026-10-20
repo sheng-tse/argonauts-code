@@ -15,12 +15,13 @@ use argonauts_core::events::task::{TaskEvent, TaskState, TryCause};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::fallback::CheckpointTag;
 use argonauts_core::limits::{
-    AgentHealth, Candidate, HealthState, LimitsService, ModelState, PlanUsageBoard,
-    PlanUsageStatus, RecoveryAction, StopContext, Trouble,
+    AgentHealth, Candidate, CandidateQuery, FallbackPlanner, HealthState, LimitsService,
+    ModelState, PlanUsageBoard, PlanUsageStatus, RecoveryAction, StopContext, Trouble,
 };
 use argonauts_core::names::{AgentId, ModelRef, RoleName, SessionKey};
 use argonauts_core::session_runner::{Access, RunnerKind};
 use argonauts_core::settings::Span;
+use argonauts_core::settings::agents::AgentSettings;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::fallback::{
     AgentFallbacks, FallbackEntry, FallbackMode, FallbackRules, FallbackStrategy, FallbackTable,
@@ -29,7 +30,7 @@ use argonauts_core::settings::fallback::{
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit, OnHit};
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::{AgentEvent, ErrorCategory, LimitDimension, Spend, TaskId};
-use argonauts_testkit::FakeDirectory;
+use argonauts_testkit::{FakeDirectory, FakeRunner};
 use tempfile::TempDir;
 use time::OffsetDateTime;
 
@@ -347,6 +348,7 @@ async fn retry_ladder() {
     for reason in [
         EndReason::Stuck {
             watchdog: Watchdog::Inactivity,
+            calls: None,
         },
         EndReason::Crashed {
             message: "exit 139".to_owned(),
@@ -370,6 +372,7 @@ async fn retry_ladder() {
         "claude-code/opus",
         EndReason::Stuck {
             watchdog: Watchdog::Repeat,
+            calls: None,
         },
         &journal.path,
     );
@@ -394,6 +397,129 @@ async fn retry_ladder() {
         }
         other => panic!("expected the task to need you, got {other:?}"),
     }
+}
+
+/// The run that showed it: a crew of one local Qwen on OpenCode, with OpenCode itself set to
+/// that Qwen and the other CLIs off. The bare `opencode` names no model, so it once counted as
+/// another provider's and took the stuck task, only to run the same Qwen again.
+fn one_qwen() -> Fixture {
+    let mut fixture = Fixture::new();
+    let settings = fixture.settings_mut();
+    for cli in ["claude-code", "codex", "antigravity-cli"] {
+        let off = AgentSettings {
+            enabled: false,
+            ..AgentSettings::default()
+        };
+        settings.agents.insert(cli.to_owned(), off);
+    }
+    let opencode = AgentSettings {
+        model: Some("ollama/qwen3-coder:30b-64k".to_owned()),
+        ..AgentSettings::default()
+    };
+    settings.agents.insert("opencode".to_owned(), opencode);
+    settings.crew = [QWEN, "opencode"].into_iter().map(worker).collect();
+    fixture
+        .registry
+        .add(model("opencode", "ollama/qwen3-coder:30b-64k", "alibaba"));
+    fixture
+}
+
+const QWEN: &str = "opencode/ollama/qwen3-coder:30b-64k";
+
+fn repeated() -> EndReason {
+    EndReason::Stuck {
+        watchdog: Watchdog::Repeat,
+        calls: None,
+    }
+}
+
+#[tokio::test]
+async fn a_crew_whose_only_worker_is_one_qwen_asks_instead_of_running_it_again() {
+    let fixture = one_qwen();
+    let shortlist = fixture.planner().shortlist(&CandidateQuery {
+        all_valid: true,
+        ..fixture.query(QWEN)
+    });
+    assert!(names(&shortlist.candidates).is_empty(), "{shortlist:?}");
+    match decide(&fixture.limits(), QWEN, repeated(), &[]).await {
+        RecoveryAction::AskYou { reason } => {
+            assert!(reason.contains("no agent of another provider"), "{reason}");
+        }
+        other => panic!("expected the task to need you, got {other:?}"),
+    }
+}
+
+/// The same crew with OpenCode left unset: its runner names the Qwen its own list marks
+/// Default, so the bare `opencode` is that Qwen too.
+#[tokio::test]
+async fn a_bare_cli_counts_as_the_model_its_runner_names() {
+    let mut fixture = one_qwen();
+    fixture.settings_mut().agents.remove("opencode");
+    let workers = Arc::new(FakeDirectory::new());
+    workers.add(FakeRunner::cli(QWEN, "alibaba"));
+    workers.add(FakeRunner::cli("opencode", "alibaba").running(QWEN));
+    let shortlist = fixture
+        .planner()
+        .with_workers(workers.clone())
+        .shortlist(&CandidateQuery {
+            all_valid: true,
+            ..fixture.query(QWEN)
+        });
+    assert!(names(&shortlist.candidates).is_empty(), "{shortlist:?}");
+    let limits = fixture.limits_with_workers(workers);
+    match decide(&limits, QWEN, repeated(), &[]).await {
+        RecoveryAction::AskYou { reason } => {
+            assert!(reason.contains("no agent of another provider"), "{reason}");
+        }
+        other => panic!("expected the task to need you, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_bare_cli_set_to_another_model_still_takes_the_task() {
+    let mut fixture = one_qwen();
+    fixture.settings_mut().agents.insert(
+        "codex".to_owned(),
+        AgentSettings {
+            model: Some("gpt-5".to_owned()),
+            ..AgentSettings::default()
+        },
+    );
+    fixture.settings_mut().crew = [QWEN, "opencode", "codex"]
+        .into_iter()
+        .map(worker)
+        .collect();
+    fixture.registry.add(model("codex", "gpt-5", "openai"));
+    assert_eq!(
+        fell_back_to(&decide(&fixture.limits(), QWEN, repeated(), &[]).await).0,
+        "codex"
+    );
+}
+
+#[tokio::test]
+async fn a_stuck_task_follows_the_fallback_mode() {
+    let mut fixture = Fixture::with_models();
+    fixture.settings_mut().fallback.mode = FallbackMode::Ask;
+    let plan_of = |action: RecoveryAction| match action {
+        RecoveryAction::Ask(plan) => plan,
+        other => panic!("expected a fallback question, got {other:?}"),
+    };
+    let plan = plan_of(decide(&fixture.limits(), "claude-code/opus", repeated(), &[]).await);
+    assert_eq!(plan.stopped, worker("claude-code/opus"));
+    // Another provider's models, as the ladder would pick from.
+    assert_eq!(
+        names(&plan.candidates),
+        ["codex/gpt-5", "antigravity-cli/gemini-3"]
+    );
+    // Waiting can't help an agent that's still there, so it asks too.
+    fixture.settings_mut().fallback.mode = FallbackMode::Wait;
+    plan_of(decide(&fixture.limits(), "claude-code/opus", repeated(), &[]).await);
+    // Auto, the default, goes on as it did.
+    fixture.settings_mut().fallback.mode = FallbackMode::Auto;
+    assert_eq!(
+        fell_back_to(&decide(&fixture.limits(), "claude-code/opus", repeated(), &[]).await),
+        ("codex/gpt-5".to_owned(), Some(1))
+    );
 }
 
 /// A 401 whose CLI says it's logged in, or says nothing, was passing: the task goes on to the
@@ -923,6 +1049,7 @@ async fn max_fallbacks_asks_you() {
                     try_number,
                     worker: worker("codex/gpt-5"),
                     cause: TryCause::Fallback,
+                    told: Vec::new(),
                 },
             )
         })
@@ -957,6 +1084,7 @@ async fn a_checkpointed_race_is_one_fallback() {
                 try_number,
                 worker: worker(racer),
                 cause: TryCause::Fallback,
+                told: Vec::new(),
             },
         )
     }));
@@ -984,6 +1112,7 @@ fn logged_fallback(task: &str, seq: u64, to: &str) -> RunEvent {
             try_number: 2,
             worker: worker(to),
             cause: TryCause::Fallback,
+            told: Vec::new(),
         },
     )
 }
@@ -1007,6 +1136,7 @@ async fn spread_rotates_an_agents_tasks_across_candidates() {
                         try_number: 1,
                         worker: worker("claude-code/opus"),
                         cause: TryCause::First,
+                        told: Vec::new(),
                     },
                 ),
                 on_task(
@@ -1281,6 +1411,7 @@ fn session_limits_follow_limit_and_watchdogs() {
     assert_eq!(unlimited.max_tool_calls, None);
     assert_eq!(unlimited.inactivity_min, Some(15.0));
     assert_eq!(unlimited.repeat_limit, Some(10));
+    assert_eq!(unlimited.no_progress_calls, Some(8));
 
     let settings = fixture.settings_mut();
     settings.limits.spend.per_task_usd = Some(3.0);
@@ -1330,6 +1461,10 @@ fn session_limits_follow_limit_and_watchdogs() {
     assert_eq!(orchestrator.limit, None);
     assert_eq!(orchestrator.max_minutes, None);
     assert_eq!(orchestrator.inactivity_min, Some(15.0));
+    assert_eq!(
+        orchestrator.no_progress_calls, None,
+        "no task, so no later try"
+    );
 
     // A share that can't be read falls back to the built-in one.
     fixture.settings_mut().limits.spend.soft_stop = f64::NAN;
@@ -1348,6 +1483,7 @@ fn fell_back_to_codex() -> Vec<RunEvent> {
                 try_number: 1,
                 worker: worker("claude-code/opus"),
                 cause: TryCause::First,
+                told: Vec::new(),
             },
         ),
         event(
@@ -1664,6 +1800,7 @@ async fn a_crash_gets_one_fresh_session_where_the_task_may_go() {
     let staying = fixture.limits();
     let stuck = EndReason::Stuck {
         watchdog: Watchdog::Inactivity,
+        calls: None,
     };
     for reason in [crashed(), stuck] {
         let action = decide(&staying, "claude-code/opus", reason.clone(), &[]).await;

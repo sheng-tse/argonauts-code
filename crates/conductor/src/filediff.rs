@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::AgentEvent;
 use argonauts_core::events::session::FileDiff;
+use argonauts_core::patch_files::patched_files;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
@@ -208,6 +209,39 @@ impl FileDiffs {
             )
             .await?;
         Ok(added.finish(path))
+    }
+
+    /// What the worktree holds now, as one number that changes whenever a tracked file's
+    /// content changes, or the files git doesn't track, their sizes or their times do. Reading
+    /// it runs git twice and changes nothing.
+    pub async fn fingerprint(&self) -> io::Result<u64> {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        use std::os::unix::ffi::OsStrExt;
+
+        let status = self
+            .git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+            .await?;
+        if !status.status.success() {
+            return Err(git_failed(&status.stderr));
+        }
+        let tracked = self.git(&[&DIFF[..], &["HEAD"]].concat()).await?;
+        if !tracked.status.success() {
+            return Err(git_failed(&tracked.stderr));
+        }
+        let mut hasher = DefaultHasher::new();
+        status.stdout.hash(&mut hasher);
+        tracked.stdout.hash(&mut hasher);
+        for entry in status.stdout.split(|byte| *byte == 0) {
+            let Some(path) = entry.strip_prefix(b"?? ") else {
+                continue;
+            };
+            let path = self.worktree.join(std::ffi::OsStr::from_bytes(path));
+            if let Ok(meta) = tokio::fs::metadata(&path).await {
+                meta.len().hash(&mut hasher);
+                meta.modified().ok().hash(&mut hasher);
+            }
+        }
+        Ok(hasher.finish())
     }
 
     /// A small command's whole output.
@@ -420,6 +454,11 @@ impl EditTracker {
     }
 }
 
+/// Whether a call writes a file, by the agent's tool name and the path its input names.
+pub fn writes_files(tool: &str, input: &Value) -> bool {
+    !edit_paths(tool, input).is_empty()
+}
+
 /// The paths an edit tool's input names, by the agent's tool name.
 fn edit_paths(tool: &str, input: &Value) -> Vec<String> {
     let at = |keys: &[&str]| -> Vec<String> {
@@ -445,6 +484,17 @@ fn edit_paths(tool: &str, input: &Value) -> Vec<String> {
         "write_to_file" | "replace_file_content" | "multi_replace_file_content" | "sed_file" => {
             at(&["TargetFile", "File", "AbsolutePath"])
         }
+        // OpenCode.
+        "write" | "edit" | "multiedit" => at(&["filePath"]),
+        // OpenCode 2.0.32 names its apply_patch tool `patch`.
+        "patch" | "apply_patch" => input
+            .get("patchText")
+            .and_then(Value::as_str)
+            .map(patched_files)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect(),
         _ => Vec::new(),
     }
 }

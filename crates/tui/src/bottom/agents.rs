@@ -6,6 +6,7 @@
 use std::time::{Duration, Instant};
 
 use argonauts_core::settings::ui::CliInternals;
+use argonauts_core::views::ContextUse;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -108,8 +109,8 @@ pub struct AgentLabel {
 /// for, review debt, and the CLI's own subagents.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RowMarkers {
-    /// Used and cap, in tokens.
-    pub context: Option<(u64, u64)>,
+    /// How full its context is, against its window.
+    pub context: Option<ContextUse>,
     /// The agent it replaced by name, for `↺ for Opus 5.5 on Claude Code`.
     pub fallback_for: Option<String>,
     /// Work a weaker fallback did that still waits for a review.
@@ -741,12 +742,15 @@ fn markers(
             dim,
         )]);
     }
-    if let Some((used, cap)) = markers.context {
-        // Past nine tenths of the cap the session is about to rotate.
-        let near = cap > 0 && used.saturating_mul(10) >= cap.saturating_mul(9);
+    if let Some(context) = markers.context {
+        // Past nine tenths of the way to where it rotates, the session is about to.
+        let near = context.of_cap().is_some_and(|share| share >= 0.9);
         let style = if near { theme.style(Role::Warn) } else { dim };
         notes.push(vec![Span::styled(
-            format!("ctx {}/{}", format::tokens(used), format::tokens(cap)),
+            format!(
+                "ctx {}",
+                format::tokens_of_window(context.used, context.window)
+            ),
             style,
         )]);
     }

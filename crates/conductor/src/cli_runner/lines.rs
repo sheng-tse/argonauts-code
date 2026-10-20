@@ -1,10 +1,10 @@
 //! A session read line by line through the adapter's parser. Messages go in through the open
 //! input where the adapter makes input lines; otherwise the runner waits for the running tool
 //! call, interrupts, and resumes the same CLI session with the message and every flag again.
-//! Open input closes once every turn has its result, so the CLI exits; a message that comes
-//! after that resumes the CLI session once the CLI is done. A message that never goes
-//! out is reported. A message sent mid-turn is a turn of its own unless the adapter says it
-//! joins the running one.
+//! Open input closes once every turn has its result and, from a CLI that can count, the count
+//! asked as it ended, so the CLI exits; a message that comes after that resumes the CLI session
+//! once the CLI is done. A message that never goes out is reported. A message sent mid-turn is
+//! a turn of its own unless the adapter says it joins the running one.
 
 use std::collections::BTreeSet;
 use std::io;
@@ -18,17 +18,18 @@ use argonauts_core::events::session::{
     WrapUpVia,
 };
 use argonauts_core::pictures::Picture;
-use argonauts_core::session_runner::{SessionControl, SteerSupport};
+use argonauts_core::session_runner::{SandboxProfile, SessionControl, SteerSupport};
 use argonauts_core::{
-    AgentEvent, ErrorCategory, LimitDimension, MessageStage, StopSignal, StreamParser,
+    AgentEvent, CommandSpec, ErrorCategory, LimitDimension, MessageStage, StopSignal, StreamParser,
 };
 use tokio::sync::mpsc;
 use tokio::time::{Instant as TokioInstant, sleep_until};
 
+use super::after_end;
 use super::context::{Context, Launch};
 use super::end::{EndFacts, classify};
 use super::group::Group;
-use super::launch::{input_event, prompt_text};
+use super::launch::{input_event, keep_launch, prompt_text};
 use super::observe::{Action, Observer, oversized_line};
 use super::outbox::Outbox;
 use super::report_tool;
@@ -45,6 +46,9 @@ const AFTER_KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(5
 /// input closes, the CLI waits for that work only a while (Claude Code ten minutes) and then
 /// stops it.
 const BACKGROUND_WAIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+/// How long a finished turn's input stays open for the count it is asked for as it ends.
+/// Claude Code answers a short count from what it already knows, in milliseconds.
+const COUNT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub async fn run(running: Running, launch: Launch) -> SessionEnd {
     let Running {
@@ -66,6 +70,7 @@ pub async fn run(running: Running, launch: Launch) -> SessionEnd {
             return not_started(reason, started, raw_path);
         }
     };
+    keep_launch(&ctx.spec.session_dir, &launch.record);
     out.session(input_event(
         launch.record.clone(),
         ctx.spec.prompt.clone(),
@@ -125,6 +130,10 @@ struct Live {
     parser: Box<dyn StreamParser>,
     group: Option<Group>,
     launch: LaunchRecord,
+    /// The adapter's command and the sandbox it ran in, for what the parser asks to run once
+    /// the process has ended.
+    unwrapped: CommandSpec,
+    profile: SandboxProfile,
     input_open: bool,
     /// The prompt and every input line since that started a turn of its own.
     turns_sent: u32,
@@ -139,6 +148,10 @@ struct Live {
     background_until: Option<TokioInstant>,
     /// The CLI's own workflows that haven't ended, by id.
     workflows: BTreeSet<String>,
+    /// The turn whose end its count was asked at, by `turns_sent` then.
+    counted_turn: Option<u32>,
+    /// While the input stays open for that count: when it closes without it.
+    count_until: Option<TokioInstant>,
 }
 
 impl Live {
@@ -148,6 +161,8 @@ impl Live {
             parser: ctx.adapter.session_parser(&launch.request),
             group: Some(group),
             launch: launch.record.clone(),
+            unwrapped: launch.unwrapped.clone(),
+            profile: launch.profile.clone(),
             input_open: launch.command.keep_stdin_open,
             turns_sent: 1,
             exited: false,
@@ -157,6 +172,8 @@ impl Live {
             background: 0,
             background_until: None,
             workflows: BTreeSet::new(),
+            counted_turn: None,
+            count_until: None,
         }
     }
 }
@@ -209,6 +226,7 @@ impl Lines {
             let stop_at = self.stopping.as_ref().and_then(Stopping::next_at);
             let drain_at = self.live.drain_until;
             let background_at = self.live.background_until;
+            let count_at = self.live.count_until;
             tokio::select! {
                 event = self.live.process.next_event() => match event {
                     Some(ProcessEvent::Line(line)) => self.line(line),
@@ -227,6 +245,7 @@ impl Lines {
                 () = sleep_until(or_far(background_at)), if background_at.is_some() => {
                     self.background_wait_over();
                 }
+                () = sleep_until(or_far(count_at)), if count_at.is_some() => self.count_wait_over(),
                 () = sleep_until(next_tick) => {
                     next_tick = TokioInstant::now() + every;
                     // A quiet wait on the background isn't the CLI going quiet mid-turn.
@@ -325,6 +344,9 @@ impl Lines {
             {
                 self.joining.retain(|waiting| waiting != uuid);
             }
+            if matches!(event, AgentEvent::ContextBreakdown { .. }) {
+                self.live.count_until = None;
+            }
             if let AgentEvent::BackgroundTasks { running, ended } = &event {
                 self.background_changed(running.len(), *ended);
             }
@@ -380,6 +402,12 @@ impl Lines {
     /// resumed process.
     async fn process_ended(&mut self) -> bool {
         self.exit = self.live.exit.as_ref().map_or((None, None), exit_parts);
+        if let Some(command) = self.live.parser.after_end(&self.live.unwrapped) {
+            let printed = after_end::run(&self.ctx, command, &self.live.profile).await;
+            for event in self.live.parser.read_after_end(printed.as_deref()) {
+                let _ = self.obs.event(event);
+            }
+        }
         for event in self.live.parser.finish(self.exit.0) {
             // The process is gone, so limits have nothing left to act on.
             let _ = self.obs.event(event);
@@ -460,6 +488,7 @@ impl Lines {
                 return false;
             }
         };
+        keep_launch(&self.ctx.spec.session_dir, &launch.record);
         announce(
             &self.out,
             &items,
@@ -527,6 +556,8 @@ impl Lines {
             }
             Some(SessionControl::WatchContext(detail)) => self.obs.watch_context(detail),
             Some(SessionControl::StopTurn) => self.stop_turn(),
+            Some(SessionControl::Asking) => self.obs.asking(true),
+            Some(SessionControl::Answered) => self.obs.asking(false),
             Some(SessionControl::StopSubagent { id }) => {
                 let line = self.live.parser.stop_subagent_line(&id);
                 if !self.write_control(line) {
@@ -792,12 +823,17 @@ impl Lines {
     }
 
     fn wrap_up(&mut self, dimension: Option<LimitDimension>) {
+        self.send_wrap_up(|via| Pending::wrap_up(dimension, via));
+    }
+
+    /// The one wrap-up a session gets, whichever asked for it.
+    fn send_wrap_up(&mut self, wrap_up: impl Fn(WrapUpVia) -> Pending) {
         if self.wrap_up_sent {
             return;
         }
         match self.steer {
             SteerSupport::Input => {
-                if self.write_input(vec![Pending::wrap_up(dimension, WrapUpVia::Input)]) {
+                if self.write_input(vec![wrap_up(WrapUpVia::Input)]) {
                     self.wrap_up_sent = true;
                 } else if !self.wrap_up_refused {
                     // Not marked sent, so a later wrap-up can still go out.
@@ -808,8 +844,7 @@ impl Lines {
             }
             SteerSupport::InterruptResume if self.ctx.capabilities.resume => {
                 self.wrap_up_sent = true;
-                self.resume_with
-                    .push(Pending::wrap_up(dimension, WrapUpVia::InterruptResume));
+                self.resume_with.push(wrap_up(WrapUpVia::InterruptResume));
                 self.try_interrupt();
             }
             _ => {
@@ -890,9 +925,10 @@ impl Lines {
         for action in actions {
             match action {
                 // The work is done and the CLI is ending on its own.
-                Action::WrapUp(_) | Action::Nudge { .. } if idle => {}
+                Action::WrapUp(_) | Action::CheckAndReport | Action::Nudge { .. } if idle => {}
                 Action::Stop(StopCause::Limit(_) | StopCause::Rotate { .. }) if idle => {}
                 Action::WrapUp(dimension) => self.wrap_up(dimension),
+                Action::CheckAndReport => self.send_wrap_up(|_| Pending::check_and_report()),
                 Action::Nudge { call, times } => self.nudge(call, times),
                 Action::Stop(cause) => self.begin_stop(cause),
                 Action::AskContext(detail) => self.ask_context(detail),
@@ -925,10 +961,36 @@ impl Lines {
                 self.report_asked = true;
                 self.write_input(vec![Pending::report_asked()]);
             } else if self.live.input_open {
-                self.live.process.close_input();
-                self.live.input_open = false;
+                self.close_input_after_count();
             }
         }
+    }
+
+    /// Every turn is counted once as it ends, in short, before its input closes, so the
+    /// screen and the record keep what fills the session though nothing showed it while it
+    /// ran. The input closes when the count comes, or when the wait for it is over. A CLI that
+    /// can't count closes at once.
+    fn close_input_after_count(&mut self) {
+        if self.live.count_until.is_some() {
+            return;
+        }
+        if self.live.counted_turn != Some(self.live.turns_sent) {
+            self.live.counted_turn = Some(self.live.turns_sent);
+            let line = self.ctx.adapter.context_usage_line(ContextDetail::Summary);
+            if self.write_control(line) {
+                self.obs.asked_context();
+                self.live.count_until = Some(TokioInstant::now() + COUNT_WAIT);
+                return;
+            }
+        }
+        self.live.process.close_input();
+        self.live.input_open = false;
+    }
+
+    /// The count asked at the turn's end didn't come in time, so the input closes without it.
+    fn count_wait_over(&mut self) {
+        self.live.count_until = None;
+        self.after_events(Vec::new());
     }
 
     fn holds_report(&mut self, event: &AgentEvent) -> bool {

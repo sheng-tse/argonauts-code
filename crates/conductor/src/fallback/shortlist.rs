@@ -12,7 +12,7 @@ use argonauts_core::limits::{
 };
 use argonauts_core::names::{AgentId, ModelRef, RoleName};
 use argonauts_core::registry::{ModelAccess, ModelRegistry};
-use argonauts_core::session_runner::RunnerDirectory;
+use argonauts_core::session_runner::{RunnerDirectory, model_run};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::fallback::{AppliedFallback, FallbackEntry, FallbackStrategy, Pick};
 use globset::{Glob, GlobSetBuilder};
@@ -31,6 +31,13 @@ pub struct Sources<'a> {
     pub slots: Option<&'a dyn FreeSlots>,
     /// Says which CLIs would refuse to start. Without it, every one is taken to start.
     pub workers: Option<&'a dyn RunnerDirectory>,
+}
+
+impl Sources<'_> {
+    /// The model a session of `model` runs, as its runner names it where there are runners.
+    pub fn runs(&self, model: &ModelRef) -> ModelRef {
+        model_run(self.workers, self.settings, model)
+    }
 }
 
 /// Why a candidate was left out, for the fallback question's "relax the rule" option.
@@ -102,12 +109,17 @@ pub fn check(
             model.agent
         )));
     }
-    if let Some(why) = sources
-        .workers
-        .and_then(|workers| workers.get(model).ok())
-        .and_then(|runner| runner.start_refusal())
-    {
+    let runner = sources.workers.and_then(|workers| workers.get(model).ok());
+    if let Some(why) = runner.as_ref().and_then(|runner| runner.start_refusal()) {
         return Err(Dropped::WontStart(why));
+    }
+    // A worker takes over the task's build, which a model on a server, with no tools, can't do.
+    if query.role == RoleName::Worker
+        && runner.is_some_and(|runner| !runner.capabilities().can_build)
+    {
+        return Err(Dropped::WontStart(format!(
+            "{model} has no tools, so it can't take over a build"
+        )));
     }
     let agent_id = model.agent_id();
     let health = sources.health.state(&agent_id);
@@ -154,7 +166,9 @@ pub fn check(
     {
         return Err(Dropped::Retired);
     }
-    let provider = sources.registry.provider(model);
+    // The provider of the model it runs, so a bare CLI counts as the model it runs.
+    let provider_of = |model: &ModelRef| sources.registry.provider(&sources.runs(model));
+    let provider = provider_of(model);
     if query.exclude_providers.contains(&provider) {
         return Err(Dropped::BreaksRule(format!(
             "{model} is of the {provider} provider, which this task excludes"
@@ -162,7 +176,7 @@ pub fn check(
     }
     if query.role == RoleName::Reviewer {
         if let Some(worker) = &query.task.worker
-            && sources.registry.provider(worker) == provider
+            && provider_of(worker) == provider
         {
             return Err(Dropped::BreaksRule(format!(
                 "{model} is of the author's provider ({provider}), so it can't review"
@@ -286,11 +300,15 @@ fn entries(
                 .map(|entry| FallbackEntry::Model(entry.id)),
         );
     }
-    let mut seen: Vec<ModelRef> = vec![query.stopped.clone()];
+    // Refs that run the same model are one candidate, and one that runs the stopped model is
+    // none: it would only run that model again.
+    let runs = |model: &ModelRef| sources.runs(model);
+    let mut seen: Vec<ModelRef> = vec![runs(&query.stopped)];
     list.retain(|entry| {
-        let fresh = !seen.contains(entry.model());
+        let model = runs(entry.model());
+        let fresh = !seen.contains(&model);
         if fresh {
-            seen.push(entry.model().clone());
+            seen.push(model);
         }
         fresh
     });
@@ -564,6 +582,29 @@ mod tests {
         assert_eq!(
             check(&opencode, &query, &sources),
             Err(Dropped::WontStart(no_model.to_owned()))
+        );
+    }
+
+    /// A model on a server answers with no tools, so it never takes over a build, though it
+    /// may still review.
+    #[test]
+    fn a_model_with_no_tools_never_takes_over_a_build() {
+        let mut fixture = Fixture::new();
+        fixture.settings_mut().fallback.order = list(&["ollama/gemma3:12b-32k", "antigravity-cli"]);
+        let workers = Arc::new(argonauts_testkit::FakeDirectory::new());
+        workers.add(FakeRunner::endpoint("ollama/gemma3:12b-32k", "ollama"));
+        workers.add(FakeRunner::cli("antigravity-cli", "google"));
+        let planner = fixture.planner().with_workers(workers);
+        let query = fixture.query("opencode/ollama/qwen3-coder:30b-64k");
+        assert_eq!(picked_with(&planner, &query), ["antigravity-cli"]);
+        let review = CandidateQuery {
+            role: RoleName::Reviewer,
+            ..query
+        };
+        assert!(
+            picked_with(&planner, &review)
+                .iter()
+                .any(|picked| picked == "ollama/gemma3:12b-32k")
         );
     }
 

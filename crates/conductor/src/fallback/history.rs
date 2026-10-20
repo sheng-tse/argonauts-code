@@ -257,6 +257,7 @@ mod tests {
             try_number: 1,
             worker: worker("codex/gpt-5"),
             cause: TryCause::First,
+            told: Vec::new(),
         });
         let events = [
             event(Some(TASK), Some(1), first_try.clone()),
@@ -300,6 +301,7 @@ mod tests {
             try_number: n,
             worker: worker(to),
             cause,
+            told: Vec::new(),
         })
     }
 

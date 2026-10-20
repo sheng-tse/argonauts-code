@@ -9,6 +9,8 @@ pub mod highlight;
 mod list;
 pub mod stream;
 mod table;
+#[cfg(test)]
+mod table_golden;
 mod writer;
 
 use ratatui::style::Style;

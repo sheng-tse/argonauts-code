@@ -8,6 +8,7 @@ use argonauts_core::events::task::{TaskKind, TaskLimit, TaskSpec};
 use argonauts_core::limits::{CandidateQuery, PlanUsageReading, PlanUsageSource, PlanUsageStatus};
 use argonauts_core::names::{AgentId, ModelRef, RoleName};
 use argonauts_core::registry::{CostModel, CostUnit, ModelAccess, ModelEntry, RegistryKind};
+use argonauts_core::session_runner::RunnerDirectory;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::fallback::FallbackEntry;
 use argonauts_core::{RunId, TaskId};
@@ -86,6 +87,18 @@ impl Fixture {
         .with_registry(self.registry.clone())
     }
 
+    /// [`Fixture::limits`] with `workers` known to its planner too, as the services give them.
+    pub fn limits_with_workers(&self, workers: Arc<dyn RunnerDirectory>) -> Limits {
+        Limits::new(
+            Arc::new(self.settings.clone()),
+            self.plan_usage.clone(),
+            self.health.clone(),
+            Arc::new(self.planner().with_workers(workers.clone())),
+        )
+        .with_registry(self.registry.clone())
+        .with_workers(workers)
+    }
+
     /// The worker of [`TASK`] stopped on `stopped`.
     pub fn query(&self, stopped: &str) -> CandidateQuery {
         CandidateQuery {
@@ -143,6 +156,11 @@ pub fn model(agent_id: &str, model: &str, provider: &str) -> ModelEntry {
         tier: None,
         name: None,
         description: None,
+        window: None,
+        ram_bytes: None,
+        thinking: None,
+        variants: None,
+        listed_cost: false,
     }
 }
 

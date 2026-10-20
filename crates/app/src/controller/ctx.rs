@@ -71,6 +71,15 @@ pub(crate) enum Internal {
     Shell(super::shell::ShellUpdate),
     /// The CLIs' model lists were read again.
     ModelsRefreshed,
+    /// One CLI's or endpoint's model list was read again.
+    ModelSourceListed {
+        cli: String,
+    },
+    /// While `/model`'s picker is open: time to ask the local servers again.
+    ModelsTick,
+    /// What this machine gives models and what the local ones take, or nothing where it
+    /// couldn't be read.
+    MemoryRead(Option<Box<super::settings::memory_facts::Reading>>),
     /// The workflow file `/workflow edit` watches was saved.
     WorkflowSaved {
         name: String,

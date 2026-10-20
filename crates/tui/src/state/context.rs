@@ -13,6 +13,18 @@ pub struct ContextCount {
     pub counted: OffsetDateTime,
 }
 
+/// The conversation session's last step as its CLI said it, for a CLI that says how full its
+/// context is and nothing of what fills it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LastStep {
+    /// When its CLI last said how full the session is, by the wall clock.
+    pub at: Option<OffsetDateTime>,
+    /// What the step read from cache, of all it read.
+    pub cached: u64,
+    /// What it wrote, reasoning included.
+    pub output: u64,
+}
+
 /// How many of the last turns the average is taken over.
 const TURNS_KEPT: usize = 8;
 

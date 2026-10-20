@@ -48,14 +48,23 @@ pub(super) struct Summary {
     pub covers: usize,
 }
 
+/// Who reads the conversation so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Reader<'a> {
+    /// A CLI session that can't resume the conversation's own, which can open the transcript.
+    Session { transcript: &'a Path },
+    /// A model on a server, which never had a session and has no tools to read a file with.
+    Model,
+}
+
 /// The conversation so far, for a session that can't resume it: `summary` when there is one, the
 /// last `recent` exchanges in full (every one with `None`) and any the summary doesn't cover, and
-/// the transcript's path.
+/// for a session the transcript's path.
 pub(super) fn excerpt(
     history: &[Exchange],
     summary: Option<&Summary>,
     recent: Option<usize>,
-    transcript: &Path,
+    reader: Reader<'_>,
 ) -> Option<InputPart> {
     if history.is_empty() {
         return None;
@@ -65,10 +74,13 @@ pub(super) fn excerpt(
     if let Some(summary) = summary {
         full_from = full_from.min(summary.covers);
     }
-    let mut text = String::from(
-        "This conversation began in another session, which this one can't resume. What was said so \
-         far:\n",
-    );
+    let mut text = String::from(match reader {
+        Reader::Session { .. } => {
+            "This conversation began in another session, which this one can't resume. What was \
+             said so far:\n"
+        }
+        Reader::Model => "What was said in this conversation so far:\n",
+    });
     if let Some(summary) = summary {
         text.push_str(&format!(
             "\nA summary of its first {}, written by {}:\n\n{}\n",
@@ -98,11 +110,13 @@ pub(super) fn excerpt(
             exchange.answer.trim()
         ));
     }
-    text.push_str(&format!(
-        "\nThe whole conversation is recorded in {}, one JSON event per line. Read it when you \
-         need more than this.\n",
-        transcript.display()
-    ));
+    if let Reader::Session { transcript } = reader {
+        text.push_str(&format!(
+            "\nThe whole conversation is recorded in {}, one JSON event per line. Read it when \
+             you need more than this.\n",
+            transcript.display()
+        ));
+    }
     Some(turn::part(
         InputPartKind::Fallback,
         "conversation so far",
@@ -134,4 +148,45 @@ pub(super) fn cut(text: &str, chars: usize) -> String {
     let mut short: String = text.chars().take(chars).collect();
     short.push('…');
     short
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn history() -> Vec<Exchange> {
+        let answer = |text: &str| TurnReply::Answer {
+            markdown: text.to_owned(),
+        };
+        vec![
+            Exchange::new("What's the code word?".to_owned(), &answer("PELICAN")),
+            Exchange::new("And again?".to_owned(), &answer("Still PELICAN")),
+        ]
+    }
+
+    #[test]
+    fn a_session_hears_it_began_elsewhere_and_where_the_transcript_is() {
+        let transcript = Path::new("/home/me/.argonauts/state/c-1.jsonl");
+        let part = excerpt(&history(), None, None, Reader::Session { transcript }).unwrap();
+        assert!(
+            part.text
+                .starts_with("This conversation began in another session")
+        );
+        assert!(part.text.contains("/home/me/.argonauts/state/c-1.jsonl"));
+        assert!(part.text.contains("You answered:\nStill PELICAN"));
+    }
+
+    #[test]
+    fn a_model_on_a_server_hears_the_exchanges_alone() {
+        let part = excerpt(&history(), None, Some(1), Reader::Model).unwrap();
+        assert!(
+            part.text
+                .starts_with("What was said in this conversation so far:\n")
+        );
+        assert!(part.text.contains("You were asked:\nAnd again?"));
+        for never in ["session", "resume", "recorded in", "Read it", ".jsonl"] {
+            assert!(!part.text.contains(never), "{never}: {}", part.text);
+        }
+        assert_eq!(part.label, "conversation so far");
+    }
 }

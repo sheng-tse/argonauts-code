@@ -33,7 +33,7 @@ const MIXED_ON_LIGHT: [f64; SHADES - 1] = [0.35, -0.30, -0.60];
 
 /// The `nth` shade of the color `base` draws in: its own first. Sixteen colors and none have
 /// no shades, so every model draws in its CLI's color and its name tells them apart.
-pub(in crate::overview) fn shade(kit: &Kit<'_>, base: Role, nth: usize) -> Style {
+pub(crate) fn shade(kit: &Kit<'_>, base: Role, nth: usize) -> Style {
     let own = kit.fg(base);
     let theme = kit.theme;
     let nth = nth % SHADES;

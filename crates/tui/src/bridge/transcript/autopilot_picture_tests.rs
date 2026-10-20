@@ -252,15 +252,20 @@ fn autopilot_run() -> Screen {
 }
 
 /// The picture is the two blocks the run leaves for you to review: the worker's finished row
-/// and the closing answer. The worker's calls above its row and the run's own finish line
-/// between the two are the screen's other rows, which the picture leaves out.
+/// and the closing answer. The worker's calls in its row, between its header and its Done
+/// line, and the run's own finish line between the two blocks are the screen's other rows,
+/// which the picture leaves out.
 #[test]
 fn autopilot_the_workers_row_counts_its_decisions_and_the_answer_lists_them() {
     let mut theme = Theme::dark();
     theme.glyphs = Glyphs::UNICODE;
     let mut screen = autopilot_run();
     let worked = screen.printed(&theme);
-    let mut lines = worked[worked.len() - 2..].to_vec();
+    let header = worked
+        .iter()
+        .position(|line| line.to_string().starts_with("● build:due-dates"))
+        .expect("the worker's row");
+    let mut lines = vec![worked[header].clone(), worked[worked.len() - 1].clone()];
     screen.send(false, closing_answer());
     screen.send(
         false,
@@ -282,12 +287,26 @@ fn autopilot_the_workers_row_counts_its_decisions_and_the_answer_lists_them() {
         &as_every_row_reads(PICTURE),
         &as_every_row_reads(COLOURS),
         &theme,
-        &[Unlike {
-            row: 0,
-            cols: (2, 16),
-            why: "an agent's label is bold in the text's colour on every row, as Claude Code \
-                  heads an agent's row; the picture draws this one purple",
-        }],
+        &[
+            Unlike {
+                row: 0,
+                cols: (2, 16),
+                why: "an agent's label reads in the text's colour on every row, as the \
+                      council's rows draw it; the picture draws this one purple",
+            },
+            Unlike {
+                row: 0,
+                cols: (20, 28),
+                why: "an agent's model reads in its shade, as the council's rows draw it, \
+                      where the picture draws it dim",
+            },
+            Unlike {
+                row: 1,
+                cols: (2, 2),
+                why: "the worker's calls print in its row above its Done line, which so \
+                      continues the row with no ⎿ of its own",
+            },
+        ],
     );
     let screen: String = ended.iter().map(|line| format!("{line}\n")).collect();
     assert!(!screen.contains('?'), "nothing is asked: {screen}");

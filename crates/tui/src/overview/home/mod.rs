@@ -308,7 +308,7 @@ impl HomeTab {
         // The period's key comes first, as on every tab that has periods.
         let mut keys = vec![super::periods::CYCLE_HINT];
         if self.level == Level::Tabs {
-            keys.extend(["tab · ←→ tabs", "↓ Overview or Models"]);
+            keys.extend(["tab · ← → tabs", "↓ Overview or Models"]);
         } else {
             if self.sub == SubTab::Models && !self.page.is_empty() {
                 keys.push(self.page.as_str());

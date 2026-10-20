@@ -194,9 +194,11 @@ pub trait StepRunner: Send + Sync {
     ) -> BoxFuture<'_, Result<StepOutcome, StepError>>;
 }
 
-/// The strict JSON Schema for `S::Output`, accepted by every agent's structured output mode.
+/// The JSON Schema for `S::Output` as the type writes it, in the shape every agent's structured
+/// output mode takes. A CLI whose strict mode wants every field required gets
+/// [`crate::answer_format::strict`] of it.
 pub fn output_schema<S: Step>() -> Value {
-    strict_schema(schemars::schema_for!(S::Output).to_value())
+    written_schema(schemars::schema_for!(S::Output).to_value())
 }
 
 impl StepName {
@@ -286,6 +288,23 @@ impl StepName {
 /// becomes `anyOf`, which means the same for the tagged enums schemars writes. A type that
 /// refers to itself keeps its `$ref` from the second level down.
 pub fn strict_schema(schema: Value) -> Value {
+    rewrite(schema, Required::Every)
+}
+
+/// [`strict_schema`]'s subset with each object requiring only what the schema itself requires,
+/// so a field with a default may be left out. Claude Code checks an answer against this shape.
+pub fn written_schema(schema: Value) -> Value {
+    rewrite(schema, Required::AsWritten)
+}
+
+/// Which properties an object lists as required.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Required {
+    Every,
+    AsWritten,
+}
+
+fn rewrite(schema: Value, required: Required) -> Value {
     let mut root = match schema {
         Value::Object(map) => map,
         other => return other,
@@ -297,6 +316,7 @@ pub fn strict_schema(schema: Value) -> Value {
         }
     }
     let mut strict = Strict {
+        required,
         defs,
         expanding: Vec::new(),
         recursive: Map::new(),
@@ -314,6 +334,7 @@ pub fn strict_schema(schema: Value) -> Value {
 const KEPT_KEYWORDS: &[&str] = &["type", "enum", "description"];
 
 struct Strict {
+    required: Required,
     defs: Map<String, Value>,
     /// Definitions being inlined right now, to spot a type that contains itself.
     expanding: Vec<String>,
@@ -335,6 +356,7 @@ impl Strict {
             return self.inline(reference, map);
         }
         let mut out = Map::new();
+        let mut written = names_of(map.get("required"));
         for (key, value) in map {
             match key.as_str() {
                 key if KEPT_KEYWORDS.contains(&key) => {
@@ -376,6 +398,7 @@ impl Strict {
                 "allOf" => {
                     for part in value.as_array().into_iter().flatten() {
                         if let Value::Object(part) = self.node(part) {
+                            written.extend(names_of(part.get("required")));
                             merge_into(&mut out, part);
                         }
                     }
@@ -384,17 +407,23 @@ impl Strict {
             }
         }
         if is_object_schema(&out) {
-            let mut names: Vec<String> = out
+            // In the order the properties are declared, never sorted: a model writes its fields
+            // in this order, and one that writes a report's long `answer` first runs it on into
+            // the fields after it.
+            let names = out
                 .get("properties")
                 .and_then(Value::as_object)
-                .map(|props| props.keys().cloned().collect())
+                .map(|props| {
+                    props
+                        .keys()
+                        .filter(|name| self.required == Required::Every || written.contains(name))
+                        .cloned()
+                        .map(Value::String)
+                        .collect()
+                })
                 .unwrap_or_default();
-            // Sorted, so the schema comes out the same when a dependency turns on serde_json's
-            // `preserve_order`.
-            names.sort();
             out.entry("properties".to_owned())
                 .or_insert_with(|| Value::Object(Map::new()));
-            let names = names.into_iter().map(Value::String).collect();
             out.insert("required".to_owned(), Value::Array(names));
             out.insert("additionalProperties".to_owned(), Value::Bool(false));
         }
@@ -435,6 +464,20 @@ impl Strict {
         self.expanding.pop();
         out
     }
+}
+
+/// The names a `required` list holds.
+fn names_of(required: Option<&Value>) -> Vec<String> {
+    required
+        .and_then(Value::as_array)
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A field that takes any value, as strict modes accept one: the value written as JSON text,
@@ -493,14 +536,20 @@ pub fn summary_line(output: &Value) -> Option<String> {
 /// `argonauts_status`. They're how a session talks to Argonauts Code rather than work it does, so
 /// the screen leaves them out of an agent's activity.
 pub fn is_own_tool(name: &str) -> bool {
-    let normal: String = name
-        .chars()
+    is_report_tool(name) || normal_tool_name(name).ends_with("argonautsstatus")
+}
+
+/// The tool a session sends its report with, under any of [`is_own_tool`]'s names.
+pub fn is_report_tool(name: &str) -> bool {
+    let normal = normal_tool_name(name);
+    matches!(normal.as_str(), "structuredoutput" | "finish") || normal.ends_with("argonautsreport")
+}
+
+fn normal_tool_name(name: &str) -> String {
+    name.chars()
         .filter(|c| c.is_alphanumeric())
         .flat_map(char::to_lowercase)
-        .collect();
-    matches!(normal.as_str(), "structuredoutput" | "finish")
-        || normal.ends_with("argonautsreport")
-        || normal.ends_with("argonautsstatus")
+        .collect()
 }
 
 #[cfg(test)]
@@ -667,8 +716,9 @@ mod tests {
         }
     }
 
+    /// The format Codex gets for `S`.
     fn assert_strict<S: Step>() {
-        let schema = output_schema::<S>();
+        let schema = crate::answer_format::strict(&output_schema::<S>());
         assert_eq!(
             schema["type"],
             "object",
@@ -851,7 +901,7 @@ mod tests {
                           "required": ["x"]}
             }
         });
-        let strict = strict_schema(schema);
+        let strict = strict_schema(schema.clone());
         assert_eq!(
             strict,
             json!({
@@ -870,11 +920,40 @@ mod tests {
                     ]},
                     "tags": {"type": "array", "items": {"type": "string"}}
                 },
-                // Sorted, whatever order serde_json keeps the properties in.
-                "required": ["child", "count", "kind", "note", "tags"],
+                // In the order the properties are declared.
+                "required": ["count", "note", "kind", "child", "tags"],
                 "additionalProperties": false
             })
         );
+        let written = written_schema(schema);
+        assert_eq!(written["required"], json!(["count"]), "{written:#}");
+        assert_eq!(
+            written["properties"]["child"]["anyOf"][0]["required"],
+            json!(["x"])
+        );
+    }
+
+    /// The format as written requires only what the type does, in the order it declares it.
+    #[test]
+    fn the_written_schema_requires_what_the_type_requires() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "notes": {"type": "array", "items": {"type": "string"}, "default": []},
+                "status": {"type": "string"},
+                "part": {"allOf": [{"$ref": "#/$defs/Part"}]}
+            },
+            "required": ["status", "summary"],
+            "$defs": {
+                "Part": {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+                         "required": ["b"]}
+            }
+        });
+        let written = written_schema(schema);
+        assert_eq!(written["required"], json!(["summary", "status"]));
+        assert_eq!(written["additionalProperties"], json!(false));
+        assert_eq!(written["properties"]["part"]["required"], json!(["b"]));
     }
 
     #[test]
@@ -915,8 +994,10 @@ mod tests {
         assert!(!jsonschema::validator_for(&schema).unwrap().is_valid(&wrong));
     }
 
+    /// Claude Code may leave out the lists with a default, and the long answer, and Codex is
+    /// asked for each of them, `answer` last.
     #[test]
-    fn a_report_without_the_newer_lists_still_parses_and_the_schema_asks_for_them() {
+    fn a_report_without_the_newer_lists_still_parses_and_only_codex_is_asked_for_them() {
         let old = json!({
             "status": "done",
             "summary": "built it",
@@ -927,9 +1008,30 @@ mod tests {
         let report: task::TaskReport = serde_json::from_value(old).unwrap();
         assert!(report.questions.is_empty() && report.memory_proposals.is_empty());
         let schema = output_schema::<task::Build>();
-        let required = schema["required"].as_array().unwrap();
-        for field in ["questions", "change_requests", "memory_proposals"] {
-            assert!(required.iter().any(|name| name == field), "{field}");
-        }
+        assert_eq!(
+            schema["required"],
+            json!([
+                "status",
+                "summary",
+                "files_changed",
+                "tests_run",
+                "concerns"
+            ])
+        );
+        let strict = crate::answer_format::strict(&schema);
+        assert_eq!(
+            strict["required"],
+            json!([
+                "status",
+                "summary",
+                "files_changed",
+                "tests_run",
+                "concerns",
+                "questions",
+                "change_requests",
+                "memory_proposals",
+                "answer"
+            ])
+        );
     }
 }

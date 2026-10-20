@@ -44,8 +44,26 @@ impl Default for AgentSettings {
     }
 }
 
+impl super::Settings {
+    /// The model `worker` really runs: its own, else `agents.<id>.model`. A bare CLI with
+    /// neither runs its CLI's own default, which settings can't name, so it stays bare. Two
+    /// refs that run the same model are one fallback: a bare `opencode` whose OpenCode is set to
+    /// the Qwen that stopped would only run that Qwen again.
+    pub fn model_run_by(&self, worker: &crate::names::ModelRef) -> crate::names::ModelRef {
+        let configured = || {
+            let agent = self.agents.get(&worker.agent)?;
+            agent.model.clone()
+        };
+        match worker.model.is_none().then(configured).flatten() {
+            Some(model) => crate::names::ModelRef::new(worker.agent.clone(), Some(model)),
+            None => worker.clone(),
+        }
+    }
+}
+
 /// One OpenAI-compatible endpoint, `[endpoints.<id>]`. Built-in ids with known URLs:
-/// `openrouter`, `ollama`, `lmstudio`; anything else needs `base_url`.
+/// `openrouter` and the local runtimes `ollama`, `lmstudio`, `llamacpp` and `vllm`; anything
+/// else needs `base_url`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct EndpointSettings {
@@ -59,7 +77,13 @@ pub struct EndpointSettings {
     /// Moving work to a paid API needs your OK unless this is set.
     pub allow_api_billing: bool,
     pub timeout: Span,
-    pub max_concurrency: u32,
+    /// Most requests the server takes at once, counted across every model on it and every
+    /// process. Unset, a local runtime takes its own number and any other endpoint 4.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_concurrency: Option<u32>,
+    /// Free the models Argonauts Code loaded on this server once nothing uses them. Only a
+    /// local runtime that can let one go does.
+    pub free_memory: bool,
     /// Header names mapped to environment variable names that hold their values.
     pub header_env: BTreeMap<String, String>,
 }
@@ -74,7 +98,8 @@ impl Default for EndpointSettings {
             local: false,
             allow_api_billing: false,
             timeout: Span::new("5m"),
-            max_concurrency: 4,
+            max_concurrency: None,
+            free_memory: true,
             header_env: BTreeMap::new(),
         }
     }
@@ -103,11 +128,17 @@ pub enum StructuredMode {
 pub struct RegistrySettings {
     /// Run discovery at `argonauts setup` and `/config models`.
     pub discover: bool,
+    /// Discovery also asks the model servers it knows on this computer, such as Ollama and LM
+    /// Studio, whenever they answer, with or without an `[endpoints.<id>]` table.
+    pub local_servers: bool,
 }
 
 impl Default for RegistrySettings {
     fn default() -> Self {
-        Self { discover: true }
+        Self {
+            discover: true,
+            local_servers: true,
+        }
     }
 }
 
@@ -160,4 +191,31 @@ pub enum Share {
     StatusOnly,
     /// Also short, sanitized agent text in fields named `agent_text`.
     Summaries,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::names::ModelRef;
+    use crate::settings::Settings;
+
+    use super::AgentSettings;
+
+    #[test]
+    fn a_bare_cli_runs_the_model_its_settings_name() {
+        let mut settings = Settings::default();
+        let qwen = ModelRef::new("opencode", Some("ollama/qwen3-coder:30b-64k".into()));
+        let bare = ModelRef::new("opencode", None);
+        assert_eq!(settings.model_run_by(&bare), bare);
+        settings.agents.insert(
+            "opencode".into(),
+            AgentSettings {
+                model: Some("ollama/qwen3-coder:30b-64k".into()),
+                ..AgentSettings::default()
+            },
+        );
+        assert_eq!(settings.model_run_by(&bare), qwen);
+        assert_eq!(settings.model_run_by(&qwen), qwen);
+        let llama = ModelRef::new("opencode", Some("ollama/llama3.2".into()));
+        assert_eq!(settings.model_run_by(&llama), llama);
+    }
 }

@@ -1,6 +1,6 @@
 //! The adapter a manifest describes.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -108,6 +108,10 @@ impl Adapter for ManifestAdapter {
         self.tested_versions
     }
 
+    fn talks_to_own_server(&self, _req: &SessionRequest) -> bool {
+        self.manifest.own_server
+    }
+
     /// A manifest names no model, so there is no cheapest one.
     fn cheapest_model(&self) -> (&'static str, Option<&'static str>) {
         ("<model>", None)
@@ -152,10 +156,11 @@ impl Adapter for ManifestAdapter {
         }
     }
 
-    fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
+    fn interactive_resume(&self, req: &SessionRequest) -> Option<CommandSpec> {
         // `command` refuses to launch a manifest whose take-over doesn't fill, so no session
         // of this CLI reaches here with an error to show.
-        crate::command::interactive_resume(&self.manifest, session_id, workdir)
+        let session_id = req.resume_session.as_deref()?;
+        crate::command::interactive_resume(&self.manifest, session_id, &req.workdir)
             .ok()
             .flatten()
     }
@@ -253,5 +258,18 @@ mod tests {
                 ..Builtin.capabilities()
             }
         );
+    }
+
+    #[test]
+    fn a_manifest_says_when_its_sessions_talk_to_a_server_of_their_own() {
+        let request = SessionRequest::default();
+        let plain = adapter(OutputKind::ArgonautsJsonl);
+        assert!(!plain.talks_to_own_server(&request));
+        let builtins: Vec<Arc<dyn Adapter>> = vec![Arc::new(Builtin)];
+        let own = CliManifest {
+            own_server: true,
+            ..plain.manifest.clone()
+        };
+        assert!(ManifestAdapter::new(own, &builtins, None).talks_to_own_server(&request));
     }
 }

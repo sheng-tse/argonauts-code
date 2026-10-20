@@ -96,6 +96,9 @@ impl Transcript {
         }
         match event {
             AppEvent::Welcome { .. } => self.items.welcome(event, cx),
+            AppEvent::ConversationCleared { way_back } => {
+                self.items.start_over(way_back.as_ref(), cx);
+            }
             AppEvent::Status { status } => self.items.status(status, cx),
             AppEvent::Run { event } => {
                 self.milestones
@@ -105,7 +108,10 @@ impl Transcript {
             AppEvent::ConversationResumed { turns, .. } => {
                 replay::conversation_resumed(turns, cx);
             }
-            AppEvent::Report { title, lines } => items::report(title, lines, cx),
+            AppEvent::Report { title, lines } => self.items.report(title, lines, cx),
+            AppEvent::ReportSoFar { title, lines } => {
+                self.items.report_so_far(title, lines, cx);
+            }
             AppEvent::Switched { text, undo, caveat } => {
                 items::switched(text, undo.as_deref(), caveat.as_deref(), cx);
             }

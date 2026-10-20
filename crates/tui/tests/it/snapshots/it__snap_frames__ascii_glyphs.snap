@@ -1,0 +1,44 @@
+---
+source: crates/tui/tests/it/snap_frames.rs
+expression: "glyph_table(&Glyphs::ASCII)"
+---
+bullet           *        1 1
+result           L        1 1
+prompt           >        1 1
+turn_end         *        1 1
+recap            #        1 1
+question         ?        1 1
+note             >        1 1
+mode_ask         ||       2 2
+mode_go          >>       2 2
+rule             -        1 1
+dashed           -        1 1
+ellipsis         ...      3 3
+tokens           v        1 1
+agents           <        1 1
+spinner          .        1 1
+spinner          o        1 1
+spinner          O        1 1
+spinner          o        1 1
+title_busy       o        1 1
+title_busy       O        1 1
+title_idle       *        1 1
+agent_working    >        1 1
+agent_waiting    o        1 1
+agent_timer      +        1 1
+agent_needs_you  ?        1 1
+agent_done       *        1 1
+agent_failed     x        1 1
+bar_fill         #        1 1
+bar_track        .        1 1
+todo_pending     [ ]      3 3
+todo_active      [>]      3 3
+todo_done        [x]      3 3
+quote            |        1 1
+tree_mid         |        1 1
+tree_end         `        1 1
+hunk_gap         :        1 1
+ready            ok       2 2
+not_ready        no       2 2
+checkbox_off     [ ]      3 3
+checkbox_on      [x]      3 3

@@ -1,11 +1,15 @@
 //! Session lifetimes per role: `task` (fresh per task, resumed for its retries), `run` (one
 //! session per role per run), and `project` (the role's main session, used only when it isn't
-//! busy, and rotated when full). Blind roles are always fresh.
+//! busy, and rotated when full). Blind roles, and roles whose `fresh_session` says so, are
+//! always fresh.
+
+use std::path::Path;
 
 use argonauts_core::TaskId;
 use argonauts_core::events::session::EndReason;
 use argonauts_core::main_sessions::{MainSession, MainSessionLease, MainSessions};
 use argonauts_core::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::session_runner::Access;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::sessions::SessionLifetime;
 
@@ -39,8 +43,22 @@ pub fn lifetime(settings: &Settings, role: RoleName) -> SessionLifetime {
         .unwrap_or(settings.sessions.lifetime)
 }
 
-/// Picks how the next session of this role, worker, and task starts. A session does one thing
-/// at a time, so a busy one is never picked and the work runs in a fresh session instead.
+/// Whether every session of `role` starts fresh, never carrying on an earlier one:
+/// `roles.<role>.fresh_session`, which is yes for the judge unless you say otherwise.
+pub fn always_fresh(settings: &Settings, role: RoleName) -> bool {
+    settings
+        .roles
+        .get(&role)
+        .and_then(|role| role.fresh_session)
+        .unwrap_or(role == RoleName::Judge)
+}
+
+/// Picks how the next session of this role, worker, and task starts, in `workdir`, or `None`
+/// for a scratch folder of its own, which a session it carries on keeps. A session does one
+/// thing at a time, so a busy one is never picked and the work runs in a fresh session instead.
+/// One that worked in another folder isn't carried on either: a CLI such as OpenCode keeps each
+/// session with the folder it began in and can't open it from another.
+#[allow(clippy::too_many_arguments)]
 pub fn choose(
     state: &RunState,
     settings: &Settings,
@@ -48,9 +66,10 @@ pub fn choose(
     role: RoleName,
     worker: &ModelRef,
     task: Option<&TaskId>,
+    workdir: Option<&Path>,
     blind: bool,
 ) -> EngineResult<Reuse> {
-    if blind {
+    if blind || always_fresh(settings, role) {
         return Ok(Reuse::Fresh);
     }
     let newest = |mine: &dyn Fn(&SessionRecord) -> bool| {
@@ -60,7 +79,10 @@ pub fn choose(
             .into_iter()
             .rev()
             .find(|session| {
-                session.started.role == role && &session.started.worker == worker && mine(session)
+                session.started.role == role
+                    && &session.started.worker == worker
+                    && same_folder(session, workdir)
+                    && mine(session)
             })
             .cloned()
     };
@@ -88,6 +110,16 @@ pub fn choose(
             let cli_session = continue_main(state, settings, mains.get(role, worker));
             Ok(Reuse::Main { lease, cli_session })
         }
+    }
+}
+
+/// Whether `session` worked where the next one will: in `workdir`, or for `None` in a scratch
+/// folder of its own. One whose folder isn't known counts, as before folders were kept.
+fn same_folder(session: &SessionRecord, workdir: Option<&Path>) -> bool {
+    match (session.workdir.as_deref(), workdir) {
+        (None, _) => true,
+        (Some(was), Some(next)) => was == next,
+        (Some(_), None) => session.started.access == Access::NoTools,
     }
 }
 
@@ -191,6 +223,7 @@ mod tests {
             RoleName::Consultant,
             &worker,
             None,
+            Some(Path::new("/work")),
             false,
         ) {
             Ok(Reuse::Main {
@@ -220,6 +253,121 @@ mod tests {
     }
 
     #[test]
+    fn fresh_session_starts_every_session_of_the_role_afresh() {
+        let worker = ModelRef::new("claude-code", None);
+        let task = TaskId::numbered(1);
+        let mut state = RunState::default();
+        let mut record = crate::state::tests::session_record("s-001", &worker, RoleName::Worker);
+        record.cli_session = Some("cli-1".to_owned());
+        record.task = Some(task.clone());
+        record.end = Some(crate::state::tests::end(
+            EndReason::Completed,
+            Some("cli-1"),
+        ));
+        state.sessions.by_key.insert(record.key.clone(), record);
+        let dir = tempfile::tempdir().unwrap();
+        let mains = MainSessions::open(dir.path());
+        let pick = |settings: &Settings| {
+            choose(
+                &state,
+                settings,
+                &mains,
+                RoleName::Worker,
+                &worker,
+                Some(&task),
+                Some(Path::new("/work")),
+                false,
+            )
+            .unwrap()
+        };
+        let mut settings = Settings::default();
+        assert!(
+            matches!(pick(&settings), Reuse::Resume { .. }),
+            "by default"
+        );
+        settings.roles.insert(
+            RoleName::Worker,
+            RoleSettings {
+                fresh_session: Some(true),
+                ..RoleSettings::default()
+            },
+        );
+        assert!(matches!(pick(&settings), Reuse::Fresh));
+
+        // The judge is fresh unless you say otherwise; nobody else is.
+        let defaults = Settings::default();
+        assert!(always_fresh(&defaults, RoleName::Judge));
+        assert!(!always_fresh(&defaults, RoleName::Reviewer));
+        let mut kept = Settings::default();
+        kept.roles.insert(
+            RoleName::Judge,
+            RoleSettings {
+                fresh_session: Some(false),
+                ..RoleSettings::default()
+            },
+        );
+        assert!(!always_fresh(&kept, RoleName::Judge));
+    }
+
+    /// A task's session is carried on only where it worked: a build after its prediction, which
+    /// ran in a scratch folder of its own, starts fresh, as OpenCode can't open a session from
+    /// another folder; a second build in the same worktree carries on the first.
+    #[test]
+    fn a_task_session_is_carried_on_only_in_the_folder_it_worked_in() {
+        let worker = ModelRef::new("opencode", Some("ollama/qwen3-coder:30b-64k".to_owned()));
+        let task = TaskId::numbered(1);
+        let tree = Path::new("/worktrees/run-1/task-001");
+        let ended = |key: &str, access: Access, workdir: &Path| {
+            let mut record = crate::state::tests::session_record(key, &worker, RoleName::Worker);
+            record.started.access = access;
+            record.cli_session = Some(format!("ses-{key}"));
+            record.task = Some(task.clone());
+            record.workdir = Some(workdir.to_path_buf());
+            record.end = Some(crate::state::tests::end(
+                EndReason::Completed,
+                Some(&format!("ses-{key}")),
+            ));
+            record
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mains = MainSessions::open(dir.path());
+        let settings = Settings::default();
+        let pick = |state: &RunState, workdir: Option<&Path>| {
+            choose(
+                state,
+                &settings,
+                &mains,
+                RoleName::Worker,
+                &worker,
+                Some(&task),
+                workdir,
+                false,
+            )
+            .unwrap()
+        };
+        let mut state = RunState::default();
+        let predicted = ended(
+            "s-001",
+            Access::NoTools,
+            Path::new("/runs/run-1/sessions/s-001/work"),
+        );
+        state
+            .sessions
+            .by_key
+            .insert(predicted.key.clone(), predicted);
+        assert!(matches!(pick(&state, Some(tree)), Reuse::Fresh));
+        // Another prediction keeps to a scratch folder too, its own carried on.
+        assert!(matches!(pick(&state, None), Reuse::Resume { .. }));
+
+        let built = ended("s-002", Access::Build, tree);
+        state.sessions.by_key.insert(built.key.clone(), built);
+        match pick(&state, Some(tree)) {
+            Reuse::Resume { cli_session, .. } => assert_eq!(cli_session, "ses-s-002"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn a_busy_main_session_leaves_the_work_to_a_fresh_one() {
         let dir = tempfile::tempdir().unwrap();
         let mains = MainSessions::open(dir.path());
@@ -233,6 +381,7 @@ mod tests {
             RoleName::Consultant,
             &worker,
             None,
+            Some(Path::new("/work")),
             false,
         );
         assert!(matches!(held, Ok(Reuse::Main { .. })));
@@ -243,6 +392,7 @@ mod tests {
             RoleName::Consultant,
             &worker,
             None,
+            Some(Path::new("/work")),
             false,
         );
         assert!(matches!(second, Ok(Reuse::Fresh)), "{second:?}");
@@ -273,6 +423,7 @@ mod tests {
                 RoleName::Worker,
                 &worker,
                 Some(&task),
+                Some(Path::new("/work")),
                 false,
             )
         };
@@ -305,6 +456,7 @@ mod tests {
             RoleName::Consultant,
             &worker,
             None,
+            Some(Path::new("/work")),
             true,
         );
         assert!(matches!(chosen, Ok(Reuse::Fresh)));

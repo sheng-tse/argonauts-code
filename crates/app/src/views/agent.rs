@@ -650,6 +650,7 @@ mod tests {
                     try_number,
                     worker: ModelRef::new("opencode", None),
                     cause,
+                    told: Vec::new(),
                 },
             )
         };
@@ -713,6 +714,7 @@ mod tests {
                     try_number,
                     worker: ModelRef::new("opencode", None),
                     cause,
+                    told: Vec::new(),
                 },
             )
         };

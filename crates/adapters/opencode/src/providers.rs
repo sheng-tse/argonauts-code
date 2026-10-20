@@ -5,20 +5,26 @@
 //! listens are looked at.
 
 use argonauts_core::adapter::CliProviders;
+use argonauts_core::runtimes::runtime;
 use argonauts_core::status_tab::{CliProvider, ProviderBilling};
 use serde_json::Value;
 
-/// The commands asked, in the order [`providers`] takes their output.
-pub(crate) const CHECKS: &[&[&str]] = &[&["auth", "list"], &["models"], &["debug", "config"]];
+use crate::private_server::STANDALONE_FLAG;
+
+/// The commands asked, in the order [`providers`] takes their output. On OpenCode 2 a plain
+/// `auth list` or `models` goes through the background service it keeps for the whole computer,
+/// and starts it with Argonauts' environment when it isn't running, so both ask a private
+/// server instead (2.0.32's `--help` lists the flag on each). `auth list` answers in JSON, since
+/// 2.x's own text is columns without a frame. `debug config` starts no server and refuses the
+/// flag. OpenCode 1.18 has neither the service nor the flags.
+pub(crate) const CHECKS: &[&[&str]] = &[
+    &["auth", "list", STANDALONE_FLAG, "--format", "json"],
+    &["models", STANDALONE_FLAG],
+    &["debug", "config"],
+];
 
 /// OpenCode's own free models, which need no provider of yours.
 const OWN_PROVIDER: &str = "opencode";
-/// Runtimes on this computer, by the id OpenCode routes them under.
-const LOCAL_RUNTIMES: &[(&str, &str)] = &[
-    ("ollama", "Ollama"),
-    ("lmstudio", "LM Studio"),
-    ("llama.cpp", "llama.cpp"),
-];
 
 /// The providers and the default model, from what [`CHECKS`] printed. `None` when the first
 /// command printed nothing to read, as when this OpenCode has no such command.
@@ -27,7 +33,7 @@ pub(crate) fn providers(outputs: &[String]) -> Option<CliProviders> {
     let models = outputs.get(1).map(String::as_str).unwrap_or_default();
     let config: Value = outputs
         .get(2)
-        .and_then(|printed| json_in(printed))
+        .and_then(|printed| config_in(printed))
         .unwrap_or(Value::Null);
 
     let mut providers = connected;
@@ -63,9 +69,13 @@ pub(crate) fn providers(outputs: &[String]) -> Option<CliProviders> {
 }
 
 /// Each credential `opencode auth list` shows: its name, and how it was connected. A key in
-/// the environment counts as an API key. `None` when nothing in the output is that list: no
-/// section's frame, which 1.18 draws around its rows, and no row of a credential either.
+/// the environment counts as an API key. `None` when nothing in the output is that list: not
+/// 2.x's JSON, no section's frame, which 1.18 draws around its rows, and no row of a credential
+/// either.
 fn connected(printed: &str) -> Option<Vec<CliProvider>> {
+    if let Some(listed) = connected_json(printed) {
+        return Some(listed);
+    }
     let text = without_colour(printed);
     let mut providers: Vec<CliProvider> = Vec::new();
     let mut listed = false;
@@ -96,6 +106,37 @@ fn connected(printed: &str) -> Option<Vec<CliProvider>> {
     (listed || !providers.is_empty()).then_some(providers)
 }
 
+/// OpenCode 2's `auth list --format json`: one entry per provider, each with the ways it is
+/// connected, such as `env` for a key in the environment or `oauth` for a plan's sign-in.
+fn connected_json(printed: &str) -> Option<Vec<CliProvider>> {
+    let Ok(Value::Array(entries)) = serde_json::from_str::<Value>(printed.trim()) else {
+        return None;
+    };
+    let mut providers: Vec<CliProvider> = Vec::new();
+    for entry in &entries {
+        let Some(name) = entry["name"].as_str().or_else(|| entry["id"].as_str()) else {
+            continue;
+        };
+        let signed_in = entry["connections"].as_array().is_some_and(|connections| {
+            connections.iter().any(|connection| {
+                matches!(connection["type"].as_str(), Some("oauth" | "wellknown"))
+            })
+        });
+        let billing = if signed_in {
+            ProviderBilling::Plan
+        } else {
+            ProviderBilling::ApiKey
+        };
+        if !providers.iter().any(|known| known.name == name) {
+            providers.push(CliProvider {
+                name: name.to_owned(),
+                billing,
+            });
+        }
+    }
+    Some(providers)
+}
+
 /// The provider ids `opencode models` routes, in the order first seen, without OpenCode's own.
 fn routed_providers(printed: &str) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
@@ -119,10 +160,9 @@ fn local_name(id: &str, config: &Value) -> Option<String> {
             .iter()
             .any(|host| url.contains(host))
     });
-    let known = LOCAL_RUNTIMES
-        .iter()
-        .find(|(runtime, _)| *runtime == id)
-        .map(|(_, name)| (*name).to_owned());
+    // A provider of yours under another id, such as OpenCode's `llama.cpp`, is found by its
+    // address instead.
+    let known = runtime(id).map(|runtime| runtime.name.to_owned());
     if !listens_here && known.is_none() {
         return None;
     }
@@ -144,17 +184,56 @@ fn same_provider(name: &str, id: &str) -> bool {
     plain(name) == plain(id)
 }
 
-/// The first JSON object in `printed`, whatever notices come before or after it.
-fn json_in(printed: &str) -> Option<Value> {
-    let start = printed.find('{')?;
-    serde_json::Deserializer::from_str(&printed[start..])
+/// The config `debug config` printed, in 1.x's shape, whatever notices come before or after
+/// it. OpenCode 1.18 prints one object. OpenCode 2 prints each source it read in the order it
+/// merges them, every one in 2.x's shape, so the documents are merged here, later ones winning,
+/// into the default model and each provider's name and address.
+fn config_in(printed: &str) -> Option<Value> {
+    let start = printed.find(['{', '['])?;
+    let value: Value = serde_json::Deserializer::from_str(&printed[start..])
         .into_iter()
         .next()?
-        .ok()
+        .ok()?;
+    let Value::Array(sources) = value else {
+        return Some(value);
+    };
+    let mut merged = serde_json::json!({ "provider": {} });
+    for info in sources
+        .iter()
+        .filter(|source| source["type"] == "document")
+        .map(|source| &source["info"])
+    {
+        if let Some(model) = model_route(&info["model"]) {
+            merged["model"] = Value::String(model);
+        }
+        let Some(providers) = info["providers"].as_object() else {
+            continue;
+        };
+        for (id, provider) in providers {
+            let kept = &mut merged["provider"][id];
+            if let Some(name) = provider["name"].as_str() {
+                kept["name"] = Value::String(name.to_owned());
+            }
+            if let Some(url) = provider["settings"]["baseURL"].as_str() {
+                kept["options"]["baseURL"] = Value::String(url.to_owned());
+            }
+        }
+    }
+    Some(merged)
+}
+
+/// A model as `provider/model`, written that way or as 2.x's `{providerID, model}`.
+fn model_route(model: &Value) -> Option<String> {
+    if let Some(route) = model.as_str() {
+        return Some(route.to_owned());
+    }
+    let provider = model["providerID"].as_str()?;
+    let id = model["model"].as_str()?;
+    Some(format!("{provider}/{id}"))
 }
 
 /// `printed` without the escape sequences a CLI colours its lists with.
-fn without_colour(printed: &str) -> String {
+pub(crate) fn without_colour(printed: &str) -> String {
     let mut plain = String::with_capacity(printed.len());
     let mut chars = printed.chars();
     while let Some(c) = chars.next() {
@@ -279,6 +358,66 @@ mod tests {
                 provider("My box", ProviderBilling::Local),
                 provider("LM Studio", ProviderBilling::Local),
             ]
+        );
+    }
+
+    /// OpenCode 2.0.26's `debug config`: each source it read, every file turned into 2.x's
+    /// shape, merged in order.
+    #[test]
+    fn opencode_2s_list_of_sources_reads_as_one_config() {
+        let printed = r#"[
+          {"type": "document", "path": "/home/me/.config/opencode/opencode.json",
+           "info": {"model": {"providerID": "ollama", "model": "qwen3-coder:30b-64k"},
+             "providers": {"gpubox": {"name": "GPU box",
+               "settings": {"baseURL": "http://127.0.0.1:8080/v1"}},
+               "ollama": {"settings": {"baseURL": "http://localhost:11434/v1"}}}}},
+          {"type": "directory", "path": "/home/me/.config/opencode"},
+          {"type": "document", "path": "/work/repo/opencode.json",
+           "info": {"providers": {"gpubox": {"name": "The GPU box"}}}}
+        ]"#;
+        let config = config_in(printed).unwrap();
+        assert_eq!(config["model"], "ollama/qwen3-coder:30b-64k");
+        assert_eq!(config["provider"]["gpubox"]["name"], "The GPU box");
+        assert_eq!(
+            config["provider"]["gpubox"]["options"]["baseURL"],
+            "http://127.0.0.1:8080/v1"
+        );
+        assert_eq!(
+            local_name("gpubox", &config).as_deref(),
+            Some("The GPU box")
+        );
+        // 1.18's single object reads as it is, past a notice before it.
+        let old = config_in("notice\n{\"model\": \"ollama/llama3.2\"}").unwrap();
+        assert_eq!(old["model"], "ollama/llama3.2");
+        assert_eq!(config_in("nothing here"), None);
+    }
+
+    /// OpenCode 2.0.32's own answers: a key in the environment, and nothing connected. It no
+    /// longer draws 1.18's frame, so its list is asked for as JSON.
+    #[test]
+    fn opencode_2s_list_reads_from_its_json() {
+        let meta: Value = serde_json::from_str(&fixture("providers_2.meta.json")).unwrap();
+        assert_eq!(meta["cli_version"], "2.0.32");
+        assert_eq!(meta["synthetic"], false);
+        let found = providers(&[fixture("providers_2_auth_list.stdout.json")]).unwrap();
+        assert_eq!(
+            found.providers,
+            [provider("OpenRouter", ProviderBilling::ApiKey)]
+        );
+        let none = providers(&[fixture("providers_2_none_auth_list.stdout.json")]).unwrap();
+        assert_eq!(none.providers, []);
+        let signed_in =
+            r#"[{"id": "anthropic", "name": "Anthropic", "connections": [{"type": "oauth"}]}]"#;
+        assert_eq!(
+            providers(&[signed_in.to_owned()]).unwrap().providers,
+            [provider("Anthropic", ProviderBilling::Plan)]
+        );
+        // 2.x's own columns, which this never asks for, aren't read as a list.
+        let columns = "OpenRouter  OPENROUTER_API_KEY          environment\n";
+        assert_eq!(providers(&[columns.to_owned()]), None);
+        assert_eq!(
+            CHECKS[0],
+            ["auth", "list", STANDALONE_FLAG, "--format", "json"]
         );
     }
 

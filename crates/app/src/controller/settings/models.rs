@@ -6,12 +6,15 @@
 
 use std::collections::BTreeSet;
 
+use argonauts_adapter_opencode::models as opencode_models;
 use argonauts_core::app::ModelChoice;
 use argonauts_core::limits::CostEstimate;
+use argonauts_core::model_picker::ListedFacts;
 use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::registry::{ModelAccess, ModelEntry, RegistryKind};
 use argonauts_core::session::AuthMode;
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::endpoints::endpoint_settings;
 use argonauts_registry::models::CLAUDE_CODE_ALIASES;
 
 use super::labels::Labels;
@@ -20,6 +23,9 @@ use crate::controller::Ctx;
 /// Roles whose steps edit files or run tools, so an endpoint, which only answers, can't fill
 /// them. The main agent works as Captain.
 const NEEDS_CLI: &[RoleName] = &[RoleName::Main, RoleName::Worker, RoleName::Experiment];
+
+/// The CLI whose models come grouped by provider.
+const OPENCODE: &str = "opencode";
 
 /// The token counts a typical task spends, for the cost column.
 const TASK_INPUT_TOKENS: u64 = 150_000;
@@ -40,8 +46,12 @@ pub(crate) fn choices(ctx: &Ctx, role: Option<RoleName>) -> Vec<ModelChoice> {
         .filter(|entry| entry.kind == RegistryKind::Endpoint || installed.contains(&entry.id.agent))
         .cloned()
         .collect();
-    let with_models: BTreeSet<String> =
-        entries.iter().map(|entry| entry.id.agent.clone()).collect();
+    // A CLI listed with no Default of its own, as OpenCode's list is, still has one.
+    let with_default: BTreeSet<String> = entries
+        .iter()
+        .filter(|entry| entry.id.model.is_none())
+        .map(|entry| entry.id.agent.clone())
+        .collect();
     // CLIs the registry has no models for yet still run on their CLI's default model.
     let bare: Vec<ModelRef> = settings
         .crew
@@ -55,7 +65,7 @@ pub(crate) fn choices(ctx: &Ctx, role: Option<RoleName>) -> Vec<ModelChoice> {
                 .filter(|(_, agent)| agent.enabled)
                 .map(|(id, _)| id.clone()),
         )
-        .filter(|id| !with_models.contains(id) && !settings.endpoints.contains_key(id))
+        .filter(|id| !with_default.contains(id) && !settings.endpoints.contains_key(id))
         .filter(|id| installed.contains(id))
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -81,6 +91,11 @@ pub(crate) fn choices(ctx: &Ctx, role: Option<RoleName>) -> Vec<ModelChoice> {
         .collect();
     for choice in &mut choices {
         labels.describe(settings, role, choice);
+        choice.listed = listed_facts(&choice.worker, &listed);
+        // OpenCode lists every one of these itself, so none is new to it.
+        if choice.listed.is_some() {
+            choice.new = false;
+        }
     }
     let mut groups: Vec<String> = Vec::new();
     for choice in &choices {
@@ -102,6 +117,38 @@ pub(crate) fn choices(ctx: &Ctx, role: Option<RoleName>) -> Vec<ModelChoice> {
         }
     }
     choices
+}
+
+/// What OpenCode's list says of one of its models, for its row: the provider's group, the
+/// window, tool use, and where a hosted one runs. A local tag's window is the least of
+/// OpenCode's figure and the one its own server holds it to, since the server cuts the prompt
+/// there.
+fn listed_facts(worker: &ModelRef, listed: &[ModelEntry]) -> Option<ListedFacts> {
+    if worker.agent != OPENCODE {
+        return None;
+    }
+    let route = worker.model.as_deref()?;
+    let (provider, tag) = route.split_once('/')?;
+    let entry = listed.iter().find(|entry| entry.id == *worker)?;
+    let local = opencode_models::is_local(provider);
+    let served = listed
+        .iter()
+        .filter(|other| local && other.kind == RegistryKind::Endpoint)
+        .filter(|other| other.access == ModelAccess::Local)
+        .filter(|other| other.id.model.as_deref() == Some(tag))
+        .find_map(|other| other.window);
+    let window = [entry.window.or(entry.context_window), served]
+        .into_iter()
+        .flatten()
+        .min();
+    Some(ListedFacts {
+        group: Some(opencode_models::provider_heading(provider)),
+        window,
+        no_tools: !entry.tools,
+        thinking: entry.thinking == Some(true),
+        hosted_by: (!local).then(|| opencode_models::provider_heading(provider)),
+        memory: None,
+    })
 }
 
 fn alias_at(worker: &str, model: &str) -> Option<usize> {
@@ -288,11 +335,16 @@ fn from_entry(ctx: &Ctx, entry: ModelEntry) -> ModelChoice {
         effort: None,
         alias: false,
         runs: None,
+        listed: None,
     }
 }
 
 fn bare_choice(ctx: &Ctx, worker: ModelRef) -> ModelChoice {
+    // A server on this computer, such as Ollama, runs its models here.
+    let local =
+        endpoint_settings(ctx.settings(), &worker.agent).is_some_and(|endpoint| endpoint.local);
     let access = match ctx.settings().agents.get(&worker.agent) {
+        _ if local => ModelAccess::Local,
         Some(agent) if agent.auth == AuthMode::ApiKey => ModelAccess::ApiKey,
         _ => ModelAccess::Subscription,
     };
@@ -315,5 +367,6 @@ fn bare_choice(ctx: &Ctx, worker: ModelRef) -> ModelChoice {
         alias: false,
         runs: None,
         worker,
+        listed: None,
     }
 }

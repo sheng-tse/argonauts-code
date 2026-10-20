@@ -496,7 +496,7 @@ impl WorkflowPageView {
             None if self.open == Some(self.group) => "⏎ fold",
             None => "⏎ its keys",
             Some(field) if field.choices.is_empty() => "⏎ type",
-            Some(_) => "←→ change",
+            Some(_) => "← → change",
         };
         Footer::hints(&[
             ("↑↓ move", 0),

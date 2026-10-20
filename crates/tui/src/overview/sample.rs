@@ -170,6 +170,7 @@ pub fn usage() -> UsageSummary {
         agent_id: agent.to_owned(),
         spent: spent(cost, estimated),
         pays_per_token: false,
+        local: false,
         this_week: Vec::new(),
     };
     let day_costs = [
@@ -370,15 +371,14 @@ pub fn context() -> ContextView {
             counts: false,
             categories: Vec::new(),
             recorded: None,
+            ended: None,
         };
     let (opus, gpt) = ("claude-code/claude-opus-5-5", "codex/gpt-5.6");
-    ContextView {
-        rows: vec![
-            row(1, "main · conversation", opus, 212_000, 1_000_000, 41, 0.21),
-            row(2, "build:report-endpoint", opus, 48_200, 200_000, 37, 0.62),
-            row(3, "build:docs", gpt, 31_000, 272_000, 12, 0.09),
-        ],
-    }
+    ContextView::of(vec![
+        row(1, "main · conversation", opus, 212_000, 1_000_000, 41, 0.21),
+        row(2, "build:report-endpoint", opus, 48_200, 200_000, 37, 0.62),
+        row(3, "build:docs", gpt, 31_000, 272_000, 12, 0.09),
+    ])
 }
 
 /// The main session's context as Claude Code's /context counts it, just now.

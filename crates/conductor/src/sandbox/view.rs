@@ -100,7 +100,7 @@ pub fn plan(profile: &SandboxProfile, disk: &dyn Disk) -> View {
     for rule in &rules {
         let path = rule.resolved.as_path();
         match rule.kind {
-            RuleKind::Stat => {}
+            RuleKind::Stat | RuleKind::List => {}
             RuleKind::Deny => {
                 if covers.hides(path) || covers.0.iter().any(|(at, _)| at == path) {
                     continue;
@@ -259,7 +259,7 @@ pub(crate) fn reads(rules: &[PathRule], path: &Path) -> bool {
     applying(rules, path).fold(true, |allowed, rule| match rule.kind {
         RuleKind::Deny => false,
         RuleKind::Read | RuleKind::ReadOnly => true,
-        RuleKind::Write | RuleKind::Stat => allowed,
+        RuleKind::Write | RuleKind::Stat | RuleKind::List => allowed,
     })
 }
 
@@ -268,7 +268,7 @@ pub(crate) fn writes(rules: &[PathRule], path: &Path) -> bool {
     applying(rules, path).fold(false, |allowed, rule| match rule.kind {
         RuleKind::Deny | RuleKind::ReadOnly => false,
         RuleKind::Write => true,
-        RuleKind::Read | RuleKind::Stat => allowed,
+        RuleKind::Read | RuleKind::Stat | RuleKind::List => allowed,
     })
 }
 
@@ -375,6 +375,8 @@ mod tests {
             proxy_port: None,
             ask_port: None,
             closed: Vec::new(),
+            listable: Vec::new(),
+            loopback: false,
         }
     }
 

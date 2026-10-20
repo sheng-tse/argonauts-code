@@ -440,7 +440,7 @@ impl LinePage {
         };
         if !self.file.toggle(left, &part) {
             return ViewOutcome::Notice(
-                "mode stays on the line: it tells you whether Argonauts Code will ask. Shift+←→ \
+                "mode stays on the line: it tells you whether Argonauts Code will ask. Shift+← → \
                  moves it"
                     .to_owned(),
             );
@@ -565,9 +565,9 @@ impl LinePage {
         };
         let footer = Footer::hints(&[
             ("↑↓ setting", 2),
-            ("←→ change", 2),
+            ("← → change", 2),
             ("space tick", 1),
-            ("shift+←→ order", 1),
+            ("shift+← → order", 1),
             ("r reset", 1),
             (save_to, 3),
             ("esc back", 0),
@@ -631,6 +631,7 @@ fn own_role(id: &str) -> Option<Role> {
         "claude-code" => ("cli-claude", Role::AgentOrange),
         "codex" => ("cli-codex", Role::AgentBlue),
         "antigravity-cli" => ("cli-agy", Role::AgentCyan),
+        "opencode" => return Some(Role::AgentGreen),
         _ => return None,
     };
     Some(Role::from_name(name).unwrap_or(nearest))
@@ -940,10 +941,11 @@ mod tests {
     #[test]
     fn a_cli_the_theme_has_no_color_for_is_grey_and_says_why() {
         let theme = Theme::dark();
+        assert_eq!(cli_role("opencode"), Role::AgentGreen);
         let numbers = LineNumbers {
             clis: vec![LineCli {
-                label: "OpenCode".to_owned(),
-                id: "opencode".to_owned(),
+                label: "My CLI".to_owned(),
+                id: "my-cli".to_owned(),
                 main: true,
                 five_hours: Some(0.2),
                 seven_days: None,
@@ -952,12 +954,9 @@ mod tests {
         };
         let mut page = on_colours();
         page.numbers = numbers;
-        assert_eq!(cli_role("opencode"), Role::CatOther);
+        assert_eq!(cli_role("my-cli"), Role::CatOther);
         let (words, from) = colours(&page, &theme);
-        assert!(
-            words.contains("OpenCode has no colour of its own"),
-            "{words}"
-        );
+        assert!(words.contains("My CLI has no colour of its own"), "{words}");
         assert_eq!(from, "theme");
         assert!(matches!(
             press(&mut page, key(KeyCode::Char(' '))),

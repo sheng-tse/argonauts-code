@@ -551,6 +551,18 @@ impl Approvals for FakeApprovals {
     }
 }
 
+/// A test app's `--set` flags: `flags`, with asking the model servers on this computer that
+/// have no table turned off unless `flags` decides it, so no test reaches a server of yours.
+pub(crate) fn quiet_local_servers(mut flags: Vec<String>) -> Vec<String> {
+    if !flags
+        .iter()
+        .any(|flag| flag.starts_with("registry.local_servers="))
+    {
+        flags.insert(0, "registry.local_servers=false".to_owned());
+    }
+    flags
+}
+
 /// The real registry with discovery off, so no test runs a CLI's model listing. A test
 /// that wants discovery passes its own, on fake CLIs.
 pub(crate) fn quiet_registry(
@@ -637,8 +649,9 @@ impl TestCtx {
         env.agent_session = false;
         env.user_home = Some(repo.user_home().to_owned());
         let env = Arc::new(env);
-        let settings = AppSettings::load(&env, options.flags, options.interactive)
-            .expect("settings that resolve");
+        let flags = quiet_local_servers(options.flags);
+        let settings =
+            AppSettings::load(&env, flags, options.interactive).expect("settings that resolve");
         let directory = Arc::new(FakeDirectory::new());
         let agent = directory.add(FakeRunner::cli("claude-code", "anthropic"));
         let conductor = Arc::new(FakeConductor::default());
@@ -802,6 +815,16 @@ impl TestDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_test_app_asks_no_server_of_yours_unless_it_says_so() {
+        assert_eq!(
+            quiet_local_servers(vec!["ui.bell=false".to_owned()]),
+            ["registry.local_servers=false", "ui.bell=false"]
+        );
+        let asked = vec!["registry.local_servers=true".to_owned()];
+        assert_eq!(quiet_local_servers(asked.clone()), asked);
+    }
 
     #[tokio::test]
     async fn the_cli_opens_with_a_header_and_bottom_line_and_exits() {

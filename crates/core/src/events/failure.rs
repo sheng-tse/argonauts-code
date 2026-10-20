@@ -2,7 +2,7 @@
 //! Argonauts Code asked for". The CLI's or git's own text stays where it was, behind `r`.
 
 use crate::ErrorCategory;
-use crate::events::session::EndReason;
+use crate::events::session::{EndReason, stuck_words};
 use crate::model_catalog::display_name_from_id;
 
 impl EndReason {
@@ -21,7 +21,9 @@ impl EndReason {
             }
             Self::ContextFull => format!("{cli}'s context window is full"),
             Self::LimitHit { .. } => "the session reached its limit".to_owned(),
-            Self::Stuck { .. } => format!("{cli} stopped responding"),
+            Self::Stuck { watchdog, calls } => {
+                format!("{cli} {}", stuck_words(*watchdog, calls.as_ref()))
+            }
             Self::AdapterBroken { .. } => {
                 format!("{cli} wrote output this version of Argonauts Code can't read")
             }

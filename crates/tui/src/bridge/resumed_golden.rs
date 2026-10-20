@@ -19,7 +19,7 @@ use crate::model::ViewModel;
 use crate::options::UiOptions;
 use crate::render::{Clock, RenderCtx};
 use crate::text::plain_text;
-use crate::theme::{Glyphs, Theme};
+use crate::theme::{Glyphs, Role, Theme};
 
 const CONVERSATION: &str = include_str!("../../golden/resumed_council/conversation-001.jsonl");
 const RUN: &str = include_str!("../../golden/resumed_council/events.jsonl");
@@ -178,17 +178,56 @@ fn resumed_with(screen: &mut Screen, events: Vec<RunEvent>) {
 const PARTS: [std::ops::Range<usize>; 6] = [12..15, 15..26, 26..28, 28..30, 30..35, 38..40];
 
 /// What the screen prints that the picture leaves out, by each block's first row, all of it as
-/// it printed live: the main agent's turn ending, the run's start note, the planner's calls,
-/// and the two fallbacks Argonauts refused to start for want of a model, which runs today
+/// it printed live: the main agent's turn ending, the run's start note, and the two fallbacks Argonauts refused to start for want of a model, which runs today
 /// never pick. The picture's rows 35 to 37 stand for slash commands typed between two tries,
 /// which this record doesn't hold.
-const LEFT_OUT: [&str; 5] = [
+const LEFT_OUT: [&str; 4] = [
     "✻ Sailed for 10s",
     "⏺ As you asked: For the main agent: try spec-first",
-    "⏺ plan:orchestrator · Haiku 5.5 on Claude Code\n  ⎿  Search(",
     "✗ propose:p3 · OpenCode · 0s",
     "✗ propose:p3 · opencode-acp · 0s",
 ];
+
+/// The planner's calls print in its one row, between its header and its Done line. The picture
+/// leaves them out and draws the Done line right under the header, as a row's first line with
+/// its `⎿`. The drawing as the picture has it, and the calls it leaves out.
+fn without_the_planners_calls(printed: Vec<Line<'static>>) -> (Vec<Line<'static>>, String) {
+    let text = |line: &Line<'_>| line.to_string();
+    let header = printed
+        .iter()
+        .position(|line| text(line).starts_with("⏺ plan:orchestrator · "))
+        .expect("the planner's row");
+    let done = (header + 1..printed.len())
+        .find(|&at| text(&printed[at]).trim_start().starts_with("Done · "))
+        .expect("the planner's Done line");
+    let calls: Vec<String> = printed[header + 1..done].iter().map(text).collect();
+    let mut lines = printed;
+    let done_line = lines[done].clone();
+    let mut spans = vec![ratatui::text::Span::styled(
+        "  ⎿  ",
+        theme().style(Role::Dim),
+    )];
+    let mut indent = 5;
+    for span in done_line.spans {
+        let content = span.content.to_string();
+        let kept: String = content
+            .chars()
+            .skip_while(|ch| {
+                let skip = indent > 0 && *ch == ' ';
+                if skip {
+                    indent -= 1;
+                }
+                skip
+            })
+            .collect();
+        if !kept.is_empty() {
+            spans.push(ratatui::text::Span::styled(kept, span.style));
+        }
+    }
+    lines[done] = Line::from(spans).style(done_line.style);
+    lines.drain(header + 1..done);
+    (lines, calls.join("\n"))
+}
 
 /// A failed agent's row starts with the app's own `✗`, where the picture draws `✘`.
 const CROSS: &str = "a failed agent's row is marked ✗, as every failed agent's is";
@@ -197,13 +236,17 @@ const CROSS: &str = "a failed agent's row is marked ✗, as every failed agent's
 /// picture paints it plain.
 const RETURNED: &str = "a Workflow call that returned has its bullet green";
 
-/// An agent's label heads its row bold in the text's colour, as on every agent's row.
-const LABEL: &str = "an agent's label is bold on every row, as Claude Code heads an agent's row";
+/// An agent's model reads in its shade, as the council's rows draw it, where this picture
+/// draws it dim.
+const MODEL: &str = "an agent's model reads in its shade, as on every agent's row";
 
 /// A fallback that skips its retry names who steps in plain, its bullet warning, where the
 /// picture paints the words amber.
 const NO_RETRY: &str =
     "a fallback that skips its retry names who steps in plain, as every such note does";
+
+/// The `❯` on your message's band is faint, as on every message of yours.
+const YOUR_MARK: &str = "the ❯ on your message's band is faint, as on every message of yours";
 
 /// The cells of the picture's `row` the screen draws otherwise, as row `at` of its part.
 fn unlike(row: &str, at: usize) -> Vec<Unlike> {
@@ -231,16 +274,18 @@ fn unlike(row: &str, at: usize) -> Vec<Unlike> {
             why: CROSS,
         });
     }
-    let label = row
+    let header = row
         .get(row.char_indices().nth(2).map_or(0, |(i, _)| i)..)
         .and_then(|rest| rest.split_once(" · "))
-        .map(|(label, _)| label)
-        .filter(|label| label.contains(':') && !label.contains(' '));
-    if let Some(label) = label {
+        .filter(|(label, _)| label.contains(':') && !label.contains(' '));
+    if let Some((label, who)) = header
+        && let Some((model, _)) = who.split_once(" on ")
+    {
+        let start = 2 + label.chars().count() + " · ".chars().count();
         unlike.push(Unlike {
             row: at,
-            cols: (2, 1 + label.chars().count()),
-            why: LABEL,
+            cols: (start, start + model.chars().count() - 1),
+            why: MODEL,
         });
     }
     unlike
@@ -256,7 +301,8 @@ fn a_resumed_conversation_is_drawn_as_it_printed_live() {
     screen.send(names());
     screen.send(welcome());
     resumed(&mut screen);
-    let printed = screen.printed();
+    let (printed, calls) = without_the_planners_calls(screen.printed());
+    assert!(calls.starts_with("  ⎿  Search("), "{calls}");
     crate::picture_dump::lines("resumed_after", &printed);
     for line in &printed {
         assert!(
@@ -287,6 +333,11 @@ fn a_resumed_conversation_is_drawn_as_it_printed_live() {
                 row: 3,
                 cols: (0, 9),
                 why: LOGO,
+            },
+            Unlike {
+                row: 6,
+                cols: (0, 0),
+                why: YOUR_MARK,
             },
         ],
     );
@@ -437,7 +488,7 @@ fn a_run_that_ends_unshaped_prints_its_planner() {
     }
     let text = plain_text(&screen.printed());
     assert!(
-        text.contains("⏺ plan:orchestrator · Haiku 5.5 on Claude Code\n  ⎿  Done"),
+        planner_block(&text).contains("\n     Done · 5 tool uses"),
         "{text}"
     );
 }
@@ -488,10 +539,26 @@ fn an_agent_at_work_keeps_the_block_its_past_drew_once_the_run_attaches() {
         screen.send(run(event));
     }
     let text = plain_text(&screen.printed());
+    let block = planner_block(&text);
     assert!(
-        text.contains("plan:orchestrator · Haiku 5.5 on Claude Code\n  ⎿  Done · 5 tool uses"),
+        block.ends_with("     Done · 5 tool uses · report ✓ · 31s · 34.6k tokens"),
         "{text}"
     );
+    assert_eq!(
+        block.matches("Read(").count(),
+        3,
+        "every call is in it: {block}"
+    );
+}
+
+/// The planner's one row: its header, its calls and its Done line.
+fn planner_block(text: &str) -> &str {
+    let header = "⏺ plan:orchestrator · Haiku 5.5 on Claude Code";
+    let at = text
+        .find(header)
+        .unwrap_or_else(|| panic!("no planner row: {text}"));
+    let block = &text[at..];
+    block.split("\n\n").next().unwrap_or(block)
 }
 
 /// What each later try printed stays for the transcript overlay, in order, after the wait.

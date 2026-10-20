@@ -666,10 +666,11 @@ mod tests {
         );
     }
 
-    /// Claude Code alone, so no real CLI runs.
+    /// Claude Code alone, so no real CLI or server runs.
     fn claude_only() -> Settings {
         let mut settings = Settings::default();
-        for agent in ["codex", "antigravity-cli"] {
+        settings.registry.local_servers = false;
+        for agent in ["codex", "antigravity-cli", "opencode"] {
             settings.agents.get_mut(agent).unwrap().enabled = false;
         }
         settings

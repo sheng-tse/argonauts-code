@@ -4,17 +4,22 @@
 //! how it ended. A two-way protocol agent gets the same treatment, with its pipes passed to the
 //! adapter's session driver instead of a line parser.
 
+mod after_end;
 mod boards;
 pub mod capabilities;
+mod config_query;
 mod context;
 mod context_watch;
 mod diffs;
 mod driven;
 pub mod end;
 mod group;
+mod handed_in;
 pub mod launch;
 mod lines;
+mod local_server;
 mod observe;
+mod opening;
 mod outbox;
 pub mod refuse;
 mod report_tool;
@@ -35,6 +40,7 @@ use std::sync::atomic::AtomicBool;
 use argonauts_core::cheapest::cheapest_listed;
 use argonauts_core::future::BoxFuture;
 use argonauts_core::limits::{HealthBoard, PlanUsageBoard};
+use argonauts_core::model_memory::{ModelMemory, NoModelMemory};
 use argonauts_core::names::RoleName;
 use argonauts_core::names::{AgentId, ModelRef};
 use argonauts_core::registry::ModelRegistry;
@@ -43,7 +49,7 @@ use argonauts_core::session_runner::{
 };
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxSettings;
-use argonauts_core::{Adapter, CommandSpec, Paths};
+use argonauts_core::{Adapter, CommandSpec, Paths, SessionRequest};
 
 use crate::doctor::resolve_binary;
 use crate::health::{DisableScope, disable_scope};
@@ -65,8 +71,13 @@ pub struct CliRunner {
     /// `None` uses the process's own, started when a session first needs it.
     proxy: Option<Proxy>,
     home: Option<Paths>,
+    /// What a local server holds for the run or conversation of a session on one of its models.
+    memory: Arc<dyn ModelMemory>,
     /// A blind session said this CLI can't keep your MCP servers and plugins out. Once is enough.
     said_it_cant_isolate: Arc<AtomicBool>,
+    /// The installed CLI's version, read before the first session of an adapter whose launch
+    /// depends on it.
+    installed_version: Arc<tokio::sync::OnceCell<Option<String>>>,
 }
 
 impl CliRunner {
@@ -91,8 +102,39 @@ impl CliRunner {
             sandbox,
             proxy: None,
             home: None,
+            memory: Arc::new(NoModelMemory),
             said_it_cant_isolate: Arc::default(),
+            installed_version: Arc::default(),
         }
+    }
+
+    /// The installed CLI's version for an adapter whose launch depends on it, read once. Every
+    /// other adapter gets `None` and its CLI isn't run for it.
+    pub(crate) async fn launch_version(&self) -> Option<String> {
+        if !self.adapter.launch_reads_version() {
+            return None;
+        }
+        let read = async {
+            let binary = self
+                .settings
+                .agents
+                .get(&self.worker.agent)
+                .and_then(|agent| agent.binary.clone());
+            crate::doctor::installed_version(self.adapter.as_ref(), binary.as_deref()).await
+        };
+        self.installed_version.get_or_init(|| read).await.clone()
+    }
+
+    /// The version [`Self::launch_version`] read, when it has.
+    pub(crate) fn known_version(&self) -> Option<String> {
+        self.installed_version.get().cloned().flatten()
+    }
+
+    /// Notes the model of a session that a local server runs, so one Argonauts loaded can be
+    /// freed when its run or conversation ends.
+    pub fn with_memory(mut self, memory: Arc<dyn ModelMemory>) -> Self {
+        self.memory = memory;
+        self
     }
 
     /// Prices the meter's usage from the registry's entry for this runner. Without one, the
@@ -250,8 +292,43 @@ impl SessionRunner for CliRunner {
         )
     }
 
+    fn model_run(&self) -> ModelRef {
+        request::model_run(
+            &self.worker,
+            self.adapter.as_ref(),
+            &self.settings,
+            self.registry.as_deref(),
+        )
+    }
+
+    /// The CLI's own screen on the session, run by the binary its sessions run.
     fn take_over_command(&self, cli_session: &str, workdir: &Path) -> Option<CommandSpec> {
-        self.adapter.interactive_resume(cli_session, workdir)
+        let req = SessionRequest {
+            cli_version: self.known_version(),
+            ..request::take_over_request(
+                &self.worker,
+                cli_session,
+                workdir,
+                self.adapter.as_ref(),
+                &self.settings,
+                self.registry.as_deref(),
+            )
+        };
+        let mut command = self.adapter.interactive_resume(&req)?;
+        let configured = self
+            .settings
+            .agents
+            .get(&self.worker.agent)
+            .and_then(|agent| agent.binary.as_deref());
+        if command.program == self.adapter.binary()
+            && let Some(configured) = configured
+        {
+            command.program = resolve_binary(self.adapter.as_ref(), Some(configured))
+                .ok()?
+                .display()
+                .to_string();
+        }
+        Some(command)
     }
 
     /// The cheapest model the CLI's own list names, else the adapter's own pick while no list

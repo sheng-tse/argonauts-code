@@ -1,0 +1,83 @@
+● Due-date support is merged into main as 55438bf4: tasks add --due, the due date shown in tasks list, and tasks over…
+                                                                                                                      
+✻ Steered for 2m 13s · done 3:04 AM                                                                                   
+                                                                                                                      
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
+ What fills each session's context                                             1 session · 27.8k in context · 9 ended 
+                                                                                                                      
+     Context Usage  counted 2m ago             Haiku 5.5  claude-haiku-5-5                       27.8k/1m tokens (3%) 
+                                                                                                                      
+                                               Estimated usage by category                                            
+     ⛀ ⛁ ⛁ ⛀ ⛀ ⛀ ⛁ ⛀ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt               2.5k    0.2%   ╮ Claude Code's own 12.4k 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools                9.9k    1.0%   ╯                         
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP tools                   2.5k    0.3%   ╮ your setup         7.9k 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP server instructions      273   <0.1%   │                         
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Custom agents                648    0.1%   │                         
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Memory files                3.7k    0.4%   │                         
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Skills                       710    0.1%   ╯                         
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Messages                    7.5k    0.8%   ─ conversation       7.5k 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free space                939.2k   93.9%   ╮ not used yet     972.2k 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛝ Autocompact buffer           33k    3.3%   ╯                         
+                                                                                                                      
+     Auto-compact window:  1m tokens           compacts at 967k · 939.2k from now                                     
+     Loaded on demand:     6.2k                system tools 4.3k · MCP tools 1.9k · out of the window until used      
+     Last request:         27.8k in            27.1k from cache (98%) · 636 written to cache · 13 out                 
+                                                                                                                      
+     MCP tools · /mcp (loaded on-demand)                                5 tools · 2.5k loaded · 1.9k on demand        
+     Loaded                                                                                                           
+     ├ argonauts_start_workflow      argonauts           1.3k                                                         
+     └ argonauts_lookup              argonauts           1.2k                                                         
+     Available · not in the window until called                                                                       
+     ├ list_commits                  github               520                                                         
+     ├ create_issue                  linear               780                                                         
+     └ search_issues                 linear               610                                                         
+                                                                                                                      
+     Custom agents · .claude/agents/            2 agents  648     Skills · /skills               5 skills  710        
+     Project   └ reviewer                                 412     Project   ├ deploy-checklist            ~180        
+     User      └ researcher                               236               └ release-notes               ~130        
+                                                                  User      └ commit-style                ~100        
+     Memory files · /memory                     3 files  3.7k     Built-in  ├ code-review                 ~250        
+     User      ├ ~/.claude/CLAUDE.md                     1.1k               └ simplify                     ~50        
+     Project   ├ CLAUDE.md                               2.3k                                                         
+     Local     └ CLAUDE.local.md                          286                                                         
+                                                                                                                      
+     Messages · by kind                          7.5k    0.8%     Tool results · by tool           1 tool  318        
+     Tool results          ━━━━━━━━━━━━━━━━━━     318   <0.1%     └ argonauts_start_workflow  ━━━━━━━━━━━  318        
+     Assistant messages    ━━━━━━━━━━━━━━━━━━      96   <0.1%                                                         
+     Attachments           ━━━━━━━━━━━━━━━━━━    5.2k    0.5%                                                         
+     Tool calls            ━━━━━━━━━━━━━━━━━━     642    0.1%                                                         
+     Your messages         ━━━━━━━━━━━━━━━━━━    1.2k    0.1%                                                         
+     Unattributed          ━━━━━━━━━━━━━━━━━━      29   <0.1%                                                         
+                                                                                                                      
+     Crew agents · Tasks due dates · ended 3:04 AM, each as its session left it                 9 agents  132k        
+                                                                                                                      
+       agent               model                      window                       used        calls     spend        
+     ● plan:orchestrator   Haiku 5.5 on Claude Code   ━━━━━━━━━━━━━━━━━━━━       12k/1M    1%      1     $0.00        
+       ⎿  as it ended, 3:02 AM                        ⛁ system 6.9k   ⛁ MCP server instructions 273   ⛁ messages 4.9k 
+                                                                                                                      
+     ● plan:due-dates      Haiku 5.5 on Claude Code   ━━━━━━━━━━━━━━━━━━━━       13k/1M    1%      6     $0.00        
+       ⎿  as it ended, 3:02 AM                        ⛁ system 6.7k   ⛁ MCP server instructions 273   ⛁ messages 3.6k 
+                                                                                                                      
+     ● build:due-dates     Haiku 5.5 on Claude Code   ━━━━━━━━━━━━━━━━━━━━     24.9k/1M    2%     16    ~$0.02        
+       ⎿  no valid report in 2 tries · 3:03 AM        ⛁ system 12.4k   ⛁ MCP server instructions 273   ⛁ messages 6k  
+                                                                                                                      
+     ● build:due-dates     GPT 6 Luna on Codex        ━━━━━━━━━━━━━━━━━━━━     20k/872k    2%      2    ~$0.00        
+       ⎿  fallback for Haiku 5.5 · 3:03 AM            Codex says how full, not with what                              
+                                                                                                                      
+     ● review:due-dates    GPT 6 Luna on Codex        ━━━━━━━━━━━━━━━━━━━━   17.9k/872k    2%      1    ~$0.00        
+       ⎿  as it ended, 3:03 AM                        Codex says how full, not with what                              
+                                                                                                                      
+     ● signoff:due-dates   GPT 6 Luna on Codex        ━━━━━━━━━━━━━━━━━━━━      3k/872k    0%      1    ~$0.00        
+       ⎿  as it ended, 3:03 AM                        Codex says how full, not with what                              
+                                                                                                                      
+     ● review:due-dates-2  Haiku 5.5 on Claude Code   ━━━━━━━━━━━━━━━━━━━━       13k/1M    1%      1     $0.00        
+       ⎿  as it ended, 3:04 AM                        ⛁ system 8.6k   ⛁ MCP tools 167   ⛁ messages 5.3k               
+                                                                                                                      
+     ● run-review          GPT 6 Luna on Codex        ━━━━━━━━━━━━━━━━━━━━   16.2k/872k    2%      1    ~$0.00        
+       ⎿  as it ended, 3:04 AM                        Codex says how full, not with what                              
+                                                                                                                      
+     ● main                Haiku 5.5 on Claude Code   ━━━━━━━━━━━━━━━━━━━━     11.7k/1M    1%      1     $0.00        
+       ⎿  as it ended, 3:04 AM                        ⛁ system 7k   ⛁ MCP server instructions 273   ⛁ messages 4.2k   
+                                                                                                                      
+ tab · ← → tabs · ↓ into the cards · esc closes                                                                       

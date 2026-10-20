@@ -387,7 +387,8 @@ fn empty_text(tab: CrewTab) -> &'static str {
     }
 }
 
-/// A divider down `area`'s one column, `|` in ASCII.
+/// A divider down `area`'s one column, `|` in ASCII, in the bright text colour of every view's
+/// frame.
 fn divider(buf: &mut Buffer, area: Rect, theme: &Theme) {
     let glyph = if theme.glyphs.prompt.is_ascii() {
         "|"
@@ -397,7 +398,7 @@ fn divider(buf: &mut Buffer, area: Rect, theme: &Theme) {
     for y in area.top()..area.bottom() {
         if let Some(cell) = buf.cell_mut((area.x, y)) {
             cell.set_symbol(glyph);
-            cell.set_style(marks::decoration(theme.style(Role::Rule)));
+            cell.set_style(marks::decoration(theme.style(Role::Bright)));
         }
     }
 }
@@ -482,7 +483,7 @@ impl View for AgentPanelView {
                     self.draw_list(state, &rows, &panel, list_area, buf, theme);
                     let rule_line = Line::from(marks::decorative(
                         theme.glyphs.rule.repeat(usize::from(rule.width)),
-                        theme.style(Role::Rule),
+                        theme.style(Role::Bright),
                     ));
                     panes::put(buf, rule.x, rule.y, rule.width, &rule_line);
                     panes::put_lines(buf, details_area, &lines);

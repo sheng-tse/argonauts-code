@@ -1,7 +1,7 @@
 //! Test helpers: a shell-script adapter that prints agent events as JSON lines, a fake session
 //! driver, specs, and a runner with no sandbox under a temp home.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -67,6 +67,14 @@ pub(crate) struct TestAdapter {
     /// Asks for the context by category with a line of its own, as Claude Code's
     /// `get_context_usage`.
     context_asks: bool,
+    /// Its launch needs the installed version, as OpenCode's does.
+    reads_version: bool,
+    /// The program that says what its config holds, as OpenCode 2's `opencode api` does.
+    config_query: Option<PathBuf>,
+    /// Holds a session to its answer format, as Claude Code's `--json-schema` does.
+    holds_format: bool,
+    /// Talks to a server of its own on loopback, as OpenCode 2 does.
+    own_server: bool,
 }
 
 impl TestAdapter {
@@ -90,7 +98,32 @@ impl TestAdapter {
             heartbeat: None,
             isolates: false,
             context_asks: false,
+            reads_version: false,
+            own_server: false,
+            config_query: None,
+            holds_format: false,
         }
+    }
+
+    /// Holds each session to its answer format, as Claude Code, Codex and agy do.
+    pub(crate) fn holding_its_answer_format(mut self) -> Self {
+        self.holds_format = true;
+        self
+    }
+
+    pub(crate) fn asking_for_its_config(mut self, program: &Path) -> Self {
+        self.config_query = Some(program.to_path_buf());
+        self
+    }
+
+    pub(crate) fn reading_its_version(mut self) -> Self {
+        self.reads_version = true;
+        self
+    }
+
+    pub(crate) fn with_its_own_server(mut self) -> Self {
+        self.own_server = true;
+        self
     }
 
     pub(crate) fn with_context_asks(mut self) -> Self {
@@ -246,6 +279,10 @@ impl Adapter for TestAdapter {
         spec.env_set.push(("FAKE_ROLE".to_owned(), role.to_owned()));
         spec.env_set
             .push(("FAKE_BUILTINS_OFF".to_owned(), req.builtins_off.join(",")));
+        if let Some(version) = &req.cli_version {
+            spec.env_set
+                .push(("FAKE_CLI_VERSION".to_owned(), version.clone()));
+        }
         if let Some(home) = req.project.as_ref().filter(|_| self.task_home) {
             spec.env_set.push(("FAKE_HOME".to_owned(), home.clone()));
         }
@@ -262,6 +299,22 @@ impl Adapter for TestAdapter {
     }
     fn parse_version(&self, output: &str) -> Option<String> {
         extract_version(output)
+    }
+    fn launch_reads_version(&self) -> bool {
+        self.reads_version
+    }
+    fn talks_to_own_server(&self, _req: &SessionRequest) -> bool {
+        self.own_server
+    }
+    fn holds_answer_format(&self) -> bool {
+        self.holds_format
+    }
+    fn config_query(&self, req: &SessionRequest) -> Option<CommandSpec> {
+        let program = self.config_query.as_ref()?;
+        Some(CommandSpec::new(
+            program.display().to_string(),
+            &req.workdir,
+        ))
     }
     fn tested_versions(&self) -> &'static [&'static str] {
         &["1.0.0"]
@@ -299,9 +352,10 @@ impl Adapter for TestAdapter {
         self.context_asks
             .then(|| format!("{}\n", json!({ "context": detail.as_str() })))
     }
-    fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
+    fn interactive_resume(&self, req: &SessionRequest) -> Option<CommandSpec> {
+        let session_id = req.resume_session.as_deref()?;
         self.take_over
-            .then(|| CommandSpec::new("/bin/sh", workdir).arg(session_id))
+            .then(|| CommandSpec::new("/bin/sh", &req.workdir).arg(session_id))
     }
     fn session_driver(&self) -> Option<Arc<dyn SessionDriver>> {
         self.driver.clone()

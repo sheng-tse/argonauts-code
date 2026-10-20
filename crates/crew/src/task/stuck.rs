@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 
 use argonauts_core::TaskId;
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::approval::{
     AnswerAction, ApprovalDecided, ApprovalKind, ApprovalPacket, FreeText, StuckPacket,
     TakeOverReturnPacket,
@@ -16,10 +17,9 @@ use argonauts_core::events::task::{
 };
 use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::policy::{EvidenceDocument, EvidenceFacts, StuckFacts};
-use argonauts_core::steps::StepName;
 use argonauts_core::steps::plan::{GoalBrief, PlanDraft, PlanToTasks, PlanToTasksInput};
 
-use crate::approvals::{self, ApprovalRequest};
+use crate::approvals::{self, ApprovalRequest, options};
 use crate::divide::graph;
 use crate::engine::host::{Ask, Host};
 use crate::error::EngineResult;
@@ -35,6 +35,7 @@ use crate::task::pipeline::transition;
 use crate::task::prompt;
 use crate::task::recovery;
 use crate::task::session::Next;
+use crate::task::stopped_work;
 use crate::task::support::{called, progress_of, record_of, record_task, wait_until, worker_of};
 use crate::tie_breaker;
 use crate::workflow::StepAt;
@@ -58,7 +59,24 @@ pub(crate) async fn decide(
     why: &str,
 ) -> EngineResult<Decision> {
     let record = record_of(host, task)?;
-    let request = request(host, &record, at, from, why);
+    let keep = stopped_work::keep_detail(host, &record).await;
+    let no_other_model = recovery::other_provider(host, &record).is_none();
+    // Work a stopped session left is the question's to keep or not, so it says what the session
+    // did, where that work is and who else could take the task.
+    let why = match keep {
+        Some(_) => {
+            let did = stopped_work::what_it_did(host, task)
+                .unwrap_or_else(|| why.trim().trim_end_matches('.').to_owned());
+            let mut why = format!("{did}. Its commit is on the task's branch.");
+            if no_other_model {
+                why.push_str(" No other model can retry it.");
+            }
+            why
+        }
+        None => why.to_owned(),
+    };
+    let mut request = request(host, &record, at, from, &why);
+    request.options = Some(options::stuck(keep.as_deref(), no_other_model));
     let Some(decided) = wait_decision(host, task, from, request).await? else {
         return Ok(Decision::MovedMeanwhile);
     };
@@ -218,29 +236,21 @@ fn stuck_facts(host: &Host, record: &TaskEntry) -> Option<StuckFacts> {
     let task = &record.spec.id;
     let worker = worker_of(host, record);
     let fallback_mode = rules::applied_for(host, &record.spec, &worker).mode;
-    let next_provider =
-        recovery::other_provider(host, record).map(|model| roles::provider(host, &model));
-    let (mut providers_tried, extra_tries, fits_reserve) = host.read(|state| {
-        let providers: Vec<String> = state
-            .sessions
-            .by_key
-            .values()
-            .filter(|s| s.task.as_ref() == Some(task) && s.started.step == Some(StepName::Build))
-            .map(|s| s.started.provider.clone())
-            .collect();
+    let next = recovery::other_provider(host, record);
+    let next_provider = next.as_ref().map(|model| roles::provider(host, model));
+    let next_name = next.map(|model| DisplayNames::default().cli(&model.agent));
+    let providers_tried = recovery::providers_tried(host, record);
+    let (extra_tries, fits_reserve) = host.read(|state| {
         (
-            providers,
             state.tasks.progress(task).extra_tries,
             limit::fits_reserve(state, record),
         )
     });
-    providers_tried.push(roles::provider(host, &worker));
-    providers_tried.sort();
-    providers_tried.dedup();
     Some(StuckFacts {
         fallback_mode,
         providers_tried,
         next_provider,
+        next_name,
         extra_tries,
         fits_reserve,
     })
@@ -311,6 +321,12 @@ pub(crate) async fn apply_answer(
                     Ok(fresh(TryCause::AfterFailure, reason, extra))
                 }
             }
+        }
+        AnswerAction::KeepWork => {
+            let reason = format!("{who} kept its work; the checks decide");
+            ask_you_first(&reason)?;
+            transition(host, task, Trigger::KeptWork, &reason)?;
+            Ok(Decision::Moved(None))
         }
         AnswerAction::TakeOver => {
             ask_you_first("you took it over")?;

@@ -1,0 +1,32 @@
+{
+  "adapter": "opencode",
+  "synthetic": false,
+  "cli_version": "2.0.32",
+  "also_matches": [],
+  "program": "opencode",
+  "args": [
+    "run",
+    "--standalone",
+    "--format",
+    "json",
+    "--model",
+    "ollama/llama3.2"
+  ],
+  "stdin": "<prompt>",
+  "env_set": [
+    "OPENCODE_CONFIG_CONTENT",
+    "OPENCODE_DISABLE_AUTOUPDATE"
+  ],
+  "role": "build",
+  "model": "ollama/llama3.2",
+  "prompt": "Create a file named hello.txt containing the word hi. Then reply with: done",
+  "exit_code": 0,
+  "duration_ms": 18614,
+  "files_after": [
+    "README.md",
+    "notes.txt"
+  ],
+  "note": "llama3.2 never wrote hello.txt: it called write with uri where OpenCode 2.0.32 asks for path, and execute with half a line of code, 19 tool calls in all, then answered with a tool call written as text. The run still exits 0.",
+  "how": "OpenCode 2.0.32 as installed, a temp HOME with no OpenCode config of its own, the inline provider config the adapter sends for ollama/llama3.2 in OPENCODE_CONFIG_CONTENT, a throwaway git repo, and Ollama 0.20.3 serving llama3.2. No sandbox and no Argonauts: the command the adapter builds, run by hand",
+  "recorded": "2026-10-19"
+}

@@ -431,6 +431,9 @@ pub enum AnswerAction {
     Cancel,
     /// The task goes to `Deferred` and the run goes on without it.
     Defer,
+    /// What a stopped session committed goes on to the checks, review, and merge, as if it had
+    /// reported done.
+    KeepWork,
     /// Let the agent continue after a take-over; it's told what changed.
     LetContinue,
     /// Plan approval: run it as Captain instead.

@@ -1,14 +1,17 @@
 //! The watchdogs inside every session: inactivity (no events, no output, and no CPU in the
-//! process tree), the same tool call repeated, a stall with no heartbeat, and a CLI's own
-//! subagents past the fan-out cap where only counting can enforce it (agy).
+//! process tree), the same tool call repeated, a later try that only looks around, a stall with
+//! no heartbeat, and a CLI's own subagents past the fan-out cap where only counting can enforce
+//! it (agy).
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use argonauts_core::AgentEvent;
-use argonauts_core::events::session::{SubagentStatus, SubagentUpdate, Watchdog};
+use argonauts_core::events::session::{CallCount, SubagentStatus, SubagentUpdate, Watchdog};
 use argonauts_core::session_runner::SessionLimits;
 use serde_json::Value;
+
+use crate::filediff::writes_files;
 
 /// How late a heartbeat may be before the silence counts as a stall.
 pub const HEARTBEAT_GRACE: Duration = Duration::from_secs(15);
@@ -16,6 +19,15 @@ pub const HEARTBEAT_GRACE: Duration = Duration::from_secs(15);
 /// The fixed note an agent gets for repeating the same call.
 pub const REPEAT_NOTE: &str = "You have made the same tool call several times in a row with the \
 same input. Stop repeating it: try a different approach, or finish and report what blocks you.";
+
+/// The wrap-up a later try gets once its calls have changed nothing for a while.
+pub const NO_PROGRESS_WRAP_UP: &str =
+    "The work may already be done. Run the checks once; if they pass, end with your report now.";
+
+/// The calls a later try may still make after that wrap-up without a change: one to run the
+/// checks, and one that may hand the report in, as a model on OpenCode may. The next one stops
+/// it.
+const CALLS_AFTER_WRAP_UP: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WatchdogVerdict {
@@ -36,10 +48,14 @@ pub enum WatchdogVerdict {
         call: String,
         times: u32,
     },
-    /// Send the wrap-up message, then stop if it keeps going.
+    /// Send the wrap-up message, then stop if it keeps going. A later try that changes nothing
+    /// gets [`NO_PROGRESS_WRAP_UP`].
     SoftStop(Watchdog),
-    /// Interrupt, then stop. The end reason is `Stuck`.
-    Stuck(Watchdog),
+    /// Interrupt, then stop. The end reason is `Stuck`, with the calls counted.
+    Stuck {
+        watchdog: Watchdog,
+        calls: Option<CallCount>,
+    },
     /// More subagents than the cap: interrupt the turn.
     FanoutExceeded {
         running: u32,
@@ -62,7 +78,11 @@ pub struct Watchdogs {
     /// The latest call of the main agent (`None`) and of each subagent, so their calls don't
     /// break each other's streaks.
     streaks: HashMap<Option<String>, Streak>,
+    /// The main agent's calls since its last file change, for a later try on committed work.
+    unchanged: u32,
     running: HashSet<String>,
+    /// Calls from the session to Argonauts Code still open, such as questions waiting on you.
+    asks_open: u32,
 }
 
 #[derive(Debug)]
@@ -84,7 +104,9 @@ impl Watchdogs {
             last_event: None,
             last_output: None,
             streaks: HashMap::new(),
+            unchanged: 0,
             running: HashSet::new(),
+            asks_open: 0,
         }
     }
 
@@ -103,10 +125,21 @@ impl Watchdogs {
                 input,
                 parent,
             } => {
-                if parent.is_none() {
-                    self.tools.insert(id.clone());
+                let repeated = self.repeat(parent, name, input);
+                if parent.is_some() {
+                    return repeated;
                 }
-                self.repeat(parent, name, input)
+                self.tools.insert(id.clone());
+                let unchanged = self.unchanged(name, input);
+                if unchanged.weight() > repeated.weight() {
+                    unchanged
+                } else {
+                    repeated
+                }
+            }
+            AgentEvent::FileChanged { .. } | AgentEvent::FilePatch { .. } => {
+                self.unchanged = 0;
+                WatchdogVerdict::Quiet
             }
             AgentEvent::ToolFinished { id, .. } => {
                 self.tools.remove(id);
@@ -126,8 +159,30 @@ impl Watchdogs {
         self.last_output = Some(now);
     }
 
+    /// The worktree changed since the last look, whatever the calls that changed it were
+    /// named, such as a shell's `sed -i`, so a later try's count of calls that change nothing
+    /// starts over.
+    pub fn progress_made(&mut self) {
+        self.unchanged = 0;
+    }
+
+    /// A call from the session to Argonauts Code opened (`open`) or was answered. While one is
+    /// open the session waits on Argonauts Code or you, so it isn't inactive or stalled, and
+    /// the inactivity clock starts again from the answer.
+    pub fn asking(&mut self, open: bool, now: Instant) {
+        if open {
+            self.asks_open = self.asks_open.saturating_add(1);
+        } else {
+            self.asks_open = self.asks_open.saturating_sub(1);
+            self.last_event = Some(now);
+        }
+    }
+
     /// `cpu_busy_at` is the shared sampler's latest busy time for the process tree.
     pub fn tick(&mut self, now: Instant, cpu_busy_at: Option<Instant>) -> WatchdogVerdict {
+        if self.asks_open > 0 {
+            return WatchdogVerdict::Quiet;
+        }
         let last_active = [self.last_event, self.last_output, cpu_busy_at]
             .into_iter()
             .flatten()
@@ -140,7 +195,10 @@ impl Watchdogs {
         let quiet_for = now.saturating_duration_since(last_active);
         if let Some(limit) = inactive_after {
             if quiet_for >= limit {
-                return WatchdogVerdict::Stuck(Watchdog::Inactivity);
+                return WatchdogVerdict::Stuck {
+                    watchdog: Watchdog::Inactivity,
+                    calls: None,
+                };
             }
             if quiet_for >= limit / 2 {
                 return WatchdogVerdict::Quieting {
@@ -198,7 +256,41 @@ impl Watchdogs {
                 times,
             },
             Some(1) => WatchdogVerdict::SoftStop(Watchdog::Repeat),
-            Some(_) => WatchdogVerdict::Stuck(Watchdog::Repeat),
+            Some(_) => WatchdogVerdict::Stuck {
+                watchdog: Watchdog::Repeat,
+                calls: Some(CallCount {
+                    name: name.to_owned(),
+                    times,
+                }),
+            },
+        }
+    }
+
+    /// A later try on committed work whose calls change nothing gets the wrap-up, since the
+    /// work may already be done, and is stopped if it still changes nothing and doesn't report.
+    /// Only the main agent's calls count: it is the one that reports.
+    fn unchanged(&mut self, name: &str, input: &Value) -> WatchdogVerdict {
+        let Some(limit) = self.limits.no_progress_calls.filter(|limit| *limit > 0) else {
+            return WatchdogVerdict::Quiet;
+        };
+        // An edit counts as a change as it starts, since some CLIs say what it changed only
+        // after it finished.
+        if writes_files(name, input) {
+            self.unchanged = 0;
+            return WatchdogVerdict::Quiet;
+        }
+        self.unchanged = self.unchanged.saturating_add(1);
+        match self.unchanged.checked_sub(limit) {
+            None => WatchdogVerdict::Quiet,
+            Some(0) => WatchdogVerdict::SoftStop(Watchdog::NoProgress),
+            Some(after) if after <= CALLS_AFTER_WRAP_UP => WatchdogVerdict::Quiet,
+            Some(_) => WatchdogVerdict::Stuck {
+                watchdog: Watchdog::NoProgress,
+                calls: Some(CallCount {
+                    name: name.to_owned(),
+                    times: self.unchanged,
+                }),
+            },
         }
     }
 
@@ -219,6 +311,18 @@ impl Watchdogs {
                 WatchdogVerdict::FanoutExceeded { running, max }
             }
             _ => WatchdogVerdict::Quiet,
+        }
+    }
+}
+
+impl WatchdogVerdict {
+    /// How far it goes, so of two verdicts on one call the stronger one acts.
+    fn weight(&self) -> u8 {
+        match self {
+            Self::Stuck { .. } | Self::FanoutExceeded { .. } => 3,
+            Self::SoftStop(_) => 2,
+            Self::Nudge { .. } => 1,
+            Self::Quiet | Self::Stalled { .. } | Self::Quieting { .. } => 0,
         }
     }
 }
@@ -281,6 +385,207 @@ mod tests {
         }
     }
 
+    fn later_try() -> SessionLimits {
+        SessionLimits {
+            no_progress_calls: Some(8),
+            ..limits()
+        }
+    }
+
+    fn edited(path: &str) -> AgentEvent {
+        AgentEvent::FileChanged {
+            path: path.into(),
+            kind: "update".into(),
+        }
+    }
+
+    #[test]
+    fn a_later_try_that_changes_nothing_is_wrapped_up_then_stopped() {
+        let mut dogs = Watchdogs::new(&later_try(), None);
+        let at = Instant::now();
+        for n in 1..8 {
+            let verdict = dogs.observe(&call(&format!("cat file-{n}"), None), at);
+            assert_eq!(verdict, WatchdogVerdict::Quiet, "call {n}");
+        }
+        assert_eq!(
+            dogs.observe(&call("git log", None), at),
+            WatchdogVerdict::SoftStop(Watchdog::NoProgress)
+        );
+        // The checks, run once as the wrap-up asks, then a call that may hand the report in.
+        assert_eq!(
+            dogs.observe(&call("cargo test", None), at),
+            WatchdogVerdict::Quiet
+        );
+        assert_eq!(
+            dogs.observe(&call("echo report", None), at),
+            WatchdogVerdict::Quiet
+        );
+        assert_eq!(
+            dogs.observe(&call("git status", None), at),
+            WatchdogVerdict::Stuck {
+                watchdog: Watchdog::NoProgress,
+                calls: Some(CallCount {
+                    name: "Bash".into(),
+                    times: 11
+                })
+            }
+        );
+    }
+
+    #[test]
+    fn a_change_starts_the_count_over() {
+        let edit = |id: &str| AgentEvent::ToolStarted {
+            id: id.into(),
+            name: "Edit".into(),
+            input: json!({ "file_path": "slug.py" }),
+            parent: None,
+        };
+        let mut dogs = Watchdogs::new(&later_try(), None);
+        let at = Instant::now();
+        let look = |dogs: &mut Watchdogs, times: u32| {
+            for n in 0..times {
+                let verdict = dogs.observe(&call(&format!("cat {n}"), None), at);
+                assert_eq!(verdict, WatchdogVerdict::Quiet);
+            }
+        };
+        look(&mut dogs, 7);
+        // An edit counts as it starts, before its CLI says what changed.
+        assert_eq!(dogs.observe(&edit("e-1"), at), WatchdogVerdict::Quiet);
+        look(&mut dogs, 7);
+        assert_eq!(dogs.observe(&edited("slug.py"), at), WatchdogVerdict::Quiet);
+        look(&mut dogs, 7);
+        // OpenCode 2.0.32's patch tool names its files inside the patch.
+        let patch = AgentEvent::ToolStarted {
+            id: "p-1".into(),
+            name: "patch".into(),
+            input: json!({ "patchText": "*** Begin Patch\n*** Update File: slug.py\n" }),
+            parent: None,
+        };
+        assert_eq!(dogs.observe(&patch, at), WatchdogVerdict::Quiet);
+        look(&mut dogs, 7);
+        // A subagent's calls are its main agent's work, and only the main agent reports.
+        for n in 0..5 {
+            let verdict = dogs.observe(&call(&format!("grep {n}"), Some("task-1")), at);
+            assert_eq!(verdict, WatchdogVerdict::Quiet);
+        }
+        assert_eq!(
+            dogs.observe(&call("ls", None), at),
+            WatchdogVerdict::SoftStop(Watchdog::NoProgress)
+        );
+
+        // A first try, or any session that isn't a later one, is never counted.
+        let mut first = Watchdogs::new(&limits(), None);
+        for n in 0..30 {
+            let verdict = first.observe(&call(&format!("cat {n}"), None), at);
+            assert_eq!(verdict, WatchdogVerdict::Quiet);
+        }
+    }
+
+    #[test]
+    fn of_a_repeat_and_a_wrap_up_on_one_call_the_stop_wins() {
+        let limits = SessionLimits {
+            repeat_limit: Some(3),
+            no_progress_calls: Some(3),
+            ..SessionLimits::default()
+        };
+        let mut dogs = Watchdogs::new(&limits, None);
+        let at = Instant::now();
+        assert_eq!(dogs.observe(&call("ls", None), at), WatchdogVerdict::Quiet);
+        assert_eq!(dogs.observe(&call("ls", None), at), WatchdogVerdict::Quiet);
+        // The third: the repeat's nudge and the wrap-up for changing nothing.
+        assert_eq!(
+            dogs.observe(&call("ls", None), at),
+            WatchdogVerdict::SoftStop(Watchdog::NoProgress)
+        );
+        assert_eq!(
+            dogs.observe(&call("ls", None), at),
+            WatchdogVerdict::SoftStop(Watchdog::Repeat)
+        );
+        assert!(matches!(
+            dogs.observe(&call("ls", None), at),
+            WatchdogVerdict::Stuck {
+                watchdog: Watchdog::Repeat,
+                ..
+            }
+        ));
+    }
+
+    /// The second try of the local Qwen run: on work the first session had committed, it
+    /// looked around for 20 minutes, 17 calls 33 to 90 s apart, and nothing stopped it. Here
+    /// its 8th call gets the wrap-up and its 11th the stop, 6 and 10 minutes after its first
+    /// event.
+    #[test]
+    fn the_recorded_later_try_is_wrapped_up_at_its_eighth_call() {
+        use argonauts_core::events::{RunEvent, RunEventKind};
+
+        let record = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/opencode/later_try_looks_around.events.jsonl"
+        ));
+        let events: Vec<RunEvent> = record
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let started = events[0].ts;
+        let t0 = Instant::now();
+        let replay = |limits: &SessionLimits| {
+            let mut dogs = Watchdogs::new(limits, None);
+            let mut verdicts = Vec::new();
+            let mut calls = 0;
+            for event in &events {
+                let RunEventKind::Agent(agent) = &event.kind else {
+                    continue;
+                };
+                let after = (event.ts - started).unsigned_abs();
+                let now = t0 + after;
+                calls += u32::from(matches!(agent, AgentEvent::ToolStarted { .. }));
+                for verdict in [dogs.tick(now, None), dogs.observe(agent, now)] {
+                    if !matches!(verdict, WatchdogVerdict::Quiet) {
+                        let stops = matches!(verdict, WatchdogVerdict::Stuck { .. });
+                        verdicts.push((calls, after.as_secs() / 60, verdict));
+                        if stops {
+                            return (calls, verdicts);
+                        }
+                    }
+                }
+            }
+            (calls, verdicts)
+        };
+
+        // As it ran, with the repeat and inactivity watchdogs only.
+        let (calls, verdicts) = replay(&SessionLimits {
+            inactivity_min: Some(15.0),
+            repeat_limit: Some(10),
+            ..SessionLimits::default()
+        });
+        assert_eq!(calls, 17);
+        assert_eq!(verdicts, []);
+
+        let (_, verdicts) = replay(&SessionLimits {
+            inactivity_min: Some(15.0),
+            repeat_limit: Some(10),
+            no_progress_calls: Some(8),
+            ..SessionLimits::default()
+        });
+        assert_eq!(
+            verdicts,
+            [
+                (8, 6, WatchdogVerdict::SoftStop(Watchdog::NoProgress)),
+                (
+                    11,
+                    10,
+                    WatchdogVerdict::Stuck {
+                        watchdog: Watchdog::NoProgress,
+                        calls: Some(CallCount {
+                            name: "shell".into(),
+                            times: 11
+                        })
+                    }
+                ),
+            ]
+        );
+    }
+
     #[test]
     fn watchdogs_inactivity_repeat() {
         let mut dogs = Watchdogs::new(&limits(), None);
@@ -288,7 +593,10 @@ mod tests {
         assert_eq!(dogs.tick(t0 + MINUTE * 7, None), WatchdogVerdict::Quiet);
         assert_eq!(
             dogs.tick(t0 + MINUTE * 16, None),
-            WatchdogVerdict::Stuck(Watchdog::Inactivity)
+            WatchdogVerdict::Stuck {
+                watchdog: Watchdog::Inactivity,
+                calls: None
+            }
         );
 
         // Output and CPU each keep it alive, though neither is an event.
@@ -300,7 +608,10 @@ mod tests {
         );
         assert_eq!(
             dogs.tick(t0 + MINUTE * 36, Some(t0 + MINUTE * 20)),
-            WatchdogVerdict::Stuck(Watchdog::Inactivity)
+            WatchdogVerdict::Stuck {
+                watchdog: Watchdog::Inactivity,
+                calls: None
+            }
         );
 
         let at = t0 + MINUTE * 40;
@@ -324,7 +635,13 @@ mod tests {
         );
         assert_eq!(
             dogs.observe(&call("ls", None), at),
-            WatchdogVerdict::Stuck(Watchdog::Repeat)
+            WatchdogVerdict::Stuck {
+                watchdog: Watchdog::Repeat,
+                calls: Some(CallCount {
+                    name: "Bash".into(),
+                    times: 5
+                })
+            }
         );
         // Moving on starts over.
         assert_eq!(
@@ -379,6 +696,47 @@ mod tests {
         assert_eq!(silent.tick(t0 + MINUTE * 7, None), WatchdogVerdict::Quiet);
     }
 
+    /// Claude Code waits inside its permission prompt tool, sending nothing, for as long as
+    /// the question stays open.
+    #[test]
+    fn a_question_waiting_on_you_is_never_inactivity() {
+        let start = Instant::now();
+        let mut dogs = Watchdogs::new(&limits(), None);
+        dogs.observe(&call("npm test", None), start);
+        dogs.asking(true, start + MINUTE);
+        assert_eq!(dogs.tick(start + 40 * MINUTE, None), WatchdogVerdict::Quiet);
+
+        // Answered at 40 minutes: the clock starts again from the answer.
+        dogs.asking(false, start + 40 * MINUTE);
+        assert_eq!(dogs.tick(start + 47 * MINUTE, None), WatchdogVerdict::Quiet);
+        assert!(matches!(
+            dogs.tick(start + 48 * MINUTE, None),
+            WatchdogVerdict::Quieting { .. }
+        ));
+        assert_eq!(
+            dogs.tick(start + 55 * MINUTE, None),
+            WatchdogVerdict::Stuck {
+                watchdog: Watchdog::Inactivity,
+                calls: None,
+            }
+        );
+    }
+
+    #[test]
+    fn two_questions_open_wait_for_both_answers() {
+        let start = Instant::now();
+        let mut dogs = Watchdogs::new(&limits(), None);
+        dogs.asking(true, start);
+        dogs.asking(true, start);
+        dogs.asking(false, start + MINUTE);
+        assert_eq!(dogs.tick(start + 30 * MINUTE, None), WatchdogVerdict::Quiet);
+        dogs.asking(false, start + 30 * MINUTE);
+        assert!(matches!(
+            dogs.tick(start + 46 * MINUTE, None),
+            WatchdogVerdict::Stuck { .. }
+        ));
+    }
+
     #[test]
     fn half_the_inactivity_limit_forecasts_the_stop() {
         let limit = MINUTE * 15;
@@ -397,7 +755,10 @@ mod tests {
         );
         assert_eq!(
             dogs.tick(t0 + limit, None),
-            WatchdogVerdict::Stuck(Watchdog::Inactivity)
+            WatchdogVerdict::Stuck {
+                watchdog: Watchdog::Inactivity,
+                calls: None
+            }
         );
         // A process tree that uses CPU isn't quiet.
         assert_eq!(

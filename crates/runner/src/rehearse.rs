@@ -40,6 +40,53 @@ pub struct Rehearsal {
     /// Each phase that started an agent, with the role it went to: whether a phase a step
     /// requires does that step's work, not only carries its name.
     pub ran: BTreeSet<(String, CrewRole)>,
+    /// Every agent it asked for, in the order it asked: what a kept step is checked by, since a
+    /// planner names its phases for each request.
+    pub asked: Vec<Asked>,
+}
+
+/// One agent a rehearsed script asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asked {
+    pub label: String,
+    pub phase: Option<String>,
+    pub role: CrewRole,
+    /// Which of its role's models takes it, from 0.
+    pub model_index: u32,
+    pub task: Option<String>,
+    pub writes: bool,
+    pub not_the_author: bool,
+    /// Its schema asks for a yes-or-no `accept`, the one field a verdict is read by.
+    pub gives_verdict: bool,
+}
+
+impl Asked {
+    fn of(call: &AgentCall) -> Self {
+        Self {
+            label: call.label.clone(),
+            phase: call.phase.clone(),
+            role: call.role,
+            model_index: call.model_index,
+            task: call.task.clone(),
+            writes: call.writes,
+            not_the_author: call.not_the_author,
+            gives_verdict: call.schema.as_ref().is_some_and(gives_verdict),
+        }
+    }
+}
+
+/// Whether a schema requires a boolean `accept` at its root, so every answer to it says yes or
+/// no.
+pub fn gives_verdict(schema: &Value) -> bool {
+    let boolean = schema
+        .pointer("/properties/accept/type")
+        .and_then(Value::as_str)
+        == Some("boolean");
+    let required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .is_some_and(|required| required.iter().any(|name| name == "accept"));
+    boolean && required
 }
 
 /// Runs `script` against placeholder answers. `workflows` loads another workflow a script runs as
@@ -55,6 +102,7 @@ pub async fn rehearse(
         seen: Mutex::default(),
         tasks: Mutex::default(),
         ran: Mutex::default(),
+        calls: Mutex::default(),
     };
     let input = RunInput {
         replay: Vec::new(),
@@ -80,18 +128,24 @@ pub async fn rehearse(
         .ran
         .into_inner()
         .unwrap_or_else(|held| held.into_inner());
+    let asked = stage
+        .calls
+        .into_inner()
+        .unwrap_or_else(|held| held.into_inner());
     match ended.result {
         Ok(_) => Ok(Rehearsal {
             agents,
             finished: true,
             tasks,
             ran,
+            asked,
         }),
         Err(_) if ran_out => Ok(Rehearsal {
             agents: AGENTS,
             finished: false,
             tasks,
             ran,
+            asked,
         }),
         Err(ScriptEnd::Threw(why)) => Err(format!(
             "rehearsed with placeholder answers, it threw: {}",
@@ -104,6 +158,7 @@ pub async fn rehearse(
             finished: false,
             tasks,
             ran,
+            asked,
         }),
     }
 }
@@ -120,6 +175,7 @@ struct Stage<'a> {
     seen: Mutex<BTreeMap<String, u32>>,
     tasks: Mutex<Vec<String>>,
     ran: Mutex<BTreeSet<(String, CrewRole)>>,
+    calls: Mutex<Vec<Asked>>,
 }
 
 impl Host for Stage<'_> {
@@ -128,6 +184,10 @@ impl Host for Stage<'_> {
             if self.asked.fetch_add(1, Ordering::Relaxed) >= AGENTS {
                 return AgentEnd::failed("the rehearsal is over");
             }
+            self.calls
+                .lock()
+                .unwrap_or_else(|held| held.into_inner())
+                .push(Asked::of(call));
             if let Some(task) = &call.task {
                 let mut tasks = self.tasks.lock().unwrap_or_else(|held| held.into_inner());
                 if !tasks.contains(task) {
@@ -251,6 +311,25 @@ fn resolve<'a>(root: &'a Value, target: &str) -> Option<&'a Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An answer may leave out a field the format doesn't require, and then says neither yes
+    /// nor no.
+    #[test]
+    fn a_verdict_needs_accept_required_and_boolean() {
+        let accept = json!({"accept": {"type": "boolean"}, "findings": {"type": "array"}});
+        let required = json!({"type": "object", "properties": accept, "required": ["accept"]});
+        assert!(gives_verdict(&required));
+        let optional = json!({"type": "object", "properties": accept});
+        assert!(!gives_verdict(&optional));
+        let others = json!({"type": "object", "properties": accept, "required": ["findings"]});
+        assert!(!gives_verdict(&others));
+        let text = json!({
+            "type": "object",
+            "properties": {"accept": {"type": "string"}},
+            "required": ["accept"],
+        });
+        assert!(!gives_verdict(&text));
+    }
 
     #[test]
     fn a_placeholder_fills_every_property_and_one_item_of_each_list() {

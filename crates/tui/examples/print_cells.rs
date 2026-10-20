@@ -63,6 +63,7 @@ fn samples(now: Instant) -> Vec<argonauts_tui::Cell> {
         model: Some("Opus 5.5".into()),
         effort: Some("xhigh".into()),
         workflow: "council".into(),
+        ultra: None,
         folder: "~/github/argonauts".into(),
         agents: vec![
             AgentReady {
@@ -83,6 +84,7 @@ fn samples(now: Instant) -> Vec<argonauts_tui::Cell> {
         ],
         runs_going: 0,
         runs_need_you: 0,
+        way_back: None,
     };
 
     let workflow = ToolCall::call(

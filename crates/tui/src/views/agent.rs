@@ -1238,12 +1238,15 @@ fn counts_line(
         let elapsed = Duration::from_millis(row.elapsed_ms + ticking);
         counts.push(format::duration(elapsed));
     }
-    if let Some(context) = row.context.filter(|context| context.cap > 0) {
-        counts.push(format!(
-            "context {} of {}",
-            format::percent(context.used as f64 / context.cap as f64),
-            format::tokens(context.cap)
-        ));
+    if let Some(context) = row.context {
+        counts.push(match (context.of_window(), context.window) {
+            (Some(share), Some(window)) => format!(
+                "context {} of {}",
+                format::percent(share),
+                format::window(window)
+            ),
+            _ => format!("context {}", format::tokens(context.used)),
+        });
     }
     let text = cut(&counts.join(" · "), usize::from(width));
     (!text.is_empty()).then(|| Line::from(Span::styled(text, theme.style(Role::Dim))))
@@ -2196,7 +2199,8 @@ mod tests {
         data.facts = vec!["worker".to_owned(), "worktree".to_owned()];
         data.row.context = Some(argonauts_core::views::ContextUse {
             used: 62_000,
-            cap: 200_000,
+            window: Some(200_000),
+            cap: Some(200_000),
         });
         let rows = vec![WorkflowRow::Agent(data.row.clone())];
         let mut view = AgentView::in_phase(data, &phase(rows));

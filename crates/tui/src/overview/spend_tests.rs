@@ -48,6 +48,7 @@ fn share(agent: &str, model: Option<&str>, spent: Spend, week: [f64; 7]) -> Usag
         agent_id: agent.to_owned(),
         spent,
         pays_per_token: false,
+        local: false,
         this_week: week
             .iter()
             .enumerate()
@@ -386,6 +387,32 @@ fn spend_on_an_api_key_is_told_from_spend_inside_a_plan() {
         foot.trim_end_matches('│').trim_end(),
         " │ on plans $0.24 (inside your plans, not charged) · on API keys $0"
     );
+}
+
+/// A model on this machine charges nothing and no plan covers it: its row reads a dim `local`,
+/// and the foot gives local spend a part of its own.
+#[test]
+fn local_spend_reads_as_local() {
+    let mut usage = the_pictures_week();
+    let mut qwen = share(
+        "opencode",
+        Some("ollama/qwen3-coder:30b-64k"),
+        spent(0.0, 490_538, false),
+        [0.0; 7],
+    );
+    qwen.local = true;
+    usage.by_agent.push(qwen);
+    let rows = rows(&usage, Form::Full, 120);
+    let foot = &rows[rows.len() - 2];
+    assert!(
+        foot.trim_end_matches('│')
+            .trim_end()
+            .ends_with("· on API keys $0 · local $0 · ~ is an estimate at list prices"),
+        "{foot}"
+    );
+    let row = rows.iter().find(|row| row.contains("OpenCode")).unwrap();
+    assert!(row.contains(" local "), "{row}");
+    assert!(!row.contains("$0 "), "{row}");
 }
 
 #[test]

@@ -4,12 +4,13 @@
 
 use std::time::{Duration, Instant};
 
-use argonauts_core::app::{AppMode, AwakeHold, ChoiceKind};
+use argonauts_core::app::{AppMode, AwakeHold, ChoiceKind, CommandWork};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::run::{Party, RunPhase};
 use argonauts_core::events::session::{Delivery, QueuedMessage};
 use argonauts_core::events::task::TaskState;
 use argonauts_core::input::MentionTarget;
+use argonauts_core::runtimes::runtime;
 use argonauts_core::settings::approvals::ApprovalMode as CoreApproval;
 use argonauts_core::settings::bottom_line::AWAKE;
 use argonauts_core::settings::ui::{NarratorMode, Notices, UiSettings, VerbTheme};
@@ -51,7 +52,15 @@ pub fn sync(cx: &mut Cx<'_>) {
     let picker = &mut cx.model.verb_picker;
     let bottom = &mut cx.model.bottom;
     let stretch = bottom.synced.work.clone();
-    sync_working(state, bottom, || picker.working(verbs), now);
+    sync_working(
+        state,
+        bottom,
+        |work| match work {
+            Some(work) => picker.command(work, verbs),
+            None => picker.working(verbs),
+        },
+        now,
+    );
     // A new stretch of work may get a tip, which stays while it goes on.
     let fresh = bottom.synced.work != stretch;
     if let Some(line) = bottom.working.as_mut() {
@@ -175,6 +184,8 @@ enum Work<'a> {
     Conversation(&'a ConversationState),
     Run(&'a RunState),
     Pausing(&'a RunState),
+    /// A command you typed at work in the background, such as `/update`.
+    Command(CommandWork),
 }
 
 impl Work<'_> {
@@ -207,7 +218,7 @@ impl Work<'_> {
                     _ => false,
                 }
             }
-            Work::Pausing(_) => false,
+            Work::Pausing(_) | Work::Command(_) => false,
         }
     }
 
@@ -221,6 +232,7 @@ impl Work<'_> {
             }
             Work::Run(run) => format!("run:{}", run.id),
             Work::Pausing(run) => format!("pausing:{}", run.id),
+            Work::Command(work) => format!("{COMMAND_KEY}{work:?}"),
         }
     }
 
@@ -233,7 +245,7 @@ impl Work<'_> {
                 let mut running = run.running_sessions().peekable();
                 running.peek().is_some() && running.all(|session| session.stalled)
             }
-            Work::Pausing(_) => false,
+            Work::Pausing(_) | Work::Command(_) => false,
         }
     }
 
@@ -246,7 +258,7 @@ impl Work<'_> {
                 .running_sessions()
                 .map(|session| session.last_event.unix_timestamp_nanos() as u64)
                 .max(),
-            Work::Pausing(_) => None,
+            Work::Pausing(_) | Work::Command(_) => None,
         }
     }
 
@@ -262,7 +274,7 @@ impl Work<'_> {
                     _ => &[],
                 }
             }
-            Work::Pausing(_) => &[],
+            Work::Pausing(_) | Work::Command(_) => &[],
         };
         let first = |status: TodoStatus| {
             todos
@@ -300,10 +312,12 @@ fn current_work(state: &AppState) -> Option<Work<'_>> {
         Some(AppMode::Answering { .. }) => Some(Work::Conversation(&state.conversation)),
         Some(AppMode::Working { run }) => run_work(run),
         Some(AppMode::Pausing { run }) => state.runs.get(run).map(Work::Pausing),
-        Some(AppMode::Idle | AppMode::Waiting { .. }) => None,
+        Some(AppMode::Idle | AppMode::Waiting { .. }) => state.command_work.map(Work::Command),
         None if state.conversation.turn.is_some() => Some(Work::Conversation(&state.conversation)),
         None => {
-            let run = state.attached_run().filter(|run| run.is_active())?;
+            let Some(run) = state.attached_run().filter(|run| run.is_active()) else {
+                return state.command_work.map(Work::Command);
+            };
             run_work(&run.id)
         }
     }
@@ -327,10 +341,15 @@ fn waits_on_you(run: &RunState) -> bool {
         && !task_at_work
 }
 
+/// How the key of a command's work begins, so the line keeps its clock from one kind of the
+/// command's work to the next.
+const COMMAND_KEY: &str = "command:";
+
+/// `pick` gives the word for a new line: a turn's, or the one that fits a command's work.
 fn sync_working(
     state: &AppState,
     bottom: &mut crate::bottom::BottomState,
-    pick: impl FnOnce() -> &'static str,
+    pick: impl FnOnce(Option<CommandWork>) -> &'static str,
     now: Instant,
 ) {
     let work = current_work(state);
@@ -345,11 +364,26 @@ fn sync_working(
     };
     let key = work.key();
     let same = bottom.synced.work.as_deref() == Some(key.as_str());
-    let previous = bottom.working.take().filter(|_| same);
+    let last = bottom.working.take();
+    // `/update` checks once it has updated: the word changes, the clock goes on.
+    let command_goes_on = key.starts_with(COMMAND_KEY)
+        && bottom
+            .synced
+            .work
+            .as_deref()
+            .is_some_and(|was| was.starts_with(COMMAND_KEY));
+    let since = last
+        .as_ref()
+        .filter(|_| command_goes_on)
+        .map(|line| line.started_at);
+    let previous = last.filter(|_| same);
 
     let mut line = match &previous {
         Some(line) => line.clone(),
-        None => WorkingLine::new(verb_for(&work, pick), started_at(&work, now)),
+        None => WorkingLine::new(
+            verb_for(&work, pick),
+            since.unwrap_or_else(|| started_at(&work, now)),
+        ),
     };
     (line.task, line.next) = work.tasks();
     match work.pulse() {
@@ -396,6 +430,13 @@ fn sync_working(
             line.timed = false;
             line.esc_stops = true;
         }
+        // Nothing an agent sends: the time alone, and Esc leaves the command to finish.
+        Work::Command(_) => {
+            line.tokens_down = 0;
+            line.activity = Activity::None;
+            line.details.clear();
+            line.esc_stops = false;
+        }
     }
     // A stall Argonauts Code reported turns the line red whatever the agent seemed to be doing.
     line.stalled_since = if work.stalled() {
@@ -423,7 +464,7 @@ fn waits_for_workflows(state: &AppState, work: Option<&Work<'_>>) -> Option<usiz
             }
             waiting
         }
-        Some(Work::Conversation(_) | Work::Pausing(_)) => return None,
+        Some(Work::Conversation(_) | Work::Pausing(_) | Work::Command(_)) => return None,
         None if state.conversation.waits_on_background() => state
             .conversation
             .workflows
@@ -450,10 +491,11 @@ fn say_what_is_written(line: &mut WorkingLine, workflow: bool) {
 }
 
 /// A new word for each stretch of work; the same turn or run keeps its word.
-fn verb_for(work: &Work<'_>, pick: impl FnOnce() -> &'static str) -> String {
+fn verb_for(work: &Work<'_>, pick: impl FnOnce(Option<CommandWork>) -> &'static str) -> String {
     match work {
         Work::Pausing(_) => "Pausing".to_owned(),
-        Work::Conversation(_) | Work::Run(_) => pick().to_owned(),
+        Work::Command(work) => pick(Some(*work)).to_owned(),
+        Work::Conversation(_) | Work::Run(_) => pick(None).to_owned(),
     }
 }
 
@@ -774,7 +816,8 @@ pub fn label_for_agent(agent_id: &str) -> String {
         "antigravity-cli" => "agy",
         "opencode" => "OpenCode",
         "openrouter" => "OpenRouter",
-        "ollama" | "lmstudio" | "llamacpp" | "llama-cpp" | "vllm" | "local" => "Local",
+        "local" => "Local",
+        other if runtime(other).is_some() => "Local",
         other => other,
     }
     .to_owned()
@@ -879,6 +922,7 @@ mod tests {
             repo: "~/code".into(),
             workflow: "council".into(),
             ultracode: true,
+            ultra: None,
             run: None,
             main_agent: "claude-code".parse().unwrap(),
             plan_chips: Vec::new(),
@@ -918,6 +962,7 @@ mod tests {
             repo: "~/code".into(),
             workflow: workflow.into(),
             ultracode: true,
+            ultra: None,
             run: None,
             main_agent: agent.parse().unwrap(),
             plan_chips: Vec::new(),
@@ -1042,7 +1087,7 @@ mod tests {
         let mut bottom = crate::bottom::BottomState::new();
         let mut stalled_since = |state: &AppState, secs: u64| {
             let now = t0 + Duration::from_secs(secs);
-            sync_working(state, &mut bottom, || "Rowing", now);
+            sync_working(state, &mut bottom, |_| "Rowing", now);
             let line = bottom.working.as_ref().expect("a working line");
             line.stalled_since
         };
@@ -1098,7 +1143,7 @@ mod tests {
             sync_working(
                 state,
                 &mut bottom,
-                || "Rowing",
+                |_| "Rowing",
                 t0 + Duration::from_secs(secs),
             );
             bottom.working.clone().expect("a working line")
@@ -1201,9 +1246,9 @@ mod tests {
         let after = |doing: &[Doing], secs: u64| {
             let state = state_with(doing);
             let mut bottom = crate::bottom::BottomState::new();
-            sync_working(&state, &mut bottom, || "Rowing", t0);
+            sync_working(&state, &mut bottom, |_| "Rowing", t0);
             let now = t0 + Duration::from_secs(secs);
-            sync_working(&state, &mut bottom, || "Rowing", now);
+            sync_working(&state, &mut bottom, |_| "Rowing", now);
             let line = bottom.working.expect("a working line");
             let drawn = line.line(&RenderCtx::new(100, &theme, Clock::new(t0, now)));
             let words: String = drawn.spans.iter().map(|span| &*span.content).collect();
@@ -1260,7 +1305,7 @@ mod tests {
         let t0 = Instant::now();
         let synced = |state: &AppState| {
             let mut bottom = crate::bottom::BottomState::new();
-            sync_working(state, &mut bottom, || "Rowing", t0);
+            sync_working(state, &mut bottom, |_| "Rowing", t0);
             bottom.working.map(|line| line.esc_stops)
         };
         let mut state = AppState::default();
@@ -1342,6 +1387,7 @@ mod tests {
             repo: "~/code".into(),
             workflow: "council".into(),
             ultracode: false,
+            ultra: None,
             run: None,
             main_agent: "claude-code".parse().unwrap(),
             plan_chips: Vec::new(),

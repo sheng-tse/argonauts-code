@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::run::Party;
+use super::session::InputPart;
 use crate::fallback::QualityDebt;
 use crate::names::ModelRef;
 use crate::policy::Violation;
@@ -119,6 +120,11 @@ pub enum TaskEvent {
         try_number: u32,
         worker: ModelRef,
         cause: TryCause,
+        /// What a try on the task's own session is told, such as the check's output or the
+        /// review's comments, sent again when the run restarts before its session began. Older
+        /// logs have none, and such a try is told to continue.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        told: Vec<InputPart>,
     },
     Worktree {
         path: PathBuf,

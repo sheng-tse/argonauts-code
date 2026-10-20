@@ -491,6 +491,8 @@ fn ask_sign_ins(ctx: &Ctx, mut view: StatusTabView) {
     let versions = version_checks(ctx, &report);
     let listing = listing_providers(ctx);
     let cwd = ctx.env.repo_root.clone();
+    let repo = crate::host::clis::RepoModels::new(&ctx.env.repo_root, &ctx.env.state_dir);
+    let confine = crate::confine::read_only(&ctx.settings.resolved().settings, Some(&repo));
     let readers = super::account::live_readers(ctx);
     let workers = Arc::clone(&ctx.services.workers);
     let internal = ctx.internal.clone();
@@ -510,9 +512,14 @@ fn ask_sign_ins(ctx: &Ctx, mut view: StatusTabView) {
             let cwd = cwd.clone();
             async move { (id, banner_sign_in(path, cwd, adapter).await) }
         });
-        let listed = lists
-            .into_iter()
-            .map(|(id, path, adapter)| async move { (id, providers(&path, adapter).await) });
+        let listed = lists.into_iter().map(|(id, path, adapter)| {
+            let asked = Asked {
+                program: path,
+                cwd: cwd.clone(),
+                confine: Arc::clone(&confine),
+            };
+            async move { (id, providers(&asked, adapter).await) }
+        });
         let (asked, read, listed) = futures::future::join3(
             futures::future::join_all(asked),
             futures::future::join_all(read),
@@ -602,24 +609,34 @@ async fn sign_in(program: &Path, args: &[String]) -> Option<SignIn> {
     Some(sign_in_from(&String::from_utf8_lossy(&output.stdout)))
 }
 
+/// How a CLI's listing commands run: its program, in the repo, inside the sandbox, since a
+/// CLI started in a repo may load the plugins that repo sets up.
+struct Asked {
+    program: std::path::PathBuf,
+    cwd: std::path::PathBuf,
+    confine: Arc<dyn argonauts_core::confine::Confine>,
+}
+
 /// Asks a CLI that keeps providers of its own what it can use: each of its listing commands
-/// in turn, with its updater kept off. A command that fails or runs out of time leaves its
-/// part unknown, and nothing but the CLI's own answers is read.
-async fn providers(program: &Path, adapter: Arc<dyn argonauts_core::Adapter>) -> Option<SignIn> {
+/// in turn, with its updater kept off. A command that fails, runs out of time or can't be
+/// sandboxed leaves its part unknown, and nothing but the CLI's own answers is read.
+async fn providers(asked: &Asked, adapter: Arc<dyn argonauts_core::Adapter>) -> Option<SignIn> {
     let mut outputs = Vec::new();
     for args in adapter.provider_checks() {
-        let child = tokio::process::Command::new(program)
-            .args(*args)
-            .envs(adapter.updater_off_env().iter().copied())
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .output();
-        let printed = match tokio::time::timeout(LOGIN_TIMEOUT, child).await {
-            Ok(Ok(output)) if output.status.success() => {
-                String::from_utf8_lossy(&output.stdout).into_owned()
+        let mut spec =
+            argonauts_core::CommandSpec::new(asked.program.display().to_string(), &asked.cwd)
+                .args(args.iter().copied());
+        spec.env_set = adapter
+            .updater_off_env()
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        let printed = match asked.confine.confine(adapter.id(), spec).await {
+            Ok(spec) => listed(&spec).await,
+            Err(why) => {
+                tracing::warn!("asking {} for its providers: {why}", adapter.id());
+                String::new()
             }
-            _ => String::new(),
         };
         outputs.push(printed);
     }
@@ -641,6 +658,27 @@ async fn providers(program: &Path, adapter: Arc<dyn argonauts_core::Adapter>) ->
         default_model,
         ..SignIn::default()
     })
+}
+
+/// What `spec` printed, or nothing when it fails or runs out of time.
+async fn listed(spec: &argonauts_core::CommandSpec) -> String {
+    let mut command = tokio::process::Command::new(&spec.program);
+    command
+        .args(&spec.args)
+        .current_dir(&spec.cwd)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    for name in &spec.env_remove {
+        command.env_remove(name);
+    }
+    command.envs(spec.env_set.iter().cloned());
+    match tokio::time::timeout(LOGIN_TIMEOUT, command.output()).await {
+        Ok(Ok(output)) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        }
+        _ => String::new(),
+    }
 }
 
 /// `GLM 5` for `z-ai/glm-5`: a routed model as its name reads, without who publishes it.

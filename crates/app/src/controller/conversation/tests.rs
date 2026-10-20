@@ -600,7 +600,8 @@ async fn turn_started_carries_the_commit_uncommitted_paths_and_settings_hash() {
     );
     assert!(read_only);
     assert_eq!(worker.agent, "claude-code");
-    let settings = AppSettings::load(&driver.env, Vec::new(), true).unwrap();
+    let flags = crate::controller::test_support::quiet_local_servers(Vec::new());
+    let settings = AppSettings::load(&driver.env, flags, true).unwrap();
     assert_eq!(settings_sha256.as_deref(), Some(settings.sha256()));
     assert!(prompt_text(&driver, 0).contains("uncommitted file"));
     turn_done(&mut driver).await;

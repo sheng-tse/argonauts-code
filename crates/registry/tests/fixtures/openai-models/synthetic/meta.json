@@ -1,7 +1,7 @@
 {
   "synthetic": true,
   "why": "no endpoint was called: Ollama wasn't running, and OpenRouter is a paid API",
-  "openrouter.json": "written by hand in the shape of GET https://openrouter.ai/api/v1/models (ids as OpenRouter lists them; prices, context lengths, and parameters made up)",
+  "openrouter.json": "written by hand in the shape of GET https://openrouter.ai/api/v1/models (ids as OpenRouter lists them; prices, context lengths, the top provider's cap, and parameters made up)",
   "ollama.json": "written by hand in the shape of Ollama's GET /v1/models, with tags like the ones Ollama pulls",
   "written": "2026-09-30"
 }

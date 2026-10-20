@@ -19,6 +19,7 @@ use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::overview::{ModelTokens, OverviewPeriod};
 use argonauts_core::pricing::{ListPrice, PriceList};
 use argonauts_core::registry::default_run;
+use argonauts_core::runtimes::RUNTIMES;
 use argonauts_core::settings::endpoints::endpoint_settings;
 use argonauts_core::{NoteLevel, Paths};
 use argonauts_tui::format::WallClock;
@@ -115,9 +116,9 @@ fn price_list(ctx: &Ctx) -> PriceList {
         .iter()
         .map(|price| (price.model.clone(), price.list_price()))
         .collect();
-    let local: Vec<String> = ["ollama", "lmstudio"]
-        .into_iter()
-        .map(str::to_owned)
+    let local: Vec<String> = RUNTIMES
+        .iter()
+        .map(|runtime| runtime.id.to_owned())
         .chain(settings.endpoints.keys().cloned())
         .filter(|id| endpoint_settings(settings, id).is_some_and(|endpoint| endpoint.local))
         .collect();

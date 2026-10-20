@@ -60,8 +60,8 @@ impl Rig {
         env.agent_session = false;
         env.user_home = Some(repo.user_home().to_owned());
         let env = Arc::new(env);
-        let settings =
-            AppSettings::load(&env, Vec::new(), interactive).expect("settings that resolve");
+        let flags = crate::controller::test_support::quiet_local_servers(Vec::new());
+        let settings = AppSettings::load(&env, flags, interactive).expect("settings that resolve");
         let directory = Arc::new(FakeDirectory::new());
         let agent = directory.add(FakeRunner::cli("claude-code", "anthropic"));
         let conductor = Arc::new(FakeConductor::default());

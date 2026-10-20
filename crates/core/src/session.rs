@@ -1,6 +1,6 @@
 //! What Argonauts Code asks an adapter for, and the process spec an adapter returns.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -156,7 +156,26 @@ pub struct SessionRequest {
     /// See [`SessionSpec::preferences`](crate::session_runner::SessionSpec::preferences).
     #[serde(default, skip_serializing_if = "SessionPreferences::is_default")]
     pub preferences: SessionPreferences,
+    /// The installed CLI's version, as its adapter parses it, for an adapter whose flags
+    /// depend on it ([`Adapter::launch_reads_version`](crate::Adapter::launch_reads_version)).
+    /// `None` when it wasn't read or couldn't be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_version: Option<String>,
+    /// What the CLI said of its own config in the session's folder, as
+    /// [`Adapter::config_query`](crate::Adapter::config_query) asked it. `None` when it wasn't
+    /// asked or didn't answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_config: Option<String>,
+    /// In tokens: the window the model's server holds it to, as the registry's
+    /// [`ModelEntry::window`](crate::registry::ModelEntry::window) says. `None` until a server
+    /// has said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
 }
+
+/// Where a report goes, for a model that would hand it to a tool.
+pub const REPORT_IN_WORDS: &str =
+    "Write the report as the text of your final message. A tool call never ends your turn.";
 
 /// A file Argonauts Code writes before spawning the command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,9 +186,21 @@ pub struct SpecFile {
 }
 
 impl SessionRequest {
+    /// A request to open `session_id` again in `workdir`, as a take-over does, with the CLI's
+    /// defaults for the rest.
+    pub fn reopening(session_id: &str, workdir: &Path) -> Self {
+        Self {
+            workdir: workdir.to_path_buf(),
+            resume_session: Some(session_id.to_owned()),
+            ..Self::default()
+        }
+    }
+
     /// The prompt, ending with the report's schema when the session has one. For a CLI with no
     /// flag that holds a run to a schema, the model learns the report's shape only from this:
-    /// without it, a live gemma4 session on OpenCode wrote its report as plain lines.
+    /// without it, a live gemma4 session on OpenCode wrote its report as plain lines. A live
+    /// Qwen session on OpenCode 2 handed it to a tool instead and kept calling it, since a tool
+    /// call doesn't end a turn, so the prompt says where the report goes.
     pub fn prompt_with_schema(&self) -> String {
         let Some(schema) = &self.json_schema else {
             return self.prompt.clone();
@@ -177,7 +208,7 @@ impl SessionRequest {
         let schema = serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
         format!(
             "{}\n\nEnd your final message with your report: one JSON object that matches this \
-             schema.\n\n```json\n{schema}\n```\n",
+             schema. {REPORT_IN_WORDS}\n\n```json\n{schema}\n```\n",
             self.prompt.trim_end()
         )
     }
@@ -293,6 +324,25 @@ mod tests {
         assert_eq!(req.role, SessionRole::ReadOnly);
         assert_eq!(req.auth, AuthMode::Subscription);
         assert!(req.json_schema.is_none());
+    }
+
+    #[test]
+    fn the_prompt_says_the_report_is_the_final_message_never_a_tool_call() {
+        let plain = SessionRequest {
+            prompt: "Fix slugify.\n".into(),
+            ..SessionRequest::default()
+        };
+        assert_eq!(plain.prompt_with_schema(), "Fix slugify.\n");
+        let asked = SessionRequest {
+            json_schema: Some(serde_json::json!({"type": "object"})),
+            ..plain
+        };
+        let prompt = asked.prompt_with_schema();
+        assert!(prompt.starts_with(
+            "Fix slugify.\n\nEnd your final message with your report: one JSON object that \
+             matches this schema. Write the report as the text of your final message. A tool \
+             call never ends your turn.\n\n```json\n"
+        ));
     }
 
     #[test]

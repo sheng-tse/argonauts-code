@@ -1,0 +1,42 @@
+{
+ "cells": [
+  [
+   9,
+   21
+  ],
+  [
+   18,
+   42
+  ]
+ ],
+ "frames": 18,
+ "mascots": {
+  "a-captain-argonaut": {
+   "area": [
+    7.15,
+    -2.15,
+    90.4,
+    87.4
+   ],
+   "cycle": 3.4
+  },
+  "a-orchestrator-medusa": {
+   "area": [
+    12.18,
+    3.08,
+    88.74,
+    95.04
+   ],
+   "cycle": 1.8
+  },
+  "a-council-hydra": {
+   "area": [
+    2.39,
+    6.59,
+    97.52,
+    93.02
+   ],
+   "cycle": 3.6
+  }
+ }
+}

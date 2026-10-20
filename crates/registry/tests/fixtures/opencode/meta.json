@@ -1,0 +1,10 @@
+{
+  "program": "opencode",
+  "cli_version": "2.0.32",
+  "model_call": false,
+  "synthetic": false,
+  "recorded_at": "2026-10-18",
+  "model-list.json": "opencode api model.list, with location.directory written as /tmp/repo",
+  "model-default.json": "opencode api model.default, with location.directory written as /tmp/repo",
+  "notes": "Qwen3 Coder 30B (64k) is named, with limit.context 65536, by the recording machine's own OpenCode config; OpenCode found every other Ollama tag by itself, named by its id. gemma3:12b-32k reads 131072 though the tag holds 32768. The version is the one installed when the list was recorded; it wasn't read again when the file was copied here. The key naming each model's line is left out, since nothing reads it."
+}

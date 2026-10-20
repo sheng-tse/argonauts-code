@@ -1625,28 +1625,37 @@ impl Host {
                 record.cli_session.is_some(),
             ),
             None => {
-                let asked = resume.filter(|_| !blind).and_then(|earlier| {
-                    self.read(|state| {
-                        let session = state.sessions.get(&earlier)?;
-                        // Carrying on the same step's work, it keeps that row's name.
-                        let same = session.started.step == identity.step
-                            && session.started.role == identity.role;
-                        if same && session.cli_session.is_some() {
-                            kept_label.clone_from(&session.started.label);
-                        }
-                        let in_role = session.started.role == identity.role;
-                        session
-                            .cli_session
-                            .clone()
-                            .map(|agent_id| (agent_id, in_role))
-                    })
-                });
+                let fresh_by_role = lifetime::always_fresh(&settings, identity.role);
+                let asked = resume
+                    .filter(|_| !blind && !fresh_by_role)
+                    .and_then(|earlier| {
+                        self.read(|state| {
+                            let session = state.sessions.get(&earlier)?;
+                            // Carrying on the same step's work, it keeps that row's name.
+                            let same = session.started.step == identity.step
+                                && session.started.role == identity.role;
+                            if same && session.cli_session.is_some() {
+                                kept_label.clone_from(&session.started.label);
+                            }
+                            let in_role = session.started.role == identity.role;
+                            session
+                                .cli_session
+                                .clone()
+                                .map(|agent_id| (agent_id, in_role))
+                        })
+                    });
                 // Asked to carry on in its own role, the session already read that role's frame.
                 carries_on_in_role = asked.as_ref().is_some_and(|(_, in_role)| *in_role);
                 let asked = asked.map(|(agent_id, _)| agent_id);
                 let cli_session = match asked {
                     Some(cli_session) => Some(cli_session),
                     None => {
+                        // Where the session will work, as the launch settles it below.
+                        let next_folder = match (&workdir, access) {
+                            (Some(workdir), _) => Some(workdir.as_path()),
+                            (None, Access::NoTools) => None,
+                            (None, _) => Some(self.shared.repo.base_worktree.as_path()),
+                        };
                         let reuse = self.read(|state| {
                             lifetime::choose(
                                 state,
@@ -1655,6 +1664,7 @@ impl Host {
                                 identity.role,
                                 &identity.worker,
                                 identity.task.as_ref(),
+                                next_folder,
                                 blind || fresh,
                             )
                         })?;
@@ -1816,10 +1826,14 @@ impl Host {
                         lifetime,
                         limits: within(
                             self.capped_by_run(
-                                self.shared
-                                    .services
-                                    .limits
-                                    .session_limits(task_spec.as_ref(), identity.role),
+                                self.watched_for_progress(
+                                    &identity,
+                                    access,
+                                    self.shared
+                                        .services
+                                        .limits
+                                        .session_limits(task_spec.as_ref(), identity.role),
+                                ),
                             ),
                             time_limit,
                         ),
@@ -1865,6 +1879,23 @@ impl Host {
                 Err(err)
             }
         }
+    }
+
+    /// Only a worker's later try on work an earlier session committed is watched for calls
+    /// that change nothing, since its work may already be done.
+    fn watched_for_progress(
+        &self,
+        identity: &Identity,
+        access: Access,
+        mut limits: SessionLimits,
+    ) -> SessionLimits {
+        let later_try = identity.role == RoleName::Worker
+            && access == Access::Build
+            && identity.task.as_ref().is_some_and(|task| {
+                self.read(|state| crate::task::later_try::on_committed_work(state, task))
+            });
+        limits.no_progress_calls = limits.no_progress_calls.filter(|_| later_try);
+        limits
     }
 
     /// A session may spend no more than what's left of the run's limit, since the run's

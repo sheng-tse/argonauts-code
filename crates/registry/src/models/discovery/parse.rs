@@ -111,9 +111,10 @@ pub fn parse_codex_models(json: &str) -> Result<Vec<ModelEntry>, String> {
 }
 
 /// An OpenAI-compatible `GET /models` reply from the endpoint `endpoint`. OpenRouter's reply
-/// also carries prices per token, the context length, and whether a model takes tools; a
-/// plain server's carries ids only. Ollama lists `name:latest`, so the bare name becomes an
-/// alias.
+/// also carries prices per token, the context length with its top provider's cap, and whether
+/// a model takes tools; vLLM's the window it serves each model at (`max_model_len`);
+/// llama-server's the most its model was trained for (`meta.n_ctx_train`); a plain server's
+/// ids only. Ollama lists `name:latest`, so the bare name becomes an alias.
 pub fn parse_openai_models(
     endpoint: &str,
     local: bool,
@@ -130,7 +131,7 @@ pub fn parse_openai_models(
         .collect())
 }
 
-fn endpoint_entry(endpoint: &str, local: bool, model: &Value) -> Option<ModelEntry> {
+pub(super) fn endpoint_entry(endpoint: &str, local: bool, model: &Value) -> Option<ModelEntry> {
     let id = model["id"].as_str()?;
     // An id that can't name a model couldn't be run either.
     let worker: ModelRef = format!("{endpoint}/{id}").parse().ok()?;
@@ -162,7 +163,9 @@ fn endpoint_entry(endpoint: &str, local: bool, model: &Value) -> Option<ModelEnt
         },
         strengths: Vec::new(),
         good_for: Vec::new(),
-        context_window: model["context_length"].as_u64(),
+        context_window: tokens(&model["context_length"])
+            .or(tokens(&model["max_model_len"]))
+            .or(tokens(&model["meta"]["n_ctx_train"])),
         efforts: Vec::new(),
         aliases,
         retired: false,
@@ -174,7 +177,27 @@ fn endpoint_entry(endpoint: &str, local: bool, model: &Value) -> Option<ModelEnt
         tier: None,
         name: None,
         description: None,
+        // What the server holds it to: vLLM's own cap, or OpenRouter's top provider's.
+        window: tokens(&model["max_model_len"])
+            .or(tokens(&model["top_provider"]["context_length"])),
+        ram_bytes: None,
+        thinking: None,
+        variants: None,
+        listed_cost: false,
     })
+}
+
+/// A count of tokens, which a server may also send as a float.
+pub(super) fn tokens(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| {
+            value
+                .as_f64()
+                .filter(|n| n.is_finite() && *n >= 1.0)
+                .map(|n| n as u64)
+        })
+        .filter(|n| *n > 0)
 }
 
 /// OpenRouter prices are dollars per token, as strings.
@@ -198,12 +221,13 @@ fn usd_per_mtok(pricing: &Value) -> CostModel {
 
 /// A CLI's own words, without control characters, which would move the cursor or recolor the
 /// screen where they're shown.
-fn plain(value: &Value) -> Option<String> {
-    let text: String = value
-        .as_str()?
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect();
+pub(super) fn plain(value: &Value) -> Option<String> {
+    plain_text(value.as_str()?)
+}
+
+/// `text` without control characters or the spaces around it, `None` when nothing is left.
+pub(super) fn plain_text(text: &str) -> Option<String> {
+    let text: String = text.chars().filter(|c| !c.is_control()).collect();
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_owned())
 }

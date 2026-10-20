@@ -14,7 +14,7 @@ mod resets;
 pub use clock::{on_24_hours, set_clock, twenty_four_hours};
 pub use numbers::{
     Formats, PlanUsageWords, TokenUnit, UNKNOWN, duration_slot, multiplier, percent, plan_usage,
-    stale, tokens, tokens_as,
+    stale, tokens, tokens_as, tokens_as_claude_code, tokens_beside, tokens_of_window, window,
 };
 pub use resets::{ClockStyle, ResetStyle, countdown, reset_time, resets};
 
@@ -66,7 +66,7 @@ pub fn thousands(n: u64) -> String {
 }
 
 /// What was spent, marked the same on every screen: `~$0.24` when estimated from token counts,
-/// `$0.24+` when some usage had no price.
+/// `$0.24+` when some usage had no price, and `<$0.01` for less than would show as a cent.
 pub fn spend(spent: &Spend) -> String {
     // A free model, such as one on your own server, is priced at exactly nothing.
     let free = spent.cost_usd == 0.0 && !spent.cost_partial;
@@ -76,8 +76,16 @@ pub fn spend(spent: &Spend) -> String {
         ""
     };
     let partial = if spent.cost_partial { "+" } else { "" };
-    format!("{estimated}{}{partial}", usd(spent.cost_usd))
+    let amount = if spent.cost_usd > 0.0 && spent.cost_usd < UNDER_A_CENT {
+        "<$0.01".to_owned()
+    } else {
+        usd(spent.cost_usd)
+    };
+    format!("{estimated}{amount}{partial}")
 }
+
+/// What rounds to `$0.00`, though something was spent.
+const UNDER_A_CENT: f64 = 0.005;
 
 fn split(elapsed: Duration) -> (u64, u64, u64) {
     let secs = elapsed.as_secs();
@@ -313,6 +321,19 @@ mod tests {
             ..Spend::default()
         };
         assert_eq!(spend(&free), "$0.00");
+    }
+
+    #[test]
+    fn spend_under_a_cent_is_not_written_as_nothing() {
+        let spent = |cost_usd, cost_estimated| Spend {
+            cost_usd,
+            cost_estimated,
+            ..Spend::default()
+        };
+        assert_eq!(spend(&spent(0.004_531_5, false)), "<$0.01");
+        assert_eq!(spend(&spent(0.000_8, true)), "~<$0.01");
+        assert_eq!(spend(&spent(0.006, false)), "$0.01");
+        assert_eq!(spend(&spent(0.0, false)), "$0.00");
     }
 
     #[test]

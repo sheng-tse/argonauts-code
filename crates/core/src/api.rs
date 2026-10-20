@@ -186,8 +186,9 @@ pub struct SteerAck {
 pub struct TakeOverTicket {
     /// Paused with its work committed.
     pub task: TaskId,
-    /// The agent's own UI on the same session, in the task's worktree. `None` for endpoints or
-    /// an agent out of plan usage; you then work in the worktree with your own tools.
+    /// The agent's own UI on the same session, in the task's worktree. `None` for an endpoint,
+    /// a CLI that can't open a session in its own screen, or a task with no session yet, which
+    /// take-over then says rather than opening anything.
     pub command: Option<CommandSpec>,
     pub worktree: PathBuf,
     pub agent_id: String,
@@ -339,6 +340,10 @@ pub struct PlanUsage {
     /// It bills for each token, so there is no plan to track.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pays_per_token: bool,
+    /// Every model the crew runs on it runs on a server on this machine, so there is no plan
+    /// to read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local: bool,
     /// Its windows, the shortest first. Each says when it was read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub windows: Vec<PlanUsageReading>,
@@ -371,6 +376,9 @@ pub struct UsageShare {
     /// Its CLI bills for each token, so this was charged rather than spent inside a plan.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pays_per_token: bool,
+    /// It ran on a server on this machine, which charges nothing and no plan covers.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local: bool,
     /// What it spent on each day of this week that it spent anything, oldest first, whatever
     /// the period.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

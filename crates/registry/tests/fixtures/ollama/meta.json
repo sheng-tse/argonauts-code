@@ -1,0 +1,13 @@
+{
+  "program": "curl",
+  "model_call": false,
+  "synthetic": false,
+  "server": "Ollama 0.20.3",
+  "recorded_at": "2026-10-19",
+  "tags.json": "GET http://localhost:11434/api/tags",
+  "show.json": "POST http://localhost:11434/api/show {\"model\": <tag>} for each tag, keyed by tag. license, modelfile, template, tensors and tokenizer.* left out, since nothing reads them",
+  "ps-empty.json": "GET http://localhost:11434/api/ps with nothing loaded",
+  "ps-loaded.json": "GET http://localhost:11434/api/ps while llama3.2 was loaded, recorded on 2026-10-18 while checking how Ollama frees a model",
+  "sanitized": "times moved from the recording machine's offset to UTC, the same instants",
+  "notes": "qwen3-coder:30b-64k and gemma3:12b-32k are tags made from qwen3-coder:30b and gemma3:12b with num_ctx set The keys naming each model's line are left out of every answer's details, since nothing reads them."
+}

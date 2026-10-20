@@ -414,9 +414,10 @@ fn a_cached_catalog_counts_only_while_it_matches_its_hash() {
     );
 }
 
-/// Discovery off, so nothing but the catalog is fetched, and the codex binary is never run.
+/// Every CLI and local server off, so nothing but the catalog is fetched and no CLI is run.
 fn quiet_settings() -> Settings {
     let mut settings = Settings::default();
+    settings.registry.local_servers = false;
     for agent in settings.agents.values_mut() {
         agent.enabled = false;
     }

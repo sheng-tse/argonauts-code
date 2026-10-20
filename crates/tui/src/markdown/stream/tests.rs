@@ -165,11 +165,11 @@ fn tables_wait_until_they_end() {
     let mut stream = MarkdownStream::new();
     stream.push("Intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n");
     assert_eq!(plain_text(&stream.take_stable(&ctx)), "● Intro");
-    assert!(plain_text(&stream.tail(&ctx)).contains("│ a │ b │"));
+    assert!(plain_text(&stream.tail(&ctx)).contains("│  a  │  b  │"));
     stream.push("| 5 | 6 |\n\nAfter\n\n");
     let rows = plain_text(&stream.take_stable(&ctx));
     assert!(
-        rows.contains("│ 5 │ 6 │") && rows.contains("After"),
+        rows.contains("│ 5   │ 6   │") && rows.contains("After"),
         "{rows}"
     );
 }

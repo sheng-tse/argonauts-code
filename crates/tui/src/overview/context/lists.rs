@@ -1,6 +1,7 @@
-//! The lists Claude Code's /context ends with, each in full under a header with its count and
-//! its total: MCP tools loaded and available, custom agents and skills grouped by where they
-//! come from, and memory files with their paths.
+//! The lists Claude Code's /context ends with, each under a header with its count and its
+//! total: MCP tools loaded and available, custom agents and skills grouped by where they come
+//! from, and memory files with their paths. Every list shows in full, except that a long list
+//! of MCP tools folds the ones not loaded into a row a server, as Claude Code folds them.
 
 use argonauts_core::events::context::{ContextKind, ContextUsage, McpTool};
 use ratatui::text::Span;
@@ -17,6 +18,8 @@ use crate::text::{sanitize_line, str_width};
 const NAMES: usize = 10;
 /// Where an MCP tool's server is named, from the list's start.
 const SERVER: usize = 32;
+/// The most rows MCP tools take before those not loaded fold into a row a server.
+const MCP_ROWS: usize = 12;
 
 fn clean(text: &str) -> String {
     sanitize_line(text).trim().to_owned()
@@ -52,13 +55,27 @@ pub(super) fn header(
     ]
 }
 
+/// Whether a list of MCP tools shows those not loaded one a row, or folded a row a server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fold {
+    Folded,
+    Whole,
+}
+
 /// MCP tools, the loaded ones with their tokens and then, where tools load on demand, the
-/// ones available by name. A server column says whose each tool is.
-pub(super) fn mcp_tools(kit: &Kit<'_>, columns: &Columns, usage: &ContextUsage) -> Drawn {
+/// ones available by name. A server column says whose each tool is. Past [`MCP_ROWS`] rows,
+/// unless `whole`, the available ones fold into a row a server. The fold, where the list is
+/// long enough for one, says how the list shows.
+pub(super) fn mcp_tools(
+    kit: &Kit<'_>,
+    columns: &Columns,
+    usage: &ContextUsage,
+    whole: bool,
+) -> (Drawn, Option<Fold>) {
     let tools = &usage.mcp_tools;
     let mut drawn = Drawn::new();
     if tools.is_empty() {
-        return drawn;
+        return (drawn, None);
     }
     let left = columns.left;
     // Claude Code's own test for tools that load on demand.
@@ -120,8 +137,13 @@ pub(super) fn mcp_tools(kit: &Kit<'_>, columns: &Columns, usage: &ContextUsage) 
         for (at_row, tool) in tools.iter().enumerate() {
             drawn.push(row(tool, at_row, tools.len(), false));
         }
-        return drawn;
+        return (drawn, None);
     }
+    let fold = (loaded.len() + waiting.len() > MCP_ROWS).then_some(if whole {
+        Fold::Whole
+    } else {
+        Fold::Folded
+    });
     if !loaded.is_empty() {
         drawn.push(place([at(left.start, vec![kit.dim("Loaded")])]));
         for (at_row, tool) in loaded.iter().enumerate() {
@@ -133,11 +155,50 @@ pub(super) fn mcp_tools(kit: &Kit<'_>, columns: &Columns, usage: &ContextUsage) 
             left.start,
             vec![kit.dim("Available \u{b7} not in the window until called")],
         )]));
-        for (at_row, tool) in waiting.iter().enumerate() {
-            drawn.push(row(tool, at_row, waiting.len(), true));
+        if fold == Some(Fold::Folded) {
+            let servers = by_server(&waiting);
+            for (at_row, (server, tools, tokens)) in servers.iter().enumerate() {
+                let words = format!(
+                    "{} \u{b7} {} \u{b7} {} on demand",
+                    clean(server),
+                    count(*tools, "tool"),
+                    format::tokens(*tokens)
+                );
+                let room = left.cells().saturating_sub(2);
+                drawn.push(place([at(
+                    left.start,
+                    vec![
+                        branch(kit, at_row, servers.len()),
+                        kit.dim(clip(&words, room)),
+                    ],
+                )]));
+            }
+        } else {
+            for (at_row, tool) in waiting.iter().enumerate() {
+                drawn.push(row(tool, at_row, waiting.len(), true));
+            }
         }
     }
-    drawn
+    (drawn, fold)
+}
+
+/// Tools by their server, in the order the servers first come: how many each has and what
+/// they come to.
+fn by_server<'a>(tools: &[&'a McpTool]) -> Vec<(&'a str, usize, u64)> {
+    let mut servers: Vec<(&str, usize, u64)> = Vec::new();
+    for tool in tools {
+        match servers
+            .iter_mut()
+            .find(|(server, ..)| *server == tool.server.as_str())
+        {
+            Some((_, count, tokens)) => {
+                *count += 1;
+                *tokens += tool.tokens;
+            }
+            None => servers.push((tool.server.as_str(), 1, tool.tokens)),
+        }
+    }
+    servers
 }
 
 /// The cells a name has between its branch and the two blanks before its tokens.

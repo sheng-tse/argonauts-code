@@ -201,6 +201,10 @@ impl Adapter for AcpAdapter {
         self.tested_versions
     }
 
+    fn talks_to_own_server(&self, _req: &SessionRequest) -> bool {
+        self.manifest.own_server
+    }
+
     /// A profile names no model, so there is no cheapest one.
     fn cheapest_model(&self) -> (&'static str, Option<&'static str>) {
         ("<model>", None)
@@ -235,15 +239,15 @@ impl Adapter for AcpAdapter {
     }
 
     /// The profile's take-over arguments for its binary, with `{session}` and `{workdir}`.
-    fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
+    fn interactive_resume(&self, req: &SessionRequest) -> Option<CommandSpec> {
         if self.manifest.interactive_resume.is_empty() {
             return None;
         }
         let values = Placeholders {
             model: None,
             effort: None,
-            workdir,
-            session: Some(session_id),
+            workdir: &req.workdir,
+            session: Some(req.resume_session.as_deref()?),
             home: None,
         };
         let args = self
@@ -253,7 +257,7 @@ impl Adapter for AcpAdapter {
             .map(|arg| values.fill(arg))
             .collect::<anyhow::Result<Vec<_>>>()
             .ok()?;
-        Some(CommandSpec::new(self.binary, workdir).args(args))
+        Some(CommandSpec::new(self.binary, &req.workdir).args(args))
     }
 
     fn default_provider(&self) -> &'static str {
@@ -590,7 +594,7 @@ mod tests {
         assert!(adapter.session_driver().is_some());
         assert_eq!(adapter.input_line("hi").as_deref(), Some("hi"));
         let resume = adapter
-            .interactive_resume("s-9", Path::new("/repo"))
+            .interactive_resume(&SessionRequest::reopening("s-9", Path::new("/repo")))
             .unwrap();
         assert_eq!(resume.args, ["--resume", "s-9"]);
 
@@ -602,7 +606,7 @@ mod tests {
         assert_eq!(adapter.input_line("hi"), None);
         assert!(
             adapter
-                .interactive_resume("s-9", Path::new("/repo"))
+                .interactive_resume(&SessionRequest::reopening("s-9", Path::new("/repo")))
                 .is_none()
         );
         let err = adapter.command(&SessionRequest::default()).unwrap_err();
@@ -621,5 +625,18 @@ mod tests {
         );
         let err = adapter.command(&SessionRequest::default()).unwrap_err();
         assert!(format!("{err:#}").contains("{model}"), "{err:#}");
+    }
+
+    /// A profile that says its sessions talk to a server of their own keeps loopback open for
+    /// them with the network off; one that doesn't say so never gets it.
+    #[test]
+    fn a_profile_says_when_its_sessions_talk_to_a_server_of_their_own() {
+        let request = SessionRequest::default();
+        assert!(!acp_adapter(hermes(None)).talks_to_own_server(&request));
+        let own = CliManifest {
+            own_server: true,
+            ..hermes(None)
+        };
+        assert!(acp_adapter(own).talks_to_own_server(&request));
     }
 }

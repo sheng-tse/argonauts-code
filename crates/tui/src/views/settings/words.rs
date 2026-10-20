@@ -2,10 +2,11 @@
 //! quotes, and typed text turned back into TOML.
 
 use argonauts_core::display_names::DisplayNames;
+use argonauts_core::model_picker::ModelSource;
 use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::approvals::Decides;
-use time::OffsetDateTime;
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::format::setting_value;
 use crate::views::resume::ago;
@@ -116,6 +117,68 @@ pub fn freshness(
         (None, true) => Some("Checking each CLI's model list.".to_owned()),
         (None, false) => None,
     }
+}
+
+/// How fresh one level's list is, from its own source: "Model list refreshed 3m ago" with
+/// "; asking OpenCode…" while it's asked again, or that it couldn't be read and which list
+/// shows instead, then what the list leaves out here, when it leaves something out. The first
+/// level takes the oldest of its sources. `None` for a level with no source of its own, such
+/// as Claude Code's, whose aliases need nothing asked.
+pub fn level_freshness(
+    sources: &[ModelSource],
+    cli: Option<&str>,
+    now: OffsetDateTime,
+    offset: UtcOffset,
+) -> Option<String> {
+    let Some(cli) = cli else {
+        let oldest = sources.iter().filter_map(|source| source.listed).min()?;
+        return Some(format!("Model lists refreshed {}.", ago(oldest, now)));
+    };
+    let source = sources.iter().find(|source| source.cli == cli)?;
+    let fresh = source_freshness(source, cli, now, offset);
+    match (fresh, &source.note) {
+        (Some(fresh), Some(note)) => Some(format!("{fresh} {note}")),
+        (fresh, note) => fresh.or_else(|| note.clone()),
+    }
+}
+
+fn source_freshness(
+    source: &ModelSource,
+    cli: &str,
+    now: OffsetDateTime,
+    offset: UtcOffset,
+) -> Option<String> {
+    let label = crate::format::agent_label(cli);
+    Some(match (source.listed, source.asking, source.failed) {
+        (Some(at), true, _) => format!("Model list refreshed {}; asking {label}…", ago(at, now)),
+        (None, true, _) => format!("Asking {label} for its models…"),
+        (Some(at), false, true) => format!(
+            "{label}'s list couldn't be read; showing the one from {}.",
+            clock_24(at, offset)
+        ),
+        (None, false, true) => format!("{label}'s list couldn't be read."),
+        (Some(at), false, false) => format!("Model list refreshed {}.", ago(at, now)),
+        (None, false, false) => return None,
+    })
+}
+
+/// What a CLI's row on the first level adds about its list: "asking…" while it's asked again,
+/// or "list from 21:40" when the latest ask failed.
+pub fn source_state(source: &ModelSource, offset: UtcOffset) -> Option<String> {
+    if source.asking {
+        return Some("asking…".to_owned());
+    }
+    match (source.failed, source.listed) {
+        (true, Some(at)) => Some(format!("list from {}", clock_24(at, offset))),
+        (true, None) => Some("list couldn't be read".to_owned()),
+        _ => None,
+    }
+}
+
+/// `21:40` in the terminal's zone.
+fn clock_24(at: OffsetDateTime, offset: UtcOffset) -> String {
+    let at = at.to_offset(offset);
+    format!("{:02}:{:02}", at.hour(), at.minute())
 }
 
 /// Why saving in `scope` won't show while `layer` sets the key, and what to do instead.
@@ -392,6 +455,31 @@ pub fn capitalized(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a list leaves out follows how fresh it is, and stands alone while nothing is known
+    /// of when it listed.
+    #[test]
+    fn a_levels_line_says_what_its_list_leaves_out() {
+        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let note = "This repo's own OpenCode config is left out until you trust the repo with \
+                    `argonauts setup`.";
+        let mut source = ModelSource {
+            cli: "opencode".to_owned(),
+            listed: Some(now),
+            asking: false,
+            failed: false,
+            note: Some(note.to_owned()),
+        };
+        assert_eq!(
+            level_freshness(&[source.clone()], Some("opencode"), now, UtcOffset::UTC),
+            Some(format!("Model list refreshed just now. {note}"))
+        );
+        source.listed = None;
+        assert_eq!(
+            level_freshness(&[source], Some("opencode"), now, UtcOffset::UTC).as_deref(),
+            Some(note)
+        );
+    }
 
     #[test]
     fn typed_text_becomes_toml() {

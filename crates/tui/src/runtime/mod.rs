@@ -18,9 +18,12 @@ use tokio::sync::mpsc;
 
 use crate::UiOptions;
 use crate::format::WallClock;
+use crate::mascot::Graphics;
 use crate::state::TerminalInfo;
 use crate::terminal::InlineTerminal;
-use crate::terminal::setup::{TerminalModes, install_panic_hook, probe_background, probe_cursor};
+use crate::terminal::setup::{
+    TerminalModes, install_panic_hook, probe_background, probe_cell_size, probe_cursor,
+};
 use crate::text::set_ambiguous_width;
 use crate::theme::ColorEnv;
 
@@ -55,6 +58,9 @@ pub async fn run_app(io: AppIo, options: UiOptions) -> anyhow::Result<()> {
     let mut modes = TerminalModes::enable()?;
     install_panic_hook();
     let background = probe_background(BACKGROUND_WAIT);
+    // Only a terminal that draws pictures is asked how big its cells are, for the mascot's.
+    let graphics = Graphics::from_process();
+    let cell = graphics.and_then(|_| probe_cell_size(BACKGROUND_WAIT));
     let (screen, cursor) = match probe_cursor() {
         Ok(found) => found,
         Err(error) => {
@@ -68,6 +74,7 @@ pub async fn run_app(io: AppIo, options: UiOptions) -> anyhow::Result<()> {
     set_ambiguous_width(options.settings.ambiguous_width);
     let mut screen = Screen::new(io, &options, terminal, terminal_info(background));
     screen.use_real_terminal(modes, stops);
+    screen.use_pictures(graphics, cell);
     screen.run(TerminalKeys::new()).await
 }
 

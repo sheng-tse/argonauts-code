@@ -210,6 +210,9 @@ pub struct StuckFacts {
     pub providers_tried: Vec<String>,
     /// The provider of the fallback the next try would go to. `None` when no fallback is left.
     pub next_provider: Option<String>,
+    /// What that fallback is called on screen, such as `Claude Code`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_name: Option<String>,
     /// Extra tries granted so far, against `rules.stuck.max_extra_tries`.
     pub extra_tries: u32,
     /// Whether one more try fits in what's left of the reserve. `None` when that can't be

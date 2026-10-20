@@ -84,7 +84,7 @@ async fn dispatch(cli: Cli) -> ExitCode {
         Some(Command::Update) => update::run(&cli.set).await,
         Some(Command::Config(ref command)) => config::run(command, &cli.set),
         Some(Command::Telemetry(command)) => telemetry(command, &cli.set).await,
-        Some(Command::Models { discover }) => config::models(discover).await,
+        Some(Command::Models { discover }) => config::models(discover, &cli.set).await,
         Some(Command::Approve {
             ref run,
             ref approval,

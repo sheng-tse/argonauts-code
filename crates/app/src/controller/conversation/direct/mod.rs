@@ -164,6 +164,9 @@ pub(super) struct Running {
     /// Files a setup you answered wrote during the turn, by path from your folder. The turn's
     /// end leaves them as the setup wrote them.
     setup_wrote: BTreeSet<String>,
+    /// The files git didn't track when the turn started, so its end names only the ones it
+    /// made.
+    untracked: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -709,6 +712,7 @@ fn start(
         }
     });
     let unmade = unmade_files(ctx, &root);
+    let untracked = untracked_files(&root);
     lifecycle::begin(ctx, conversation, text.clone(), |_| step(asking))?;
     if let Some(turn) = conversation.turn.as_mut() {
         turn.direct = Some(Running {
@@ -725,9 +729,53 @@ fn start(
             root,
             has_tools: turn.step.has_tools(),
             setup_wrote: BTreeSet::new(),
+            untracked,
         });
     }
     Ok(())
+}
+
+/// The files in `root` that git neither tracks nor ignores, by path from it. None in a folder
+/// with no git, where nothing is tracked.
+fn untracked_files(root: &Path) -> BTreeSet<String> {
+    if !crate::git::has_git(root) {
+        return BTreeSet::new();
+    }
+    let listed = crate::git::git(root, &["ls-files", "--others", "--exclude-standard", "-z"]);
+    listed
+        .map(|listed| {
+            listed
+                .split('\0')
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The most files the line names before it counts the rest.
+const MOST_UNTRACKED: usize = 3;
+
+/// The files the turn made that git doesn't track, so a scratch file the agent left doesn't
+/// hide in your checkout: `Left untracked: test_slug_fix.py`. A setup you answered wrote its
+/// files on purpose, so they aren't named.
+fn left_untracked(running: &Running) -> Option<String> {
+    let made: Vec<String> = untracked_files(&running.root)
+        .into_iter()
+        .filter(|path| !running.untracked.contains(path) && !running.setup_wrote.contains(path))
+        .collect();
+    let named = match made.as_slice() {
+        [] => return None,
+        [one] => one.clone(),
+        [first, second] => format!("{first} and {second}"),
+        [first, second, third] => format!("{first}, {second} and {third}"),
+        many => format!(
+            "{} and {} more",
+            many[..MOST_UNTRACKED].join(", "),
+            many.len() - MOST_UNTRACKED
+        ),
+    };
+    Some(format!("Left untracked: {named}"))
 }
 
 /// The protected files that aren't in the turn's folder now, when our sandbox wraps the turn.
@@ -893,6 +941,9 @@ pub(super) fn finished(ctx: &mut Ctx, conversation: &mut ConversationState, turn
     close_asks(ctx, conversation, &turn.id);
     set_aside_planted(ctx, conversation, &running, &turn.id);
     record(ctx, conversation, &mut running);
+    if let Some(left) = left_untracked(&running) {
+        ctx.notice(NoteLevel::Info, left);
+    }
     let agy = turn.worker.agent == ANTIGRAVITY;
     if agy && running.asks != Asks::Never && !running.refused.is_empty() {
         offer_refused(ctx, conversation, turn, &running.refused);
@@ -911,6 +962,44 @@ pub(super) fn failed(ctx: &mut Ctx, conversation: &mut ConversationState, turn: 
     match changed {
         Some(summary) => ctx.notice(NoteLevel::Info, format!("Stopped · {summary}")),
         None => ctx.notice(NoteLevel::Info, "Stopped · nothing changed"),
+    }
+    if let Some(left) = left_untracked(&running) {
+        ctx.notice(NoteLevel::Info, left);
+    }
+}
+
+/// What a turn left in your checkout, for the lines after its end.
+#[derive(Debug, Default)]
+pub(super) struct Kept {
+    /// What it changed and what `/rewind` puts back, when it changed anything.
+    pub(super) changed: Option<String>,
+    /// The files it made that git doesn't track.
+    untracked: Option<String>,
+}
+
+impl Kept {
+    pub(super) fn say(&self, ctx: &Ctx) {
+        for line in [&self.changed, &self.untracked].into_iter().flatten() {
+            ctx.notice(NoteLevel::Info, line.clone());
+        }
+    }
+}
+
+/// A turn a watchdog stopped keeps what it changed, as one Esc stops does.
+pub(super) fn kept_after_watchdog(
+    ctx: &mut Ctx,
+    conversation: &mut ConversationState,
+    turn: &mut Turn,
+) -> Kept {
+    let Some(mut running) = turn.direct.take() else {
+        return Kept::default();
+    };
+    close_asks(ctx, conversation, &turn.id);
+    set_aside_planted(ctx, conversation, &running, &turn.id);
+    let changed = record(ctx, conversation, &mut running);
+    Kept {
+        changed,
+        untracked: left_untracked(&running),
     }
 }
 
@@ -934,6 +1023,9 @@ pub(super) fn stopped(ctx: &mut Ctx, conversation: &mut ConversationState, id: &
     set_aside_planted(ctx, conversation, &running, id);
     if let Some(summary) = record(ctx, conversation, &mut running) {
         ctx.notice(NoteLevel::Info, summary);
+    }
+    if let Some(left) = left_untracked(&running) {
+        ctx.notice(NoteLevel::Info, left);
     }
 }
 

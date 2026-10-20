@@ -84,10 +84,10 @@ mod tests {
         }
     }
 
-    /// The schema the step enforces meets the strict rules every agent accepts: closed
-    /// objects, every property required, and optional values written as nullable.
+    /// The schema the step enforces closes every object and asks for what runs, `based_on` or
+    /// `workflow`, either of them null; the strict shape Codex gets asks for every field.
     #[test]
-    fn the_design_schema_is_strict() {
+    fn the_design_schema_asks_for_what_runs() {
         let schema = output_schema::<DesignWorkflow>();
         let param = &schema["properties"]["params"]["items"];
         assert_eq!(schema["additionalProperties"], false, "{schema:#}");
@@ -102,19 +102,25 @@ mod tests {
         };
         assert_eq!(
             required(&schema),
+            ["name", "description", "based_on", "why", "workflow"],
+            "{schema:#}"
+        );
+        let strict = argonauts_core::answer_format::strict(&schema);
+        assert_eq!(
+            required(&strict),
             [
-                "based_on",
-                "description",
-                "done_when",
-                "first_try",
                 "name",
+                "description",
+                "based_on",
+                "why",
                 "params",
+                "workflow",
+                "done_when",
                 "plan",
                 "questions",
-                "why",
-                "workflow"
+                "first_try"
             ],
-            "{schema:#}"
+            "{strict:#}"
         );
         assert_eq!(required(param), ["name", "value"], "{schema:#}");
         for nullable in ["based_on", "workflow"] {

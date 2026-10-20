@@ -94,7 +94,7 @@ impl UsageCard {
 pub fn cli_role(agent: &str) -> Role {
     match agent {
         "claude-code" | "codex" | "antigravity-cli" => Role::for_cli(agent),
-        "opencode" => Role::AgentPurple,
+        "opencode" => Role::AgentGreen,
         _ => Role::AgentPink,
     }
 }
@@ -277,7 +277,9 @@ impl UsageCards<'_> {
             .windows
             .iter()
             .find(|reading| reading.status == PlanUsageStatus::Rejected && !reading.wrap_up);
-        let mut words = if plan.pays_per_token {
+        let mut words = if plan.local {
+            vec![kit.dim("  local, no plan")]
+        } else if plan.pays_per_token {
             vec![kit.dim(" pays per token, so there is no plan to track")]
         } else if let Some(reading) = out {
             let until = reading
@@ -333,7 +335,42 @@ impl UsageCards<'_> {
         } else {
             Vec::new()
         };
-        bodies::half_stack(kit, &stack, &entries, width, 2)
+        let mut body = bodies::half_stack(kit, &stack, &entries, width, 2);
+        if let Some(note) = self.no_cache_note().filter(|_| full) {
+            body.push(truncate_spans(&[kit.dim(note)], width));
+        }
+        body
+    }
+
+    /// `Ollama reports no cache, so local input counts in full`: a local server says none of
+    /// a prompt came from cache, so each step counts its whole prompt again, and the input
+    /// reads far larger than what any one context held.
+    fn no_cache_note(&self) -> Option<String> {
+        let mut servers: Vec<String> = Vec::new();
+        let uncached = self.usage.by_agent.iter().filter(|share| {
+            share.local && share.spent.input_tokens > 0 && share.spent.cached_tokens == 0
+        });
+        for share in uncached {
+            // A CLI names the server in its model's route, as OpenCode's `ollama/…`; an
+            // endpoint is the server itself.
+            let server = share
+                .model
+                .as_deref()
+                .and_then(|model| model.split_once('/'))
+                .map_or(share.agent_id.as_str(), |(server, _)| server);
+            let name = self.names.cli(server);
+            if !servers.contains(&name) {
+                servers.push(name);
+            }
+        }
+        let (named, verb) = match servers.as_slice() {
+            [] => return None,
+            [one] => (one.clone(), "reports"),
+            [rest @ .., last] => (format!("{} and {last}", rest.join(", ")), "report"),
+        };
+        Some(format!(
+            "{named} {verb} no cache, so local input counts in full"
+        ))
     }
 
     fn history_total(&self) -> argonauts_core::Spend {
@@ -503,7 +540,9 @@ pub fn spoken(usage: &UsageSummary, names: &DisplayNames) -> Vec<String> {
             Some(tier) => format!("{} {tier}", plan.name),
             None => plan.name.clone(),
         };
-        if plan.pays_per_token {
+        if plan.local {
+            lines.push(format!("{name}: local, no plan"));
+        } else if plan.pays_per_token {
             lines.push(format!("{name}: pays per token, no plan to track"));
         } else if plan.windows.is_empty() {
             lines.push(format!("{name}: no reading yet"));

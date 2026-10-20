@@ -1,25 +1,29 @@
 //! The run views, built by code at no token cost, and the narrator's summary and `/ask`.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use argonauts_core::app::{AppEvent, RepoRuns, ViewData, ViewRequest};
+use argonauts_core::app::{AppEvent, RepoRuns, SessionCounted, ViewData, ViewRequest};
+use argonauts_core::display_names::builtin_cli_name;
 use argonauts_core::events::context::ContextDetail;
 use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::ids::RepoId;
 use argonauts_core::journal;
-use argonauts_core::layout::run_files;
+use argonauts_core::layout::{self, run_files, session_files};
+use argonauts_core::names::ModelRef;
 use argonauts_core::names::WorkflowId;
+use argonauts_core::registry::ModelRegistry;
+use argonauts_core::settings::Settings;
+use argonauts_core::settings::endpoints::endpoint_settings;
 use argonauts_core::settings::sessions::RotateAt;
-use argonauts_core::views::{ContextRow, ContextView};
+use argonauts_core::views::{ContextRow, ContextView, RunFinishedAt, ServerCap, WindowFigures};
 use argonauts_core::{NoteLevel, RunId};
 
 use super::{Handled, on_screen};
 use crate::client;
 use crate::controller::Ctx;
-use crate::controller::attach::Stage;
 use crate::controller::runs::{self, RunsState};
 use crate::live_registry;
 use crate::views;
@@ -54,6 +58,19 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
         ViewRequest::SessionsEverywhere => runs::show_runs(ctx, true).await?,
         ViewRequest::Status => return status(ctx, runs).await,
         ViewRequest::Context => return context(ctx, runs, None).await,
+        ViewRequest::SessionContext { run, session } => {
+            let path =
+                layout::session_dir(&ctx.env.run_dir(&run), &session).join(session_files::CONTEXT);
+            let counted = kept_count(&path);
+            show(
+                ctx,
+                ViewData::SessionContext {
+                    run,
+                    session,
+                    counted,
+                },
+            );
+        }
         ViewRequest::Diff { run, task, scope } => {
             let diff = match ctx.services.conductor.diff(&run, &task, scope).await {
                 Ok(diff) => diff,
@@ -224,20 +241,16 @@ pub(super) fn asks_for_status(question: &str) -> bool {
         || PHRASES.iter().any(|phrase| question.contains(phrase))
 }
 
-/// `/context`: every live session's context, including the conversation's own row. The tab asks
-/// again while work runs, so a list that fails only leaves the other runs out.
+/// `/context`: every live session's context, including the conversation's own row, and every
+/// session of the run you follow. The tab asks again while work runs, so a list that fails
+/// only leaves the other runs out.
 pub(crate) async fn context(
     ctx: &mut Ctx,
     runs: &mut RunsState,
     conversation: Option<ContextRow>,
 ) -> Handled {
-    let (rows, _) = context_rows(ctx, runs, conversation).await;
-    show(
-        ctx,
-        ViewData::Context {
-            view: ContextView { rows },
-        },
-    );
+    let (view, _) = context_view(ctx, runs, conversation).await;
+    show(ctx, ViewData::Context { view });
     Ok(Vec::new())
 }
 
@@ -248,61 +261,142 @@ pub(crate) async fn context_report(
     runs: &mut RunsState,
     conversation: Option<ContextRow>,
 ) -> Handled {
-    let (rows, left_out) = context_rows(ctx, runs, conversation).await;
+    let (view, left_out) = context_view(ctx, runs, conversation).await;
     if let Some(err) = left_out {
         ctx.notice(
             NoteLevel::Warn,
             format!("Other runs' sessions are left out: {err}"),
         );
     }
-    show(
-        ctx,
-        ViewData::ContextPrint {
-            view: ContextView { rows },
-        },
-    );
+    show(ctx, ViewData::ContextPrint { view });
     Ok(Vec::new())
 }
 
-/// Every live session's context: the conversation's own, the run on screen, then the other runs
-/// that work now, with why the other runs are missing when they couldn't be listed.
-async fn context_rows(
+/// The sessions with where they run: the servers on this machine they use, and what holds the
+/// main session's window to its size.
+fn where_they_run(ctx: &Ctx, mut view: ContextView) -> ContextView {
+    view.main_window = view
+        .rows
+        .iter()
+        .find(|row| row.run.is_none())
+        .map(|row| window_figures(ctx.services.registry.as_ref(), &row.worker))
+        .filter(|figures| *figures != WindowFigures::default());
+    view.local = local_servers(ctx.settings(), &view.rows);
+    view
+}
+
+/// The servers on this machine the sessions run on, by endpoint id: a session's CLI is one, or
+/// its model's route names one.
+fn local_servers(settings: &Settings, rows: &[ContextRow]) -> Vec<String> {
+    let mut local: Vec<String> = Vec::new();
+    for worker in rows.iter().map(|row| &row.worker) {
+        let routed = worker
+            .model
+            .as_deref()
+            .and_then(|model| model.split_once('/'))
+            .map(|(server, _)| server);
+        for id in std::iter::once(worker.agent.as_str()).chain(routed) {
+            let on_this_machine =
+                endpoint_settings(settings, id).is_some_and(|endpoint| endpoint.local);
+            if on_this_machine && !local.iter().any(|known| known == id) {
+                local.push(id.to_owned());
+            }
+        }
+    }
+    local
+}
+
+/// What holds `worker`'s window to its size, from the registry. A CLI's model routed to a
+/// server, as OpenCode's `ollama/qwen3-coder:30b-64k`, has the most the model takes and the
+/// server's cap from the server's own entry for it, and the CLI's figure from the CLI's.
+fn window_figures(registry: &dyn ModelRegistry, worker: &ModelRef) -> WindowFigures {
+    let own = registry.get(worker);
+    let routed = worker
+        .model
+        .as_deref()
+        .and_then(|model| model.split_once('/'))
+        .map(|(server, model)| ModelRef::new(server, Some(model.to_owned())));
+    let (server, served) = match &routed {
+        Some(routed) => (routed.agent.as_str(), registry.get(routed)),
+        None => (worker.agent.as_str(), own.clone()),
+    };
+    let cli = own
+        .filter(|_| routed.is_some())
+        .and_then(|entry| entry.window.or(entry.context_window));
+    WindowFigures {
+        model: served.as_ref().and_then(|entry| entry.context_window),
+        server: served
+            .as_ref()
+            .and_then(|entry| entry.window)
+            .map(|tokens| ServerCap {
+                name: builtin_cli_name(server).map_or_else(|| server.to_owned(), str::to_owned),
+                tokens,
+            }),
+        cli,
+    }
+}
+
+/// The sessions the Context tab lists: the conversation's own, every session of the run on
+/// screen in the order they started, live or ended, then the live sessions of the other runs
+/// that work now, with why the other runs are missing when they couldn't be listed. The run on
+/// screen stays listed after it finishes, until the next one comes on screen or another
+/// conversation does.
+async fn context_view(
     ctx: &mut Ctx,
     runs: &mut RunsState,
     conversation: Option<ContextRow>,
-) -> (Vec<ContextRow>, Option<anyhow::Error>) {
+) -> (ContextView, Option<anyhow::Error>) {
     let rotate_at = ctx.settings().sessions.rotate_at.clone();
     let clis = ContextClis::here(ctx);
-    let mut rows: Vec<ContextRow> = conversation
-        .into_iter()
-        .map(|row| clis.said_of(row))
-        .collect();
-    let attached = runs::attached(runs).cloned();
+    let mut view = ContextView::of(
+        conversation
+            .into_iter()
+            .map(|row| clis.said_of(row))
+            .collect(),
+    );
+    let attached = runs::followed(runs).cloned();
     if let Some(run) = &attached {
-        let finished = runs
-            .attached
-            .as_ref()
-            .is_some_and(|attached| matches!(attached.stage, Stage::Finished(_)));
-        if !finished {
-            let events = run_events(ctx, runs, run);
-            rows.extend(capped_rows(&events, run, &rotate_at, &clis));
+        let events = run_events(ctx, runs, run);
+        view.rows
+            .extend(capped_rows(&events, run, &rotate_at, &clis));
+        if let Some(at) = views::finished_at(&events) {
+            view.finished.push(RunFinishedAt {
+                run: run.clone(),
+                at,
+            });
         }
     }
     let list = match ctx.services.conductor.list().await {
         Ok(list) => list,
-        Err(err) => return (rows, Some(err.into())),
+        Err(err) => return (where_they_run(ctx, view), Some(err.into())),
     };
     for other in list
         .iter()
         .filter(|summary| summary.live && Some(&summary.run) != attached.as_ref())
     {
         let events = run_events(ctx, runs, &other.run);
-        rows.extend(capped_rows(&events, &other.run, &rotate_at, &clis));
+        let live = capped_rows(&events, &other.run, &rotate_at, &clis)
+            .into_iter()
+            .filter(|row| row.ended.is_none());
+        view.rows.extend(live);
     }
-    (rows, None)
+    (where_they_run(ctx, view), None)
 }
 
-/// A run's live sessions, each capped where it rotates. A share of the window gives each
+/// A session's last whole count as its folder keeps it, counted when the file was written.
+/// Nothing for a session never counted, or a file that doesn't read as one.
+fn kept_count(path: &Path) -> Option<SessionCounted> {
+    let usage = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let at = std::fs::metadata(path)
+        .and_then(|file| file.modified())
+        .ok()?;
+    Some(SessionCounted {
+        usage: Box::new(usage),
+        at: at.into(),
+    })
+}
+
+/// A run's sessions, each capped where it rotates. A share of the window gives each
 /// session its own cap, and none while its window is unknown.
 fn capped_rows(
     events: &[RunEvent],
@@ -516,4 +610,107 @@ pub(crate) async fn all_repos(ctx: &Ctx) -> anyhow::Result<Vec<RepoRuns>> {
         runs,
     }));
     Ok(repos)
+}
+
+#[cfg(test)]
+mod window_tests {
+    use argonauts_core::registry::ModelEntry;
+    use argonauts_core::settings::agents::EndpointSettings;
+    use argonauts_core::views::ContextRow;
+    use argonauts_testkit::services::StaticRegistry;
+
+    use super::*;
+
+    fn entry(id: &str, context_window: Option<u64>, window: Option<u64>) -> ModelEntry {
+        let mut entry: ModelEntry = serde_json::from_value(serde_json::json!({
+            "id": id,
+            "provider": "qwen",
+            "kind": "cli",
+            "access": "local",
+            "cost": { "unit": "none" },
+        }))
+        .expect("a registry entry");
+        entry.context_window = context_window;
+        entry.window = window;
+        entry
+    }
+
+    /// Qwen on OpenCode through Ollama: the model takes 256k, the 64k tag holds it to 64k, and
+    /// OpenCode's own list says 64k.
+    #[test]
+    fn a_routed_model_s_window_has_each_figure_that_holds_it() {
+        let registry = StaticRegistry::default();
+        registry.add(entry(
+            "ollama/qwen3-coder:30b-64k",
+            Some(262_144),
+            Some(65_536),
+        ));
+        registry.add(entry(
+            "opencode/ollama/qwen3-coder:30b-64k",
+            None,
+            Some(65_536),
+        ));
+        let worker: ModelRef = "opencode/ollama/qwen3-coder:30b-64k".parse().unwrap();
+        assert_eq!(
+            window_figures(&registry, &worker),
+            WindowFigures {
+                model: Some(262_144),
+                server: Some(ServerCap {
+                    name: "Ollama".to_owned(),
+                    tokens: 65_536,
+                }),
+                cli: Some(65_536),
+            }
+        );
+        // A model straight on its server has no CLI between.
+        let gemma: ModelRef = "ollama/gemma3:12b-32k".parse().unwrap();
+        registry.add(entry("ollama/gemma3:12b-32k", Some(131_072), Some(32_768)));
+        let figures = window_figures(&registry, &gemma);
+        assert_eq!(figures.cli, None);
+        assert_eq!(figures.server.map(|cap| cap.tokens), Some(32_768));
+        // A model nothing knows has no figures.
+        let unknown: ModelRef = "opencode/openrouter/qwen3-coder".parse().unwrap();
+        assert_eq!(
+            window_figures(&registry, &unknown),
+            WindowFigures::default()
+        );
+    }
+
+    #[test]
+    fn the_servers_a_session_runs_on_here_are_listed_once() {
+        let row = |worker: &str| ContextRow {
+            run: None,
+            session: argonauts_core::names::SessionKey::numbered(1),
+            label: worker.to_owned(),
+            worker: worker.parse().unwrap(),
+            used: 0,
+            window: None,
+            cap: None,
+            tool_calls: 0,
+            spent: argonauts_core::Spend::default(),
+            rotations: 0,
+            estimated: false,
+            counts: false,
+            categories: Vec::new(),
+            recorded: None,
+            ended: None,
+        };
+        let mut settings = Settings::default();
+        let rows = [
+            row("opencode/ollama/qwen3-coder:30b-64k"),
+            row("ollama/gemma3:12b-32k"),
+            row("opencode/openrouter/qwen3-coder"),
+            row("claude-code/claude-haiku-5-5"),
+        ];
+        assert_eq!(local_servers(&settings, &rows), ["ollama"]);
+        // Ollama moved to another machine is no longer local.
+        settings.endpoints.insert(
+            "ollama".into(),
+            EndpointSettings {
+                base_url: Some("http://gpu-box:11434/v1".into()),
+                ..EndpointSettings::default()
+            },
+        );
+        assert!(local_servers(&settings, &rows).is_empty());
+    }
 }

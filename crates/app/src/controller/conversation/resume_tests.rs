@@ -34,6 +34,16 @@ fn resume(conversation: &str) -> UiCommand {
     })
 }
 
+/// Waits for `/clear` to start the screen over, and returns the way back it names.
+async fn cleared(driver: &mut TestDriver) -> Option<ConversationId> {
+    match driver
+        .until(|event| matches!(event, AppEvent::ConversationCleared { .. }))
+        .await
+    {
+        AppEvent::ConversationCleared { way_back } => way_back,
+        _ => unreachable!(),
+    }
+}
 async fn turn(driver: &mut TestDriver, text: &str) {
     driver.submit(text).await;
     driver
@@ -112,8 +122,11 @@ async fn clear_starts_a_new_conversation_and_resume_carries_the_old_one_on() {
     turn(&mut driver, "hi").await;
 
     driver.send(slash(SlashCommand::Clear)).await;
-    let said = notice(&mut driver, "Started a new conversation").await;
-    assert!(said.contains("/resume conversation-001"), "{said}");
+    let way_back = cleared(&mut driver).await;
+    assert_eq!(
+        way_back.as_ref().map(ToString::to_string).as_deref(),
+        Some("conversation-001")
+    );
     turn(&mut driver, "something else").await;
     let specs = driver.agent.specs();
     assert_eq!(specs[1].resume, None, "a new conversation is a new session");
@@ -243,7 +256,7 @@ async fn a_resumed_conversation_draws_its_run_after_the_turn_that_started_it() {
         })
         .unwrap();
     driver.send(slash(SlashCommand::Clear)).await;
-    notice(&mut driver, "Started a new conversation").await;
+    cleared(&mut driver).await;
     let mark = driver.seen().len();
     driver.send(resume("conversation-001")).await;
     driver
@@ -285,7 +298,7 @@ async fn a_long_conversation_is_drawn_whole_from_its_record() {
         turn(&mut driver, &format!("question {n}")).await;
     }
     driver.send(slash(SlashCommand::Clear)).await;
-    notice(&mut driver, "Started a new conversation").await;
+    cleared(&mut driver).await;
     let mark = driver.seen().len();
     driver.send(resume("conversation-001")).await;
     driver
@@ -654,7 +667,7 @@ async fn a_resumed_conversation_counts_its_context_at_once() {
     );
 
     driver.send(slash(SlashCommand::Clear)).await;
-    notice(&mut driver, "Started a new conversation").await;
+    cleared(&mut driver).await;
     driver.send(resume("conversation-1")).await;
     driver
         .until(|event| matches!(event, AppEvent::PastDrawn))
@@ -708,7 +721,7 @@ async fn a_typed_command_comes_back_where_it_was_typed() {
         })
         .await;
     driver.send(slash(SlashCommand::Clear)).await;
-    notice(&mut driver, "Started a new conversation").await;
+    cleared(&mut driver).await;
     let mark = driver.seen().len();
     driver.send(resume("conversation-1")).await;
     driver

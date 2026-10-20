@@ -338,6 +338,7 @@ pub(crate) fn summary(
                 agent_id,
                 spent,
                 pays_per_token: false,
+                local: false,
                 this_week: days.map(|(day, spent)| DaySpend { day, spent }).collect(),
             }
         })

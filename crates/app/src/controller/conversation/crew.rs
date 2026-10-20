@@ -33,7 +33,8 @@ pub(crate) fn rows(
                 .filter(|_| current)
                 .map(|row| ContextUse {
                     used: row.used,
-                    cap: row.cap.or(row.window).unwrap_or(0),
+                    window: row.window,
+                    cap: row.cap,
                 });
             Some(row(&summary, &past, busy, context, repo))
         })

@@ -96,12 +96,12 @@ fn whole_days(records: &[Record]) -> usize {
         .len()
 }
 
-/// `950`, `48.2k`, `3.4m`, `118.4b`.
+/// `950`, `48.2k`, `3.4M`, `118.4b`: millions in the `M` every other token count uses.
 fn short(count: u64) -> String {
     let count = count as f64;
     match count {
         n if n >= 1e9 => format!("{:.1}b", n / 1e9),
-        n if n >= 1e6 => format!("{:.1}m", n / 1e6),
+        n if n >= 1e6 => format!("{:.1}M", n / 1e6),
         n if n >= 1e3 => format!("{:.1}k", n / 1e3),
         n => format!("{n}"),
     }

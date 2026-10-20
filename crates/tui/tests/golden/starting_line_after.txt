@@ -1,0 +1,9 @@
+❯ Use a workflow for this, with Codex as the reviewer, and choose everything else yourself. Fix the …                 
+                                                                                                                      
+⏺ Starting a workflow: Captain, as Claude Code's own, with GPT 6 Luna on Codex reviewing as you asked; Haiku 5.5 on   
+  Claude Code plans and builds.                                                                                       
+                                                                                                                      
+⏺ Workflow(Fix the money rounding · Captain)                                                                          
+  ⎿  Running in background · /workflows to monitor and save                                                           
+                                                                                                                      
+ (the row prints once Claude Code's script names its phases, 14.6 s in on that run; until then the working line moves)

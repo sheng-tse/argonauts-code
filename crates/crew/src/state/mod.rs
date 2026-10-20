@@ -295,6 +295,7 @@ pub(crate) mod tests {
             written: Default::default(),
             network_retries: 0,
             workflow: None,
+            workdir: None,
         }
     }
 
@@ -515,6 +516,32 @@ pub(crate) mod tests {
         let record = state.sessions.get(&key).unwrap();
         assert_eq!((record.starts, record.since), (2, 3));
         assert!(record.end.is_none());
+
+        // A spend limit cut it with its CLI session kept: it carries on once the limit allows.
+        let limit = EndReason::LimitHit {
+            dimension: argonauts_core::LimitDimension::Spend,
+        };
+        state.apply(&envelope(
+            8,
+            Some("task-001"),
+            Some("s-004"),
+            RunEventKind::Session(SessionEvent::Ended(Box::new(end(
+                limit.clone(),
+                Some("v-2"),
+            )))),
+        ));
+        assert!(state.sessions.get(&key).unwrap().resumable());
+        state.apply(&envelope(9, Some("task-001"), Some("s-004"), started()));
+        state.apply(&envelope(
+            10,
+            Some("task-001"),
+            Some("s-004"),
+            RunEventKind::Session(SessionEvent::Ended(Box::new(end(limit, None)))),
+        ));
+        assert!(
+            !state.sessions.get(&key).unwrap().resumable(),
+            "with no CLI session there is nothing to carry on"
+        );
     }
 
     #[test]

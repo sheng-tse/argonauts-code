@@ -194,7 +194,8 @@ pub enum LimitLineKind {
 }
 
 /// Watchdogs, per task unless the task overrides them. The two caps on a task's work are off
-/// until you set them. The other two catch a session that hangs or loops, so they stay on.
+/// until you set them. The other three catch a session that hangs, loops, or only looks around,
+/// so they stay on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct WatchdogSettings {
@@ -207,6 +208,10 @@ pub struct WatchdogSettings {
     pub inactivity_min: f64,
     /// The same call this many times in a row gets a nudge; again, a soft stop.
     pub repeat_limit: u32,
+    /// A later try on work an earlier session committed gets the wrap-up after this many tool
+    /// calls in a row that change no file, since the work may already be done. It may run the
+    /// checks once more, and the call after that stops it. 0 turns it off.
+    pub no_progress_calls: u32,
 }
 
 impl Default for WatchdogSettings {
@@ -216,6 +221,7 @@ impl Default for WatchdogSettings {
             wall_clock_min: None,
             inactivity_min: 15.0,
             repeat_limit: 10,
+            no_progress_calls: 8,
         }
     }
 }

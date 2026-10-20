@@ -139,14 +139,14 @@ pub struct Heading {
 }
 
 /// The name in bold in the accent color, and under it, dim, what kind of workflow it is and its
-/// description cut with `…`, then the totals at the right.
+/// description cut with `…` where its room ends, then the totals at the right.
 pub fn draw_heading(buf: &mut Buffer, dock: &Dock, heading: &Heading, theme: &Theme) {
     let area = dock.panes.header;
     if area.height == 0 || area.width == 0 {
         return;
     }
     let dim = theme.style(Role::Dim);
-    // A long title ends at the last whole word that fits, as its description does.
+    // A long title ends at the last whole word that fits.
     let name = cut_at_word(sanitize_line(&heading.name).trim(), usize::from(area.width));
     let spans = vec![Span::styled(
         name,
@@ -169,7 +169,11 @@ pub fn draw_heading(buf: &mut Buffer, dock: &Dock, heading: &Heading, theme: &Th
         .map(|part| sanitize_line(part).trim().to_owned())
         .filter(|part| !part.is_empty())
         .collect();
-    let mut text = cut_at_word(&said.join(" · "), room);
+    // The description keeps all the room it has, so it may end mid-word.
+    let mut text = cut(&said.join(" · "), room);
+    if let Some(kept) = text.strip_suffix('…') {
+        text = format!("{}…", kept.trim_end());
+    }
     let used = str_width(&text);
     text.push_str(&" ".repeat(width.saturating_sub(used + totals_width)));
     text.push_str(&totals);
@@ -287,14 +291,15 @@ pub(super) fn with_names(
     spans
 }
 
-/// The box in a faint line with both pane titles plain on its top edge, whichever pane has
-/// the keys, and `mark`, such as `↑ 2–6 of 9 ↓`, on its bottom edge at the right.
+/// The box, its divider and both pane titles in the bright text colour, white on a dark screen
+/// and black on a light one, as Claude Code draws its frame, whichever pane has the keys, and
+/// `mark`, such as `↑ 2–6 of 9 ↓`, dim on its bottom edge at the right.
 pub fn draw_box(buf: &mut Buffer, dock: &Dock, titles: [&str; 2], mark: &str, theme: &Theme) {
     let body = dock.panes.body;
     if body.width < 2 || body.height < 2 {
         return;
     }
-    let border = marks::decoration(theme.style(Role::Faint));
+    let border = marks::decoration(theme.style(Role::Bright));
     let ascii = theme.glyphs.prompt.is_ascii();
     let set = if ascii {
         ratatui::symbols::border::Set {
@@ -319,7 +324,7 @@ pub fn draw_box(buf: &mut Buffer, dock: &Dock, titles: [&str; 2], mark: &str, th
     } else {
         ("┬", "│", "┴")
     };
-    let title = theme.style(Role::Text);
+    let title = theme.style(Role::Bright);
     let top = body.y;
     let bottom = body.bottom().saturating_sub(1);
     let right_title_x = if dock.panes.left.width > 0 {
@@ -348,7 +353,7 @@ pub fn draw_box(buf: &mut Buffer, dock: &Dock, titles: [&str; 2], mark: &str, th
         let width = str_width(&text) as u16;
         if width + 4 < body.width {
             let x = body.right() - 2 - width;
-            let line = Line::from(Span::styled(text, theme.style(Role::Faint)));
+            let line = Line::from(Span::styled(text, theme.style(Role::Dim)));
             panes::put(buf, x, bottom, width, &line);
         }
     }
@@ -376,8 +381,9 @@ pub fn carve_below(dock: &mut Dock, rows: u16, keep: u16) -> Option<Rect> {
     })
 }
 
-/// A second box in the frame, drawn as the first is: `title` on its top edge at the left and
-/// `note` at the right. Returns where its rows go, one cell in from each border.
+/// A second box in the frame, drawn as the first is, in the same bright line: `title` on its
+/// top edge at the left and `note` at the right. Returns where its rows go, one cell in from
+/// each border.
 pub fn draw_panel(
     buf: &mut Buffer,
     area: Rect,
@@ -388,7 +394,7 @@ pub fn draw_panel(
     if area.width < 4 || area.height < 2 {
         return Rect::default();
     }
-    let border = marks::decoration(theme.style(Role::Faint));
+    let border = marks::decoration(theme.style(Role::Bright));
     let set = if theme.glyphs.prompt.is_ascii() {
         ASCII_BORDER
     } else {

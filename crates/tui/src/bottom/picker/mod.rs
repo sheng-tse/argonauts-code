@@ -61,6 +61,12 @@ pub struct Picker {
     pub enter_hint: String,
     /// The Esc hint, such as `Esc to go back`, when Esc doesn't close or cancel.
     pub esc_hint: String,
+    /// A line that stays under the title while the rows scroll, such as what this machine
+    /// gives models: its label in the question colour, then its figures, both bold.
+    pub banner: Option<(String, String)>,
+    /// In the warning colour where the effort line goes, such as why the model under the
+    /// pointer won't fit, or the question Enter asks before a download.
+    pub note: Option<String>,
     pub flow: Flow,
 }
 
@@ -84,6 +90,12 @@ pub struct PickerRow {
     /// What state the row's thing is in, drawn as that state's glyph in its color before the
     /// description, whose first word names it: `✔ on`, `✗ not installed`.
     pub state: Option<State>,
+    /// Words of the description drawn in the danger colour, such as "too big", so a row that
+    /// can't be used here stands out.
+    pub danger: Option<String>,
+    /// What the filter matches beside the label and the description, such as a model's id,
+    /// so `qwen3-coder:30b` finds the row named "Qwen3 Coder 30B (64k)".
+    pub also_matches: Option<String>,
 }
 
 impl PickerRow {
@@ -140,6 +152,10 @@ impl Picker {
                 needle.is_empty()
                     || row.label.to_lowercase().contains(&needle)
                     || row.description.to_lowercase().contains(&needle)
+                    || row
+                        .also_matches
+                        .as_deref()
+                        .is_some_and(|text| text.to_lowercase().contains(&needle))
             })
             .map(|(index, _)| index)
             .collect()
@@ -167,6 +183,22 @@ impl Picker {
         self.filtering = false;
         self.input = None;
         self.warning = None;
+    }
+
+    /// New rows in place of the old, as a list refreshed while it's open: the pointer goes to
+    /// `pointed`, an index into `rows`, the window stays where it was unless the pointer would
+    /// leave it, and a filter or a typed line is kept. Without that row, the pointer keeps its
+    /// place.
+    pub fn replace_rows(&mut self, rows: Vec<PickerRow>, pointed: Option<usize>) {
+        let place = self.selected;
+        self.rows = rows;
+        let shown = self.shown();
+        let at = pointed
+            .and_then(|pointed| shown.iter().position(|&index| index == pointed))
+            .unwrap_or(place.min(shown.len().saturating_sub(1)));
+        self.selected = at;
+        self.offset = self.offset.min(shown.len().saturating_sub(VISIBLE_ROWS));
+        self.scroll_to_pointer();
     }
 
     fn picks_by_letter(&self) -> bool {

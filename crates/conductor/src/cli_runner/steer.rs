@@ -10,7 +10,7 @@ use argonauts_core::{LimitDimension, WRAP_UP_MESSAGE};
 
 use super::launch::{input_event, message_part, part};
 use super::outbox::Outbox;
-use crate::watchdogs::REPEAT_NOTE;
+use crate::watchdogs::{NO_PROGRESS_WRAP_UP, REPEAT_NOTE};
 
 /// Put between messages sent as one turn.
 const BETWEEN: &str = "\n\n";
@@ -39,6 +39,15 @@ impl Pending {
             part: part(InputPartKind::WrapUp, "wrap-up", WRAP_UP_MESSAGE, None),
             message: None,
             limit: dimension.map(|dimension| LimitEvent::WrapUpSent { via, dimension }),
+        }
+    }
+
+    /// The wrap-up for a later try whose calls changed nothing: run the checks, and report.
+    pub fn check_and_report() -> Self {
+        Self {
+            part: part(InputPartKind::WrapUp, "wrap-up", NO_PROGRESS_WRAP_UP, None),
+            message: None,
+            limit: None,
         }
     }
 

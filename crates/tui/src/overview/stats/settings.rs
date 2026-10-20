@@ -339,9 +339,9 @@ impl SettingsPage {
         };
         vec![
             "↑↓ setting",
-            "←→ change",
+            "← → change",
             "space tick",
-            "shift+←→ order",
+            "shift+← → order",
             "r reset",
             save,
         ]

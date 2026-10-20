@@ -3,12 +3,13 @@
 //! the record of what is sent. A resume builds its launch the same way, every flag again.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use argonauts_core::events::session::LaunchRecord;
 use argonauts_core::limits::{HealthBoard, PlanUsageBoard};
+use argonauts_core::model_memory::ModelMemory;
 use argonauts_core::names::AgentId;
 use argonauts_core::registry::ModelRegistry;
 use argonauts_core::session_runner::{
@@ -16,10 +17,11 @@ use argonauts_core::session_runner::{
 };
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{SandboxChoice, SandboxSettings};
+use argonauts_core::settings::context::ContextAsk;
 use argonauts_core::settings::endpoints::local_endpoint_addresses;
 use argonauts_core::{Adapter, CommandSpec, Paths, SessionRequest, create_private_dir_all};
 
-use super::{CliRunner, capabilities, launch, request};
+use super::{CliRunner, capabilities, config_query, launch, request};
 use crate::cli_versions::CliVersions;
 use crate::doctor::resolve_binary;
 use crate::sandbox::profile::{build_cache_env, build_cache_root, launch_paths, rewritten_files};
@@ -38,10 +40,15 @@ pub struct Context {
     pub plan_usage: Arc<dyn PlanUsageBoard>,
     pub health: Arc<dyn HealthBoard>,
     pub home: Paths,
+    pub memory: Arc<dyn ModelMemory>,
     pub agent_id: AgentId,
     pub capabilities: RunnerCapabilities,
     /// Shared by the runner's sessions, so a CLI that can't isolate says so once.
     pub said_it_cant_isolate: Arc<AtomicBool>,
+    /// See [`SessionRequest::cli_version`].
+    pub cli_version: Option<String>,
+    /// See [`SessionRequest::cli_config`]: asked once, before the session's first launch.
+    pub cli_config: OnceLock<Option<String>>,
 }
 
 /// One process launch.
@@ -49,6 +56,8 @@ pub struct Launch {
     pub request: SessionRequest,
     /// What is spawned: the adapter's command in the sandbox.
     pub command: CommandSpec,
+    /// The adapter's command as it runs, before the sandbox wraps it.
+    pub unwrapped: CommandSpec,
     /// The adapter's command before the sandbox wraps it, prompt and values left out.
     pub record: LaunchRecord,
     pub profile: SandboxProfile,
@@ -68,14 +77,55 @@ impl Context {
             plan_usage: worker.plan_usage.clone(),
             health: worker.health.clone(),
             home,
+            memory: worker.memory.clone(),
             agent_id: worker.worker.agent_id(),
             capabilities: capabilities::capabilities_for(worker.adapter.as_ref()),
             said_it_cant_isolate: worker.said_it_cant_isolate.clone(),
+            cli_version: worker.known_version(),
+            cli_config: OnceLock::new(),
         }
+    }
+
+    /// The session's first launch, after asking the CLI what its config holds where its adapter
+    /// needs that ([`Adapter::config_query`]). The answer stands for every later launch.
+    pub async fn first_launch(&self) -> Result<Launch, String> {
+        let mut request = self.request(&self.spec, None)?;
+        if let Some(query) = self.adapter.config_query(&request) {
+            let answer = config_query::ask(self, request.clone(), query).await;
+            request.cli_config = self.cli_config.get_or_init(|| answer).clone();
+        }
+        self.launch_from(&self.spec, request)
     }
 
     /// The launch for `spec`: this session's own, or a resume of it with a message.
     pub fn launch(&self, spec: &SessionSpec) -> Result<Launch, String> {
+        self.launch_with_window(spec, None)
+    }
+
+    /// The launch for `spec` on a model a local server loaded with `window`, which the CLI is
+    /// asked for as the largest the model has, unless your cap is smaller.
+    pub fn launch_with_window(
+        &self,
+        spec: &SessionSpec,
+        window: Option<u64>,
+    ) -> Result<Launch, String> {
+        let request = self.request(spec, window)?;
+        self.launch_from(spec, request)
+    }
+
+    fn launch_from(&self, spec: &SessionSpec, request: SessionRequest) -> Result<Launch, String> {
+        let command = self.adapter.command(&request).map_err(|err| {
+            format!(
+                "{} could not build its command: {err:#}",
+                self.adapter.display_name()
+            )
+        })?;
+        self.contain(spec, request, command)
+    }
+
+    /// The request for `spec`, with what the runner learned of the CLI before the launch and
+    /// the window a local server loaded its model with.
+    fn request(&self, spec: &SessionSpec, window: Option<u64>) -> Result<SessionRequest, String> {
         let mut request = request::session_request(
             spec,
             self.adapter.as_ref(),
@@ -83,18 +133,38 @@ impl Context {
             self.registry.as_deref(),
         )
         .map_err(|err| err.to_string())?;
+        request.cli_version = self.cli_version.clone();
+        request.cli_config = self.cli_config.get().cloned().flatten();
+        if let Some(window) = window {
+            // The server holds the model to what it loaded, so a CLI that's told the window,
+            // as OpenCode is in its provider config, is told that one.
+            request.window = Some(request.window.map_or(window, |held| held.min(window)));
+            request.context = match request.context {
+                ContextAsk::Held { tokens } => ContextAsk::Held {
+                    tokens: tokens.min(window),
+                },
+                ContextAsk::AsItIs | ContextAsk::Largest { .. } => ContextAsk::Largest {
+                    known: Some(window),
+                },
+            };
+        }
         request.tool_sandbox_off =
             self.contained(spec.sandbox.mode) || self.rules.mode == SandboxChoice::None;
         if spec.isolated {
             request.builtins_off =
                 CliVersions::load(&self.home.cli_versions()).builtins(self.adapter.id());
         }
-        let mut command = self.adapter.command(&request).map_err(|err| {
-            format!(
-                "{} could not build its command: {err:#}",
-                self.adapter.display_name()
-            )
-        })?;
+        Ok(request)
+    }
+
+    /// `command` made ready to run as `spec`'s: the binary you named, the session's
+    /// environment and network, and its sandbox.
+    pub(super) fn contain(
+        &self,
+        spec: &SessionSpec,
+        request: SessionRequest,
+        mut command: CommandSpec,
+    ) -> Result<Launch, String> {
         if command.program == self.adapter.binary()
             && let Some(binary) = self.configured_binary()?
         {
@@ -117,6 +187,15 @@ impl Context {
             let (port, url) = self.proxy()?;
             profile.proxy_port = Some(port);
             set_env(&mut command, proxy::session_env(&url));
+            // Its own server listens on 127.0.0.1, which the proxy would refuse; `localhost`,
+            // where your local endpoints are, still goes through the proxy.
+            if self.adapter.talks_to_own_server(&request) {
+                profile.loopback = true;
+                let own_server = ["NO_PROXY", "no_proxy"]
+                    .map(|name| (name.to_owned(), "127.0.0.1".to_owned()))
+                    .to_vec();
+                set_env(&mut command, own_server);
+            }
         }
         // A direct turn asks the app before an edit through its own port, which the network
         // being off must not cut.
@@ -136,6 +215,7 @@ impl Context {
             SandboxMode::Os | SandboxMode::Container => self.sandbox.describe(&profile),
         };
         let record = launch::launch_record(&command, &request.prompt, &sandbox_line);
+        let unwrapped = command.clone();
         let command = match profile.mode {
             SandboxMode::None => command,
             SandboxMode::Os | SandboxMode::Container => self
@@ -146,6 +226,7 @@ impl Context {
         Ok(Launch {
             request,
             command,
+            unwrapped,
             record,
             profile,
         })
@@ -416,6 +497,23 @@ mod tests {
         assert!(!launch.profile.writable.contains(&home));
     }
 
+    #[test]
+    fn a_launch_on_a_loaded_window_is_told_that_window() {
+        let h = TestDriver::new(TestAdapter::new("true").with_driver(FakeDriver::default()));
+        let dir = tempfile::tempdir().unwrap();
+        let spec = spec_in(dir.path(), dir.path(), "hi");
+        let ctx = Context::new(&h.worker, spec.clone(), h.worker.home().unwrap());
+        assert_eq!(ctx.launch(&spec).unwrap().request.window, None);
+        let loaded = ctx.launch_with_window(&spec, Some(65_536)).unwrap();
+        assert_eq!(loaded.request.window, Some(65_536));
+        assert!(matches!(
+            loaded.request.context,
+            ContextAsk::Largest {
+                known: Some(65_536)
+            } | ContextAsk::Held { .. }
+        ));
+    }
+
     /// Claims a sandbox's mode and runs the command as it is.
     struct Pretend(SandboxMode);
 
@@ -495,6 +593,41 @@ mod tests {
         assert_eq!(
             ended(ErrorCategory::Timeout, Instant::now()),
             "API Error: Connection error."
+        );
+    }
+
+    /// A CLI that talks to a server of its own, on a loopback port it picks, reaches it with the
+    /// network off: loopback stays open, and 127.0.0.1 goes around the proxy, which would refuse
+    /// it, while `localhost`, where your local endpoints are, still goes through it.
+    #[test]
+    fn a_session_with_a_server_of_its_own_reaches_it_with_the_network_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = Proxy::start().unwrap();
+        let h = TestDriver::with_settings(
+            TestAdapter::new("true")
+                .with_driver(FakeDriver::default())
+                .with_its_own_server(),
+            Settings::default(),
+        );
+        let worker = h
+            .worker
+            .with_sandbox(Arc::new(Pretend(SandboxMode::Os)))
+            .with_proxy(proxy.clone());
+        let mut spec = spec_in(dir.path(), dir.path(), "hi");
+        spec.access = Access::NoTools;
+        let home = worker.home().unwrap();
+        let launch = Context::new(&worker, spec.clone(), home)
+            .launch(&spec)
+            .unwrap();
+        assert_eq!(launch.profile.proxy_port, Some(proxy.port()));
+        assert!(launch.profile.loopback);
+        assert_eq!(env_of(&launch.command, "NO_PROXY"), Some("127.0.0.1"));
+        assert_eq!(env_of(&launch.command, "no_proxy"), Some("127.0.0.1"));
+        assert!(env_of(&launch.command, "HTTPS_PROXY").is_some());
+        let sbpl = crate::sandbox::seatbelt::render_profile(&launch.profile);
+        assert!(
+            sbpl.contains("(allow network-outbound (remote ip \"localhost:*\"))"),
+            "{sbpl}"
         );
     }
 
@@ -593,6 +726,60 @@ mod tests {
 
     fn fake() -> TestAdapter {
         TestAdapter::new("true").with_driver(FakeDriver::default())
+    }
+
+    /// Settings whose fake CLI is a script that answers `--version` and counts each time.
+    fn versioned(dir: &Path, version: &str) -> Settings {
+        use std::os::unix::fs::PermissionsExt;
+        let binary = dir.join("fake-cli");
+        let script = format!(
+            "#!/bin/sh\necho asked >> '{}'\necho 'fake {version}'\n",
+            dir.join("asked").display()
+        );
+        std::fs::write(&binary, script).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut settings = Settings::default();
+        settings.agents.entry("fake".to_owned()).or_default().binary = Some(binary);
+        settings
+    }
+
+    fn asked(dir: &Path) -> usize {
+        std::fs::read_to_string(dir.join("asked"))
+            .map(|asked| asked.lines().count())
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn a_launch_that_needs_the_version_reads_it_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = TestDriver::with_settings(
+            fake().reading_its_version(),
+            versioned(dir.path(), "2.0.32"),
+        );
+        let spec = spec_in(dir.path(), &dir.path().join("s"), "hi");
+        assert_eq!(launch(&h.worker, &spec).request.cli_version, None);
+        for _ in 0..2 {
+            assert_eq!(h.worker.launch_version().await.as_deref(), Some("2.0.32"));
+        }
+        assert_eq!(asked(dir.path()), 1);
+        let launched = launch(&h.worker, &spec);
+        assert_eq!(launched.request.cli_version.as_deref(), Some("2.0.32"));
+        assert!(
+            launched
+                .command
+                .env_set
+                .contains(&("FAKE_CLI_VERSION".to_owned(), "2.0.32".to_owned()))
+        );
+    }
+
+    #[tokio::test]
+    async fn any_other_launch_never_runs_the_cli_for_its_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = TestDriver::with_settings(fake(), versioned(dir.path(), "2.0.32"));
+        assert_eq!(h.worker.launch_version().await, None);
+        let spec = spec_in(dir.path(), &dir.path().join("s"), "hi");
+        assert_eq!(launch(&h.worker, &spec).request.cli_version, None);
+        assert_eq!(asked(dir.path()), 0);
     }
 
     fn launch(worker: &CliRunner, spec: &SessionSpec) -> Launch {

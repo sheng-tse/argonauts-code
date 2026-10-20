@@ -203,7 +203,7 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
     let keys = rows.iter().rev().find(|row| !row.is_empty()).unwrap();
     assert_eq!(
         keys.trim(),
-        "r to cycle dates · tab · ←→ tabs · ↓ sub-tabs, then cards · u tokens, tasks or spend · enter open · p pin · esc closes"
+        "r to cycle dates · tab · ← → tabs · ↓ sub-tabs, then cards · u tokens, tasks or spend · enter open · p pin · esc closes"
     );
 }
 
@@ -873,7 +873,7 @@ fn comma_opens_the_stats_mods_page_over_the_tab_with_its_card_as_the_preview() {
     // Lines aren't offered: nothing records them per task yet.
     assert!(!columns.contains("lines"), "{columns}");
     let keys = rows.last().unwrap();
-    assert!(keys.contains("shift+←→ order"), "{keys}");
+    assert!(keys.contains("shift+← → order"), "{keys}");
     assert!(keys.ends_with("s save to yours · esc back"), "{keys}");
 
     // Esc goes back to the tab, and another Esc closes the panel.

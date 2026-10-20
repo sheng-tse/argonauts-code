@@ -57,6 +57,9 @@ pub(super) struct Attached {
     pub(super) ended: bool,
     pub(super) crashed: bool,
     pub(super) stage: Stage,
+    /// Another conversation came on screen once the run had finished, so the Context tab,
+    /// which lists the conversation's last run, no longer lists it.
+    pub(super) left_behind: bool,
     /// What the run's events make the app mode, applied once replay is done.
     pub(super) mode: AppMode,
     pub(super) approval_mode: Option<ApprovalMode>,
@@ -146,6 +149,7 @@ pub(super) async fn attach(
         ended: false,
         crashed: false,
         stage: Stage::Going,
+        left_behind: false,
         mode,
         approval_mode: None,
         spent: None,

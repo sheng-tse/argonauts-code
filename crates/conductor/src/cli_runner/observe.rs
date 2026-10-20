@@ -10,13 +10,17 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::answer_format;
 use argonauts_core::events::AgentStatusEvent;
-use argonauts_core::events::context::ContextDetail;
-use argonauts_core::events::session::{LimitEvent, SessionEvent, loaded_words};
+use argonauts_core::events::context::{ContextDetail, ContextUsage};
+use argonauts_core::events::session::{LimitEvent, SessionEvent, Watchdog, loaded_words};
+use argonauts_core::layout::session_files;
 use argonauts_core::limits::{HealthSignal, PlanUsageStatus};
+use argonauts_core::paths::write_private_file;
+use argonauts_core::session_runner::SessionLimits;
 use argonauts_core::settings::approvals::IsolatedLeak;
 use argonauts_core::settings::fallback::WrapUp;
 use argonauts_core::settings::limit::OnHit;
 use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout};
+use argonauts_core::steps::is_report_tool;
 use argonauts_core::{AgentEvent, ErrorCategory, LimitDimension, Spend, SpendStatus, TweakEffect};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -26,6 +30,7 @@ use super::context::Context;
 use super::context_watch::ContextWatch;
 use super::diffs::Diffs;
 use super::end::{EndFacts, SeenError};
+use super::handed_in::HandedIn;
 use super::outbox::Outbox;
 use super::stop::StopCause;
 use crate::cli_versions::{CliVersions, event_kind, startup_lacks};
@@ -56,6 +61,9 @@ pub enum Action {
         call: String,
         times: u32,
     },
+    /// Send the wrap-up for a later try whose calls changed nothing, which asks it to run the
+    /// checks once and report.
+    CheckAndReport,
     Stop(StopCause),
     /// Ask the CLI for its context by category.
     AskContext(ContextDetail),
@@ -79,9 +87,24 @@ pub struct Facts {
     /// The model the session asked for, else the one its CLI reported.
     pub model: Option<String>,
     stderr_tail: VecDeque<String>,
+    /// What the session's last report call sent, which a missed answer is mended from.
+    last_report: Option<Value>,
 }
 
+/// How the line saying a report was mended ends, after `<CLI>'s report`.
+const MENDED: &str = "was mended: fields that had run on inside its answer are fields again.";
+const MENDED_AFTER_MISS: &str =
+    "was mended from its last try: its fields had run on inside its answer.";
+
 impl Facts {
+    /// The CLI gave up on the answer format.
+    fn missed_the_answer(&self) -> bool {
+        [&self.fatal_error, &self.last_error]
+            .into_iter()
+            .flatten()
+            .any(|error| error.category == ErrorCategory::AnswerMissed)
+    }
+
     pub fn end_facts(&self) -> EndFacts {
         let tail: Vec<&str> = self.stderr_tail.iter().map(String::as_str).collect();
         EndFacts {
@@ -129,9 +152,12 @@ pub struct Observer {
     wrap_up_stopped: bool,
     plan_limit_stopped: bool,
     context_watch: ContextWatch,
+    handed_in: HandedIn,
     /// The parser's figure for the requests since the agent's last totals, as of the line
     /// being read.
     billed: Option<f64>,
+    /// The session's first context breakdown came, which says what its first request held.
+    opening_weighed: bool,
 }
 
 impl Observer {
@@ -142,12 +168,12 @@ impl Observer {
             out.notice(format!("sessions.{err}, so the largest window is used"));
             None
         });
-        // The largest window the CLI offers for the model, held to `sessions.context`.
+        // The window the model is held to, held in turn to `sessions.context`.
         let context_window = sessions.context.window(
             ctx.registry
                 .as_ref()
                 .and_then(|registry| registry.get(&spec.model))
-                .and_then(|entry| entry.context_window),
+                .and_then(|entry| entry.session_window()),
         );
         let rotate_at = match sessions.rotate_at.tokens(context_window) {
             Ok(_) => Some(sessions.rotate_at.clone()),
@@ -173,6 +199,9 @@ impl Observer {
         let watchdogs =
             Watchdogs::new(&spec.limits, fanout_cap(&ctx)).with_heartbeat(ctx.adapter.heartbeat());
         let diffs = Diffs::start(FileDiffs::new(spec.workdir.clone()), out.clone());
+        if counts_no_progress(&spec.limits) {
+            diffs.read_worktree();
+        }
         let boards = Boards::start(ctx.clone(), out.clone());
         let asked_for = spec.model.model.clone().or_else(|| {
             let agent = ctx.settings.agents.get(&spec.model.agent);
@@ -209,7 +238,9 @@ impl Observer {
             wrap_up_stopped: false,
             plan_limit_stopped: false,
             context_watch,
+            handed_in: HandedIn::default(),
             billed: None,
+            opening_weighed: false,
         }
     }
 
@@ -232,6 +263,24 @@ impl Observer {
     }
 
     /// The breakdown was asked for outright.
+    /// The session's last count, whole, in its folder, replaced whole so a reader never finds
+    /// half of one.
+    fn keep_whole_count(&self, usage: &ContextUsage) {
+        let dir = &self.ctx.spec.session_dir;
+        let path = dir.join(session_files::CONTEXT);
+        let partial = dir.join(format!("{}.partial", session_files::CONTEXT));
+        let kept = serde_json::to_vec(usage)
+            .map_err(std::io::Error::other)
+            .and_then(|json| write_private_file(&partial, &json))
+            .and_then(|()| std::fs::rename(&partial, &path));
+        if let Err(err) = kept {
+            self.out.notice(format!(
+                "could not keep the session's count in {}: {err}",
+                path.display()
+            ));
+        }
+    }
+
     pub fn asked_context(&mut self) {
         self.context_watch.asked(Instant::now());
     }
@@ -288,11 +337,20 @@ impl Observer {
     }
 
     pub fn event(&mut self, mut event: AgentEvent) -> Vec<Action> {
-        // A run's journal keeps how full its agent's session is and with what, and leaves the
-        // grid and the lists to the main session, whose tab draws them.
+        if let AgentEvent::ContextBreakdown { usage } = &event
+            && let Some(run) = &self.ctx.spec.run
+            && !std::mem::replace(&mut self.opening_weighed, true)
+            && let Some(note) =
+                super::opening::heavy_opening(run, self.ctx.adapter.display_name(), usage)
+        {
+            self.out.notice(note);
+        }
+        // A run's journal keeps how full its agent's session is and with what. The whole count,
+        // with the grid and the lists, goes beside it for the session's own view.
         if let AgentEvent::ContextBreakdown { usage } = &mut event
             && self.ctx.spec.run.is_some()
         {
+            self.keep_whole_count(usage);
             **usage = usage.summary();
         }
         if let AgentEvent::ContextFill { size, .. } = &mut event {
@@ -317,6 +375,7 @@ impl Observer {
             self.diffs.changed(path);
         }
         let mut actions: Vec<Action> = self.isolation(&event).into_iter().collect();
+        actions.extend(self.report_handed_in(&event));
         if matches!(event, AgentEvent::ContextFill { .. })
             && let Some(detail) = self.context_watch.after_fill(Instant::now())
         {
@@ -332,10 +391,33 @@ impl Observer {
             actions.extend(meter_action(verdict));
             self.record_spend();
         }
+        self.watch_the_worktree(&event);
         let verdict = self.watchdogs.observe(&event, Instant::now());
         actions.extend(self.watchdog_action(verdict));
         self.limit(false);
         actions
+    }
+
+    /// For a later try whose calls are counted while they change nothing, the worktree is read
+    /// after each of the main agent's calls ends, and a change found resets the count before
+    /// the next call counts, whatever made it.
+    fn watch_the_worktree(&mut self, event: &AgentEvent) {
+        if !counts_no_progress(&self.ctx.spec.limits) {
+            return;
+        }
+        match event {
+            AgentEvent::ToolFinished { parent: None, .. } => self.diffs.read_worktree(),
+            AgentEvent::ToolStarted { parent: None, .. } if self.diffs.worktree_changed() => {
+                self.watchdogs.progress_made();
+            }
+            _ => {}
+        }
+    }
+
+    /// A call from the session to Argonauts Code opened (`open`) or was answered, as the
+    /// watchdogs count it.
+    pub fn asking(&mut self, open: bool) {
+        self.watchdogs.asking(open, Instant::now());
     }
 
     /// The wall clock, inactivity, and stalls. `cpu_busy` is when the process tree last used
@@ -408,8 +490,16 @@ impl Observer {
             AgentEvent::Message { text, parent: None } => {
                 self.facts.last_message = Some(text.clone());
             }
-            AgentEvent::ToolStarted { id, .. } => {
+            AgentEvent::ToolStarted {
+                id,
+                name,
+                input,
+                parent,
+            } => {
                 self.facts.open_tools.insert(id.clone());
+                if parent.is_none() && is_report_tool(name) {
+                    self.facts.last_report = Some(input.clone());
+                }
             }
             AgentEvent::ToolFinished { id, .. } => {
                 self.facts.open_tools.remove(id);
@@ -468,11 +558,39 @@ impl Observer {
                 {
                     facts.structured = Some(report);
                 }
+                let format = self.ctx.spec.json_schema.as_ref();
+                let mut mended = None;
                 if let Some(answer) = structured {
-                    facts.structured = Some(match &self.ctx.spec.json_schema {
+                    let answer = match format {
                         Some(format) => answer_format::as_written(format, answer.clone()),
                         None => answer.clone(),
-                    });
+                    };
+                    let fixed =
+                        format.and_then(|format| answer_format::mended_to_fit(format, &answer));
+                    mended = fixed.is_some().then_some(MENDED);
+                    facts.structured = Some(fixed.unwrap_or(answer));
+                } else if *is_error
+                    && facts.missed_the_answer()
+                    && let Some(format) = format
+                    && let Some(last) = facts.last_report.take()
+                    && let Some(report) = answer_format::mended_to_fit(
+                        format,
+                        &answer_format::as_written(format, last),
+                    )
+                {
+                    // The fields were all there, run on inside one string: the session ends
+                    // done with them.
+                    facts.structured = Some(report);
+                    facts.result_is_error = Some(false);
+                    facts.fatal_error = None;
+                    facts.last_error = None;
+                    mended = Some(MENDED_AFTER_MISS);
+                }
+                if let Some(words) = mended {
+                    self.out.notice(format!(
+                        "{}'s report {words}",
+                        self.ctx.adapter.display_name()
+                    ));
                 }
                 if !is_error {
                     self.signal(HealthSignal::Success {
@@ -639,6 +757,22 @@ impl Observer {
         }
     }
 
+    /// The session's work is done once a tool call hands its report in, on a CLI that can't
+    /// hold the session to the format, unless it reports through Argonauts Code's own tool,
+    /// which holds a report sent too early.
+    fn report_handed_in(&mut self, event: &AgentEvent) -> Option<Action> {
+        let schema = self.ctx.spec.json_schema.as_ref()?;
+        if self.ctx.adapter.holds_answer_format()
+            || self.facts.structured.is_some()
+            || super::report_tool::reports_by_tool(&self.ctx.spec)
+        {
+            return None;
+        }
+        let report = self.handed_in.report(event, schema)?;
+        self.facts.structured = Some(report);
+        Some(Action::Stop(StopCause::Reported))
+    }
+
     /// With `fallback.wrap_up = "fallback"`, the first sign of the wrap-up allowance ends the
     /// turn, so the allowance is saved and the work moves on at once.
     fn wrap_up_stop(&mut self, event: &AgentEvent) -> Option<Action> {
@@ -732,8 +866,11 @@ impl Observer {
                 None
             }
             WatchdogVerdict::Nudge { call, times } => Some(Action::Nudge { call, times }),
+            WatchdogVerdict::SoftStop(Watchdog::NoProgress) => Some(Action::CheckAndReport),
             WatchdogVerdict::SoftStop(_) => Some(Action::WrapUp(None)),
-            WatchdogVerdict::Stuck(watchdog) => Some(Action::Stop(StopCause::Stuck(watchdog))),
+            WatchdogVerdict::Stuck { watchdog, calls } => {
+                Some(Action::Stop(StopCause::Stuck { watchdog, calls }))
+            }
             WatchdogVerdict::FanoutExceeded { running, max } => {
                 Some(Action::Stop(StopCause::Fanout { running, max }))
             }
@@ -824,6 +961,11 @@ pub fn oversized_line(text: &str, dropped: usize) -> AgentEvent {
     }
 }
 
+/// Whether the session's limits count a later try's calls that change nothing.
+fn counts_no_progress(limits: &SessionLimits) -> bool {
+    limits.no_progress_calls.is_some_and(|calls| calls > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use argonauts_core::events::session::{EndReason, Watchdog};
@@ -870,6 +1012,49 @@ mod tests {
         }
     }
 
+    /// A later try that edits with its shell, as `sed -i` does, changes the worktree with calls
+    /// no tool name tells apart from looking around, so only reading the worktree shows it.
+    #[tokio::test]
+    async fn a_later_try_that_edits_with_its_shell_is_never_wrapped_up() {
+        for edits in [true, false] {
+            let repo = crate::testutil::TestRepo::new();
+            let driver = TestDriver::new(TestAdapter::new("exec sleep 30"));
+            let mut spec = spec_in(&repo.root, &repo.root, "hi");
+            spec.limits = SessionLimits {
+                no_progress_calls: Some(3),
+                ..SessionLimits::default()
+            };
+            let (_handle, out, _control) = outbox::open(spec.key.clone());
+            let home = driver.worker.home().unwrap();
+            let ctx = Arc::new(Context::new(&driver.worker, spec, home));
+            let mut obs = Observer::new(ctx, out, Instant::now());
+            let mut actions = Vec::new();
+            for n in 0..6 {
+                let id = format!("c{n}");
+                let command = format!("sed -i '' 's/Test/Test {n}/' README.md");
+                actions.extend(obs.event(AgentEvent::ToolStarted {
+                    id: id.clone(),
+                    name: "shell".into(),
+                    input: serde_json::json!({ "command": command }),
+                    parent: None,
+                }));
+                if edits {
+                    repo.write("README.md", &format!("# Test {n}\n"));
+                }
+                actions.extend(obs.event(AgentEvent::ToolFinished {
+                    id,
+                    ok: true,
+                    output: Some(String::new()),
+                    parent: None,
+                }));
+                // The read runs in the background, as the next call would follow it.
+                obs.diffs.flush(&obs.out).await;
+            }
+            let wrapped = actions.contains(&Action::CheckAndReport);
+            assert_eq!(wrapped, !edits, "edits: {edits}, {actions:?}");
+        }
+    }
+
     impl Watched {
         fn at(&self, after: Duration) -> Instant {
             self.started + after
@@ -892,6 +1077,105 @@ mod tests {
             }
             notes
         }
+    }
+
+    /// An observer of a build session, which answers in the report's format.
+    fn reporting() -> Watched {
+        let mut w = watched(TestAdapter::new("true"), SessionLimits::default());
+        let mut spec = w.obs.ctx.spec.clone();
+        spec.json_schema = Some(argonauts_core::steps::output_schema::<
+            argonauts_core::steps::task::Build,
+        >());
+        let home = w._cli.worker.home().unwrap();
+        let (handle, out, _control) = outbox::open(spec.key.clone());
+        let ctx = Arc::new(Context::new(&w._cli.worker, spec, home));
+        w.obs = Observer::new(ctx, out, w.started);
+        w.handle = handle;
+        w
+    }
+
+    /// A report whose required lists ran on inside its answer.
+    fn leaked_report() -> Value {
+        json!({
+            "status": "done",
+            "summary": "Due dates in the tasks CLI.",
+            "tests_run": ["node --test: 11 pass"],
+            "answer": "Done.</answer>\n<parameter name=\"concerns\">[\"Assumed: local dates.\"]\
+                       </parameter>\n<parameter name=\"files_changed\">[\"src/cli.js\"]"
+        })
+    }
+
+    async fn notices(handle: &mut SessionHandle) -> Vec<String> {
+        let mut notes = Vec::new();
+        let wait = Duration::from_millis(100);
+        while let Ok(Some(event)) = tokio::time::timeout(wait, handle.events.recv()).await {
+            if let RunnerEvent::Agent(AgentEvent::Error {
+                category: ErrorCategory::Unknown,
+                message,
+                ..
+            }) = event
+            {
+                notes.push(message);
+            }
+        }
+        notes
+    }
+
+    /// Claude Code gave up on the format, but its last try held every field, run on inside
+    /// the answer: mended, it is the session's report, and the session ends done.
+    #[tokio::test]
+    async fn a_missed_report_whose_fields_ran_into_its_answer_ends_done_mended() {
+        let mut w = reporting();
+        w.obs.event(AgentEvent::ToolStarted {
+            id: "so-5".into(),
+            name: "StructuredOutput".into(),
+            input: leaked_report(),
+            parent: None,
+        });
+        w.obs.event(AgentEvent::Error {
+            category: ErrorCategory::AnswerMissed,
+            message: "Failed to provide valid structured output".into(),
+            retryable: false,
+        });
+        w.obs.event(AgentEvent::Result {
+            text: None,
+            structured: None,
+            is_error: true,
+        });
+        let report = w.obs.facts.structured.clone().expect("the mended report");
+        assert_eq!(report["files_changed"], json!(["src/cli.js"]));
+        assert_eq!(report["concerns"], json!(["Assumed: local dates."]));
+        assert_eq!(report["answer"], json!("Done."));
+        assert_eq!(
+            super::super::end::classify(&w.obs.facts.end_facts()),
+            EndReason::Completed
+        );
+        let notes = notices(&mut w.handle).await;
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("report was mended from its last try")),
+            "{notes:?}"
+        );
+    }
+
+    /// An answer Claude Code accepted with a list run on inside it gets that list back.
+    #[tokio::test]
+    async fn an_accepted_report_with_a_list_run_into_its_answer_is_mended() {
+        let mut w = reporting();
+        let mut accepted = leaked_report();
+        accepted["concerns"] = json!([]);
+        accepted["files_changed"] = json!(["src/store.js"]);
+        accepted["answer"] = json!("Done.</answer>\n<parameter name=\"change_requests\">[]");
+        w.obs.event(AgentEvent::Result {
+            text: None,
+            structured: Some(accepted),
+            is_error: false,
+        });
+        let report = w.obs.facts.structured.clone().expect("the report");
+        assert_eq!(report["answer"], json!("Done."));
+        assert_eq!(report["change_requests"], json!([]));
+        assert_eq!(report["files_changed"], json!(["src/store.js"]));
     }
 
     fn cargo_test() -> AgentEvent {
@@ -955,7 +1239,10 @@ mod tests {
         let actions = w.obs.tick_at(w.at(MINUTE * 15 + second), None);
         assert_eq!(
             actions,
-            [Action::Stop(StopCause::Stuck(Watchdog::Inactivity))]
+            [Action::Stop(StopCause::Stuck {
+                watchdog: Watchdog::Inactivity,
+                calls: None
+            })]
         );
     }
 

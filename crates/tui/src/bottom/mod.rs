@@ -178,6 +178,14 @@ impl BottomState {
         self.working.is_some() || self.waits_for.is_some()
     }
 
+    /// An open picker takes the input's place, as a dialog does in Claude Code 2.1.303: the
+    /// input's rules, its row and the cursor go, and so do the band and the notice over it,
+    /// until it closes. A question that holds the keys, or the prompt search, stands in for
+    /// the picker instead.
+    pub fn picker_in_place(&self) -> bool {
+        self.picker.is_some() && self.history_search.is_none() && self.focused_question().is_none()
+    }
+
     /// A question that waits without focus leaves the keys with the composer.
     pub fn composer_has_focus(&self) -> bool {
         self.focused_question().is_none()
@@ -370,18 +378,22 @@ impl BottomState {
         text_streaming: bool,
     ) -> BottomView {
         let mut parts = self.parts(ctx, text_streaming, max_rows);
-        // The band takes only rows nothing else wants: the input and a question never lose
-        // one to it.
-        let room = max_rows.saturating_sub(parts.rows());
-        let question_up = self.focused_question().is_some();
-        parts.band = self.band.lines(ctx, room, question_up, self.at_work());
-        // Your mods share the band's rows, under its cap.
-        let left = room
-            .min(self.band.max_rows)
-            .saturating_sub(parts.band.len());
-        parts
-            .band
-            .extend(self.file_mods_above(ctx, left, question_up));
+        // An open picker hides the band with the input, as Claude Code hides its panes with
+        // the prompt.
+        if !self.picker_in_place() {
+            // The band takes only rows nothing else wants: the input and a question never
+            // lose one to it.
+            let room = max_rows.saturating_sub(parts.rows());
+            let question_up = self.focused_question().is_some();
+            parts.band = self.band.lines(ctx, room, question_up, self.at_work());
+            // Your mods share the band's rows, under its cap.
+            let left = room
+                .min(self.band.max_rows)
+                .saturating_sub(parts.band.len());
+            parts
+                .band
+                .extend(self.file_mods_above(ctx, left, question_up));
+        }
         parts.fit(max_rows);
         parts.assemble(max_rows)
     }
@@ -585,8 +597,9 @@ impl BottomState {
             let line = Line::from(vec![Span::raw("  "), Span::styled(hint.clone(), dim)]);
             queued.extend([truncate_line(&line, width), Line::default()]);
         }
-        // A question with the keys hides it until it's answered or passed on.
-        let notice = if self.focused_question().is_some() {
+        // A question with the keys hides it until it's answered or passed on, and so does a
+        // picker in the input's place.
+        let notice = if self.focused_question().is_some() || self.picker_in_place() {
             Vec::new()
         } else {
             self.notice.lines(ctx)
@@ -642,7 +655,7 @@ impl BottomState {
                 let (lines, cursor) = search.lines(ctx, max_rows);
                 ComposerView { lines, cursor }
             }
-            None if question_holds_keys => ComposerView {
+            None if question_holds_keys || picker.is_some() => ComposerView {
                 lines: Vec::new(),
                 cursor: (0, 0),
             },
@@ -673,11 +686,10 @@ impl BottomState {
         {
             *rule = agents::message_rule(agent, ctx);
         }
-        // An open picker's edge rule takes the bottom rule's place, and its rows take the menu's.
+        // An open picker's edge rule is the only one: its rows take the input's place.
         let menu = if search.is_some() || question_holds_keys {
             Vec::new()
         } else if let Some(picker) = picker {
-            composer.lines.pop();
             picker.lines(ctx)
         } else if focused && !self.composer.is_shell() {
             self.menus
@@ -759,7 +771,8 @@ impl BottomState {
             question_head_rows: question_rows.min(2),
             question_cursor: question.cursor,
             question: question.lines,
-            composer_cursor: (focused || searching).then_some(composer.cursor),
+            composer_cursor: ((focused && picker.is_none()) || searching)
+                .then_some(composer.cursor),
             composer: composer.lines,
             menu,
             mode: (!searching).then_some(mode),
@@ -909,6 +922,8 @@ const MENU_MIN_ROWS: usize = 3;
 
 #[cfg(test)]
 mod command_tests;
+#[cfg(test)]
+mod picker_place_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

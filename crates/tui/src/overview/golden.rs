@@ -269,10 +269,10 @@ fn roles(name: &str) -> &'static [Role] {
             Role::Denominator,
         ],
         "--term-acc" => &[Role::Question, Role::Accent],
-        "--term-grn" => &[Role::Success],
         "--term-amb" => &[Role::Warn],
         "--term-red" => &[Role::Danger],
         // A picture may name a CLI's colour by its hue, which is the same colour on the page.
+        "--term-grn" => &[Role::Success, Role::AgentGreen],
         "--term-org" => &[Role::AgentOrange, Role::CliClaude],
         "--term-blu" => &[Role::AgentBlue, Role::CliCodex],
         "--term-cyn" => &[Role::AgentCyan, Role::CliAgy],

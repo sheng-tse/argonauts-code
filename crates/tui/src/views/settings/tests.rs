@@ -70,6 +70,7 @@ fn choice(worker: &str, current: bool) -> ModelChoice {
         effort: None,
         alias: false,
         runs: None,
+        listed: None,
     }
 }
 
@@ -80,6 +81,8 @@ fn models(role: Option<RoleName>, choices: Vec<ModelChoice>) -> ViewData {
         refreshed: None,
         refreshing: false,
         update: false,
+        sources: Vec::new(),
+        memory: None,
     }
 }
 
@@ -89,6 +92,8 @@ struct Screen {
     model: ViewModel,
     state: AppState,
     settings: UiSettings,
+    /// What the latest `WatchModels` said, kept out of the commands the tests compare.
+    watching: Option<bool>,
 }
 
 impl Screen {
@@ -97,7 +102,20 @@ impl Screen {
             model: ViewModel::default(),
             state: AppState::default(),
             settings: UiSettings::default(),
+            watching: None,
         }
+    }
+
+    /// The effects without `WatchModels`, which `watching` keeps.
+    fn sent(&mut self, mut out: Effects) -> Effects {
+        out.commands.retain(|command| match command {
+            UiCommand::WatchModels { watching } => {
+                self.watching = Some(*watching);
+                false
+            }
+            _ => true,
+        });
+        out
     }
 
     fn cx<'a>(&'a mut self, out: &'a mut Effects) -> Cx<'a> {
@@ -113,7 +131,7 @@ impl Screen {
     fn answer(&mut self, data: ViewData) -> Effects {
         let mut out = Effects::default();
         open_for(&data, &mut self.cx(&mut out));
-        out
+        self.sent(out)
     }
 
     fn press(&mut self, code: KeyCode) -> Effects {
@@ -123,7 +141,7 @@ impl Screen {
         if event != PickerEvent::Unhandled {
             on_picker(&event, &mut self.cx(&mut out));
         }
-        out
+        self.sent(out)
     }
 
     fn labels(&self) -> Vec<String> {
@@ -147,6 +165,24 @@ impl Screen {
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+#[test]
+fn the_model_picker_is_watched_while_it_is_open() {
+    let mut screen = Screen::new();
+    screen.answer(settings(
+        "model",
+        vec![row("crew.main", "\"claude-code\"", "global", &[])],
+    ));
+    assert_eq!(screen.watching, Some(true));
+    screen.answer(models(None, vec![choice("claude-code", true)]));
+    screen.press(KeyCode::Esc);
+    assert!(screen.model.bottom.picker.is_none());
+    assert_eq!(screen.watching, Some(false), "closing it stops the watch");
+
+    let mut theme = Screen::new();
+    theme.answer(settings("theme", vec![theme_row("global")]));
+    assert_eq!(theme.watching, None, "only /model is watched");
 }
 
 #[test]
@@ -690,6 +726,8 @@ fn model_update(
         refreshed,
         refreshing: false,
         update: true,
+        sources: Vec::new(),
+        memory: None,
     }
 }
 
@@ -702,6 +740,8 @@ fn a_refreshed_list_reaches_only_the_open_model_list() {
         refreshed: None,
         refreshing: true,
         update: false,
+        sources: Vec::new(),
+        memory: None,
     });
     assert_eq!(screen.labels(), ["Claude Code", "Codex"]);
     let about = |screen: &Screen| screen.model.bottom.picker.as_ref().unwrap().about.clone();

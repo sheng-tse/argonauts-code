@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use argonauts_core::app::UltraColour;
 use argonauts_core::cli_commands::{BuiltinCommand, CliCommand};
 use argonauts_core::cli_sessions::{CliScan, CliSession, CliTurn};
 use argonauts_core::events::context::ContextDetail;
@@ -10,7 +11,7 @@ use argonauts_core::screen::ScreenRequest;
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::{
     Adapter, Capabilities, CommandSpec, LaunchTweak, PARENT_SESSION_ENV_VARS, SessionRequest,
-    SetupHints, StopPlan, StreamParser, extract_version,
+    SetupHints, StopPlan, StreamParser, UltraMode, UltraOn, extract_version,
 };
 use time::OffsetDateTime;
 
@@ -123,6 +124,18 @@ impl Adapter for ClaudeCodeAdapter {
         StopPlan::stepped(Duration::from_secs(5), Duration::from_secs(5))
     }
 
+    fn holds_answer_format(&self) -> bool {
+        true
+    }
+
+    /// Its own ultracode, drawn in Claude Code's ultracode purple.
+    fn ultra_mode(&self) -> Option<UltraMode> {
+        Some(UltraMode {
+            on: UltraOn::Ultracode,
+            colour: UltraColour::Purple,
+        })
+    }
+
     fn capabilities(&self) -> Capabilities {
         // The result carries total_cost_usd, and after --resume it covers the whole conversation.
         // 2.1.285 hands a message sent mid-turn to the model with the next tool result, inside
@@ -218,7 +231,8 @@ impl Adapter for ClaudeCodeAdapter {
 
     /// Opens a `-p` session in the interactive UI. Such sessions aren't in the `/resume` picker,
     /// so the id is passed. The UI restores the session's permission mode itself.
-    fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
+    fn interactive_resume(&self, req: &SessionRequest) -> Option<CommandSpec> {
+        let (session_id, workdir) = (req.resume_session.as_deref()?, &req.workdir);
         let usable = !session_id.trim().is_empty() && !session_id.starts_with('-');
         usable.then(|| CommandSpec {
             env_remove: PARENT_SESSION_ENV_VARS
@@ -1358,7 +1372,10 @@ mod tests {
     #[test]
     fn interactive_resume_opens_the_same_session() {
         let spec = ClaudeCodeAdapter
-            .interactive_resume(SESSION_ID, Path::new("/tmp/worktree"))
+            .interactive_resume(&SessionRequest::reopening(
+                SESSION_ID,
+                Path::new("/tmp/worktree"),
+            ))
             .unwrap();
         assert_eq!(spec.program, "claude");
         assert_eq!(spec.args, ["--resume", SESSION_ID]);
@@ -1370,7 +1387,7 @@ mod tests {
         for bad in ["", "  ", "--dangerously-skip-permissions"] {
             assert!(
                 ClaudeCodeAdapter
-                    .interactive_resume(bad, Path::new("/w"))
+                    .interactive_resume(&SessionRequest::reopening(bad, Path::new("/w")))
                     .is_none()
             );
         }

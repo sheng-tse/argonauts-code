@@ -163,9 +163,10 @@ emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess
 [[rule.step]]
 exit = 0
 
-# The orchestrator writes the steps for the rate limiter as a script, with council's roles: one
-# worker builds it, and a worker who didn't build it reviews it. Its prompt quotes the request,
-# so it comes before the conversation rules.
+# The orchestrator writes the steps for the rate limiter as a script, with the steps council keeps:
+# every worker proposes and argues against the others, the judge decides, then one worker builds it
+# and a worker who didn't build it reviews it. Its prompt quotes the request, so it comes before the
+# conversation rules.
 [[rule]]
 argv0 = "claude"
 args_contain = ["dontAsk"]
@@ -176,7 +177,7 @@ emit = '{"type":"system","subtype":"init","session_id":"sess-orchestrator-claude
 [[rule.step]]
 emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-orchestrator-claude","message":{"id":"msg-sess-orchestrator-claude","content":[{"type":"text","text":"One worker builds it, and one who did not build it reviews it."}]}}'
 [[rule.step]]
-emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-orchestrator-claude","result":"One worker builds it, and one who did not build it reviews it.","total_cost_usd":0.001,"usage":{"input_tokens":120,"output_tokens":200},"structured_output":{"script":"export const meta = {\n  name: \"rate-limit-per-key\",\n  description: \"Per-key rate limiting for the public API\",\n  phases: [\n    { title: \"Build\", detail: \"one worker adds the limiter\" },\n    { title: \"Review\", detail: \"a worker who did not build it\" },\n  ],\n}\nawait agent(\"Add a token bucket per API key after the auth middleware. The request: \" + args.request, {\n  role: \"worker\", label: \"build:rate-limit\", phase: \"Build\", task: \"rate-limit\",\n})\nconst verdict = await agent(\"Review the rate limiter against the request: \" + args.request, {\n  role: \"worker\", notTheAuthor: true, access: \"read\",\n  label: \"review:rate-limit\", phase: \"Review\", task: \"rate-limit\",\n  schema: {\n    type: \"object\",\n    properties: { accept: { type: \"boolean\" }, findings: { type: \"array\", items: { type: \"string\" } } },\n    required: [\"accept\", \"findings\"],\n  },\n})\nreturn { accepted: Boolean(verdict && verdict.accept) }\n"}}'
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-orchestrator-claude","result":"One worker builds it, and one who did not build it reviews it.","total_cost_usd":0.001,"usage":{"input_tokens":120,"output_tokens":200},"structured_output":{"script":"export const meta = {\n  name: \"rate-limit-per-key\",\n  description: \"Per-key rate limiting for the public API\",\n  phases: [\n    { title: \"Propose\", detail: \"every worker says how\" },\n    { title: \"Challenge\", detail: \"each argues against the others\" },\n    { title: \"Decide\", detail: \"the judge picks one\" },\n    { title: \"Build\", detail: \"one worker adds the limiter\" },\n    { title: \"Review\", detail: \"a worker who did not build it\" },\n  ],\n}\nconst asked = [0, 1, 2].map((n) => () => agent(\"Propose how to limit each API key: \" + args.request, {\n  role: \"worker\", access: \"read\", model: n, label: \"propose:\" + (n + 1), phase: \"Propose\",\n}))\nconst proposals = (await parallel(asked)).filter(Boolean)\nconst challenges = proposals.map((_, n) => () => agent(\"Argue against the other proposals.\", {\n  role: \"worker\", access: \"read\", model: n, label: \"challenge:\" + (n + 1), phase: \"Challenge\",\n}))\nawait parallel(challenges)\nawait agent(\"Pick the strongest of \" + proposals.length + \" proposals.\", {\n  role: \"judge\", access: \"read\", label: \"decide\", phase: \"Decide\",\n})\nawait agent(\"Add a token bucket per API key after the auth middleware. The request: \" + args.request, {\n  role: \"worker\", label: \"build:rate-limit\", phase: \"Build\", task: \"rate-limit\",\n})\nconst verdict = await agent(\"Review the rate limiter against the request: \" + args.request, {\n  role: \"worker\", notTheAuthor: true, access: \"read\",\n  label: \"review:rate-limit\", phase: \"Review\", task: \"rate-limit\",\n  schema: {\n    type: \"object\",\n    properties: { accept: { type: \"boolean\" }, findings: { type: \"array\", items: { type: \"string\" } } },\n    required: [\"accept\", \"findings\"],\n  },\n})\nreturn { accepted: Boolean(verdict && verdict.accept) }\n"}}'
 [[rule.step]]
 exit = 0
 

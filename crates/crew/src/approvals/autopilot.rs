@@ -655,6 +655,7 @@ mod tests {
             fallback_mode: argonauts_core::settings::fallback::FallbackMode::Auto,
             providers_tried: vec!["anthropic".to_owned()],
             next_provider: Some("openai".to_owned()),
+            next_name: Some("Codex".to_owned()),
             extra_tries,
             fits_reserve,
         };

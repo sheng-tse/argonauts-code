@@ -161,6 +161,8 @@ enum Script {
 
 pub struct FakeRunner {
     worker: ModelRef,
+    /// The model its sessions run, where that isn't `worker` as it stands.
+    runs: Option<ModelRef>,
     kind: RunnerKind,
     provider: String,
     capabilities: RunnerCapabilities,
@@ -190,6 +192,7 @@ impl FakeRunner {
             worker: worker
                 .parse()
                 .unwrap_or_else(|_| ModelRef::new(worker, None)),
+            runs: None,
             kind,
             provider: provider.to_owned(),
             capabilities: RunnerCapabilities {
@@ -243,6 +246,13 @@ impl FakeRunner {
     /// OpenCode does with no model set.
     pub fn refusing_to_start(mut self, why: &str) -> Self {
         self.wont_start = Some(why.to_owned());
+        self
+    }
+
+    /// Its sessions run `model`, as a bare OpenCode runs the local model it names in place of
+    /// its hosted default.
+    pub fn running(mut self, model: &str) -> Self {
+        self.runs = Some(model.parse().unwrap_or_else(|_| ModelRef::new(model, None)));
         self
     }
 
@@ -343,6 +353,10 @@ fn input_record(spec: &SessionSpec, kind: RunnerKind) -> SessionInput {
 impl SessionRunner for FakeRunner {
     fn model_ref(&self) -> &ModelRef {
         &self.worker
+    }
+
+    fn model_run(&self) -> ModelRef {
+        self.runs.clone().unwrap_or_else(|| self.worker.clone())
     }
 
     fn kind(&self) -> RunnerKind {

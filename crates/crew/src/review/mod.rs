@@ -149,8 +149,14 @@ async fn review_task_among(
 ) -> EngineResult<Verdict> {
     let provider = providers(host);
     let other_provider = host.settings().review.other_provider;
+    let crew = crate::roles::candidates(host.settings(), RoleName::Reviewer);
+    if host.read(|state| reviewers::none_set(state, task, &crew)) {
+        return Ok(Verdict::NeedsYou {
+            reasons: vec![reviewers::NONE_SET.to_owned()],
+        });
+    }
     let mut reviewers =
-        host.read(|state| reviewers::for_task(state, task, &provider, other_provider));
+        host.read(|state| reviewers::for_task(state, task, &provider, other_provider, &crew));
     reviewers.retain(|reviewer| !excluded.contains(&provider(reviewer)));
     review_by(host, task, round, &reviewers).await
 }

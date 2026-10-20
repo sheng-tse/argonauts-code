@@ -740,7 +740,8 @@ fn the_workers_agent_view_shows_its_workflow() {
     let mut row = agent(1, "build:due-flag", SONNET, RowStatus::Running, 22_400, 160);
     row.context = Some(ContextUse {
         used: 28_000,
-        cap: 200_000,
+        window: Some(200_000),
+        cap: Some(200_000),
     });
     let mut prompt =
         vec!["Add --due <date> to todo add, and show the date in todo list.".to_owned()];

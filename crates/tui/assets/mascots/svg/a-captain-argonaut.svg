@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- An argonaut, the real octopus named after Jason's crew, with one arm raised the way Aristotle believed it sailed the sea: it steers itself and does the work itself, as the captain does. -->
+  <!-- Argonauta. Captain: the argonaut, one arm raised. Normal. -->
+  <!-- raised arm, curling over at the tip -->
+  <path d="M60.85 50.70 C67.62 39.36 68.57 25.61 80.34 15.74 A2.20 2.20 0 0 0 77.66 12.26 C63.43 22.39 60.38 36.64 53.15 45.30 Z" fill="#E8A33D"/>
+  <path d="M80.32 15.76 C85 11.38 89.47 14.35 86.40 19.91 A1.25 1.25 0 0 0 88.60 21.09 C92.53 13.65 85 7.62 77.68 12.24 Z" fill="#E8A33D"/>
+  <!-- arms, four in a skirt, the outer ones curling up -->
+  <path d="M34.25 52.07 C25.60 59.58 16.10 62.64 13.42 55.53 A1.50 1.50 0 0 0 10.58 56.47 C13.90 67.36 28.40 66.42 39.75 59.93 Z" fill="#E8A33D"/>
+  <path d="M37.27 59.21 C36.52 70.74 32.56 79.84 28.47 78.58 A1.50 1.50 0 0 0 27.53 81.42 C35.44 84.16 43.48 73.26 46.73 60.79 Z" fill="#E8A33D"/>
+  <path d="M45.27 60.79 C48.52 73.26 56.56 84.16 64.47 81.42 A1.50 1.50 0 0 0 63.53 78.58 C59.44 79.84 55.48 70.74 54.73 59.21 Z" fill="#E8A33D"/>
+  <path d="M52.25 59.93 C63.60 66.42 78.10 67.36 81.42 56.47 A1.50 1.50 0 0 0 78.58 55.53 C75.90 62.64 66.40 59.58 57.75 52.07 Z" fill="#E8A33D"/>
+  <!-- crown, where the arms meet under the mantle -->
+  <ellipse cx="46" cy="57" rx="12.5" ry="7.5" fill="#E8A33D"/>
+  <!-- mantle, the head -->
+  <path d="M46 12 C59 12 66 23 66 35.5 C66 48 58 56.5 46 56.5 C34 56.5 26 48 26 35.5 C26 23 33 12 46 12 Z" fill="#E8A33D"/>
+  <!-- eyes -->
+  <circle cx="39.5" cy="42" r="3.6" fill="#2B2B2B"/><circle cx="40.69" cy="40.81" r="1.12" fill="#E8A33D"/>
+  <circle cx="52.5" cy="42" r="3.6" fill="#2B2B2B"/><circle cx="53.69" cy="40.81" r="1.12" fill="#E8A33D"/>
+</svg>

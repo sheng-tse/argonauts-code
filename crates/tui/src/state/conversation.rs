@@ -6,7 +6,7 @@ use argonauts_core::names::{ModelRef, TurnId};
 use argonauts_core::screen::{Drawn, ScreenChange};
 use argonauts_core::{AgentEvent, ErrorCategory, PluginOutputKind, TodoItem};
 
-use super::context::{ContextCount, ContextGrowth};
+use super::context::{ContextCount, ContextGrowth, LastStep};
 use super::session::{Doing, ToolRecord};
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -47,6 +47,8 @@ pub struct ConversationState {
     pub context: Option<ContextCount>,
     /// What the conversation's turns add to its context, kept across turns as the count is.
     pub growth: ContextGrowth,
+    /// Its session's last step, kept across turns as the count is.
+    pub last_step: LastStep,
     /// The subagents the turn's CLI started, the latest update of each, in first-seen order.
     /// The list under the input shows them under `main`.
     pub subagents: Vec<SubagentUpdate>,
@@ -87,6 +89,11 @@ impl ConversationState {
                     } else {
                         ContextGrowth::default()
                     },
+                    last_step: if self.worker.as_ref() == Some(worker) {
+                        self.last_step
+                    } else {
+                        LastStep::default()
+                    },
                     ..Self::default()
                 };
                 // The bridge queued it while the last turn ran; now it's this turn's prompt.
@@ -112,6 +119,7 @@ impl ConversationState {
             }
             ConversationEvent::TurnFailed { turn, .. }
             | ConversationEvent::TurnCancelled { turn }
+            | ConversationEvent::TurnStopped { turn, .. }
                 if self.turn.as_ref() == Some(turn) =>
             {
                 self.end_turn();
@@ -120,6 +128,7 @@ impl ConversationState {
                 self.worker = Some(to.clone());
                 self.context = None;
                 self.growth = ContextGrowth::default();
+                self.last_step = LastStep::default();
                 self.todos.clear();
                 self.stalled = false;
             }
@@ -147,6 +156,7 @@ impl ConversationState {
             ConversationEvent::TurnFinished { .. }
             | ConversationEvent::TurnFailed { .. }
             | ConversationEvent::TurnCancelled { .. }
+            | ConversationEvent::TurnStopped { .. }
             | ConversationEvent::FellBack { .. }
             | ConversationEvent::AnswerRetried { .. }
             | ConversationEvent::ContextLeft { .. }
@@ -243,7 +253,10 @@ impl ConversationState {
                     counted: crate::bottom::wall_now(),
                 });
             }
-            AgentEvent::ContextFill { used, .. } => self.growth.filled(*used),
+            AgentEvent::ContextFill { used, .. } => {
+                self.growth.filled(*used);
+                self.last_step.at = Some(crate::bottom::wall_now());
+            }
             AgentEvent::ScreenChanged {
                 change: ScreenChange::Drawn { drawn },
             } => self.notice = (!drawn.is_empty()).then(|| drawn.clone()),
@@ -289,6 +302,7 @@ impl ConversationState {
             }
             AgentEvent::Usage {
                 output_tokens,
+                cached_tokens,
                 cost_usd,
                 cumulative,
                 ..
@@ -299,6 +313,8 @@ impl ConversationState {
                         self.cost_usd = *cost_usd;
                     }
                 } else {
+                    self.last_step.cached = *cached_tokens;
+                    self.last_step.output = *output_tokens;
                     self.tokens_out += output_tokens;
                     if let Some(cost) = cost_usd {
                         self.cost_usd = Some(self.cost_usd.unwrap_or(0.0) + cost);

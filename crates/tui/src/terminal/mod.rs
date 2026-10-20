@@ -62,6 +62,9 @@ pub struct InlineTerminal<W: Write> {
     marked: Option<Marked>,
     /// Rows to print over the marked ones on the next frame.
     pending_redraw: Option<Vec<Line<'static>>>,
+    /// Escapes to send at a cell of the marked rows on the next frame, such as a picture, by
+    /// the row among them and the column.
+    pending_on_marked: Option<(u16, u16, Vec<u8>)>,
     /// The frame being drawn and the one on screen, both covering the viewport.
     buffers: [Buffer; 2],
     current: usize,
@@ -148,6 +151,7 @@ impl<W: Write> InlineTerminal<W> {
             pending_mark: None,
             marked: None,
             pending_redraw: None,
+            pending_on_marked: None,
             buffers: [Buffer::empty(viewport), Buffer::empty(viewport)],
             current: 0,
             resting: None,
@@ -212,6 +216,30 @@ impl<W: Write> InlineTerminal<W> {
     /// still on screen. Rows already in scrollback can't change, so then nothing prints.
     pub fn redraw_marked(&mut self, lines: Vec<Line<'static>>) {
         self.pending_redraw = Some(lines);
+    }
+
+    /// Sends `escapes` with the cursor at `column` of the marked rows' `row`, on the next frame,
+    /// while that row still shows, such as a picture to draw in the header's cells. Sent again
+    /// before that frame, they add to what waits.
+    pub fn send_on_marked(&mut self, row: u16, column: u16, escapes: Vec<u8>) {
+        match &mut self.pending_on_marked {
+            Some((at_row, at_column, waiting)) if (*at_row, *at_column) == (row, column) => {
+                waiting.extend(escapes);
+            }
+            pending => *pending = Some((row, column, escapes)),
+        }
+    }
+
+    /// Whether every marked row is still on screen, where a later frame can reach them.
+    pub fn marked_on_screen(&self) -> bool {
+        self.marked_top().is_some()
+    }
+
+    /// The screen row of the first marked row, while every one of them shows.
+    fn marked_top(&self) -> Option<u16> {
+        let marked = self.marked?;
+        let top = i32::from(self.history_end) - i32::from(marked.below) - i32::from(marked.rows);
+        u16::try_from(top).ok()
     }
 
     /// History inserted after this starts a fresh screen: what printed before goes up into
@@ -354,6 +382,14 @@ impl<W: Write> InlineTerminal<W> {
         }
         if let Some(lines) = self.pending_redraw.take() {
             self.print_over_marked(out, &lines)?;
+        }
+        if let Some((row, column, escapes)) = self.pending_on_marked.take()
+            && let Some(top) = self.marked_top()
+            && self.marked.is_some_and(|marked| row < marked.rows)
+        {
+            queue!(out, MoveTo(column, top + row))?;
+            out.extend_from_slice(&escapes);
+            self.resting = None;
         }
 
         let area = Rect::new(
@@ -595,6 +631,38 @@ impl<W: Write> InlineTerminal<W> {
         self.emit(&out)
     }
 
+    /// Sends `escapes` on the alternate screen, from the cell `at` when given, such as a picture
+    /// over the header's cells, then puts the cursor back where it rests.
+    pub fn send_escapes(&mut self, at: Option<Position>, escapes: &[u8]) -> io::Result<()> {
+        if escapes.is_empty() {
+            return Ok(());
+        }
+        let mut out = Vec::new();
+        if let Some(at) = at {
+            queue!(out, MoveTo(at.x, at.y))?;
+        }
+        out.extend_from_slice(escapes);
+        match self.resting {
+            Some(rest) if at.is_some() => queue!(out, MoveTo(rest.x, rest.y))?,
+            _ => {}
+        }
+        self.write_frame(&out)
+    }
+
+    /// The next alternate-screen draw writes every cell of `area` again, whatever it held, such
+    /// as where a picture drawn into the cells was.
+    pub fn redraw_cells(&mut self, area: Rect) {
+        let Some(buffer) = self.screen_buffer.as_mut() else {
+            return;
+        };
+        let area = area.intersection(buffer.area);
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                buffer[(x, y)].set_diff_option(CellDiffOption::AlwaysUpdate);
+            }
+        }
+    }
+
     /// What the alternate screen shows, as the last [`draw_buffer`](Self::draw_buffer) left it.
     pub fn screen_buffer(&self) -> Option<&Buffer> {
         self.screen_buffer.as_ref()
@@ -729,14 +797,10 @@ impl<W: Write> InlineTerminal<W> {
     /// their number, so nothing under them moves. Nothing prints once any of them has gone
     /// up into scrollback, or when a line would wrap.
     fn print_over_marked(&mut self, out: &mut Vec<u8>, lines: &[Line<'static>]) -> io::Result<()> {
-        let Some(marked) = self.marked else {
+        let (Some(marked), Some(top)) = (self.marked, self.marked_top()) else {
             return Ok(());
         };
         let width = self.screen.width;
-        let top = i32::from(self.history_end) - i32::from(marked.below) - i32::from(marked.rows);
-        let Ok(top) = u16::try_from(top) else {
-            return Ok(());
-        };
         if lines.iter().any(|line| physical_rows(line, width) > 1) {
             return Ok(());
         }

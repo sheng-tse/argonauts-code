@@ -1,0 +1,88 @@
+{
+ "location": {
+  "directory": "/tmp/repo"
+ },
+ "data": {
+  "id": "nemotron-3.5-super-vl-free",
+  "modelID": "nemotron-3.5-super-vl-free",
+  "providerID": "opencode",
+  "name": "Nemotron 3.5 Super VL Free",
+  "compatibility": {
+   "reasoningField": "reasoning_content"
+  },
+  "package": "@opencode/ai/providers/openai-compatible",
+  "settings": {
+   "apiKey": "public",
+   "baseURL": "https://opencode.ai/inference/openai/v1",
+   "provider": "opencode"
+  },
+  "capabilities": {
+   "tools": true,
+   "input": [
+    "text",
+    "image"
+   ],
+   "output": [
+    "text"
+   ]
+  },
+  "variants": [
+   {
+    "id": "none",
+    "settings": {
+     "reasoningEffort": "none"
+    }
+   },
+   {
+    "id": "minimal",
+    "settings": {
+     "reasoningEffort": "minimal"
+    }
+   },
+   {
+    "id": "low",
+    "settings": {
+     "reasoningEffort": "low"
+    }
+   },
+   {
+    "id": "medium",
+    "settings": {
+     "reasoningEffort": "medium"
+    }
+   },
+   {
+    "id": "high",
+    "settings": {
+     "reasoningEffort": "high"
+    }
+   },
+   {
+    "id": "xhigh",
+    "settings": {
+     "reasoningEffort": "xhigh"
+    }
+   }
+  ],
+  "time": {
+   "released": 1792022400000
+  },
+  "cost": [
+   {
+    "input": 0,
+    "output": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  ],
+  "status": "active",
+  "enabled": true,
+  "limit": {
+   "context": 1048576,
+   "input": 1048576,
+   "output": 131072
+  }
+ }
+}

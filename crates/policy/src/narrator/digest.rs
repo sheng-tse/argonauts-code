@@ -243,6 +243,7 @@ fn task_line(event: &RunEvent, task: &TaskEvent) -> Option<String> {
             try_number,
             worker,
             cause,
+            ..
         } => format!("{who}: try {try_number} by {worker} ({})", name(cause)),
         TaskEvent::Reported(_) => format!("{who} reported"),
         TaskEvent::Reassigned { to, by, .. } => {

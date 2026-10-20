@@ -10,6 +10,7 @@ use argonauts_core::TaskId;
 use argonauts_core::events::session::InputPartKind;
 use argonauts_core::limits::{FallbackNote, TranscriptPaths};
 use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::registry::{ModelAccess, ModelEntry};
 use argonauts_core::session_runner::Access;
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::fallback::{FallbackSummary, FallbackSummaryInput};
@@ -22,8 +23,10 @@ use crate::task::support::part;
 
 pub const SUMMARY_FILE: &str = "summary.md";
 
-/// Assumed when the registry doesn't know the summarizer's context window.
-const DEFAULT_WINDOW: u64 = 128_000;
+/// Assumed when no model's window is known at all: the least a local server gives a model
+/// with no cap of its own (Ollama's 4,096 on a machine with little memory), so a transcript
+/// never overflows the model that reads it.
+const LEAST_WINDOW: u64 = 4_096;
 /// Kept free for the prompt, the question, and the answer.
 const RESERVED_TOKENS: u64 = 8_000;
 /// On the low side, so the tail that's kept fits.
@@ -194,12 +197,83 @@ async fn save(paths: &TranscriptPaths, summary: &str) {
 
 /// How much transcript the summarizer's context holds, in bytes.
 fn limit(host: &Host, summarizer: &ModelRef) -> usize {
-    let window = host
-        .services()
-        .registry
-        .get(summarizer)
-        .and_then(|entry| entry.context_window)
-        .unwrap_or(DEFAULT_WINDOW);
+    let registry = &host.services().registry;
+    // An alias such as `claude-code/haiku` has no window of its own; the model it runs has.
+    let runs = registry
+        .catalog()
+        .runs(summarizer)
+        .map(|model| ModelRef::new(summarizer.agent.clone(), Some(model)))
+        .filter(|runs| runs != summarizer)
+        .and_then(|runs| registry.get(&runs));
+    let window = summary_window(
+        summarizer,
+        registry.get(summarizer).as_ref(),
+        runs.as_ref(),
+        &registry.list(),
+    );
+    bytes_for(window)
+}
+
+/// The summarizer's real window: the smaller of the most its model takes and the cap its
+/// server holds it to, from its own entry or that of the model an alias of it runs. Where
+/// neither knows it, the smallest window known beside it stands in, of its CLI's models on the
+/// same server or route. With none known, a local model gets the least a local server gives,
+/// and a hosted one the smallest window known of a hosted model, so a summary never assumes
+/// more room than its model has, nor sizes a hosted model by a small local one.
+fn summary_window(
+    summarizer: &ModelRef,
+    own: Option<&ModelEntry>,
+    runs: Option<&ModelEntry>,
+    known: &[ModelEntry],
+) -> u64 {
+    if let Some(window) = own
+        .and_then(held_window)
+        .or_else(|| runs.and_then(held_window))
+    {
+        return window;
+    }
+    let smallest = |keep: &dyn Fn(&ModelEntry) -> bool| {
+        known
+            .iter()
+            .filter(|entry| keep(entry))
+            .filter_map(held_window)
+            .min()
+    };
+    if let Some(window) = smallest(&|entry| beside(summarizer, &entry.id)) {
+        return window;
+    }
+    let local = match own.or(runs) {
+        Some(entry) => entry.access == ModelAccess::Local,
+        None => known
+            .iter()
+            .any(|entry| beside(summarizer, &entry.id) && entry.access == ModelAccess::Local),
+    };
+    if local {
+        return LEAST_WINDOW;
+    }
+    smallest(&|entry| entry.access != ModelAccess::Local).unwrap_or(LEAST_WINDOW)
+}
+
+/// Whether `id` runs where `summarizer` does: on the same CLI, and for a model the CLI reaches
+/// through a server, such as OpenCode's `ollama/…`, on the same one.
+fn beside(summarizer: &ModelRef, id: &ModelRef) -> bool {
+    let route = |id: &ModelRef| {
+        id.model
+            .as_deref()
+            .and_then(|model| model.split_once('/'))
+            .map(|(route, _)| route.to_owned())
+    };
+    id.agent == summarizer.agent && route(id) == route(summarizer)
+}
+
+/// The window a session on the model is held to, as its entry says. A local model with no cap
+/// of its own has none until its server loads it, so the summary doesn't count on its most.
+fn held_window(entry: &ModelEntry) -> Option<u64> {
+    entry.session_window().filter(|window| *window > 0)
+}
+
+/// The transcript's bytes that fit in `window` tokens, with room kept for the rest.
+fn bytes_for(window: u64) -> usize {
     let tokens = window.saturating_sub(RESERVED_TOKENS.min(window / 4));
     usize::try_from(tokens.saturating_mul(CHARS_PER_TOKEN)).unwrap_or(usize::MAX)
 }
@@ -243,6 +317,103 @@ mod tests {
         assert!(cut);
         assert!(text.starts_with("… the first 3 lines are cut"), "{text}");
         assert!(text.ends_with("\n\nlast line\n"), "{text}");
+    }
+
+    fn entry(id: &str, context_window: Option<u64>, window: Option<u64>) -> ModelEntry {
+        let access = if id.starts_with("ollama/") || id.contains("/ollama/") {
+            "local"
+        } else {
+            "subscription"
+        };
+        let mut entry: ModelEntry = serde_json::from_value(serde_json::json!({
+            "id": id,
+            "provider": "local",
+            "kind": "cli",
+            "access": access,
+            "cost": { "unit": "none" },
+        }))
+        .expect("a registry entry");
+        entry.context_window = context_window;
+        entry.window = window;
+        entry
+    }
+
+    fn model(id: &str) -> ModelRef {
+        id.parse().expect("a model id")
+    }
+
+    /// Gemma 3 takes 131,072 tokens, but its 32k tag holds it to 32,768, and that is what the
+    /// summary must fit in.
+    #[test]
+    fn the_summary_fits_the_window_the_server_holds_the_model_to() {
+        let window = |entry: &ModelEntry| summary_window(&entry.id, Some(entry), None, &[]);
+        let gemma = entry("ollama/gemma3:12b-32k", Some(131_072), Some(32_768));
+        assert_eq!(window(&gemma), 32_768);
+        let opus = entry("claude-code/claude-opus-5-5", Some(1_000_000), None);
+        assert_eq!(window(&opus), 1_000_000);
+        // A tag with no cap of its own is sized as it loads, so its most isn't counted on.
+        let mut uncapped = entry("ollama/qwen3-coder:30b", Some(262_144), None);
+        uncapped.discovered = true;
+        assert_eq!(window(&uncapped), LEAST_WINDOW);
+    }
+
+    /// Haiku named by its alias reads the window of the model the alias runs, never that of a
+    /// small local model beside it in the registry.
+    #[test]
+    fn an_alias_takes_the_window_of_the_model_it_runs() {
+        let alias = entry("claude-code/haiku", None, None);
+        let haiku = entry("claude-code/claude-haiku-5-5", Some(1_000_000), None);
+        let known = [
+            alias.clone(),
+            haiku.clone(),
+            entry("ollama/gemma2:9b", Some(8_192), Some(8_192)),
+        ];
+        let window = summary_window(&alias.id, Some(&alias), Some(&haiku), &known);
+        assert_eq!(window, 1_000_000);
+    }
+
+    /// A hosted model the registry knows no window of takes the smallest known beside it on
+    /// its CLI, and with none there the smallest of a hosted model; a local one the smallest
+    /// on its own server, and with none there the least a local server gives. Never a made-up
+    /// 128k, and never a hosted model sized by a local one.
+    #[test]
+    fn a_model_with_no_window_known_is_sized_by_those_beside_it() {
+        let mut uncapped = entry("opencode/ollama/qwen3-coder:30b", Some(262_144), None);
+        uncapped.discovered = true;
+        let known = [
+            entry("claude-code/claude-opus-5-5", Some(1_000_000), None),
+            entry("codex/gpt-6-luna", Some(400_000), None),
+            entry("antigravity-cli/gemini-3.8-flash-low", None, None),
+            entry("ollama/gemma2:9b", Some(8_192), Some(8_192)),
+            entry(
+                "opencode/ollama/gemma3:12b-32k",
+                Some(131_072),
+                Some(32_768),
+            ),
+            uncapped,
+            entry("opencode/opencode/glm-5.3-flash-free", Some(200_000), None),
+        ];
+        let window = |id: &str| {
+            let own = known.iter().find(|entry| entry.id == model(id));
+            summary_window(&model(id), own, None, &known)
+        };
+        assert_eq!(window("antigravity-cli/gemini-3.8-flash-low"), 200_000);
+        assert_eq!(window("codex/gpt-6-sol"), 400_000);
+        assert_eq!(window("opencode/ollama/qwen3-coder:30b"), 32_768);
+        assert_eq!(window("ollama/llama3.2:latest"), 8_192);
+        let mut local_alone = [entry("ollama/qwen3-coder:30b", Some(262_144), None)];
+        local_alone[0].discovered = true;
+        let own = &local_alone[0];
+        assert_eq!(
+            summary_window(&own.id, Some(own), None, &local_alone),
+            LEAST_WINDOW
+        );
+        assert_eq!(
+            summary_window(&model("codex/gpt-6-luna"), None, None, &[]),
+            LEAST_WINDOW
+        );
+        assert!(bytes_for(32_768) < bytes_for(65_536));
+        assert_eq!(bytes_for(32_768), (32_768 - 8_000) * 3);
     }
 
     #[test]

@@ -123,6 +123,20 @@ mod tests {
         assert!(claude_codes_own(&Settings::default(), &[]).is_none());
     }
 
+    /// The orchestrator is the first of its models that can work now, so one that can't is
+    /// passed over for the Claude Code model after it, and whoever asks must say what can work.
+    #[test]
+    fn an_orchestrator_that_cannot_work_now_is_passed_over() {
+        let settings = crew(serde_json::json!({
+            "orchestrator": ["codex", "claude-code/opus-5-5"],
+            "worker": ["claude-code/opus-5-5"],
+        }));
+        let available = [worker("claude-code/opus-5-5")];
+        let own = claude_codes_own(&settings, &available).expect("Claude Code's own");
+        assert_eq!(own.orchestrator, worker("claude-code/opus-5-5"));
+        assert!(claude_codes_own(&settings, &[]).is_none());
+    }
+
     /// Claude Code's own workflow plans and delegates, which is what the orchestrator's does;
     /// a council, a maker and its checker, and several tries with a pick run their own steps.
     #[test]

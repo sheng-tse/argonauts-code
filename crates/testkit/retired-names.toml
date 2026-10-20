@@ -43,9 +43,9 @@ allowed_in = [
     "crates/tui/src/bridge/keys.rs",
     "crates/tui/src/bridge/mod.rs",
     "crates/tui/src/bridge/status.rs",
-    "crates/tui/tests/snap_mods.rs",
-    "crates/tui/tests/snap_mods/**",
-    "crates/tui/tests/snapshots/snap_mods__*",
+    "crates/tui/tests/it/snap_mods.rs",
+    "crates/tui/tests/it/snap_mods/**",
+    "crates/tui/tests/it/snapshots/it__snap_mods__*",
     "crates/tui/tests/fixtures/mods/**",
     # placing and settings
     "crates/app/src/mods/**",
@@ -53,7 +53,7 @@ allowed_in = [
     "crates/app/src/controller/mod_places.rs",
     "crates/app/src/setup/tests.rs",
     "crates/app/src/usage_ledger.rs",
-    "crates/scenarios/tests/app_settings.rs",
+    "crates/scenarios/tests/it/app_settings.rs",
     "crates/core/src/settings/mods/**",
     "crates/core/src/settings/mods.rs",
     "templates/mods/**",
@@ -110,7 +110,7 @@ allowed_in = [
     "crates/adapters/codex/src/classify.rs",
     "crates/adapters/manifest/src/output/mod.rs",
     "crates/endpoints/src/errors.rs",
-    "crates/endpoints/tests/runner.rs",
+    "crates/endpoints/tests/it/runner.rs",
     "crates/testkit/src/openai.rs",
     "crates/registry/src/clis/tests.rs",
     "crates/registry/tests/fixtures/models.toml",
@@ -207,7 +207,7 @@ new = "try"
 allowed_in = [
     "crates/adapters/antigravity-cli/src/errors.rs",
     "crates/adapters/antigravity-cli/src/parser.rs",
-    "crates/adapters/antigravity-cli/tests/replay.rs",
+    "crates/adapters/antigravity-cli/tests/it/replay.rs",
     "crates/adapters/claude-code/src/parser.rs",
     "crates/adapters/claude-code/src/workflows.rs",
     "crates/scenarios/scenarios/limits/*.toml",
@@ -242,7 +242,8 @@ allowed_in = [
     "crates/policy/src/parts.rs",
     "crates/policy/src/autonomy/**",
     "crates/learning/**",
-    "crates/scenarios/tests/policy_revert_of_auto_merge_demotes.rs",
+    "crates/scenarios/tests/it/policy_revert_of_auto_merge_demotes.rs",
+    "crates/scenarios/tests/it/main.rs",
 ]
 
 # The endpoints speak the OpenAI Chat Completions API, which is the API's own name.
@@ -252,7 +253,7 @@ new = "conversation"
 allowed_in = [
     "crates/endpoints/**",
     "crates/testkit/src/openai.rs",
-    "crates/testkit/tests/openai_endpoint.rs",
+    "crates/testkit/tests/it/openai_endpoint.rs",
 ]
 
 # ── Retired phrases ──────────────────────────────────────────────────────────────────────
@@ -398,6 +399,8 @@ also = [
     "crates/policy/tests/fixtures/diffs/**",
     # a run an older build wrote, kept in the words it wrote
     "crates/app/tests/fixtures/older-run/**",
+    # a session's events from a run's log, with the model's own words
+    "crates/conductor/fixtures/opencode/*.events.jsonl",
 ]
 
 # ── Real names ───────────────────────────────────────────────────────────────────────────
@@ -661,14 +664,24 @@ text = 'workflow = "solo"'
 why = "a file an older build wrote, which the start question offers to rename"
 
 [[allow]]
-path = "crates/app/tests/golden/start_after.txt"
+path = "crates/app/tests/golden/rename_after.txt"
 text = 'workflow = "solo"'
 why = "the rename question's picture, naming an old value the file still uses"
 
 [[allow]]
-path = "crates/app/tests/golden/start_after.html"
+path = "crates/app/tests/golden/rename_after.html"
 text = 'workflow = &quot;solo&quot;'
 why = "the rename question's picture, naming an old value the file still uses"
+
+[[allow]]
+path = "crates/tui/golden/mascot_terminal.html"
+text = "font-family"
+why = "CSS of the page that draws the header's pictures"
+
+[[allow]]
+path = "crates/tui/golden/mascot_terminal.html"
+text = "box-shadow"
+why = "CSS of the page that draws the header's pictures"
 
 # ── Files whose words aren't read ────────────────────────────────────────────────────────
 

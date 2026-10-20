@@ -54,6 +54,8 @@ pub struct History {
     withheld: Option<Vec<(Cell, bool)>>,
     /// How many cells went to scrollback, so a line can tell whether anything printed since.
     committed: usize,
+    /// Where the last drain started the screen over, as a row of the rows it returned.
+    started_over: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -69,6 +71,8 @@ enum Pending {
     },
     /// The header at this index in `cells` changed, and prints over its old rows.
     HeaderChanged(usize),
+    /// The screen starts over: what printed before goes, and the rows after start a fresh one.
+    StartOver,
 }
 
 #[derive(Debug)]
@@ -114,6 +118,14 @@ impl History {
 
     pub fn cells(&self) -> &[Cell] {
         &self.cells
+    }
+
+    /// The header printed last.
+    pub fn header(&self) -> Option<&SessionHeader> {
+        self.cells.iter().rev().find_map(|cell| match cell {
+            Cell::Header(header) => Some(header),
+            _ => None,
+        })
     }
 
     /// Prints on the next frame, or after the open stream ends.
@@ -193,6 +205,20 @@ impl History {
         self.cells[index] = Cell::Header(header);
         self.queue.push_back(Pending::HeaderChanged(index));
         true
+    }
+
+    /// The screen starts over, as `/clear` has it: the cells so far go, the transcript's
+    /// included, and what prints next begins a fresh screen. Live cells, such as a run's rows,
+    /// stay where they are.
+    pub fn start_over(&mut self) {
+        self.queue.push_back(Pending::StartOver);
+    }
+
+    /// Where the rows of the last [`drain_printable`](Self::drain_printable) start a fresh
+    /// screen, when they do. The rows the header and the prompts are at count from the first of
+    /// all of them, as ever.
+    pub fn take_started_over(&mut self) -> Option<usize> {
+        self.started_over.take()
     }
 
     /// Where the rows of the last [`drain_printable`](Self::drain_printable) hold the header.
@@ -441,6 +467,7 @@ impl History {
                 Pending::HeaderChanged(index) => {
                     self.header_redrawn = Some(self.cells[index].lines(ctx));
                 }
+                Pending::StartOver => self.forget_printed(out.len()),
             }
         }
         if let Some(mut open) = self.stream.take() {
@@ -453,6 +480,31 @@ impl History {
             self.stream = Some(open);
         }
         out
+    }
+
+    /// Drops the cells printed up to here, so the next one prints first on a fresh screen at
+    /// row `at` of this drain, and the cells still to print keep their places.
+    fn forget_printed(&mut self, at: usize) {
+        let gone = self
+            .queue
+            .iter()
+            .filter_map(|pending| match pending {
+                Pending::Cell(index) | Pending::HeaderChanged(index) => Some(*index),
+                _ => None,
+            })
+            .min()
+            .unwrap_or(self.cells.len());
+        self.cells.drain(..gone);
+        for pending in &mut self.queue {
+            if let Pending::Cell(index) | Pending::HeaderChanged(index) = pending {
+                *index -= gone;
+            }
+        }
+        self.started_over = Some(at);
+        self.printed_any = false;
+        self.header_rows = None;
+        self.header_redrawn = None;
+        self.prompt_rows.retain(|(rows, _)| rows.start >= at);
     }
 
     /// Where `rows` went in `out`, after any blank row put before them.
@@ -545,10 +597,12 @@ mod tests {
             model: None,
             effort: None,
             workflow: "captain".to_owned(),
+            ultra: None,
             folder: "~/repo".to_owned(),
             agents: Vec::new(),
             runs_going: 0,
             runs_need_you: 0,
+            way_back: None,
         }
     }
 
@@ -584,6 +638,39 @@ mod tests {
             .filter(|cell| matches!(cell, Cell::Header(_)))
             .count();
         assert_eq!(headers, 1, "the overlay keeps one header too");
+    }
+
+    /// Starting over drops what printed, the transcript's cells too, and says where the fresh
+    /// screen begins in the rows of the drain, its header there with no blank row before it.
+    #[test]
+    fn a_screen_started_over_begins_at_its_header() {
+        let theme = theme();
+        let ctx = RenderCtx::new(60, &theme, Clock::still(Instant::now()));
+        let mut history = History::new();
+        history.push(header("Claude Code"));
+        history.push(UserMessage::new("hi"));
+        history.drain_printable(&ctx);
+        assert_eq!(history.take_started_over(), None);
+
+        history.push(UserMessage::new("one more"));
+        history.start_over();
+        let mut fresh = header("Claude Code");
+        fresh.way_back = Some("conversation-007".to_owned());
+        history.push(fresh);
+        let rows = history.drain_printable(&ctx);
+        let at = history.take_started_over().expect("where it starts over");
+        assert_eq!(plain_text(&rows[..at]), "\n❯ one more");
+        let shown = plain_text(&rows[at..]);
+        assert!(
+            shown.starts_with('\n'),
+            "the header's own blank row on top: {shown:?}"
+        );
+        assert!(
+            shown.contains("/resume conversation-007 picks the last one up again"),
+            "{shown}"
+        );
+        assert_eq!(history.take_header_rows().map(|rows| rows.start), Some(at));
+        assert_eq!(history.cells().len(), 1, "only the new header is kept");
     }
 
     #[test]

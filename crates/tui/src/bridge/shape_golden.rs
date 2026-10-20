@@ -199,6 +199,13 @@ const AUTOPILOT: Unlike = Unlike {
 };
 
 /// The input's rules, rows 5 and 7 of the picture.
+/// While the turn works, the input's `❯` is grey.
+const BUSY_PROMPT: Unlike = Unlike {
+    row: 3,
+    cols: (0, 0),
+    why: "the input's ❯ turns grey while the turn works",
+};
+
 fn rule(row: usize) -> Unlike {
     Unlike {
         row,
@@ -247,7 +254,14 @@ fn a_run_draws_no_row_until_its_workflow_has_its_phases() {
         (&picture(), COLOURS),
         3..9,
         &theme(),
-        &[NO_ESC, rule(2), rule(4), AUTOPILOT, NOTHING_TO_MANAGE],
+        &[
+            NO_ESC,
+            rule(2),
+            BUSY_PROMPT,
+            rule(4),
+            AUTOPILOT,
+            NOTHING_TO_MANAGE,
+        ],
     );
 
     // The crew's reviewers Claude Code's workflow asks for come and go before it reports its

@@ -55,8 +55,6 @@ pub struct Glyphs {
     pub tree_mid: &'static str,
     pub tree_end: &'static str,
     pub hunk_gap: &'static str,
-    /// The session header's mark, three rows of eight columns: a sail over a hull, for the Argo.
-    pub mark: [&'static str; 3],
     pub ready: &'static str,
     pub not_ready: &'static str,
     pub checkbox_off: &'static str,
@@ -97,7 +95,6 @@ impl Glyphs {
         tree_mid: "├",
         tree_end: "└",
         hunk_gap: "⋮",
-        mark: ["   ▟▙   ", "  ▟██▙  ", "▝▀▀▀▀▀▀▘"],
         ready: "✓",
         not_ready: "✗",
         checkbox_off: "☐",
@@ -137,7 +134,6 @@ impl Glyphs {
         tree_mid: "|",
         tree_end: "`",
         hunk_gap: ":",
-        mark: ["   /\\   ", "  /__\\  ", "\\______/"],
         ready: "ok",
         not_ready: "no",
         checkbox_off: "[ ]",
@@ -219,7 +215,6 @@ impl Glyphs {
             ("tree_end", self.tree_end),
             ("hunk_gap", self.hunk_gap),
         ]);
-        all.extend(self.mark.iter().map(|row| ("mark", *row)));
         all.extend([
             ("ready", self.ready),
             ("not_ready", self.not_ready),
@@ -320,17 +315,10 @@ mod tests {
     fn unicode_glyphs_are_one_column_per_char() {
         let g = Glyphs::UNICODE;
         for (name, glyph) in g.named() {
-            if name != "mark" {
-                assert_eq!(str_width(glyph), glyph.chars().count(), "{name}: {glyph:?}");
-            }
+            assert_eq!(str_width(glyph), glyph.chars().count(), "{name}: {glyph:?}");
         }
         assert_eq!(str_width(g.mode_ask), 1);
         assert_eq!(str_width(g.mode_go), 2);
-        for set in [Glyphs::UNICODE, Glyphs::ASCII] {
-            for row in set.mark {
-                assert_eq!(str_width(row), 8, "{row:?}");
-            }
-        }
     }
 
     #[test]
@@ -346,8 +334,8 @@ mod tests {
 
     #[test]
     fn named_lists_every_glyph() {
-        // The fields that hold one glyph each, the mark's three rows included.
-        let singles = 36;
+        // The fields that hold one glyph each.
+        let singles = 33;
         for set in [Glyphs::UNICODE, Glyphs::ASCII] {
             let frames = set.spinner.len() + set.title_busy.len() + set.agent_working.len();
             assert_eq!(set.named().len(), singles + frames);

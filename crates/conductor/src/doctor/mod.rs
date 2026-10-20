@@ -386,6 +386,18 @@ pub(crate) mod tests {
             self.transport = Transport::Acp;
             self
         }
+
+        /// Names its program `binary`, a bare name or a path.
+        pub(crate) fn with_binary(mut self, binary: &'static str) -> Self {
+            self.binary = binary;
+            self
+        }
+
+        /// Runs the program `other` runs, as OpenCode over ACP runs OpenCode's.
+        pub(crate) fn running(mut self, other: &FakeCli) -> Self {
+            self.binary = other.binary;
+            self
+        }
     }
 
     impl Adapter for FakeCli {

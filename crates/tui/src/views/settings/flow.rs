@@ -6,7 +6,7 @@
 
 use argonauts_core::app::{MissingCli, ModelChoice, SettingRow, UiCommand, ViewRequest};
 use argonauts_core::input::{EFFORT_LEVELS, SLASH_COMMANDS, SlashCommand};
-use argonauts_core::model_picker::{EffortLine, EffortSlider};
+use argonauts_core::model_picker::{EffortLine, EffortSlider, ModelSource};
 use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::SettingScope;
 
@@ -51,11 +51,28 @@ pub struct Flow {
     pub models: Vec<ModelChoice>,
     /// For `/model`: how fresh the model lists are, after what the choice does.
     pub freshness: Option<String>,
-    /// For `/model`'s models level: the highlighted model's effort, under the list. `None`
-    /// elsewhere, and on a row whose model takes no effort setting.
+    /// For `/model`: each list the choices come from, with when it was read and whether it's
+    /// being asked again, so each level says how fresh its own list is.
+    pub sources: Vec<ModelSource>,
+    /// For `/model`: what this machine gives models, for the level of a CLI that runs some
+    /// here.
+    pub memory: Option<argonauts_core::model_picker::MachineMemory>,
+    /// When the controller's answer came and the terminal's zone, which those times are
+    /// worded from.
+    pub told_at: Option<(time::OffsetDateTime, time::UtcOffset)>,
+    /// For `/model`: the models its first answer listed, so one that arrives while it's open
+    /// reads "new" until it closes.
+    pub opened_with: Option<Vec<ModelRef>>,
+    /// A model not installed whose download Enter asked about, which Enter again starts.
+    pub download_asked: Option<ModelRef>,
+    /// For `/model`'s models level: the highlighted model's effort, under the list, with no
+    /// levels for a model that takes no effort setting. `None` elsewhere.
     pub effort: Option<EffortLine>,
     /// The level you moved the effort line to, which carries over as the pointer moves.
     pub effort_wanted: Option<String>,
+    /// On `/model`'s models level, the model the pointer was on last, which "Other model…"
+    /// opens holding so it can be edited into a full id.
+    pub pointed_model: Option<String>,
     /// For `/effort`: the slider, drawn in place of rows.
     pub slider: Option<EffortSlider>,
     /// The levels this one opened from, nearest last, for ← to go back to. `/model`'s own
@@ -69,7 +86,11 @@ pub struct Flow {
 impl Flow {
     /// Whether ←/→ change a value here rather than move between levels.
     pub fn arrows_adjust(&self) -> bool {
-        self.slider.is_some() || self.effort.is_some()
+        self.slider.is_some()
+            || self
+                .effort
+                .as_ref()
+                .is_some_and(|line| !line.levels.is_empty())
     }
 
     /// Whether ← has a level to go back to.
@@ -251,6 +272,8 @@ pub enum Step {
     Ask(ViewRequest),
     /// Send this and close.
     Done(UiCommand),
+    /// Send this and stay open, as a download does, so the list can show what it brought.
+    Send(UiCommand),
     /// Close with nothing sent, leaving this line under the command's echo.
     Cancel {
         kept: Kept,
@@ -352,6 +375,10 @@ pub fn fill_models(picker: &mut Picker, role: Option<RoleName>, choices: &[Model
 /// Adds how fresh the model lists are after what the choice does.
 pub fn show_freshness(picker: &mut Picker, note: Option<&str>) {
     picker.flow.freshness = note.map(str::to_owned);
+    // A level whose source the controller named words its own, as it was filled.
+    if models::level_note(picker).is_some() {
+        return;
+    }
     if let Some(note) = note {
         let about = picker.about.trim_end_matches('.');
         picker.about = format!("{about}. {note}");
@@ -395,7 +422,13 @@ fn sideways(picker: &mut Picker, right: bool) -> Step {
         }
         return Step::Stay;
     }
-    if let Some(line) = picker.flow.effort.as_mut() {
+    // A model that takes no effort setting has nothing on the arrows.
+    if let Some(line) = picker
+        .flow
+        .effort
+        .as_mut()
+        .filter(|line| !line.levels.is_empty())
+    {
         // A model's only level is no choice of yours to carry to the next model.
         if line.is_fixed() {
             return Step::Stay;
@@ -566,6 +599,9 @@ fn act(picker: &mut Picker, action: RowAction) -> Step {
         }
         RowAction::Worker { role, worker } => match picker.flow.model_for {
             Some(key) => set_value(picker, key, quote(&worker.to_string())),
+            None if models::not_installed(&picker.flow, &worker) => {
+                models::download(picker, worker)
+            }
             None => models::pick_listed(picker, role, worker),
         },
         RowAction::OtherModel { role, cli } => {
@@ -651,9 +687,9 @@ fn entered(picker: &mut Picker, text: &str) -> Step {
             }
         },
         Stage::OtherModel { role, cli } => match models::typed(picker, &cli, text) {
-            Some(worker) => match picker.flow.model_for {
+            Some((worker, level)) => match picker.flow.model_for {
                 Some(key) => set_value(picker, key, quote(&worker.to_string())),
-                None => models::pick(role, worker),
+                None => models::pick_typed(role, worker, level),
             },
             None => Step::Stay,
         },

@@ -12,9 +12,10 @@ use argonauts_conductor::{AgentStatus, DoctorReport};
 use argonauts_core::Adapter;
 use argonauts_core::adapter::SetupHints;
 use argonauts_core::names::ModelRef;
+use argonauts_core::runtimes::{RUNTIMES, runtime};
 use argonauts_core::settings::Settings;
 use argonauts_core::status_tab::CliVersionCheck;
-use serde::Deserialize;
+use argonauts_endpoints::runtime_api;
 
 /// Each server probe waits at most this long.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
@@ -22,16 +23,10 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// A login check starts the CLI itself, which takes longer than a server takes to answer.
 pub(crate) const LOGIN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The servers the setup looks for, at their usual addresses when the settings name none.
-pub(crate) const LOCAL_SERVERS: &[(&str, &str)] = &[
-    ("ollama", "http://localhost:11434/v1"),
-    ("lmstudio", "http://127.0.0.1:1234/v1"),
-];
-
-/// A server that answered `GET {base_url}/models`.
+/// A local runtime that said what it is, with the models it serves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LocalServer {
-    /// `ollama` or `lmstudio`.
+    /// The runtime's id, such as `llamacpp`.
     pub id: String,
     pub base_url: String,
     pub models: Vec<String>,
@@ -39,11 +34,13 @@ pub(crate) struct LocalServer {
 
 impl LocalServer {
     pub(crate) fn name(&self) -> &str {
-        match self.id.as_str() {
-            "ollama" => "Ollama",
-            "lmstudio" => "LM Studio",
-            other => other,
-        }
+        runtime(&self.id).map_or(self.id.as_str(), |runtime| runtime.name)
+    }
+
+    /// Its ports are ones other servers use too, so the setup writes its table once it has
+    /// said what it is, and only then may a session reach it.
+    pub(crate) fn needs_its_table(&self) -> bool {
+        runtime(&self.id).is_some_and(|runtime| runtime.common_ports)
     }
 }
 
@@ -184,30 +181,43 @@ pub(crate) async fn login_state(program: &Path, args: &[String]) -> LoginState {
     }
 }
 
-/// `endpoints.ollama` and `endpoints.lmstudio` at their resolved `base_url`, or the built-in
-/// address. Only servers that list at least one model are returned.
+/// Every known runtime, each at your table's `base_url` or else its usual addresses in turn
+/// (llama-server's 9931, then 8080), all at once and each within [`PROBE_TIMEOUT`]. A server
+/// counts only when it says in its own API which runtime it is, so another app on port 8000 or
+/// 8080 is never taken for one, and only when it serves at least one model.
 pub(crate) async fn local_servers(settings: &Settings) -> Vec<LocalServer> {
-    // Local servers never go through a proxy.
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(PROBE_TIMEOUT)
-        .no_proxy()
-        .build()
-    else {
+    let Some(client) = runtime_api::local_client(PROBE_TIMEOUT) else {
         return Vec::new();
     };
-    let probes = LOCAL_SERVERS.iter().map(|(id, builtin)| {
-        let base_url = settings
-            .endpoints
-            .get(*id)
-            .and_then(|endpoint| endpoint.base_url.clone())
-            .unwrap_or_else(|| (*builtin).to_owned());
+    let probes = RUNTIMES.iter().map(|runtime| {
+        let yours = settings.endpoints.get(runtime.id);
+        // Without a table of yours, a server is asked where it listens by default, unless
+        // you turned off asking the servers on this computer.
+        let addresses: Vec<String> = match yours.and_then(|table| table.base_url.clone()) {
+            Some(base_url) => vec![base_url],
+            None if !settings.registry.local_servers => Vec::new(),
+            None => runtime
+                .addresses
+                .iter()
+                .map(|url| (*url).to_owned())
+                .collect(),
+        };
+        let token = yours
+            .and_then(|table| table.api_key_env.as_deref())
+            .and_then(|variable| std::env::var(variable).ok());
         let client = client.clone();
         async move {
-            let models = models_at(&client, &base_url).await?;
+            let asked = addresses.iter().map(|base_url| {
+                runtime_api::identify(&client, runtime, base_url, token.as_deref())
+            });
+            let answered = tokio::time::timeout(PROBE_TIMEOUT, futures::future::join_all(asked))
+                .await
+                .ok()?;
+            let served = answered.into_iter().flatten().next()?;
             Some(LocalServer {
-                id: (*id).to_owned(),
-                base_url,
-                models,
+                id: runtime.id.to_owned(),
+                base_url: served.base_url,
+                models: served.models,
             })
         }
     });
@@ -219,31 +229,11 @@ pub(crate) async fn local_servers(settings: &Settings) -> Vec<LocalServer> {
         .collect()
 }
 
-#[derive(Deserialize)]
-struct ModelList {
-    data: Vec<ModelItem>,
-}
-
-#[derive(Deserialize)]
-struct ModelItem {
-    id: String,
-}
-
-async fn models_at(client: &reqwest::Client, base_url: &str) -> Option<Vec<String>> {
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let response = client.get(url).send().await.ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let list: ModelList = response.json().await.ok()?;
-    Some(list.data.into_iter().map(|model| model.id).collect())
-}
-
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
-    use argonauts_testkit::FakeOpenAi;
+    use argonauts_testkit::{FakeKind, FakeModelServer};
 
     use super::*;
 
@@ -300,21 +290,30 @@ mod tests {
         assert_eq!(states, vec![("codex".to_owned(), LoginState::LoggedOut)]);
     }
 
+    fn table(base_url: &str) -> argonauts_core::settings::agents::EndpointSettings {
+        serde_json::from_value(serde_json::json!({ "base_url": base_url })).unwrap()
+    }
+
+    /// Nothing listens on port 9 here, so a runtime pointed there is found nowhere, fast.
+    fn nowhere(settings: &mut Settings, except: &[&str]) {
+        for runtime in RUNTIMES
+            .iter()
+            .filter(|runtime| !except.contains(&runtime.id))
+        {
+            settings
+                .endpoints
+                .insert(runtime.id.to_owned(), table("http://127.0.0.1:9/v1"));
+        }
+    }
+
     #[tokio::test]
     async fn a_server_is_probed_at_its_resolved_address() {
-        let server = FakeOpenAi::start().unwrap();
-        server.set_models(&["llama3.2", "qwen3"]);
+        let server = FakeModelServer::start(FakeKind::Ollama, &["llama3.2", "qwen3"]).unwrap();
         let mut settings = Settings::default();
-        settings.endpoints.insert(
-            "ollama".to_owned(),
-            serde_json::from_value(serde_json::json!({ "base_url": server.base_url() })).unwrap(),
-        );
-        // Nothing listens on port 9 here, so LM Studio's probe fails fast.
-        settings.endpoints.insert(
-            "lmstudio".to_owned(),
-            serde_json::from_value(serde_json::json!({ "base_url": "http://127.0.0.1:9/v1" }))
-                .unwrap(),
-        );
+        settings
+            .endpoints
+            .insert("ollama".to_owned(), table(&server.base_url()));
+        nowhere(&mut settings, &["ollama"]);
         let servers = local_servers(&settings).await;
         assert_eq!(
             servers,
@@ -326,18 +325,87 @@ mod tests {
         );
     }
 
+    /// Off, the setup asks only the servers you have a table for, never one where it listens
+    /// by default, such as an Ollama of yours.
+    #[tokio::test]
+    async fn with_local_servers_off_only_your_tables_are_asked() {
+        let server = FakeModelServer::start(FakeKind::Ollama, &["llama3.2"]).unwrap();
+        let mut settings = Settings::default();
+        settings.registry.local_servers = false;
+        assert!(local_servers(&settings).await.is_empty());
+        settings
+            .endpoints
+            .insert("ollama".to_owned(), table(&server.base_url()));
+        let found: Vec<String> = local_servers(&settings)
+            .await
+            .into_iter()
+            .map(|server| server.id)
+            .collect();
+        assert_eq!(found, ["ollama"]);
+    }
+
+    #[tokio::test]
+    async fn all_four_runtimes_are_found_and_named() {
+        let ollama = FakeModelServer::start(FakeKind::Ollama, &["llama3.2"]).unwrap();
+        let lm_studio = FakeModelServer::start(FakeKind::LmStudio, &["qwen/qwen3-8b"]).unwrap();
+        let llama = FakeKind::LlamaServer {
+            slots: 2,
+            router: false,
+        };
+        let llama = FakeModelServer::start(llama, &["qwen3-8b-q4.gguf"]).unwrap();
+        let vllm = FakeKind::Vllm {
+            max_model_len: 32768,
+        };
+        let vllm = FakeModelServer::start(vllm, &["Qwen/Qwen3-8B"]).unwrap();
+        let mut settings = Settings::default();
+        for (id, server) in [
+            ("ollama", &ollama),
+            ("lmstudio", &lm_studio),
+            ("llamacpp", &llama),
+            ("vllm", &vllm),
+        ] {
+            settings
+                .endpoints
+                .insert(id.to_owned(), table(&server.base_url()));
+        }
+        let found = local_servers(&settings).await;
+        let names: Vec<(&str, &str)> = found
+            .iter()
+            .map(|server| (server.name(), server.models[0].as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("Ollama", "llama3.2"),
+                ("LM Studio", "qwen/qwen3-8b"),
+                ("llama-server", "qwen3-8b-q4.gguf"),
+                ("vLLM", "Qwen/Qwen3-8B"),
+            ]
+        );
+        let tables: Vec<bool> = found.iter().map(LocalServer::needs_its_table).collect();
+        assert_eq!(tables, [false, false, true, true]);
+    }
+
+    #[tokio::test]
+    async fn another_app_on_a_runtimes_port_is_not_taken_for_it() {
+        let other = FakeModelServer::start(FakeKind::Other, &["some-model"]).unwrap();
+        let mut settings = Settings::default();
+        for runtime in RUNTIMES {
+            settings
+                .endpoints
+                .insert(runtime.id.to_owned(), table(&other.base_url()));
+        }
+        assert!(local_servers(&settings).await.is_empty());
+    }
+
     #[tokio::test]
     async fn a_server_with_no_models_is_left_out() {
-        let server = FakeOpenAi::start().unwrap();
-        server.set_models(&[]);
+        let server = FakeModelServer::start(FakeKind::Ollama, &[]).unwrap();
         let mut settings = Settings::default();
-        for (id, _) in LOCAL_SERVERS {
-            settings.endpoints.insert(
-                (*id).to_owned(),
-                serde_json::from_value(serde_json::json!({ "base_url": server.base_url() }))
-                    .unwrap(),
-            );
-        }
+        settings
+            .endpoints
+            .insert("ollama".to_owned(), table(&server.base_url()));
+        nowhere(&mut settings, &["ollama"]);
         assert!(local_servers(&settings).await.is_empty());
     }
 }

@@ -735,7 +735,8 @@ pub fn unmet(verdicts: &[CriterionVerdict]) -> impl Iterator<Item = &str> {
 /// crew member that wrote none of the work, from another provider than its authors and than
 /// the phase's tie-breaker where there is one, else from another provider than its authors, else
 /// from any. Only when everyone wrote some does the tie-breaker's own CLI judge. Agents outside
-/// the crew and the reviewer role are never picked: they may not be set up to run here.
+/// the crew and the reviewer role are never picked: they may not be set up to run here. Nor is
+/// a model on a server, unless `goal.checker` names it: with no tools, it can't read the work.
 pub fn checker(host: &Host, authors: &[ModelRef]) -> ModelRef {
     let settings = host.settings();
     let mut pool = settings.crew.members();
@@ -744,7 +745,8 @@ pub fn checker(host: &Host, authors: &[ModelRef]) -> ModelRef {
             pool.push(worker);
         }
     }
-    let available = host.services().workers.available();
+    let workers = &host.services().workers;
+    let available = workers.available();
     pool.retain(|worker| available.iter().any(|ready| ready.agent == worker.agent));
     if settings.goal.checker != "other_provider"
         && let Some(named) = pool
@@ -753,6 +755,11 @@ pub fn checker(host: &Host, authors: &[ModelRef]) -> ModelRef {
     {
         return named.clone();
     }
+    pool.retain(|worker| {
+        workers
+            .get(worker)
+            .is_ok_and(|runner| runner.capabilities().can_build)
+    });
     let tie_breaker = change::tie_breaker(host);
     let wrote: Vec<String> = authors
         .iter()

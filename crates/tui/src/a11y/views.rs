@@ -297,20 +297,30 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             .rows
             .iter()
             .map(|row| {
-                let cap = row
-                    .cap
-                    .map(|cap| format!(" of {}", tokens(cap)))
-                    .unwrap_or_default();
+                let used = match row.window.or(row.cap).filter(|window| *window > 0) {
+                    Some(window) => super::words::tokens_of_window(row.used, window),
+                    None => tokens(row.used),
+                };
                 format!(
-                    "{}: {}, {}{cap}, {} tool calls, {}",
+                    "{}: {}, {used}, {} tool calls, {}",
                     one(&row.label),
                     names.worker(&row.worker),
-                    tokens(row.used),
                     row.tool_calls,
                     format::spend(&row.spent)
                 )
             })
             .collect(),
+        ViewData::SessionContext {
+            session, counted, ..
+        } => match counted {
+            Some(counted) => counted
+                .usage
+                .categories
+                .iter()
+                .map(|row| format!("{session} {}: {}", one(&row.name), tokens(row.tokens)))
+                .collect(),
+            None => vec![format!("{session}: not counted")],
+        },
         ViewData::AllRepos { repos } => repos
             .iter()
             .flat_map(|repo| {

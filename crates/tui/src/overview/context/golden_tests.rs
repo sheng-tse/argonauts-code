@@ -1,5 +1,6 @@
 //! The Context tab against its pictures, cell for cell and colour for colour: a 1M main
-//! session at 75% with two crew agents at work, and the same session at 94%.
+//! session at 75% with two crew agents at work, the same session at 94%, and a main session
+//! after a finished run, its nine sessions listed as each one ended.
 //!
 //! Every screen writes tokens in one format, Argonauts Code's own (`1M`, `800k`), and that format
 //! stands over the pictures, which spell counts as Claude Code does (`1m`, `799.6k`). So each
@@ -94,6 +95,112 @@ const COUNTS_NEAR_FULL: &[Respelled] = &[
     respelled(76, "244.8k", "245k", Some("Codex says")),
 ];
 
+/// The picture after the run spells counts as Claude Code does in the main session's blocks,
+/// and spend under a cent as `$0.00`, which every screen now writes `<$0.01`.
+const COUNTS_AFTER_RUN: &[Respelled] = &[
+    respelled(8, "/1m tokens", "/1M tokens", None),
+    respelled(19, "939.2k", "939k", Some("939.2k")),
+    respelled(19, "972.2k", "972k", Some("972.2k")),
+    respelled(22, "1m tokens", "1M tokens", None),
+    respelled(22, "939.2k", "939k", None),
+    respelled(55, "$0.00", "<$0.01", Some("$0.00")),
+    respelled(58, "$0.00", "<$0.01", Some("$0.00")),
+    respelled(64, "~$0.00", "~<$0.01", Some("~$0.00")),
+    respelled(67, "~$0.00", "~<$0.01", Some("~$0.00")),
+    respelled(70, "~$0.00", "~<$0.01", Some("~$0.00")),
+    respelled(73, "$0.00", "<$0.01", Some("$0.00")),
+    respelled(76, "~$0.00", "~<$0.01", Some("~$0.00")),
+    respelled(79, "$0.00", "<$0.01", Some("$0.00")),
+];
+
+/// What fills each crew agent's session lines up in one column a part across the crew, as
+/// wide as the part's widest entry, where the picture lets each part run on after the one
+/// before. With the four parts too wide for the row, MCP tools, the smallest, has no column,
+/// so system takes 54, MCP server instructions 71 and messages 103, and the one row with MCP
+/// tools and no MCP server instructions puts it in that column: each part of the picture moved
+/// to its column, its colours kept.
+const LINED_UP: &[Moved] = &[
+    moved(56, "\u{26c1} messages 4.9k", Some(103)),
+    moved(56, "\u{26c1} MCP server instructions 273", Some(71)),
+    moved(59, "\u{26c1} messages 3.6k", Some(103)),
+    moved(59, "\u{26c1} MCP server instructions 273", Some(71)),
+    moved(74, "\u{26c1} messages 5.3k", Some(103)),
+    moved(74, "\u{26c1} MCP tools 167", Some(71)),
+    moved(80, "\u{26c1} messages 4.2k", Some(103)),
+    moved(80, "\u{26c1} MCP server instructions 273", Some(71)),
+    // A tool's bar ends where every tool's bar ends, in the column the tab's pictures with
+    // several tools end it at, three cells before this one's lone bar.
+    Moved {
+        from: 62,
+        ..moved(45, "\u{2501}\u{2501}\u{2501}  ", None)
+    },
+];
+
+/// The picture's rows of messages by kind, from row 45, in the order the tab lists them,
+/// largest first: the picture keeps the order of the picture it was drawn from, with new
+/// numbers. Each is the picture's row of that kind.
+const KINDS_LARGEST_FIRST: [usize; 6] = [47, 49, 48, 45, 46, 50];
+
+/// The picture with its message kinds largest first, each row's left half moved whole.
+fn kinds_largest_first(mut picture: Picture) -> Picture {
+    let left = 0..62;
+    let kinds: Vec<Vec<PictureCell>> = KINDS_LARGEST_FIRST
+        .iter()
+        .map(|&row| picture.rows[row][left.clone()].to_vec())
+        .collect();
+    for (row, cells) in (45..).zip(kinds) {
+        picture.rows[row].splice(left.clone(), cells);
+    }
+    picture
+}
+
+/// A part of a picture's row moved to another column, or taken out.
+struct Moved {
+    row: usize,
+    text: &'static str,
+    /// The column it is looked for from.
+    from: usize,
+    to: Option<usize>,
+}
+
+const fn moved(row: usize, text: &'static str, to: Option<usize>) -> Moved {
+    Moved {
+        row,
+        text,
+        from: 0,
+        to,
+    }
+}
+
+/// The picture with each part moved, in the order listed: the cells it leaves are blank, and
+/// the cells it lands on must be.
+fn lined_up(mut picture: Picture, parts: &[Moved]) -> Picture {
+    let blank = PictureCell {
+        ch: ' ',
+        fg: None,
+        bg: None,
+        bold: false,
+    };
+    for part in parts {
+        let cells = &mut picture.rows[part.row];
+        let at = found(cells, part.text, part.from)
+            .unwrap_or_else(|| panic!("row {} has no {:?}", part.row, part.text));
+        let len = part.text.chars().count();
+        let taken: Vec<PictureCell> = cells[at..at + len].to_vec();
+        cells[at..at + len].fill(blank.clone());
+        if let Some(to) = part.to {
+            assert!(
+                cells[to..to + len].iter().all(|cell| cell.ch == ' '),
+                "row {} has no room for {:?} at {to}",
+                part.row,
+                part.text
+            );
+            cells.splice(to..to + len, taken);
+        }
+    }
+    picture
+}
+
 /// Where a row's cells first spell `text`, at or after `from`.
 fn found(cells: &[PictureCell], text: &str, from: usize) -> Option<usize> {
     let wanted: Vec<char> = text.chars().collect();
@@ -103,6 +210,21 @@ fn found(cells: &[PictureCell], text: &str, from: usize) -> Option<usize> {
             .zip(&wanted)
             .all(|(cell, ch)| cell.ch == *ch)
     })
+}
+
+/// The picture with the tabs' arrows on its key line `row` a space apart, where it writes them
+/// together: Ghostty with Iosevka draws both arrows two cells wide, so the panel spaces them.
+fn arrows_apart(mut picture: Picture, row: usize) -> Picture {
+    let cells = &mut picture.rows[row];
+    let at = found(cells, "\u{2190}\u{2192}", 0)
+        .unwrap_or_else(|| panic!("row {row} has no arrows together"));
+    let mut blank = cells[at].clone();
+    blank.ch = ' ';
+    cells.insert(at + 1, blank);
+    if cells.last().is_some_and(|cell| cell.ch == ' ') {
+        cells.pop();
+    }
+    picture
 }
 
 /// The picture with each count respelled. A count already respelled on a row isn't found
@@ -119,7 +241,30 @@ fn respell(mut picture: Picture, counts: &[Respelled]) -> Picture {
         let at = found(cells, count.from, 0)
             .unwrap_or_else(|| panic!("row {} has no {:?}", count.row, count.from));
         let (old, new) = (count.from.chars().count(), count.to.chars().count());
-        assert!(new <= old, "{:?} is longer than {:?}", count.to, count.from);
+        if new > old {
+            // A longer count flush right takes the blank cells before it.
+            assert_eq!(
+                count.blanks_before,
+                Some(count.from),
+                "{:?} is longer than {:?} and not flush right",
+                count.to,
+                count.from
+            );
+            let grow = new - old;
+            assert!(
+                at >= grow && cells[at - grow..at].iter().all(|cell| cell.ch == ' '),
+                "row {} has no room before {:?}",
+                count.row,
+                count.from
+            );
+            let style = cells[at].clone();
+            let spelled = count.to.chars().map(|ch| PictureCell {
+                ch,
+                ..style.clone()
+            });
+            cells.splice(at - grow..at + old, spelled);
+            continue;
+        }
         let blanks_at = count.blanks_before.map(|text| {
             if text == count.from {
                 return at;
@@ -181,7 +326,12 @@ fn drawn(example: &Example) -> Buffer {
 }
 
 /// The Context tab drawn from `view` at `now`.
-fn panel(state: &AppState, view: ContextView, now: OffsetDateTime, places: Places) -> Buffer {
+pub(super) fn panel(
+    state: &AppState,
+    view: ContextView,
+    now: OffsetDateTime,
+    places: Places,
+) -> Buffer {
     let theme = theme();
     let ctx = ViewCtx {
         theme: &theme,
@@ -249,7 +399,10 @@ fn assert_panel_matches(picture: &Picture, buf: &Buffer, rows: std::ops::Range<u
 
 #[test]
 fn the_context_tab_matches_its_picture() {
-    let picture = respell(Picture::load("context_tab"), COUNTS_AT_THREE_QUARTERS);
+    let picture = arrows_apart(
+        respell(Picture::load("context_tab"), COUNTS_AT_THREE_QUARTERS),
+        75,
+    );
     let buf = drawn(&example::at_three_quarters());
     // From the panel's rule to its key line: the rows above are the conversation, and the
     // rows below are the prompt after Esc.
@@ -258,9 +411,53 @@ fn the_context_tab_matches_its_picture() {
 
 #[test]
 fn the_context_tab_near_full_matches_its_picture() {
-    let picture = respell(Picture::load("context_near_full"), COUNTS_NEAR_FULL);
+    let picture = arrows_apart(
+        respell(Picture::load("context_near_full"), COUNTS_NEAR_FULL),
+        78,
+    );
     let buf = drawn(&example::near_full());
     assert_panel_matches(&picture, &buf, 4..79);
+}
+
+/// After the orchestrator run: the main session counted as its answer ended, and the run's
+/// nine sessions listed in the order they started, each as it left its window.
+#[test]
+fn the_context_tab_after_a_run_matches_its_picture() {
+    let picture = respell(Picture::load("context_after"), COUNTS_AFTER_RUN);
+    let picture = kinds_largest_first(lined_up(picture, LINED_UP));
+    let example = example::after_run();
+    let mut state = AppState::default();
+    state.names = example.names.clone();
+    state.conversation.context = Some(example.count.clone());
+    state.conversation.worker = Some(example.view.rows[0].worker.clone());
+    // Haiku 5.5 is the third of Claude Code's models by tokens in all, and GPT 6 Luna the
+    // second of Codex's, so each draws in that shade of its CLI's colour.
+    let mut usage = crate::overview::sample::usage();
+    usage.all_time_models = [
+        ("claude-code", "claude-opus-5-5", 9_400_000),
+        ("claude-code", "claude-sonnet-5-5", 2_100_000),
+        ("claude-code", "claude-haiku-5-5", 310_000),
+        ("codex", "gpt-6-astra", 3_200_000),
+        ("codex", "gpt-6-luna", 140_000),
+    ]
+    .map(|(agent, model, tokens)| ModelTokens {
+        agent: agent.to_owned(),
+        model: Some(model.to_owned()),
+        tokens,
+    })
+    .to_vec();
+    state.usage = Some(Arc::new(usage));
+    let mut run = RunState::new(example::finished_run());
+    run.title = example::AFTER_RUN_TITLE.to_owned();
+    state.runs.insert(example::finished_run(), run);
+    let buf = panel(
+        &state,
+        example.view.clone(),
+        example.now,
+        example.places.clone(),
+    );
+    // From the panel's rule to its key line: the rows above are the conversation.
+    assert_panel_matches(&picture, &buf, 4..83);
 }
 
 /// A resumed conversation before a turn of it runs again, its session as the record left it:
@@ -268,9 +465,12 @@ fn the_context_tab_near_full_matches_its_picture() {
 /// under the transcript of `resumed_after`.
 #[test]
 fn a_resumed_conversations_context_matches_its_picture() {
-    let mut picture = respell(
-        Picture::screen("resumed_after"),
-        &[respelled(45, "/1m", "/1M", None)],
+    let mut picture = arrows_apart(
+        respell(
+            Picture::screen("resumed_after"),
+            &[respelled(45, "/1m", "/1M", None)],
+        ),
+        49,
     );
     // The picture's tab row has no Config tab. The panel's is the one the Context tab's own
     // picture draws: Config after Status, under the bold Settings title.
@@ -318,6 +518,7 @@ fn a_resumed_conversations_context_matches_its_picture() {
             at: datetime!(2026-10-14 01:52 UTC),
             turns: 1,
         }),
+        ended: None,
     };
     let mut state = AppState::default();
     state.names = crate::overview::sample::names();
@@ -339,7 +540,7 @@ fn a_resumed_conversations_context_matches_its_picture() {
     state.usage = Some(Arc::new(usage));
     let buf = panel(
         &state,
-        ContextView { rows: vec![row] },
+        ContextView::of(vec![row]),
         datetime!(2026-10-15 00:35 UTC),
         Places::default(),
     );

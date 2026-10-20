@@ -162,6 +162,7 @@ fn main_session(agent: &str, effort: &str) -> HeaderAndBottomLine {
         repo: "~/workspace/rate-limiter-app/captain".to_owned(),
         workflow: "captain".to_owned(),
         ultracode: false,
+        ultra: None,
         run: None,
         main_agent: agent.parse().unwrap(),
         plan_chips: Vec::new(),

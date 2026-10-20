@@ -140,7 +140,8 @@ fn ended_turn(event: &ConversationEvent) -> Option<&TurnId> {
     match event {
         ConversationEvent::TurnFinished { turn, .. }
         | ConversationEvent::TurnFailed { turn, .. }
-        | ConversationEvent::TurnCancelled { turn } => Some(turn),
+        | ConversationEvent::TurnCancelled { turn }
+        | ConversationEvent::TurnStopped { turn, .. } => Some(turn),
         _ => None,
     }
 }

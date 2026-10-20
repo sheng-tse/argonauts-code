@@ -1,0 +1,18 @@
+{
+  "adapter": "opencode",
+  "synthetic": true,
+  "derived_from": "OpenCode 2.0.26 on ollama/qwen3-coder:30b-64k, recorded by hand on 2026-10-18 (opencode run --format json, then the session's export)",
+  "also_matches": [],
+  "program": "opencode",
+  "args": [
+    "run",
+    "--format",
+    "json",
+    "--model",
+    "ollama/qwen3-coder:30b-64k"
+  ],
+  "model": "ollama/qwen3-coder:30b-64k",
+  "note": "The first turn of a session on OpenCode 2.0.26: three steps begun and two finished on stdout, the last one's tokens only in OpenCode's export of the session. The export is the session's final export cut after that turn, with its totals summed again.",
+  "trimmed": "location written as /tmp/repo, the title neutral, texts cut to their first line and tool calls to their names and status, since only the tokens are read",
+  "recorded": "2026-10-18"
+}

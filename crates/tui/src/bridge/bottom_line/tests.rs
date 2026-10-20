@@ -304,6 +304,7 @@ fn status(main: &str, plan_chips: Vec<PlanUsageChip>) -> HeaderAndBottomLine {
         repo: "~/code".into(),
         workflow: "captain".into(),
         ultracode: false,
+        ultra: None,
         run: None,
         main_agent: main.parse().unwrap(),
         plan_chips,
@@ -928,7 +929,8 @@ fn with_sessions(state: &mut AppState, sessions: &[(&str, u64, u64)]) -> argonau
         session.status = SessionStatus::Working;
         session.context = Some(ContextUse {
             used: *used,
-            cap: *cap,
+            window: Some(*cap),
+            cap: Some(*cap),
         });
         run.session_order.push(key.clone());
         run.sessions.insert(key, session);

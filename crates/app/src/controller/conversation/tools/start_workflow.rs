@@ -16,6 +16,8 @@ use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::{CaptainKind, ForcedMode};
 use argonauts_core::steps::intake::{Instruction, InstructionKind};
 use argonauts_core::text::sentence_case;
+use argonauts_crew::ultra as ultra_engine;
+use argonauts_runner::Loaded;
 use serde_json::Value;
 
 use super::{Call, MainTool};
@@ -24,7 +26,7 @@ use crate::controller::conversation::{
 };
 use crate::controller::instructions::{self, Applied, Roster};
 use crate::controller::recap::mode_name;
-use crate::controller::{Ctx, Effect, ultra};
+use crate::controller::{Ctx, Effect, crew_lines, ultra, workflows};
 
 pub(in crate::controller::conversation) const NAME: &str = "argonauts_start_workflow";
 
@@ -59,14 +61,7 @@ fn call(ctx: &mut Ctx, conversation: &mut ConversationState, call: Call) -> Vec<
     let typed = turn.text.clone();
     // `/plan <task>`: the workflow plans, and the plan waits for you whatever the mode.
     let plan_first = turn.plan_first;
-    let how_to_run: Vec<Instruction> = call
-        .arguments
-        .get("how_to_run")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|instruction| serde_json::from_value(instruction.clone()).ok())
-        .collect();
+    let how_to_run = instructions_in(call.arguments.get("how_to_run"));
     let applied = instructions::check(&how_to_run, &typed, ctx.settings(), &Roster::new(ctx), None);
     let in_use = standing::workflow_for(ctx, conversation);
     // With ultracode on in Captain on a CLI with no workflow of its own, real work goes to a
@@ -146,6 +141,9 @@ fn call(ctx: &mut Ctx, conversation: &mut ConversationState, call: Call) -> Vec<
     let main = &ctx.settings().crew.main;
     let crew = match &in_use {
         Some(workflow) => Crew::asked(workflow, &applied),
+        None if orchestrated && runs_as_claude_codes_own(ctx, &start.request_settings) => {
+            Crew::claude_codes_own(main, &applied)
+        }
         None if mode == RunMode::Crew => Crew::orchestrated(main, &applied),
         None => Crew::checked(main, &applied),
     };
@@ -157,6 +155,40 @@ fn call(ctx: &mut Ctx, conversation: &mut ConversationState, call: Call) -> Vec<
     // The answer waits until the run is under way or has failed, so it tells the truth.
     run_news::hold(conversation, call.reply, what, began);
     vec![handover::start(start)]
+}
+
+/// The instructions a call passed: a list of them, as the tool asks, or one alone, either of
+/// them also as JSON text, which a session sometimes sends in its place.
+fn instructions_in(how_to_run: Option<&Value>) -> Vec<Instruction> {
+    match how_to_run {
+        Some(Value::Array(list)) => list
+            .iter()
+            .filter_map(|instruction| serde_json::from_value(instruction.clone()).ok())
+            .collect(),
+        Some(Value::Object(_)) => instructions_in(Some(&Value::Array(vec![
+            how_to_run.cloned().unwrap_or_default(),
+        ]))),
+        Some(Value::String(text)) => match serde_json::from_str::<Value>(text) {
+            Ok(value @ (Value::Array(_) | Value::Object(_))) => instructions_in(Some(&value)),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// Whether the engine will hand this crew run to Claude Code's own workflow, by the test it
+/// makes itself: the workflow the run takes plans and hands out the work, and its orchestrator
+/// (the first of the role's models that can run here) and every worker are on Claude Code,
+/// with the request's own settings on top.
+fn runs_as_claude_codes_own(ctx: &Ctx, request_settings: &[String]) -> bool {
+    let Some(settings) = crew_lines::with_request(ctx.settings(), request_settings) else {
+        return false;
+    };
+    let Ok(Loaded::Steps(file)) = workflows::library(ctx).load(&settings.workflow) else {
+        return false;
+    };
+    ultra_engine::plans_and_delegates(&file)
+        && ultra_engine::claude_codes_own(&settings, &ctx.services.workers.available()).is_some()
 }
 
 /// The run a call starts, or what the session is told when the work stays with it.
@@ -274,6 +306,16 @@ impl Crew {
         }
     }
 
+    /// The orchestrator's workflow when Claude Code runs it as its own: the run is a Captain
+    /// that Claude Code plans and builds, which its row names, with the same models doing the
+    /// same work.
+    fn claude_codes_own(main: &ModelRef, applied: &Applied) -> Self {
+        Self {
+            workflow: "Captain, as Claude Code's own".to_owned(),
+            ..Self::orchestrated(main, applied)
+        }
+    }
+
     /// One worker in a checked worktree, as a review asked for in Captain starts.
     fn checked(main: &ModelRef, applied: &Applied) -> Self {
         Self {
@@ -367,8 +409,10 @@ fn why_not(applied: &Applied) -> String {
     if applied.instructions.is_empty() {
         text.push_str(
             " The call passed no instruction in `how_to_run`, so nothing asked for one. If the \
-             user did, call again with their words for it: `says` copied exactly, such as \
-             {\"says\": \"use a workflow\", \"kind\": \"mode\", \"value\": \"crew\"}.",
+             user did, call again with a list of their words for it, one instruction for each \
+             thing they asked, the agents they named in roles included, `says` copied exactly, \
+             such as [{\"says\": \"use a workflow\", \"kind\": \"mode\", \"value\": \"crew\"}, \
+             {\"says\": \"with Codex as the reviewer\", \"kind\": \"review\", \"who\": \"codex\"}].",
         );
     } else {
         text.push_str(" What came of each instruction:");
@@ -408,6 +452,7 @@ fn why_not(applied: &Applied) -> String {
 #[cfg(test)]
 mod tests {
     use argonauts_core::steps::intake::InstructionScope;
+    use serde_json::json;
 
     use super::*;
     use crate::controller::instructions::{Agent, AgentState};
@@ -585,6 +630,23 @@ mod tests {
         assert!(nothing.contains("passed no instruction"), "{nothing}");
     }
 
+    /// The instructions come as a list, as the tool asks, and also as one alone or as JSON
+    /// text, which a session sometimes sends instead: a reviewer sent that way still counts.
+    #[test]
+    fn instructions_count_however_the_call_wrote_them() {
+        let review =
+            json!({"says": "with Codex as the reviewer", "kind": "review", "who": "codex"});
+        let mode = json!({"says": "Use a workflow", "kind": "mode", "value": "crew"});
+        let list = json!([mode, review]);
+        let read = |value: Value| instructions_in(Some(&value)).len();
+        assert_eq!(read(list.clone()), 2);
+        assert_eq!(read(Value::String(list.to_string())), 2);
+        assert_eq!(read(review.clone()), 1);
+        assert_eq!(read(Value::String(review.to_string())), 1);
+        assert_eq!(read(Value::String("use a workflow".to_owned())), 0);
+        assert_eq!(instructions_in(None).len(), 0);
+    }
+
     /// The session says what started and with whom, and a crew from Captain runs the
     /// orchestrator's workflow with the main agent planning and building.
     #[test]
@@ -635,6 +697,51 @@ mod tests {
             Crew::asked("council", &Applied::default()).line(name),
             "Starting a workflow: Council."
         );
+        // Claude Code runs the orchestrator's workflow as its own when it plans and builds.
+        let list = [
+            said(Mode, "Use a workflow for this", "", "crew"),
+            said(Review, "with Codex as the reviewer", "codex", ""),
+        ];
+        let message = "Use a workflow for this, with Codex as the reviewer. Fix the rounding.";
+        let applied = checked(&settings, message, &list);
+        assert_eq!(
+            Crew::claude_codes_own(main, &applied).line(name),
+            "Starting a workflow: Captain, as Claude Code's own, with **GPT 5.6 Luna on Codex** \
+             reviewing as you asked; **Haiku 5.5 on Claude Code** plans and builds."
+        );
+    }
+
+    /// The recorded Captain run's Starting line, GPT 6 Luna on Codex reviewing and Haiku 5.5 on
+    /// Claude Code planning and building, says what its picture says, which the screen's golden
+    /// draws.
+    #[test]
+    fn the_starting_line_reads_as_its_picture() {
+        use InstructionKind::{Mode, Review};
+        const PICTURE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tui/tests/golden/starting_line_after.txt"
+        ));
+        let settings = captain();
+        let message = "Use a workflow for this, with Codex as the reviewer, and choose everything \
+                       else yourself. Fix the money rounding so the three failing tests in \
+                       tests/test_money.py pass without changing those tests.";
+        let list = [
+            said(Mode, "Use a workflow for this", "", "crew"),
+            said(Review, "with Codex as the reviewer", "codex", ""),
+        ];
+        let applied = checked(&settings, message, &list);
+        let name = |worker: &ModelRef| match worker.agent.as_str() {
+            "codex" => "GPT 6 Luna on Codex".to_owned(),
+            _ => "Haiku 5.5 on Claude Code".to_owned(),
+        };
+        let line = Crew::claude_codes_own(&settings.crew.main, &applied).line(name);
+        let rows: Vec<&str> = PICTURE.lines().collect();
+        let pictured = format!(
+            "{} {}",
+            rows[2].trim_start_matches("⏺ ").trim_end(),
+            rows[3].trim()
+        );
+        assert_eq!(line.replace("**", ""), pictured);
     }
 
     /// With a workflow in use the session's call is enough, and your words still decide for

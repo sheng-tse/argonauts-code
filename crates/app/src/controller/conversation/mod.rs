@@ -127,6 +127,7 @@ use super::{Ctx, Effect};
 use crate::conversation_store::{
     ConversationPlace, ConversationRun, ConversationSession, ConversationStore,
 };
+use crate::model_memory;
 use argonauts_core::events::approval::AnswerAction;
 
 pub(crate) struct ConversationState {
@@ -261,6 +262,8 @@ pub(crate) enum TurnUpdate {
     },
     /// A direct turn's CLI asks you something, and waits for the answer.
     Asked { turn: TurnId, asked: direct::Asked },
+    /// What the turn's CLI asked was answered, or closed without an answer.
+    Answered { turn: TurnId },
     /// The answer didn't fit its format, and the step asks the agent for it again.
     Retried { turn: TurnId },
 }
@@ -471,6 +474,13 @@ impl ConversationState {
             .filter(|place| place.made_again && !same_folder);
         if next.id != self.id {
             self.store.release_if_empty();
+            let out = ctx.out.clone();
+            model_memory::conversation_ended(&ctx.env.paths, ctx.names.names(), move |text| {
+                out.send(AppEvent::Notice {
+                    level: NoteLevel::Info,
+                    text,
+                });
+            });
         }
         *self = next;
         if let Some(place) = left {
@@ -531,8 +541,9 @@ pub(crate) fn list(ctx: &Ctx, runs: &[RunSummary]) -> Vec<ConversationSummary> {
     past::list(&ctx.env.conversation_dir(), &waiting)
 }
 
-/// `/clear`: a new conversation with the main agent. The old one stays in `/resume`, open
-/// `StartWork` questions stay answerable, and runs keep going.
+/// `/clear`: a new conversation with the main agent, and the screen starts over under its
+/// header, which says how to get back to the old one when it had turns. The old one stays in
+/// `/resume`, open `StartWork` questions stay answerable, and runs keep going.
 pub(crate) fn clear(
     ctx: &mut Ctx,
     conversation: &mut ConversationState,
@@ -549,13 +560,9 @@ pub(crate) fn clear(
     // A goal covers the work that follows in its own conversation, and no other.
     goal::forget(ctx)?;
     conversation.succeed(ctx, ConversationState::new(ctx)?);
-    ctx.send(AppEvent::ConversationCleared);
-    let text = if had_turns {
-        format!("Started a new conversation. /resume {old} picks the last one up again.")
-    } else {
-        "Started a new conversation.".to_owned()
-    };
-    ctx.notice(NoteLevel::Info, text);
+    ctx.send(AppEvent::ConversationCleared {
+        way_back: had_turns.then_some(old),
+    });
     Ok(vec![Effect::Status])
 }
 
@@ -1849,7 +1856,20 @@ pub(crate) async fn on_update(
             Ok(Vec::new())
         }
         TurnUpdate::Done { turn, outcome } => on_done(ctx, conversation, &turn, outcome),
-        TurnUpdate::Asked { turn, asked } => direct::on_asked(ctx, conversation, &turn, asked),
+        TurnUpdate::Asked { turn, asked } => {
+            // The CLI waits on the answer, which the inactivity watchdog mustn't take for a
+            // session gone quiet.
+            if let Some(current) = conversation.turn.as_ref().filter(|now| now.id == turn) {
+                current.live.asking(true);
+            }
+            direct::on_asked(ctx, conversation, &turn, asked)
+        }
+        TurnUpdate::Answered { turn } => {
+            if let Some(current) = conversation.turn.as_ref().filter(|now| now.id == turn) {
+                current.live.asking(false);
+            }
+            Ok(Vec::new())
+        }
         TurnUpdate::Retried { turn } => {
             on_retried(ctx, conversation, &turn);
             Ok(Vec::new())
@@ -2179,6 +2199,7 @@ fn event_turn(event: &ConversationEvent) -> Option<&TurnId> {
         | ConversationEvent::TurnFinished { turn, .. }
         | ConversationEvent::TurnFailed { turn, .. }
         | ConversationEvent::TurnCancelled { turn }
+        | ConversationEvent::TurnStopped { turn, .. }
         | ConversationEvent::FellBack { turn, .. }
         | ConversationEvent::Joined { turn, .. }
         | ConversationEvent::AnswerRetried { turn }

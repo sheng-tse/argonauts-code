@@ -23,7 +23,7 @@ const BASES: [Role; 5] = [
     Role::CliClaude,
     Role::CliCodex,
     Role::CliAgy,
-    Role::AgentPurple,
+    Role::AgentGreen,
     Role::AgentPink,
 ];
 

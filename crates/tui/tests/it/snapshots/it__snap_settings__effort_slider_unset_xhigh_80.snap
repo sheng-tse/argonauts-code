@@ -1,0 +1,16 @@
+---
+source: crates/tui/tests/it/snap_settings.rs
+expression: "picker_lines(picker, width)"
+---
+────────────────────────────────────────────────────────────────────────────────
+  Effort
+  How long Claude Code's default model thinks before it answers, for the main
+  agent
+
+    Faster                                Smarter
+    ─────────────────────────────────▲───────────
+    low      medium      high      xhigh      max
+
+    Extra depth for hard, many-step problems. The model's default
+
+  ←/→  to adjust · Enter to confirm · Esc to cancel

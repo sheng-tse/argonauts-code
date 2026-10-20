@@ -74,6 +74,10 @@ pub struct Scrollback {
     /// Scrolled back down with `holds_still`: at the bottom, but new output leaves the rows
     /// in view where they are.
     resting: bool,
+    /// The rows of `wrapped` and the live rows after them the last frame showed, and how many
+    /// rows it put above them, where a kept prompt sits.
+    shown: Range<usize>,
+    kept_above: usize,
 }
 
 impl Scrollback {
@@ -99,6 +103,55 @@ impl Scrollback {
                 .into_iter()
                 .filter_map(|(rows, text)| Some((at + rows.start, sticky::words(&text)?))),
         );
+    }
+
+    /// The screen row the header's row `row` showed at in the last frame, while it and the
+    /// `rows` rows under it all showed, each whole on a row of its own.
+    pub fn header_rows_at(&self, row: usize, rows: usize) -> Option<u16> {
+        let header = self.header.as_ref()?;
+        let first = header.start + row;
+        let last = first + rows.checked_sub(1)?;
+        if last >= header.end || self.wrapped_from <= last {
+            return None;
+        }
+        let top = *self.wrapped_at.get(first)?;
+        let below = self
+            .wrapped_at
+            .get(last + 1)
+            .copied()
+            .unwrap_or(self.wrapped.len());
+        let whole = below - top == rows;
+        let shows = self.shown.start <= top && top + rows <= self.shown.end;
+        (whole && shows)
+            .then(|| u16::try_from(top - self.shown.start + self.kept_above).ok())
+            .flatten()
+    }
+
+    /// The header printed last now reads as `lines`, rows that only change how they look, as
+    /// an ultra look's moving light does: they take the old ones' place where they show,
+    /// without wrapping the rest again.
+    pub fn redraw_header(&mut self, lines: Vec<Line<'static>>) {
+        let Some(range) = self.header.clone() else {
+            return;
+        };
+        let wrapped_alone = range.end <= self.wrapped_from
+            && range.clone().all(|row| {
+                let at = self.wrapped_at[row];
+                let next = self.wrapped_at.get(row + 1).copied();
+                next.unwrap_or(self.wrapped.len()) == at + 1
+            });
+        let fits = lines.len() == range.len()
+            && lines
+                .iter()
+                .all(|line| line.width() <= usize::from(self.width));
+        if !(wrapped_alone && fits) {
+            self.replace_header(lines);
+            return;
+        }
+        for (row, line) in range.zip(lines) {
+            self.wrapped[self.wrapped_at[row]] = line.clone();
+            self.printed[row] = line;
+        }
     }
 
     /// The header printed last now reads as `lines`.
@@ -251,9 +304,13 @@ impl Scrollback {
             .flatten()
             .map(|(at, words)| (at, words.to_owned()));
         self.sticky = answered.as_ref().map(|(at, _)| *at);
+        self.shown = start..start + lines.len();
+        self.kept_above = 0;
         if let Some((_, words)) = &answered {
             lines.truncate(lines.len() - sticky::ROWS);
             lines.splice(0..0, [sticky::prompt_row(words, ctx), sticky::rule(ctx)]);
+            self.shown.end -= sticky::ROWS;
+            self.kept_above = sticky::ROWS;
         }
         if self.offset > 0 {
             if foot == 2 {
@@ -330,6 +387,8 @@ impl<W: Write> Ui<W> {
         if self.scrollback.is_none() {
             self.scrollback = Some(Scrollback::new());
         }
+        // The full screen draws its history again each frame, so its mascot is block cells.
+        self.fit_mascot_to_theme();
         self.dirty = true;
     }
 
@@ -349,6 +408,8 @@ impl<W: Write> Ui<W> {
         now: Instant,
         state: Option<&AppState>,
     ) -> io::Result<()> {
+        self.resend_mascot(now);
+        self.animate_full_screen_mascot(now);
         let dock = self.dock_lines(now, state);
         let screen = self.terminal.screen_size();
         let ctx = RenderCtx::new(screen.width, &self.theme, Clock::new(self.started, now))
@@ -383,6 +444,7 @@ impl<W: Write> Ui<W> {
         };
         scrollback.holds_still = !self.model.screen.autoscroll;
         let conversation = scrollback.window(trailing, usize::from(top), &ctx);
+        let mascot_at = super::mascot::mascot_cell(scrollback);
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, screen.width, screen.height));
         paint_rows(
@@ -403,7 +465,9 @@ impl<W: Write> Ui<W> {
             let row = top.checked_add(row.checked_sub(trailing_rows)?)?;
             (row < screen.height).then_some(Position::new(column, row))
         });
-        self.terminal.draw_buffer_resting(&buffer, cursor)
+        let placing = self.place_mascot(now, mascot_at);
+        self.terminal.draw_buffer_resting(&buffer, cursor)?;
+        self.send_placing(placing)
     }
 
     /// PgUp and PgDn scroll the conversation. False on the inline screen, where the terminal

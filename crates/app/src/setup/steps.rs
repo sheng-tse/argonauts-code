@@ -25,7 +25,7 @@ pub(crate) const CAPTAIN: &str = "captain";
 /// A local model server's model, picked to review.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReviewerPick {
-    /// `ollama` or `lmstudio`.
+    /// The runtime's id, such as `ollama`.
     pub endpoint: String,
     pub base_url: String,
     pub model: String,
@@ -37,6 +37,9 @@ pub(crate) struct Answers {
     /// Every ready CLI. Empty writes no `crew`.
     pub crew: Vec<ModelRef>,
     pub reviewers: Vec<ReviewerPick>,
+    /// llama-server and vLLM servers that said what they are, as (runtime id, base URL). Their
+    /// ports are common, so their tables are written for sessions to reach them.
+    pub confirmed: Vec<(String, String)>,
     pub main_agent: Option<ModelRef>,
     pub workflow: String,
     /// Only for `orchestrator`.
@@ -58,6 +61,7 @@ impl Default for Answers {
         Self {
             crew: Vec::new(),
             reviewers: Vec::new(),
+            confirmed: Vec::new(),
             main_agent: None,
             workflow: ORCHESTRATOR.to_owned(),
             orchestrator: None,
@@ -97,16 +101,24 @@ pub(crate) fn keys(answers: &Answers, interactive: bool) -> Vec<(String, String)
     for (key, worker) in &answers.roles {
         keys.push((key.clone(), roles::toml_value(key, worker)));
     }
-    // A reviewer's address is a safety key, so without a terminal the whole pick stays out.
-    if interactive && !answers.reviewers.is_empty() {
-        for pick in &answers.reviewers {
-            let endpoint = &pick.endpoint;
-            keys.push((
-                format!("endpoints.{endpoint}.base_url"),
-                string(&pick.base_url),
-            ));
+    // A server's address is a safety key, so without a terminal it stays out.
+    if interactive {
+        let picked = answers
+            .reviewers
+            .iter()
+            .map(|pick| (&pick.endpoint, &pick.base_url));
+        let confirmed = answers.confirmed.iter().map(|(id, url)| (id, url));
+        let mut written = Vec::new();
+        for (endpoint, base_url) in picked.chain(confirmed) {
+            if written.contains(&endpoint) {
+                continue;
+            }
+            written.push(endpoint);
+            keys.push((format!("endpoints.{endpoint}.base_url"), string(base_url)));
             keys.push((format!("endpoints.{endpoint}.local"), "true".to_owned()));
         }
+    }
+    if interactive && !answers.reviewers.is_empty() {
         // A reviewer you chose later, in "Who does what", is the one written.
         if !answers.roles.contains_key(roles::REVIEWER_KEY) {
             let reviewers: Vec<ModelRef> = answers
@@ -303,6 +315,32 @@ mod tests {
         assert_eq!(
             find("roles.reviewer.models"),
             Some(r#"["ollama/llama3.2"]"#)
+        );
+    }
+
+    #[test]
+    fn a_confirmed_llama_server_gets_its_table_with_or_without_a_pick() {
+        let mut answers = answers();
+        answers
+            .confirmed
+            .push(("llamacpp".to_owned(), "http://127.0.0.1:8080/v1".to_owned()));
+        let keys = keys(&answers, true);
+        let find = |name: &str| {
+            keys.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.as_str())
+        };
+        assert_eq!(
+            find("endpoints.llamacpp.base_url"),
+            Some(r#""http://127.0.0.1:8080/v1""#)
+        );
+        assert_eq!(find("endpoints.llamacpp.local"), Some("true"));
+        assert_eq!(find("roles.reviewer.models"), None);
+        // An address is a safety key, which needs a terminal.
+        assert!(
+            super::keys(&answers, false)
+                .iter()
+                .all(|(key, _)| !key.starts_with("endpoints."))
         );
     }
 

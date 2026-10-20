@@ -482,7 +482,7 @@ impl StatsState {
         const OPENS: &str = "enter opens or closes it";
         match (self.level, self.group) {
             (Level::Tabs, _) => vec![
-                "tab · ←→ tabs",
+                "tab · ← → tabs",
                 "↓ sub-tabs, then cards",
                 MEASURE,
                 "enter open",

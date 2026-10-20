@@ -1111,7 +1111,7 @@ impl View for WorkflowView {
         let height = usize::from(panes.right.height);
         let mut selected_line = level.row;
         let mut lines: Vec<Line<'static>> = match level.phase() {
-            Some(_) if !shown.is_empty() => {
+            Some(open) if !shown.is_empty() => {
                 let models = Models::of(&level.data, ctx);
                 let around = Around {
                     run: &level.data.run,
@@ -1121,7 +1121,7 @@ impl View for WorkflowView {
                     ctx,
                 };
                 let rows = RowColumns::fit(
-                    workflow_rows::label_width(&level.data),
+                    workflow_rows::label_width(open),
                     usize::from(panes.right.width),
                     theme,
                 );

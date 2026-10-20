@@ -361,6 +361,7 @@ isolated_leak = "stop"
 [watchdogs]
 inactivity_min = 15.0
 repeat_limit = 10
+no_progress_calls = 8
 
 [health]
 degraded_after = 2
@@ -499,6 +500,7 @@ recaps = true
 recap_after = "2m"
 theme = "auto"
 glyphs = "unicode"
+mascot = "auto"
 ambiguous_width = 1
 newer_cli_notice = true
 plugin_output = "show"
@@ -747,6 +749,7 @@ runs_per_day = 5
 
 [registry]
 discover = true
+local_servers = true
 
 [awake]
 while_working = true

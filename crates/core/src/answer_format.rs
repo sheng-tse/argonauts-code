@@ -1,11 +1,36 @@
-//! Answer formats in the one shape every CLI's structured output takes, Codex's strict mode
+//! Answer formats in the one shape every CLI's structured output takes. Codex's strict mode is
 //! the strictest: every property required at every depth, no others allowed, and a field the
-//! format left optional allowed to be `null` instead. The answer is read back as the format
-//! was written, those nulls left out again.
+//! format left optional allowed to be `null` instead. Claude Code takes the format as written,
+//! with only what it requires required. The answer is read back as the format was written,
+//! those nulls left out again, and mended when its fields ran on inside one string.
+
+mod leaked;
+#[cfg(test)]
+mod report_tests;
 
 use serde_json::{Map, Value, json};
 
-use crate::steps::strict_schema;
+use crate::steps::{strict_schema, written_schema};
+
+pub use leaked::mended;
+
+/// The format as Claude Code takes it: the subset every CLI accepts, with a field that has a
+/// default left optional. A model that leaves out a list it has nothing for, as Haiku does,
+/// still answers.
+pub fn written(schema: &Value) -> Value {
+    written_schema(schema.clone())
+}
+
+/// Whether `answer` is an answer to `schema`. A schema that can't be read takes nothing.
+pub fn fits(schema: &Value, answer: &Value) -> bool {
+    jsonschema::validator_for(schema).is_ok_and(|validator| validator.is_valid(answer))
+}
+
+/// `answer` [`mended`], when the mended one fits `schema`. `None` when nothing needed mending,
+/// or mending didn't make it fit.
+pub fn mended_to_fit(schema: &Value, answer: &Value) -> Option<Value> {
+    mended(answer, schema).filter(|mended| fits(schema, mended))
+}
 
 /// The format as it goes to a CLI. A property the format didn't require may come back as
 /// `null`, one with a default too: a model that leaves out a list it has nothing for, as Haiku
@@ -309,6 +334,19 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_fits_the_format_as_written() {
+        let format = loose_review();
+        assert!(fits(&format, &json!({"accept": true})));
+        assert!(fits(&format, &json!({"accept": false, "severity": "low"})));
+        assert!(!fits(&format, &json!({"summary": "no verdict"})));
+        assert!(!fits(
+            &format,
+            &json!({"accept": true, "severity": "medium"})
+        ));
+        assert!(!fits(&json!({"type": 7}), &json!({})));
+    }
+
+    #[test]
     fn codex_refuses_a_format_that_leaves_a_property_out_of_required() {
         let problems = codex_problems(&loose_review());
         assert!(
@@ -330,7 +368,7 @@ mod tests {
         assert_eq!(codex_problems(&strict), Vec::<String>::new(), "{strict:#}");
         assert_eq!(
             strict["required"],
-            json!(["accept", "files", "findings", "severity", "summary"])
+            json!(["accept", "summary", "findings", "severity", "files"])
         );
         assert_eq!(strict["properties"]["accept"]["type"], "boolean");
         assert_eq!(
@@ -344,7 +382,7 @@ mod tests {
         let line = &strict["properties"]["files"]["type"];
         assert_eq!(line, &json!(["array", "null"]));
         let file = &strict["properties"]["files"]["items"];
-        assert_eq!(file["required"], json!(["line", "path"]));
+        assert_eq!(file["required"], json!(["path", "line"]));
         assert_eq!(
             file["properties"]["line"]["type"],
             json!(["integer", "null"])

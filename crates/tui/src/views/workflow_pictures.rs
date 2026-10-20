@@ -106,6 +106,23 @@ impl Picture {
         }
     }
 
+    /// Gives `label` on row `row` a column `width` cells wide, the label and the blanks after
+    /// it, for a picture that lays every phase out by the widest label of the whole workflow
+    /// where the view lays each phase out by its own. The row keeps its width as
+    /// [`Self::reword`] keeps it.
+    pub(crate) fn label_column(&mut self, row: usize, label: &str, width: usize) {
+        let text: String = self.rows[row].iter().map(|cell| cell.ch).collect();
+        let at = text
+            .find(label)
+            .unwrap_or_else(|| panic!("{}: row {row} doesn't say {label:?}", self.name));
+        let blanks = text[at + label.len()..]
+            .chars()
+            .take_while(|ch| *ch == ' ')
+            .count();
+        let from = format!("{label}{}", " ".repeat(blanks));
+        self.reword(row, &from, &format!("{label:<width$}"));
+    }
+
     /// Puts a token count in the one format every screen writes, Argonauts Code's own (`11k`,
     /// `171k`, `1M`), where the picture writes Claude Code's (`11.0k`, `1m`). That format
     /// stands over the pictures'; the row keeps its width as [`Self::reword`] keeps it.
@@ -335,5 +352,7 @@ fn colour_of(style: &str, theme: &Theme) -> Option<Color> {
     let hex = value.strip_prefix('#').expect("a colour");
     let rgb = u32::from_str_radix(hex, 16).expect("a colour's digits");
     let [_, r, g, b] = rgb.to_be_bytes();
-    Some(Color::Rgb(r, g, b))
+    let colour = Color::Rgb(r, g, b);
+    // The bright text colour, written as its value, draws as the terminal's own does.
+    (theme.style(Role::Bright).fg != Some(colour)).then_some(colour)
 }

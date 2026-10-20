@@ -122,6 +122,8 @@ struct Row {
     name: String,
     spent: Spend,
     pays_per_token: bool,
+    /// It ran on a server on this machine.
+    local: bool,
     /// What it spent on each day of this week, in the units of [`units`].
     week: [u64; 7],
     /// The pieces of work it did, by role.
@@ -132,6 +134,7 @@ impl Row {
     fn add(&mut self, more: &Row) {
         self.spent = self.spent.plus(&more.spent);
         self.pays_per_token |= more.pays_per_token;
+        self.local &= more.local;
         for (day, spent) in self.week.iter_mut().zip(more.week) {
             *day += spent;
         }
@@ -214,6 +217,7 @@ impl SpendCard<'_> {
                     name,
                     spent: Spend::default(),
                     pays_per_token: false,
+                    local: true,
                     week: [0; 7],
                     did: BTreeMap::new(),
                 });
@@ -225,6 +229,7 @@ impl SpendCard<'_> {
             let row = &mut rows[at];
             row.spent = row.spent.plus(&share.spent);
             row.pays_per_token |= share.pays_per_token;
+            row.local &= share.local;
             for day in &share.this_week {
                 let at = (day.day - week_start).whole_days();
                 if let Some(slot) = usize::try_from(at).ok().and_then(|at| row.week.get_mut(at)) {
@@ -408,6 +413,9 @@ impl SpendCard<'_> {
                     cell
                 }
                 Column::On => vec![kit.dim(cli_word(self.names, &row.agent))],
+                Column::Spend if row.local && row.spent.cost_usd == 0.0 => {
+                    vec![kit.dim("local")]
+                }
                 Column::Spend => vec![kit.strong(format::spend(&row.spent))],
                 Column::Share if total > 0.0 => {
                     vec![kit.dim(format::percent(row.spent.cost_usd / total))]
@@ -437,11 +445,13 @@ impl SpendCard<'_> {
         cells
     }
 
-    /// `on plans $0.26 (inside Max and Plus, not charged) · on API keys $0`, and what `~`
-    /// means where a number carries it.
+    /// `on plans $0.26 (inside Max and Plus, not charged) · on API keys $0`, then `local $0`
+    /// where a model ran on this machine, and what `~` means where a number carries it.
     fn billing(&self, kit: &Kit<'_>, rows: &[Row]) -> Vec<Span<'static>> {
         let sum = |charged: bool| -> f64 {
-            let rows = rows.iter().filter(|row| row.pays_per_token == charged);
+            let rows = rows
+                .iter()
+                .filter(|row| !row.local && row.pays_per_token == charged);
             rows.map(|row| row.spent.cost_usd).sum()
         };
         let (on_plans, on_keys) = (sum(false), sum(true));
@@ -456,6 +466,15 @@ impl SpendCard<'_> {
             kit.dim(format!("{inside} · on API keys ")),
             kit.strong(dollars(on_keys)),
         ];
+        if rows.iter().any(|row| row.local) {
+            let local: f64 = rows
+                .iter()
+                .filter(|row| row.local)
+                .map(|row| row.spent.cost_usd)
+                .sum();
+            line.push(kit.dim(" · local "));
+            line.push(kit.strong(dollars(local)));
+        }
         let estimated = |row: &Row| row.spent.cost_estimated && row.spent.cost_usd > 0.0;
         if rows.iter().any(estimated) {
             line.push(kit.dim(" · ~ is an estimate at list prices"));
@@ -467,7 +486,7 @@ impl SpendCard<'_> {
     fn plans_of(&self, rows: &[Row]) -> String {
         let mut plans: Vec<&str> = Vec::new();
         let mut agents: Vec<&str> = Vec::new();
-        for row in rows.iter().filter(|row| !row.pays_per_token) {
+        for row in rows.iter().filter(|row| !row.pays_per_token && !row.local) {
             if agents.contains(&row.agent.as_str()) {
                 continue;
             }

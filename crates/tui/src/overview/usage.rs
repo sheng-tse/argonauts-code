@@ -401,7 +401,9 @@ impl UsageTab<'_> {
     }
 
     fn why_none(&self, plan: &PlanUsage) -> &'static str {
-        if plan.pays_per_token {
+        if plan.local {
+            "local, no plan"
+        } else if plan.pays_per_token {
             "pays per token, so there is no plan to track"
         } else if plan.down {
             "can't be reached"

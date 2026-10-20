@@ -411,9 +411,10 @@ impl RunFacts {
             spent,
             elapsed_ms: self.elapsed_ms(facts),
             subagents: u32::try_from(facts.subagents.len()).unwrap_or(u32::MAX),
-            context: facts.context.and_then(|(used, window)| {
-                let cap = self.rotate_cap(window).or(window)?;
-                Some(ContextUse { used, cap })
+            context: facts.context.map(|(used, window)| ContextUse {
+                used,
+                window,
+                cap: self.rotate_cap(window),
             }),
             fallback_for: facts.fallback_for.clone(),
             answered: false,

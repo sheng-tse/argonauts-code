@@ -4,6 +4,7 @@
 
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::session_runner::model_run;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewRole;
 
@@ -48,6 +49,16 @@ pub fn candidates(settings: &Settings, role: RoleName) -> Vec<ModelRef> {
 /// The worker's model provider from the registry.
 pub fn provider(host: &Host, worker: &ModelRef) -> String {
     host.services().registry.provider(worker)
+}
+
+/// The model a session of `worker` runs, as its runner names it, so a bare CLI counts as the
+/// model it runs.
+pub fn runs(host: &Host, worker: &ModelRef) -> ModelRef {
+    model_run(
+        Some(host.services().workers.as_ref()),
+        host.settings(),
+        worker,
+    )
 }
 
 /// What the transcript calls `worker`, such as `GPT 5.6 on Codex`, rather than its id.

@@ -69,6 +69,7 @@ Phases saved from a run's workflow view sit here as `<name>.yaml`, a file of pha
 | `max_rounds` | The most times the step runs for one task; on a step with `until`, the most tries its goal gets. A loop that sends work back with no `max_rounds` in it stops after two send-backs. A `then` that goes back up needs a step with `max_rounds` in its loop, unless the `then` step runs only when work is sent back to it. |
 | `model` | A model of its own, such as `codex/gpt-5.6`, in place of the role's. |
 | `own_workflow` | Its workers may each run a workflow of their own, where their CLI has one. On Claude Code that is Claude Code's own workflow, and it shows nested under the worker. |
+| `keep` | When the orchestrator writes the steps for a request, it carries this step out with its role, its access and as many agents as the step says, under a phase name of its own. A script that leaves it out is sent back before any agent starts. |
 
 A file may also set settings below its steps, such as `[review]` keys. They apply while the
 workflow is in use. Its phases, when it has them, come last.

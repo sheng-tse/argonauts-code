@@ -44,6 +44,10 @@ pub struct QuestionPrompt {
     /// A table in plain text whose notes are dim, as the setup question shows a setup: each row is
     /// split by tabs into parts, plain then dim in turn.
     pub noted_rows: Vec<String>,
+    /// The noted rows hold two columns laid out to the screen's width: a row of four parts is
+    /// a left cell's plain and dim words then a right cell's, the first such row with only dim
+    /// words names the columns, and a row of other parts is drawn as a noted row is.
+    pub two_columns: bool,
     /// A letter that opens what the question is about without an option listed for it, with the
     /// index that option has in the question, as the setup question's `d` shows the diff.
     pub view_key: Option<(char, usize)>,
@@ -359,6 +363,7 @@ impl QuestionPrompt {
             agent: None,
             detail: Vec::new(),
             noted_rows: Vec::new(),
+            two_columns: false,
             view_key: None,
             body: Vec::new(),
             question: None,

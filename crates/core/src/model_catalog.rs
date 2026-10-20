@@ -240,7 +240,7 @@ impl ModelCatalog {
         let entry = self.entry(id);
         let name = entry
             .and_then(|entry| entry.name.as_deref())
-            .map(spelled_one_way)
+            .map(|name| shown_name(&id.agent, name))
             .unwrap_or_else(|| match &id.model {
                 Some(model) => display_name_from_id(model),
                 None => "Default".to_owned(),
@@ -288,6 +288,20 @@ pub fn builtin_effort_note(level: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// A model's name as Argonauts Code shows it for `cli`. OpenCode's own list is the one place
+/// that names most of its models, as OpenCode Zen's "GLM-5.3-Flash Free", so its names stand
+/// as OpenCode writes them. The other CLIs name models that are also read from their ids, so
+/// their names are spelled one way.
+pub fn shown_name(cli: &str, name: &str) -> String {
+    if cli.trim() == OPENCODE {
+        name.trim().to_owned()
+    } else {
+        spelled_one_way(name)
+    }
+}
+
+const OPENCODE: &str = "opencode";
 
 /// A model's name as every place in Argonauts Code writes it, with its words apart: a CLI's own
 /// list may join them, as Codex's "GPT-5.6-Luna", and the same model then read two ways.
@@ -380,7 +394,12 @@ fn word_case(token: &str) -> String {
     if ACRONYMS.contains(&lower.as_str()) || (letters_only && no_vowel && lower.len() <= 4) {
         return lower.to_ascii_uppercase();
     }
+    // A size, such as `30b` or `64k`, with the letter some sizes start with, such as Gemma's
+    // `e2b` or a mixture's `a3b`.
     let size = lower.strip_suffix(['b', 'k', 'm']).is_some_and(|number| {
+        let number = number
+            .strip_prefix(|c: char| c.is_ascii_alphabetic())
+            .unwrap_or(number);
         !number.is_empty() && number.chars().all(|c| c.is_ascii_digit() || c == '.')
     });
     if size {
@@ -427,6 +446,9 @@ mod tests {
             ("z-ai/glm-5", "GLM 5"),
             ("qwen3-coder:30b", "Qwen3 Coder 30B"),
             ("llama3.1:latest", "Llama3.1"),
+            ("gemma4:e2b", "Gemma4 E2B"),
+            ("qwen3-30b-a3b", "Qwen3 30B A3B"),
+            ("gemma3:12b-32k", "Gemma3 12B 32K"),
             ("gemini-2.5-pro-2025-06-05", "Gemini 2.5 Pro"),
             ("gpt-4-0613", "GPT 4 0613"),
             ("", ""),

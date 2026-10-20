@@ -208,6 +208,60 @@ pub fn probe_background(timeout: std::time::Duration) -> Option<bool> {
 
 #[cfg(unix)]
 fn read_background(timeout: std::time::Duration) -> Option<bool> {
+    let answer = ask(b"\x1b]11;?\x1b\\", osc_complete, timeout)?;
+    parse_background(&answer).map(is_light)
+}
+
+/// Pixels a cell, from the size in pixels the terminal reports with its size (TIOCGWINSZ).
+/// `None` when it reports none, as some terminals and anything not a terminal do.
+pub fn cell_size() -> Option<(u16, u16)> {
+    let size = terminal::window_size().ok()?;
+    cell_of((size.width, size.height), (size.columns, size.rows))
+}
+
+fn cell_of((width, height): (u16, u16), (columns, rows): (u16, u16)) -> Option<(u16, u16)> {
+    if columns == 0 || rows == 0 {
+        return None;
+    }
+    Some((width / columns, height / rows)).filter(|(width, height)| *width > 0 && *height > 0)
+}
+
+/// Pixels a cell: from the size the terminal reports, else from its answer to CSI 16 t,
+/// waited for up to `timeout`. Raw mode must be on, and nothing else may read input meanwhile.
+pub fn probe_cell_size(timeout: std::time::Duration) -> Option<(u16, u16)> {
+    if let Some(cell) = cell_size() {
+        return Some(cell);
+    }
+    #[cfg(unix)]
+    {
+        let done = |answer: &[u8]| answer.contains(&b't');
+        parse_cell_size(&ask(b"\x1b[16t", done, timeout)?)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = timeout;
+        None
+    }
+}
+
+/// `ESC [ 6 ; height ; width t`, the answer to CSI 16 t, as width and height.
+pub fn parse_cell_size(answer: &[u8]) -> Option<(u16, u16)> {
+    let text = std::str::from_utf8(answer).ok()?;
+    let body = &text[text.find("\x1b[6;")? + 4..];
+    let (body, _) = body.split_once('t')?;
+    let (height, width) = body.split_once(';')?;
+    let (width, height) = (width.parse().ok()?, height.parse().ok()?);
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+/// Sends `query` and reads the terminal's answer until `done` says it is whole or `timeout`
+/// passes. `None` when stdin or stdout isn't a terminal.
+#[cfg(unix)]
+fn ask(
+    query: &[u8],
+    done: impl Fn(&[u8]) -> bool,
+    timeout: std::time::Duration,
+) -> Option<Vec<u8>> {
     use std::time::Instant;
 
     use nix::sys::termios::{SetArg, SpecialCharacterIndices, tcgetattr, tcsetattr};
@@ -226,10 +280,8 @@ fn read_background(timeout: std::time::Duration) -> Option<bool> {
     let deadline = Instant::now() + timeout;
     let mut answer = Vec::new();
     let mut stdout = io::stdout();
-    let asked = stdout
-        .write_all(b"\x1b]11;?\x1b\\")
-        .and_then(|()| stdout.flush());
-    while asked.is_ok() && Instant::now() < deadline && !osc_complete(&answer) {
+    let asked = stdout.write_all(query).and_then(|()| stdout.flush());
+    while asked.is_ok() && Instant::now() < deadline && !done(&answer) {
         let mut chunk = [0u8; 64];
         match nix::unistd::read(&stdin, &mut chunk) {
             Ok(read) => answer.extend_from_slice(&chunk[..read]),
@@ -238,7 +290,7 @@ fn read_background(timeout: std::time::Duration) -> Option<bool> {
         }
     }
     let _ = tcsetattr(&stdin, SetArg::TCSANOW, &saved);
-    parse_background(&answer).map(is_light)
+    Some(answer)
 }
 
 /// An OSC answer ends with BEL or ST.
@@ -274,6 +326,21 @@ pub fn is_light((r, g, b): (u8, u8, u8)) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_cell_is_the_pixels_over_the_cells() {
+        assert_eq!(super::cell_of((1062, 1344), (118, 64)), Some((9, 21)));
+        assert_eq!(super::cell_of((0, 0), (118, 64)), None);
+        assert_eq!(super::cell_of((1062, 1344), (0, 0)), None);
+    }
+
+    #[test]
+    fn the_answer_to_csi_16_t_is_height_then_width() {
+        assert_eq!(super::parse_cell_size(b"\x1b[6;42;18t"), Some((18, 42)));
+        assert_eq!(super::parse_cell_size(b"junk\x1b[6;21;9t"), Some((9, 21)));
+        assert_eq!(super::parse_cell_size(b"\x1b[6;0;9t"), None);
+        assert_eq!(super::parse_cell_size(b""), None);
+    }
+
     use super::*;
 
     #[test]

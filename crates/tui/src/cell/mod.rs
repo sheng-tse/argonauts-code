@@ -29,7 +29,7 @@ pub use crew::{AgentsStarted, StartedAgent};
 pub use decided::DecidedOnAutopilot;
 pub use diff::{DiffCell, DiffHunk, DiffKind, DiffLine, DiffParseError, DiffView};
 pub use group::CollapsedGroup;
-pub use header::{AgentReady, SessionHeader};
+pub use header::{AgentReady, MARK_COL, MARK_MIN_WIDTH, SessionHeader, TEXT_COL};
 pub use notice::{ExitNote, HungLine, Notice, ResultLine, Trailing};
 pub use record::Record;
 pub use shell::{ShellEnd, ShellRun};
@@ -37,8 +37,8 @@ pub use templates::{TemplateFolder, TemplateRows};
 pub use tool::Held;
 pub use tool::StepMark;
 pub use tool::{
-    BLINK_PERIOD, PhaseLine, Todo, TodoState, ToolCall, ToolItem, ToolKind, ToolState, ToolStats,
-    ToolTitle, WorkflowEnd, WorkflowResult,
+    BLINK_PERIOD, ModelShade, PhaseLine, Todo, TodoState, ToolCall, ToolItem, ToolKind, ToolState,
+    ToolStats, ToolTitle, WorkflowEnd, WorkflowResult,
 };
 pub use turn::{Recap, Thought, TurnEnd};
 pub use user::UserMessage;
@@ -291,6 +291,7 @@ mod tests {
                 model: Some(long.into()),
                 effort: Some(long.into()),
                 workflow: long.into(),
+                ultra: None,
                 folder: long.into(),
                 agents: vec![AgentReady {
                     name: long.into(),
@@ -299,6 +300,7 @@ mod tests {
                 }],
                 runs_going: 3,
                 runs_need_you: 0,
+                way_back: None,
             }
             .into(),
             UserMessage::new(long).into(),

@@ -3,12 +3,36 @@
 //! prompt went in, and the sandbox in one line) and the prompt parts. The prompt sent is the
 //! parts' text, concatenated byte for byte.
 
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
+
 use argonauts_core::CommandSpec;
 use argonauts_core::events::session::{
     InputPart, InputPartKind, LaunchRecord, PromptVia, QueuedMessage, SessionEvent, SessionInput,
 };
+use argonauts_core::layout::session_files;
 
 pub const PROMPT_PLACEHOLDER: &str = "<prompt>";
+
+/// Adds `record` to the session folder's list of launches, beside its `process.json`. One
+/// that can't be kept goes to the log and never stops the session.
+pub fn keep_launch(session_dir: &Path, record: &LaunchRecord) {
+    let path = session_dir.join(session_files::LAUNCHES);
+    let kept = serde_json::to_string(record)
+        .map_err(std::io::Error::other)
+        .and_then(|line| {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o600)
+                .open(&path)?;
+            writeln!(file, "{line}")
+        });
+    if let Err(err) = kept {
+        tracing::warn!("couldn't keep the launch in {}: {err}", path.display());
+    }
+}
 
 /// What goes to the CLI, byte for byte.
 pub fn prompt_text(parts: &[InputPart]) -> String {
@@ -122,6 +146,34 @@ mod tests {
         assert_eq!(record.sandbox.as_deref(), Some("seatbelt"));
         let json = serde_json::to_string(&record).unwrap();
         assert!(!json.contains("hunter2") && !json.contains("fix the bug"));
+    }
+
+    #[test]
+    fn each_launch_is_kept_in_order_without_its_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = CommandSpec::new("opencode", "/w").args(["run", "--format", "json"]);
+        let resumed = fresh.clone().args(["--session", "ses_1"]);
+        for command in [&fresh, &resumed] {
+            keep_launch(
+                dir.path(),
+                &launch_record(command, "the secret plan", "none"),
+            );
+        }
+        let kept = std::fs::read_to_string(dir.path().join("launches.jsonl")).unwrap();
+        let launches: Vec<LaunchRecord> = kept
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(launches.len(), 2);
+        assert!(!launches[0].args.iter().any(|arg| arg == "--session"));
+        assert!(
+            launches[1]
+                .args
+                .ends_with(&["--session".to_owned(), "ses_1".to_owned()])
+        );
+        assert!(!kept.contains("secret plan"));
+        // A folder that can't be written to never stops the session.
+        keep_launch(&dir.path().join("missing"), &launches[0]);
     }
 
     #[test]

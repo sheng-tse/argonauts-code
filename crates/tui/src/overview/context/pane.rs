@@ -9,6 +9,7 @@ use argonauts_core::names::SessionKey;
 use crossterm::event::KeyCode;
 use ratatui::text::{Line, Span};
 
+use super::lists::Fold;
 use crate::kit::{Drawn, Kit};
 use crate::theme::Role;
 
@@ -20,6 +21,8 @@ pub struct Section {
     pub pointer_row: usize,
     /// The crew agent the block is about, which Enter opens.
     pub agent: Option<(RunId, SessionKey)>,
+    /// A list long enough to fold, which Enter folds or shows whole.
+    pub fold: Option<Fold>,
 }
 
 impl Section {
@@ -37,6 +40,7 @@ struct Laid {
     /// Each block's first row and its height.
     blocks: Vec<(usize, usize)>,
     agents: Vec<Option<(RunId, SessionKey)>>,
+    folds: Vec<Option<Fold>>,
     rows: usize,
     /// The rows the panel had for them.
     room: usize,
@@ -80,6 +84,7 @@ impl ContextPane {
             }
             laid.blocks.push((rows.len(), section.drawn.height()));
             laid.agents.push(section.agent);
+            laid.folds.push(section.fold);
             for (row, line) in section.drawn.lines.into_iter().enumerate() {
                 let pointed = nth == self.focus && row == section.pointer_row;
                 rows.push(match pointer.filter(|_| pointed) {
@@ -104,6 +109,11 @@ impl ContextPane {
     /// The crew agent the keys are on, if they are on one.
     pub fn agent(&self) -> Option<(RunId, SessionKey)> {
         self.laid.borrow().agents.get(self.focus).cloned().flatten()
+    }
+
+    /// How the list the keys are on shows, where it is long enough to fold.
+    pub fn fold(&self) -> Option<Fold> {
+        self.laid.borrow().folds.get(self.focus).copied().flatten()
     }
 
     /// Whether the tab is taller than the panel.

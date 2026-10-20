@@ -1,6 +1,8 @@
 # The words on the working line and the turn end. One word per line under its list's
 # heading. Lines that start with # are notes. The voyage lists tell of the Argo's crew at
-# sea and at their craft; the plain lists say what happens without the theme.
+# sea and at their craft; the plain lists say what happens without the theme. A turn draws
+# from the whole working list; a command's own work, such as /update, from the short list
+# of words for it, each one already in the working list.
 
 [voyage working]
 Rowing
@@ -207,12 +209,31 @@ Docked
 Quested
 Berthed
 
+[voyage updating]
+Careening
+Caulking
+Rigging
+Shipwrighting
+Sail-mending
+Provisioning
+
+[voyage checking]
+Sounding
+Spyglassing
+Lookout-keeping
+
 [plain working]
 Working
 Thinking
 Building
 Checking
 Writing
+
+[plain updating]
+Working
+
+[plain checking]
+Checking
 
 [plain done]
 Worked

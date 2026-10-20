@@ -33,6 +33,8 @@ struct Marks {
     above: &'static str,
     /// Starts the effort line under `/model`'s models.
     effort: &'static str,
+    /// Starts the line for a model that takes no effort setting.
+    no_effort: &'static str,
     /// Points at the chosen level on the effort slider.
     chosen: &'static str,
 }
@@ -45,6 +47,7 @@ impl Marks {
                 below: "v",
                 above: "^",
                 effort: "*",
+                no_effort: "o",
                 chosen: "^",
             }
         } else {
@@ -53,6 +56,7 @@ impl Marks {
                 below: "↓",
                 above: "↑",
                 effort: "◉",
+                no_effort: "○",
                 chosen: "▲",
             }
         }
@@ -81,6 +85,20 @@ impl Picker {
         let about = sanitize_line(&self.about);
         if !about.trim().is_empty() {
             lines.extend(wrap_text(about.trim(), dim, width, &indent, &indent));
+        }
+        if let Some((label, figures)) = &self.banner {
+            let bold = Modifier::BOLD;
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    sanitize_line(label).into_owned(),
+                    question.add_modifier(bold),
+                ),
+                Span::styled(
+                    format!(" {}", sanitize_line(figures)),
+                    theme.style(Role::Text).add_modifier(bold),
+                ),
+            ]));
         }
         lines.push(Line::default());
 
@@ -118,7 +136,12 @@ impl Picker {
         } else {
             self.push_rows(&mut lines, &shown, ctx);
         }
-        if let Some(line) = self.flow.effort.as_ref().filter(|_| self.input.is_none()) {
+        if let Some(note) = self.note.as_deref().filter(|_| self.input.is_none()) {
+            lines.push(Line::default());
+            let note = sanitize_line(note);
+            let style = theme.style(Role::Warn);
+            lines.extend(wrap_text(note.trim(), style, width, &indent, &indent));
+        } else if let Some(line) = self.flow.effort.as_ref().filter(|_| self.input.is_none()) {
             lines.push(Line::default());
             lines.push(self.effort_row(line, ctx));
         }
@@ -275,7 +298,7 @@ impl Picker {
                 let description = cut(&description, description_width - drawn);
                 drawn += str_width(&description);
                 used = description_at + drawn;
-                spans.push(Span::styled(description, dim));
+                spans.extend(with_danger(description, row.danger.as_deref(), dim, theme));
             }
             if let Some(key) = row.key {
                 spans.push(Span::raw(" ".repeat(key_at.saturating_sub(used).max(1))));
@@ -298,12 +321,15 @@ impl Picker {
         }
     }
 
-    /// `◉ xhigh effort (default)  ←/→ to adjust`, for the highlighted model, and no hint for
-    /// one fixed at its only level.
+    /// `◉ xhigh effort (default)  ←/→  to adjust`, for the highlighted model, no hint for one
+    /// fixed at its only level, and Claude Code's faint line for one that takes none.
     fn effort_row(&self, line: &EffortLine, ctx: &RenderCtx<'_>) -> Line<'static> {
         let theme = ctx.theme;
         let dim = theme.style(Role::Dim);
         let marks = Marks::for_theme(theme);
+        if line.levels.is_empty() {
+            return self.no_effort_row(&marks, ctx);
+        }
         let default = line.default.and_then(|at| line.levels.get(at));
         let (level, note) = match line.level() {
             Some(level) if line.is_fixed() => (format!("{level} effort"), format!(" ({FIXED})")),
@@ -326,11 +352,29 @@ impl Picker {
         Line::from(spans)
     }
 
+    /// Claude Code's line for a model that takes no effort setting, in its faint colour:
+    /// `○ Effort not supported for Haiku 4.5`.
+    fn no_effort_row(&self, marks: &Marks, ctx: &RenderCtx<'_>) -> Line<'static> {
+        let model = self
+            .pointed()
+            .map(|index| sanitize_line(&self.rows[index].label).trim().to_owned())
+            .unwrap_or_default();
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("{} Effort not supported for {model}", marks.no_effort),
+                ctx.theme.style(Role::Faint),
+            ),
+        ])
+    }
+
+    /// Ghostty with Iosevka draws a side arrow two cells wide, so words after one keep two
+    /// cells away.
     fn adjust_hint(&self) -> &'static str {
         if self.vim {
             "h/l to adjust"
         } else {
-            "←/→ to adjust"
+            "←/→  to adjust"
         }
     }
 
@@ -391,6 +435,27 @@ impl Picker {
             parts.push(Part::joined(dot(), part(esc("Esc to close")), 1));
         }
         fit_parts(vec![Span::raw("  ")], &parts, usize::from(ctx.width))
+    }
+}
+
+/// A dim description with `danger`, where it holds those words, in the danger colour.
+fn with_danger(
+    description: String,
+    danger: Option<&str>,
+    dim: Style,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let split = danger.filter(|words| !words.is_empty()).and_then(|words| {
+        let (before, after) = description.split_once(words)?;
+        Some((before.to_owned(), words.to_owned(), after.to_owned()))
+    });
+    match split {
+        Some((before, words, after)) => vec![
+            Span::styled(before, dim),
+            Span::styled(words, theme.style(Role::Danger)),
+            Span::styled(after, dim),
+        ],
+        None => vec![Span::styled(description, dim)],
     }
 }
 

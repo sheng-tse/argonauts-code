@@ -78,29 +78,26 @@ pub(crate) fn ask_at_start(ctx: &mut Ctx, state: &mut RenamedState) {
     }
 }
 
-/// The question, worded from the file's own lines: each old name beside its new one, then what
-/// renaming does and what leaving them does.
+/// The question, worded from the file's own lines: two headed columns, each line as the file has
+/// it and as Rename writes it, then what renaming does and what leaving them does.
 pub(crate) fn question(id: ChoiceId, shown: &str, renames: &[Rename]) -> AppChoice {
+    const NOW: &str = "In the file now";
+    const AFTER: &str = "After Rename them";
     let count = match renames.len() {
         1 => "1 name that changed".to_owned(),
         n => format!("{n} names that changed"),
     };
-    let width = renames
-        .iter()
-        .map(|rename| rename.old.chars().count())
-        .max()
-        .unwrap_or(0)
-        + 6;
-    // Each row's parts are plain and dim in turn, so the empty first part makes the old name dim.
-    let mut body = vec![String::new()];
-    body.extend(renames.iter().map(|rename| {
-        let note = rename
-            .note
-            .as_deref()
-            .map(|note| format!("\t   ({note})"))
-            .unwrap_or_default();
-        format!("\t  {:<width$}\t→ {}{note}", rename.old, rename.new)
-    }));
+    // Two columns the screen lays out to its width, four tab-separated parts a row: the line
+    // as the file has it, then as Rename writes it, each cell's plain words then its dim ones.
+    // The headings and the notes are dim.
+    let cell = |text: &str| text.replace('\t', " ");
+    let mut body = vec![String::new(), format!("\t{NOW}\t\t{AFTER}")];
+    for rename in renames {
+        body.push(format!("{}\t\t{}\t", cell(&rename.old), cell(&rename.new)));
+        if let Some(note) = &rename.note {
+            body.push(format!("\t\t\t{}", cell(note)));
+        }
+    }
     body.push(String::new());
     body.push(
         "\t  Until they're renamed they are skipped, and the defaults are used instead.".to_owned(),
@@ -390,24 +387,151 @@ mode = "supervised"
         );
     }
 
+    /// The picture's file: the same three names, with the values it shows.
+    const PICTURED: &str = r#"main_agent = "claude-code"
+workflow = "solo"
+crew = ["claude-code", "codex", "antigravity-cli"]
+
+[approvals.goal]
+mode = "ask"
+"#;
+
     #[test]
     fn the_rename_question_reads_as_the_picture_draws_it() {
         let choice = question(
             ChoiceId::numbered(1),
             "~/.argonauts/config.toml",
-            &renames_in(OLDER),
+            &renames_in(PICTURED),
         );
         let theme = theme();
         let lines = choice_question(1, &choice).lines(&still(&theme));
-        crate::golden::dump("start_after", &lines);
+        crate::golden::dump("rename_after", &lines);
         assert_eq!(
             drawn_rows(&lines),
-            picture_rows(include_str!("../../../tests/golden/start_after.txt"))
+            picture_rows(include_str!("../../../tests/golden/rename_after.txt"))
         );
         assert_looks(
             &theme,
             &lines,
-            include_str!("../../../tests/golden/start_after.html"),
+            include_str!("../../../tests/golden/rename_after.html"),
+        );
+    }
+
+    /// The question's rows at `width`, without the blanks at their ends.
+    fn rows_at(choice: &AppChoice, width: u16) -> Vec<String> {
+        use argonauts_tui::render::{Clock, RenderCtx};
+        let theme = theme();
+        let ctx = RenderCtx::new(width, &theme, Clock::still(std::time::Instant::now()));
+        drawn_rows(&choice_question(1, choice).lines(&ctx))
+            .into_iter()
+            .map(|row| row.trim_end().to_owned())
+            .collect()
+    }
+
+    /// The row that starts with `start` and the rows that carry it on, which start with blanks.
+    fn carried<'a>(rows: &'a [String], start: &str) -> Vec<&'a str> {
+        let at = rows
+            .iter()
+            .position(|row| row.starts_with(start))
+            .unwrap_or_else(|| panic!("no row starts {start:?}: {rows:#?}"));
+        std::iter::once(rows[at].as_str())
+            .chain(
+                rows[at + 1..]
+                    .iter()
+                    .map(String::as_str)
+                    .take_while(|row| row.starts_with("     ") && !row.trim().is_empty()),
+            )
+            .collect()
+    }
+
+    /// Where the columns have room, each value wraps in its own column; where the right one
+    /// hasn't, each line as the file has it and as Rename writes it takes rows of its own,
+    /// each started with its column's name.
+    #[test]
+    fn the_rename_question_lays_its_columns_out_to_the_screen() {
+        const LONG: &str = r#"main_agent = "claude-code/claude-opus-5-5-with-a-very-long-model-name"
+workflow = "solo"
+
+[approvals.goal]
+mode = "ask"
+"#;
+        let long = question(
+            ChoiceId::numbered(1),
+            "~/.argonauts/config.toml",
+            &renames_in(LONG),
+        );
+        let old = r#"main_agent = "claude-code/claude-opus-5-5-with-a-very-long-model-name""#;
+        let right_at = 3 + old.len() + 6;
+
+        let wide = rows_at(&long, 140);
+        let heading = carried(&wide, "   In the file now");
+        assert_eq!(
+            heading[0].find("After Rename them"),
+            Some(right_at),
+            "{wide:#?}"
+        );
+        let pair = carried(&wide, &format!("   {old}"));
+        assert!(pair.len() > 1, "the long value wraps: {wide:#?}");
+        assert_eq!(pair[0].find("[crew] main ="), Some(right_at), "{wide:#?}");
+        for row in &pair[1..] {
+            let words = row.len() - row.trim_start().len();
+            assert_eq!(
+                words, right_at,
+                "a wrapped value stays in its column: {wide:#?}"
+            );
+        }
+
+        for width in [100, 80] {
+            let narrow = rows_at(&long, width);
+            assert!(
+                !narrow.iter().any(|row| row.contains("After Rename them  ")
+                    || row.starts_with("   In the file now  ")),
+                "no column headings at {width}: {narrow:#?}"
+            );
+            let now = carried(&narrow, "   In the file now: main_agent =");
+            let after = carried(&narrow, "   After Rename them: [crew] main =");
+            for row in now[1..].iter().chain(&after[1..]) {
+                assert!(row.len() <= usize::from(width), "{narrow:#?}");
+            }
+            assert!(
+                narrow
+                    .iter()
+                    .any(|row| row == "   After Rename them: workflow = \"captain\""),
+                "{narrow:#?}"
+            );
+        }
+
+        // The pictured lines at 80 columns keep their columns, and the crew note wraps in its own.
+        let pictured = question(
+            ChoiceId::numbered(1),
+            "~/.argonauts/config.toml",
+            &renames_in(PICTURED),
+        );
+        let rows = rows_at(&pictured, 80);
+        let right_at = 3 + r#"[approvals.goal] mode = "ask""#.len() + 6;
+        let heading = carried(&rows, "   In the file now");
+        assert_eq!(
+            heading[0].find("After Rename them"),
+            Some(right_at),
+            "{rows:#?}"
+        );
+        let crew = carried(&rows, r#"   main_agent = "claude-code""#);
+        assert!(crew.len() > 2, "the crew note wraps: {rows:#?}");
+        for row in &crew[1..] {
+            assert_eq!(row.len() - row.trim_start().len(), right_at, "{rows:#?}");
+        }
+    }
+
+    #[test]
+    fn a_rename_question_has_no_arrow_and_promises_no_values_it_does_not_show() {
+        let choice = question(ChoiceId::numbered(1), "config.toml", &renames_in(OLDER));
+        let body = choice.body.join("\n");
+        assert!(!body.contains('→'), "{body}");
+        assert!(!body.contains("before and after"), "{body}");
+        assert!(body.contains("In the file now"), "{body}");
+        assert!(
+            body.contains("[approvals.goal] mode = \"supervised\""),
+            "{body}"
         );
     }
 }

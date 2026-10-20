@@ -87,6 +87,13 @@ struct CliHome {
     /// Claude Code. A direct turn has you there to answer; any other session could plant one
     /// that a later session of yours loads.
     asked_first: &'static [&'static str],
+    /// It opens every folder above its working folder to find its real path, and stops with an
+    /// error where one can't be opened, as OpenCode 2.0.32 does.
+    opens_folders_above: bool,
+    /// Another CLI's folders it opens and lists to find their real path, and stops with an error
+    /// where one can't be opened, as OpenCode 2.0.32 does with Claude Code's `~/.claude` while
+    /// it looks for config the two share. Nothing in them opens.
+    lists: &'static [&'static str],
 }
 
 const CLAUDE_CODE: CliHome = CliHome {
@@ -119,6 +126,8 @@ const CLAUDE_CODE: CliHome = CliHome {
     ],
     rewritten: &[],
     asked_first: &[".claude/dev-mods"],
+    opens_folders_above: false,
+    lists: &[],
 };
 
 const CODEX: CliHome = CliHome {
@@ -146,6 +155,8 @@ const CODEX: CliHome = CliHome {
     ],
     rewritten: &[],
     asked_first: &[],
+    opens_folders_above: false,
+    lists: &[],
 };
 
 const ANTIGRAVITY_CLI: CliHome = CliHome {
@@ -171,6 +182,8 @@ const ANTIGRAVITY_CLI: CliHome = CliHome {
     private: &[".gemini/antigravity-cli/history.jsonl"],
     rewritten: &[".gemini/antigravity-cli/bin/agentapi"],
     asked_first: &[],
+    opens_folders_above: false,
+    lists: &[],
 };
 
 const OPENCODE: CliHome = CliHome {
@@ -184,6 +197,8 @@ const OPENCODE: CliHome = CliHome {
     private: &[],
     rewritten: &[],
     asked_first: &[],
+    opens_folders_above: true,
+    lists: &[".claude"],
 };
 
 const NO_HOME: CliHome = CliHome {
@@ -192,6 +207,8 @@ const NO_HOME: CliHome = CliHome {
     private: &[],
     rewritten: &[],
     asked_first: &[],
+    opens_folders_above: false,
+    lists: &[],
 };
 
 /// The CLI whose files in your home `agent` uses. OpenCode over ACP runs the same
@@ -416,6 +433,18 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
         readable.extend(open_to_git(&git.kept_read_only()));
     }
 
+    let mut listable: Vec<PathBuf> = if own.opens_folders_above {
+        input
+            .workdir
+            .ancestors()
+            .skip(1)
+            .map(Path::to_path_buf)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    listable.extend(in_home(own.lists));
+
     SandboxProfile {
         mode: requested.mode,
         writable: dedup(writable),
@@ -425,6 +454,8 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
         proxy_port: requested.proxy_port,
         ask_port: requested.ask_port,
         closed,
+        listable,
+        loopback: false,
     }
 }
 
@@ -814,7 +845,7 @@ pub fn can_read(profile: &SandboxProfile, path: &Path) -> bool {
         .fold(true, |allowed, rule| match rule.kind {
             RuleKind::Deny => false,
             RuleKind::Read | RuleKind::ReadOnly => true,
-            RuleKind::Write | RuleKind::Stat => allowed,
+            RuleKind::Write | RuleKind::Stat | RuleKind::List => allowed,
         })
 }
 
@@ -828,7 +859,7 @@ pub fn can_write(profile: &SandboxProfile, path: &Path) -> bool {
         .fold(false, |allowed, rule| match rule.kind {
             RuleKind::Deny | RuleKind::ReadOnly => false,
             RuleKind::Write => true,
-            RuleKind::Read | RuleKind::Stat => allowed,
+            RuleKind::Read | RuleKind::Stat | RuleKind::List => allowed,
         })
 }
 
@@ -867,6 +898,8 @@ pub(crate) enum RuleKind {
     /// Lets a session stat one folder on the way to an exception inside a denied area. git
     /// stats every parent of its worktree, and fails without it.
     Stat,
+    /// Lets a session open and list one folder inside a denied area, though nothing under it.
+    List,
     /// A readable path that is also writable.
     Read,
     /// A readable path that isn't writable, even inside a writable temp folder, such as a
@@ -930,8 +963,24 @@ pub(crate) fn ordered_rules(profile: &SandboxProfile) -> Vec<PathRule> {
             }
         }
     }
-    rules.extend(dedup(stats).into_iter().map(|dir| PathRule {
-        kind: RuleKind::Stat,
+    let listed: Vec<PathBuf> = profile
+        .listable
+        .iter()
+        .map(|dir| resolve_path(dir))
+        .filter(|dir| denied.iter().any(|area| dir.starts_with(area)))
+        .collect();
+    rules.extend(
+        dedup(stats)
+            .into_iter()
+            .filter(|dir| !listed.contains(dir))
+            .map(|dir| PathRule {
+                kind: RuleKind::Stat,
+                path: dir.clone(),
+                resolved: dir,
+            }),
+    );
+    rules.extend(dedup(listed).into_iter().map(|dir| PathRule {
+        kind: RuleKind::List,
         path: dir.clone(),
         resolved: dir,
     }));
@@ -1356,6 +1405,79 @@ mod tests {
 
         // A build session never gets the base worktree, even when the caller passes one.
         assert!(!build.readable.contains(&l.base_tree));
+    }
+
+    /// OpenCode opens every folder above its worktree to find its real path, and stops where
+    /// one can't be opened. Its sessions may open and list those folders, though nothing under
+    /// them but their own worktree opens; other CLIs' sessions may only stat them.
+    #[test]
+    fn opencode_may_open_the_folders_above_its_worktree_and_nothing_in_them() {
+        let l = layout();
+        let run_trees = l.own_tree.parent().unwrap().to_path_buf();
+        let opencode = profile_for(&l, Access::Build, "opencode", &[]);
+        let listed: Vec<PathBuf> = ordered_rules(&opencode)
+            .into_iter()
+            .filter(|rule| rule.kind == RuleKind::List)
+            .map(|rule| rule.resolved)
+            .collect();
+        assert!(listed.contains(&run_trees), "{listed:?}");
+        assert!(listed.contains(&l.argonauts), "{listed:?}");
+        let claude = l.home.join(".claude");
+        assert!(
+            listed
+                .iter()
+                .all(|dir| dir.starts_with(&l.argonauts) || *dir == claude)
+        );
+        assert!(can_read(&opencode, &l.own_tree.join("src/lib.rs")));
+        assert!(!can_read(&opencode, &l.other_tree.join("src/lib.rs")));
+        assert!(!can_read(&opencode, &run_trees.join("notes.md")));
+        let sbpl = super::super::seatbelt::render_profile(&opencode);
+        assert!(
+            sbpl.contains(&format!(
+                "(allow file-read-metadata file-read-data (literal \"{}\"))",
+                run_trees.display()
+            )),
+            "{sbpl}"
+        );
+
+        let codex = profile_for(&l, Access::Build, "codex", &[]);
+        assert!(
+            !ordered_rules(&codex)
+                .iter()
+                .any(|rule| rule.kind == RuleKind::List)
+        );
+    }
+
+    /// OpenCode 2.0.32 opens Claude Code's `~/.claude` to find its real path, and its server
+    /// answers 500 where it can't. Its sessions may open and list that one folder, and read
+    /// nothing in it; another CLI's sessions can't even open it.
+    #[test]
+    fn opencode_may_open_claude_codes_folder_and_nothing_in_it() {
+        let l = layout();
+        let claude = l.home.join(".claude");
+        let lists = |profile: &SandboxProfile| {
+            ordered_rules(profile)
+                .iter()
+                .any(|rule| rule.kind == RuleKind::List && rule.resolved == claude)
+        };
+        for agent_id in ["opencode", "opencode-acp"] {
+            for access in [Access::Direct, Access::Build, Access::ReadOnly] {
+                let profile = profile_for(&l, access, agent_id, &[]);
+                assert!(lists(&profile), "{agent_id} {access:?}");
+                for inside in ["settings.json", ".credentials.json", "projects/a.jsonl"] {
+                    assert!(
+                        !can_read(&profile, &claude.join(inside)),
+                        "{agent_id} {access:?} {inside}"
+                    );
+                }
+            }
+        }
+        for agent_id in ["codex", "antigravity-cli"] {
+            assert!(
+                !lists(&profile_for(&l, Access::Build, agent_id, &[])),
+                "{agent_id}"
+            );
+        }
     }
 
     #[test]

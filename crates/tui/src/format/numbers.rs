@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use argonauts_core::window_size;
+
 use super::resets::{ClockStyle, ResetStyle};
 
 /// What a number shows when it isn't known. Never `?`.
@@ -62,6 +64,44 @@ pub fn tokens_as(count: u64, unit: TokenUnit) -> String {
     format!("{trimmed}{unit}")
 }
 
+/// Token counts as Claude Code writes them under an agent's row, by Intl's compact rule: one
+/// decimal from 1,000 on, `.0` kept, `11.0k`, `118.8k`, `1.2m`; under 1,000 the count itself.
+pub fn tokens_as_claude_code(count: u64) -> String {
+    const UNITS: [&str; 4] = ["k", "m", "b", "t"];
+    if count < 1_000 {
+        return count.to_string();
+    }
+    let mut value = count as f64 / 1_000.0;
+    let mut unit = 0;
+    // Rounded first, so 999,950 reads as the next unit up, as Intl's does.
+    while (value * 10.0).round() >= 10_000.0 && unit + 1 < UNITS.len() {
+        value /= 1_000.0;
+        unit += 1;
+    }
+    format!("{:.1}{}", (value * 10.0).round() / 10.0, UNITS[unit])
+}
+
+/// A context window's size, by the one rule every screen, mod and command shares: `64k` for
+/// 65,536, `200k` for 200,000, `1M` for either million.
+pub fn window(size: u64) -> String {
+    window_size::window_words(size)
+}
+
+/// A token count beside a window, in the window's divisor: 9,551 of 65,536 reads `9.3k/64k`,
+/// and a full 64k window `64k/64k`. A count with no window beside it reads as [`tokens`].
+pub fn tokens_beside(count: u64, window: u64) -> String {
+    window_size::tokens_beside(count, window)
+}
+
+/// What a session holds of its window, `9.3k/64k`, or its count alone while no one has said
+/// how large the window is.
+pub fn tokens_of_window(used: u64, window: Option<u64>) -> String {
+    match window.filter(|window| *window > 0) {
+        Some(window) => format!("{}/{}", tokens_beside(used, window), self::window(window)),
+        None => tokens(used),
+    }
+}
+
 /// A share of a whole: whole percents, one decimal under 1%, and `<0.1%` below that. Over a
 /// limit it keeps counting, as `105%`.
 pub fn percent(ratio: f64) -> String {
@@ -116,6 +156,24 @@ pub fn duration_slot(elapsed: Duration) -> String {
 mod tests {
     use super::*;
 
+    /// Claude Code 2.1.303's `ti()`: Intl's compact notation, one decimal from 1,000 on.
+    #[test]
+    fn tokens_read_as_claude_code_writes_them_under_an_agent() {
+        for (count, words) in [
+            (950, "950"),
+            (1_000, "1.0k"),
+            (11_000, "11.0k"),
+            (14_249, "14.2k"),
+            (118_800, "118.8k"),
+            (999_949, "999.9k"),
+            (999_950, "1.0m"),
+            (1_250_000, "1.3m"),
+            (2_000_000_000, "2.0b"),
+        ] {
+            assert_eq!(tokens_as_claude_code(count), words, "{count}");
+        }
+    }
+
     #[test]
     fn token_counts_read_one_way_everywhere() {
         assert_eq!(tokens(0), "0");
@@ -133,6 +191,22 @@ mod tests {
         assert_eq!(tokens(12_400_000), "12M");
         assert_eq!(tokens_as(1_200_000, TokenUnit::Lower), "1.2m");
         assert_eq!(tokens_as(48_200, TokenUnit::Lower), "48.2k");
+    }
+
+    #[test]
+    fn windows_and_the_counts_beside_them_share_one_divisor() {
+        assert_eq!(window(65_536), "64k");
+        assert_eq!(window(262_144), "256k");
+        assert_eq!(window(200_000), "200k");
+        assert_eq!(window(1_000_000), "1M");
+        assert_eq!(window(1_048_576), "1M");
+        assert_eq!(tokens_beside(9_551, 65_536), "9.3k");
+        assert_eq!(tokens_beside(65_536, 65_536), "64k");
+        // Beside a window in thousands a count reads as every other count does.
+        assert_eq!(tokens_beside(9_551, 200_000), tokens(9_551));
+        assert_eq!(tokens_of_window(9_551, Some(65_536)), "9.3k/64k");
+        assert_eq!(tokens_of_window(65_536, Some(65_536)), "64k/64k");
+        assert_eq!(tokens_of_window(9_551, None), "9.6k");
     }
 
     #[test]

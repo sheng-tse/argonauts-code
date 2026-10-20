@@ -433,6 +433,7 @@ fn state_folds_task() {
             try_number: 2,
             worker: worker("claude-code", "opus"),
             cause: TryCause::Rotation,
+            told: Vec::new(),
         },
     ));
     let task = &run(&state).tasks[&task_id(1)];
@@ -714,7 +715,8 @@ fn state_folds_agent() {
         // A session starts fresh near the end of the window it reports.
         Some(argonauts_core::views::ContextUse {
             used: 150_000,
-            cap: 900_000
+            window: Some(1_000_000),
+            cap: Some(900_000),
         })
     );
 
@@ -1218,6 +1220,7 @@ fn state_folds_welcome_status_and_mode() {
         repo: "~/argonauts".into(),
         workflow: "council".into(),
         ultracode: false,
+        ultra: None,
         run: None,
         main_agent: worker("claude-code", "opus"),
         plan_chips: vec![PlanUsageChip {
@@ -1472,7 +1475,7 @@ fn the_notice_goes_when_nothing_is_drawn_or_the_conversation_is_cleared() {
 
     state.apply(&drawn(2, notice));
     assert!(state.conversation.notice.is_some());
-    state.apply(&AppEvent::ConversationCleared);
+    state.apply(&AppEvent::ConversationCleared { way_back: None });
     assert!(state.conversation.notice.is_none());
 }
 
@@ -2332,8 +2335,8 @@ fn a_conversation_turn_waits_on_the_background_while_its_main_agent_rests() {
 }
 
 /// A page published with Claude Code's Artifact tool is recorded when its call finishes, by
-/// the main agent in the conversation or by an agent inside a run, and stays past the turn
-///. The bottom line's part names the newest and counts the others.
+/// the main agent in the conversation or by an agent inside a run, and stays past the turn.
+/// The bottom line's part names the newest and counts the others.
 #[test]
 fn published_artifacts_are_kept_with_who_published_them() {
     let overview = "https://claude.ai/code/artifact/0b1e7c9a-4f1d-4c57-9a55-2f6f0d3a8e11";
@@ -2434,7 +2437,7 @@ fn published_artifacts_are_kept_with_who_published_them() {
         .collect();
     assert_eq!(names, ["test-report", "weekly-usage-chart"]);
 
-    state.apply(&AppEvent::ConversationCleared);
+    state.apply(&AppEvent::ConversationCleared { way_back: None });
     assert!(state.artifacts.is_empty(), "a new conversation has none");
 
     // A conversation carried on brings its own pages back, in place of what was held.

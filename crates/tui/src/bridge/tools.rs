@@ -233,6 +233,71 @@ pub fn written_object(text: &str) -> Option<(String, Value)> {
     Some((words.to_owned(), report))
 }
 
+/// Where a JSON object that may still end the message starts, at or after byte `from`: a line
+/// that opens with `{` or a ```` ```json ```` fence, whose object is still open or closes the
+/// message. A screen that streams the message holds back what follows it, so a result the agent
+/// writes out at the end never shows; once words follow the object, it is part of the answer.
+/// `text.len()` when nothing may.
+pub fn json_tail_from(text: &str, from: usize) -> usize {
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        let start = at;
+        at += line.len();
+        if start < from {
+            continue;
+        }
+        let opening = line.trim_end();
+        let fence = "```json".starts_with(opening) && !opening.is_empty() && !line.ends_with('\n');
+        let opens = opening.starts_with('{') || opening == "```json" || opening == "```" || fence;
+        if opens && may_end_with_object(&text[start..]) {
+            return start;
+        }
+    }
+    text.len()
+}
+
+/// Whether `tail`, fenced or not, is a JSON object still being written, or one with nothing
+/// after it but its closing fence.
+fn may_end_with_object(tail: &str) -> bool {
+    let body = tail
+        .strip_prefix("```json")
+        .or_else(|| tail.strip_prefix("```"))
+        .unwrap_or(tail)
+        .trim_start();
+    // A fence still being typed, or one whose object hasn't started.
+    if body.is_empty() || "```json".starts_with(tail.trim_end()) {
+        return true;
+    }
+    if !body.starts_with('{') {
+        return false;
+    }
+    let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
+    for (i, c) in body.char_indices() {
+        if in_string {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let after = body[i + 1..].trim();
+                    return after.is_empty() || "```".starts_with(after);
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
 /// Where each line that opens with `{` opens it. A written report starts its own line, and
 /// trying only those keeps a long message cheap.
 fn object_lines(text: &str) -> impl Iterator<Item = usize> + '_ {
@@ -1037,6 +1102,27 @@ mod tests {
     use crate::render::{Clock, RenderCtx};
     use crate::text::plain_text;
     use crate::theme::{Glyphs, Role, Theme};
+
+    #[test]
+    fn a_json_object_that_may_end_the_message_is_held_back() {
+        let words = "The limiter now keys on X-Api-Key.\n\n";
+        // Fenced, while it streams and once it closes.
+        let open = format!("{words}```json\n{{\"answer_markdown\": \"The lim");
+        assert_eq!(json_tail_from(&open, 0), words.len());
+        let closed = format!("{words}```json\n{{\"answer_markdown\": \"a }} b\"}}\n```\n");
+        assert_eq!(json_tail_from(&closed, 0), words.len());
+        // Bare, and a fence still being typed.
+        let bare = format!("{words}{{\"answer_markdown\": \"x\"}}");
+        assert_eq!(json_tail_from(&bare, 0), words.len());
+        let typing = format!("{words}``");
+        assert_eq!(json_tail_from(&typing, 0), words.len());
+        // Words after the object make it part of the answer, and plain words hold nothing.
+        let example = format!("{words}```json\n{{\"a\": 1}}\n```\n\nThat is the shape.");
+        assert_eq!(json_tail_from(&example, 0), example.len());
+        assert_eq!(json_tail_from(words, 0), words.len());
+        // Nothing before `from` is held, since it has shown already.
+        assert_eq!(json_tail_from(&bare, bare.len()), bare.len());
+    }
 
     /// Claude Code wrote its report out as fenced JSON before it called the report tool.
     #[test]

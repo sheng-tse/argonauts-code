@@ -8,7 +8,7 @@ use super::{ModelEntry, ModelRegistry};
 use crate::display_names::DisplayNames;
 use crate::input::EFFORT_LEVELS;
 use crate::log::NO_LONGER_OFFERS;
-use crate::model_catalog::{display_name_from_id, spelled_one_way};
+use crate::model_catalog::{display_name_from_id, shown_name};
 use crate::names::ModelRef;
 
 /// Claude Code lists no models of its own: its list comes from Anthropic, and it takes models
@@ -74,7 +74,7 @@ pub fn runs_in_place(
 /// the catalog knows it by.
 pub fn model_name(registry: &dyn ModelRegistry, model: &ModelRef) -> Option<String> {
     let own = registry.get(model).and_then(|entry| entry.name);
-    own.map(|name| spelled_one_way(&name)).or_else(|| {
+    own.map(|name| shown_name(&model.agent, &name)).or_else(|| {
         let names = DisplayNames {
             catalog: registry.catalog(),
             ..DisplayNames::default()

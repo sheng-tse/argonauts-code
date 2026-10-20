@@ -9,13 +9,14 @@
 //!   reports its own workflows, and hands the host every finished call to save.
 //! - [`dry_run`] says what a file would run, and runs nothing.
 //! - [`rehearse`] runs a script against placeholder answers, to catch one that throws before any
-//!   agent starts.
+//!   agent starts, and [`left_out`] and [`without_verdicts`] read what its agents did.
 //! - [`Library`] finds workflows on disk and the built-in ones.
 //! - [`change`] makes one change to a file of steps in its text, comments kept.
 
 mod call;
 mod edit;
 mod file;
+mod kept;
 mod library;
 mod plan;
 mod rehearse;
@@ -28,12 +29,13 @@ mod script;
 pub use call::{AgentCall, AgentEnd, Check, Checked, Host, JournalEntry, Kept};
 pub use edit::{Change, EditError, FILE_FIELDS, STEP_FIELDS, change};
 pub use file::{Count, FileError, ForEach, KeptBy, Problem, Step, WORKFLOW_KEYS, WorkflowFile};
+pub use kept::{left_out, without_verdicts};
 pub use library::{
     Library, LibraryError, Listed, Loaded, Origin, README, built_in, built_ins, check_name,
     template,
 };
 pub use plan::{DryRun, Estimate, Row, dry_run, how};
-pub use rehearse::{Rehearsal, rehearse};
+pub use rehearse::{Asked, Rehearsal, gives_verdict, rehearse};
 pub use require::{Required, RequiredStep};
 pub use run::{Ended, RunInput, run};
 pub use sandbox::{CallKind, Limits, ScriptEnd};

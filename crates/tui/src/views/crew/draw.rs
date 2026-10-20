@@ -573,14 +573,16 @@ fn fields(
         fields.push(("Tokens", tokens));
     }
     if let Some(context) = &details.context {
-        let mut used = format!(
-            "{} of {}",
-            format::tokens(context.used),
-            format::tokens(context.cap)
-        );
-        if context.cap > 0 {
-            let percent = (context.used as f64 / context.cap as f64 * 100.0).round();
-            used.push_str(&format!(" ({percent}%)"));
+        let mut used = match context.window.filter(|window| *window > 0) {
+            Some(window) => format!(
+                "{} of {}",
+                format::tokens_beside(context.used, window),
+                format::window(window)
+            ),
+            None => format::tokens(context.used),
+        };
+        if let Some(share) = context.of_window() {
+            used.push_str(&format!(" ({:.0}%)", (share * 100.0).round()));
         }
         fields.push(("Context", used));
     }

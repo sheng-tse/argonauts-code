@@ -61,6 +61,8 @@ pub(super) fn track(attached: &mut Attached, event: &RunEvent) -> Seen {
             RunLifecycle::Started(_) | RunLifecycle::Resumed(_) | RunLifecycle::PauseCancelled => {
                 attached.stage = Stage::Going;
                 attached.crashed = false;
+                // Going again, it's the run the conversation follows again.
+                attached.left_behind = false;
                 Some(AppMode::Working { run })
             }
             RunLifecycle::PauseRequested { .. } => {

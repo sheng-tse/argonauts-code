@@ -15,7 +15,7 @@ use crate::bridge::tools::Places;
 use crate::cell::HistoryCell;
 use crate::kit::Kit;
 use crate::render::RenderCtx;
-use crate::state::{AppState, ContextCount};
+use crate::state::{AppState, ContextCount, LastStep};
 use crate::theme::Role;
 
 /// Where the rows' text starts, after `  ⎿  `.
@@ -28,6 +28,7 @@ pub struct ContextPrinted {
     count: Option<ContextCount>,
     main: Option<ModelRef>,
     per_turn: Option<u64>,
+    last_step: LastStep,
     names: DisplayNames,
     places: Places,
     now: OffsetDateTime,
@@ -54,6 +55,7 @@ impl ContextPrinted {
             count: state.conversation.context.clone(),
             main: state.conversation.worker.clone(),
             per_turn: state.conversation.growth.per_turn(),
+            last_step: state.conversation.last_step,
             names: state.names.clone(),
             places: Places::of_conversation(state),
             now,
@@ -87,10 +89,13 @@ impl HistoryCell for ContextPrinted {
             count: self.count.as_ref(),
             main: self.main.as_ref(),
             per_turn: self.per_turn,
+            last_step: self.last_step,
             places: &self.places,
             now: self.now,
             run_title: &run_title,
             ranked: &self.ranked,
+            // A printed tab has no keys, so a long list stays folded.
+            whole_tools: false,
         };
         // A narrow tab sets its text two cells in, so it is drawn narrower and moved under
         // the hang.

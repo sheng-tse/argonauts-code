@@ -1,0 +1,287 @@
+{
+ "gemma2:9b": {
+  "capabilities": [
+   "completion"
+  ],
+  "details": {
+   "format": "gguf",
+   "parameter_size": "9.2B",
+   "parent_model": "",
+   "quantization_level": "Q4_0"
+  },
+  "model_info": {
+   "gemma2.attention.head_count": 16,
+   "gemma2.attention.head_count_kv": 8,
+   "gemma2.attention.key_length": 256,
+   "gemma2.attention.layer_norm_rms_epsilon": 1e-06,
+   "gemma2.attention.sliding_window": 4096,
+   "gemma2.attention.value_length": 256,
+   "gemma2.attn_logit_softcapping": 50,
+   "gemma2.block_count": 42,
+   "gemma2.context_length": 8192,
+   "gemma2.embedding_length": 3584,
+   "gemma2.feed_forward_length": 14336,
+   "gemma2.final_logit_softcapping": 30,
+   "general.architecture": "gemma2",
+   "general.file_type": 2,
+   "general.parameter_count": 9241705984,
+   "general.quantization_version": 2
+  },
+  "modified_at": "2026-08-16T23:44:57.324579492Z",
+  "parameters": "stop                           \"<start_of_turn>\"\nstop                           \"<end_of_turn>\""
+ },
+ "gemma3:12b": {
+  "capabilities": [
+   "completion",
+   "vision"
+  ],
+  "details": {
+   "format": "gguf",
+   "parameter_size": "12.2B",
+   "parent_model": "",
+   "quantization_level": "Q4_K_M"
+  },
+  "model_info": {
+   "gemma3.attention.head_count": 16,
+   "gemma3.attention.head_count_kv": 8,
+   "gemma3.attention.key_length": 256,
+   "gemma3.attention.sliding_window": 1024,
+   "gemma3.attention.value_length": 256,
+   "gemma3.block_count": 48,
+   "gemma3.context_length": 131072,
+   "gemma3.embedding_length": 3840,
+   "gemma3.feed_forward_length": 15360,
+   "gemma3.mm.tokens_per_image": 256,
+   "gemma3.vision.attention.head_count": 16,
+   "gemma3.vision.attention.layer_norm_epsilon": 1e-06,
+   "gemma3.vision.block_count": 27,
+   "gemma3.vision.embedding_length": 1152,
+   "gemma3.vision.feed_forward_length": 4304,
+   "gemma3.vision.image_size": 896,
+   "gemma3.vision.num_channels": 3,
+   "gemma3.vision.patch_size": 14,
+   "general.architecture": "gemma3",
+   "general.file_type": 15,
+   "general.parameter_count": 12187079280,
+   "general.quantization_version": 2
+  },
+  "modified_at": "2026-08-17T00:06:11.365413046Z",
+  "parameters": "temperature                    1\ntop_k                          64\ntop_p                          0.95\nstop                           \"<end_of_turn>\""
+ },
+ "gemma3:12b-32k": {
+  "capabilities": [
+   "completion",
+   "vision"
+  ],
+  "details": {
+   "format": "gguf",
+   "parameter_size": "12.2B",
+   "parent_model": "gemma3:12b",
+   "quantization_level": "Q4_K_M"
+  },
+  "model_info": {
+   "gemma3.attention.head_count": 16,
+   "gemma3.attention.head_count_kv": 8,
+   "gemma3.attention.key_length": 256,
+   "gemma3.attention.sliding_window": 1024,
+   "gemma3.attention.value_length": 256,
+   "gemma3.block_count": 48,
+   "gemma3.context_length": 131072,
+   "gemma3.embedding_length": 3840,
+   "gemma3.feed_forward_length": 15360,
+   "gemma3.mm.tokens_per_image": 256,
+   "gemma3.vision.attention.head_count": 16,
+   "gemma3.vision.attention.layer_norm_epsilon": 1e-06,
+   "gemma3.vision.block_count": 27,
+   "gemma3.vision.embedding_length": 1152,
+   "gemma3.vision.feed_forward_length": 4304,
+   "gemma3.vision.image_size": 896,
+   "gemma3.vision.num_channels": 3,
+   "gemma3.vision.patch_size": 14,
+   "general.architecture": "gemma3",
+   "general.file_type": 15,
+   "general.parameter_count": 12187079280,
+   "general.quantization_version": 2
+  },
+  "modified_at": "2026-10-19T00:23:04.433991031Z",
+  "parameters": "stop                           \"<end_of_turn>\"\ntemperature                    1\ntop_k                          64\ntop_p                          0.95\nnum_ctx                        32768"
+ },
+ "gemma4:e2b": {
+  "capabilities": [
+   "completion",
+   "vision",
+   "audio",
+   "tools",
+   "thinking"
+  ],
+  "details": {
+   "format": "gguf",
+   "parameter_size": "5.1B",
+   "parent_model": "",
+   "quantization_level": "Q4_K_M"
+  },
+  "model_info": {
+   "gemma4.attention.head_count": 8,
+   "gemma4.attention.head_count_kv": 1,
+   "gemma4.attention.key_length": 512,
+   "gemma4.attention.key_length_swa": 256,
+   "gemma4.attention.layer_norm_rms_epsilon": 1e-06,
+   "gemma4.attention.shared_kv_layers": 20,
+   "gemma4.attention.sliding_window": 512,
+   "gemma4.attention.sliding_window_pattern": null,
+   "gemma4.attention.value_length": 512,
+   "gemma4.attention.value_length_swa": 256,
+   "gemma4.audio.attention.head_count": 8,
+   "gemma4.audio.attention.layer_norm_epsilon": 1e-06,
+   "gemma4.audio.block_count": 12,
+   "gemma4.audio.conv_kernel_size": 5,
+   "gemma4.audio.embedding_length": 1024,
+   "gemma4.audio.feed_forward_length": 4096,
+   "gemma4.block_count": 35,
+   "gemma4.context_length": 131072,
+   "gemma4.embedding_length": 1536,
+   "gemma4.embedding_length_per_layer_input": 256,
+   "gemma4.feed_forward_length": null,
+   "gemma4.final_logit_softcapping": 30,
+   "gemma4.rope.dimension_count": 512,
+   "gemma4.rope.dimension_count_swa": 256,
+   "gemma4.rope.freq_base": 1000000,
+   "gemma4.rope.freq_base_swa": 10000,
+   "gemma4.vision.attention.head_count": 12,
+   "gemma4.vision.attention.layer_norm_epsilon": 1e-06,
+   "gemma4.vision.block_count": 16,
+   "gemma4.vision.embedding_length": 768,
+   "gemma4.vision.feed_forward_length": 3072,
+   "gemma4.vision.num_channels": 3,
+   "gemma4.vision.patch_size": 16,
+   "gemma4.vision.projector.scale_factor": 3,
+   "general.architecture": "gemma4",
+   "general.file_type": 15,
+   "general.parameter_count": 5123179235,
+   "general.quantization_version": 2
+  },
+  "modified_at": "2026-04-10T03:43:05.046735462Z",
+  "parameters": "temperature                    1\ntop_k                          64\ntop_p                          0.95",
+  "requires": "0.20.0"
+ },
+ "llama3.2:latest": {
+  "capabilities": [
+   "completion",
+   "tools"
+  ],
+  "details": {
+   "format": "gguf",
+   "parameter_size": "3.2B",
+   "parent_model": "",
+   "quantization_level": "Q4_K_M"
+  },
+  "model_info": {
+   "general.architecture": "llama",
+   "general.basename": "Llama-3.2",
+   "general.file_type": 15,
+   "general.finetune": "Instruct",
+   "general.languages": null,
+   "general.parameter_count": 3212749888,
+   "general.quantization_version": 2,
+   "general.size_label": "3B",
+   "general.tags": null,
+   "general.type": "model",
+   "llama.attention.head_count": 24,
+   "llama.attention.head_count_kv": 8,
+   "llama.attention.key_length": 128,
+   "llama.attention.layer_norm_rms_epsilon": 1e-05,
+   "llama.attention.value_length": 128,
+   "llama.block_count": 28,
+   "llama.context_length": 131072,
+   "llama.embedding_length": 3072,
+   "llama.feed_forward_length": 8192,
+   "llama.rope.dimension_count": 128,
+   "llama.rope.freq_base": 500000,
+   "llama.vocab_size": 128256
+  },
+  "modified_at": "2025-03-09T10:41:32.225485822Z",
+  "parameters": "stop                           \"<|start_header_id|>\"\nstop                           \"<|end_header_id|>\"\nstop                           \"<|eot_id|>\""
+ },
+ "qwen3-coder:30b": {
+  "capabilities": [
+   "completion",
+   "tools"
+  ],
+  "details": {
+   "format": "gguf",
+   "parameter_size": "30.5B",
+   "parent_model": "",
+   "quantization_level": "Q4_K_M"
+  },
+  "model_info": {
+   "general.architecture": "qwen3moe",
+   "general.basename": "Qwen3-Coder",
+   "general.file_type": 15,
+   "general.finetune": "Instruct",
+   "general.license": "apache-2.0",
+   "general.license.link": "https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct/blob/main/LICENSE",
+   "general.parameter_count": 30532122624,
+   "general.quantization_version": 2,
+   "general.size_label": "30B-A3B",
+   "general.tags": null,
+   "general.type": "model",
+   "qwen3moe.attention.head_count": 32,
+   "qwen3moe.attention.head_count_kv": 4,
+   "qwen3moe.attention.key_length": 128,
+   "qwen3moe.attention.layer_norm_rms_epsilon": 1e-06,
+   "qwen3moe.attention.value_length": 128,
+   "qwen3moe.block_count": 48,
+   "qwen3moe.context_length": 262144,
+   "qwen3moe.embedding_length": 2048,
+   "qwen3moe.expert_count": 128,
+   "qwen3moe.expert_feed_forward_length": 768,
+   "qwen3moe.expert_shared_feed_forward_length": 0,
+   "qwen3moe.expert_used_count": 8,
+   "qwen3moe.feed_forward_length": 5472,
+   "qwen3moe.rope.freq_base": 10000000
+  },
+  "modified_at": "2026-10-19T00:22:12.460867772Z",
+  "parameters": "top_p                          0.8\nrepeat_penalty                 1.05\nstop                           \"<|im_start|>\"\nstop                           \"<|im_end|>\"\nstop                           \"<|endoftext|>\"\ntemperature                    0.7\ntop_k                          20"
+ },
+ "qwen3-coder:30b-64k": {
+  "capabilities": [
+   "completion",
+   "tools"
+  ],
+  "details": {
+   "format": "gguf",
+   "parameter_size": "30.5B",
+   "parent_model": "qwen3-coder:30b",
+   "quantization_level": "Q4_K_M"
+  },
+  "model_info": {
+   "general.architecture": "qwen3moe",
+   "general.basename": "Qwen3-Coder",
+   "general.file_type": 15,
+   "general.finetune": "Instruct",
+   "general.license": "apache-2.0",
+   "general.license.link": "https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct/blob/main/LICENSE",
+   "general.parameter_count": 30532122624,
+   "general.quantization_version": 2,
+   "general.size_label": "30B-A3B",
+   "general.tags": null,
+   "general.type": "model",
+   "qwen3moe.attention.head_count": 32,
+   "qwen3moe.attention.head_count_kv": 4,
+   "qwen3moe.attention.key_length": 128,
+   "qwen3moe.attention.layer_norm_rms_epsilon": 1e-06,
+   "qwen3moe.attention.value_length": 128,
+   "qwen3moe.block_count": 48,
+   "qwen3moe.context_length": 262144,
+   "qwen3moe.embedding_length": 2048,
+   "qwen3moe.expert_count": 128,
+   "qwen3moe.expert_feed_forward_length": 768,
+   "qwen3moe.expert_shared_feed_forward_length": 0,
+   "qwen3moe.expert_used_count": 8,
+   "qwen3moe.feed_forward_length": 5472,
+   "qwen3moe.rope.freq_base": 10000000
+  },
+  "modified_at": "2026-10-19T00:23:04.348610749Z",
+  "parameters": "repeat_penalty                 1.05\nstop                           \"<|im_start|>\"\nstop                           \"<|im_end|>\"\nstop                           \"<|endoftext|>\"\ntemperature                    0.7\ntop_k                          20\ntop_p                          0.8\nnum_ctx                        65536"
+ }
+}

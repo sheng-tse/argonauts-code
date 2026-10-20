@@ -7,8 +7,11 @@ pub mod agents;
 mod band;
 pub mod bottom_line;
 pub mod cli_workflow_run;
+#[cfg(test)]
+mod council_golden;
 mod ended;
 pub mod failure;
+mod gave;
 pub mod input;
 pub mod keys;
 pub mod panel;
@@ -871,7 +874,7 @@ mod view_answer_tests {
         assert_eq!(model.history.cells().len(), printed);
         let context = AppEvent::View {
             data: Box::new(ViewData::Context {
-                view: argonauts_core::views::ContextView { rows: Vec::new() },
+                view: argonauts_core::views::ContextView::default(),
             }),
         };
         let out = bridge.on_event(&mut model, &context, t0 + every);
@@ -902,7 +905,7 @@ mod view_answer_tests {
         };
         let context = AppEvent::View {
             data: Box::new(ViewData::Context {
-                view: argonauts_core::views::ContextView { rows: Vec::new() },
+                view: argonauts_core::views::ContextView::default(),
             }),
         };
         let mut answers = vec![status_tab(), context];
@@ -1038,6 +1041,7 @@ mod awake_tests {
                 repo: "~/code".into(),
                 workflow: "council".into(),
                 ultracode: false,
+                ultra: None,
                 run: None,
                 main_agent: "claude-code".parse().unwrap(),
                 plan_chips: Vec::new(),

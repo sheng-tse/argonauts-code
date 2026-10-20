@@ -2,11 +2,19 @@
 //! OpenCode's providers.
 
 mod command;
+mod level;
+pub mod models;
 mod parser;
+pub mod private_server;
 mod provider;
 mod providers;
+mod sessions;
 mod user_config;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use argonauts_core::confine::Confine;
 use argonauts_core::keywords::Keyword;
 use argonauts_core::{
     Adapter, Capabilities, CommandSpec, SessionRequest, SetupHints, StopPlan, StreamParser,
@@ -14,6 +22,9 @@ use argonauts_core::{
 };
 
 pub use provider::{LocalUrls, local_provider_config};
+
+/// The adapter's id, which also names OpenCode to the sandbox its own commands run in.
+pub(crate) const ID: &str = "opencode";
 
 /// Words OpenCode treats specially in a prompt: none known. It wasn't installed to check its
 /// program text, and nothing in this adapter's notes or fixtures names one.
@@ -27,6 +38,9 @@ pub const TESTED_VERSIONS: &[&str] = include!(concat!(env!("OUT_DIR"), "/tested_
 #[derive(Debug, Clone, Default)]
 pub struct OpenCodeAdapter {
     local_urls: LocalUrls,
+    /// How the commands this adapter runs itself start, which list and read back OpenCode's
+    /// own sessions. Without one they run nothing.
+    reader: Option<sessions::Reader>,
 }
 
 impl OpenCodeAdapter {
@@ -34,16 +48,31 @@ impl OpenCodeAdapter {
         Self::default()
     }
 
-    /// With your `[endpoints.ollama]` and `[endpoints.lmstudio]` base URLs, which reach
-    /// OpenCode in the provider config it's sent for a local model.
+    /// With your `[endpoints.<runtime>]` base URLs, which reach OpenCode in the provider config
+    /// it's sent for a local model.
     pub fn with_local_urls(local_urls: LocalUrls) -> Self {
-        Self { local_urls }
+        Self {
+            local_urls,
+            ..Self::default()
+        }
+    }
+
+    /// With OpenCode's program, from `agents.opencode.binary` or `PATH`, found by the caller
+    /// as a program run outside the sandbox is, so that neither a repo nor an agent can plant
+    /// the one that lists your sessions. Each of its commands runs inside `confine`, since
+    /// OpenCode started in a repo loads the plugins that repo sets up.
+    pub fn with_program(mut self, program: impl Into<PathBuf>, confine: Arc<dyn Confine>) -> Self {
+        self.reader = Some(sessions::Reader {
+            program: program.into(),
+            confine,
+        });
+        self
     }
 }
 
 impl Adapter for OpenCodeAdapter {
     fn id(&self) -> &'static str {
-        "opencode"
+        ID
     }
 
     fn display_name(&self) -> &'static str {
@@ -68,6 +97,43 @@ impl Adapter for OpenCodeAdapter {
 
     fn parse_version(&self, output: &str) -> Option<String> {
         extract_version(output)
+    }
+
+    /// OpenCode 2 sessions need `--standalone`, which 1.18 doesn't know.
+    fn launch_reads_version(&self) -> bool {
+        true
+    }
+
+    fn talks_to_own_server(&self, req: &SessionRequest) -> bool {
+        !private_server::private_server_flags(req.cli_version.as_deref()).is_empty()
+    }
+
+    fn config_query(&self, req: &SessionRequest) -> Option<CommandSpec> {
+        command::config_query(req, &self.local_urls)
+    }
+
+    /// From `opencode session list` on a private server, in this folder's project.
+    fn cli_sessions(
+        &self,
+        scan: &argonauts_core::cli_sessions::CliScan,
+        limit: usize,
+    ) -> anyhow::Result<Vec<argonauts_core::cli_sessions::CliSession>> {
+        sessions::list(self.reader.as_ref(), scan, limit)
+    }
+
+    /// From `opencode session export` on a private server.
+    fn cli_session_turns(
+        &self,
+        scan: &argonauts_core::cli_sessions::CliScan,
+        session: &str,
+        count: usize,
+    ) -> anyhow::Result<Vec<argonauts_core::cli_sessions::CliTurn>> {
+        sessions::turns(self.reader.as_ref(), scan, session, count)
+    }
+
+    fn interactive_resume(&self, req: &SessionRequest) -> Option<CommandSpec> {
+        let config_files = user_config::config_files(&req.workdir, |name| std::env::var(name).ok());
+        command::take_over(req, &config_files, &self.local_urls)
     }
 
     fn keywords(&self) -> &'static [Keyword] {
@@ -149,12 +215,26 @@ impl Adapter for OpenCodeAdapter {
 mod tests {
     use super::*;
 
+    /// OpenCode 2 runs every session on a private server of its own, on a loopback port it
+    /// picks; 1.18 talks to none.
+    #[test]
+    fn opencode_2_talks_to_a_server_of_its_own() {
+        let on = |version: &str| SessionRequest {
+            cli_version: Some(version.to_owned()),
+            ..SessionRequest::default()
+        };
+        let adapter = OpenCodeAdapter::new();
+        assert!(adapter.talks_to_own_server(&on("2.0.32")));
+        assert!(!adapter.talks_to_own_server(&on("1.18.34")));
+    }
+
     #[test]
     fn read_only_is_left_to_the_worktree() {
         let adapter = OpenCodeAdapter::new();
         assert_eq!(adapter.id(), "opencode");
         assert_eq!(adapter.binary(), "opencode");
         assert_eq!(adapter.version_args(), ["--version"]);
+        assert!(adapter.launch_reads_version());
         assert!(!adapter.capabilities().enforces_read_only);
         let hints = adapter.setup_hints();
         assert!(hints.install.is_some());

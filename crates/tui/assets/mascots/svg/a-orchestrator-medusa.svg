@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- A medusa, as a jellyfish is called after the Gorgon: one beat of its bell sets every tentacle stroking in time, as the orchestrator hands out the parts and keeps the crew in step. -->
+  <!-- Argonauta. Orchestrator: the medusa, every tentacle on one beat. Normal. -->
+  <!-- tentacles, five, all swaying in the same phase -->
+  <path d="M23.26 53.35 C17.45 65.77 29.96 75.61 24.63 84.18 A1.60 1.60 0 0 0 27.37 85.82 C34.04 74.39 22.55 64.23 28.74 56.65 Z" fill="#E8A33D"/>
+  <path d="M35.15 53.54 C29.42 67.33 41.93 78.86 36.58 89.27 A1.60 1.60 0 0 0 39.42 90.73 C46.07 77.80 34.58 66 40.85 56.46 Z" fill="#E8A33D"/>
+  <path d="M47.11 53.63 C41.41 68.28 53.92 80.82 48.55 92.32 A1.60 1.60 0 0 0 51.45 93.68 C58.08 79.84 46.59 67.05 52.89 56.37 Z" fill="#E8A33D"/>
+  <path d="M59.15 53.54 C53.42 67.33 65.93 78.86 60.58 89.27 A1.60 1.60 0 0 0 63.42 90.73 C70.07 77.80 58.58 66 64.85 56.46 Z" fill="#E8A33D"/>
+  <path d="M71.26 53.35 C65.45 65.77 77.96 75.61 72.63 84.18 A1.60 1.60 0 0 0 75.37 85.82 C82.04 74.39 70.55 64.23 76.74 56.65 Z" fill="#E8A33D"/>
+  <!-- bell -->
+  <path d="M16 54 C16 30 31.5 15 50 15 C68.5 15 84 30 84 54 Z" fill="#E8A33D"/>
+  <!-- margin of the bell, a row of small lobes -->
+  <circle cx="21" cy="54.00" r="5.3" fill="#E8A33D"/>
+  <circle cx="30.7" cy="55.23" r="5.3" fill="#E8A33D"/>
+  <circle cx="40.3" cy="55.95" r="5.3" fill="#E8A33D"/>
+  <circle cx="50" cy="56.20" r="5.3" fill="#E8A33D"/>
+  <circle cx="59.7" cy="55.95" r="5.3" fill="#E8A33D"/>
+  <circle cx="69.3" cy="55.23" r="5.3" fill="#E8A33D"/>
+  <circle cx="79" cy="54.00" r="5.3" fill="#E8A33D"/>
+  <!-- eyes -->
+  <circle cx="41" cy="35" r="3.6" fill="#2B2B2B"/><circle cx="42.19" cy="33.81" r="1.12" fill="#E8A33D"/>
+  <circle cx="59" cy="35" r="3.6" fill="#2B2B2B"/><circle cx="60.19" cy="33.81" r="1.12" fill="#E8A33D"/>
+</svg>

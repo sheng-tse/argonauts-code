@@ -685,6 +685,7 @@ impl RunState {
                 try_number,
                 worker,
                 cause,
+                ..
             } => {
                 task.try_number = *try_number;
                 task.worker = Some(worker.clone());

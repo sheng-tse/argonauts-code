@@ -1,0 +1,925 @@
+{
+ "palettes": {
+  "normal": {
+   "A": "#E8A33D",
+   "D": "#B07020",
+   "K": "#2B2B2B",
+   "G": "#E8A33D"
+  },
+  "light": {
+   "A": "#B07020",
+   "D": "#7A4A12",
+   "K": "#2B2B2B",
+   "G": "#B07020"
+  },
+  "ultracode": {
+   "A": "#AF87FF",
+   "D": "#6F45C8",
+   "K": "#2B2B2B",
+   "G": "#E8A33D"
+  },
+  "codex": {
+   "A": "#6AA6FF",
+   "D": "#2E6FD1",
+   "K": "#2B2B2B",
+   "G": "#E8A33D"
+  }
+ },
+ "shimmer": {
+  "ultracode": "#D7C2FF",
+  "codex": "#BFD8FF"
+ },
+ "mascots": {
+  "a-captain-argonaut": {
+   "story": "An argonaut, the real octopus named after Jason's crew, with one arm raised the way Aristotle believed it sailed the sea: it steers itself and does the work itself, as the captain does.",
+   "grid": [
+    "....AAAAAA...AAA..",
+    "...AAAAAAAA..A..A.",
+    "...AAKAAKAA..A....",
+    "...AAAAAAAAAAA....",
+    "...A.A..A.A.......",
+    "..A..A..A..A......"
+   ],
+   "cells": [
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▗",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "▖",
+      "A",
+      null
+     ],
+     [
+      "▐",
+      "A",
+      null
+     ],
+     [
+      "▀",
+      "A",
+      null
+     ],
+     [
+      "▖",
+      "A",
+      null
+     ]
+    ],
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▐",
+      "A",
+      null
+     ],
+     [
+      "▝",
+      "K",
+      "A"
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "▘",
+      "K",
+      "A"
+     ],
+     [
+      "▙",
+      "A",
+      null
+     ],
+     [
+      "▟",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ]
+    ],
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▞",
+      "A",
+      null
+     ],
+     [
+      "▐",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▌",
+      "A",
+      null
+     ],
+     [
+      "▚",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ]
+    ]
+   ],
+   "ultra_cells": [
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▗",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "▖",
+      "A",
+      null
+     ],
+     [
+      "▐",
+      "A",
+      null
+     ],
+     [
+      "▀",
+      "G",
+      null
+     ],
+     [
+      "▖",
+      "A",
+      null
+     ]
+    ],
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▐",
+      "A",
+      null
+     ],
+     [
+      "▝",
+      "K",
+      "A"
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "▘",
+      "K",
+      "A"
+     ],
+     [
+      "▙",
+      "A",
+      null
+     ],
+     [
+      "▟",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ]
+    ],
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▞",
+      "A",
+      null
+     ],
+     [
+      "▐",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▌",
+      "A",
+      null
+     ],
+     [
+      "▚",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ]
+    ]
+   ]
+  },
+  "a-orchestrator-medusa": {
+   "story": "A medusa, as a jellyfish is called after the Gorgon: one beat of its bell sets every tentacle stroking in time, as the orchestrator hands out the parts and keeps the crew in step.",
+   "grid": [
+    "....AAAAAAAAAA....",
+    "...AAKAAAAAAKAA...",
+    "..AAAAAAAAAAAAAA..",
+    "..AAAAAAAAAAAAAA..",
+    "...A..A.AA.A..A...",
+    "...A..A.AA.A..A..."
+   ],
+   "cells": [
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▗",
+      "A",
+      null
+     ],
+     [
+      "▗",
+      "K",
+      "A"
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "▖",
+      "K",
+      "A"
+     ],
+     [
+      "▖",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ]
+    ],
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ]
+    ],
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▐",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▌",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "▐",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▌",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ]
+    ]
+   ],
+   "ultra_cells": [
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▗",
+      "A",
+      null
+     ],
+     [
+      "▗",
+      "K",
+      "A"
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "▖",
+      "K",
+      "A"
+     ],
+     [
+      "▄",
+      "A",
+      null
+     ],
+     [
+      "▞",
+      "G",
+      null
+     ]
+    ],
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ]
+    ],
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▐",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▌",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "▐",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▌",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ]
+    ]
+   ]
+  },
+  "a-council-hydra": {
+   "story": "The hydra that Heracles, one of the Argonauts, fought, with three heads arguing over one body: one strong, one overwhelmed, and one goofy, like whichever model everyone is teasing that day, so the other two catch its mistakes.",
+   "grid": [
+    "......AAAAAA..AAKA",
+    "......AKAAKA..AKAA",
+    "AAA.....AA....AAD.",
+    "AKAA....AA...AA...",
+    "..AAAAAAAAAAAA..A.",
+    "....AAAAAAAAAAAA.."
+   ],
+   "cells": [
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▗",
+      "K",
+      "A"
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "▖",
+      "K",
+      "A"
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▗",
+      "K",
+      "A"
+     ],
+     [
+      "▘",
+      "K",
+      "A"
+     ]
+    ],
+    [
+     [
+      "▗",
+      "K",
+      "A"
+     ],
+     [
+      "▙",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▗",
+      "A",
+      null
+     ],
+     [
+      "▛",
+      "A",
+      null
+     ],
+     [
+      "▘",
+      "D",
+      null
+     ]
+    ],
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▀",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "▄",
+      "A",
+      null
+     ],
+     [
+      "▘",
+      "A",
+      null
+     ]
+    ]
+   ],
+   "ultra_cells": [
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▗",
+      "K",
+      "A"
+     ],
+     [
+      "▄",
+      "A",
+      "G"
+     ],
+     [
+      "▖",
+      "K",
+      "A"
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▗",
+      "K",
+      "A"
+     ],
+     [
+      "▘",
+      "K",
+      "A"
+     ]
+    ],
+    [
+     [
+      "▗",
+      "K",
+      "A"
+     ],
+     [
+      "▙",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▗",
+      "A",
+      null
+     ],
+     [
+      "▛",
+      "A",
+      null
+     ],
+     [
+      "▘",
+      "D",
+      null
+     ]
+    ],
+    [
+     [
+      " ",
+      null,
+      null
+     ],
+     [
+      "▀",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "█",
+      "A",
+      null
+     ],
+     [
+      "▄",
+      "A",
+      null
+     ],
+     [
+      "▘",
+      "A",
+      null
+     ]
+    ]
+   ]
+  }
+ }
+}

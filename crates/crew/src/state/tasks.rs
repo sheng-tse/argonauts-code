@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::agent_status::FallbackEvent;
 use argonauts_core::events::run::Party;
+use argonauts_core::events::session::InputPart;
 use argonauts_core::events::task::{
     CheckOutcome, ReviewEvent, TaskEvent, TaskSpec, TaskState, TryCause,
 };
@@ -53,6 +54,9 @@ pub struct TaskEntry {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskProgress {
     pub last_cause: Option<TryCause>,
+    /// What the newest try on the task's own session was told.
+    #[serde(default)]
+    pub last_told: Vec<InputPart>,
     /// `Task::Try` events so far; each one starts exactly one worker session.
     pub try_events: u32,
     /// The seq of the newest `Task::Try`, to tell whether its session has started.
@@ -106,6 +110,7 @@ pub struct TaskProgress {
 /// Progress of a task nothing has happened to yet.
 static NO_PROGRESS: TaskProgress = TaskProgress {
     last_cause: None,
+    last_told: Vec::new(),
     try_events: 0,
     try_seq: None,
     deferred_for_limit: false,
@@ -194,10 +199,12 @@ impl Tasks {
                 try_number,
                 worker,
                 cause,
+                told,
             } => {
                 record.tries = record.tries.max(*try_number);
                 record.worker = Some(worker.clone());
                 progress.last_cause = Some(*cause);
+                progress.last_told.clone_from(told);
                 progress.waiting_for = None;
                 match cause {
                     TryCause::CheckRetry => progress.check_retries += 1,
@@ -455,6 +462,7 @@ mod tests {
                     try_number: 1,
                     worker: worker("codex"),
                     cause: TryCause::First,
+                    told: Vec::new(),
                 }),
             ),
             run_event(
@@ -490,6 +498,7 @@ mod tests {
                     try_number: 1,
                     worker: worker("codex"),
                     cause: TryCause::CheckRetry,
+                    told: Vec::new(),
                 }),
             ),
             run_event(
@@ -500,6 +509,7 @@ mod tests {
                     try_number: 1,
                     worker: worker("codex"),
                     cause: TryCause::ReviewChanges,
+                    told: Vec::new(),
                 }),
             ),
         ]);
@@ -611,6 +621,7 @@ mod tests {
                     try_number: n,
                     worker: worker("codex"),
                     cause,
+                    told: Vec::new(),
                 }),
             )
         };

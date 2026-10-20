@@ -682,4 +682,98 @@ mod tests {
         assert_eq!(shown.phases[1].status, RowStatus::Skipped);
         assert_eq!(shown.phases[2].status, RowStatus::Skipped);
     }
+
+    /// A session the Work step started for a council: `role`, reading only or not, on no task.
+    fn council_session(
+        seq: u64,
+        session: u32,
+        label: &str,
+        role: RoleName,
+        reads: bool,
+    ) -> RunEvent {
+        let mut event = started_as(seq, session, label);
+        if let RunEventKind::Session(SessionEvent::Started(started)) = &mut event.kind {
+            started.role = role;
+            if reads {
+                started.access = argonauts_core::session_runner::Access::ReadOnly;
+            }
+        }
+        event
+    }
+
+    fn answered(seq: u64, session: u32, answer: serde_json::Value) -> RunEvent {
+        let mut event = session_ended(
+            seq,
+            &SessionKey::numbered(session),
+            EndReason::Completed,
+            1_000,
+        );
+        if let RunEventKind::Session(SessionEvent::Ended(end)) = &mut event.kind {
+            end.structured = Some(answer);
+        }
+        event
+    }
+
+    /// A council's rows say what each agent gave: a proposal is ready, a challenge says what it
+    /// argued against, the judge that decides what it chose, and the sign-off that it read the
+    /// task's change. A judge's plan is no verdict, so no review word shows on its row.
+    #[test]
+    fn a_councils_rows_say_what_each_agent_gave() {
+        use serde_json::json;
+        let mut council = crate::client::test_support::run_started(0, "Per key rate limit", None);
+        if let RunEventKind::Run(argonauts_core::events::run::RunLifecycle::Started(started)) =
+            &mut council.kind
+        {
+            started.workflow = "council".to_owned();
+        }
+        let events = vec![
+            council,
+            run_started(),
+            council_session(1, 1, "propose:p1", RoleName::Worker, true),
+            answered(2, 1, json!({"plan": "one bucket a key"})),
+            council_session(3, 2, "challenge:p1", RoleName::Worker, true),
+            answered(
+                4,
+                2,
+                json!({"against": ["p2", "p3"], "points": ["a", "b", "c"]}),
+            ),
+            council_session(5, 3, "decide:plan", RoleName::Judge, false),
+            answered(
+                6,
+                3,
+                json!({"chose": "p2", "summary": "Chose p2.", "plan": "x"}),
+            ),
+            council_session(7, 4, "signoff:per-key", RoleName::Judge, false),
+            answered(8, 4, json!({"accept": true, "findings": []})),
+        ];
+        let workflow = report(
+            "council",
+            &["Propose", "Challenge", "Decide", "Sign-off"],
+            &[
+                ("propose:p1", Some(1), Done),
+                ("challenge:p1", Some(2), Done),
+                ("decide:plan", Some(3), Done),
+                ("signoff:per-key", Some(4), Done),
+            ],
+        );
+        let shown = view(&events, &workflow, &[(1, 1), (2, 2), (3, 3), (4, 4)]);
+        let notes: Vec<Option<String>> = shown.phases[..4]
+            .iter()
+            .map(|phase| match phase.rows.first() {
+                Some(WorkflowRow::Agent(agent)) => {
+                    agent.note.as_ref().map(|note| note.text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                Some("proposal ready".to_owned()),
+                Some("against p2 and p3 · 3 points".to_owned()),
+                Some("chose p2".to_owned()),
+                Some("read the task's change".to_owned()),
+            ]
+        );
+    }
 }

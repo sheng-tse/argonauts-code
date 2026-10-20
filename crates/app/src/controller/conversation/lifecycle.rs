@@ -281,7 +281,7 @@ fn try_turn(
     // A reviewer judges the changes alone, as a run's reviewers do, and a CLI command must
     // be the whole prompt, or the CLI won't read it as one.
     let excerpt = if resume.is_none() && !reviewing && !carrying && !step.main_agent_only() {
-        carry::primer(ctx, conversation)
+        carry::primer(ctx, conversation, handle.kind())
     } else {
         None
     };
@@ -433,6 +433,7 @@ fn track_context(conversation: &mut ConversationState, key: SessionKey, worker: 
         counts: false,
         categories: Vec::new(),
         recorded: None,
+        ended: None,
     });
 }
 
@@ -1075,6 +1076,9 @@ fn fail(
     mut turn: Turn,
     err: &StepError,
 ) -> anyhow::Result<Vec<Effect>> {
+    if let Some(why) = turn::stopped_by_watchdog(&ctx.names.names(), &turn.worker, err) {
+        return Ok(end_by_watchdog(ctx, conversation, turn, why));
+    }
     if turn.step.writes() {
         return fail_direct(ctx, conversation, turn, err);
     }
@@ -1362,6 +1366,34 @@ pub(super) fn end_direct(
     );
     direct::failed(ctx, conversation, &mut turn);
     settle_mode(ctx, &turn.id);
+    send_queued(conversation)
+}
+
+/// A watchdog stopped the turn, and one line under it says what it saw. Nothing falls back,
+/// since the next agent would get the same request. A turn in your checkout keeps what it
+/// changed, and the line after says what that is and what `/rewind` puts back.
+fn end_by_watchdog(
+    ctx: &mut Ctx,
+    conversation: &mut ConversationState,
+    mut turn: Turn,
+    why: String,
+) -> Vec<Effect> {
+    let id = turn.id.clone();
+    let kept = direct::kept_after_watchdog(ctx, conversation, &mut turn);
+    let why = match kept.changed {
+        Some(_) => format!("{why} Its edits stay in your checkout."),
+        None => why,
+    };
+    emit(
+        ctx,
+        conversation,
+        ConversationEvent::TurnStopped {
+            turn: id.clone(),
+            why,
+        },
+    );
+    kept.say(ctx);
+    settle_mode(ctx, &id);
     send_queued(conversation)
 }
 

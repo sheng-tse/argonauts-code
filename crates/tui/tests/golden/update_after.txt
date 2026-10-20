@@ -1,0 +1,39 @@
+ About 2 s after Enter: the working line from the first moment, and Claude Code's row as soon as its updater is done  
+                                                                                                                      
+❯ /update                                                                                                             
+                                                                                                                      
+● Update                                                                                                              
+  ⎿  Claude Code       2.1.303   up to date                                                                           
+                                                                                                                      
+✻ Careening… (2s)                                                                                                     
+                                                                                                                      
+─────────────────────────────────────────────────────────────────────────────────────────────────────────── Opus 5.5 ─
+❯                                                                                                                     
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  -- INSERT -- ⏵⏵ auto mode on          ● Claude 5h ▄▄▄▄▄▄ 2% 7d ▄▄▄▄▄▄ 87%  ○ Codex 7d ▄▄▄▄▄▄ 3%  ○ agy 7d ▄▄▄▄▄▄ 0% 
+                                                                                                                      
+ Done: the rows came in as each CLI finished, then a voyage word for checking, such as                                
+ "Sounding…", ran until the Doctor report was ready.                                                                  
+                                                                                                                      
+❯ /update                                                                                                             
+                                                                                                                      
+● Update                                                                                                              
+  ⎿  Claude Code       2.1.303   up to date                                                                           
+     Codex             0.163.0   up to date                                                                           
+     Antigravity CLI   1.4.2     up to date                                                                           
+     OpenCode          2.0.32    up to date · also through ACP                                                        
+                                                                                                                      
+● Doctor                                                                                                              
+  ⎿  Claude Code 2.1.303       newer than checked · works    its flags and start-up message match 2.1.295 · logged in 
+     · 4 new commands read from it                                                                                    
+     Codex 0.163.0             newer than checked            logged in                                                
+     Antigravity CLI 1.4.2     newer than checked                                                                     
+     OpenCode 2.0.32           new major version             checked with 1.18.34 · compared at start-up              
+     git 2.51.2                                                                                                       
+     Ready with 4 of 4 agent CLIs.                                                                                    
+     Claude Code's own checkup: /checkup                                                                              
+                                                                                                                      
+─────────────────────────────────────────────────────────────────────────────────────────────────────────── Opus 5.5 ─
+❯                                                                                                                     
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  -- INSERT -- ⏵⏵ auto mode on          ● Claude 5h ▄▄▄▄▄▄ 2% 7d ▄▄▄▄▄▄ 87%  ○ Codex 7d ▄▄▄▄▄▄ 3%  ○ agy 7d ▄▄▄▄▄▄ 0% 

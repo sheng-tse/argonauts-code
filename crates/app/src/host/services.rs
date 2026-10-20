@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use anyhow::Context as _;
-use argonauts_adapter_opencode::{LocalUrls, OpenCodeAdapter};
 use argonauts_conductor::cli_runner::capabilities;
 use argonauts_conductor::{CliRunner, boards_with, check_runner, fallback_planner, limits_service};
 use argonauts_core::clock::SystemClock;
@@ -29,8 +28,9 @@ use time::OffsetDateTime;
 use tokio::sync::watch;
 
 use super::clis::{self, CliAdapters, RepoModels};
-use crate::adapters::builtin_adapters;
+use crate::adapters::{builtin_adapters, opencode};
 use crate::app_settings::AppSettings;
+use crate::model_memory::ServerMemory;
 
 /// Where a directory reads its settings: fixed for a run's life, or following each change you
 /// make in the app. Either way with the agents a settings layer turned on, since a built-in
@@ -113,9 +113,7 @@ impl Directory {
             .builtins
             .iter()
             .map(|adapter| match adapter.id() {
-                "opencode" => Arc::new(OpenCodeAdapter::with_local_urls(opencode_local_urls(
-                    settings,
-                ))) as Arc<dyn Adapter>,
+                "opencode" => Arc::new(opencode(settings, self.repo.as_ref())) as Arc<dyn Adapter>,
                 _ => adapter.clone(),
             })
             .collect();
@@ -173,13 +171,14 @@ impl Directory {
             )
             .with_registry(self.registry.clone())
             // Its plan usage probes and concurrency slots belong in this home, not the process's.
-            .with_home(self.home.clone());
+            .with_home(self.home.clone())
+            .with_memory(Arc::new(ServerMemory::new(&self.home)));
             return Ok(Arc::new(cli));
         }
         // Your table over the workflow of the same name, so `ollama` works with no table at all.
         if let Some(endpoint) = endpoint_settings(settings, &worker.agent) {
             let provider = self.provider(worker, None);
-            return Ok(Arc::new(EndpointRunner::new(
+            let runner = EndpointRunner::new(
                 &worker.agent,
                 &endpoint,
                 worker.clone(),
@@ -187,7 +186,10 @@ impl Directory {
                 self.registry.clone(),
                 self.plan_usage.clone(),
                 self.health.clone(),
-            )));
+            )
+            .with_home(self.home.clone())
+            .with_memory(Arc::new(ServerMemory::new(&self.home)));
+            return Ok(Arc::new(runner));
         }
         Err(RunnerError::Unknown(worker.clone()))
     }
@@ -291,10 +293,12 @@ impl RunnerDirectory for Directory {
 /// through `cache`.
 pub(crate) struct LiveRegistry {
     settings: watch::Receiver<Arc<Settings>>,
-    repo: Option<RepoModels>,
-    cache: Option<PathBuf>,
+    build: RegistryFor,
     current: Mutex<(Arc<Settings>, Arc<dyn ModelRegistry>)>,
 }
+
+/// Builds the registry for the settings in effect.
+type RegistryFor = Box<dyn Fn(&Settings) -> Arc<dyn ModelRegistry> + Send + Sync>;
 
 impl LiveRegistry {
     pub(crate) fn new(
@@ -302,12 +306,21 @@ impl LiveRegistry {
         repo: Option<RepoModels>,
         cache: Option<PathBuf>,
     ) -> Self {
+        Self::built_by(settings, move |now| {
+            clis::registry(now, repo.as_ref(), cache.as_deref())
+        })
+    }
+
+    /// The registry `build` makes for the settings in effect, made again as they change.
+    pub(crate) fn built_by(
+        settings: watch::Receiver<Arc<Settings>>,
+        build: impl Fn(&Settings) -> Arc<dyn ModelRegistry> + Send + Sync + 'static,
+    ) -> Self {
         let now = Arc::clone(&settings.borrow());
-        let registry = clis::registry(&now, repo.as_ref(), cache.as_deref());
+        let registry = build(&now);
         Self {
             settings,
-            repo,
-            cache,
+            build: Box::new(build),
             current: Mutex::new((now, registry)),
         }
     }
@@ -317,10 +330,19 @@ impl LiveRegistry {
         let settings = Arc::clone(&self.settings.borrow());
         let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
         if !Arc::ptr_eq(&current.0, &settings) {
-            let registry = clis::registry(&settings, self.repo.as_ref(), self.cache.as_deref());
+            let registry = (self.build)(&settings);
             *current = (settings, registry);
         }
         Arc::clone(&current.1)
+    }
+
+    /// Settings that changed while `asked` was asking built their registry from the older
+    /// cache, so it's built again from the one `asked` kept.
+    fn caught_up_with(&self, asked: &Arc<dyn ModelRegistry>) {
+        let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
+        if !Arc::ptr_eq(&current.1, asked) {
+            current.1 = (self.build)(&current.0);
+        }
     }
 }
 
@@ -346,11 +368,7 @@ impl ModelRegistry for LiveRegistry {
         let registry = self.registry();
         Box::pin(async move {
             let found = registry.discover().await;
-            // Settings that changed meanwhile built their registry from the older cache.
-            let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
-            if !Arc::ptr_eq(&current.1, &registry) {
-                current.1 = clis::registry(&current.0, self.repo.as_ref(), self.cache.as_deref());
-            }
+            self.caught_up_with(&registry);
             found
         })
     }
@@ -359,12 +377,38 @@ impl ModelRegistry for LiveRegistry {
         self.registry().refreshed()
     }
 
+    fn loaded_window(&self, worker: &ModelRef) -> BoxFuture<'_, Option<u64>> {
+        let registry = self.registry();
+        let worker = worker.clone();
+        Box::pin(async move { registry.loaded_window(&worker).await })
+    }
+
     fn catalog(&self) -> ModelCatalog {
         self.registry().catalog()
     }
 
     fn models_reported(&self, cli: &str, models: &[argonauts_core::ReportedModel]) {
         self.registry().models_reported(cli, models);
+    }
+
+    fn sources(&self) -> Vec<String> {
+        self.registry().sources()
+    }
+
+    fn discover_source<'a>(&'a self, cli: &'a str) -> BoxFuture<'a, ()> {
+        let registry = self.registry();
+        Box::pin(async move {
+            registry.discover_source(cli).await;
+            self.caught_up_with(&registry);
+        })
+    }
+
+    fn source_listed(&self, cli: &str) -> (Option<OffsetDateTime>, bool) {
+        self.registry().source_listed(cli)
+    }
+
+    fn source_note(&self, cli: &str) -> Option<String> {
+        self.registry().source_note(cli)
     }
 }
 
@@ -375,19 +419,6 @@ fn on_path(binary: &str) -> bool {
     }
     std::env::var_os("PATH")
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(binary).is_file()))
-}
-
-/// Your `[endpoints.ollama]` and `[endpoints.lmstudio]` addresses, which OpenCode is told for a
-/// local model in place of its own defaults.
-fn opencode_local_urls(settings: &Settings) -> LocalUrls {
-    ["ollama", "lmstudio"]
-        .into_iter()
-        .fold(LocalUrls::new(), |urls, id| {
-            match endpoint_settings(settings, id).and_then(|endpoint| endpoint.base_url) {
-                Some(base_url) => urls.with(id, base_url),
-                None => urls,
-            }
-        })
 }
 
 /// The directory for these settings. `repo` adds the repo's `models.toml` CLI entries once
@@ -490,12 +521,14 @@ pub(crate) fn services(
 
 #[cfg(test)]
 mod tests {
+    use argonauts_adapter_opencode::LocalUrls;
     use argonauts_core::RepoId;
     use argonauts_core::layout::project_files;
     use argonauts_core::session_runner::RunnerKind;
     use argonauts_core::settings::agents::EndpointSettings;
 
     use super::*;
+    use crate::adapters::opencode_local_urls;
     use crate::trust::TrustStore;
 
     const CLIS: &str = r#"
@@ -779,7 +812,9 @@ build_args = []
             opencode_local_urls(&moved),
             LocalUrls::new()
                 .with("ollama", "http://gpu-box:11434/v1")
-                .with("lmstudio", "http://127.0.0.1:1234/v1"),
+                .with("lmstudio", "http://127.0.0.1:1234/v1")
+                .with("llamacpp", "http://127.0.0.1:9931/v1")
+                .with("vllm", "http://localhost:8000/v1"),
             "OpenCode is told where your Ollama moved"
         );
         assert!(directory_for(moved, &home, None).get(&ollama).is_ok());

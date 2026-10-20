@@ -1,6 +1,6 @@
 //! One line on why a session stopped, for the fallback question and the note.
 
-use argonauts_core::events::session::{EndReason, Watchdog, loaded_words};
+use argonauts_core::events::session::{EndReason, loaded_words, stuck_words};
 use argonauts_core::sanitize::sanitize_for_terminal;
 use argonauts_core::{ErrorCategory, LimitDimension};
 use time::OffsetDateTime;
@@ -20,12 +20,9 @@ pub fn stop_line(reason: &EndReason) -> String {
         },
         EndReason::Paused => "the run paused".to_owned(),
         EndReason::Stopped => "you stopped it".to_owned(),
-        EndReason::Stuck {
-            watchdog: Watchdog::Inactivity,
-        } => "stuck, with no output or activity".to_owned(),
-        EndReason::Stuck {
-            watchdog: Watchdog::Repeat,
-        } => "looping on the same call after a nudge".to_owned(),
+        EndReason::Stuck { watchdog, calls } => {
+            format!("it {}", stuck_words(*watchdog, calls.as_ref()))
+        }
         EndReason::UsageLimit {
             resets_at: Some(at),
         } => format!("usage limit, resets at {}", clock(*at)),

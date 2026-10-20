@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use argonauts_core::app::UltraColour;
 use argonauts_core::cli_commands::{BuiltinCommand, CliCommand};
 use argonauts_core::cli_sessions::{CliScan, CliSession, CliTurn};
 use argonauts_core::keywords::Keyword;
@@ -7,7 +8,7 @@ use argonauts_core::limits::{PlanUsageAnswer, PlanUsageReading};
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::{
     Adapter, Capabilities, CommandSpec, LaunchTweak, PARENT_SESSION_ENV_VARS, SessionRequest,
-    SetupHints, StopPlan, StreamParser, extract_version,
+    SetupHints, StopPlan, StreamParser, UltraMode, UltraOn, extract_version,
 };
 use time::OffsetDateTime;
 
@@ -107,6 +108,18 @@ impl Adapter for CodexAdapter {
         true
     }
 
+    fn holds_answer_format(&self) -> bool {
+        true
+    }
+
+    /// Its `ultra` reasoning level, drawn in Codex's ultra-effort blue.
+    fn ultra_mode(&self) -> Option<UltraMode> {
+        Some(UltraMode {
+            on: UltraOn::Effort("ultra"),
+            colour: UltraColour::Blue,
+        })
+    }
+
     fn capabilities(&self) -> Capabilities {
         // Usage comes only with turn.completed, and thread.started doesn't name the model.
         Capabilities {
@@ -161,11 +174,17 @@ impl Adapter for CodexAdapter {
         }
     }
 
-    /// Opens exec sessions too, by id. Names would match only interactive sessions.
-    fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
+    /// Opens exec sessions too, by id. Names would match only interactive sessions. A local
+    /// model's session is opened in local mode again, with its provider and model, or Codex
+    /// would carry it on with its hosted model.
+    fn interactive_resume(&self, req: &SessionRequest) -> Option<CommandSpec> {
+        let session_id = req.resume_session.as_deref()?;
         let id = flag_value("session id", session_id.trim()).ok()?;
-        let dir = command::utf8(workdir).ok()?;
-        let mut spec = CommandSpec::new(self.binary(), workdir).args(["resume", "--cd", dir, id]);
+        let dir = command::utf8(&req.workdir).ok()?;
+        let mut spec = CommandSpec::new(self.binary(), &req.workdir)
+            .args(["resume", "--cd", dir])
+            .args(command::local_mode_args(req).ok()?)
+            .arg(id);
         spec.env_remove = PARENT_SESSION_ENV_VARS
             .iter()
             .map(|name| (*name).to_owned())
@@ -779,14 +798,49 @@ mod tests {
     }
 
     #[test]
+    fn a_local_session_is_taken_over_in_local_mode() {
+        let req = SessionRequest {
+            model: Some("qwen3-coder".to_owned()),
+            launch: Some(LaunchHints {
+                oss: true,
+                local_provider: Some("ollama".to_owned()),
+                provider_model: Some("qwen3-coder:30b-64k".to_owned()),
+            }),
+            ..SessionRequest::reopening("0199a213", Path::new("/work/tree"))
+        };
+        let spec = CodexAdapter::new().interactive_resume(&req).unwrap();
+        assert_eq!(
+            spec.args,
+            [
+                "resume",
+                "--cd",
+                "/work/tree",
+                "--oss",
+                "--local-provider",
+                "ollama",
+                "--model",
+                "qwen3-coder:30b-64k",
+                "0199a213"
+            ]
+        );
+        // A hosted session keeps the model it ran, and Codex knows it.
+        let hosted = SessionRequest {
+            model: Some("gpt-6-luna".to_owned()),
+            ..SessionRequest::reopening("0199a213", Path::new("/work/tree"))
+        };
+        let spec = CodexAdapter::new().interactive_resume(&hosted).unwrap();
+        assert_eq!(spec.args, ["resume", "--cd", "/work/tree", "0199a213"]);
+    }
+
+    #[test]
     fn steering_interrupts_and_take_over_opens_the_session() {
         let adapter = CodexAdapter::new();
         assert!(adapter.input_line("focus on the tests").is_none());
         let spec = adapter
-            .interactive_resume(
+            .interactive_resume(&SessionRequest::reopening(
                 "0199a213-81c0-7800-8aa1-bbab2a035a53",
                 Path::new("/work/tree"),
-            )
+            ))
             .unwrap();
         assert_eq!(
             spec.args,
@@ -801,7 +855,7 @@ mod tests {
         assert!(spec.env_remove.iter().any(|v| v == "CLAUDECODE"));
         assert!(
             adapter
-                .interactive_resume("--last", Path::new("/w"))
+                .interactive_resume(&SessionRequest::reopening("--last", Path::new("/w")))
                 .is_none()
         );
     }

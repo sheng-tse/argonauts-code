@@ -1,0 +1,23 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  OpenCode                                                                                                            
+  The model the main agent runs on OpenCode. Model lists refreshed just now.                                          
+                                                                                                                      
+  ↑ 7.  Gemma3 12B                   no tool use · 128k context · on this machine                                     
+    8.  Gemma3 12B 32K               no tool use · 32k context · on this machine                                      
+        OpenCode Zen                                                                                                  
+    9.  Nemotron 3.5 Super VL Free   1M context · free                                                                
+    10. Beam Free                    1M context · free                                                                
+    11. LongCat 2.5 Preview Free     1M context · free                                                                
+    12. Space Bunny Free             1M context · free                                                                
+    13. MiMo-V2.6-Flash Free         200k context · free                                                              
+  ❯ 14. DeepSeek V4.1 Flash Free     200k context · free                                                              
+    … +5 more                                                                                                         
+                                                                                                                      
+  ◉ high effort  h/l to adjust                                                                                        
+                                                                                                                      
+  Enter to choose · j/k to move · / to filter · Esc to go back                                                        
+                                                                                                                      
+ DeepSeek V4.1 Flash Free takes low, high and max, its variants in model.list: h/l steps through those only.          
+ With Nemotron 3 Ultra Free highlighted instead, which has no variants in model.list (Ultra is its size):             
+                                                                                                                      
+  ○ Effort not supported for Nemotron 3 Ultra Free                                                                    

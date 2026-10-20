@@ -65,6 +65,10 @@ pub struct CliManifest {
     pub home: Option<HomeTemplate>,
     #[serde(default)]
     pub stop: Option<StopWaits>,
+    /// Its sessions talk to a server of the CLI's own, on a loopback port it picks as it
+    /// starts, as OpenCode's do. A session with the network off still reaches loopback then.
+    #[serde(default)]
+    pub own_server: bool,
     /// The take-over command, with `{session}`. Empty means none.
     #[serde(default)]
     pub interactive_resume: Vec<String>,

@@ -167,7 +167,20 @@ pub(crate) struct Client {
 
 impl Client {
     pub(crate) async fn connect(path: &Path) -> Self {
-        let stream = UnixStream::connect(path).await.unwrap();
+        // The socket's file shows when it's bound, a moment before it listens.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let stream = loop {
+            match UnixStream::connect(path).await {
+                Ok(stream) => break stream,
+                Err(err)
+                    if err.kind() == io::ErrorKind::ConnectionRefused
+                        && std::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(err) => panic!("connecting to {}: {err}", path.display()),
+            }
+        };
         let (read, write) = stream.into_split();
         let mut client = Self {
             read: BufReader::new(read),

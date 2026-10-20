@@ -2,7 +2,7 @@
   "adapter": "opencode",
   "synthetic": true,
   "program": "opencode",
-  "commands": [["auth", "list"], ["models"], ["debug", "config"]],
+  "commands": [["auth", "list", "--standalone"], ["models", "--standalone"], ["debug", "config"]],
   "files": ["providers_auth_list.stdout.txt", "providers_models.stdout.txt", "providers_config.stdout.json"],
   "note": "Made up by hand from the shape OpenCode's own commands print: one API key connected, a local runtime declared in the config, and a default model. No real account, key or path is in them",
   "how": "Written by hand. A recording against OpenCode 2.x replaces them once a provider is picked"

@@ -1,0 +1,79 @@
+{
+ "models": [
+  {
+   "type": "llm",
+   "publisher": "qwen",
+   "key": "qwen/qwen3-coder-30b",
+   "display_name": "Qwen3 Coder 30B",
+   "architecture": "qwen3moe",
+   "quantization": {
+    "name": "Q4_K_M",
+    "bits_per_weight": 4
+   },
+   "size_bytes": 18556700706,
+   "params_string": "30B",
+   "loaded_instances": [
+    {
+     "id": "qwen/qwen3-coder-30b",
+     "config": {
+      "context_length": 4096,
+      "eval_batch_size": 512,
+      "flash_attention": true,
+      "offload_kv_cache_to_gpu": true
+     }
+    }
+   ],
+   "max_context_length": 262144,
+   "format": "gguf",
+   "capabilities": {
+    "vision": false,
+    "trained_for_tool_use": true
+   },
+   "description": null
+  },
+  {
+   "type": "llm",
+   "publisher": "google",
+   "key": "google/gemma-3-12b",
+   "display_name": "Gemma 3 12B",
+   "architecture": "gemma3",
+   "quantization": {
+    "name": "Q4_K_M",
+    "bits_per_weight": 4
+   },
+   "size_bytes": 8149190253,
+   "params_string": "12B",
+   "loaded_instances": [],
+   "max_context_length": 131072,
+   "format": "gguf",
+   "capabilities": {
+    "vision": true,
+    "trained_for_tool_use": false,
+    "reasoning": {
+     "allowed_options": [
+      "off",
+      "on"
+     ],
+     "default": "off"
+    }
+   },
+   "description": null
+  },
+  {
+   "type": "embedding",
+   "publisher": "nomic-ai",
+   "key": "text-embedding-nomic-embed-text-v1.5",
+   "display_name": "Nomic Embed Text v1.5",
+   "architecture": "nomic-bert",
+   "quantization": {
+    "name": "Q4_K_M",
+    "bits_per_weight": 4
+   },
+   "size_bytes": 84106624,
+   "params_string": null,
+   "loaded_instances": [],
+   "max_context_length": 2048,
+   "format": "gguf"
+  }
+ ]
+}

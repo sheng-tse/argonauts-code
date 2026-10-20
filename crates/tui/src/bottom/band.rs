@@ -1,5 +1,5 @@
-//! The band between the working line and the input: the mods you pinned, top to bottom
-//!. Each is a card, or folded to its line. When the band runs out of room the
+//! The band between the working line and the input: the mods you pinned, top to bottom.
+//! Each is a card, or folded to its line. When the band runs out of room the
 //! cards step down from the last one up, and Ctrl+X Ctrl+A hides them all to one line that
 //! still shows each one's number. Ctrl+X Tab gives the band the keys. On a wide screen two
 //! half-width mods share a row, and a change of height waits a moment so it lands in one

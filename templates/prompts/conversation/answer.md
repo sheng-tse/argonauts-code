@@ -4,11 +4,7 @@ Keep the read-only rule to yourself, in a greeting as in an answer. Bring it up 
 
 {{run_status}}
 
-First write your answer in Markdown, so it streams as you write. Then end your reply with one JSON object that matches this schema, with the same answer in `answer_markdown`:
-
-```json
-{{schema}}
-```
+Write your answer in Markdown, so it streams as you write.
 
 The question:
 

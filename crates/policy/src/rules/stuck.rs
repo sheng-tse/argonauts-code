@@ -26,12 +26,16 @@ pub fn check(facts: Option<&StuckFacts>, rules: &StuckRules) -> RuleVerdict {
     } else {
         c.ask_you("the role's fallback mode isn't auto, so who takes the task is yours");
     }
+    // Reasons are read on screen, so the fallback goes by its name there, not its provider's id.
+    let named = |next: &str| facts.next_name.clone().unwrap_or_else(|| next.to_owned());
     match &facts.next_provider {
         Some(next) if facts.providers_tried.contains(next) => c.ask_you(format!(
-            "the next fallback is of the {next} provider, which already tried the task"
+            "the next fallback, {}, already tried the task",
+            named(next)
         )),
         Some(next) => c.hold(format!(
-            "the next try goes to the {next} provider, which hasn't tried the task"
+            "the next try goes to {}, which hasn't tried the task",
+            named(next)
         )),
         None => c.ask_you("no fallback from a provider that hasn't tried the task is left"),
     }
@@ -62,9 +66,30 @@ mod tests {
             fallback_mode: FallbackMode::Auto,
             providers_tried: vec!["anthropic".to_owned()],
             next_provider: Some("openai".to_owned()),
+            next_name: Some("Codex".to_owned()),
             extra_tries: 0,
             fits_reserve: Some(true),
         }
+    }
+
+    /// A reason is read on screen, so it names the fallback as the screen does.
+    #[test]
+    fn the_next_fallback_goes_by_its_name() {
+        let tried = StuckFacts {
+            next_provider: Some("anthropic".to_owned()),
+            next_name: Some("Claude Code".to_owned()),
+            ..granting()
+        };
+        let reasons = check(Some(&tried), &StuckRules { max_extra_tries: 1 }).reasons;
+        assert!(
+            reasons.contains(&"the next fallback, Claude Code, already tried the task".to_owned()),
+            "{reasons:?}"
+        );
+        let fresh = check(Some(&granting()), &StuckRules { max_extra_tries: 1 }).reasons;
+        assert!(
+            fresh.contains(&"the next try goes to Codex, which hasn't tried the task".to_owned()),
+            "{fresh:?}"
+        );
     }
 
     fn verdict(facts: Option<&StuckFacts>, max_extra_tries: u32) -> Verdict {

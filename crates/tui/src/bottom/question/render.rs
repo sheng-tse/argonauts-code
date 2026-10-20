@@ -195,9 +195,19 @@ impl QuestionPrompt {
                 lines.extend(wrap_text(&part, dim, width, &indent, &indent));
             }
         }
-        for row in &self.noted_rows {
-            let plain = theme.style(Role::Text);
-            lines.extend(noted_row(row, plain, dim, width, place.margin()));
+        let plain = theme.style(Role::Text);
+        if self.two_columns {
+            lines.extend(two_columns(
+                &self.noted_rows,
+                plain,
+                dim,
+                width,
+                place.margin(),
+            ));
+        } else {
+            for row in &self.noted_rows {
+                lines.extend(noted_row(row, plain, dim, width, place.margin()));
+            }
         }
         if self.body.is_empty() {
             lines.push(Line::default());
@@ -968,6 +978,133 @@ fn noted_row(
         &[Span::raw(" ".repeat(margin))],
         &[Span::raw(" ".repeat(under))],
     )
+}
+
+/// Cells between two columns.
+const COLUMN_GAP: usize = 6;
+/// The room a right column needs, short of its longest cell, before the two columns stand side
+/// by side: less, and each row's cells go one under the other.
+const RIGHT_COLUMN: usize = 40;
+
+/// One row of a two-column table: its left cell's plain and dim words, then its right cell's.
+struct Cells<'a> {
+    left: (&'a str, &'a str),
+    right: (&'a str, &'a str),
+}
+
+impl<'a> Cells<'a> {
+    fn of(row: &'a str) -> Option<Self> {
+        let mut parts = row.split('\t');
+        let cells = Self {
+            left: (parts.next()?, parts.next()?),
+            right: (parts.next()?, parts.next()?),
+        };
+        parts.next().is_none().then_some(cells)
+    }
+
+    /// The row that names the columns: dim words alone in both.
+    fn names(&self) -> Option<(&'a str, &'a str)> {
+        let named = self.left.0.is_empty()
+            && self.right.0.is_empty()
+            && !self.left.1.is_empty()
+            && !self.right.1.is_empty();
+        named.then_some((self.left.1.trim(), self.right.1.trim()))
+    }
+
+    fn left_width(&self) -> usize {
+        str_width(self.left.0) + str_width(self.left.1)
+    }
+
+    fn right_width(&self) -> usize {
+        str_width(self.right.0) + str_width(self.right.1)
+    }
+}
+
+fn cell(words: (&str, &str), plain: Style, dim: Style) -> Vec<Span<'static>> {
+    [(words.0, plain), (words.1, dim)]
+        .into_iter()
+        .filter(|(text, _)| !text.is_empty())
+        .map(|(text, style)| Span::styled(sanitize_line(text).into_owned(), style))
+        .collect()
+}
+
+/// A two-column table two cells in: side by side where the right column has room for its
+/// cells, or 40 cells of it, each cell wrapping in its own column, and else each row's left
+/// cell then its right one, on lines that start with the columns' names.
+fn two_columns(
+    rows: &[String],
+    plain: Style,
+    dim: Style,
+    width: usize,
+    margin: usize,
+) -> Vec<Line<'static>> {
+    let indent = margin + 2;
+    let table: Vec<Option<Cells<'_>>> = rows.iter().map(|row| Cells::of(row)).collect();
+    let names = table.iter().flatten().find_map(Cells::names);
+    let left = table
+        .iter()
+        .flatten()
+        .map(Cells::left_width)
+        .max()
+        .unwrap_or(0);
+    let right_at = indent + left + COLUMN_GAP;
+    let longest = table
+        .iter()
+        .flatten()
+        .filter(|cells| !cells.right.0.is_empty() || cells.names().is_some())
+        .map(Cells::right_width)
+        .max()
+        .unwrap_or(0);
+    let side_by_side =
+        names.is_none() || width.saturating_sub(right_at) >= longest.min(RIGHT_COLUMN);
+    let pad = |cells: usize| Span::raw(" ".repeat(cells));
+    let mut lines = Vec::new();
+    for (row, cells) in rows.iter().zip(&table) {
+        let Some(cells) = cells else {
+            lines.extend(noted_row(row, plain, dim, width, margin));
+            continue;
+        };
+        if side_by_side {
+            let mut first = vec![pad(indent)];
+            first.extend(cell(cells.left, plain, dim));
+            first.push(pad(right_at - indent - cells.left_width()));
+            lines.extend(wrap_spans(
+                &cell(cells.right, plain, dim),
+                width,
+                &first,
+                &[pad(right_at)],
+            ));
+            continue;
+        }
+        let Some((now, after)) = names else {
+            continue;
+        };
+        if cells.names().is_some() {
+            continue;
+        }
+        let labelled = |name: &str, words: (&str, &str)| {
+            let label = format!("{name}: ");
+            let under = indent + str_width(&label);
+            let first = [pad(indent), Span::styled(label, dim)];
+            wrap_spans(&cell(words, plain, dim), width, &first, &[pad(under)])
+        };
+        if !cells.left.0.is_empty() || !cells.left.1.is_empty() {
+            lines.extend(labelled(now, cells.left));
+        }
+        if cells.right.0.is_empty() {
+            // A note on the row above sits under that row's value.
+            let under = indent + str_width(after) + 2;
+            lines.extend(wrap_spans(
+                &cell(cells.right, plain, dim),
+                width,
+                &[pad(under)],
+                &[pad(under)],
+            ));
+        } else {
+            lines.extend(labelled(after, cells.right));
+        }
+    }
+    lines
 }
 
 /// A `·`-joined line broken between its parts where it must wrap, so `$0.00 spent` never

@@ -134,7 +134,8 @@ pub(super) async fn script_for(
             })),
             resume: None,
             slot: 0,
-            label: Some("plan:orchestrator".to_owned()),
+            // Its row is named for the workflow it plans, as `plan:council`.
+            label: Some(format!("plan:{}", file.name)),
             reviews: false,
             fresh: false,
             independent_of: Vec::new(),
@@ -259,13 +260,73 @@ async fn usable(
         ..RunInput::default()
     };
     let load = |name: &str| super::workflow_named(host, name);
+    let crew = input.args.get("crew").cloned().unwrap_or_default();
     let rehearsal = argonauts_runner::rehearse(&script, input, &load).await?;
+    verdicts(&rehearsal.asked)?;
     // A script still going when the rehearsal stopped may name the rest later.
     if rehearsal.finished {
         kept_tasks(required, &rehearsal.tasks)?;
         worked(required, &rehearsal.ran)?;
+        kept_steps(file, &rehearsal.asked, &crew)?;
     }
     Ok(script)
+}
+
+/// The answer format of every reviewer and every judge that signs off, as the planner is told
+/// to write it.
+const VERDICT_SCHEMA: &str = r#"{"type": "object", "properties": {"accept": {"type": "boolean"}, "findings": {"type": "array", "items": {"type": "string"}}}, "required": ["accept", "findings"]}"#;
+
+/// Whether every reviewer and every judge that signs off answers with a yes-or-no `accept`,
+/// the one field a verdict is read by.
+fn verdicts(asked: &[argonauts_runner::Asked]) -> Result<(), Unusable> {
+    let without = argonauts_runner::without_verdicts(asked);
+    if without.is_empty() {
+        return Ok(());
+    }
+    let why = format!(
+        "a reviewer or a judge that signs off answers without a required yes-or-no accept: {}",
+        without.join(", ")
+    );
+    let ask = format!(
+        "Your last script couldn't be used: {why}.\nGive every reviewer, and every judge that \
+         signs off, exactly the schema {VERDICT_SCHEMA}, and write it again."
+    );
+    Err(Unusable {
+        why,
+        ask: Some(ask),
+    })
+}
+
+/// Whether the script carries out every step the file keeps, by the roles, access and order of
+/// its agents, whatever it names their phases.
+fn kept_steps(
+    file: &WorkflowFile,
+    asked: &[argonauts_runner::Asked],
+    crew: &Value,
+) -> Result<(), Unusable> {
+    let models = |role: CrewRole| {
+        crew.get(role.as_str())
+            .and_then(Value::as_u64)
+            .map_or(1, |count| u32::try_from(count).unwrap_or(u32::MAX))
+    };
+    let missing = argonauts_runner::left_out(file, asked, &models);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let why = format!(
+        "it leaves out what the workflow keeps: {}",
+        missing.join("; ")
+    );
+    let lines: Vec<String> = missing.iter().map(|line| format!("- {line}")).collect();
+    let ask = format!(
+        "Your last script couldn't be used: it doesn't carry out every step the workflow file \
+         keeps. These are missing:\n{}\nWrite it again with them, under phase names of your own.",
+        lines.join("\n")
+    );
+    Err(Unusable {
+        why,
+        ask: Some(ask),
+    })
 }
 
 /// Whether each step you require started an agent of its role in its phase: a phase that only

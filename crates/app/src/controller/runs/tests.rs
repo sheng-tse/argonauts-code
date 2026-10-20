@@ -1131,8 +1131,8 @@ async fn continuing_carries_on_a_conversation_that_only_opened_runs() {
     driver.exit().await;
 }
 
-/// The panel follows the conversation on screen, the way `argonauts -c` would bring it back
-///: `/resume <conversation>` shows that conversation's runs in place of the ones it left,
+/// The panel follows the conversation on screen, the way `argonauts -c` would bring it back:
+/// `/resume <conversation>` shows that conversation's runs in place of the ones it left,
 /// `/branch` keeps them in the copy, and `/clear` starts with none. Each conversation keeps its
 /// own runs on disk.
 #[tokio::test]

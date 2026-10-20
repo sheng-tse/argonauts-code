@@ -329,7 +329,7 @@ fn status_draws_every_part_of_the_picture() {
     assert!(at("◆ settings in effect") < at("◆ runs"));
     assert_eq!(
         rows.last().unwrap(),
-        " tab · ←→ tabs · ↓ into the cards · esc closes"
+        " tab · ← → tabs · ↓ into the cards · esc closes"
     );
 }
 

@@ -1,17 +1,19 @@
-use argonauts_core::RunId;
+use argonauts_conductor::fallback::why::{category_words, stop_line};
 use argonauts_core::events::RunEvent;
-use argonauts_core::views::ContextRow;
+use argonauts_core::events::session::EndReason;
+use argonauts_core::views::{ContextRow, EndedHow, RowStatus, SessionLeft};
+use argonauts_core::{ErrorCategory, RunId};
+use time::OffsetDateTime;
 
-use super::sessions::RunFacts;
+use super::sessions::{RunFacts, SessionFacts};
 
-/// Each live session's context use, cap (`sessions.rotate_at`), tool calls, spend, and
-/// rotations.
+/// Each session's context use, cap (`sessions.rotate_at`), tool calls, spend, and rotations,
+/// in the order they started. One that ended keeps what it held as it ended, and says how.
 pub(crate) fn context_rows(events: &[RunEvent], run: &RunId, cap: u64) -> Vec<ContextRow> {
     let facts = RunFacts::of(events);
     facts
         .sessions
         .iter()
-        .filter(|session| session.ended.is_none())
         .map(|session| {
             let (used, window) = session.context.unwrap_or((0, None));
             ContextRow {
@@ -29,9 +31,49 @@ pub(crate) fn context_rows(events: &[RunEvent], run: &RunId, cap: u64) -> Vec<Co
                 counts: false,
                 categories: session.context_rows.clone(),
                 recorded: None,
+                ended: left(&facts, session),
             }
         })
         .collect()
+}
+
+/// When the run finished, where its log says it has.
+pub(crate) fn finished_at(events: &[RunEvent]) -> Option<OffsetDateTime> {
+    RunFacts::of(events).finished_at
+}
+
+/// How `session` ended, once it has.
+fn left(facts: &RunFacts, session: &SessionFacts) -> Option<SessionLeft> {
+    let end = session.ended.as_ref()?;
+    let how = match facts.status(session) {
+        RowStatus::Failed => EndedHow::Failed {
+            why: failed_why(session, &end.reason),
+        },
+        RowStatus::Paused | RowStatus::Skipped => EndedHow::Stopped,
+        _ => EndedHow::Done,
+    };
+    Some(SessionLeft {
+        at: session.ended_at.unwrap_or(session.started_at),
+        how,
+        fallback_for: session.fallback_for.clone(),
+    })
+}
+
+/// Why a session failed, in the few words its row has room for: `no valid report in 2 tries`.
+fn failed_why(session: &SessionFacts, reason: &EndReason) -> String {
+    let why = match reason {
+        _ if session.unreported => "no valid report".to_owned(),
+        EndReason::CliError {
+            category: ErrorCategory::AnswerMissed,
+            ..
+        } => "no valid report".to_owned(),
+        EndReason::CliError { category, .. } => category_words(*category).to_owned(),
+        reason => stop_line(reason),
+    };
+    match session.try_number {
+        Some(tries) if tries > 1 => format!("{why} in {tries} tries"),
+        _ => why,
+    }
 }
 
 #[cfg(test)]
@@ -44,7 +86,7 @@ mod tests {
     use argonauts_core::names::{RoleName, SessionKey};
 
     #[test]
-    fn context_rows_list_live_sessions_with_cap_calls_spend_and_rotations() {
+    fn context_rows_list_every_session_with_cap_calls_spend_and_rotations() {
         let task = argonauts_core::TaskId::new("task-001").unwrap();
         let first = SessionKey::numbered(1);
         let second = SessionKey::numbered(2);
@@ -103,8 +145,16 @@ mod tests {
             ),
         ];
         let rows = context_rows(&events, &run_id(), 200_000);
-        assert_eq!(rows.len(), 2, "the rotated-away session is gone");
-        let worker = &rows[0];
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        // The session it rotated away from stays, as it left its window.
+        let rotated = &rows[0];
+        assert_eq!((rotated.session.clone(), rotated.used), (first, 199_000));
+        assert_eq!(
+            rotated.ended.as_ref().map(|left| &left.how),
+            Some(&EndedHow::Done)
+        );
+        let worker = &rows[1];
+        assert_eq!(worker.ended, None, "it still runs");
         assert_eq!(worker.session, second);
         assert_eq!(worker.label, "worker · task-001");
         assert_eq!(
@@ -116,9 +166,146 @@ mod tests {
         assert_eq!(worker.rotations, 1);
         // Its CLI's count says what fills it. How full it is stays the fill's to say.
         assert_eq!(worker.categories, [messages]);
-        let review = &rows[1];
+        let review = &rows[2];
         assert_eq!(review.worker.agent, "codex");
         assert_eq!((review.used, review.rotations), (0, 0));
         assert!(review.categories.is_empty());
+    }
+
+    /// Every session of a finished run keeps the row it left: its fill, what filled it and how
+    /// it ended, and the run says when it finished.
+    #[test]
+    fn a_finished_runs_sessions_keep_their_rows() {
+        use crate::client::test_support::event;
+        use argonauts_core::events::RunEventKind;
+        use argonauts_core::events::run::{RunLifecycle, RunOutcome};
+
+        let task = argonauts_core::TaskId::new("task-due-dates").unwrap();
+        let (planner, worker) = (SessionKey::numbered(1), SessionKey::numbered(2));
+        let messages = |tokens| ContextCategory {
+            name: "Messages".to_owned(),
+            tokens,
+            color: "purple_FOR_SUBAGENTS_ONLY".to_owned(),
+            kind: ContextKind::Used,
+        };
+        let filled = |seq, session: &SessionKey, used, tokens| {
+            [
+                agent(
+                    seq,
+                    session,
+                    AgentEvent::ContextFill {
+                        used,
+                        size: Some(1_000_000),
+                        sent: None,
+                    },
+                ),
+                agent(
+                    seq + 1,
+                    session,
+                    AgentEvent::ContextBreakdown {
+                        usage: Box::new(ContextUsage {
+                            categories: vec![messages(tokens)],
+                            total_tokens: used,
+                            window: 1_000_000,
+                            ..ContextUsage::default()
+                        }),
+                    },
+                ),
+            ]
+        };
+        let mut events = vec![session_started(
+            0,
+            &planner,
+            None,
+            RoleName::Orchestrator,
+            "claude-code",
+        )];
+        events.extend(filled(1, &planner, 12_021, 4_921));
+        events.push(session_ended(3, &planner, EndReason::Completed, 19_512));
+        events.push(session_started(
+            4,
+            &worker,
+            Some(&task),
+            RoleName::Worker,
+            "claude-code",
+        ));
+        events.extend(filled(5, &worker, 24_924, 5_989));
+        events.push(session_ended(
+            7,
+            &worker,
+            EndReason::CliError {
+                category: ErrorCategory::AnswerMissed,
+                message: "Failed to provide valid structured output".to_owned(),
+            },
+            25_200,
+        ));
+        events.push(event(
+            8,
+            RunEventKind::Run(RunLifecycle::Finished {
+                outcome: RunOutcome::Merged,
+                detail: None,
+            }),
+        ));
+        let rows = context_rows(&events, &run_id(), 0);
+        let kept: Vec<(&SessionKey, u64, u64)> = rows
+            .iter()
+            .map(|row| (&row.session, row.used, row.categories[0].tokens))
+            .collect();
+        assert_eq!(kept, [(&planner, 12_021, 4_921), (&worker, 24_924, 5_989)]);
+        let how: Vec<Option<&EndedHow>> = rows
+            .iter()
+            .map(|row| row.ended.as_ref().map(|left| &left.how))
+            .collect();
+        assert_eq!(
+            how,
+            [
+                Some(&EndedHow::Done),
+                Some(&EndedHow::Failed {
+                    why: "no valid report".to_owned()
+                })
+            ]
+        );
+        assert_eq!(
+            finished_at(&events),
+            Some(crate::client::test_support::base_ts() + time::Duration::seconds(8))
+        );
+    }
+
+    #[test]
+    fn a_session_that_failed_says_why_in_a_few_words() {
+        let task = argonauts_core::TaskId::new("task-001").unwrap();
+        let worker = SessionKey::numbered(1);
+        let missed = EndReason::CliError {
+            category: ErrorCategory::AnswerMissed,
+            message: "Failed to provide valid structured output".to_owned(),
+        };
+        let overloaded = EndReason::CliError {
+            category: ErrorCategory::Overloaded,
+            message: "529".to_owned(),
+        };
+        let ended = |reason: EndReason| {
+            let events = vec![
+                session_started(0, &worker, Some(&task), RoleName::Worker, "claude-code"),
+                session_ended(1, &worker, reason, 1_000),
+            ];
+            context_rows(&events, &run_id(), 0)
+                .remove(0)
+                .ended
+                .map(|left| left.how)
+        };
+        assert_eq!(
+            ended(missed),
+            Some(EndedHow::Failed {
+                why: "no valid report".to_owned()
+            })
+        );
+        assert_eq!(
+            ended(overloaded),
+            Some(EndedHow::Failed {
+                why: "overloaded".to_owned()
+            })
+        );
+        assert_eq!(ended(EndReason::Stopped), Some(EndedHow::Stopped));
+        assert_eq!(ended(EndReason::Completed), Some(EndedHow::Done));
     }
 }

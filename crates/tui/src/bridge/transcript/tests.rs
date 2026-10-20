@@ -223,6 +223,42 @@ fn conversation_turn(n: u32, question: &str, answer: &str) -> Vec<AppEvent> {
     ]
 }
 
+/// A main agent that also writes its structured answer out as JSON at the end of its text
+/// streams its words, and the JSON never shows, fenced or not, however the deltas split it.
+#[test]
+fn a_json_object_that_ends_the_main_agents_text_never_shows() {
+    let words = "Export writes CSV, one row per task.";
+    for tail in [
+        "\n\n```json\n{\"answer_markdown\": \"Export writes CSV, one row per task.\"}\n```",
+        "\n\n{\"answer_markdown\": \"Export writes CSV, one row per task.\"}",
+    ] {
+        let mut driver = TestDriver::new();
+        let mut events = conversation_turn(1, "what does export do?", words);
+        // The streamed text comes in pieces of a few characters, the JSON among them.
+        let streamed: Vec<char> = format!("{words}{tail}").chars().collect();
+        let deltas: Vec<AppEvent> = streamed
+            .chunks(7)
+            .map(|piece| AppEvent::Conversation {
+                event: ConversationEvent::Agent {
+                    turn: TurnId::numbered(1),
+                    event: AgentEvent::TextDelta {
+                        text: piece.iter().collect(),
+                        parent: None,
+                    },
+                },
+            })
+            .collect();
+        events.splice(3..4, deltas);
+        for event in events {
+            driver.send(event);
+        }
+        let printed = driver.printed();
+        assert!(printed.contains(words), "{printed}");
+        assert!(!printed.contains("answer_markdown"), "{printed}");
+        assert!(!printed.contains("```"), "{printed}");
+    }
+}
+
 #[test]
 fn an_attached_runs_history_only_joins_ctrl_o() {
     let mut driver = TestDriver::new();
@@ -1027,6 +1063,7 @@ fn the_header_waits_for_the_main_agent() {
             repo: "~/github/argonauts".into(),
             workflow: "council".into(),
             ultracode: false,
+            ultra: None,
             run: None,
             main_agent: ModelRef::new("claude-code", Some("haiku".into())),
             plan_chips: vec![],
@@ -1387,6 +1424,7 @@ fn a_rotation_prints_a_line() {
         try_number: 2,
         worker: ModelRef::new("claude-code", None),
         cause: TryCause::Rotation,
+        told: Vec::new(),
     })));
     let printed = driver.printed();
     assert!(
@@ -1403,6 +1441,7 @@ fn a_restart_prints_a_line() {
         try_number: 2,
         worker: ModelRef::new("claude-code", None),
         cause: TryCause::Restarted,
+        told: Vec::new(),
     })));
     let printed = driver.printed();
     assert!(
@@ -1434,6 +1473,7 @@ fn a_model_you_pick_is_named_as_its_list_named_it() {
         effort: None,
         alias: false,
         runs: None,
+        listed: None,
     };
     driver.state.model_words.insert(
         "codex/gpt-6-sol".to_owned(),
@@ -2773,6 +2813,48 @@ fn a_turn_stopped_alone_leaves_the_interrupted_line_once() {
     driver.send(conversation(ConversationEvent::TurnCancelled { turn }));
     let printed = driver.printed();
     assert_eq!(printed.matches("Interrupted").count(), 1, "{printed}");
+}
+
+/// A turn a watchdog stopped ends with one line under it that says what it saw, and no
+/// Interrupted line, since nobody pressed Esc.
+#[test]
+fn a_turn_a_watchdog_stopped_says_what_it_saw() {
+    let turn = TurnId::numbered(1);
+    let conversation = |event| AppEvent::Conversation { event };
+    let mut driver = TestDriver::new();
+    driver.send(conversation(ConversationEvent::TurnStarted {
+        turn: turn.clone(),
+        text: "fix slugify".into(),
+        worker: ModelRef::new("opencode", Some("ollama/qwen3-coder:30b-64k".into())),
+        read_only: false,
+        commit: "8b41d07".into(),
+        uncommitted: vec![],
+        settings_sha256: None,
+        continues: false,
+    }));
+    driver.send(conversation(ConversationEvent::Agent {
+        turn: turn.clone(),
+        event: AgentEvent::TextDelta {
+            text: "Let me hand in the report.".into(),
+            parent: None,
+        },
+    }));
+    let why = "Stopped: Qwen3 Coder 30B repeated the same execute call 12 times. Its edits stay \
+               in your checkout.";
+    driver.send(conversation(ConversationEvent::TurnStopped {
+        turn,
+        why: why.into(),
+    }));
+    let printed = driver.printed();
+    assert!(
+        printed.ends_with(
+            "● Let me hand in the report.\n  ⎿  Stopped: Qwen3 Coder 30B repeated the same \
+             execute call 12 times. Its edits\n     stay in your checkout."
+        ),
+        "{printed}"
+    );
+    assert!(!printed.contains("Interrupted"), "{printed}");
+    assert!(!printed.contains("couldn't answer"), "{printed}");
 }
 
 /// A crew run named `switch-reads` whose one step runs another workflow's steps, and whose own

@@ -1,6 +1,12 @@
 # OpenCode over ACP, the first ACP profile. Values marked 1.18.34 were seen on OpenCode 1.18.34
 # over stdio with a local Ollama on 2026-10-02. Its permission behavior over ACP and config
 # isolation are not verified, and conformance pins the rest.
+#
+# No --standalone, which 2.0.32's `opencode acp` doesn't take: it starts a server of its own
+# instead (`opencode serve --stdio --port 0`, its child, with the client's environment, read from
+# its program text), so its sessions never go through OpenCode 2's shared service and stay
+# inside the sandbox the client starts in. It talks to that server over HTTP on the loopback
+# port the server reports, hence own_server, which keeps that port in reach with the network off.
 
 [[cli]]
 id = "opencode-acp"
@@ -13,6 +19,7 @@ transport = "acp"
 read_only_args = ["acp"]
 build_args = ["acp"]
 env_set = { OPENCODE_DISABLE_AUTOUPDATE = "1" }   # not verified: no self-update mid-session
+own_server = true                             # its client and server talk over loopback
 interactive_resume = []                       # no take-over command
 
 [cli.acp]

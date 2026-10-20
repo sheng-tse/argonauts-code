@@ -65,6 +65,10 @@ pub struct Step {
     /// Its workers may each run a workflow of their own, where their CLI has one.
     #[serde(default, skip_serializing_if = "is_false")]
     pub own_workflow: bool,
+    /// A script the orchestrator writes for a request carries the step out with its role, its
+    /// access and as many agents as it says, however it names the phase.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub keep: bool,
     /// A step you require in every workflow, added to this one. Never written in a file.
     #[serde(skip_deserializing, skip_serializing_if = "is_false")]
     pub required: bool,
@@ -167,7 +171,8 @@ fn lines(problems: &[Problem]) -> String {
 }
 
 const STEP_KEYS: &str = "name, role, does, for_each, count, independent, not_the_author, \
-                         send_back_to, then, until, max_rounds, model, kept_by, own_workflow";
+                         send_back_to, then, until, max_rounds, model, kept_by, own_workflow, \
+                         keep";
 
 impl WorkflowFile {
     /// Reads a workflow file. `Ok(None)` is a file with no steps: it only carries settings.

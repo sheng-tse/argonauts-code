@@ -280,6 +280,7 @@ impl Controller {
         if !conversation::settled(&self.conversation) {
             tracing::warn!("a conversation step was still stopping when the app closed");
         }
+        crate::model_memory::app_closing(&self.ctx.env.paths).await;
         Ok(())
     }
 
@@ -699,6 +700,10 @@ impl Controller {
             }
             UiCommand::WatchContext { detail } => {
                 conversation::watch_context(&mut self.conversation, detail);
+                Ok(Vec::new())
+            }
+            UiCommand::WatchModels { watching } => {
+                settings::watch_models(&self.ctx, &mut self.settings, watching);
                 Ok(Vec::new())
             }
             UiCommand::Exit => Ok(vec![Effect::Exit]),
@@ -1265,6 +1270,14 @@ impl Controller {
                 names::send(&mut self.ctx);
                 settings::models_refreshed(&self.ctx, &mut self.settings)
             }
+            Internal::ModelSourceListed { cli } => {
+                names::send(&mut self.ctx);
+                settings::model_source_listed(&self.ctx, &mut self.settings, &cli)
+            }
+            Internal::ModelsTick => settings::models_tick(&self.ctx, &mut self.settings),
+            Internal::MemoryRead(reading) => {
+                settings::memory_read(&self.ctx, &mut self.settings, reading)
+            }
             Internal::WorkflowSaved { name } => {
                 workflows::saved(&self.ctx, &mut self.workflows, &name)
             }
@@ -1297,5 +1310,7 @@ fn keeps_orchestrator_hold(command: &UiCommand) -> bool {
                 role: Some(RoleName::Orchestrator)
             }
         } | UiCommand::Focus { .. }
+            // The orchestrator's picker opening and closing.
+            | UiCommand::WatchModels { .. }
     )
 }

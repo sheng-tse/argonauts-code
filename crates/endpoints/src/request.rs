@@ -331,7 +331,11 @@ mod tests {
             system: "sys".into(),
             user: "hi".into(),
         };
-        let schema = json!({"type": "object"});
+        let schema = json!({
+            "type": "object",
+            "properties": {"verdict": {"type": "string"}, "notes": {"type": "string"}},
+            "required": ["verdict"],
+        });
         let options = Options {
             api: EndpointApi::ChatCompletions,
             mode: StructuredMode::JsonSchema,
@@ -346,7 +350,13 @@ mod tests {
         );
         assert_eq!(chat["stream"], json!(true));
         assert_eq!(chat["reasoning_effort"], json!("low"));
-        assert_eq!(chat["response_format"]["json_schema"]["schema"], schema);
+        // Strict mode asks for every field, the optional one allowed to be null.
+        let sent = &chat["response_format"]["json_schema"]["schema"];
+        assert_eq!(sent["required"], json!(["verdict", "notes"]));
+        assert_eq!(
+            sent["properties"]["notes"]["type"],
+            json!(["string", "null"])
+        );
         let responses = body(
             &prompt,
             Options {

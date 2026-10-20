@@ -91,7 +91,7 @@ impl Scenario {
         let binary = argonauts_bin().context("finding the argonauts binary")?;
         Pty::spawn(
             PtyCommand::new(binary)
-                .args(inline_screen(args))
+                .args(launch_defaults(args))
                 .cwd(self.repo.root())
                 .envs(self.envs())
                 .env_remove("ARGONAUTS_SESSION")
@@ -117,13 +117,28 @@ impl Drop for Scenario {
     }
 }
 
-/// Scenarios read what the app printed from the terminal's scrollback, which only the inline
-/// screen fills; the fullscreen mode has tests of its own in the tui crate.
-pub fn inline_screen<'a>(args: &[&'a str]) -> Vec<&'a str> {
-    if args.iter().any(|arg| arg.starts_with("ui.screen=")) {
-        return args.to_vec();
+/// The settings a launch takes unless it sets them itself: the inline screen, since scenarios
+/// read what the app printed from the terminal's scrollback, which only the inline screen fills
+/// (the fullscreen mode has tests of its own in the tui crate), and [`no_servers_of_yours`].
+pub fn launch_defaults<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut all = Vec::new();
+    if !args.iter().any(|arg| arg.starts_with("ui.screen=")) {
+        all.extend(["--set", "ui.screen=inline"]);
     }
-    let mut all = vec!["--set", "ui.screen=inline"];
+    all.extend(no_servers_of_yours(args));
+    all
+}
+
+/// `args`, with discovery asking no model server on this computer it has no table for, unless
+/// `args` decide it, so no test reaches a server of yours, such as a running Ollama.
+pub fn no_servers_of_yours<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut all = Vec::new();
+    if !args
+        .iter()
+        .any(|arg| arg.starts_with("registry.local_servers="))
+    {
+        all.extend(["--set", "registry.local_servers=false"]);
+    }
     all.extend_from_slice(args);
     all
 }

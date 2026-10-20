@@ -771,7 +771,7 @@ fn agent_row(
     }
     row.key = Some(session.key.to_string());
     row.run = Some(run.id.to_string());
-    row.markers.context = session.context.map(|context| (context.used, context.cap));
+    row.markers.context = session.context;
     row.markers.fallback_for = session
         .fallback_for
         .as_ref()
@@ -830,6 +830,7 @@ mod tests {
             repo: "~/code".into(),
             workflow: "council".into(),
             ultracode: false,
+            ultra: None,
             run: Some(RunId::new(run).unwrap()),
             main_agent: "claude-code/opus".parse().unwrap(),
             plan_chips: Vec::new(),

@@ -102,6 +102,8 @@ pub fn no_tools_spec(session: NoToolsSession<'_>) -> io::Result<SessionSpec> {
             proxy_port: None,
             ask_port: None,
             closed: Vec::new(),
+            listable: Vec::new(),
+            loopback: false,
         },
     };
 

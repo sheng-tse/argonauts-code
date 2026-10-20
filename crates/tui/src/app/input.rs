@@ -150,6 +150,8 @@ impl<W: Write> Ui<W> {
     pub fn resize(&mut self, size: Size, cursor: Option<Position>) {
         // Resizing only records the new size, so it has nothing to fail on.
         let _ = self.terminal.resize(size, cursor);
+        self.measure_cells();
+        self.fit_mascot_to_width();
         self.clear_selection();
         self.dirty = true;
     }

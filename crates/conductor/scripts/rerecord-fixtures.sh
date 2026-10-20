@@ -169,7 +169,7 @@ for id in "${adapters[@]}"; do
         (
             cd "$repo"
             ARGONAUTS_RECORD=$test ARGONAUTS_LIVE_DIR=$live_dir \
-                cargo test -p "$crate" --test record -- --ignored --exact "$test" --nocapture
+                cargo test -p "$crate" --test it -- --ignored --exact "record::$test" --nocapture
         )
     done
     echo "rerecord-fixtures: $id fixtures are in crates/adapters/$id/fixtures/"

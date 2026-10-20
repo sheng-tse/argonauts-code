@@ -6,7 +6,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use argonauts_core::NoteLevel;
-use argonauts_core::events::session::{EndReason, InputPart, InputPartKind, loaded_words};
+use argonauts_core::display_names::DisplayNames;
+use argonauts_core::events::session::{
+    EndReason, InputPart, InputPartKind, loaded_words, stuck_words,
+};
 use argonauts_core::input::EFFORT_LEVELS;
 use argonauts_core::limits::{HealthState, ModelState, PlanUsageStatus};
 use argonauts_core::names::{ConversationId, ModelRef, RoleName, SessionKey, TurnId};
@@ -246,6 +249,9 @@ pub(crate) fn describe(err: &StepError) -> String {
             }
             EndReason::ContextFull => "its context window is full".to_owned(),
             EndReason::Stopped | EndReason::Paused => "it was stopped".to_owned(),
+            EndReason::Stuck { watchdog, calls } => {
+                format!("it {}", stuck_words(*watchdog, calls.as_ref()))
+            }
             other => format!("it ended early ({other:?})"),
         },
         StepError::SchemaMismatch { raw: None, .. } => "it ended without an answer".to_owned(),
@@ -253,6 +259,29 @@ pub(crate) fn describe(err: &StepError) -> String {
             format!("its answer didn't match the schema: {}", errors.join("; "))
         }
     }
+}
+
+/// The line under a turn a watchdog stopped, naming the model as the turn ran it: `Stopped:
+/// Qwen3 Coder 30B repeated the same execute call 12 times.` `None` for any other end.
+pub(crate) fn stopped_by_watchdog(
+    names: &DisplayNames,
+    worker: &ModelRef,
+    err: &StepError,
+) -> Option<String> {
+    let StepError::Session(end) = err else {
+        return None;
+    };
+    let EndReason::Stuck { watchdog, calls } = &end.reason else {
+        return None;
+    };
+    let running = names.running(worker);
+    let who = names
+        .model(&running.agent, running.model.as_deref())
+        .unwrap_or_else(|| names.cli(&running.agent));
+    Some(format!(
+        "Stopped: {who} {}.",
+        stuck_words(*watchdog, calls.as_ref())
+    ))
 }
 
 /// Whether `err` says `agent`'s CLI is signed out, as [`argonauts_core::sign_in`] reads a
@@ -916,7 +945,7 @@ pub(crate) fn session_spec(
         limits: if direct {
             message_limits(settings, words)
         } else {
-            SessionLimits::default()
+            watched(settings)
         },
         // Sending your message is the approval, as `captain.understand_first = false` already
         // treats your prompt.
@@ -930,6 +959,8 @@ pub(crate) fn session_spec(
             proxy_port: None,
             ask_port: None,
             closed: Vec::new(),
+            listable: Vec::new(),
+            loopback: false,
         },
         compaction: role
             .and_then(|role| role.compaction)
@@ -985,8 +1016,20 @@ fn direct_sandbox(choice: SandboxChoice) -> SandboxMode {
     }
 }
 
+/// Every turn, talk included, has the watchdogs a run's sessions have for a session that
+/// loops or hangs: a nudge at `repeat_limit` identical calls, and the stop two calls on or
+/// after `inactivity_min` quiet minutes. They are no limit on the work, so they stay on.
+fn watched(settings: &Settings) -> SessionLimits {
+    let watchdogs = &settings.watchdogs;
+    SessionLimits {
+        inactivity_min: Some(watchdogs.inactivity_min).filter(|minutes| *minutes > 0.0),
+        repeat_limit: Some(watchdogs.repeat_limit).filter(|limit| *limit > 0),
+        ..SessionLimits::default()
+    }
+}
+
 /// Each message is held to the run's limit when you set one, as a run is: the CLI's own cap
-/// sits just above it, and the meter acts for the rest. With none, nothing stops it.
+/// sits just above it, and the meter acts for the rest. With none, only the watchdogs stop it.
 fn message_limits(settings: &Settings, words: Option<&DirectWords>) -> SessionLimits {
     let limit = &settings.limits.spend;
     // Your words only ever lower it, so theirs stands in for the setting's.
@@ -1011,7 +1054,7 @@ fn message_limits(settings: &Settings, words: Option<&DirectWords>) -> SessionLi
             DEFAULT_SOFT_RATIO
         },
         max_minutes: limit.run_minutes,
-        ..SessionLimits::default()
+        ..watched(settings)
     }
 }
 
@@ -1082,6 +1125,63 @@ mod tests {
         assert_eq!(names(&waits, &["codex"]), ["claude-code", "codex"]);
         let claude: ModelRef = "claude-code".parse().unwrap();
         assert_eq!(fallback_mode(&waits, &claude), FallbackMode::Auto);
+    }
+
+    #[test]
+    fn every_turn_has_the_watchdogs_and_a_stop_by_one_says_what_it_saw() {
+        use argonauts_core::events::session::{CallCount, Watchdog};
+
+        let settings = Settings::default();
+        for limits in [watched(&settings), message_limits(&settings, None)] {
+            assert_eq!(limits.repeat_limit, Some(10));
+            assert_eq!(limits.inactivity_min, Some(15.0));
+            assert_eq!(limits.limit, None, "no spend limit until you set one");
+            assert_eq!(limits.max_minutes, None);
+            assert_eq!(limits.no_progress_calls, None, "a turn is no later try");
+        }
+        let mut off = Settings::default();
+        off.watchdogs.repeat_limit = 0;
+        off.watchdogs.inactivity_min = 0.0;
+        let limits = message_limits(&off, None);
+        assert_eq!((limits.repeat_limit, limits.inactivity_min), (None, None));
+
+        let ended = |reason| StepError::Session(Box::new(session_end(reason, None, None)));
+        let repeated = ended(EndReason::Stuck {
+            watchdog: Watchdog::Repeat,
+            calls: Some(CallCount {
+                name: "execute".into(),
+                times: 12,
+            }),
+        });
+        assert!(!worth_a_fallback(&repeated));
+        let names = DisplayNames::default();
+        let qwen: ModelRef = "opencode/ollama/qwen3-coder:30b-64k".parse().unwrap();
+        let name = names
+            .model("opencode", qwen.model.as_deref())
+            .expect("a model name");
+        assert_eq!(
+            stopped_by_watchdog(&names, &qwen, &repeated),
+            Some(format!(
+                "Stopped: {name} repeated the same execute call 12 times."
+            ))
+        );
+        assert_eq!(
+            describe(&repeated),
+            "it repeated the same execute call 12 times"
+        );
+        let quiet = ended(EndReason::Stuck {
+            watchdog: Watchdog::Inactivity,
+            calls: None,
+        });
+        let codex: ModelRef = "codex".parse().unwrap();
+        assert_eq!(
+            stopped_by_watchdog(&names, &codex, &quiet).as_deref(),
+            Some("Stopped: Codex went quiet, with no output or activity.")
+        );
+        assert_eq!(
+            stopped_by_watchdog(&names, &codex, &ended(EndReason::RateLimited)),
+            None
+        );
     }
 
     #[test]

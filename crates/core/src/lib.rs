@@ -16,6 +16,7 @@ pub mod cheapest;
 pub mod cli_commands;
 pub mod cli_sessions;
 pub mod clock;
+pub mod confine;
 pub mod control;
 pub mod crew_stats;
 pub mod display_names;
@@ -40,9 +41,11 @@ pub mod log;
 pub mod main_sessions;
 pub mod meter;
 pub mod model_catalog;
+pub mod model_memory;
 pub mod model_picker;
 pub mod names;
 pub mod overview;
+pub mod patch_files;
 pub mod paths;
 pub mod pictures;
 pub mod plan_usage;
@@ -55,8 +58,10 @@ pub mod prompt_parts;
 pub mod redact;
 pub mod registry;
 pub mod required;
+pub mod runtimes;
 pub mod sanitize;
 pub mod screen;
+pub mod server_requests;
 pub mod session;
 pub mod session_runner;
 pub mod settings;
@@ -69,6 +74,7 @@ pub mod templates;
 pub mod text;
 pub mod unborn;
 pub mod views;
+pub mod window_size;
 pub mod workflow;
 pub mod workflow_files;
 pub mod workflow_page;
@@ -76,7 +82,7 @@ pub mod workflow_page;
 pub use adapter::BannerAccount;
 pub use adapter::{
     Adapter, Capabilities, KNOWN_AGENT_IDS, LaunchTweak, SetupHints, StopPlan, StopSignal,
-    StopStep, StreamParser, TweakEffect, extract_version,
+    StopStep, StreamParser, TweakEffect, UltraMode, UltraOn, extract_version,
 };
 pub use event::{
     AgentEvent, ErrorCategory, MessageStage, PluginOutputKind, ReportedCommand, ReportedModel,

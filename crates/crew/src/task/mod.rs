@@ -28,8 +28,10 @@ pub mod worktree;
 mod asked_anyway;
 pub(crate) mod claims;
 mod contracts;
+pub(crate) mod later_try;
 mod limit;
 pub(crate) mod session;
+mod stopped_work;
 mod stuck;
 pub(crate) mod support;
 

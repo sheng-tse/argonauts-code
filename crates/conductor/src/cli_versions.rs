@@ -470,26 +470,36 @@ mod tests {
 
         let adapter = ClaudeCodeAdapter;
         let tested = adapter.tested_versions();
-        assert_eq!(version_fit("2.1.295", tested), VersionFit::Tested);
-        assert_eq!(version_fit("2.1.297", tested), VersionFit::Newer);
-        assert_eq!(version_fit("2.2.0", tested), VersionFit::Newer);
+        // The newest recording's version, and patches after it.
+        let newest = *tested
+            .last()
+            .expect("Claude Code was recorded with a version");
+        let (minor, patch) = newest.rsplit_once('.').expect("a three-part version");
+        let patch: u32 = patch.parse().expect("a patch number");
+        let later = |by: u32| format!("{minor}.{}", patch + by);
+        assert_eq!(version_fit(newest, tested), VersionFit::Tested);
+        assert_eq!(version_fit(&later(2), tested), VersionFit::Newer);
+        assert_eq!(version_fit("2.99.0", tested), VersionFit::Newer);
         assert_eq!(version_fit("3.0.0", tested), VersionFit::Untested);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state/cli-versions.json");
-        assert!(CliVersions::notice_once(&path, &adapter, "2.1.295").is_none());
+        assert!(CliVersions::notice_once(&path, &adapter, newest).is_none());
         // A later minor is newer too, as /doctor says.
-        assert!(CliVersions::notice_once(&path, &adapter, "2.2.0").is_some());
-        let notice = CliVersions::notice_once(&path, &adapter, "2.1.297").unwrap();
+        assert!(CliVersions::notice_once(&path, &adapter, "2.99.0").is_some());
+        let notice = CliVersions::notice_once(&path, &adapter, &later(2)).unwrap();
         assert_eq!(
             notice,
-            "Claude Code 2.1.297 is newer than 2.1.295, the newest version Argonauts Code was \
-             checked with. It should work. /doctor lists anything it sends that Argonauts Code \
-             doesn't read yet."
+            format!(
+                "Claude Code {} is newer than {newest}, the newest version Argonauts Code was \
+                 checked with. It should work. /doctor lists anything it sends that Argonauts \
+                 Code doesn't read yet.",
+                later(2)
+            )
         );
         // The file is read again each time, as after a restart.
-        assert!(CliVersions::notice_once(&path, &adapter, "2.1.297").is_none());
-        assert!(CliVersions::notice_once(&path, &adapter, "2.1.298").is_some());
+        assert!(CliVersions::notice_once(&path, &adapter, &later(2)).is_none());
+        assert!(CliVersions::notice_once(&path, &adapter, &later(3)).is_some());
     }
 
     /// Claude Code lists `/heapdump` as its own, which its table doesn't have; `/compact` and

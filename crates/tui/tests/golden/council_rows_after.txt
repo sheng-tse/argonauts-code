@@ -1,0 +1,79 @@
+ In the conversation, one row an agent as each one finishes (the Merge steps print as today):                         
+                                                                                                                      
+● Workflow(Per key rate limiter · Council)                                                                            
+  ⎿  Running in background · /workflows to monitor and save                                                           
+                                                                                                                      
+● plan:council · Haiku 5.5 on Claude Code                                                                             
+  ⎿  Done · 1 tool use · report ✓ · 22s · 17.7k tokens                                                                
+                                                                                                                      
+● propose:p1 · Haiku 5.5 on Claude Code                                                                               
+  ⎿  Done · 4 tool uses · proposal ready · 41s · 14.2k tokens                                                         
+                                                                                                                      
+● propose:p2 · GPT 6 Luna on Codex                                                                                    
+  ⎿  Done · 3 tool uses · proposal ready · 52s · 11.0k tokens                                                         
+                                                                                                                      
+● propose:p3 · Gemini 3.8 Flash on Antigravity CLI                                                                    
+  ⎿  Done · 2 tool uses · proposal ready · 38s · 9.4k tokens                                                          
+                                                                                                                      
+● challenge:p1 · Haiku 5.5 on Claude Code                                                                             
+  ⎿  Done · argued against p2 and p3 · 3 points · 24s · 8.1k tokens                                                   
+                                                                                                                      
+● challenge:p2 · GPT 6 Luna on Codex                                                                                  
+  ⎿  Done · argued against p1 and p3 · 2 points · 29s · 7.6k tokens                                                   
+                                                                                                                      
+● challenge:p3 · Gemini 3.8 Flash on Antigravity CLI                                                                  
+  ⎿  Done · argued against p1 and p2 · 2 points · 21s · 6.9k tokens                                                   
+                                                                                                                      
+● decide:plan · Haiku 5.5 on Claude Code                                                                              
+  ⎿  Chose p2, with p3's whole-second Retry-After · 1 task: per-key-rate-limit · 11s · 43.8k tokens                   
+                                                                                                                      
+● build:per-key-rate-limit · Haiku 5.5 on Claude Code                                                                 
+  ⎿  Done · 9 tool uses · report ✓ · checks ✓ · 18s · 118.8k tokens                                                   
+                                                                                                                      
+● review:per-key-rate-limit · GPT 6 Luna on Codex                                                                     
+  ⎿  Accepted · used the checks' result: 5 passed                                                                     
+                                                                                                                      
+● signoff:per-key-rate-limit · Haiku 5.5 on Claude Code                                                               
+  ⎿  Accepted · read in the task's worktree, the change holds 2 files +17 −4: ratelimit/bucket.py,                    
+     ratelimit/middleware.py · tests: 5 passed                                                                        
+                                                                                                                      
+ The workflow view when it's done, on Decide (the Phases list counts every phase that ran):                           
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Per key rate limiter                                                                                                 
+ Council · Give each X-Api-Key its own token bucket in the council rate limiter, cap re…  11/11 agents · 2m35s · done 
+ ✔ Merged onto main · 7c41d09 · 2 files +17 −4                                                                        
+                                                                                                                      
+ ╭ Phases ──────────────┬ Decide · 1 agent ─────────────────────────────────────────────────────────────────────────╮ 
+ │   ✔ Propose      3/3 │  ✔ decide:plan  Haiku 5.5 · 43.8k tok · chose p2                                      11s │ 
+ │   ✔ Challenge    3/3 │                                                                                           │ 
+ │ ❯ ✔ Decide       1/1 │                                                                                           │ 
+ │   ✔ Build        1/1 │                                                                                           │ 
+ │   ✔ Cross-review 1/1 │                                                                                           │ 
+ │   ✔ Sign-off     1/1 │                                                                                           │ 
+ │   ✔ Merge        1/1 │                                                                                           │ 
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
+ ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save                                   
+                                                                                                                      
+ The same view on Sign-off, and on Challenge:                                                                         
+                                                                                                                      
+ ╭ Phases ──────────────┬ Sign-off · 1 agent ───────────────────────────────────────────────────────────────────────╮ 
+ │   ✔ Propose      3/3 │  ✔ signoff:per-key-rate-limit  Haiku 5.5 · 41.6k tok · read the task's change         10s │ 
+ │   ✔ Challenge    3/3 │                                                                                           │ 
+ │   ✔ Decide       1/1 │                                                                                           │ 
+ │   ✔ Build        1/1 │                                                                                           │ 
+ │   ✔ Cross-review 1/1 │                                                                                           │ 
+ │ ❯ ✔ Sign-off     1/1 │                                                                                           │ 
+ │   ✔ Merge        1/1 │                                                                                           │ 
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                                                      
+ ╭ Phases ──────────────┬ Challenge · 3 agents ─────────────────────────────────────────────────────────────────────╮ 
+ │   ✔ Propose      3/3 │  ✔ challenge:p1  Haiku 5.5 · 8.1k tok · against p2 and p3 · 3 points                  24s │ 
+ │ ❯ ✔ Challenge    3/3 │  ✔ challenge:p2  GPT 6 Luna · 7.6k tok · against p1 and p3 · 2 points                 29s │ 
+ │   ✔ Decide       1/1 │  ✔ challenge:p3  Gemini 3.8 Flash · 6.9k tok · against p1 and p2 · 2 points           21s │ 
+ │   ✔ Build        1/1 │                                                                                           │ 
+ │   ✔ Cross-review 1/1 │                                                                                           │ 
+ │   ✔ Sign-off     1/1 │                                                                                           │ 
+ │   ✔ Merge        1/1 │                                                                                           │ 
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                                                      
+  ✔ Per key rate limiter  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  11/11 · 2m35s · ↓ 302k tokens · merged onto main                      

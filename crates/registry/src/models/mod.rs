@@ -11,6 +11,8 @@ mod estimate;
 mod files;
 mod provider;
 pub mod reported;
+pub mod sources;
+pub mod suggested;
 mod trust;
 
 use std::collections::BTreeMap;
@@ -18,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock};
 
 use argonauts_core::ReportedModel;
+use argonauts_core::confine::Confine;
 use argonauts_core::future::BoxFuture;
 use argonauts_core::limits::CostEstimate;
 use argonauts_core::model_catalog::ModelCatalog;
@@ -28,12 +31,14 @@ use argonauts_core::settings::Settings;
 use time::OffsetDateTime;
 
 use crate::clis::every_builtin_cli;
-use discovery::{CLAUDE_LIST_FRESH_FOR, ClaudeSource, agent_enabled};
+use discovery::{CLAUDE_LIST_FRESH_FOR, ClaudeSource, Sources, agent_enabled};
+use sources::ListSource;
 
 pub use builtin::{
-    CLAUDE_CODE_ALIASES, builtin_endpoint, builtin_models, endpoint_settings, usual_efforts,
+    CLAUDE_CODE_ALIASES, builtin_endpoint, builtin_models, cli_entry, endpoint_settings,
+    usual_efforts,
 };
-pub use cache::ModelCache;
+pub use cache::{ModelCache, SourceListed};
 pub use catalog::{CatalogSource, FetchedCatalog, shipped_catalog};
 pub use files::{ModelTier, ModelsFile, read_registry_file, set_model_tier};
 pub(crate) use provider::resolve_provider;
@@ -46,10 +51,19 @@ pub fn registry(settings: &Settings, repo_root: Option<&Path>) -> Arc<dyn ModelR
     Arc::new(FileRegistry::load(settings, repo_root, &[]))
 }
 
+/// How OpenCode is asked for its models: inside `confine`, and in the repo only once you
+/// trusted it, since OpenCode started there loads the repo's plugins.
+#[derive(Debug, Clone)]
+pub struct AskOpenCode {
+    pub confine: Arc<dyn Confine>,
+    pub in_repo: bool,
+}
+
 /// The registry with the repo's `.argonauts/models.toml` counting when its hash is in
 /// `trusted_hashes`, starting from the model list `cache` keeps, when given, and reading
-/// Claude Code's models from `claude` and the model catalog from `catalog` once a day. It
-/// comes back whole, so its warnings and discovery's skipped sources can be shown.
+/// Claude Code's models from `claude` and the model catalog from `catalog` once a day, and
+/// asking OpenCode for its models as `opencode` says. It comes back whole, so its warnings
+/// and discovery's skipped sources can be shown.
 pub fn registry_with_trust(
     settings: &Settings,
     repo_root: Option<&Path>,
@@ -57,8 +71,13 @@ pub fn registry_with_trust(
     cache: Option<&Path>,
     claude: Option<ClaudeSource>,
     catalog: Option<CatalogSource>,
+    opencode: Option<AskOpenCode>,
 ) -> Arc<FileRegistry> {
     let mut registry = FileRegistry::load(settings, repo_root, trusted_hashes);
+    if let Some(opencode) = opencode {
+        registry = registry.with_confine(opencode.confine);
+        registry.sources.opencode_in_repo = opencode.in_repo;
+    }
     if let Some(cache) = cache {
         registry = registry.with_cache(cache);
     }
@@ -106,6 +125,12 @@ pub struct FileRegistry {
     /// later winning by id.
     cli_providers: Vec<(String, String)>,
     warnings: Vec<String>,
+    /// Where discovery asks from.
+    sources: Sources,
+    /// Lists given to it beside the ones discovery asks for itself.
+    lists: Vec<Arc<dyn ListSource>>,
+    /// When each source last listed, and whether its latest ask failed.
+    listed: RwLock<Vec<SourceListed>>,
 }
 
 impl FileRegistry {
@@ -113,6 +138,7 @@ impl FileRegistry {
     /// `.argonauts/models.toml` when the hash of its text is in `trusted_hashes`.
     pub fn load(settings: &Settings, repo_root: Option<&Path>, trusted_hashes: &[String]) -> Self {
         let mut registry = Self::empty(settings);
+        registry.sources.repo = repo_root.map(Path::to_owned);
         match Paths::from_env() {
             Ok(paths) => {
                 registry.add_global(&paths.global_models());
@@ -170,7 +196,22 @@ impl FileRegistry {
             home: None,
             cli_providers,
             warnings: Vec::new(),
+            sources: Sources::default(),
+            lists: Vec::new(),
+            listed: RwLock::new(Vec::new()),
         }
+    }
+
+    /// With the sandbox OpenCode is asked for its models in. Without one, OpenCode isn't asked.
+    pub fn with_confine(mut self, confine: Arc<dyn Confine>) -> Self {
+        self.sources.confine = Some(confine);
+        self
+    }
+
+    /// Asking OpenCode in the repo, which you trusted, so its config there may add models.
+    pub fn asking_opencode_in_the_repo(mut self) -> Self {
+        self.sources.opencode_in_repo = true;
+        self
     }
 
     /// Starts from the list `path` keeps, for the sources these settings still use, and keeps
@@ -198,6 +239,10 @@ impl FileRegistry {
                 .get_mut()
                 .unwrap_or_else(PoisonError::into_inner) = cache.claude_listed;
             *self
+                .listed
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner) = cache.sources;
+            *self
                 .fetched
                 .get_mut()
                 .unwrap_or_else(PoisonError::into_inner) = cache
@@ -213,6 +258,165 @@ impl FileRegistry {
     pub fn with_claude_source(mut self, source: ClaudeSource) -> Self {
         self.claude = Some(source);
         self
+    }
+
+    /// Discovery asks `source` too, beside the CLIs it runs itself.
+    pub fn with_source(mut self, source: Arc<dyn ListSource>) -> Self {
+        self.lists.push(source);
+        self
+    }
+
+    /// What discovery found for `cli` last, which a source that can't answer keeps.
+    fn discovered_for(&self, cli: &str) -> Vec<ModelEntry> {
+        self.discovered
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|entry| entry.id.agent == cli)
+            .cloned()
+            .collect()
+    }
+
+    /// Every source discovery asks: the CLIs it runs, the endpoints, and the lists it was given.
+    fn source_ids(&self) -> Vec<String> {
+        let mut ids = discovery::source_ids(&self.settings);
+        if self.settings.registry.discover {
+            ids.extend(
+                self.lists
+                    .iter()
+                    .filter(|source| agent_enabled(&self.settings, source.cli()))
+                    .map(|source| source.cli().to_owned()),
+            );
+        }
+        ids
+    }
+
+    /// `cli` listed at `at`, or failed with its last list kept.
+    fn mark_listed(&self, cli: &str, at: Option<OffsetDateTime>, failed: bool) {
+        let mut listed = self.listed.write().unwrap_or_else(PoisonError::into_inner);
+        match listed.iter_mut().find(|known| known.cli == cli) {
+            Some(known) => {
+                known.at = at.or(known.at);
+                known.failed = failed;
+            }
+            None => listed.push(SourceListed {
+                cli: cli.to_owned(),
+                at,
+                failed,
+            }),
+        }
+    }
+
+    fn listed_now(&self) -> Vec<SourceListed> {
+        self.listed
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// What one source answered, in place of what it listed before and where that stood, so
+    /// the other lists keep their order. OpenCode's models on a server here are held to that
+    /// server's window again, whichever of the two answered.
+    fn replace_listed(&self, cli: &str, models: Vec<ModelEntry>) {
+        let mut discovered = self
+            .discovered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        let at = discovered
+            .iter()
+            .position(|entry| entry.id.agent == cli)
+            .unwrap_or(discovered.len());
+        discovered.retain(|entry| entry.id.agent != cli);
+        let at = at.min(discovered.len());
+        discovered.splice(at..at, models);
+        discovery::hold_to_their_servers(&mut discovered);
+    }
+
+    /// The cache file as it stands now, after one source answered.
+    fn keep_in_cache(&self) {
+        let Some(path) = &self.cache else {
+            return;
+        };
+        let refreshed = self
+            .refreshed
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or_else(OffsetDateTime::now_utc);
+        let cache = ModelCache {
+            refreshed,
+            models: self
+                .discovered
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
+            skipped: self.discovery_skipped(),
+            claude_listed: *self
+                .claude_listed
+                .read()
+                .unwrap_or_else(PoisonError::into_inner),
+            catalog: self
+                .fetched
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .map(|(file, _)| file.clone()),
+            sources: self.listed_now(),
+        };
+        if let Err(e) = cache.write(path) {
+            self.note_skipped(format!(
+                "couldn't keep the model list in {}: {e}",
+                path.display()
+            ));
+        }
+    }
+
+    fn note_skipped(&self, why: String) {
+        let mut skipped = self.skipped.write().unwrap_or_else(PoisonError::into_inner);
+        if !skipped.contains(&why) {
+            skipped.push(why);
+        }
+    }
+
+    /// Asks one source again, keeping its last list when it fails.
+    async fn discover_one(&self, cli: &str) {
+        let answer = match self.lists.iter().find(|source| source.cli() == cli) {
+            Some(source) if self.source_ids().iter().any(|id| id == cli) => {
+                let last = self.discovered_for(cli);
+                let answer = source.list(&self.settings, last).await;
+                Some(match answer.failed {
+                    Some(why) => Err(why),
+                    None => Ok(answer.models),
+                })
+            }
+            Some(_) => None,
+            None => discovery::discover_source(&self.settings, &self.sources, cli).await,
+        };
+        match answer {
+            None => return,
+            Some(Ok(models)) => {
+                self.replace_listed(cli, models);
+                self.mark_listed(cli, Some(OffsetDateTime::now_utc()), false);
+            }
+            Some(Err(why)) => {
+                self.note_skipped(discovery::listing_failed(cli, &why));
+                self.mark_listed(cli, None, true);
+            }
+        }
+        self.keep_in_cache();
+    }
+
+    /// Asks each source the app gave, one after another, each with what it listed before.
+    async fn ask_sources(&self) -> Vec<(String, sources::Answer)> {
+        let mut answers = Vec::new();
+        for source in &self.lists {
+            if !agent_enabled(&self.settings, source.cli()) {
+                continue;
+            }
+            let last = self.discovered_for(source.cli());
+            let answer = source.list(&self.settings, last).await;
+            answers.push((source.cli().to_owned(), answer));
+        }
+        answers
     }
 
     /// The model catalog comes from `source` at most once a day, the one fetched last staying
@@ -387,9 +591,17 @@ impl FileRegistry {
     }
 }
 
-/// The cached entries whose CLI is still on or whose endpoint is still configured, with
-/// a CLI's access and cost from the settings now, since you may have changed its auth.
+/// The cached entries whose CLI is still on or whose endpoint is still asked. A CLI's model
+/// takes its access and cost from the settings now, since you may have changed its auth,
+/// except what the CLI's own listing decided: a model on this computer stays local, and a
+/// cost the listing gave stays. An endpoint is asked while you have a table for it, and a
+/// known server on this computer while `registry.local_servers` is on.
 fn still_listed(settings: &Settings, cached: Vec<ModelEntry>) -> Vec<ModelEntry> {
+    let asked = |id: &str| {
+        settings.endpoints.contains_key(id)
+            || (settings.registry.local_servers
+                && builtin_endpoint(id).is_some_and(|endpoint| endpoint.local))
+    };
     cached
         .into_iter()
         .filter(|entry| match entry.kind {
@@ -397,11 +609,15 @@ fn still_listed(settings: &Settings, cached: Vec<ModelEntry>) -> Vec<ModelEntry>
                 .agents
                 .get(&entry.id.agent)
                 .is_none_or(|agent| agent.enabled),
-            RegistryKind::Endpoint => settings.endpoints.contains_key(&entry.id.agent),
+            RegistryKind::Endpoint => asked(&entry.id.agent),
         })
         .map(|mut entry| {
-            if entry.kind == RegistryKind::Cli {
-                (entry.access, entry.cost) = builtin::cli_access(settings, &entry.id.agent);
+            if entry.kind == RegistryKind::Cli && entry.access != ModelAccess::Local {
+                let (access, cost) = builtin::cli_access(settings, &entry.id.agent);
+                entry.access = access;
+                if !entry.listed_cost {
+                    entry.cost = cost;
+                }
             }
             entry
         })
@@ -486,11 +702,22 @@ impl ModelRegistry for FileRegistry {
                     None => None,
                 }
             };
-            let (mut found, claude, fetched) = tokio::join!(
-                discovery::discover_with_reasons(&self.settings),
+            let (mut found, claude, fetched, answers) = tokio::join!(
+                discovery::discover_with_reasons(&self.settings, &self.sources),
                 claude,
-                fetch
+                fetch,
+                self.ask_sources(),
             );
+            for (cli, answer) in answers {
+                match answer.failed {
+                    // What it listed before stays, as for a CLI discovery runs itself.
+                    Some(why) => {
+                        found.skipped.push(format!("{cli}: {why}"));
+                        found.failed.push(cli);
+                    }
+                    None => found.models.extend(answer.models),
+                }
+            }
             match fetched {
                 Some(Ok(fetched)) => {
                     *self.fetched.write().unwrap_or_else(PoisonError::into_inner) = Some(fetched);
@@ -546,6 +773,11 @@ impl ModelRegistry for FileRegistry {
                 (models, kept_claude)
             };
             let mut skipped = found.skipped;
+            for cli in self.source_ids() {
+                let failed = found.failed.contains(&cli);
+                self.mark_listed(&cli, (!failed).then_some(refreshed), failed);
+            }
+            let sources = self.listed_now();
             if let Some(path) = &self.cache {
                 let catalog = self
                     .fetched
@@ -559,6 +791,7 @@ impl ModelRegistry for FileRegistry {
                     skipped: skipped.clone(),
                     claude_listed,
                     catalog,
+                    sources,
                 };
                 if let Err(e) = cache.write(path) {
                     skipped.push(format!(
@@ -577,6 +810,25 @@ impl ModelRegistry for FileRegistry {
                 .write()
                 .unwrap_or_else(PoisonError::into_inner) = claude_listed;
             found.models.into_iter().chain(kept_claude).collect()
+        })
+    }
+
+    /// An endpoint's own server, or for an OpenCode model on a server here, that server.
+    fn loaded_window(&self, worker: &ModelRef) -> BoxFuture<'_, Option<u64>> {
+        let served = match worker.model.as_deref() {
+            Some(model) if worker.agent == "opencode" => model
+                .split_once('/')
+                .and_then(|(provider, model)| {
+                    Some((discovery::server_for_opencode(provider)?, model))
+                })
+                .map(|(endpoint, model)| (endpoint.to_owned(), model.to_owned())),
+            Some(model) => endpoint_settings(&self.settings, &worker.agent)
+                .map(|_| (worker.agent.clone(), model.to_owned())),
+            None => None,
+        };
+        Box::pin(async move {
+            let (endpoint, model) = served?;
+            discovery::loaded_window(&self.settings, &endpoint, &model).await
         })
     }
 
@@ -606,6 +858,28 @@ impl ModelRegistry for FileRegistry {
             &reported,
             &self.yours,
         )
+    }
+
+    fn sources(&self) -> Vec<String> {
+        self.source_ids()
+    }
+
+    fn discover_source<'a>(&'a self, cli: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(self.discover_one(cli))
+    }
+
+    fn source_listed(&self, cli: &str) -> (Option<OffsetDateTime>, bool) {
+        let known = self.listed_now().into_iter().find(|known| known.cli == cli);
+        match known {
+            Some(known) => (known.at.or_else(|| self.refreshed()), known.failed),
+            None => (self.refreshed(), false),
+        }
+    }
+
+    fn source_note(&self, cli: &str) -> Option<String> {
+        (cli == "opencode")
+            .then(|| discovery::opencode_note(&self.sources))
+            .flatten()
     }
 
     fn models_reported(&self, cli: &str, models: &[ReportedModel]) {
@@ -848,6 +1122,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(with_trust.get(&worker).and_then(|e| e.launch).is_some());
     }
@@ -896,7 +1171,8 @@ mod tests {
     #[tokio::test]
     async fn discovery_keeps_why_a_source_was_skipped() {
         let mut settings = Settings::default();
-        for agent in ["claude-code", "codex", "antigravity-cli"] {
+        settings.registry.local_servers = false;
+        for agent in ["claude-code", "codex", "antigravity-cli", "opencode"] {
             settings.agents.insert(
                 agent.to_owned(),
                 AgentSettings {
@@ -916,8 +1192,12 @@ mod tests {
         assert!(registry.discovery_skipped().is_empty());
         assert!(registry.discover().await.is_empty());
         let skipped = registry.discovery_skipped();
-        assert_eq!(skipped.len(), 1, "{skipped:?}");
-        assert!(skipped[0].starts_with("endpoint gone: "), "{skipped:?}");
+        assert_eq!(skipped.len(), 2, "{skipped:?}");
+        assert_eq!(
+            skipped[0],
+            "Claude Code, Codex, Antigravity CLI, OpenCode: off in your settings"
+        );
+        assert!(skipped[1].starts_with("endpoint gone: "), "{skipped:?}");
     }
 
     /// A fake `codex` that prints `fixture` for `codex debug models`, and fails otherwise.
@@ -934,10 +1214,11 @@ mod tests {
         path
     }
 
-    /// Codex alone, at `binary`, so no real CLI runs.
+    /// Codex alone, at `binary`, so no real CLI or server runs.
     fn codex_only(binary: PathBuf) -> Settings {
         let mut settings = Settings::default();
-        for agent in ["claude-code", "antigravity-cli"] {
+        settings.registry.local_servers = false;
+        for agent in ["claude-code", "antigravity-cli", "opencode"] {
             settings.agents.get_mut(agent).unwrap().enabled = false;
         }
         settings.agents.get_mut("codex").unwrap().binary = Some(binary);
@@ -983,7 +1264,8 @@ mod tests {
         let broken = FileRegistry::from_files(&codex_only(failing), None, None).with_cache(&cache);
         assert!(broken.discover().await.is_empty());
         assert_eq!(codex_models(&broken).len(), 7);
-        assert_eq!(broken.discovery_skipped().len(), 1);
+        // Codex's failure, after the CLIs turned off.
+        assert_eq!(broken.discovery_skipped().len(), 2);
         assert_eq!(ModelCache::read(&cache).unwrap().models.len(), 7);
 
         // A CLI you turned off, or an API key you switched to, shows at once.
@@ -1023,6 +1305,7 @@ mod tests {
             skipped: Vec::new(),
             claude_listed: None,
             catalog: None,
+            sources: Vec::new(),
         }
         .write(&cache)
         .unwrap();

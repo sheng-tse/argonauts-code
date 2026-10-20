@@ -94,6 +94,7 @@ fn a_fallback_at_work_reads_as_its_picture() {
 #[test]
 fn a_run_paused_on_a_cli_that_is_down_reads_as_its_picture() {
     let mut picture = picture!("workflow_cli_down");
+    build_in_its_own_column(&mut picture);
     picture.respell_tokens(6, "44.0k", "44k");
     // The picture says paused, which now only a pause you asked for reads: these tasks wait
     // for their CLI.
@@ -106,6 +107,14 @@ fn a_run_paused_on_a_cli_that_is_down_reads_as_its_picture() {
     let mut view = WorkflowView::new(examples::cli_down());
     // The question about the CLI takes the keys' row and the rows under it.
     picture.assert_drawn(0..11, &drawn(&mut view, 12), 0);
+}
+
+/// Build's rows in the column Build's own labels give them, where the picture gives every
+/// phase the widest label of the whole workflow.
+fn build_in_its_own_column(picture: &mut Picture) {
+    let width = "build:due-tests  ".len();
+    picture.label_column(6, "build:due-flag", width);
+    picture.label_column(7, "build:due-tests", width);
 }
 
 /// The wait under the header loses a second as each runs out, while every agent is paused,
@@ -285,9 +294,32 @@ fn r_twice_starts_an_agent_a_script_called_over() {
     assert_eq!(said, "build:due-flag has no task of its own to start again");
 }
 
+/// The Merge phase's rows of `picture` in the column Merge's own labels give them. The pictures
+/// of a merged run give every phase the widest label of the whole workflow; each phase is laid
+/// out by its own, as Claude Code's view lays out its own.
+fn merge_in_its_own_column(picture: &mut Picture, rows: &[usize], width: usize) {
+    for &row in rows {
+        let text = picture.text(row..row + 1).remove(0);
+        let label = [
+            "merge the tasks",
+            "settle conflict",
+            "catch up with main",
+            "fix after main moved",
+            "final check",
+            "commit message",
+            "merge onto main",
+        ]
+        .into_iter()
+        .find(|label| text.contains(&format!("{label}  ")))
+        .unwrap_or_else(|| panic!("row {row} names no Merge step: {text}"));
+        picture.label_column(row, label, width);
+    }
+}
+
 #[test]
 fn a_merged_run_reads_as_its_picture() {
-    let picture = picture!("workflow_done");
+    let mut picture = picture!("workflow_done");
+    merge_in_its_own_column(&mut picture, &[6, 7, 8], "merge onto main  ".len());
     let mut view = WorkflowView::new(examples::done(Merge::Clean));
     picture.assert_drawn(0..12, &drawn(&mut view, 12), 0);
 }
@@ -365,7 +397,18 @@ fn the_merge_phase_of_a_folder_without_git_reads_as_its_picture() {
 
 #[test]
 fn the_merge_phase_reads_as_its_pictures_in_each_case() {
-    let picture = picture!("merge_cases");
+    let mut picture = picture!("merge_cases");
+    merge_in_its_own_column(&mut picture, &[2, 3, 4], "merge onto main  ".len());
+    merge_in_its_own_column(
+        &mut picture,
+        &[10, 11, 12, 13, 14],
+        "settle conflict  ".len(),
+    );
+    merge_in_its_own_column(
+        &mut picture,
+        &[19, 20, 21, 22, 23, 24],
+        "fix after main moved  ".len(),
+    );
     for (merge, rows) in [
         (Merge::Clean, 1..7),
         (Merge::Conflict, 9..16),
@@ -509,4 +552,29 @@ fn claude_codes_own_workflow_draws_in_the_same_view() {
         keys.starts_with(" ↑↓ select · enter opens its agents"),
         "{keys}"
     );
+}
+
+/// Claude Code's own workflow view in this frame, its box, divider and pane titles in the bright
+/// text colour. The picture leaves out the box's empty rows, so its bottom edge and the keys
+/// under it are checked where the screen draws them.
+#[test]
+fn the_frame_is_bright_as_claude_codes_is() {
+    const ROWS: u16 = 14;
+    let mut picture = picture!("workflow_frame_after");
+    // The picture's rows are Claude Code's, with one space after the longest label and no
+    // times. The screen's rows keep their own two spaces and each agent's time, here none.
+    let dim = dark().style(crate::theme::Role::Dim).fg;
+    for row in 5..8 {
+        picture.reword(row, "Opus 5.5", " Opus 5.5");
+        let edge = picture.text(row..row + 1)[0].chars().count() - 1;
+        picture.write(row, edge - 3, "0s", dim);
+    }
+    let mut view = WorkflowView::new(examples::ui_kit());
+    // It opens on Look, which runs; Build opened, with the keys in its agents.
+    press(&mut view, KeyCode::Up);
+    press(&mut view, KeyCode::Up);
+    press(&mut view, KeyCode::Enter);
+    let buf = drawn(&mut view, ROWS);
+    picture.assert_drawn(0..9, &buf, 0);
+    picture.assert_drawn(9..11, &buf, ROWS - 2);
 }

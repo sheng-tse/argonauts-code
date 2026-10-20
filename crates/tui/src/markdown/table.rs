@@ -1,6 +1,7 @@
-//! Tables draw in box characters. Columns shrink to fit by wrapping their cells, widest first,
-//! but never below their longest word (capped) so values stay readable. A table that still
-//! doesn't fit stacks each row as a record of `Header: value` lines.
+//! Tables draw in box characters as Claude Code draws them: a rule between every row, headers
+//! centred, each cell in the middle of its row, and the borders in the text colour. Columns get
+//! Claude Code's widths. A table whose cell needs more than four lines, or that is wider than its
+//! room, is drawn as records of `Header: value` lines instead.
 
 use std::ops::Range;
 
@@ -13,10 +14,14 @@ use crate::theme::{Role, Theme};
 
 /// Each column's frame cells besides its text: the border on its left and a space each side.
 const COLUMN_FRAME: usize = 3;
-/// The narrowest a column shrinks to, unless its content is narrower.
+/// The narrowest a column gets.
 const MIN_COLUMN: usize = 3;
-/// A long word only protects its column up to this width.
-const WORD_FLOOR_CAP: usize = 12;
+/// A table with a cell that needs more lines than this is drawn as records.
+const MOST_LINES: usize = 4;
+/// Rows drawn; the ones past them are counted on a line of their own.
+const MOST_ROWS: usize = 200;
+/// The longest line between records.
+const RECORD_RULE: usize = 40;
 
 type Cell = Vec<Span<'static>>;
 
@@ -65,176 +70,193 @@ impl TableBuilder {
         self.rows.push(std::mem::take(&mut self.row));
     }
 
-    /// The table in a box, or as records when the box doesn't fit in `width` columns. `None`
-    /// only when there is no room at all.
-    pub(super) fn layout(&self, width: usize, theme: &Theme) -> Option<Vec<Vec<Span<'static>>>> {
+    /// The table in a box at most `room` cells wide, or as records in `width` columns when the
+    /// box doesn't fit. `None` only when there is no room at all.
+    pub(super) fn layout(
+        &self,
+        width: usize,
+        room: usize,
+        theme: &Theme,
+    ) -> Option<Vec<Vec<Span<'static>>>> {
         if width == 0 {
             return None;
         }
+        let Some((header, body)) = self.rows.split_first() else {
+            return Some(Vec::new());
+        };
         let columns = self
             .aligns
             .len()
             .max(self.rows.iter().map(Vec::len).max().unwrap_or(0));
-        if columns == 0 || self.rows.is_empty() {
+        if columns == 0 {
             return Some(Vec::new());
         }
-        let Some(widths) = self.column_widths(columns, width) else {
-            return Some(self.records(width));
-        };
-        let widths = self.fitted(widths);
+        let hidden = body.len().saturating_sub(MOST_ROWS);
+        let body = &body[..body.len() - hidden];
+        let widths = column_widths(header, body, columns, room);
         let frame = Frame::for_theme(theme);
-        let bold = Style::new().add_modifier(Modifier::BOLD);
+        let wrapped = |row: &[Cell]| -> Vec<Vec<Line<'static>>> {
+            widths
+                .iter()
+                .enumerate()
+                .map(|(col, width)| wrap_cell(row.get(col), *width))
+                .collect()
+        };
+        let header_lines = wrapped(header);
+        let body_lines: Vec<_> = body.iter().map(|row| wrapped(row)).collect();
+        let tallest = std::iter::once(&header_lines)
+            .chain(&body_lines)
+            .flatten()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(1);
+        let box_width = 1 + widths
+            .iter()
+            .map(|width| width + COLUMN_FRAME)
+            .sum::<usize>();
+        if tallest > MOST_LINES || box_width > room {
+            return Some(self.records(header, body, hidden, width, &frame));
+        }
         let mut out = vec![frame.rule(&widths, frame.top)];
-        for (i, row) in self.rows.iter().enumerate() {
-            let header = i == 0;
-            out.extend(self.row_lines(row, &widths, header.then_some(bold), &frame));
-            if header && self.rows.len() > 1 {
+        out.extend(self.row_lines(header_lines, &widths, true, &frame));
+        out.push(frame.rule(&widths, frame.middle));
+        let last = body_lines.len().saturating_sub(1);
+        for (at, row) in body_lines.into_iter().enumerate() {
+            out.extend(self.row_lines(row, &widths, false, &frame));
+            if at < last {
                 out.push(frame.rule(&widths, frame.middle));
             }
         }
         out.push(frame.rule(&widths, frame.bottom));
+        if hidden > 0 {
+            out.push(vec![Span::raw(more_rows(hidden))]);
+        }
         Some(out)
     }
 
-    /// The narrow layout: each row as a record, a `Header: value` line per cell, with a blank
-    /// line between records.
-    fn records(&self, width: usize) -> Vec<Cell> {
-        let Some((header, body)) = self.rows.split_first() else {
-            return Vec::new();
-        };
+    /// The narrow layout, as Claude Code draws it: each row a record of a bold `Header:` line per
+    /// cell with its value beside it, the value's later lines from the left edge, and a line
+    /// between records.
+    fn records(
+        &self,
+        header: &[Cell],
+        body: &[Vec<Cell>],
+        hidden: usize,
+        width: usize,
+        frame: &Frame,
+    ) -> Vec<Cell> {
         let bold = Style::new().add_modifier(Modifier::BOLD);
-        let label = |col: usize| -> Cell {
-            let mut label = header.get(col).cloned().unwrap_or_default();
-            for span in &mut label {
-                span.style = span.style.patch(bold);
-            }
-            label
-        };
-        // Wrapped values hang under their label, when there is room for that.
-        let hang: Vec<Span<'static>> = if width >= 8 {
-            vec![Span::raw("  ")]
+        let rule = vec![Span::styled(
+            frame
+                .across
+                .repeat(width.saturating_sub(1).min(RECORD_RULE)),
+            frame.style,
+        )];
+        // A header row alone shows its cells as values.
+        let rows: Vec<Vec<Cell>> = if body.is_empty() {
+            vec![header.to_vec()]
         } else {
-            Vec::new()
+            body.to_vec()
         };
-        if body.is_empty() {
-            return (0..header.len())
-                .flat_map(|col| wrap_spans(&label(col), width, &[], &hang))
-                .map(|line| line.spans)
-                .collect();
-        }
-        let mut out = Vec::new();
-        for (i, row) in body.iter().enumerate() {
-            if i > 0 {
-                out.push(Vec::new());
-            }
+        let labelled = !body.is_empty();
+        let mut out: Vec<Cell> = Vec::new();
+        for row in &rows {
+            let mut record = Vec::new();
             for (col, cell) in row.iter().enumerate() {
-                let mut spans = label(col);
-                if spans_width(&spans) > 0 {
-                    spans.push(Span::styled(":", bold));
-                    spans.push(Span::raw(" "));
+                let label: String = labelled
+                    .then(|| header.get(col))
+                    .flatten()
+                    .map(|label| plain(label).trim().to_owned())
+                    .unwrap_or_default();
+                let value = collapsed(cell);
+                if label.is_empty() && spans_width(&value) == 0 {
+                    continue;
                 }
-                spans.extend(cell.iter().cloned());
-                let lines = wrap_spans(&spans, width, &[], &hang);
-                out.extend(lines.into_iter().map(|line| line.spans));
+                let first_room = if label.is_empty() {
+                    width.saturating_sub(1)
+                } else {
+                    width.saturating_sub(str_width(&label) + 3)
+                };
+                let lines = wrap_spans(&value, first_room.max(10), &[], &[]);
+                let (first, later) = lines
+                    .split_first()
+                    .map_or((Vec::new(), &[][..]), |(first, later)| {
+                        (first.spans.clone(), later)
+                    });
+                let mut line = Vec::new();
+                if !label.is_empty() {
+                    line.push(Span::styled(format!("{label}:"), bold));
+                    line.push(Span::raw(" "));
+                }
+                line.extend(first);
+                record.push(line);
+                if !later.is_empty() {
+                    let rest: Vec<Span<'static>> = later
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(at, line)| {
+                            let gap = (at > 0).then(|| Span::raw(" "));
+                            gap.into_iter().chain(line.spans.iter().cloned())
+                        })
+                        .collect();
+                    record.extend(
+                        wrap_spans(&rest, width.saturating_sub(3).max(1), &[], &[])
+                            .into_iter()
+                            .map(|line| line.spans)
+                            .filter(|spans| spans_width(spans) > 0),
+                    );
+                }
             }
+            if record.is_empty() {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push(rule.clone());
+            }
+            out.extend(record);
+        }
+        if hidden > 0 {
+            if !out.is_empty() {
+                out.push(rule);
+            }
+            out.push(vec![Span::raw(more_rows(hidden))]);
         }
         out
     }
 
-    fn column_widths(&self, columns: usize, width: usize) -> Option<Vec<usize>> {
-        let cell_at = |row: &Vec<Cell>, col: usize| row.get(col).map_or(0, |c| spans_width(c));
-        let mut widths: Vec<usize> = (0..columns)
-            .map(|col| {
-                self.rows
-                    .iter()
-                    .map(|row| cell_at(row, col))
-                    .max()
-                    .unwrap_or(0)
-            })
-            .collect();
-        let floors: Vec<usize> = (0..columns)
-            .map(|col| {
-                let word = self
-                    .rows
-                    .iter()
-                    .filter_map(|row| row.get(col))
-                    .map(|cell| longest_word(cell))
-                    .max()
-                    .unwrap_or(0);
-                word.clamp(MIN_COLUMN, WORD_FLOOR_CAP).min(widths[col])
-            })
-            .collect();
-        let frame = COLUMN_FRAME * columns + 1;
-        let floor_total: usize = floors.iter().sum::<usize>() + frame;
-        if floor_total > width {
-            return None;
-        }
-        let mut total: usize = widths.iter().sum::<usize>() + frame;
-        while total > width {
-            let (col, _) = widths
-                .iter()
-                .zip(&floors)
-                .enumerate()
-                .map(|(col, (w, floor))| (col, w.saturating_sub(*floor)))
-                .max_by_key(|(_, slack)| *slack)
-                .filter(|(_, slack)| *slack > 0)?;
-            widths[col] -= 1;
-            total -= 1;
-        }
-        Some(widths)
-    }
-
-    /// Narrows each column to what its wrapped cells really take, so the box is no wider than
-    /// the text.
-    fn fitted(&self, mut widths: Vec<usize>) -> Vec<usize> {
-        for (col, width) in widths.iter_mut().enumerate() {
-            let used = self
-                .rows
-                .iter()
-                .filter_map(|row| row.get(col))
-                .flat_map(|cell| wrap_spans(cell, *width, &[], &[]))
-                .map(|line| spans_width(&line.spans))
-                .max()
-                .unwrap_or(0);
-            *width = used.min(*width);
-        }
-        widths
-    }
-
+    /// A row's lines in the box: each cell in the middle of the row, half the lines it lacks
+    /// above it (rounded down), a header cell centred and a body cell aligned as its column.
     fn row_lines(
         &self,
-        row: &[Cell],
+        wrapped: Vec<Vec<Line<'static>>>,
         widths: &[usize],
-        patch: Option<Style>,
+        header: bool,
         frame: &Frame,
     ) -> Vec<Cell> {
-        let wrapped: Vec<Vec<Line<'static>>> = widths
+        let height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
+        let tops: Vec<usize> = wrapped
             .iter()
-            .enumerate()
-            .map(|(col, width)| {
-                let mut cell = row.get(col).cloned().unwrap_or_default();
-                if let Some(patch) = patch {
-                    for span in &mut cell {
-                        span.style = span.style.patch(patch);
-                    }
-                }
-                wrap_spans(&cell, *width, &[], &[])
-            })
+            .map(|lines| (height - lines.len()) / 2)
             .collect();
-        let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
         (0..height)
             .map(|line| {
                 let mut spans: Cell = vec![frame.edge()];
                 for (col, width) in widths.iter().enumerate() {
                     spans.push(Span::raw(" "));
-                    let content = wrapped[col]
-                        .get(line)
+                    let content = line
+                        .checked_sub(tops[col])
+                        .and_then(|at| wrapped[col].get(at))
                         .map(|l| l.spans.clone())
                         .unwrap_or_default();
                     let room = width.saturating_sub(spans_width(&content));
-                    let (left, right) = match self.aligns.get(col) {
-                        Some(Alignment::Right) => (room, 0),
-                        Some(Alignment::Center) => (room / 2, room - room / 2),
+                    let align = if header {
+                        Alignment::Center
+                    } else {
+                        self.aligns.get(col).copied().unwrap_or(Alignment::None)
+                    };
+                    let (left, right) = match align {
+                        Alignment::Right => (room, 0),
+                        Alignment::Center => (room / 2, room - room / 2),
                         _ => (0, room),
                     };
                     if left > 0 {
@@ -250,6 +272,119 @@ impl TableBuilder {
     }
 }
 
+/// Claude Code's widths. Each column wants its longest cell and needs its longest word, never
+/// under three cells, and the text gets `room` less the borders and padding. When every column's
+/// longest cell fits, that is its width. Otherwise each gets its longest word and a share of what
+/// is left in proportion to how much more it wants, rounded down. When even the longest words
+/// don't fit, they shrink in proportion, and words break.
+fn column_widths(header: &[Cell], body: &[Vec<Cell>], columns: usize, room: usize) -> Vec<usize> {
+    // A column's widest `of` its cells, the header's included.
+    let measure = |col: usize, of: fn(&Cell) -> usize| -> usize {
+        std::iter::once(header)
+            .chain(body.iter().map(Vec::as_slice))
+            .filter_map(|row| row.get(col))
+            .map(of)
+            .max()
+            .unwrap_or(0)
+            .max(MIN_COLUMN)
+    };
+    let wants: Vec<usize> = (0..columns)
+        .map(|col| measure(col, |cell| spans_width(cell)))
+        .collect();
+    let needs: Vec<usize> = (0..columns)
+        .map(|col| measure(col, |cell| longest_word(cell)))
+        .collect();
+    let text_room = room
+        .saturating_sub(1 + COLUMN_FRAME * columns)
+        .max(MIN_COLUMN * columns);
+    let (wanted, needed) = (wants.iter().sum::<usize>(), needs.iter().sum::<usize>());
+    if wanted <= text_room {
+        return wants;
+    }
+    if needed <= text_room {
+        let spare = (text_room - needed) as f64;
+        let more: Vec<usize> = wants
+            .iter()
+            .zip(&needs)
+            .map(|(want, need)| want - need)
+            .collect();
+        let all_more = more.iter().sum::<usize>() as f64;
+        // In Claude Code's order: each column's share of the whole, times what is left.
+        return needs
+            .iter()
+            .zip(&more)
+            .map(|(need, more)| need + (*more as f64 / all_more * spare).floor() as usize)
+            .collect();
+    }
+    let scale = text_room as f64 / needed as f64;
+    needs
+        .iter()
+        .map(|need| ((*need as f64 * scale).floor() as usize).max(MIN_COLUMN))
+        .collect()
+}
+
+/// A cell's lines at `width`. A word wider than its column breaks, which happens only once the
+/// longest words were shrunk to fit.
+fn wrap_cell(cell: Option<&Cell>, width: usize) -> Vec<Line<'static>> {
+    let cell = cell.cloned().unwrap_or_default();
+    let lines: Vec<Line<'static>> = wrap_spans(&cell, width.max(1), &[], &[])
+        .into_iter()
+        .filter(|line| spans_width(&line.spans) > 0)
+        .collect();
+    if lines.is_empty() {
+        vec![Line::default()]
+    } else {
+        lines
+    }
+}
+
+/// `… 12 more rows not shown`, as Claude Code counts the rows past its 200.
+fn more_rows(count: usize) -> String {
+    let rows = if count == 1 { "row" } else { "rows" };
+    format!("… {} more {rows} not shown", thousands(count))
+}
+
+fn thousands(count: usize) -> String {
+    let digits = count.to_string();
+    let mut out = String::new();
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// A cell's text without its styles.
+fn plain(cell: &[Span<'_>]) -> String {
+    cell.iter().map(|span| span.content.as_ref()).collect()
+}
+
+/// A cell on one line, its runs of whitespace one space each, styles kept.
+fn collapsed(cell: &[Span<'static>]) -> Cell {
+    let mut out: Cell = Vec::new();
+    let mut gap = false;
+    for span in cell {
+        let mut text = String::new();
+        for c in span.content.chars() {
+            if c.is_whitespace() {
+                gap = true;
+                continue;
+            }
+            if gap && (!text.is_empty() || !out.is_empty()) {
+                text.push(' ');
+            }
+            gap = false;
+            text.push(c);
+        }
+        if !text.is_empty() {
+            out.push(Span::styled(text, span.style));
+        }
+    }
+    out
+}
+
 /// The box's pieces. Joints run left, middle, right. ASCII glyph sets get `+`, `-`, and `|`.
 struct Frame {
     across: &'static str,
@@ -262,7 +397,9 @@ struct Frame {
 
 impl Frame {
     fn for_theme(theme: &Theme) -> Self {
-        let style = theme.style(Role::Dim);
+        // Claude Code writes the box with no colour of its own, so it takes the terminal's text
+        // colour, as the words do.
+        let style = theme.style(Role::Text);
         if theme.glyphs.rule.is_ascii() {
             return Self {
                 across: "-",

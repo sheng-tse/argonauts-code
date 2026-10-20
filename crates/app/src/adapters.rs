@@ -3,8 +3,14 @@ use std::sync::Arc;
 use argonauts_adapter_antigravity_cli::AntigravityCli;
 use argonauts_adapter_claude_code::ClaudeCodeAdapter;
 use argonauts_adapter_codex::CodexAdapter;
-use argonauts_adapter_opencode::OpenCodeAdapter;
+use argonauts_adapter_opencode::{LocalUrls, OpenCodeAdapter};
+use argonauts_conductor::doctor::resolve_binary;
 use argonauts_core::Adapter;
+use argonauts_core::runtimes::RUNTIMES;
+use argonauts_core::settings::Settings;
+use argonauts_registry::models::endpoint_settings;
+
+use crate::host::clis::RepoModels;
 
 /// Claude Code, Codex, Antigravity CLI, and OpenCode, in the order the setup lists them.
 pub fn builtin_adapters() -> Vec<Arc<dyn Adapter>> {
@@ -14,6 +20,50 @@ pub fn builtin_adapters() -> Vec<Arc<dyn Adapter>> {
         Arc::new(AntigravityCli::new()),
         Arc::new(OpenCodeAdapter::new()),
     ]
+}
+
+/// [`builtin_adapters`] as `settings` set them up for `repo`, which only OpenCode needs.
+pub(crate) fn builtin_adapters_for(
+    settings: &Settings,
+    repo: Option<&RepoModels>,
+) -> Vec<Arc<dyn Adapter>> {
+    builtin_adapters()
+        .into_iter()
+        .map(|adapter| match adapter.id() {
+            "opencode" => Arc::new(opencode(settings, repo)) as Arc<dyn Adapter>,
+            _ => adapter,
+        })
+        .collect()
+}
+
+/// OpenCode as `settings` set it up: told where your local runtimes listen, and given its
+/// program for listing its own sessions, found as doctor finds a program it runs outside the
+/// sandbox, with the sandbox those lists run in for `repo`. One that can't be found that way
+/// lists none.
+pub(crate) fn opencode(settings: &Settings, repo: Option<&RepoModels>) -> OpenCodeAdapter {
+    let adapter = OpenCodeAdapter::with_local_urls(opencode_local_urls(settings));
+    let configured = settings
+        .agents
+        .get(adapter.id())
+        .and_then(|agent| agent.binary.as_deref());
+    match resolve_binary(&adapter, configured) {
+        Ok(program) => adapter.with_program(program, crate::confine::read_only(settings, repo)),
+        Err(_) => adapter,
+    }
+}
+
+/// Your `[endpoints.<runtime>]` addresses for the local runtimes, which OpenCode is told for a
+/// local model in place of its own defaults.
+pub(crate) fn opencode_local_urls(settings: &Settings) -> LocalUrls {
+    RUNTIMES
+        .iter()
+        .map(|runtime| runtime.id)
+        .fold(LocalUrls::new(), |urls, id| {
+            match endpoint_settings(settings, id).and_then(|endpoint| endpoint.base_url) {
+                Some(base_url) => urls.with(id, base_url),
+                None => urls,
+            }
+        })
 }
 
 #[cfg(test)]
@@ -41,6 +91,7 @@ mod tests {
             skipped: Vec::new(),
             claude_listed: None,
             catalog: None,
+            sources: Vec::new(),
         }
         .write(&cache)
         .unwrap();

@@ -281,6 +281,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "time",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -359,6 +362,7 @@ dependencies = [
  "argonauts-adapter-antigravity-cli",
  "argonauts-adapter-claude-code",
  "argonauts-adapter-codex",
+ "argonauts-adapter-opencode",
  "argonauts-core",
  "argonauts-testkit",
  "futures",
@@ -509,6 +513,7 @@ dependencies = [
 name = "argonauts-registry"
 version = "0.0.1"
 dependencies = [
+ "argonauts-adapter-opencode",
  "argonauts-core",
  "argonauts-testkit",
  "regex",
@@ -587,8 +592,10 @@ dependencies = [
  "argonauts-adapter-claude-code",
  "argonauts-core",
  "argonauts-testkit",
+ "base64 0.22.1",
  "crossterm",
  "dirs",
+ "flate2",
  "futures",
  "insta",
  "nix 0.31.3",

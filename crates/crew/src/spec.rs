@@ -303,6 +303,8 @@ pub fn sandbox(
         proxy_port: None,
         ask_port: None,
         closed: Vec::new(),
+        listable: Vec::new(),
+        loopback: false,
     })
 }
 

@@ -114,7 +114,7 @@ impl InputRouter {
                 cx.model.bottom.composer.restore(texts);
                 cx.model.bottom.menus.text_changed();
             }
-            AppEvent::ConversationCleared => cx.model.bottom.composer.start_conversation(),
+            AppEvent::ConversationCleared { .. } => cx.model.bottom.composer.start_conversation(),
             AppEvent::ConversationResumed { turns, .. } => {
                 let yours = turns
                     .iter()
@@ -641,6 +641,13 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
                 section: Some("ui".into()),
             },
         }),
+        // Its rows come a while later, so the command shows at once, above them.
+        (_, SlashCommand::Update) => {
+            cx.model.history.push(UserMessage::command(typed.trim()));
+            cx.out.send(UiCommand::Slash {
+                command: SlashCommand::Update,
+            });
+        }
         (_, command) => cx.out.send(UiCommand::Slash { command }),
     }
 }

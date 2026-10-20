@@ -88,6 +88,7 @@ pub fn theme_for(ui: &UiSettings, env: &ColorEnv, background_is_light: Option<bo
     );
     theme.reduced_motion = ui.motion == Motion::Reduced;
     theme.glyphs = Glyphs::for_settings(ui.glyphs, ui.ambiguous_width);
+    theme.mascot = ui.mascot;
     theme
 }
 

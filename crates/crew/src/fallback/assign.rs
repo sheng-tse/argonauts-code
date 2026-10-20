@@ -19,6 +19,7 @@ use crate::engine::host::Host;
 use crate::engine::job_fallback;
 use crate::error::EngineResult;
 use crate::fallback::{broken, debt, down, notes, rules, tags};
+use crate::roles;
 use crate::state::tasks::TaskEntry;
 
 /// Gives the task to `to`: tags its committed work first when `tag` is set, then the note,
@@ -189,7 +190,13 @@ fn say_in_the_view(
     let Some(step) = step else {
         return Ok(());
     };
-    let line = job_fallback::task_in_the_view(from, to, ended.as_ref(), kept_on_its_cli);
+    // Named by the models they run, so a bare CLI that runs the stopped model reads as it.
+    let line = job_fallback::task_in_the_view(
+        &roles::runs(host, from),
+        &roles::runs(host, to),
+        ended.as_ref(),
+        kept_on_its_cli,
+    );
     job_fallback::say_in_the_view(host, &step.workflow, line)
 }
 

@@ -25,6 +25,7 @@ pub const STEP_FIELDS: &[&str] = &[
     "max_rounds",
     "model",
     "own_workflow",
+    "keep",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,7 +242,7 @@ enum Takes {
 
 fn takes(key: &str) -> Takes {
     match key {
-        "adapt" | "independent" | "not_the_author" | "own_workflow" => Takes::Flag,
+        "adapt" | "independent" | "not_the_author" | "own_workflow" | "keep" => Takes::Flag,
         "max_rounds" => Takes::Rounds,
         "count" => Takes::Count,
         _ => Takes::Text,
@@ -350,9 +351,12 @@ mod tests {
         let text = change(&file(), &step(2, "count", "2")).unwrap();
         let text = change(&text, &step(2, "max_rounds", "3")).unwrap();
         let text = change(&text, &step(2, "independent", "true")).unwrap();
+        let text = change(&text, &step(0, "keep", "true")).unwrap();
         assert!(text.contains("count = 2"), "{text}");
         assert!(text.contains("max_rounds = 3"), "{text}");
         assert!(text.contains("independent = true"), "{text}");
+        let read = WorkflowFile::parse(&text).unwrap().unwrap();
+        assert!(read.steps[0].keep, "{text}");
         let all = change(&text, &step(2, "count", "all")).unwrap();
         assert!(all.contains("count = \"all\""), "{all}");
         // False is what an unwritten flag means, so it adds no line.

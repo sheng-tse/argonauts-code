@@ -608,8 +608,15 @@ pub enum WorkflowAction {
     Diff,
 }
 
-/// Reasoning effort levels `/effort` accepts. Pickers offer only the ones the model supports.
-pub const EFFORT_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+/// Reasoning effort levels `/effort` accepts, lowest first. Pickers offer only the ones the
+/// model supports. `none` is for a model whose own list names it, as OpenCode's does.
+pub const EFFORT_LEVELS: &[&str] = &[
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
+
+/// Every level but `none`, for a model whose own levels nothing lists.
+pub const REASONING_LEVELS: &[&str] =
+    &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 /// The keys `/permissions` covers, in picker order.
 pub const PERMISSION_KEYS: &[&str] = &[

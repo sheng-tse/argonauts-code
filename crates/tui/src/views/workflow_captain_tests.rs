@@ -160,7 +160,10 @@ fn build_done() -> PhaseRow {
 /// 33 s in: Codex answered review:money, and Claude Code's agent is passing the answer back.
 #[test]
 fn an_answer_fills_the_row_that_asked_for_it() {
-    let picture = picture!("answer_after");
+    let mut picture = picture!("answer_after");
+    // The picture gives Review's row the whole workflow's label column; the view lays each
+    // phase out by its own labels.
+    picture.label_column(6, "review:money", "review:money  ".len());
     let review = agent(2, "review:money", LUNA, RowStatus::Running, 51_800, 7);
     let data = captain(
         (1, 2),
@@ -227,15 +230,9 @@ fn at_one_minute() -> WorkflowData {
 /// 1 m 06 s in, on Final, then one ↑ away on Review: each row names the model that did its
 /// job, with " on" its CLI where that isn't Claude Code.
 ///
-/// One label column holds for the whole workflow, every level of it, so the models line up
-/// from phase to phase. The picture is wrong to lay Final's rows out by Final's own
-/// widest label: the test moves them to the workflow's column, set by Review's
-/// `fix:review-findings`, five cells further right.
 #[test]
 fn a_captain_run_mid_review_reads_as_its_picture() {
-    let mut picture = picture!("captain_review_running");
-    picture.reword(6, "review:final    ", "review:final         ");
-    picture.reword(7, "sign-off:money  ", "sign-off:money       ");
+    let picture = picture!("captain_review_running");
     let mut view = WorkflowView::new(at_one_minute());
     picture.assert_drawn(0..12, &drawn(&mut view, 12), 0);
     press(&mut view, KeyCode::Up);
@@ -285,16 +282,16 @@ fn command(label: &str, ran: &str, result: &str, seconds: u64) -> WorkflowRow {
 /// Done and merged, on Merge: the end line names who built it, who reviewed it and who signed
 /// it off, each model in its row's colour.
 ///
-/// One label column holds for the whole workflow, set by its widest label,
-/// `fix:review-findings` here. The picture is wrong to keep an earlier run's column in Merge's
-/// rows, set by that run's `sign-off:add-due-dates`: the test moves them to this run's column,
-/// three cells further left.
+/// Each phase is laid out by its own widest label. The picture keeps an earlier run's column in
+/// Merge's rows, set by that run's `sign-off:add-due-dates`: the test moves them to Merge's own
+/// column.
 #[test]
 fn a_merged_captain_run_says_who_did_its_work() {
     let mut picture = picture!("captain_done");
-    picture.reword(16, "final check             ", "final check          ");
-    picture.reword(17, "commit message          ", "commit message       ");
-    picture.reword(18, "merge onto main         ", "merge onto main      ");
+    let width = "merge onto main  ".len();
+    picture.label_column(16, "final check", width);
+    picture.label_column(17, "commit message", width);
+    picture.label_column(18, "merge onto main", width);
     let done = |session, label, model, tokens, seconds| {
         WorkflowRow::Agent(agent(
             session,

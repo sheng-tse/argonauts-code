@@ -2,27 +2,33 @@
 
 use super::Settings;
 use super::agents::EndpointSettings;
+use crate::runtimes::{RUNTIMES, Requests, Runtime, runtime};
 
-/// (id, base URL, key variable, local) for each known endpoint.
-const KNOWN_ENDPOINTS: &[(&str, &str, Option<&str>, bool)] = &[
-    (
-        "openrouter",
-        "https://openrouter.ai/api/v1",
-        Some("OPENROUTER_API_KEY"),
-        false,
-    ),
-    ("ollama", "http://localhost:11434/v1", None, true),
-    ("lmstudio", "http://127.0.0.1:1234/v1", None, true),
-];
+const OPENROUTER: &str = "openrouter";
 
-/// The known endpoints `openrouter`, `ollama`, and `lmstudio`, as settings with their base
-/// URL, key variable, and whether they're local.
+/// How many requests an endpoint that isn't a local runtime takes at once, unless you say.
+pub const DEFAULT_REQUESTS: u32 = 4;
+
+/// The ids of the known endpoints, in the order they're listed: OpenRouter, then the local
+/// runtimes.
+pub fn known_endpoint_ids() -> impl Iterator<Item = &'static str> {
+    std::iter::once(OPENROUTER).chain(RUNTIMES.iter().map(|runtime| runtime.id))
+}
+
+/// The known endpoints: OpenRouter and the local runtimes, as settings with their base URL, key
+/// variable, and whether they're local.
 pub fn builtin_endpoint(id: &str) -> Option<EndpointSettings> {
-    let &(_, base_url, api_key_env, local) = KNOWN_ENDPOINTS.iter().find(|known| known.0 == id)?;
+    if id == OPENROUTER {
+        return Some(EndpointSettings {
+            base_url: Some("https://openrouter.ai/api/v1".to_owned()),
+            api_key_env: Some("OPENROUTER_API_KEY".to_owned()),
+            ..EndpointSettings::default()
+        });
+    }
+    let runtime = runtime(id)?;
     Some(EndpointSettings {
-        base_url: Some(base_url.to_owned()),
-        api_key_env: api_key_env.map(str::to_owned),
-        local,
+        base_url: Some(runtime.address().to_owned()),
+        local: true,
         ..EndpointSettings::default()
     })
 }
@@ -58,11 +64,9 @@ pub fn endpoint_settings(settings: &Settings, id: &str) -> Option<EndpointSettin
         local: yours.local || (!moved && known.local),
         allow_api_billing: yours.allow_api_billing || known.allow_api_billing,
         timeout: either(yours.timeout.clone(), known.timeout, default.timeout),
-        max_concurrency: either(
-            yours.max_concurrency,
-            known.max_concurrency,
-            default.max_concurrency,
-        ),
+        // A number you set wins even when it's the usual one.
+        max_concurrency: yours.max_concurrency.or(known.max_concurrency),
+        free_memory: either(yours.free_memory, known.free_memory, default.free_memory),
         header_env: if yours.header_env.is_empty() {
             known.header_env
         } else {
@@ -75,14 +79,32 @@ fn either<T: PartialEq>(yours: T, known: T, default: T) -> T {
     if yours == default { known } else { yours }
 }
 
+/// How many requests endpoint `id` takes at once: your `max_concurrency`, else its runtime's
+/// own number, else [`DEFAULT_REQUESTS`]. `reported` is what llama-server says it has slots for,
+/// once asked; until then it counts as one.
+pub fn requests_at_once(id: &str, endpoint: &EndpointSettings, reported: Option<u32>) -> u32 {
+    let number = endpoint.max_concurrency.unwrap_or_else(|| {
+        match runtime(id).map(|runtime| runtime.requests) {
+            Some(Requests::At(number)) => number,
+            Some(Requests::TheServerSlots) => reported.unwrap_or(1),
+            None => DEFAULT_REQUESTS,
+        }
+    });
+    number.max(1)
+}
+
 /// Where each local endpoint listens, as (host, port) from its `base_url`: the known local
-/// endpoints unless you moved them, and every table of yours marked `local`. A session's network
+/// runtimes unless you moved them, and every table of yours marked `local`. A session's network
 /// proxy lets it reach exactly these, since they speak plain HTTP and often sit on loopback.
+///
+/// llama-server's and vLLM's ports are common to other servers, so they count only once you
+/// have a table for them.
 pub fn local_endpoint_addresses(settings: &Settings) -> Vec<(String, u16)> {
-    let ids = KNOWN_ENDPOINTS
+    let known = RUNTIMES
         .iter()
-        .map(|known| known.0)
-        .chain(settings.endpoints.keys().map(String::as_str));
+        .filter(|runtime| !runtime.common_ports || settings.endpoints.contains_key(runtime.id))
+        .map(|runtime: &Runtime| runtime.id);
+    let ids = known.chain(settings.endpoints.keys().map(String::as_str));
     let mut addresses: Vec<(String, u16)> = ids
         .filter_map(|id| endpoint_settings(settings, id))
         .filter(|endpoint| endpoint.local)
@@ -145,17 +167,22 @@ mod tests {
             builtin_endpoint("lmstudio").unwrap().base_url.as_deref(),
             Some("http://127.0.0.1:1234/v1")
         );
-        assert!(builtin_endpoint("vllm").is_none());
+        assert_eq!(
+            builtin_endpoint("llamacpp").unwrap().base_url.as_deref(),
+            Some("http://127.0.0.1:9931/v1")
+        );
+        assert!(builtin_endpoint("vllm").unwrap().local);
+        assert!(builtin_endpoint("gpu-box").is_none());
 
         let mut settings = Settings::default();
         assert!(endpoint_settings(&settings, "ollama").unwrap().local);
-        assert!(endpoint_settings(&settings, "vllm").is_none());
+        assert!(endpoint_settings(&settings, "gpu-box").is_none());
 
         settings.endpoints.insert(
             "openrouter".to_owned(),
             EndpointSettings {
                 api: EndpointApi::Responses,
-                max_concurrency: 2,
+                max_concurrency: Some(2),
                 ..EndpointSettings::default()
             },
         );
@@ -163,7 +190,7 @@ mod tests {
         assert_eq!(merged.base_url, openrouter.base_url);
         assert_eq!(merged.api_key_env, openrouter.api_key_env);
         assert_eq!(merged.api, EndpointApi::Responses);
-        assert_eq!(merged.max_concurrency, 2);
+        assert_eq!(merged.max_concurrency, Some(2));
 
         settings.endpoints.insert(
             "ollama".to_owned(),
@@ -176,17 +203,69 @@ mod tests {
         assert_eq!(remote.base_url.as_deref(), Some("http://gpu-box:11434/v1"));
         assert!(!remote.local);
 
-        let vllm = EndpointSettings {
-            base_url: Some("http://localhost:8000/v1".to_owned()),
+        let mine = EndpointSettings {
+            base_url: Some("http://gpu-box:8000/v1".to_owned()),
             local: true,
             ..EndpointSettings::default()
         };
-        settings.endpoints.insert("vllm".to_owned(), vllm.clone());
-        assert_eq!(endpoint_settings(&settings, "vllm"), Some(vllm));
+        settings
+            .endpoints
+            .insert("gpu-box".to_owned(), mine.clone());
+        assert_eq!(endpoint_settings(&settings, "gpu-box"), Some(mine));
+    }
+
+    #[test]
+    fn a_number_you_set_wins_over_the_servers_own() {
+        let mut settings = Settings::default();
+        let count = |settings: &Settings, id: &str, reported: Option<u32>| {
+            let endpoint = endpoint_settings(settings, id).unwrap_or_default();
+            requests_at_once(id, &endpoint, reported)
+        };
+        assert_eq!(count(&settings, "ollama", None), 1);
+        assert_eq!(count(&settings, "lmstudio", None), 1);
+        assert_eq!(count(&settings, "vllm", None), 4);
+        assert_eq!(count(&settings, "llamacpp", None), 1);
+        assert_eq!(count(&settings, "llamacpp", Some(3)), 3);
+        assert_eq!(count(&settings, "openrouter", None), DEFAULT_REQUESTS);
+
+        // 4 is the usual number elsewhere, and still wins over Ollama's 1 once you write it.
+        for (id, number) in [("ollama", 4), ("llamacpp", 2), ("openrouter", 9)] {
+            settings.endpoints.insert(
+                id.to_owned(),
+                EndpointSettings {
+                    max_concurrency: Some(number),
+                    ..EndpointSettings::default()
+                },
+            );
+        }
+        assert_eq!(count(&settings, "ollama", None), 4);
+        assert_eq!(count(&settings, "llamacpp", Some(8)), 2);
+        assert_eq!(count(&settings, "openrouter", None), 9);
+
+        let zero = EndpointSettings {
+            max_concurrency: Some(0),
+            ..EndpointSettings::default()
+        };
+        assert_eq!(requests_at_once("ollama", &zero, None), 1);
+    }
+
+    #[test]
+    fn freeing_memory_is_on_until_you_turn_it_off() {
+        let mut settings = Settings::default();
+        assert!(endpoint_settings(&settings, "ollama").unwrap().free_memory);
+        settings.endpoints.insert(
+            "ollama".to_owned(),
+            EndpointSettings {
+                free_memory: false,
+                ..EndpointSettings::default()
+            },
+        );
+        assert!(!endpoint_settings(&settings, "ollama").unwrap().free_memory);
     }
 
     #[test]
     fn local_endpoints_are_the_known_local_ones_and_yours() {
+        // llama-server and vLLM listen on ports other servers use, so they wait for a table.
         let mut settings = Settings::default();
         assert_eq!(
             local_endpoint_addresses(&settings),
@@ -195,6 +274,18 @@ mod tests {
                 ("localhost".to_owned(), 11434)
             ]
         );
+        settings
+            .endpoints
+            .insert("llamacpp".to_owned(), EndpointSettings::default());
+        assert_eq!(
+            local_endpoint_addresses(&settings),
+            [
+                ("127.0.0.1".to_owned(), 1234),
+                ("127.0.0.1".to_owned(), 9931),
+                ("localhost".to_owned(), 11434)
+            ]
+        );
+        settings.endpoints.remove("llamacpp");
 
         // Moving Ollama elsewhere drops it unless you say it's local; a table of yours marked
         // local joins, and one that isn't stays out.

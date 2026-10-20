@@ -40,6 +40,9 @@ pub mod session_files {
     /// The session's process group, pid, and process start time, so recovery can kill an
     /// orphan left by a crashed run host before it resumes the CLI session.
     pub const PROCESS: &str = "process.json";
+    /// Every command the session was launched with, one JSON line each in order, with the
+    /// prompt and the variables' values left out, so whether a launch resumed shows later.
+    pub const LAUNCHES: &str = "launches.jsonl";
     /// The MCP config passed to the CLI: only the `argonauts_status` server.
     pub const MCP_CONFIG: &str = "mcp.json";
     /// The last valid report from the `argonauts_report` tool. Argonauts Code validates it
@@ -51,6 +54,9 @@ pub mod session_files {
     pub const HOME: &str = "home";
     /// The frames sent to an ACP agent. What it sends back goes to `RAW_STDOUT`.
     pub const RAW_STDIN: &str = "raw.stdin.jsonl";
+    /// The session's last count by its CLI, whole, written over at each count. The run's
+    /// journal keeps only its rows.
+    pub const CONTEXT: &str = "context.json";
 }
 
 /// Per-user files under `~/.argonauts/` (`ARGONAUTS_HOME`).

@@ -60,6 +60,9 @@ struct OpenTurn {
     text: String,
     /// Whether that text came in deltas, which a whole `Message` then repeats.
     from_deltas: bool,
+    /// How much of that text went to the screen. A JSON object that may end it waits, so a
+    /// result the agent writes out at the end never shows.
+    shown: usize,
     /// Text of each part that already ended, which the finished reply repeats.
     parts: Vec<String>,
     /// Live cells for the calls since the last text, oldest first: a call each, or a fold line
@@ -136,6 +139,16 @@ impl ConversationTurns {
                             Cell::Custom(Box::new(ResultLine::new(Tone::Dim, INTERRUPTED))),
                         );
                     }
+                }
+            }
+            // A watchdog stopped it: the line says what it saw.
+            ConversationEvent::TurnStopped { turn, why } => {
+                if let Some(mut open) = self.take(turn) {
+                    end_parts(&mut open, ToolState::Stopped, cx);
+                    emit(
+                        cx,
+                        Cell::Custom(Box::new(ResultLine::new(Tone::Warning, why.trim()))),
+                    );
                 }
             }
             ConversationEvent::FellBack {
@@ -232,6 +245,7 @@ impl ConversationTurns {
             stream: None,
             text: String::new(),
             from_deltas: false,
+            shown: 0,
             parts: Vec::new(),
             calls: Vec::new(),
             own: Vec::new(),
@@ -554,6 +568,7 @@ fn retried(open: &mut OpenTurn, cx: &mut Cx<'_>) {
     if dropped {
         open.stream = None;
         open.text.clear();
+        open.shown = 0;
         open.from_deltas = false;
     } else {
         end_stream(open, cx);
@@ -617,6 +632,15 @@ fn deliver(open: &mut OpenTurn, text: &str, clock: &WallClock, cx: &mut Cx<'_>) 
         return;
     }
     settle_tools(open, ToolState::Stopped, cx);
+    let upto = tools::json_tail_from(&open.text, open.shown);
+    show(open, upto, clock, cx);
+}
+
+/// Streams the answer's text up to byte `upto`.
+fn show(open: &mut OpenTurn, upto: usize, clock: &WallClock, cx: &mut Cx<'_>) {
+    if upto <= open.shown {
+        return;
+    }
     let history = &mut cx.model.history;
     let id = match open.stream {
         Some(id) => id,
@@ -627,13 +651,20 @@ fn deliver(open: &mut OpenTurn, text: &str, clock: &WallClock, cx: &mut Cx<'_>) 
             id
         }
     };
-    history.push_stream(id, text);
+    history.push_stream(id, &open.text[open.shown..upto]);
+    open.shown = upto;
 }
 
-/// Ends the part of the answer streaming now, so a call goes under it.
+/// Ends the part of the answer streaming now, so a call goes under it. Text held back as a
+/// possible closing JSON object wasn't the close after all, so it shows.
 fn end_stream(open: &mut OpenTurn, cx: &mut Cx<'_>) {
     if open.replaying {
         return;
+    }
+    if open.shown < open.text.len()
+        && let Some(id) = open.stream
+    {
+        cx.model.history.push_stream(id, &open.text[open.shown..]);
     }
     if let Some(id) = open.stream.take() {
         cx.model.history.finish_stream(id);
@@ -642,6 +673,7 @@ fn end_stream(open: &mut OpenTurn, cx: &mut Cx<'_>) {
         open.parts.push(std::mem::take(&mut open.text));
     }
     open.text.clear();
+    open.shown = 0;
     open.from_deltas = false;
     keep_own(open, None, cx);
 }
@@ -855,6 +887,7 @@ fn fell_back(
     end_parts(open, ToolState::Stopped, cx);
     open.parts.clear();
     open.text.clear();
+    open.shown = 0;
     open.from_deltas = false;
     open.worker = to.clone();
     if open.replaying {

@@ -432,6 +432,7 @@ impl SessionState {
                 }
                 self.context = Some(ContextUse {
                     used: *used,
+                    window: self.context_window,
                     cap: context_cap(self.context_window),
                 });
             }
@@ -538,17 +539,16 @@ impl SessionState {
 }
 
 /// Where a session rotates: `sessions.rotate_at`, near the end of its window by default, or
-/// the window when that's smaller. With no window reported yet the bar is drawn against
-/// 200k tokens. `ViewData::Context` brings the configured caps when `/context` opens.
-fn context_cap(window: Option<u64>) -> u64 {
-    const FALLBACK: u64 = 200_000;
+/// the window when that's smaller. A share of a window no one has reported is no point at
+/// all, so the session shows its count alone until its window is known. `ViewData::Context`
+/// brings the configured caps when `/context` opens.
+fn context_cap(window: Option<u64>) -> Option<u64> {
     let cap = SessionSettings::default()
         .rotate_at
         .tokens(window)
         .ok()
-        .flatten()
-        .unwrap_or(FALLBACK);
-    window.map_or(cap, |window| cap.min(window))
+        .flatten()?;
+    Some(window.map_or(cap, |window| cap.min(window)))
 }
 
 #[cfg(test)]

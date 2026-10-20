@@ -11,6 +11,7 @@ mod value;
 
 use ratatui::style::{Color, Modifier, Style};
 
+pub use argonauts_core::settings::ui::MascotDrawing;
 pub use color::{Brightness, ColorEnv, ColorLevel, downgrade, nearest_ansi16, nearest_ansi256};
 pub use glyphs::Glyphs;
 pub use value::{BadColor, ColorValue};
@@ -303,6 +304,7 @@ impl Role {
             "claude-code" | "Claude" | "Claude Code" => Role::CliClaude,
             "codex" | "Codex" => Role::CliCodex,
             "antigravity-cli" | "agy" | "Antigravity CLI" => Role::CliAgy,
+            "opencode" | "OpenCode" => Role::AgentGreen,
             _ => Role::CatOther,
         }
     }
@@ -390,6 +392,11 @@ pub struct Theme {
     pub brightness: Brightness,
     /// Hold animations still: no spinner, shimmer, blinking, or turning glyphs.
     pub reduced_motion: bool,
+    /// How the welcome header draws its mascot, as `ui.mascot` says.
+    pub mascot: MascotDrawing,
+    /// The mascot goes out as a picture, which the screen sends once it knows the terminal
+    /// draws one, so the header leaves its cells blank.
+    pub mascot_pictures: bool,
 }
 
 impl Theme {
@@ -498,6 +505,8 @@ impl Theme {
             level: ColorLevel::TrueColor,
             brightness,
             reduced_motion: false,
+            mascot: MascotDrawing::Auto,
+            mascot_pictures: false,
         }
     }
 }
@@ -611,7 +620,8 @@ fn light_style(role: Role) -> Style {
         Role::Bright => fg(0x000000),
         Role::Dim => fg(0x666666),
         Role::Faint => fg(0xafafaf),
-        Role::Rule => fg(0x999999),
+        // Claude Code 2.1.303's light promptBorder.
+        Role::Rule => fg(0x8a8a8a),
         // A darker gold, which reads on white.
         Role::Accent => fg(0xb7791f),
         Role::Shimmer => fg(0xd69e2e),
@@ -716,6 +726,16 @@ mod tests {
         assert_eq!(bg(Role::RemovedRow), Some(rgb(0x3d0100)));
         assert_eq!(bg(Role::AddedRow), Some(rgb(0x022800)));
         assert_eq!(bg(Role::UserBand), Some(rgb(0x373737)));
+        assert_eq!(theme.style(Role::Text), Style::new());
+    }
+
+    #[test]
+    fn the_light_palette_frames_as_claude_codes_light_theme() {
+        let theme = Theme::light();
+        let fg = |role| theme.style(role).fg;
+        assert_eq!(fg(Role::Rule), Some(rgb(0x8a8a8a)));
+        // Frames that are white on a dark screen are black on a light one.
+        assert_eq!(fg(Role::Bright), Some(rgb(0x000000)));
         assert_eq!(theme.style(Role::Text), Style::new());
     }
 

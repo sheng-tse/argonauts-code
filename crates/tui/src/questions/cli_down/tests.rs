@@ -266,6 +266,10 @@ fn an_explanation_the_event_carries_is_kept() {
 #[test]
 fn under_the_workflow_view_the_question_reads_as_its_picture() {
     let mut picture = picture!("workflow_cli_down");
+    // The picture gives Build's rows the whole workflow's label column; the view lays each
+    // phase out by its own labels.
+    picture.label_column(6, "build:due-flag", "build:due-tests  ".len());
+    picture.label_column(7, "build:due-tests", "build:due-tests  ".len());
     picture.respell_tokens(6, "44.0k", "44k");
     // The picture says paused, which now only a pause you asked for reads: these tasks wait
     // for their CLI.

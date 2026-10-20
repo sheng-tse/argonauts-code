@@ -1,0 +1,33 @@
+ As /model opens at 21:43: the lists read at 21:40, at once. The three CLIs that list their models by running are     
+ asked again, all at the same time, and each says so on its own row until its answer is in.                           
+                                                                                                                      
+❯ /model                                                                                                              
+                                                                                                                      
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Main agent                                                                                                          
+  Who answers in conversation, works as Captain, and steps in last when others stop. Model lists refreshed 3m ago.    
+                                                                                                                      
+  ❯ 1. Claude Code ✓     default, Opus 5.5 · subscription · 92% used                                                  
+    2. Codex             7 models · subscription · 2% used · asking…                                                  
+    3. Antigravity CLI   6 models · subscription · 0% used · asking…                                                  
+    4. OpenCode          17 models · 7 local, 10 free · asking…                                                       
+    5. Roles…            each role's own model                                                                        
+                                                                                                                      
+  Enter to see its models · j/k to move · / to filter · Esc to close                                                  
+                                                                                                                      
+ Left open, about 8 s later: every answer is in, each row changed in place when its own came. OpenCode counts the     
+ model pulled since 21:40, and Claude Code's 92% became 93% when a session elsewhere wrote a new reading to the board.
+                                                                                                                      
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Main agent                                                                                                          
+  Who answers in conversation, works as Captain, and steps in last when others stop. Model lists refreshed just now.  
+                                                                                                                      
+  ❯ 1. Claude Code ✓     default, Opus 5.5 · subscription · 93% used                                                  
+    2. Codex             7 models · subscription · 2% used                                                            
+    3. Antigravity CLI   6 models · subscription · 0% used                                                            
+    4. OpenCode          18 models · 8 local, 10 free                                                                 
+    5. Roles…            each role's own model                                                                        
+                                                                                                                      
+  Enter to see its models · j/k to move · / to filter · Esc to close                                                  
+                                                                                                                      
+ (cropped to the /model echo and the picker; the times, the pulled model and 93% are illustrative)                    

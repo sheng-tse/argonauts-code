@@ -56,7 +56,8 @@ impl Fixture {
         env.agent_session = agent_session;
         env.user_home = Some(repo.user_home().to_owned());
         let env = Arc::new(env);
-        let settings = AppSettings::load(&env, Vec::new(), interactive).unwrap();
+        let flags = crate::controller::test_support::quiet_local_servers(Vec::new());
+        let settings = AppSettings::load(&env, flags, interactive).unwrap();
         let (plan_usage, health) = argonauts_conductor::boards(&paths);
         let services = AppServices {
             conductor: Arc::new(FakeConductor::default()),
@@ -212,6 +213,12 @@ fn registry_with(entries: &[serde_json::Value]) -> Arc<dyn ModelRegistry> {
         registry.add(serde_json::from_value::<ModelEntry>(entry.clone()).unwrap());
     }
     Arc::new(registry)
+}
+
+#[test]
+fn the_fixture_asks_no_server_of_yours() {
+    let fixture = Fixture::new(false, |_| {});
+    assert!(!fixture.ctx.settings().registry.local_servers);
 }
 
 const GLOBAL_WITH_COMMENTS: &str = "# Mine, keep these notes.\n[ui]\nbell = true  # I like it\n";
@@ -1634,6 +1641,8 @@ async fn the_orchestrator_is_asked_for_and_saved_with_the_workflow() {
         panic!("the orchestrator's picker");
     };
     assert_eq!(role, Some(RoleName::Orchestrator));
+    // The picker opens and closes its watch on the model lists around the pick.
+    driver.send(UiCommand::WatchModels { watching: true }).await;
 
     // The pick saves both keys to the workflow's scope without asking again.
     let worker: ModelRef = "codex/gpt-5.6".parse().unwrap();
@@ -2113,9 +2122,13 @@ async fn a_session_value_joins_the_app_and_later_runs() {
     ));
     assert_eq!(fixture.ctx.settings().ui.narrator, NarratorMode::Live);
     assert_eq!(fixture.ctx.settings.layer("ui.narrator"), "session");
+    // Past the flag every test app starts with.
     assert_eq!(
         fixture.ctx.settings.run_overrides(),
-        vec!["ui.narrator=\"live\"".to_owned()]
+        [
+            "registry.local_servers=false".to_owned(),
+            "ui.narrator=\"live\"".to_owned()
+        ]
     );
     let events = fixture.drain();
     assert!(events.iter().any(|event| matches!(

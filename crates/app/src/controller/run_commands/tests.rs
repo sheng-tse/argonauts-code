@@ -20,7 +20,7 @@ use argonauts_core::layout::run_files;
 use argonauts_core::names::{ApprovalId, MessageId, ModelRef, RoleName, SessionKey};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::fallback::FallbackMode;
-use argonauts_core::views::ContextRow;
+use argonauts_core::views::{ContextRow, ContextView};
 use argonauts_core::{AgentEvent, NoteLevel, RunId, Spend, TaskId};
 use time::OffsetDateTime;
 
@@ -749,6 +749,7 @@ async fn giving_a_task_to_the_worker_it_has_starts_it_over() {
             try_number: 1,
             worker: opus.clone(),
             cause: TryCause::First,
+            told: Vec::new(),
         }),
     );
     tried.task_id = Some(task.clone());
@@ -790,7 +791,7 @@ async fn giving_a_task_to_the_worker_it_has_starts_it_over() {
     assert_eq!(sent, [opus, luna]);
 }
 
-async fn context_rows(rig: &mut Rig, conversation: &ContextRow) -> Vec<ContextRow> {
+async fn context_view(rig: &mut Rig, conversation: &ContextRow) -> ContextView {
     super::context(&mut rig.ctx, &mut rig.runs, Some(conversation.clone()))
         .await
         .expect("/context");
@@ -801,13 +802,13 @@ async fn context_rows(rig: &mut Rig, conversation: &ContextRow) -> Vec<ContextRo
         unreachable!()
     };
     match *data {
-        ViewData::Context { view } => view.rows,
+        ViewData::Context { view } => view,
         other => panic!("{other:?}"),
     }
 }
 
 #[tokio::test]
-async fn context_lists_the_conversation_then_live_sessions_each_capped_by_its_window() {
+async fn context_lists_the_conversation_then_the_runs_sessions_each_capped_by_its_window() {
     let mut rig = Rig::with(true, |global| {
         std::fs::write(global, "[sessions]\nrotate_at = 0.9\n").expect("the global config");
     });
@@ -851,9 +852,10 @@ async fn context_lists_the_conversation_then_live_sessions_each_capped_by_its_wi
         counts: false,
         categories: Vec::new(),
         recorded: None,
+        ended: None,
     };
 
-    let rows = context_rows(&mut rig, &conversation).await;
+    let rows = context_view(&mut rig, &conversation).await.rows;
     let shown: Vec<(Option<&str>, &SessionKey, Option<u64>)> = rows
         .iter()
         .map(|row| (row.run.as_ref().map(RunId::as_str), &row.session, row.cap))
@@ -880,23 +882,158 @@ async fn context_lists_the_conversation_then_live_sessions_each_capped_by_its_wi
     assert!(rows.iter().all(|row| row.counts && !row.estimated));
     assert_eq!((rows[1].used, rows[1].spent.input_tokens), (20_000, 1_000));
 
+    // A run still going when another conversation comes on screen is that one's too.
+    crate::controller::runs::follow_conversation(&rig.ctx, &mut rig.runs, Vec::new());
+    let view = context_view(&mut rig, &conversation).await;
+    assert!(
+        view.rows
+            .iter()
+            .any(|row| row.run.as_ref().map(RunId::as_str) == Some("run-001")),
+        "the run going on screen is followed after the switch"
+    );
+
     assert!(
         rig.conductor
             .push(&run, finished(&run, 4, RunOutcome::Merged))
             .await
     );
     rig.settle().await;
-    let rows = context_rows(&mut rig, &conversation).await;
-    let runs: Vec<Option<&str>> = rows
+    rig.conductor.set_runs(vec![
+        listed("run-001", false),
+        listed("run-002", true),
+        listed("run-003", false),
+    ]);
+    let view = context_view(&mut rig, &conversation).await;
+    let runs: Vec<Option<&str>> = view
+        .rows
+        .iter()
+        .map(|row| row.run.as_ref().map(RunId::as_str))
+        .collect();
+    assert_eq!(
+        runs,
+        [None, Some("run-001"), Some("run-002"), Some("run-002")],
+        "the run on screen stays listed once it finishes"
+    );
+    let finished: Vec<&str> = view.finished.iter().map(|run| run.run.as_str()).collect();
+    assert_eq!(finished, ["run-001"]);
+
+    // Once it has finished, the next conversation leaves it behind.
+    crate::controller::runs::follow_conversation(&rig.ctx, &mut rig.runs, Vec::new());
+    let view = context_view(&mut rig, &conversation).await;
+    let runs: Vec<Option<&str>> = view
+        .rows
         .iter()
         .map(|row| row.run.as_ref().map(RunId::as_str))
         .collect();
     assert_eq!(
         runs,
         [None, Some("run-002"), Some("run-002")],
-        "a finished run has no live sessions"
+        "a finished run leaves the tab with the conversation it finished in"
     );
+    assert!(view.finished.is_empty(), "{:?}", view.finished);
     assert!(rig.agent.specs().is_empty(), "/context started a session");
+}
+
+/// Carrying a conversation on brings back the run it ended with, finished as it is: before
+/// anything comes on screen, the Context tab lists that run's sessions and when it ended.
+#[tokio::test]
+async fn a_carried_on_conversation_lists_the_run_it_ended_with() {
+    let mut rig = Rig::new();
+    let (earlier, last) = (run_id("run-001"), run_id("run-002"));
+    let worker = SessionKey::numbered(1);
+    for run in [&earlier, &last] {
+        let mut events = live_session(run, 1, &worker, Some(200_000));
+        events.push(finished(run, 4, RunOutcome::Merged));
+        write_run(&rig, run, &events);
+    }
+    rig.conductor
+        .set_runs(vec![listed("run-001", false), listed("run-002", false)]);
+    crate::controller::runs::adopt(&mut rig.runs, [earlier.clone(), last.clone()]);
+    let conversation = ContextRow {
+        run: None,
+        session: SessionKey::numbered(9),
+        label: "conversation".to_owned(),
+        worker: ModelRef::new("claude-code", None),
+        used: 3_000,
+        window: Some(200_000),
+        cap: None,
+        tool_calls: 0,
+        spent: Spend::default(),
+        rotations: 0,
+        estimated: false,
+        counts: false,
+        categories: Vec::new(),
+        recorded: None,
+        ended: None,
+    };
+    let view = context_view(&mut rig, &conversation).await;
+    let runs: Vec<Option<&str>> = view
+        .rows
+        .iter()
+        .map(|row| row.run.as_ref().map(RunId::as_str))
+        .collect();
+    assert_eq!(runs, [None, Some("run-002")]);
+    let finished: Vec<&str> = view.finished.iter().map(|run| run.run.as_str()).collect();
+    assert_eq!(finished, ["run-002"]);
+
+    // A new conversation has no run to bring back.
+    crate::controller::runs::follow_conversation(&rig.ctx, &mut rig.runs, Vec::new());
+    let view = context_view(&mut rig, &conversation).await;
+    assert_eq!(view.rows.len(), 1, "{:?}", view.rows);
+    assert!(view.finished.is_empty());
+}
+
+/// A run session opened from the Context tab draws from its last whole count, which its
+/// folder keeps. A session never counted has none.
+#[tokio::test]
+async fn a_run_sessions_whole_count_comes_from_its_folder() {
+    use argonauts_core::events::context::{ContextCell, ContextUsage};
+
+    let mut rig = Rig::new();
+    let run = run_id("run-001");
+    let (counted, never) = (SessionKey::numbered(3), SessionKey::numbered(4));
+    let dir = argonauts_core::layout::session_dir(&rig.ctx.env.run_dir(&run), &counted);
+    std::fs::create_dir_all(&dir).expect("the session's folder");
+    let usage = ContextUsage {
+        total_tokens: 24_924,
+        window: 1_000_000,
+        grid: vec![vec![ContextCell {
+            category: "Messages".to_owned(),
+            color: "purple_FOR_SUBAGENTS_ONLY".to_owned(),
+            filled: true,
+            tokens: 5_989,
+            percentage: 1,
+            fullness: 1.0,
+        }]],
+        ..ContextUsage::default()
+    };
+    std::fs::write(
+        dir.join(argonauts_core::layout::session_files::CONTEXT),
+        serde_json::to_vec(&usage).expect("a count"),
+    )
+    .expect("the count");
+    let mut answer = async |session: &SessionKey| {
+        let request = ViewRequest::SessionContext {
+            run: run.clone(),
+            session: session.clone(),
+        };
+        super::view(&mut rig.ctx, &mut rig.runs, request)
+            .await
+            .expect("the session's count");
+        let AppEvent::View { data } = rig
+            .until(|event| matches!(event, AppEvent::View { .. }))
+            .await
+        else {
+            unreachable!()
+        };
+        match *data {
+            ViewData::SessionContext { counted, .. } => counted,
+            other => panic!("{other:?}"),
+        }
+    };
+    let kept = answer(&counted).await.expect("its count");
+    assert_eq!(*kept.usage, usage);
+    assert!(answer(&never).await.is_none());
 }
 
 /// A child playing a live run host, killed when it drops.

@@ -15,6 +15,7 @@ use argonauts_core::limits::{
 };
 use argonauts_core::names::{AgentId, ModelRef, SessionKey};
 use argonauts_core::registry::ModelRegistry;
+use argonauts_core::server_requests::ServerRequests;
 use argonauts_core::session_runner::{RunnerEvent, SessionControl};
 use argonauts_core::settings::agents::EndpointApi;
 use argonauts_core::{AgentEvent, ErrorCategory, LimitDimension, MessageStage, RetryReason, Spend};
@@ -22,7 +23,7 @@ use futures::StreamExt;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, RETRY_AFTER};
 use serde_json::Value;
 use time::OffsetDateTime;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::errors::{self, Failure, Secrets};
@@ -53,6 +54,10 @@ pub(crate) struct Session {
     pub events: mpsc::Sender<RunnerEvent>,
     /// Taken out of every error and plan usage detail the endpoint sends back.
     pub secrets: Secrets,
+    /// The window the registry holds the model to, when it knows one.
+    pub window: Option<u64>,
+    /// The brief's size, by the parts' estimates.
+    pub brief: u64,
 }
 
 /// Everything the request needs, checked before the session starts.
@@ -64,7 +69,9 @@ pub(crate) struct Exchange {
     pub api: EndpointApi,
     pub model: String,
     pub schema: Option<Value>,
-    pub slots: Arc<Semaphore>,
+    /// The server's request count, shared by every model on it and every process. `None`
+    /// counts nothing.
+    pub slots: Option<ServerRequests>,
     pub limits: Limits,
 }
 
@@ -264,7 +271,9 @@ impl Session {
                         | SessionControl::Screen(_)
                         | SessionControl::AskContext(_)
                         | SessionControl::WatchContext(_)
-                        | SessionControl::StopSubagent { .. },
+                        | SessionControl::StopSubagent { .. }
+                        | SessionControl::Asking
+                        | SessionControl::Answered,
                     ) => {}
                 },
                 output = &mut future => return Waited::Done(output),
@@ -278,18 +287,25 @@ impl Session {
         raw: &mut RawLog,
         control: &mut mpsc::Receiver<SessionControl>,
     ) -> Outcome {
-        let slot = within(
-            exchange.limits.queue(),
-            exchange.slots.clone().acquire_owned(),
-        );
-        let _slot = match self.wait(slot, control).await {
-            Waited::Done(Ok(Ok(permit))) => permit,
-            Waited::Done(Ok(Err(closed))) => {
-                let message = format!("the endpoint's request slots closed: {closed}");
-                return Outcome::ended(EndReason::StartFailed { message }, Reply::default());
+        let _slot = match &exchange.slots {
+            None => None,
+            Some(requests) => {
+                let slot = within(exchange.limits.queue(), requests.take());
+                match self.wait(slot, control).await {
+                    Waited::Done(Ok(Ok(slot))) => Some(slot),
+                    Waited::Done(Ok(Err(failed))) => {
+                        let message = format!("couldn't count the server's requests: {failed}");
+                        return Outcome::ended(
+                            EndReason::StartFailed { message },
+                            Reply::default(),
+                        );
+                    }
+                    Waited::Done(Err(missed)) => {
+                        return Outcome::ended(missed.missed(), Reply::default());
+                    }
+                    Waited::Halted(reason) => return Outcome::ended(reason, Reply::default()),
+                }
             }
-            Waited::Done(Err(missed)) => return Outcome::ended(missed.missed(), Reply::default()),
-            Waited::Halted(reason) => return Outcome::ended(reason, Reply::default()),
         };
         let mut waits = 0;
         let mut reply = ReplyStream::new(exchange.api);
@@ -524,6 +540,12 @@ impl Session {
                 cumulative: true,
             })
             .await;
+            self.emit_agent(AgentEvent::ContextFill {
+                used: reply.input_tokens + reply.output_tokens,
+                size: self.context_size().await,
+                sent: Some(self.brief),
+            })
+            .await;
         }
         let category = errors::category(&reason);
         match &reason {
@@ -582,6 +604,15 @@ impl Session {
             structured,
             last_message: text,
             raw_log: Some(raw.path().to_owned()),
+        }
+    }
+
+    /// The window the request ran in: the registry's, else, for a model its server sized as
+    /// it loaded it, the size it loaded with, which the server can say now the request ran.
+    async fn context_size(&self) -> Option<u64> {
+        match self.window {
+            Some(window) => Some(window),
+            None => self.registry.loaded_window(&self.pricing).await,
         }
     }
 
@@ -798,6 +829,19 @@ mod tests {
         schema: Option<Value>,
         payloads: Vec<Value>,
     ) -> (Vec<AgentEvent>, SessionEnd) {
+        let registry = Arc::new(StaticRegistry::default());
+        exchange_on(registry, None, api, schema, payloads).await
+    }
+
+    /// [`exchange`] with the registry the session looks the model up in, and the window it
+    /// knows.
+    async fn exchange_on(
+        registry: Arc<dyn ModelRegistry>,
+        window: Option<u64>,
+        api: EndpointApi,
+        schema: Option<Value>,
+        payloads: Vec<Value>,
+    ) -> (Vec<AgentEvent>, SessionEnd) {
         let (events, mut received) = mpsc::channel(64);
         let session = Session {
             key: SessionKey::numbered(1),
@@ -805,9 +849,11 @@ mod tests {
             pricing: ModelRef::new("fake", Some("m".to_owned())),
             plan_usage: Arc::new(MemoryPlanUsageBoard::default()),
             health: Arc::new(MemoryHealthBoard::default()),
-            registry: Arc::new(StaticRegistry::default()),
+            registry,
             events,
             secrets: Secrets::default(),
+            window,
+            brief: 7,
         };
         let exchange = Exchange {
             client: reqwest::Client::new(),
@@ -817,7 +863,7 @@ mod tests {
             api,
             model: "m".to_owned(),
             schema,
-            slots: Arc::new(Semaphore::new(1)),
+            slots: None,
             limits: Limits {
                 timeout: None,
                 limit: None,
@@ -870,6 +916,73 @@ mod tests {
     fn verdict_schema() -> Value {
         json!({"type": "object", "required": ["verdict"],
                "properties": {"verdict": {"type": "string"}}})
+    }
+
+    fn usage_chunk() -> Value {
+        json!({"choices": [], "usage": {"prompt_tokens": 9_000, "completion_tokens": 551}})
+    }
+
+    fn fills(events: &[AgentEvent]) -> Vec<(u64, Option<u64>, Option<u64>)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::ContextFill { used, size, sent } => Some((*used, *size, *sent)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A model a server sized as it loaded it, which the server can say once loaded.
+    struct LoadedAt(u64);
+
+    impl ModelRegistry for LoadedAt {
+        fn get(&self, _: &ModelRef) -> Option<argonauts_core::registry::ModelEntry> {
+            None
+        }
+        fn provider(&self, _: &ModelRef) -> String {
+            String::new()
+        }
+        fn list(&self) -> Vec<argonauts_core::registry::ModelEntry> {
+            Vec::new()
+        }
+        fn estimate(&self, _: &ModelRef, _: u64, _: u64) -> CostEstimate {
+            CostEstimate::Free
+        }
+        fn discover(
+            &self,
+        ) -> argonauts_core::future::BoxFuture<'_, Vec<argonauts_core::registry::ModelEntry>>
+        {
+            Box::pin(async { Vec::new() })
+        }
+        fn loaded_window(
+            &self,
+            worker: &ModelRef,
+        ) -> argonauts_core::future::BoxFuture<'_, Option<u64>> {
+            let asked = worker.to_string();
+            Box::pin(async move { (asked == "fake/m").then_some(self.0) })
+        }
+    }
+
+    /// The reply says how full the window is, against the window the registry knows, else the
+    /// one the server loaded the model with, else none.
+    #[tokio::test]
+    async fn a_reply_says_how_full_its_window_is() {
+        let payloads = || vec![chunk("ok", Some("stop")), usage_chunk()];
+        let api = EndpointApi::ChatCompletions;
+        let known = Arc::new(StaticRegistry::default());
+        let (events, _) = exchange_on(known, Some(32_768), api, None, payloads()).await;
+        assert_eq!(fills(&events), [(9_551, Some(32_768), Some(7))]);
+
+        let loaded = Arc::new(LoadedAt(262_144));
+        let (events, _) = exchange_on(loaded, None, api, None, payloads()).await;
+        assert_eq!(fills(&events), [(9_551, Some(262_144), Some(7))]);
+
+        let (events, _) = exchange(api, None, payloads()).await;
+        assert_eq!(fills(&events), [(9_551, None, Some(7))]);
+
+        // A reply with no usage says nothing of its context.
+        let (events, _) = exchange(api, None, vec![chunk("ok", Some("stop"))]).await;
+        assert!(fills(&events).is_empty());
     }
 
     #[tokio::test]

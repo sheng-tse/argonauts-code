@@ -6,4 +6,5 @@
      Accepted. Per-key buckets, the shared no-key bucket and the refill clamp are right; 429 carries Retry-After.
 
 ● sign-off:per-key · Haiku 4.5 on Claude Code
-  ⎿  Accepted · the change holds 3 files: ratelimit/bucket.py, ratelimit/middleware.py, tests/test_middleware.py
+  ⎿  Accepted · read in the task's worktree, the change holds 3 files +3 −0: ratelimit/bucket.py,
+     ratelimit/middleware.py, tests/test_middleware.py · tests: 12 passed

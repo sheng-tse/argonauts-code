@@ -91,8 +91,8 @@ impl StatusTabCards<'_> {
             match (main.context_used, main.context_window) {
                 (Some(used), Some(window)) => session.push(dim(format!(
                     "{} of {} context",
-                    format::tokens(used),
-                    format::tokens(window)
+                    format::tokens_beside(used, window),
+                    format::window(window)
                 ))),
                 (Some(used), None) => {
                     session.push(dim(format!("{} in context", format::tokens(used))))

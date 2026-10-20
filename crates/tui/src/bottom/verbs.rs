@@ -5,6 +5,8 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::LazyLock;
 
+use argonauts_core::app::CommandWork;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum VerbStyle {
     #[default]
@@ -17,16 +19,24 @@ const WORDS_FILE: &str = include_str!("../../data/spinner-words.txt");
 struct Lists {
     voyage_working: Vec<&'static str>,
     voyage_done: Vec<&'static str>,
+    voyage_updating: Vec<&'static str>,
+    voyage_checking: Vec<&'static str>,
     plain_working: Vec<&'static str>,
     plain_done: Vec<&'static str>,
+    plain_updating: Vec<&'static str>,
+    plain_checking: Vec<&'static str>,
 }
 
 static LISTS: LazyLock<Lists> = LazyLock::new(|| {
     let mut lists = Lists {
         voyage_working: Vec::new(),
         voyage_done: Vec::new(),
+        voyage_updating: Vec::new(),
+        voyage_checking: Vec::new(),
         plain_working: Vec::new(),
         plain_done: Vec::new(),
+        plain_updating: Vec::new(),
+        plain_checking: Vec::new(),
     };
     let mut current: Option<&mut Vec<&'static str>> = None;
     for line in WORDS_FILE.lines().map(str::trim) {
@@ -37,8 +47,12 @@ static LISTS: LazyLock<Lists> = LazyLock::new(|| {
             current = match heading {
                 "voyage working" => Some(&mut lists.voyage_working),
                 "voyage done" => Some(&mut lists.voyage_done),
+                "voyage updating" => Some(&mut lists.voyage_updating),
+                "voyage checking" => Some(&mut lists.voyage_checking),
                 "plain working" => Some(&mut lists.plain_working),
                 "plain done" => Some(&mut lists.plain_done),
+                "plain updating" => Some(&mut lists.plain_updating),
+                "plain checking" => Some(&mut lists.plain_checking),
                 _ => None,
             };
             continue;
@@ -55,6 +69,16 @@ pub fn working_words(style: VerbStyle) -> &'static [&'static str] {
     match style {
         VerbStyle::Voyage => &LISTS.voyage_working,
         VerbStyle::Plain => &LISTS.plain_working,
+    }
+}
+
+/// The gerunds that fit a command's own `work`, such as `Careening` while `/update` updates.
+pub fn command_words(work: CommandWork, style: VerbStyle) -> &'static [&'static str] {
+    match (work, style) {
+        (CommandWork::Updating, VerbStyle::Voyage) => &LISTS.voyage_updating,
+        (CommandWork::Checking, VerbStyle::Voyage) => &LISTS.voyage_checking,
+        (CommandWork::Updating, VerbStyle::Plain) => &LISTS.plain_updating,
+        (CommandWork::Checking, VerbStyle::Plain) => &LISTS.plain_checking,
     }
 }
 
@@ -99,6 +123,14 @@ impl VerbPicker {
     pub fn working(&mut self, style: VerbStyle) -> &'static str {
         let mut last = self.last_working;
         let word = self.pick(working_words(style), &mut last);
+        self.last_working = last;
+        word
+    }
+
+    /// A word for a command's own `work`, never the one given last time.
+    pub fn command(&mut self, work: CommandWork, style: VerbStyle) -> &'static str {
+        let mut last = self.last_working;
+        let word = self.pick(command_words(work, style), &mut last);
         self.last_working = last;
         word
     }
@@ -202,6 +234,40 @@ mod tests {
                 assert!(word.ends_with("ed"), "{word:?} reads oddly before `for`");
             }
         }
+    }
+
+    /// Each kind of a command's work has its own few words, all of them in the working list,
+    /// and the plain set's words say it plainly.
+    #[test]
+    fn a_commands_work_takes_its_own_words_from_the_working_list() {
+        for work in [CommandWork::Updating, CommandWork::Checking] {
+            let words = command_words(work, VerbStyle::Voyage);
+            assert!((3..=6).contains(&words.len()), "{work:?}: {words:?}");
+            for word in words {
+                assert!(working_words(VerbStyle::Voyage).contains(word), "{word}");
+            }
+        }
+        assert_eq!(
+            command_words(CommandWork::Updating, VerbStyle::Voyage)[0],
+            "Careening"
+        );
+        assert_eq!(
+            command_words(CommandWork::Updating, VerbStyle::Plain),
+            ["Working"]
+        );
+        assert_eq!(
+            command_words(CommandWork::Checking, VerbStyle::Plain),
+            ["Checking"]
+        );
+        let mut picker = VerbPicker::default();
+        assert_eq!(
+            picker.command(CommandWork::Updating, VerbStyle::Voyage),
+            "Careening"
+        );
+        assert_eq!(
+            picker.command(CommandWork::Checking, VerbStyle::Voyage),
+            "Sounding"
+        );
     }
 
     #[test]

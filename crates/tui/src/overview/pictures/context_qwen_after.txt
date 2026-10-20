@@ -1,0 +1,51 @@
+● Started Slug fixes: Qwen fixes slugify on OpenCode and adds unicode slugs, and Gemma reviews each change on Ollama. 
+                                                                                                                      
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
+ What fills each session's context                                            2 sessions · 51.5k in context · 2 ended 
+                                                                                                                      
+     Context Usage  counted 2m ago                                                               41k/64k tokens (64%) 
+     Qwen3 Coder 30B (64k)  ollama/qwen3-coder:30b-64k                                                                
+                                                                                                                      
+                                               OpenCode says how full, not with what                                  
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁                       ⛁ In context                   41k   64.1%                             
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁                       ⛶ Free space                   23k   35.9%                             
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁                                                                                              
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁                                                                                              
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁                                                                                              
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁                                                                                              
+     ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶                                                                                              
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶                                                                                              
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶                                                                                              
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶                                                                                              
+                                                                                                                      
+     Context window:       64k tokens          smallest of the model's 256k, the tag's 64k on Ollama, OpenCode's 64k  
+     Auto-compact:         by OpenCode         at a point it doesn't report · 23k left in the window                  
+     Last request:         41k in              Ollama reports no cache, so local input counts in full · 212 out       
+                                                                                                                      
+     No MCP tools, memory files, skills or messages to list: OpenCode reports how many tokens a step read, not what.  
+                                                                                                                      
+     Crew agents · Slug fixes · each in its own window, outside this one                       3 agents  32.7k        
+                                                                                                                      
+       agent               model                      window                       used        calls     spend        
+     ● build:slug          Qwen3 Coder 30B (64k) on…  ━━━━━━━━━━━━━━━━━━━━    15.4k/64k   24%     24     local        
+       ⎿  as it ended, 8:26 PM                        OpenCode says how full, not with what                           
+                                                                                                                      
+     ● review:slug         Gemma3 12B 32K on Ollama   ━━━━━━━━━━━━━━━━━━━━     7.2k/32k   23%      0     local        
+       ⎿  as it ended, 8:27 PM                        Ollama says how full, not with what                             
+                                                                                                                      
+     ◐ build:unicode       Qwen3 Coder 30B (64k) on…  ━━━━━━━━━━━━━━━━━━┃━     9.3k/64k   15%      6     local        
+       ⎿  ┃ starts afresh at 57.6k                    OpenCode says how full, not with what                           
+                                                                                                                      
+ tab · ← → tabs · ↓ into the cards · esc closes                                                                       
+                                                                                                                      
+After esc, back at the prompt:                                                                                        
+                                                                                                                      
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                                                                                     
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts · ← 1 agent · ↓ to manage        context · build:unicode 16% 
+                                                                                                                      
+  ● main                                                                                                              
+  ◯ Slug fixes            ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  2/4 · 4m12s · ↓ 2.9k tokens                                           
+    ○ build:unicode  Running python3 -m unittest              ctx 9.3k/64k · 2m · ↓ 1.2k tokens                       

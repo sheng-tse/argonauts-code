@@ -35,7 +35,7 @@ use time::{OffsetDateTime, UtcOffset};
 use crate::theme::ColorEnv;
 
 pub use artifacts::{Artifacts, Published};
-pub use context::{ContextCount, ContextGrowth};
+pub use context::{ContextCount, ContextGrowth, LastStep};
 pub use conversation::ConversationState;
 pub use decisions::DecisionRecord;
 pub use goals::GoalBoard;
@@ -54,6 +54,8 @@ pub struct AppState {
     pub usage: Option<std::sync::Arc<argonauts_core::api::UsageSummary>>,
     /// `None` until the first `Mode` event, which reads as idle.
     pub mode: Option<AppMode>,
+    /// What a command you typed does in the background now, such as `/update` updating.
+    pub command_work: Option<argonauts_core::app::CommandWork>,
     /// The narrator's latest line, for the live line under `ui.narrator = "live"`.
     pub narrator: Option<NarratorLine>,
     pub narrator_status: Option<NarratorStatus>,
@@ -335,7 +337,8 @@ impl AppState {
                 }
             }
             AppEvent::TakenBack { texts } => self.taken_back(texts),
-            AppEvent::ConversationCleared => {
+            AppEvent::CommandWorking { work } => self.command_work = *work,
+            AppEvent::ConversationCleared { .. } => {
                 self.conversation.notice = None;
                 self.artifacts.clear();
             }
@@ -379,6 +382,7 @@ impl AppState {
             | AppEvent::Recap { .. }
             | AppEvent::RepoFiles { .. }
             | AppEvent::Report { .. }
+            | AppEvent::ReportSoFar { .. }
             | AppEvent::Switched { .. }
             | AppEvent::Templates { .. }
             | AppEvent::Folded { .. }
