@@ -151,6 +151,7 @@ mod tests {
             note: None,
             inner: None,
             left_out: false,
+            fallback_why: None,
         }
     }
 

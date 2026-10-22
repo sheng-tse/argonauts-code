@@ -269,12 +269,12 @@ fn run(spec: &CommandSpec, shown: &str, timeout: Duration) -> anyhow::Result<Str
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
 
     use argonauts_core::confine::Unconfined;
     use argonauts_core::future::BoxFuture;
 
     use super::*;
+    use crate::test_script::write_script;
 
     const OPENCODE: &str = "/opt/opencode/bin/opencode";
 
@@ -419,8 +419,7 @@ mod tests {
     fn a_list_is_read_whole_and_a_slow_one_given_up() {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("opencode");
-        std::fs::write(&program, "#!/bin/sh\ncat \"$0.json\"\n").unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&program, "#!/bin/sh\ncat \"$0.json\"\n");
         std::fs::write(dir.path().join("opencode.json"), LISTED).unwrap();
         let spec = list_command(&program, dir.path(), 5);
         assert_eq!(
@@ -481,8 +480,7 @@ mod tests {
         let program = dir.join("opencode");
         let script = "#!/bin/sh\necho \"$*\" >> \"$0.calls\"\n\
                       if [ \"$SANDBOXED\" = 1 ]; then cat \"$0.json\"; fi\n";
-        std::fs::write(&program, script).unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&program, script);
         std::fs::write(dir.join("opencode.json"), LISTED).unwrap();
         (program, CliScan::new(dir, home).everywhere())
     }

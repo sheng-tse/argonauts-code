@@ -372,19 +372,61 @@ pub fn checks_passed(checks: &[CheckOutcome]) -> bool {
     latest.iter().all(|check| check.passed)
 }
 
-/// Whether the verdict that stands on the task came from another provider than its worker's. A
-/// provider nobody knows can't be shown to be different, so it isn't.
+/// Whether the task's approval came from another provider than its worker's: the verdict
+/// that stands did, or it approves and a review of the newest round from another provider
+/// approved too, with nobody in that round asking for more. A provider nobody knows can't
+/// be shown to be different, so it isn't.
 fn approved_elsewhere(host: &Host, record: &TaskEntry, worker: Option<&ModelRef>) -> bool {
     let provider = |model: &ModelRef| Some(roles::provider(host, model)).filter(|p| is_known(p));
-    let judge = record.reviews.iter().rev().find_map(|event| match event {
+    let Some(worker) = worker.and_then(provider) else {
+        return false;
+    };
+    let elsewhere = |model: &ModelRef| provider(model).is_some_and(|theirs| theirs != worker);
+    let reviews = &record.reviews;
+    let judge = reviews.iter().rev().find_map(|event| match event {
         ReviewEvent::Reviewed { reviewer, .. } => Some(reviewer),
         ReviewEvent::Settled { judge, .. } => Some(judge),
         ReviewEvent::TestsWritten { .. } => None,
     });
-    match (judge.and_then(provider), worker.and_then(provider)) {
-        (Some(judge), Some(worker)) => judge != worker,
-        _ => false,
+    if judge.is_some_and(elsewhere) {
+        return true;
     }
+    if last_verdict(reviews) != Some(ReviewVerdict::Approve) {
+        return false;
+    }
+    let newest = newest_round(reviews);
+    let mut cross_approved = false;
+    for event in newest {
+        let (by, verdict) = match event {
+            ReviewEvent::Reviewed {
+                reviewer, review, ..
+            } => (reviewer, review.verdict),
+            ReviewEvent::Settled { judge, ruling } => (judge, ruling.verdict),
+            ReviewEvent::TestsWritten { .. } => continue,
+        };
+        if verdict != ReviewVerdict::Approve {
+            return false;
+        }
+        cross_approved |= elsewhere(by);
+    }
+    cross_approved
+}
+
+/// The reviews of the work as it stands: from the first review of the highest round on, so a
+/// judge who settled that round counts with it, and an approval of an earlier build doesn't.
+fn newest_round(reviews: &[ReviewEvent]) -> &[ReviewEvent] {
+    let round = |event: &ReviewEvent| match event {
+        ReviewEvent::Reviewed { round, .. } => Some(*round),
+        _ => None,
+    };
+    let Some(newest) = reviews.iter().filter_map(round).max() else {
+        return reviews;
+    };
+    let first = reviews
+        .iter()
+        .position(|event| round(event) == Some(newest))
+        .unwrap_or_default();
+    &reviews[first..]
 }
 
 /// The verdict that stands: the judge's ruling, else the latest reviewer's.

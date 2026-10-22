@@ -392,6 +392,31 @@ mod tests {
         }
     }
 
+    /// Work outside the project is ours to hold: inside our sandbox Codex has full access and
+    /// ours keeps the never-list, and under its own it writes only its workspace.
+    #[test]
+    fn work_outside_is_ours_to_hold_and_its_own_sandbox_keeps_to_the_workspace() {
+        let outside = argonauts_core::outside::Outside {
+            read: true,
+            write: true,
+            ..Default::default()
+        };
+        let ours = command(&SessionRequest {
+            tool_sandbox_off: true,
+            goal_hash: Some("abc".into()),
+            outside: outside.clone(),
+            ..request(SessionRole::Direct)
+        });
+        assert_eq!(value_after(&ours.args, "--sandbox"), "danger-full-access");
+        let own = command(&SessionRequest {
+            goal_hash: Some("abc".into()),
+            outside,
+            ..request(SessionRole::Direct)
+        });
+        assert_eq!(value_after(&own.args, "--sandbox"), "workspace-write");
+        assert!(!own.args.iter().any(|arg| arg == "--add-dir"));
+    }
+
     #[test]
     fn codex_loads_its_own_skills_plugins_and_servers() {
         for role in [SessionRole::ReadOnly, SessionRole::Build] {

@@ -17,7 +17,7 @@ expression: text(&lines)
   Tasks
     task-001 Exporter trait · Opus on Claude Code · reviewed by GPT 5.6 on Codex
       task-002 JSON writer · GPT 5.6 on Codex · reviewed by Opus on Claude Code
-        task-003 Wire --json into the CLI · Gemini 3.6 on Antigravity CLI · reviewed by GPT 5.6 on Codex
+        task-003 Wire --json into the CLI · Gemini 3.6 on agy · reviewed by GPT 5.6 on Codex
 
   Acceptance tests
     export --json writes one object per row

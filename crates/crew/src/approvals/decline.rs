@@ -9,7 +9,9 @@
 //!   away.
 //! - `stop`: that part ends, with its work kept.
 //!
-//! Either way the run's closing answer lists what was left and what was taken.
+//! Either way the run's closing answer lists what was left and what was taken. The one question
+//! nothing is taken on is the draft pull request's, whose yes posts on GitHub as you: it waits
+//! for your answer.
 
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::approval::{
@@ -25,6 +27,7 @@ use argonauts_core::{Note, NoteLevel};
 use super::autopilot::{self, Held};
 use super::lock;
 use crate::engine::host::Host;
+use crate::follow::draft;
 use crate::workflow::change;
 
 /// What an agent reads when its question was left and `approvals.when_declined` is `stop`.
@@ -57,6 +60,9 @@ pub(super) fn left(host: &Host, id: &ApprovalId) -> Result<(), String> {
         return Err(format!("withdrawn: {reason}"));
     }
     let opened = &record.opened;
+    if draft::asks(opened) {
+        return Err("only your own answer posts on GitHub".to_owned());
+    }
     let when = host.settings().approvals.when_declined;
     let (option, text) = taken(opened, when)
         .ok_or_else(|| "nothing it offers lets the work go on without you".to_owned())?;

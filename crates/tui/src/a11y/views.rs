@@ -135,6 +135,34 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             lines
         }
         ViewData::Mods { view } => crate::mods::spoken(view),
+        ViewData::Issues {
+            repo,
+            issues,
+            problem,
+            ..
+        } => {
+            let mut first = format!("issues: {}", issues.len());
+            if !repo.trim().is_empty() {
+                first.push_str(&format!(", in {}", one(repo)));
+            }
+            let mut lines = vec![first];
+            lines.extend(
+                problem
+                    .iter()
+                    .map(|problem| format!("problem: {}", one(problem))),
+            );
+            lines.extend(numbered(issues.iter().map(|issue| {
+                let mut line = format!("#{} {}", issue.number, one(&issue.title));
+                if !issue.labels.is_empty() {
+                    line.push_str(&format!(", labels: {}", one(&issue.labels.join(", "))));
+                }
+                if issue.yours {
+                    line.push_str(", yours");
+                }
+                line
+            })));
+            lines
+        }
         ViewData::Models { choices, .. } => {
             let mut lines = vec![format!("models: {}", choices.len())];
             lines.extend(numbered(choices.iter().map(|choice| {
@@ -293,6 +321,8 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
         ViewData::Usage { summary } => crate::overview::cards::spoken(summary, names),
         ViewData::StatusTab { view } => crate::overview::status_tab::spoken(view, names),
         ViewData::Overview { overview } => crate::overview::spoken_overview(overview, names),
+        ViewData::Behaviors { map } => crate::overview::spoken_behaviors(map),
+        ViewData::DeepOffer { offer } => crate::questions::deep_map::spoken(offer),
         ViewData::Context { view } | ViewData::ContextPrint { view } => view
             .rows
             .iter()
@@ -609,6 +639,52 @@ mod tests {
     use super::{agent_row, view_lines};
 
     #[test]
+    fn the_issue_list_reads_as_numbered_issues_with_their_labels() {
+        use argonauts_core::app::IssueRow;
+
+        let data = ViewData::Issues {
+            repo: "team/app".to_owned(),
+            issues: vec![
+                IssueRow {
+                    number: 42,
+                    title: "Rate limiter shares one bucket\u{1b}[31m".to_owned(),
+                    labels: vec!["bug".to_owned()],
+                    updated: OffsetDateTime::UNIX_EPOCH,
+                    yours: true,
+                },
+                IssueRow {
+                    number: 51,
+                    title: "Document the header".to_owned(),
+                    labels: Vec::new(),
+                    updated: OffsetDateTime::UNIX_EPOCH,
+                    yours: false,
+                },
+            ],
+            problem: None,
+            open: None,
+        };
+        let names = argonauts_core::display_names::DisplayNames::default();
+        assert_eq!(
+            view_lines(&data, &names),
+            [
+                "issues: 2, in team/app",
+                "  1. #42 Rate limiter shares one bucket, labels: bug, yours",
+                "  2. #51 Document the header",
+            ]
+        );
+        let none = ViewData::Issues {
+            repo: String::new(),
+            issues: Vec::new(),
+            problem: Some("gh isn't signed in".to_owned()),
+            open: None,
+        };
+        assert_eq!(
+            view_lines(&none, &names),
+            ["issues: 0", "problem: gh isn't signed in"]
+        );
+    }
+
+    #[test]
     fn the_resume_list_reads_cli_sessions_by_the_id_resume_takes() {
         let data = ViewData::ResumeList {
             conversations: Vec::new(),
@@ -657,6 +733,7 @@ mod tests {
             )),
             inner: None,
             left_out: false,
+            fallback_why: None,
         };
         let read = agent_row(&row, &Default::default());
         assert!(

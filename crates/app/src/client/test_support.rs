@@ -122,6 +122,9 @@ pub(crate) fn session_started(
         workflow_step: None,
         label: None,
         asked: None,
+        asked_by: None,
+        asked_why: None,
+        forked: false,
     };
     session_event(
         seq,
@@ -210,6 +213,7 @@ pub(crate) fn run_started(seq: u64, request: &str, outside_agent: Option<&str>) 
         outside_agent: outside_agent.map(str::to_owned),
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     };
     event(
         seq,

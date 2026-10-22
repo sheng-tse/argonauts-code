@@ -1,0 +1,185 @@
+{
+  "run": "run-20261020-121825-aa34",
+  "id": "wf-001",
+  "name": "Fix the money rounding",
+  "description": "Codex reviews, as you asked",
+  "style": "workflow",
+  "status_lines": [
+    {
+      "kind": "ended",
+      "text": "Merged onto main · 0a7b465 · 1 file +9 −4 · Haiku 5.5 built it, GPT 6 Luna reviewed, Gemini 3.8 Flash Low signed off",
+      "tone": "good"
+    }
+  ],
+  "agents_done": 4,
+  "agents_total": 4,
+  "elapsed_ms": 83326,
+  "spent": {
+    "input_tokens": 317305,
+    "output_tokens": 9508,
+    "cached_tokens": 208061,
+    "cost_usd": 0.03677806,
+    "cost_partial": false,
+    "cost_estimated": true
+  },
+  "phases": [
+    {
+      "name": "Build",
+      "detail": "",
+      "standard": "do",
+      "status": "done",
+      "count": {
+        "done": 1,
+        "total": 1
+      },
+      "rows": [
+        {
+          "row": "agent",
+          "session": "s-001",
+          "label": "build:fix-the-money",
+          "worker": "claude-code/claude-haiku-5-5",
+          "status": "done",
+          "tokens": 14978,
+          "spent": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "cost_partial": false,
+            "cost_estimated": false
+          },
+          "elapsed_ms": 10697,
+          "subagents": 0,
+          "context": null,
+          "fallback_for": null,
+          "inner": {
+            "workflow": "cli-worx86tbc",
+            "index": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "Review",
+      "detail": "",
+      "standard": "do",
+      "status": "done",
+      "count": {
+        "done": 1,
+        "total": 1
+      },
+      "rows": [
+        {
+          "row": "agent",
+          "session": "s-002",
+          "label": "review:fix-the-money",
+          "worker": "codex/gpt-6-luna",
+          "status": "done",
+          "tokens": 16783,
+          "spent": {
+            "input_tokens": 16750,
+            "output_tokens": 33,
+            "cached_tokens": 0,
+            "cost_usd": 0.0016915,
+            "cost_partial": false,
+            "cost_estimated": true
+          },
+          "elapsed_ms": 6984,
+          "subagents": 0,
+          "context": {
+            "used": 16783,
+            "window": 872000,
+            "cap": 784800
+          },
+          "fallback_for": null,
+          "answered": true,
+          "note": {
+            "text": "approved",
+            "tone": "good"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Judge",
+      "detail": "",
+      "standard": "do",
+      "status": "done",
+      "count": {
+        "done": 1,
+        "total": 1
+      },
+      "rows": [
+        {
+          "row": "agent",
+          "session": "s-003",
+          "label": "sign-off:fix-the-money",
+          "worker": "antigravity-cli/gemini-3.8-flash-low",
+          "status": "done",
+          "tokens": 19727,
+          "spent": {
+            "input_tokens": 19034,
+            "output_tokens": 693,
+            "cached_tokens": 0,
+            "cost_usd": 0.01687425,
+            "cost_partial": false,
+            "cost_estimated": true
+          },
+          "elapsed_ms": 19079,
+          "subagents": 0,
+          "context": {
+            "used": 7141
+          },
+          "fallback_for": null,
+          "answered": true,
+          "note": {
+            "text": "approved",
+            "tone": "good"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Verify",
+      "detail": "",
+      "standard": "do",
+      "status": "done",
+      "count": {
+        "done": 1,
+        "total": 1
+      },
+      "rows": [
+        {
+          "row": "agent",
+          "session": "s-001",
+          "label": "verify:tests",
+          "worker": "claude-code/claude-haiku-5-5",
+          "status": "done",
+          "tokens": 12680,
+          "spent": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "cost_partial": false,
+            "cost_estimated": false
+          },
+          "elapsed_ms": 4834,
+          "subagents": 0,
+          "context": null,
+          "fallback_for": null,
+          "inner": {
+            "workflow": "cli-worx86tbc",
+            "index": 4
+          }
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "Captain",
+    "Claude Code's workflow fix-money-rounding"
+  ],
+  "worker": "claude-code",
+  "state": "done"
+}

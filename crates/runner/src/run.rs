@@ -447,11 +447,13 @@ async fn agent<H: Host + ?Sized>(
         tool_calls: end.tool_calls,
         duration_ms: end.duration_ms,
     };
-    let answer = end.result.as_ref().ok().map(|value| match value {
+    let answer = end.result.as_ref().map(|value| match value {
         Value::String(text) => text.clone(),
         other => other.to_string(),
     });
-    shared.progress().ended(row, &totals, answer.as_deref());
+    shared
+        .progress()
+        .ended(row, &totals, answer.as_deref().map_err(|why| why.as_str()));
     shared
         .spent
         .store(shared.host.tokens_spent(), Ordering::Relaxed);

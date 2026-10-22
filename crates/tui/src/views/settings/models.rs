@@ -255,13 +255,14 @@ fn model_list(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
         })
     });
     picker.banner = memory.as_ref().map(memory_rows::banner);
-    if memory.is_some() {
+    if let Some(machine) = &memory {
         let width = memory_rows::context_width(level.rows().filter_map(|c| c.listed.as_ref()));
         for (row, choice) in rows.iter_mut().zip(level.rows()) {
             if let Some(listed) = &choice.listed {
-                let (description, danger) = memory_rows::description(choice, listed, width);
-                row.description = description;
-                row.danger = danger;
+                let described = memory_rows::description(choice, listed, width, machine);
+                row.description = described.description;
+                row.tail = described.tail;
+                row.danger = described.danger;
             }
         }
     }

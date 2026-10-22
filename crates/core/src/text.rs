@@ -2,8 +2,9 @@
 //! such as `limits.spend_per_run`, a file, or a model, and that keeps its exact spelling.
 
 /// Starts `text` with a capital, as a sentence does, unless its first word is written as code:
-/// a dotted key, a path, a flag, a model, anything with a digit, `_`, or backtick in it, or the
-/// key of a line quoted from a file, such as `workflow = "council"`.
+/// a dotted key, a path, a flag, a model, anything with a digit, `_`, or backtick in it, a name
+/// spelled in lowercase such as agy, or the key of a line quoted from a file, such as
+/// `workflow = "council"`.
 pub fn sentence_case(text: &str) -> String {
     let mut words = text.split_whitespace();
     let first_word = words.next().unwrap_or_default();
@@ -114,6 +115,9 @@ pub fn clause_case(text: &str) -> String {
     }
 }
 
+/// Names that are spelled in lowercase, which no sentence capitalizes.
+const LOWERCASE_NAMES: &[&str] = &["agy"];
+
 /// Whether a word is a name to keep as written rather than an English word. Closing
 /// punctuation and a possessive don't count, so "done," and "it's" read as words.
 fn is_code(word: &str) -> bool {
@@ -122,13 +126,14 @@ fn is_code(word: &str) -> bool {
         .strip_suffix("'s")
         .or_else(|| word.strip_suffix("’s"))
         .unwrap_or(word);
-    word.chars().any(|c| {
-        c.is_ascii_digit()
-            || matches!(
-                c,
-                '.' | '_' | '/' | '\\' | '-' | '`' | '=' | '[' | '~' | '@' | '<' | ':' | '*'
-            )
-    })
+    LOWERCASE_NAMES.contains(&word)
+        || word.chars().any(|c| {
+            c.is_ascii_digit()
+                || matches!(
+                    c,
+                    '.' | '_' | '/' | '\\' | '-' | '`' | '=' | '[' | '~' | '@' | '<' | ':' | '*'
+                )
+        })
 }
 
 /// A state's name in the journal, as the screen says it. Every place that prints a state from
@@ -192,6 +197,8 @@ mod tests {
             "[[checks.run]] needs a name",
             "gpt5 is gone",
             "workflow = \"x\" in config.toml names no workflow",
+            "agy worked on this",
+            "agy's session ended",
         ] {
             assert_eq!(sentence_case(text), text);
         }

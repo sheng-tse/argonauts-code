@@ -225,6 +225,16 @@ impl Glyphs {
     }
 }
 
+/// The blanks after `glyph` before text: two after an arrow, which fonts such as Iosevka draw
+/// two cells wide, so the arrow never touches the text, and one after anything else.
+pub fn gap_after(glyph: &str) -> &'static str {
+    if glyph.ends_with(['←', '→', '↑', '↓']) {
+        "  "
+    } else {
+        " "
+    }
+}
+
 impl Default for Glyphs {
     fn default() -> Self {
         Self::UNICODE

@@ -1,6 +1,6 @@
 //! A resumed conversation, drawn by the printers that drew it live, from the council session's
-//! own records in `golden/resumed_council/` (its home folder made neutral, its plan readings and
-//! its CLI's lists left out), compared cell for cell with `golden/resumed_after.txt` at its width
+//! own records in `tests/golden/transcript/resumed_council/` (its home folder made neutral, its plan readings and
+//! its CLI's lists left out), compared cell for cell with `tests/golden/transcript/resumed_after.txt` at its width
 //! of 118 columns.
 
 use std::time::Instant;
@@ -21,10 +21,11 @@ use crate::render::{Clock, RenderCtx};
 use crate::text::plain_text;
 use crate::theme::{Glyphs, Role, Theme};
 
-const CONVERSATION: &str = include_str!("../../golden/resumed_council/conversation-001.jsonl");
-const RUN: &str = include_str!("../../golden/resumed_council/events.jsonl");
-const PICTURE: &str = include_str!("../../golden/resumed_after.txt");
-const COLOURS: &str = include_str!("../../golden/resumed_after.html");
+const CONVERSATION: &str =
+    include_str!("../../tests/golden/transcript/resumed_council/conversation-001.jsonl");
+const RUN: &str = include_str!("../../tests/golden/transcript/resumed_council/events.jsonl");
+const PICTURE: &str = include_str!("../../tests/golden/transcript/resumed_after.txt");
+const COLOURS: &str = include_str!("../../tests/golden/transcript/resumed_after.html");
 const WIDTH: u16 = 118;
 
 /// The picture's rows up to and with the main agent's answer, which this test holds the screen
@@ -99,7 +100,7 @@ fn names() -> AppEvent {
     for (cli, name) in [
         ("claude-code", "Claude Code"),
         ("codex", "Codex"),
-        ("antigravity-cli", "Antigravity CLI"),
+        ("antigravity-cli", "agy"),
         ("opencode", "OpenCode"),
     ] {
         names.clis.insert(cli.to_owned(), name.to_owned());
@@ -173,13 +174,13 @@ fn resumed_with(screen: &mut Screen, events: Vec<RunEvent>) {
 }
 
 /// The picture's rows after the main agent's answer, a run of them at a time, each found in
-/// the drawing by its first two rows. Between them the screen draws what the picture leaves
-/// out, each block of it named in [`LEFT_OUT`].
-const PARTS: [std::ops::Range<usize>; 6] = [12..15, 15..26, 26..28, 28..30, 30..35, 38..40];
+/// the drawing by its first two rows (its one row, for a part of one). Between them the screen
+/// draws what the picture leaves out, each block of it named in [`LEFT_OUT`].
+const PARTS: [std::ops::Range<usize>; 6] = [12..15, 15..26, 26..27, 27..29, 29..34, 37..39];
 
 /// What the screen prints that the picture leaves out, by each block's first row, all of it as
 /// it printed live: the main agent's turn ending, the run's start note, and the two fallbacks Argonauts refused to start for want of a model, which runs today
-/// never pick. The picture's rows 35 to 37 stand for slash commands typed between two tries,
+/// never pick. The picture's rows 34 to 36 stand for slash commands typed between two tries,
 /// which this record doesn't hold.
 const LEFT_OUT: [&str; 4] = [
     "✻ Sailed for 10s",
@@ -350,9 +351,9 @@ fn a_resumed_conversation_is_drawn_as_it_printed_live() {
     covered[..=OWN_ROWS].fill(true);
     let mut after = OWN_ROWS;
     for part in PARTS {
-        let first = &want[part.start..part.start + 2];
-        let at = (after..rows.len().saturating_sub(1))
-            .find(|&at| rows[at] == first[0] && rows[at + 1] == first[1])
+        let first = &want[part.start..part.end.min(part.start + 2)];
+        let at = (after..=rows.len().saturating_sub(first.len()))
+            .find(|&at| rows[at..at + first.len()] == *first)
             .unwrap_or_else(|| {
                 panic!(
                     "rows {part:?} of the picture aren't drawn:\n{}",

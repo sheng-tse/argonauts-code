@@ -140,7 +140,6 @@ impl FakeModelServer {
 impl Drop for FakeModelServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        let _ = TcpStream::connect(self.addr);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -152,18 +151,11 @@ fn rfc3339(at: OffsetDateTime) -> String {
 }
 
 fn accept(listener: &TcpListener, state: &Arc<Mutex<State>>, stop: &AtomicBool) {
-    for stream in listener.incoming() {
-        if stop.load(Ordering::SeqCst) {
-            return;
-        }
-        let Ok(stream) = stream else { continue };
-        let state = state.clone();
-        let _ = thread::Builder::new()
-            .name("argonauts-fake-model-server-conn".to_owned())
-            .spawn(move || {
-                let _ = serve(stream, &state);
-            });
-    }
+    let state = state.clone();
+    let name = "argonauts-fake-model-server-conn";
+    crate::accept::accept_until(listener, stop, name, move |stream| {
+        let _ = serve(stream, &state);
+    });
 }
 
 fn serve(stream: TcpStream, state: &Mutex<State>) -> std::io::Result<()> {

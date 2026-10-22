@@ -5,6 +5,7 @@ mod artifacts;
 mod context;
 mod conversation;
 mod decisions;
+mod deep;
 mod goals;
 mod plan_usage;
 mod reported;
@@ -36,8 +37,9 @@ use crate::theme::ColorEnv;
 
 pub use artifacts::{Artifacts, Published};
 pub use context::{ContextCount, ContextGrowth, LastStep};
-pub use conversation::ConversationState;
+pub use conversation::{ConversationState, TurnRetry};
 pub use decisions::DecisionRecord;
+pub use deep::DeepUpdate;
 pub use goals::GoalBoard;
 pub use plan_usage::binding_reading;
 pub use run::{
@@ -56,6 +58,8 @@ pub struct AppState {
     pub mode: Option<AppMode>,
     /// What a command you typed does in the background now, such as `/update` updating.
     pub command_work: Option<argonauts_core::app::CommandWork>,
+    /// The deeper Behaviors map's update, while one runs, and how the last one ended.
+    pub deep: deep::DeepUpdate,
     /// The narrator's latest line, for the live line under `ui.narrator = "live"`.
     pub narrator: Option<NarratorLine>,
     pub narrator_status: Option<NarratorStatus>,
@@ -338,6 +342,8 @@ impl AppState {
             }
             AppEvent::TakenBack { texts } => self.taken_back(texts),
             AppEvent::CommandWorking { work } => self.command_work = *work,
+            AppEvent::DeepProgress { progress } => self.deep.progressed(progress),
+            AppEvent::DeepDone { done } => self.deep.done(done),
             AppEvent::ConversationCleared { .. } => {
                 self.conversation.notice = None;
                 self.artifacts.clear();
@@ -390,7 +396,13 @@ impl AppState {
             | AppEvent::Continued { .. }
             | AppEvent::Hint { .. }
             | AppEvent::SettingRefused { .. }
+            | AppEvent::Updated { .. }
             | AppEvent::Exit => {}
+            AppEvent::PullRequestFollowed { run, followed } => {
+                if let Some(state) = self.runs.get_mut(run) {
+                    state.followed = Some(followed.clone());
+                }
+            }
         }
     }
 

@@ -144,7 +144,7 @@ fn session_view_output_and_input() {
     let mut driver = TestDriver::launch(script)
         .ui("[panel]\nagents = true")
         .start();
-    driver.wait_visible("↓ to manage");
+    driver.wait_visible("↓  to manage");
     open_first_session(&mut driver);
     let output = driver.wait_visible("JSON writer goes beside");
     assert!(
@@ -180,7 +180,7 @@ fn session_input_side_exact() {
     let mut driver = TestDriver::launch(script)
         .ui("[panel]\nagents = true")
         .start();
-    driver.wait_visible("↓ to manage");
+    driver.wait_visible("↓  to manage");
     open_first_session(&mut driver);
     driver.press(Key::Tab);
     let input = driver.wait_visible("No new dependencies\\.");
@@ -215,7 +215,7 @@ fn session_view_steer_raw_diff() {
     let mut driver = TestDriver::launch(script)
         .ui("[panel]\nagents = true")
         .start();
-    driver.wait_visible("↓ to manage");
+    driver.wait_visible("↓  to manage");
     open_first_session(&mut driver);
     driver.press(Key::Char('m'));
     driver.send("use serde_json");
@@ -265,7 +265,7 @@ fn follow_mode_1_to_9_end_esc() {
     let mut driver = TestDriver::launch(script)
         .ui("[panel]\nagents = true")
         .start();
-    driver.wait_visible("↓ to manage");
+    driver.wait_visible("↓  to manage");
     driver.press(Key::Down);
     driver.press(Key::Char('2'));
     let follow = driver.wait_gone(TOP_RULE);

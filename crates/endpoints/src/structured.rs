@@ -66,7 +66,8 @@ pub(crate) fn schema_part(mode: StructuredMode, schema: &Value) -> Option<InputP
 pub(crate) fn read(schema: &Value, text: &str) -> Result<Value, String> {
     let validator =
         jsonschema::validator_for(schema).map_err(|err| format!("the schema is invalid: {err}"))?;
-    let value = json_in(text).ok_or_else(|| "the reply held no JSON object".to_owned())?;
+    let value =
+        answer_format::json_in(text).ok_or_else(|| "the reply held no JSON object".to_owned())?;
     let value = answer_format::as_written(schema, value);
     let errors: Vec<String> = validator
         .iter_errors(&value)
@@ -84,46 +85,6 @@ pub(crate) fn read(schema: &Value, text: &str) -> Result<Value, String> {
     } else {
         Err(errors.join("; "))
     }
-}
-
-/// The whole reply as JSON, else the inside of a code fence, else the last JSON object in the
-/// text, since a prompted model may still wrap its answer in prose.
-fn json_in(text: &str) -> Option<Value> {
-    let trimmed = text.trim();
-    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-        return Some(value);
-    }
-    if let Some(fenced) = fenced(trimmed)
-        && let Ok(value) = serde_json::from_str::<Value>(fenced)
-    {
-        return Some(value);
-    }
-    last_object(text)
-}
-
-fn fenced(text: &str) -> Option<&str> {
-    let rest = text.strip_prefix("```")?;
-    let body_start = rest.find('\n')? + 1;
-    let body = &rest[body_start..];
-    let end = body.rfind("```")?;
-    Some(body[..end].trim())
-}
-
-fn last_object(text: &str) -> Option<Value> {
-    let mut last = None;
-    let mut at = 0;
-    while let Some(offset) = text[at..].find('{') {
-        let start = at + offset;
-        let mut values = serde_json::Deserializer::from_str(&text[start..]).into_iter::<Value>();
-        match values.next() {
-            Some(Ok(value)) if value.is_object() => {
-                at = start + values.byte_offset();
-                last = Some(value);
-            }
-            _ => at = start + 1,
-        }
-    }
-    last
 }
 
 #[cfg(test)]

@@ -583,7 +583,7 @@ fn cleaned_report(cleaned: usize, hidden: Option<Option<(u64, u64)>>) -> (String
     match hidden {
         Some(sizes) => {
             let sizes = sizes.map_or_else(String::new, |(before, after)| {
-                format!(" · {} → {}", megabytes(before), megabytes(after))
+                format!(" · {} →  {}", megabytes(before), megabytes(after))
             });
             (
                 format!("Cleaned this folder's hidden history{sizes}"),

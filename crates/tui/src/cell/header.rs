@@ -150,7 +150,7 @@ impl SessionHeader {
         }
         let (mascot, look) = self.mascot(theme.brightness == Brightness::Light);
         let frame = if look.is_ultra() && !theme.reduced_motion {
-            ctx.clock.frame(mascot.frame_time(), mascot::FRAMES)
+            ctx.clock.frame(mascot.frame_time(), mascot.frames())
         } else {
             0
         };

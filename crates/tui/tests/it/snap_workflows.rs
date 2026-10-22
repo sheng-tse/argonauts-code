@@ -77,6 +77,7 @@ fn agent(
         note: None,
         inner: None,
         left_out: false,
+        fallback_why: None,
     }
 }
 
@@ -395,7 +396,10 @@ fn agent_data(row: AgentRow) -> AgentData {
         asked_for: None,
         earlier: None,
         moved: None,
+        given: None,
+        prompt_about: None,
         review: None,
+        started_from: None,
     }
 }
 
@@ -533,7 +537,7 @@ fn workflow_view() {
     assert!(text.contains("Build · 7 agents"), "{text}");
     assert!(
         text.contains(
-            "↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save"
+            "↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save"
         ),
         "{text}"
     );
@@ -682,7 +686,7 @@ fn agent_view() {
     assert!(text.contains("build:b-history-cells ─"), "{text}");
     assert!(text.contains("✔ Done · GPT 5.6 on Codex"), "{text}");
     assert!(
-        text.contains("747k tok · 195 tool calls · 1h 21m 0s"),
+        text.contains("747.0k tok · 195 tool calls · 1h 21m 0s"),
         "{text}"
     );
 
@@ -1016,7 +1020,10 @@ fn run_tree_subagents_and_threads() {
     assert!(text.contains("+2 subagents"), "{text}");
     assert!(text.contains("+1 subagent "), "{text}");
     assert!(text.contains("↷ worker · task-002"), "{text}");
-    assert!(text.contains("GPT 5.6 · 181k tok · for Opus"), "{text}");
+    assert!(
+        text.contains("GPT 5.6 · 181.0k tok · in place of Opus"),
+        "{text}"
+    );
 
     let child = |id: &str,
                  kind: SubagentKind,
@@ -1477,7 +1484,10 @@ fn debt_markers_on_rows() {
         .find(|row| row.contains("worker · task-002"))
         .unwrap();
     assert!(row.contains("↷ worker · task-002"), "{text}");
-    assert!(row.contains("for Opus · needs a review by Opus"), "{text}");
+    assert!(
+        row.contains("in place of Opus · needs a review by Opus"),
+        "{text}"
+    );
     assert!(!text.contains('◌'), "{text}");
     assert_eq!(text.matches("needs a review by").count(), 1, "{text}");
     let theme = theme();
@@ -1592,7 +1602,7 @@ fn run_row_shows_outside_agent() {
     let text = panel_text(&panel, &AgentPanel::default(), 120);
     insta::assert_snapshot!("run_row_shows_outside_agent", text);
     assert!(
-        text.contains("1/3 · 4m12s · ↓ 54.3k tokens · via desktop-client"),
+        text.contains("1/3 · 4m12s · ↓  54.3k tokens · via desktop-client"),
         "{text}"
     );
     // At 60 columns the bar goes first, and who fills in outlasts who started the run.

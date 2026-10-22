@@ -147,7 +147,7 @@ mod tests {
             names.worker(&worker("claude-code/opus")),
             "Opus 5.5 on Claude Code"
         );
-        assert_eq!(names.worker(&worker("antigravity-cli")), "Antigravity CLI");
+        assert_eq!(names.worker(&worker("antigravity-cli")), "agy");
         driver.exit().await;
     }
 

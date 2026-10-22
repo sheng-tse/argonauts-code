@@ -7,7 +7,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// Runs your coding-agent CLIs as one crew, in git worktrees, and asks you before anything merges.
 #[derive(Debug, Parser)]
-#[command(name = "argonauts", version)]
+// The version line names the package people install and update, as `rg` names `ripgrep`.
+#[command(name = "argonauts", display_name = "argonauts-code", version)]
 pub struct Cli {
     /// Plain, append-only lines for a screen reader instead of the full screen.
     #[arg(long, global = true)]
@@ -53,10 +54,15 @@ pub enum Command {
     /// Update each installed agent CLI the way it was installed, such as `claude update` or
     /// `brew upgrade codex`, then run the doctor. It waits while a run is going.
     Update,
+    /// Update Argonauts Code itself, or go back to the version before.
+    #[command(name = "self-update")]
+    SelfUpdate(SelfUpdateArgs),
+    /// Show the greeting Argonauts Code gives the first time it starts.
+    Welcome,
     /// Show, explain, or change your settings.
     #[command(subcommand)]
     Config(ConfigCommand),
-    /// The one anonymous event a day about how you use Argonauts Code, off until you turn it on.
+    /// One anonymous usage report a day, never your code or prompts; on until you turn it off.
     #[command(subcommand)]
     Telemetry(TelemetryCommand),
     /// The models Argonauts Code knows about.
@@ -121,6 +127,9 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// What each model does that the others don't: every action your agents took, labelled,
+    /// and each model's behaviors ranked by how much they set it apart.
+    Behaviors(BehaviorsArgs),
     /// A run's review: its outcome, predictions against results, memory, routing, and the
     /// change it proposed.
     #[command(name = "run-review")]
@@ -208,19 +217,59 @@ pub enum MergeArg {
 }
 
 #[derive(Debug, Clone, Default, Args)]
+pub struct SelfUpdateArgs {
+    /// Only say whether a newer version is out.
+    #[arg(long, conflicts_with_all = ["version", "rollback"])]
+    pub check: bool,
+    /// The releases to follow from now on.
+    #[arg(long, value_enum)]
+    pub channel: Option<UpdateChannelArg>,
+    /// Install this version rather than the newest, such as `0.1.1`.
+    #[arg(long, value_name = "VERSION", conflicts_with = "rollback")]
+    pub version: Option<String>,
+    /// Go back to the version installed before this one.
+    #[arg(long)]
+    pub rollback: bool,
+}
+
+/// `--channel`, as `updates.channel` names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum UpdateChannelArg {
+    Stable,
+    /// Each release before it's stable.
+    Beta,
+}
+
+#[derive(Debug, Clone, Default, Args)]
 pub struct DoctorArgs {
     /// Print the report as JSON.
     #[arg(long)]
     pub json: bool,
 }
 
+#[derive(Debug, Clone, Args)]
+pub struct BehaviorsArgs {
+    /// Only actions from this far back, such as `7d`, `24h` or `4w`, or since a day such as
+    /// `2026-10-01`.
+    #[arg(long, value_name = "PERIOD")]
+    pub since: Option<argonauts_app::BehaviorPeriod>,
+    /// Write every agent session's actions for another tool instead: `hodoscope <DIR>` writes
+    /// Hodoscope's trajectory JSON, one file per session.
+    #[arg(long, num_args = 2, value_names = ["FORMAT", "DIR"], conflicts_with = "deep")]
+    pub export: Option<Vec<String>>,
+    /// Update the deeper map instead: each new action summarized by one model, then embedded
+    /// and placed. Every summary is kept, so a second update sends only what's new.
+    #[arg(long)]
+    pub deep: bool,
+}
+
 #[derive(Debug, Clone, Copy, Subcommand)]
 pub enum TelemetryCommand {
-    /// Print the event as it would be sent, and whether it is.
+    /// Print the next report exactly as it will be sent, and whether it goes.
     Show,
-    /// Send it once a day from now on.
+    /// Send it once a day again.
     On,
-    /// Send nothing.
+    /// Stop the reports.
     Off,
 }
 
@@ -449,6 +498,34 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn the_version_line_names_the_package_and_the_command_stays_argonauts() {
+        let mut command = Cli::command();
+        assert_eq!(
+            command.render_version(),
+            format!("argonauts-code {}\n", env!("CARGO_PKG_VERSION"))
+        );
+        let usage = command.render_usage().to_string();
+        assert!(usage.contains("argonauts [OPTIONS]"), "{usage}");
+        assert!(!usage.contains("argonauts-code"), "{usage}");
+    }
+
+    #[test]
+    fn behaviors_takes_a_period_and_an_export() {
+        let Some(Command::Behaviors(args)) =
+            parse(&["behaviors", "--since", "7d", "--export", "hodoscope", "out"]).command
+        else {
+            panic!("not the behaviors command");
+        };
+        assert!(args.since.is_some());
+        assert_eq!(
+            args.export,
+            Some(vec!["hodoscope".to_owned(), "out".to_owned()])
+        );
+        assert!(fails(&["behaviors", "--since", "soon"]));
+        assert!(fails(&["behaviors", "--export", "hodoscope"]));
+    }
+
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(std::iter::once("argonauts").chain(args.iter().copied())).unwrap()
     }
@@ -478,6 +555,29 @@ mod tests {
     #[test]
     fn the_cli_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn self_update_takes_its_flags_and_welcome_none() {
+        let Some(Command::SelfUpdate(args)) =
+            parse(&["self-update", "--channel", "beta", "--version", "0.1.1"]).command
+        else {
+            panic!("self-update");
+        };
+        assert_eq!(args.channel, Some(UpdateChannelArg::Beta));
+        assert_eq!(args.version.as_deref(), Some("0.1.1"));
+        assert!(!args.check && !args.rollback);
+        let Some(Command::SelfUpdate(rollback)) = parse(&["self-update", "--rollback"]).command
+        else {
+            panic!("self-update --rollback");
+        };
+        assert!(rollback.rollback);
+        assert!(fails(&["self-update", "--check", "--rollback"]));
+        assert!(matches!(
+            parse(&["welcome"]).command,
+            Some(Command::Welcome)
+        ));
+        assert!(fails(&["welcome", "now"]));
     }
 
     #[test]

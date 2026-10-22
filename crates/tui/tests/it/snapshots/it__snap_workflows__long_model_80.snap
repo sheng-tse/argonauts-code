@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_workflows.rs
+source: crates/tui/tests/it/snap_workflows.rs
+assertion_line: 645
 expression: text
 ---
 ──────────────────────────────────────────────────────────────────────────
@@ -13,4 +14,4 @@ expression: text
  │                  │                                                   │
  │                  │                                                   │
  ╰──────────────────┴───────────────────────────────────────────────────╯
- ↑↓ select · enter opens its agents · x stop workflow · esc back
+ ↑↓  select · enter opens its agents · x stop workflow · esc back

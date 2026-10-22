@@ -18,6 +18,29 @@ pub(crate) fn sh_spec(dir: &Path, script: &str) -> CommandSpec {
     CommandSpec::new("/bin/sh", dir).args(["-c", script, "sh"])
 }
 
+/// As [`sh_spec`], in bash, for a script whose `set -m` must put a job in a group of its own:
+/// dash, the sh of Debian and Ubuntu, turns job control off without a terminal.
+pub(crate) fn bash_spec(dir: &Path, script: &str) -> CommandSpec {
+    CommandSpec::new("/bin/bash", dir).args(["-c", script, "bash"])
+}
+
+/// Writes `text` to `path` as an executable script. `sh` writes it, so no handle of this
+/// process ever has it open for writing: on Linux a child that another test forks meanwhile
+/// would hold that handle until it execs, and running the script then fails as busy.
+pub(crate) fn write_script(path: &Path, text: &str) {
+    let status = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"",
+            "sh",
+        ])
+        .arg(path)
+        .arg(text)
+        .status()
+        .unwrap();
+    assert!(status.success(), "couldn't write {}", path.display());
+}
+
 /// A fake agent: a shell script that prints [`AgentEvent`]s as JSON lines, with the prompt as `$1`
 /// and any session id to resume as `$2`. Like the real adapters, it rejects a flag-like model.
 pub(crate) struct ScriptAdapter {

@@ -388,7 +388,7 @@ fn vim_slash_searches_prompt_history_and_enter_only_fills_the_input() {
     expect_row(&screen, "│ ⌕ Filter history…");
     expect_row(
         &screen,
-        "^  ↑/↓ to navigate · Enter to use · Esc to cancel · ctrl\\+s to scope · Esc i / for slash commands$",
+        "^  ↑/↓  to navigate · Enter to use · Esc to cancel · ctrl\\+s to scope · Esc i / for slash commands$",
     );
     assert!(
         row_of(&screen, MODE_IDLE).is_none(),
@@ -438,7 +438,7 @@ fn ctrl_r_searches_prompt_history_with_default_keys() {
     driver.press(Key::Ctrl('r'));
     let screen = driver.wait_visible("Search prompts · everywhere");
     expect_row(&screen, "^  ❯ 3d ago   deploy the web app");
-    let hints = expect_row(&screen, "^  ↑/↓ to navigate");
+    let hints = expect_row(&screen, "^  ↑/↓  to navigate");
     assert!(
         !screen.visible[hints].contains("Esc i /"),
         "the way to `/` commands is for vim keys"
@@ -549,7 +549,7 @@ fn esc_i_slash_from_the_search_opens_the_slash_menu() {
     // Ctrl+R in INSERT goes back to INSERT, where Esc i / would type, so no hint.
     driver.press(Key::Ctrl('r'));
     let screen = driver.wait_visible("Search prompts · everywhere");
-    let hints = expect_row(&screen, "^  ↑/↓ to navigate");
+    let hints = expect_row(&screen, "^  ↑/↓  to navigate");
     assert!(
         !screen.visible[hints].contains("Esc i /"),
         "{}",

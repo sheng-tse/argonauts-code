@@ -357,7 +357,7 @@ impl ResumePicker {
             ];
         }
         let letters = !self.filtering;
-        let mut keys: Vec<(&str, u8)> = vec![("↑↓ pick", 9)];
+        let mut keys: Vec<(&str, u8)> = vec![("↑↓  pick", 9)];
         if self.selected_row().is_some() {
             keys.push(("enter continues it", 8));
             if letters {
@@ -877,7 +877,7 @@ mod tests {
         let keys = view.key_line(200, &Theme::dark()).to_string();
         assert_eq!(
             keys,
-            "↑↓ pick · enter continues it · b branches from it, the original untouched · a every \
+            "↑↓  pick · enter continues it · b branches from it, the original untouched · a every \
              folder · / search · esc"
         );
     }

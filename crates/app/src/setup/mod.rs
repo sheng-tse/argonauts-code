@@ -1,6 +1,7 @@
 //! The guided setup (`argonauts setup`, `/setup`, and the first start): the terms note, your
-//! agents, a local model server, who you talk to, how the crew works, approvals, and this
-//! folder. Every answer is written at the end, so a setup cut off leaves no file.
+//! agents, who you talk to, how the crew works and the roles that workflow has, a local model
+//! server when it has a reviewer, approvals, and this folder. Every answer is written at the
+//! end, so a setup cut off leaves no file.
 
 mod finish;
 pub(crate) mod probe;
@@ -22,6 +23,7 @@ use argonauts_core::model_catalog::display_name_from_id;
 use argonauts_core::names::{ChoiceId, ModelRef};
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::text::shown_name;
 
 use crate::builtin_adapters;
 use crate::choices::app_choice;
@@ -44,6 +46,15 @@ pub(crate) use templates::guide_topics;
 const TOOK_THE_RECOMMENDED: &str =
     "Took the recommended answers. /setup (or argonauts setup) walks through the setup again.";
 
+/// Between `/setup` and its one line, which the screen draws as the command with the line
+/// under it, as Claude Code closes a dialog.
+const COMMAND_SAID: &str = " ⎿  ";
+
+/// The one row a setup run over your settings ends in, in place of a row per question.
+pub(crate) fn setup_row(line: &str) -> String {
+    format!("/setup{COMMAND_SAID}{line}")
+}
+
 pub(crate) struct Setup {
     open: Option<ChoiceId>,
     view: SetupView,
@@ -54,6 +65,8 @@ pub(crate) struct Setup {
     agent_before: ModelRef,
     header: Header,
     done: bool,
+    /// You had settings already, so the questions leave no rows and the setup ends in one.
+    one_row: bool,
 }
 
 /// What the header showed besides your settings, so it can print again with the new ones.
@@ -96,6 +109,7 @@ impl Setup {
         header: Header,
         probing: Probing,
     ) -> anyhow::Result<(Self, Vec<Effect>)> {
+        let one_row = ctx.env.global_config().exists();
         let current = read_table(&ctx.env.global_config());
         let untrusted =
             finish::untrusted_files(&ctx.env, |file| ctx.settings.trust().is_trusted(file));
@@ -113,18 +127,18 @@ impl Setup {
                 .into_iter()
                 .map(|workflow| workflow.name)
                 .collect(),
+            captain_reviews: ctx.settings().captain.review,
         };
         let mut steps = VecDeque::new();
         if !terms_shown(ctx) {
             steps.push_back(Step::Terms);
         }
+        // The workflow's own steps follow its answer, and the local servers after them.
         steps.extend([
             Step::Agents,
-            Step::Servers,
             Step::MainAgent,
             Step::Workflow,
             Step::Approvals,
-            Step::Telemetry,
             Step::Trust,
             Step::ProjectFolder,
             Step::Guides,
@@ -137,6 +151,7 @@ impl Setup {
             agent_before: ctx.settings().crew.main.clone(),
             header,
             done: false,
+            one_row,
         };
         if !ctx.env.interactive {
             if probing == Probing::Live {
@@ -179,7 +194,16 @@ impl Setup {
         let Some(value) = value else {
             bail!("that isn't one of this question's answers");
         };
-        let outcome = self.settle_step(ctx, &step, &value);
+        let mut outcome = self.settle_step(ctx, &step, &value);
+        if self.one_row {
+            outcome.clear();
+            // How to log an agent back in is still its own line.
+            if step == Step::Agents {
+                for fix in questions::logged_out_fixes(&self.view) {
+                    ctx.notice(NoteLevel::Warn, fix);
+                }
+            }
+        }
         self.open = None;
         ctx.send(AppEvent::ChoiceClosed {
             id: id.clone(),
@@ -205,9 +229,14 @@ impl Setup {
         id: &ChoiceId,
     ) -> anyhow::Result<Vec<Effect>> {
         self.open = None;
+        let outcome = if self.one_row {
+            String::new()
+        } else {
+            TOOK_THE_RECOMMENDED.to_owned()
+        };
         ctx.send(AppEvent::ChoiceClosed {
             id: id.clone(),
-            outcome: TOOK_THE_RECOMMENDED.to_owned(),
+            outcome,
         });
         self.take_the_rest(ctx)
     }
@@ -263,7 +292,13 @@ impl Setup {
                 return Ok(Vec::new());
             }
             if step == Step::Servers {
-                self.expand_servers();
+                // A reviewer chosen in "Who does what" is the one written, so a local model
+                // would have nothing to fill.
+                if self.answers.roles.contains_key(roles::REVIEWER_KEY) {
+                    self.steps.pop_front();
+                } else {
+                    self.expand_servers();
+                }
                 continue;
             }
             // Nothing to ask, such as who you talk to when no agent is ready.
@@ -306,11 +341,20 @@ impl Setup {
                 }
             }
             Step::Workflow => {
-                // A crew's roles come after who orchestrates it.
-                if self.answers.workflow != steps::CAPTAIN {
-                    self.steps.push_front(Step::WhoDoesWhat);
+                // Each goes in front of the one before, so they're asked in the reverse order:
+                // who orchestrates, who does what, then a local model for the reviewer.
+                let workflow = self.answers.workflow.clone();
+                if questions::has_reviewer(&workflow, &self.view) {
+                    self.steps.push_front(Step::Servers);
                 }
-                if self.answers.workflow == steps::ORCHESTRATOR {
+                if workflow != steps::CAPTAIN {
+                    self.steps.push_front(Step::WhoDoesWhat);
+                } else if self.view.captain_reviews {
+                    // Captain's one other role is its reviewer.
+                    let key = roles::REVIEWER_KEY.to_owned();
+                    self.steps.push_front(Step::RoleAgent(key));
+                }
+                if workflow == steps::ORCHESTRATOR {
                     self.steps.push_front(Step::Orchestrator);
                 }
             }
@@ -418,6 +462,16 @@ impl Setup {
         // The header printed before you answered, so it changes in place to the new agent and
         // workflow, followed by the warnings about the settings now in effect.
         ctx.send(welcome_from(ctx, &self.header.report, self.header.runs));
+        let wrote: Vec<String> = pages
+            .in_project
+            .iter()
+            .map(|page| env.shown(page))
+            .collect();
+        if self.one_row && written.is_ok() {
+            let id = ctx.next_choice_id();
+            let outcome = setup_row(&self.result_line(ctx, &wrote));
+            ctx.send(AppEvent::ChoiceClosed { id, outcome });
+        }
         let warnings = ctx.settings.resolved().warnings.iter();
         let said = |warning: &&SettingsWarning| {
             crate::controller::settings::said_by_a_question(ctx, warning)
@@ -432,12 +486,7 @@ impl Setup {
                 finish::nothing_ready_line(&self.view.agents),
             );
         }
-        if written.is_ok() {
-            let wrote: Vec<String> = pages
-                .in_project
-                .iter()
-                .map(|page| env.shown(page))
-                .collect();
+        if written.is_ok() && !self.one_row {
             let also = if wrote.is_empty() {
                 String::new()
             } else {
@@ -463,6 +512,35 @@ impl Setup {
         }
         effects.push(Effect::SetupDone);
         Ok(effects)
+    }
+
+    /// What the setup left you with, in one line: `Captain · Claude Code · auto mode · Usage
+    /// reports on · saved to ~/.argonauts/config.toml`.
+    fn result_line(&self, ctx: &Ctx, wrote: &[String]) -> String {
+        let settings = ctx.settings();
+        let mode = match settings.approvals.mode() {
+            ApprovalMode::Autopilot => "autopilot".to_owned(),
+            mode => format!("{} mode", mode.label()),
+        };
+        // CI, DO_NOT_TRACK or an agent's session keep reports off whatever the setting says. The
+        // tests run in CI, and speak of a machine where nothing does.
+        let quiet =
+            !cfg!(test) && crate::telemetry::notice::quiet(&|name| std::env::var(name).ok());
+        let usage = usage_words(settings.telemetry.enabled, quiet);
+        let mut parts = vec![
+            shown_name(&settings.workflow),
+            self.view.agent_name(&settings.crew.main.agent),
+            mode,
+            usage.to_owned(),
+        ];
+        if !wrote.is_empty() {
+            parts.push(format!("wrote {} here", wrote.join(", ")));
+        }
+        parts.push(format!(
+            "saved to {}",
+            ctx.env.display(&ctx.env.global_config())
+        ));
+        parts.join(" · ")
     }
 }
 
@@ -507,6 +585,15 @@ fn mark_terms_shown(ctx: &Ctx) -> anyhow::Result<()> {
     create_private_dir_all(home)?;
     write_private_file(&home.join(user_files::TERMS_SHOWN), b"")?;
     Ok(())
+}
+
+/// Whether usage reports go, as setup's row says it.
+fn usage_words(enabled: bool, quiet: bool) -> &'static str {
+    if enabled && !quiet {
+        "Usage reports on"
+    } else {
+        "Usage reports off"
+    }
 }
 
 #[cfg(test)]

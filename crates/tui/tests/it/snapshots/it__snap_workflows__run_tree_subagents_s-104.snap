@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_workflows.rs
+source: crates/tui/tests/it/snap_workflows.rs
+assertion_line: 1123
 expression: text
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -8,20 +9,24 @@ expression: text
 
  ╭ worker · task-001 ───────────────────────────────────────────────────────────────────────╮
  │ ✔ Done · Opus on Claude Code                                                             │
- │ 402k tok · 195 tool calls · 25m 40s                                                      │
+ │ 402.0k tok · 195 tool calls · 25m 40s                                                    │
  │                                                                                          │
  │ Prompt · 14 lines · ⏎ expand                                                             │
  │   Build the terminal and the whole bottom region of the UI kit.                          │
  │   … 13 more lines                                                                        │
+ │                                                                                          │
  │ Activity · last 3 of 195 tool calls · ⏎ expand                                           │
  │   ⏺ Bash(cargo test -p argonauts-tui composer) · error                                   │
  │   ⏺ Bash(cargo clippy -p argonauts-tui --all-targets -- -D warnings)                     │
  │   ◌ Bash(cargo test -p argonauts-tui) · no result                                        │
+ │                                                                                          │
  │ Diff · 4 files · +120 -18 · d open                                                       │
+ │                                                                                          │
  │ Subagents · 3 · structure not exposed                                                    │
  │   ✔ explorer  done                                                                       │
  │   ✔ planner   done                                                                       │
  │   ✔ tester    done                                                                       │
+ │                                                                                          │
  │ Outcome · 11 lines · ⏎ expand                                                            │
  │   Report: the terminal and the bottom region are done, with no stubs left.               │
  │                                                                                          │
@@ -36,9 +41,5 @@ expression: text
  │                                                                                          │
  │                                                                                          │
  │                                                                                          │
- │                                                                                          │
- │                                                                                          │
- │                                                                                          │
- │                                                                                          │
  ╰──────────────────────────────────────────────────────────────────────────────────────────╯
- ↑↓ agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back
+ ↑↓  agent · j/k scroll · ⏎ expand · m message · p pause · esc back

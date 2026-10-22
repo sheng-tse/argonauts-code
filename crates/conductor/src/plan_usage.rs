@@ -1206,8 +1206,8 @@ mod tests {
             seconds: 15,
         };
         assert_eq!(
-            failure_words("Antigravity CLI", &timed_out).as_deref(),
-            Some("Antigravity CLI didn't answer within 15s")
+            failure_words("agy", &timed_out).as_deref(),
+            Some("agy didn't answer within 15s")
         );
     }
 

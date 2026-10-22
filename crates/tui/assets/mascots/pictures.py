@@ -1,21 +1,26 @@
 """The pictures the welcome header sends where the terminal can draw one: each mascot in each state
 as a PNG that fills its 9 x 3 cells, and each ultra look as the frames its animation swaps
-through. They are drawn for the cell sizes listed here; the header sends the one drawn for the
-terminal's own cell size, and scales the largest to fit any other.
+through, one every 50 ms of its cycle. They are drawn for one cell size; the header sends them
+as drawn for a terminal of that size, and scales them to fit any other.
 
 A mascot keeps one drawn area in every state, its ultra mark included, so it doesn't move when
 the look changes. The area is fitted to the 9 x 3 cells by its height, or by its width when it
 would be too wide, and centred.
 
-pictures.json lists what was written, with each mascot's area and cycle, for the header to read.
+pictures.json lists what was written, with each mascot's area, cycle and frames, for the header
+to read.
 
-Needs rsvg-convert and Pillow. Usage: python3 pictures.py   (argonauta.py runs it too)
+Needs rsvg-convert and Pillow. Usage: python3 pictures.py [DIR...]   (argonauta.py runs it too)
+Each DIR is one that `argonauta.py frames DIR N` wrote; a mascot's frames come from the one
+whose N is its own count, and from argonauta.py's own drawing where none is given, which is the
+same.
 """
 
 import io
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from PIL import Image
@@ -24,11 +29,29 @@ import argonauta
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "pictures"
-# Cell sizes in pixels: Iosevka at 17 px, and the same on a Retina screen.
-CELLS = [(9, 21), (18, 42)]
+# The cell size in pixels: Iosevka at 17 px on a Retina screen. Any other size
+# is scaled from it.
+CELLS = [(18, 42)]
 COLUMNS, ROWS = 9, 3
-FRAMES = 18
+# Seconds between an ultra look's frames, quicker than Claude Code's own 64 ms shimmer step.
+STEP = 0.05
 STILL = ("normal", "light")
+
+
+def frames_of(cycle):
+    """How many frames one cycle takes, one every STEP seconds."""
+    return round(cycle / STEP)
+
+
+def frame_svg(make, state, k, n, given):
+    """Frame k of n of an ultra look: from a directory `argonauta.py frames` wrote with n frames,
+    or drawn here, which comes to the same."""
+    stem, svg = argonauta.build(make, state, "frame", k / n)
+    for folder in given:
+        drawn = folder / f"{stem}-{k:02d}.svg"
+        if len(list(folder.glob(f"{stem}-*.svg"))) == n and drawn.exists():
+            return stem, drawn.read_text()
+    return stem, svg
 
 
 def viewbox(svg_text):
@@ -75,16 +98,18 @@ def png(svg_text, box, size):
     return out.getvalue()
 
 
-def main():
+def main(given=()):
+    given = [Path(folder) for folder in given]
     OUT.mkdir(exist_ok=True)
     for old in OUT.glob("*.png"):
         old.unlink()
-    listing = {"cells": CELLS, "frames": FRAMES, "mascots": {}}
+    listing = {"cells": CELLS, "step": STEP, "mascots": {}}
     for make in argonauta.MASCOTS:
         probe = make(argonauta.Motion("off"), "x", False)
         name = probe["name"]
         box = area(name)
-        listing["mascots"][name] = {"area": box, "cycle": probe["cycle"]}
+        frames = frames_of(probe["cycle"])
+        listing["mascots"][name] = {"area": box, "cycle": probe["cycle"], "frames": frames}
         for cw, ch in CELLS:
             size = (COLUMNS * cw, ROWS * ch)
             for state in argonauta.STATES:
@@ -92,12 +117,50 @@ def main():
                     stem, svg = argonauta.build(make, state)
                     (OUT / f"{stem}-{cw}x{ch}.png").write_bytes(png(svg, box, size))
                     continue
-                for k in range(FRAMES):
-                    stem, svg = argonauta.build(make, state, "frame", k / FRAMES)
+                for k in range(frames):
+                    stem, svg = frame_svg(make, state, k, frames, given)
                     (OUT / f"{stem}-{cw}x{ch}-{k:02d}.png").write_bytes(png(svg, box, size))
     (HERE / "pictures.json").write_text(json.dumps(listing, indent=1) + "\n")
+    write_list(listing)
     print("wrote", len(list(OUT.glob("*.png"))), "pictures")
 
 
+def write_list(listing):
+    """The Rust list of every picture, which the header builds in, in pictures.json's order."""
+    (cw, ch), = CELLS
+    lines = [
+        "//! Every picture the header builds in, by mascot and look, as `assets/mascots/pictures.py`",
+        "//! writes them with `pictures.json`. Run that script to draw them again; it writes this",
+        "//! list too.",
+        "",
+        "/// A mascot's pictures: its two stills, and the frames of its ultra looks.",
+        "pub(super) struct Drawn {",
+        "    pub normal: &'static [u8],",
+        "    pub light: &'static [u8],",
+        "    pub ultracode: &'static [&'static [u8]],",
+        "    pub codex: &'static [&'static [u8]],",
+        "}",
+        "",
+        "macro_rules! picture {",
+        "    ($name:literal) => {",
+        '        include_bytes!(concat!("../../assets/mascots/pictures/", $name)).as_slice()',
+        "    };",
+        "}",
+    ]
+    for name, listed in listing["mascots"].items():
+        constant = name.rsplit("-", 1)[1].upper()
+        lines += ["", f"pub(super) static {constant}: Drawn = Drawn {{"]
+        for state in STILL:
+            stem = name if state == "normal" else f"{name}-{state}"
+            lines.append(f'    {state}: picture!("{stem}-{cw}x{ch}.png"),')
+        for state in ("ultracode", "codex"):
+            lines.append(f"    {state}: &[")
+            for k in range(listed["frames"]):
+                lines.append(f'        picture!("{name}-{state}-{cw}x{ch}-{k:02d}.png"),')
+            lines.append("    ],")
+        lines.append("};")
+    (HERE.parent.parent / "src" / "mascot" / "frames.rs").write_text("\n".join(lines) + "\n")
+
+
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

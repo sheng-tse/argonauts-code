@@ -1,10 +1,10 @@
  ╭ Review · 2 agents ───┬ review:due-flag ──────────────────────────────────────────────────────────────────────────╮ 
- │   ✔ review:due-tests │ ↷ Running · Gemini 3.8 Flash on Antigravity CLI · reviewer · read-only                    │ 
+ │   ✔ review:due-tests │ ↷ Running · Gemini 3.8 Flash on agy · reviewer · read-only                                │ 
  │ ❯ ↷ review:due-flag  │ 9.1k tok · 3 tool calls · 12s                                                             │ 
  │                      │                                                                                           │ 
  │                      │ Fallback for GPT 5.6 Luna on Codex, which crashed twice as it started                     │ 
  │                      │   Codex: "Failed to synchronize managed preferences"                                      │ 
- │                      │   Antigravity CLI isn't build:due-flag's provider, so the review stays independent        │ 
+ │                      │   agy isn't build:due-flag's provider, so the review stays independent                    │ 
  │                      │ Prompt · 6 lines · ⏎ expand                                                               │ 
  │                      │   Review build:due-flag's change: the --due flag on todo add and todo list.               │ 
  │                      │   … 5 more lines                                                                          │ 
@@ -15,7 +15,7 @@
  │                      │ Outcome                                                                                   │ 
  │                      │   Still running…                                                                          │ 
  ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓ agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save                      
+ ↑↓  agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save                     
                                                                                                                       
   the same place in review:due-tests' view, a fallback on the same CLI                                                
     ↷ Running · Sonnet 5.5 on Claude Code · reviewer · read-only                                                      
@@ -30,7 +30,7 @@
       it gave Codex the change, waited, and passed the verdict back · 12.3k tok · 8s                                  
                                                                                                                       
   in the left-out seat's view, where nothing ran, so there are no numbers                                             
-    ✘ Left out · Gemini 3.8 Flash on Antigravity CLI · proposer                                                       
-    Left out, because Antigravity CLI is signed out                                                                   
+    ✘ Left out · Gemini 3.8 Flash on agy · proposer                                                                   
+    Left out, because agy is signed out                                                                               
       a council can do without one proposal, so it goes on with two                                                   
-      sign in to Antigravity CLI and the next run asks it again                                                       
+      sign in to agy and the next run asks it again                                                                   

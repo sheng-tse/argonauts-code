@@ -139,8 +139,8 @@ pub(super) async fn attach(
         Opening::Watch | Opening::Reattach => stream.replay_until,
     };
     let live = *stream.live.borrow();
-    let task = forward(run.clone(), stream, ctx.internal.clone());
-    let attached = Attached {
+    let task = forward(run.clone(), stream, live, ctx.internal.clone());
+    let mut attached = Attached {
         run: run.clone(),
         title: title.clone(),
         replay_until,
@@ -162,6 +162,9 @@ pub(super) async fn attach(
     if attached.replay_done {
         ctx.send(AppEvent::ReplayDone { run, seq: 0 });
         ctx.set_mode(attached.mode.clone());
+        // A run host gone before the stream opened sends no change of its own, so a run it
+        // never began is said now, as after a replay.
+        report_crash(ctx, &mut attached);
     }
     // Started or opened here, it's this conversation's run from now on.
     runs.ours.insert(attached.run.clone());
@@ -187,7 +190,12 @@ pub(super) async fn follow_on(ctx: &Ctx, attached: &mut Attached) -> anyhow::Res
     attached.live = *stream.live.borrow();
     attached.ended = false;
     attached.stream.abort();
-    attached.stream = forward(attached.run.clone(), stream, ctx.internal.clone());
+    attached.stream = forward(
+        attached.run.clone(),
+        stream,
+        attached.live,
+        ctx.internal.clone(),
+    );
     Ok(())
 }
 
@@ -277,15 +285,18 @@ fn mode_from_summary(summary: &RunSummary) -> AppMode {
     }
 }
 
-/// Forwards the stream's events and liveness, then `Ended` once it closes.
+/// Forwards the stream's events and liveness, then `Ended` once it closes. `seen` is the
+/// liveness the app took when the stream opened: one that changed before this task first
+/// looks is still sent.
 pub(super) fn forward(
     run: RunId,
     mut stream: EventStream,
+    seen: bool,
     internal: mpsc::UnboundedSender<Internal>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let send = |update: RunUpdate| internal.send(Internal::Run(update)).is_ok();
-        let mut live = *stream.live.borrow_and_update();
+        let mut live = seen;
         let mut watching_live = true;
         loop {
             tokio::select! {
@@ -324,4 +335,39 @@ pub(super) fn forward(
         }
         send(RunUpdate::Ended { run });
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::sync::watch;
+
+    use super::*;
+
+    /// The run host can let go between the app's look at a new stream and this task's first:
+    /// the change still reaches the app, or a run that never began would read as working.
+    #[tokio::test]
+    async fn a_run_host_gone_before_the_first_look_is_still_sent() {
+        let (_events, receiver) = mpsc::channel(1);
+        let (live, live_receiver) = watch::channel(true);
+        let stream = EventStream {
+            events: receiver,
+            replay_until: None,
+            live: live_receiver,
+        };
+        live.send_replace(false);
+        let (internal, mut updates) = mpsc::unbounded_channel();
+        let _task = forward(RunId::new("run-001").unwrap(), stream, true, internal);
+        let update = tokio::time::timeout(Duration::from_secs(5), updates.recv())
+            .await
+            .expect("an update in time");
+        assert!(
+            matches!(
+                update,
+                Some(Internal::Run(RunUpdate::Live { live: false, .. }))
+            ),
+            "the run host's going"
+        );
+    }
 }

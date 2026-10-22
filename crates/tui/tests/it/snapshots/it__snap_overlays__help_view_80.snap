@@ -1,9 +1,10 @@
 ---
-source: crates/tui/tests/snap_overlays.rs
+source: crates/tui/tests/it/snap_overlays.rs
+assertion_line: 1243
 expression: "screen(&mut view, width, height, &state)"
 ---
 Help
-The keys in effect, and every command by category                    68 commands
+The keys in effect, and every command by category                    69 commands
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Keys                                                                         │
@@ -25,4 +26,4 @@ The keys in effect, and every command by category                    68 commands
 │ up                            take queued messages back                      │
 │ tab / up                      answer a waiting question                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ scroll · esc back                                               1-18 of 166 ↓
+↑↓  scroll · esc back                                              1-18 of 169 ↓

@@ -328,7 +328,7 @@ const DOCTOR: [&str; 7] = [
     "Claude Code 2.1.303       newer than checked · works    its flags and start-up message \
      match 2.1.295 · logged in · 4 new commands read from it",
     "Codex 0.163.0             newer than checked            logged in",
-    "Antigravity CLI 1.4.2     newer than checked",
+    "agy 1.4.2                 newer than checked",
     "OpenCode 2.0.32           new major version             checked with 1.18.34 · compared \
      at start-up",
     "git 2.51.2",
@@ -337,10 +337,10 @@ const DOCTOR: [&str; 7] = [
 ];
 
 const UPDATES: [&str; 4] = [
-    "Claude Code       2.1.303   up to date",
-    "Codex             0.163.0   up to date",
-    "Antigravity CLI   1.4.2     up to date",
-    "OpenCode          2.0.32    up to date · also through ACP",
+    "Claude Code   2.1.303   up to date",
+    "Codex         0.163.0   up to date",
+    "agy           1.4.2     up to date",
+    "OpenCode      2.0.32    up to date · also through ACP",
 ];
 
 /// `/update` echoes at once and its working line says it updates, with a word that fits the
@@ -444,6 +444,97 @@ const PROMPT: &str = "Use a workflow for this, with Codex as the reviewer, and c
 const STARTING: &str = "Starting a workflow: Captain, as Claude Code's own, with **GPT 6 Luna on \
                         Codex** reviewing as you asked; **Haiku 5.5 on Claude Code** plans and \
                         builds.";
+
+/// What the main agent said once the run in the Captain run's picture had merged, its
+/// underscores escaped as Markdown keeps them.
+const MERGED: &str = "The money rounding fix is merged into main as 0a7b4656. parse() now applies \
+                      a leading minus to the whole amount and pads a single cents digit, and \
+                      format_cents() formats negatives with a leading \"-\". The three failing \
+                      tests in tests/test_money.py now pass, all 8 tests pass, and the test file \
+                      is unchanged. GPT 6 Luna's review and Gemini's sign-off both approved with \
+                      no blocking findings, and the run needed no input from you. The reviewer's \
+                      written comments were not captured, so the approval is recorded but its \
+                      reasoning isn't visible. The invoice/\\_\\_pycache\\_\\_/ and \
+                      tests/\\_\\_pycache\\_\\_/ directories left by the test runs are \
+                      untracked, so don't commit them.";
+
+/// The Captain run's picture draws the same Starting line, in red nowhere, and the main
+/// agent's answer once the run merged. The picture wraps the answer two cells short of the
+/// edge, where the screen wraps text at its full width, so the answer is drawn here as wide as
+/// the picture's lines.
+#[test]
+fn the_captain_runs_start_and_answer_are_its_picture() {
+    let theme = on_macos();
+    let ctx = RenderCtx::new(WIDTH, &theme, Clock::still(Instant::now()));
+    let (txt, html) = picture("captain_after");
+    let mut starting = AssistantMessage::new(STARTING).lines(&ctx);
+    starting.push(Line::default());
+    assert_rows_match(
+        "captain_after",
+        &starting,
+        (&txt, &html),
+        89..92,
+        &theme,
+        &[],
+    );
+    let narrower = RenderCtx::new(WIDTH - 2, &theme, Clock::still(Instant::now()));
+    let answer = AssistantMessage::new(MERGED).lines(&narrower);
+    assert_rows_match("captain_after", &answer, (&txt, &html), 61..67, &theme, &[]);
+}
+
+/// The Captain run's picture keeps your prompt over the run's end and over its start, each
+/// cut where the picture cuts it.
+#[test]
+fn the_captain_runs_prompt_rows_are_its_picture() {
+    let theme = on_macos();
+    let ctx = RenderCtx::new(WIDTH, &theme, Clock::still(Instant::now()));
+    let (txt, html) = picture("captain_after");
+    let words = sticky::words(PROMPT).expect("the prompt's words");
+    let prompt = [sticky::prompt_row(&words, &ctx), Line::default()];
+    for (top, picture_cuts) in [(56, 106), (87, 100)] {
+        let cut = Unlike {
+            row: 0,
+            cols: (picture_cuts, WIDTH as usize - 1),
+            why: "the kept prompt is cut a cell short of the edge, where the picture cuts it sooner",
+        };
+        assert_rows_match(
+            "captain_after",
+            &prompt,
+            (&txt, &html),
+            top..top + 2,
+            &theme,
+            &[cut],
+        );
+    }
+}
+
+/// Your words as the fork picture keeps them over either start: the prompt row the Starting
+/// line's picture has.
+#[test]
+fn the_fork_starts_prompt_row_is_its_picture() {
+    const ASKED: &str = "Run what we just worked out as an orchestrator workflow, with Codex as \
+                         the reviewer. Keep the due date optional, and list what is due first.";
+    let theme = on_macos();
+    let ctx = RenderCtx::new(WIDTH, &theme, Clock::still(Instant::now()));
+    let (txt, html) = picture("fork_start");
+    let words = sticky::words(ASKED).expect("the prompt's words");
+    let prompt = [sticky::prompt_row(&words, &ctx), Line::default()];
+    let cut = Unlike {
+        row: 0,
+        cols: (100, WIDTH as usize - 1),
+        why: "the kept prompt is cut a cell short of the edge, where the picture cuts it at 100",
+    };
+    for top in [2, 31] {
+        assert_rows_match(
+            "fork_start",
+            &prompt,
+            (&txt, &html),
+            top..top + 2,
+            &theme,
+            &[cut],
+        );
+    }
+}
 
 /// The Starting line names Captain as Claude Code's own, the reviewer you asked for and the
 /// builder, over the Workflow row that prints once Claude Code's script names its phases, with

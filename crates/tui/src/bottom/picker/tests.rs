@@ -142,7 +142,7 @@ fn picker_of_four() -> Picker {
 #[test]
 fn without_vim_keys_letters_filter_and_hjkl_are_letters() {
     let mut picker = picker_of_four();
-    assert!(text(&picker, 80).contains("↑↓ to move · type to filter · Esc to close"));
+    assert!(text(&picker, 80).contains("↑↓  to move · type to filter · Esc to close"));
     assert_eq!(press(&mut picker, KeyCode::Char('j')), PickerEvent::Moved);
     assert_eq!(picker.filter, "j");
     assert!(picker.shown().is_empty());

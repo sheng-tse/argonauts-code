@@ -212,7 +212,7 @@ fn text_of(screen: &Screen) -> String {
 fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
     let mut driver = TestDriver::start(script());
     driver.resize(64, 120);
-    driver.wait_visible("↓ to manage");
+    driver.wait_visible("↓  to manage");
     // The run's row, then its workflow.
     driver.press(Key::Down);
     driver.press(Key::Enter);
@@ -256,7 +256,7 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
     expect_row(&view, "1 failed · 11 passed · 4\\.1s");
     expect_row(
         &view,
-        "↑↓ select · ⏎ open · g its goal · m message · x stop",
+        "↑↓  select · ⏎ open · g its goal · m message · x stop",
     );
 
     // The same agent opened, on its Goal tab: the same four parts at full size.
@@ -296,7 +296,7 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
         "^From the orchestrator · Opus 5\\.5$",
         "^Your file · roles/worker\\.md$",
         "^From your request$",
-        "^Launched as codex exec --json --sandbox workspace-write '<prompt>' · → expands$",
+        "^Launched as codex exec --json --sandbox workspace-write '<prompt>' · →  expands$",
     ] {
         expect_row(&input, heading);
     }
@@ -314,7 +314,7 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
 fn the_row_at_the_bottom_counts_the_goals_still_running() {
     let mut driver = TestDriver::start(script());
     driver.resize(64, 120);
-    driver.wait_visible("↓ to manage");
+    driver.wait_visible("↓  to manage");
     driver.press(Key::Down);
     driver.press(Key::Enter);
     driver.wait_visible("◆ Goal of build:cli");

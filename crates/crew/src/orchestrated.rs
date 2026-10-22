@@ -16,6 +16,8 @@ use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
 use argonauts_core::events::plan::PlanEvent;
+use argonauts_core::events::run::{ForkFrom, StartsFrom};
+use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::events::task::{TaskKind, TaskSpec};
 use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::session_runner::Access;
@@ -46,6 +48,35 @@ use crate::workflow::{StepCall, StepDone};
 /// A rejected answer is retried once; the second rejection goes to you.
 const TRIES: usize = 2;
 
+/// What the orchestrator reads first when it is a copy of the main session. The conversation
+/// it carries was with you, so it is told that part is over and what it does now; the brief
+/// and the crew's tools come after.
+pub const FORKED: &str = "You are now the orchestrator of the run you just started.\n\
+     You no longer talk to the user: nothing you write reaches them, and the conversation's \
+     own tools are gone. What you and the user settled in the conversation still holds. The \
+     brief below is the run's request as you handed it over. Plan the run from both, with the \
+     crew's tools, and answer in the form the brief asks for.";
+
+/// The main session `orchestrator` starts as a copy of: the run's, when your words in a
+/// conversation on the orchestrator's own CLI started it.
+pub fn fork_for(host: &Host, orchestrator: &ModelRef) -> Option<ForkFrom> {
+    host.read(
+        |state| match state.run.started.as_ref()?.starts_from.as_ref()? {
+            StartsFrom::Fork(from) if from.worker.agent == orchestrator.agent => Some(from.clone()),
+            _ => None,
+        },
+    )
+}
+
+/// [`FORKED`] as the first part of a forked orchestrator's prompt, before the brief.
+pub fn forked_opening() -> InputPart {
+    context::part(
+        InputPartKind::Prompt,
+        "you are the orchestrator now",
+        FORKED.to_owned(),
+    )
+}
+
 /// The orchestrator's tasks and assignments, sealed beside its plan for dividing the work.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OrchestratedTasks {
@@ -71,10 +102,12 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     let task_roles = roles::tasks::for_run(host);
     task_roles.announce(host)?;
     let settings = task_roles.apply(host.settings());
+    // A copy that failed before its session was recorded is never tried again either.
+    let mut fork_gave_way = false;
     loop {
         // A plan you sent back gets two new tries, in the orchestrator's own session, with your
         // note. A settled plan sent back starts a new planning round.
-        let (records, sent_back, replanning, asked, session) = host.read(|state| {
+        let (records, sent_back, replanning, asked, session, failed_forks) = host.read(|state| {
             (
                 tries(state),
                 sent_back(state),
@@ -86,6 +119,7 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
                     .iter()
                     .rev()
                     .find_map(|r| r.session.clone()),
+                failed_forks(state, call),
             )
         });
         if records.iter().any(|record| record.rejection.is_none()) {
@@ -122,18 +156,40 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             input,
         );
         ask.access = Access::ReadOnly;
-        // Counted over the whole run, so an answer after a send-back never reuses a slot.
-        ask.slot = asked as u32;
+        // Counted over the whole run, so an answer after a send-back never reuses a slot. A copy
+        // of the main session that ended without a plan took a slot of its own.
+        ask.slot = (asked + failed_forks) as u32;
         ask.resume = session;
         ask.parts
             .push(context::status_part(host, RoleName::Orchestrator, None));
-        // A session that carries on already heard it.
+        // A session that carries on already heard it. A new one may start as a copy of the
+        // main session, until one such copy ended without a plan.
         if ask.resume.is_none() {
+            if failed_forks == 0 && !fork_gave_way {
+                ask.fork_of = fork_for(host, &orchestrator);
+            }
             ask.parts.extend(at_start::part(host).await?);
         }
+        // A copy gets one try and no fallback: the same orchestrator plans from the brief next.
+        let forked = ask.fork_of.is_some();
+        ask.optional = forked;
         let answered = match host.ask::<Orchestrate>(ask).await {
             Ok(answered) => answered,
             Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
+            Err(_) if forked => {
+                fork_gave_way = true;
+                host.record(
+                    None,
+                    None,
+                    RunEventKind::Note(Note {
+                        level: NoteLevel::Info,
+                        text: "The copy of your main session ended without a plan, so the \
+                               orchestrator plans from the brief"
+                            .to_owned(),
+                    }),
+                )?;
+                continue;
+            }
             Err(error) => {
                 reject(
                     host,
@@ -215,6 +271,29 @@ fn graph_problems(host: &Host, tasks: &[TaskProposal]) -> Vec<String> {
     divide::build(host.run_id(), &proposal, host.settings())
         .err()
         .unwrap_or_default()
+}
+
+/// The copies of the main session this step started for its orchestrator that ended without
+/// a plan any try was recorded with. Once one has, the orchestrator plans from the brief.
+fn failed_forks(state: &RunState, call: &StepCall) -> usize {
+    let answered: BTreeSet<&SessionKey> = state
+        .plan
+        .orchestrated
+        .iter()
+        .filter_map(|record| record.session.as_ref())
+        .collect();
+    state
+        .sessions
+        .in_order()
+        .into_iter()
+        .filter(|session| {
+            session.started.role == RoleName::Orchestrator
+                && session.started.forked
+                && session.started.workflow_step.as_ref() == Some(&call.at.step)
+                && !session.resumable()
+                && !answered.contains(&session.key)
+        })
+        .count()
 }
 
 struct SentBack {
@@ -653,7 +732,7 @@ fn protected_set(settings: &Settings) -> GlobSet {
     builder.build().unwrap_or_else(|_| GlobSet::empty())
 }
 
-/// Every rule the assignments break, in plain words with names: "Antigravity CLI can't own task
+/// Every rule the assignments break, in plain words with names: "agy can't own task
 /// `tests`: only Claude Code and Codex may own tasks."
 fn assignment_problems(
     output: &OrchestrateOutput,
@@ -962,6 +1041,26 @@ mod tests {
         check(output, &settings(), &provider)
     }
 
+    /// A copy of the main session opens on its new role, in the words the orchestrator's own
+    /// view shows first, and never on the conversation's.
+    #[test]
+    fn a_forked_orchestrator_is_told_first_that_it_no_longer_talks_to_you() {
+        const PICTURE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tui/tests/golden/fork_start.txt"
+        ));
+        let opening = forked_opening();
+        assert_eq!(opening.kind, InputPartKind::Prompt);
+        let first = opening.text.lines().next().unwrap();
+        assert!(
+            PICTURE
+                .lines()
+                .any(|row| row.contains(&format!("│   {first} "))),
+            "{first}"
+        );
+        assert!(opening.text.contains("You no longer talk to the user"));
+    }
+
     #[test]
     fn a_plan_that_keeps_the_rules_stands() {
         assert_eq!(broken(&good()), Vec::<String>::new());
@@ -1023,7 +1122,7 @@ mod tests {
         let broken = broken(&output);
         assert!(
             broken.contains(
-                &"stranger can't own task `store`: only Claude Code, Codex, Antigravity CLI and \
+                &"stranger can't own task `store`: only Claude Code, Codex, agy and \
                   OpenCode may own tasks."
                     .to_owned()
             ),
@@ -1075,7 +1174,7 @@ mod tests {
         );
     }
 
-    /// The sample repo's run: Claude Code and Codex may own, Antigravity CLI alone reviews, and
+    /// The sample repo's run: Claude Code and Codex may own, agy alone reviews, and
     /// the orchestrator wrote each agent with its provider where a model goes and rotated them
     /// through every role.
     fn trial_roles() -> TaskRoles {
@@ -1148,14 +1247,14 @@ mod tests {
         assert_eq!(
             moved,
             [
-                "`iface`: Antigravity CLI reviews it, not Claude Code, since only Antigravity CLI \
+                "`iface`: agy reviews it, not Claude Code, since only agy \
                  may review tasks.",
-                "`tests`: Codex owns it, not Antigravity CLI, since only Claude Code and Codex may \
-                 own tasks; Antigravity CLI reviews it, not Codex, since only Antigravity CLI may \
+                "`tests`: Codex owns it, not agy, since only Claude Code and Codex may \
+                 own tasks; agy reviews it, not Codex, since only agy may \
                  review tasks.",
-                "`review`: Claude Code owns it, not Antigravity CLI, since only Claude Code and \
-                 Codex may own tasks; Antigravity CLI reviews it, not Claude Code, since only \
-                 Antigravity CLI may review tasks.",
+                "`review`: Claude Code owns it, not agy, since only Claude Code and \
+                 Codex may own tasks; agy reviews it, not Claude Code, since only \
+                 agy may review tasks.",
             ]
         );
         // The same plan moves the same way every time.

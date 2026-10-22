@@ -37,6 +37,9 @@ pub struct AgentCall {
     pub effort: Option<String>,
     /// The task it works on. A writer gets that task's worktree, and a reviewer its change.
     pub task: Option<String>,
+    /// The tasks its task builds on, by the names the script gave them. Their accepted work is
+    /// in the run before its task's worktree is made.
+    pub after: Vec<String>,
     /// A fresh worktree of its own even without a task.
     pub worktree: bool,
     /// It changes files. Workers do unless the call says `access: 'read'`, such as one that
@@ -70,6 +73,8 @@ struct Asked {
     model: Option<Value>,
     effort: Option<String>,
     task: Option<String>,
+    #[serde(default)]
+    after: Vec<String>,
     isolation: Option<String>,
     access: Option<String>,
     #[serde(default)]
@@ -119,6 +124,7 @@ impl AgentCall {
             model,
             effort: asked.effort,
             task: asked.task,
+            after: asked.after,
             worktree: asked.isolation.as_deref() == Some("worktree"),
             writes: role.writes() && asked.access.as_deref() != Some("read"),
             not_the_author: asked.not_the_author,

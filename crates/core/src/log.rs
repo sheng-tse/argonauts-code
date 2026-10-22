@@ -294,7 +294,7 @@ pub const GAVE_NO_ANSWER: &str = " gave no answer: ";
 pub const NOBODY_TO_FALL_BACK_TO: &str = "Nobody to fall back to";
 
 /// What the line says of a model its CLI no longer lists, before the model, as in
-/// `propose:p3 runs on Gemini 3.8 Flash (Low): Antigravity CLI no longer offers Gemini 3.6 Flash
+/// `propose:p3 runs on Gemini 3.8 Flash (Low): agy no longer offers Gemini 3.6 Flash
 /// (Low)`. The screen draws the line's words plain.
 pub const NO_LONGER_OFFERS: &str = " no longer offers ";
 

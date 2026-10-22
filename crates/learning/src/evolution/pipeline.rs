@@ -440,6 +440,7 @@ fn who(by: &Party) -> String {
         Party::Config => "a setting".to_owned(),
         Party::Autopilot => "autopilot".to_owned(),
         Party::ArgonautsCode => "Argonauts Code".to_owned(),
+        Party::Network => "the network".to_owned(),
         Party::Agent { worker, .. } => worker.to_string(),
         Party::OutsideAgent { client } => client.clone(),
     }

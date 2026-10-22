@@ -1,15 +1,16 @@
 ---
-source: crates/tui/tests/snap_overlays.rs
+source: crates/tui/tests/it/snap_overlays.rs
+assertion_line: 1390
 expression: "screen(&mut view, width, height, &state)"
 ---
 Rewind
 Go back to a fallback checkpoint. The work after it stays on a side branch             3 checkpoints
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   Checkpoint             When  Fallback                            Why                           │
-│   task-001 fallback-1  2h ago  claude-code/opus → codex            usage limit, r…  rewound here │
-│   task-002 fallback-1  2h ago  claude-code/opus → antigravity-cli  usage limit, r…               │
-│ ❯ task-001 fallback-2  2h ago  claude-code/opus → opencode         usage limit, r…               │
+│   Checkpoint             When  Fallback                             Why                          │
+│   task-001 fallback-1  2h ago  claude-code/opus →  codex            usage limit, …  rewound here │
+│   task-002 fallback-1  2h ago  claude-code/opus →  antigravity-cli  usage limit, …               │
+│ ❯ task-001 fallback-2  2h ago  claude-code/opus →  opencode         usage limit, …               │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
@@ -33,4 +34,4 @@ Go back to a fallback checkpoint. The work after it stays on a side branch      
 │                                                                                                  │
 │                                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · ⏎ go back to it · esc back
+↑↓  select · ⏎ go back to it · esc back

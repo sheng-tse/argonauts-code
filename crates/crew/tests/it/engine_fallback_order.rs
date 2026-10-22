@@ -157,6 +157,7 @@ fn scripted(
         judge: vec![CLAUDE.parse()?],
         worker_workflows: false,
         merger: Vec::new(),
+        orchestrator_context: Default::default(),
     };
     crew.settings.workflow = "council".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -177,7 +178,7 @@ async fn a_model_its_cli_no_longer_lists_runs_the_nearest_listed_one() -> anyhow
         [agy("gemini-3.8-flash-low")]
     );
     let said = notes(&run.events);
-    let line = "propose:p3 runs on Gemini 3.8 Flash (Low): Antigravity CLI no longer offers \
+    let line = "propose:p3 runs on Gemini 3.8 Flash (Low): agy no longer offers \
                 Gemini 3.6 Flash (Low)";
     assert_eq!(
         said.iter().filter(|note| *note == line).count(),
@@ -333,7 +334,7 @@ async fn an_agent_the_council_can_do_without_is_left_out() -> anyhow::Result<()>
     assert_eq!(left.len(), 1, "{left:#?}");
     assert_eq!(left[0].label, "propose:p3");
     assert_eq!(left[0].why, "signed out");
-    assert_eq!(left[0].said, "Antigravity CLI is signed out");
+    assert_eq!(left[0].said, "agy is signed out");
     assert_eq!(left[0].meant_for.agent, AGY);
     // Its agent view says what it was and what going on without it means.
     assert_eq!(left[0].acts_as, "proposer");
@@ -341,10 +342,10 @@ async fn an_agent_the_council_can_do_without_is_left_out() -> anyhow::Result<()>
         left[0].means,
         [
             "a council can do without one proposal, so it goes on with two",
-            "sign in to Antigravity CLI and the next run asks it again",
+            "sign in to agy and the next run asks it again",
         ]
     );
-    let line = "propose:p3 is left out: Antigravity CLI is signed out and nothing else can take \
+    let line = "propose:p3 is left out: agy is signed out and nothing else can take \
                 it · the council goes on with 2";
     assert!(
         notes(&run.events).iter().any(|note| note == line),
@@ -438,9 +439,9 @@ async fn a_run_that_cant_go_on_stops_fully_with_why_and_how_to_carry_on() -> any
         stop.lines(),
         [
             "propose:p2 · Codex is signed out",
-            "propose:p3 · Antigravity CLI is signed out",
+            "propose:p3 · agy is signed out",
             "Nothing else can take them: Claude Code already works in this step",
-            "propose:p1's work so far is kept · once Codex or Antigravity CLI works, /resume \
+            "propose:p1's work so far is kept · once Codex or agy works, /resume \
              carries the run on",
         ]
     );
@@ -462,6 +463,12 @@ fn with_sonnet(crew: &Crew) {
     crew.services.workers.add(
         FakeRunner::cli("claude-code/sonnet", "anthropic").respond_with(support::smallest_answer),
     );
+}
+
+/// Codex and agy sign out side by side, so either one may be left out first and the other be
+/// the proposal the council can't do without. `line` says it for a job and its CLI.
+fn either_proposal(line: impl Fn(&str, &str) -> String) -> [String; 2] {
+    [line("propose:p2", "Codex"), line("propose:p3", "agy")]
 }
 
 fn second_questions(events: &[RunEvent]) -> Vec<String> {
@@ -502,9 +509,13 @@ async fn same_step_allow_puts_another_model_of_a_cli_in_the_step_on_the_job() ->
     );
     assert!(second_questions(&run.events).is_empty(), "nothing is asked");
     let said = notes(&run.events);
-    let line = "propose:p3 runs on Sonnet 5.5, a second proposal from Claude Code: Antigravity \
-                CLI is signed out and nothing else can take it";
-    assert!(said.iter().any(|note| note == line), "{said:#?}");
+    let lines = either_proposal(|job, cli| {
+        format!(
+            "{job} runs on Sonnet 5.5, a second proposal from Claude Code: {cli} is signed out \
+             and nothing else can take it"
+        )
+    });
+    assert!(said.iter().any(|note| lines.contains(note)), "{said:#?}");
     Ok(())
 }
 
@@ -517,10 +528,11 @@ async fn same_step_ask_stops_the_run_when_you_say_no() -> anyhow::Result<()> {
     let _env = crew.repo.env_guard();
 
     let asked = crew.start(RunMode::Crew, REQUEST).await?;
-    assert_eq!(
-        second_questions(&asked.events),
-        ["A second proposal from Claude Code for propose:p3?"],
-        "{:?}",
+    let questions = second_questions(&asked.events);
+    let titles = either_proposal(|job, _| format!("A second proposal from Claude Code for {job}?"));
+    assert!(
+        matches!(questions.as_slice(), [title] if titles.contains(title)),
+        "{questions:?} {:?}",
         asked.exit
     );
     let no = AnswerAction::Choose {

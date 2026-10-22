@@ -955,12 +955,19 @@ impl Check<'_, '_> {
             .sum();
         let spends = self.flat.iter().any(|seen| takes_agents(seen.kind));
         if estimate > left || (left <= 0.0 && spends) {
-            self.error(
-                Rule::OverLimit,
-                "the workflow",
-                format!("it needs at least ${estimate:.2}, and ${left:.2} of the limit is left"),
-            );
+            self.error(Rule::OverLimit, "the workflow", over_limit(estimate, left));
         }
+    }
+}
+
+/// What a workflow needs against what is left of the limit, in cents. Two sums that read as
+/// the same cents would say the workflow fits, so the left one reads as less than that.
+fn over_limit(estimate: f64, left: f64) -> String {
+    let (need, have) = (format!("{estimate:.2}"), format!("{left:.2}"));
+    if need == have {
+        format!("it needs at least ${need}, and less than that of the limit is left")
+    } else {
+        format!("it needs at least ${need}, and ${have} of the limit is left")
     }
 }
 
@@ -1075,6 +1082,15 @@ mod tests {
             limit.to_string(),
             "the workflow needs at least $3.00, and $0.61 of the limit is left"
         );
+        // Sums that read as the same cents never say the workflow fits.
+        assert_eq!(
+            over_limit(0.05, 0.0499),
+            "it needs at least $0.05, and less than that of the limit is left"
+        );
+        assert_eq!(
+            over_limit(3.0, 0.61),
+            "it needs at least $3.00, and $0.61 of the limit is left"
+        );
         let step = error("phase Build, step 1", "it has no worker");
         assert_eq!(step.to_string(), "phase Build, step 1: it has no worker");
     }
@@ -1120,7 +1136,7 @@ mod tests {
             says: "gemini reviews".to_owned(),
             kind: InstructionKind::Review,
             outcome: InstructionOutcome::Followed {
-                said: "Antigravity CLI reviews".to_owned(),
+                said: "agy reviews".to_owned(),
                 note: None,
             },
         };

@@ -322,12 +322,16 @@ pub(crate) async fn view(
         ViewRequest::Config => ViewData::Config {
             entries: ctx.settings.entries(),
         },
-        ViewRequest::Settings { section } => ViewData::Settings {
-            rows: rows::rows(&ctx.settings, None, section.as_deref()),
-            command: None,
-            section,
-            not_installed: Vec::new(),
-        },
+        ViewRequest::Settings { section } => {
+            let mut found = rows::rows(&ctx.settings, None, section.as_deref());
+            rows::with_picks(&mut found, &ctx.env.paths, &ctx.names.names());
+            ViewData::Settings {
+                rows: found,
+                command: None,
+                section,
+                not_installed: Vec::new(),
+            }
+        }
         ViewRequest::Models { role } => refresh::view(ctx, settings, role),
         ViewRequest::Approvals => pickers::approvals(ctx),
         _ => return Ok(Vec::new()),

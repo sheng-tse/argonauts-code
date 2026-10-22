@@ -6,7 +6,7 @@
 //!
 //! On Codex the goal is Codex's own where the live check allows it (`crew::goal::cli`): the
 //! turn is told to set the lines as its goal, a turn that ends with the goal still active is
-//! carried on, and Argonauts Code still runs the check. On Claude Code and Antigravity CLI
+//! carried on, and Argonauts Code still runs the check. On Claude Code and agy
 //! Argonauts Code keeps it. A notice says which of the two it is.
 
 use std::path::{Path, PathBuf};
@@ -477,6 +477,7 @@ fn judge(ctx: &Ctx, conversation: &mut ConversationState, folder: &Path) -> Opti
         shell: None,
         fast: false,
         workdir: folder.to_path_buf(),
+        outside: Default::default(),
     };
     let mut spec = turn::session_spec(ctx, &launch, key, session_dir);
     spec.role = RoleName::Reviewer;

@@ -1,0 +1,64 @@
+Settings   Overview    Status    Config    Usage    Context    Limits    Stats                 Today  Week  Month  All
+Every model the crew used: all together, then each one by itself                        By CLI    By model    By role 
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◆ all models  every day so far                    14 workflows · 63 tasks merged · 5.0M tokens · ~$11.20 · 12h 40m │
+│                                                                                                                    │
+│                                 tokens by model · 5.0M                                                             │
+│                                 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│                                 ■ Opus 5.5 2.1M 42%  ■ Sonnet 5.5 0.8M 16%  ■ GPT 5.6 1.2M 24%                     │
+│                                 ■ GPT 5.6 Luna 0.35M 7%  ■ Gemini 3.6 Pro 0.43M 9%  ■ Gemini 3.6 Flash 0.12M 2%    │
+│                                                                                                                    │
+│                            ██   spend by model · ~$11.20                                                           │
+│                   ██ ██ ██ ██   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│                   ██ ██ ██ ██   ■ Opus 5.5 ~$6.30 56%  ■ Sonnet 5.5 ~$1.60 14%  ■ GPT 5.6 $2.20 20%                │
+│          ██ ██ ██ ██ ██ ██ ██   ■ GPT 5.6 Luna $0.55 5%  ■ Gemini 3.6 Pro ~$0.45 4%  ■ Gemini 3.6 Flash ~$0.10 1%  │
+│ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██                                                                                      │
+│ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   agent time by model · 12h 40m                                                      │
+│ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   ■ Opus 5.5 6h 54m 55%  ■ Sonnet 5.5 1h 35m 13%  ■ GPT 5.6 2h 54m 23%               │
+│ Aug      Sep         Oct        ■ GPT 5.6 Luna 42m 6%  ■ Gemini 3.6 Pro 31m 4%  ■ Gemini 3.6 Flash 3m              │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭────────────────────────────────────╮  ╭────────────────────────────────────╮  ╭────────────────────────────────────╮
+│ ■ Opus 5.5                2.1M tok │  │ ■ Sonnet 5.5              0.8M tok │  │ ■ GPT 5.6                 1.2M tok │
+│ Claude Code                 ~$6.30 │  │ Claude Code                 ~$1.60 │  │ Codex                        $2.20 │
+│                                    │  │                                    │  │                                    │
+│ ■ main         ━━━━ 0.5M · 9       │  │ ■ workers      ━━━━ 0.8M · 11      │  │ ■ workers      ━━━━ 1.03M · 21     │
+│ ■ orchestrator ━━━━ 0.6M · 14      │  │                                    │  │ ■ reviewers    ━━━━ 0.17M · 14     │
+│ ■ workers      ━━━━ 0.82M · 24     │  │                                    │  │                                    │
+│ ■ merger       ━━━━ 0.18M · 14     │  │                                    │  │                                    │
+│                                    │  │                                    │  │                                    │
+│ tasks    ▪▪▪▪▪▪▪▪▪▪ 96% first pass │  │ tasks    ▪▪▪▪▪▪▪▪▪▪ 91% first pass │  │ tasks    ▪▪▪▪▪▪▪▪▪▪ 90% first pass │
+│ reviews  none                      │  │ reviews  none                      │  │ reviews  ▪▪▪▪▪▪▪▪▪▪ 86% accepted   │
+│ ▃▅▂▄▇▁▃▅▆█ weeks · 9m 50s a task   │  │ ▂▃▁▄▅▁▂▃▅▆ weeks · 8m 40s a task   │  │ ▃▄▁▄▅▁▃▄▆▇ weeks · 7m 50s a task   │
+│ cache hit 71% · 58 tok/s out       │  │ cache hit 68% · 74 tok/s out       │  │ cache hit 64% · 91 tok/s out       │
+╰────────────────────────────────────╯  ╰────────────────────────────────────╯  ╰────────────────────────────────────╯
+
+╭────────────────────────────────────╮  ╭────────────────────────────────────╮  ╭────────────────────────────────────╮
+│ ■ GPT 5.6 Luna           0.35M tok │  │ ■ Gemini 3.6 Pro         0.43M tok │  │ ■ Gemini 3.6 Flash       0.12M tok │
+│ Codex                        $0.55 │  │ agy                         ~$0.45 │  │ agy                         ~$0.10 │
+│                                    │  │                                    │  │                                    │
+│ ■ workers      ━━━━ 0.35M · 7      │  │ ■ reviewers    ━━━━ 0.43M · 49     │  │ ■ judge        ━━━━ 0.12M · 14     │
+│                                    │  │                                    │  │                                    │
+│ tasks    ▪▪▪▪▪▪▪▪▪▪ 86% first pass │  │ tasks    none                      │  │ tasks    none                      │
+│ reviews  none                      │  │ reviews  ▪▪▪▪▪▪▪▪▪▪ 92% accepted   │  │ reviews  ▪▪▪▪▪▪▪▪▪▪ 100% accepted  │
+│ ▁▂▁▂▃▁▁▂▃▄ weeks · 6m a task       │  │ ▂▃▁▃▄▁▂▃▄▅ weeks · 38s a review    │  │ ▁▁▁▂▂▁▁▂▂▃ weeks · 11s a sign-off  │
+│ cache hit 60% · 140 tok/s out      │  │ cache hit 52% · 110 tok/s out      │  │ cache hit 40% · 210 tok/s out      │
+╰────────────────────────────────────╯  ╰────────────────────────────────────╯  ╰────────────────────────────────────╯
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◆ the same job, side by side                            every role two or more models filled · enter opens a model │
+│                                                                                                                    │
+│               model              first pass        time each   cost each   tokens each  sent back most for         │
+│ workers       ■ Opus 5.5         ▪▪▪▪▪▪▪▪▪▪ 96%    9m 50s      $0.14       34k          an edge case               │
+│               ■ Sonnet 5.5       ▪▪▪▪▪▪▪▪▪▪ 91%    8m 40s      $0.15       73k          a test missing             │
+│               ■ GPT 5.6          ▪▪▪▪▪▪▪▪▪▪ 90%    7m 50s      $0.10       49k          wrong rounding             │
+│               ■ GPT 5.6 Luna     ▪▪▪▪▪▪▪▪▪▪ 86%    6m          $0.08       50k          a test missing             │
+│                                                                                                                    │
+│               model              accepted          time each   cost each   tokens each  caught most                │
+│ reviewers     ■ GPT 5.6          ▪▪▪▪▪▪▪▪▪▪ 86%    44s         $0.014      12k          wrong rounding             │
+│               ■ Gemini 3.6 Pro   ▪▪▪▪▪▪▪▪▪▪ 92%    38s         ~$0.009     9k           a test missing             │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+r to cycle dates · tab By CLI, By model, By role · ↓  into the cards · enter opens a model · esc closes

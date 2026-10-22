@@ -141,7 +141,7 @@ fn follow(
         .map(String::as_str)
         .chain([target.as_str()])
         .collect::<Vec<_>>()
-        .join(" → ");
+        .join(" →  ");
     if chain.iter().any(|name| name == target.as_str()) {
         problems.push(format!("loops back to {target}: {route}"));
         return None;

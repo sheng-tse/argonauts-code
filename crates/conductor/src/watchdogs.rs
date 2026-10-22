@@ -83,6 +83,8 @@ pub struct Watchdogs {
     running: HashSet<String>,
     /// Calls from the session to Argonauts Code still open, such as questions waiting on you.
     asks_open: u32,
+    /// The internet is down, so the session waits on it rather than on itself.
+    offline: bool,
 }
 
 #[derive(Debug)]
@@ -107,6 +109,7 @@ impl Watchdogs {
             unchanged: 0,
             running: HashSet::new(),
             asks_open: 0,
+            offline: false,
         }
     }
 
@@ -178,9 +181,18 @@ impl Watchdogs {
         }
     }
 
+    /// The internet went (`down`) or came back. While it's down the session waits for it, so
+    /// it's neither inactive nor stalled, and its clock starts again once it's back.
+    pub fn network(&mut self, down: bool, now: Instant) {
+        if self.offline && !down {
+            self.last_event = Some(now);
+        }
+        self.offline = down;
+    }
+
     /// `cpu_busy_at` is the shared sampler's latest busy time for the process tree.
     pub fn tick(&mut self, now: Instant, cpu_busy_at: Option<Instant>) -> WatchdogVerdict {
-        if self.asks_open > 0 {
+        if self.asks_open > 0 || self.offline {
             return WatchdogVerdict::Quiet;
         }
         let last_active = [self.last_event, self.last_output, cpu_busy_at]
@@ -720,6 +732,31 @@ mod tests {
                 calls: None,
             }
         );
+    }
+
+    #[test]
+    fn inactivity_never_stops_a_session_while_offline() {
+        let t0 = Instant::now();
+        let mut dogs = Watchdogs::new(&limits(), None);
+        dogs.network(true, t0 + Duration::from_secs(60));
+        assert_eq!(
+            dogs.tick(t0 + Duration::from_secs(3600), None),
+            WatchdogVerdict::Quiet
+        );
+        // Back after an hour: the clock starts again from there.
+        let back = t0 + Duration::from_secs(3600);
+        dogs.network(false, back);
+        assert_eq!(
+            dogs.tick(back + Duration::from_secs(5 * 60), None),
+            WatchdogVerdict::Quiet
+        );
+        assert!(matches!(
+            dogs.tick(back + Duration::from_secs(20 * 60), None),
+            WatchdogVerdict::Stuck {
+                watchdog: Watchdog::Inactivity,
+                ..
+            }
+        ));
     }
 
     #[test]

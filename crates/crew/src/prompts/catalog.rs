@@ -325,11 +325,11 @@ mod tests {
         }
     }
 
-    /// An id is where its file sits under `templates/prompts/`, so the name `/prompts` shows is
-    /// the one to look for on disk.
+    /// An id is where its file sits under `crates/core/templates/prompts/`, so the name
+    /// `/prompts` shows is the one to look for on disk.
     #[test]
     fn every_template_sits_at_the_path_its_id_names() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates/prompts");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/templates/prompts");
         for template in ALL {
             let path = root.join(format!("{}.md", template.id));
             let text = std::fs::read_to_string(&path)

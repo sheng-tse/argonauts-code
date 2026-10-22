@@ -193,6 +193,7 @@ impl Bench {
             scope: PermissionScope {
                 roots: vec![root.clone()],
                 writable: vec![root],
+                read_only: Vec::new(),
                 deny: Vec::new(),
                 forbidden: vec![".argonauts/**".into()],
                 network: false,

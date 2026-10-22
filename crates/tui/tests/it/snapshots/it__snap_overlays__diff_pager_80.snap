@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_overlays.rs
+source: crates/tui/tests/it/snap_overlays.rs
+assertion_line: 1145
 expression: "screen(&mut view, width, height, &state)"
 ---
 Diff · task-002
@@ -25,4 +26,4 @@ Diff · task-002
 │                                                                              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ scroll · pgup pgdn page · esc back
+↑↓  scroll · pgup pgdn page · esc back

@@ -117,7 +117,7 @@ impl Library {
             )));
         }
         Footer::hints(&[
-            ("↑↓ select", 0),
+            ("↑↓  select", 0),
             ("⏎ show", 5),
             ("c copy", 4),
             ("C copy to repo", 2),

@@ -82,6 +82,7 @@ fn a_container_session_sees_its_worktree_and_nothing_else() {
         closed: Vec::new(),
         listable: Vec::new(),
         loopback: false,
+        outside: Default::default(),
     };
     let stdout = run(
         &container,
@@ -197,6 +198,9 @@ fn a_container_session_without_network_reaches_only_the_proxy() {
         proxy_port: None,
         ask_port: None,
         closed: Vec::new(),
+        listable: Vec::new(),
+        loopback: false,
+        outside: Default::default(),
     };
     let wrapped = container.wrap(command, &profile).unwrap();
     let mut process = Command::new(&wrapped.program);

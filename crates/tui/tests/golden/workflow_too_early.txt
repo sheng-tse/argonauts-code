@@ -3,7 +3,7 @@ Today, while Claude Code is still writing the script:
     ⎿ Phases: (none yet)
 
 After, until the script exists, only the working line moves:
-✶ Writing a workflow… (12s · ↓ 3.1k tokens · esc to interrupt)
+✶ Writing a workflow… (12s · ↓  3.1k tokens · esc to interrupt)
 
 Then, once its phases are known, the row appears with all of them, and its time ticks every second:
-◐ Add due dates   ━━━━━ ━━━━━ ━━━━━ ━━━━━  Build · 0 of 4 steps · 2s · ↓ 0
+◐ Add due dates   ━━━━━ ━━━━━ ━━━━━ ━━━━━  Build · 0 of 4 steps · 2s · ↓  0

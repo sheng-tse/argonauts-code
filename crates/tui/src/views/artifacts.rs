@@ -153,7 +153,7 @@ impl View for ArtifactsView {
             Footer::hints(&[(panes::ESC_BACK, 0)])
         } else {
             Footer::hints(&[
-                ("↑↓ select", 0),
+                ("↑↓  select", 0),
                 ("⏎ or o open in the browser", 2),
                 ("c copy its link", 1),
                 (panes::ESC_BACK, 0),
@@ -303,7 +303,7 @@ mod tests {
             "{wide}"
         );
         assert!(
-            wide.contains("↑↓ select · ⏎ or o open in the browser · c copy its link · esc back"),
+            wide.contains("↑↓  select · ⏎ or o open in the browser · c copy its link · esc back"),
             "{wide}"
         );
         // A narrow screen cuts the link, never the name, and no row runs past the edge.

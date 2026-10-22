@@ -15,4 +15,4 @@
  │                     │ Outcome                                                                                    │
  │                     │   Still running…                                                                           │
  ╰─────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯
- ↑↓ agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save
+ ↑↓  agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save

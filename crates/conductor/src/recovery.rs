@@ -16,6 +16,7 @@ use argonauts_core::future::BoxFuture;
 use argonauts_core::limits::{
     Candidate, CandidateQuery, CostEstimate, FallbackNote, FallbackPlanner, HealthBoard,
     HealthState, LimitsService, ModelState, PlanUsageBoard, RecoveryAction, Shortlist, StopContext,
+    may_have_lost_the_network, served_on_this_machine,
 };
 use argonauts_core::names::{AgentId, ModelRef, RoleName};
 use argonauts_core::registry::{ModelEntry, ModelRegistry};
@@ -46,6 +47,9 @@ const NO_AGENT_ISOLATES: &str = "no other agent keeps your plugins out of a blin
 
 const RESUME_MESSAGE: &str =
     "The run was paused and is resuming. Continue the task from where you stopped.";
+
+const NETWORK_BACK_MESSAGE: &str = "The network was down and is back. Continue the task from \
+     where you stopped.";
 
 /// For a session that did its work but missed the answer format, so the work isn't done twice.
 const REPORT_ONLY_MESSAGE: &str = "Your work is done, but your report didn't match the answer \
@@ -119,6 +123,11 @@ impl Limits {
     }
 
     async fn recover(&self, context: &StopContext, timed_out: bool) -> RecoveryAction {
+        if self.lost_the_internet(context).await {
+            return RecoveryAction::ResumeSame {
+                message: NETWORK_BACK_MESSAGE.to_owned(),
+            };
+        }
         let (log, unread) = match task_log(&context.events, &context.task.id).await {
             Ok(log) => (log, None),
             Err(error) => {
@@ -132,6 +141,15 @@ impl Limits {
         };
         let stop = self.stop(context, log, unread, timed_out);
         self.decide(&stop)
+    }
+
+    /// A session that needs a provider, which ended on the network while the internet is
+    /// gone: its agent did nothing wrong, so it goes on where it stopped once it's back.
+    async fn lost_the_internet(&self, context: &StopContext) -> bool {
+        let worker = &context.worker;
+        may_have_lost_the_network(&context.end.reason)
+            && !served_on_this_machine(&worker.agent, worker.model.as_deref())
+            && self.health.check_network().await.is_down()
     }
 
     fn stop<'a>(

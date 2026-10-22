@@ -1,0 +1,22 @@
+ The end of the /issue 42 run: nothing goes to GitHub before this question's yes                                      
+                                                                                                                      
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Open a draft pull request on GitHub?                                                                                
+  branch issue-42-per-key-limiter · 2 files +30 −4 · checks 5/5 · Codex approved, agy signed off                      
+  It posts as you (gh: test-user) · nothing is posted on the issue itself                                             
+                                                                                                                      
+  title   Give each API key its own rate limit bucket                                                                 
+  body    Gives each X-Api-Key its own token bucket, so one busy key no longer slows the others.                      
+          Requests with no key share one anonymous bucket.                                                            
+          … 6 more lines: the checks, who reviewed, and how it was made                                               
+          Fixes #42                                                                                                   
+                                                                                                                      
+  ❯ 1. Push and open the draft                        pushes the branch to origin, then opens it as a draft           
+    2. Show the whole body                            the body in full, then these choices again                      
+    3. Keep the branch here, post nothing             the run ends with the branch kept                               
+    4. Allow GitHub writes for the rest of this run   this and any later comment or reply in the run go without asking
+                                                                                                                      
+  Enter to choose · Tab to add a note · Esc to set aside                                                              
+                                                                                                                      
+ (Fixes #42 reads Refs #42 when the base isn't the default branch, where GitHub ignores the keyword)                  
+ (on autopilot the push and the draft go ahead with a line in the conversation; comments still wait)                  

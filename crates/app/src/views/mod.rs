@@ -3,6 +3,7 @@
 
 mod agent;
 mod asked;
+pub(crate) mod behaviors;
 mod checkpoints;
 mod context;
 mod goal;
@@ -17,4 +18,6 @@ pub(crate) use checkpoints::checkpoint_rows;
 pub(crate) use context::{context_rows, finished_at};
 pub(crate) use goal::goal_view;
 pub(crate) use sessions::{add_spend, crew_rows};
-pub(crate) use workflow::{being_written, inner_agent_view, saved_workflow, workflow_view};
+pub(crate) use workflow::{
+    being_written, followed_heading, inner_agent_view, saved_workflow, workflow_view,
+};

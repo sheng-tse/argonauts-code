@@ -1,6 +1,7 @@
 //! What the setup looks at without logging in or calling a model: the agent CLIs you have, local
 //! model servers, and a CLI's login state where its adapter has a verified check.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use argonauts_conductor::{AgentStatus, DoctorReport};
 use argonauts_core::Adapter;
 use argonauts_core::adapter::SetupHints;
 use argonauts_core::names::ModelRef;
-use argonauts_core::runtimes::{RUNTIMES, runtime};
+use argonauts_core::runtimes::{RUNTIMES, RuntimeKind, runtime};
 use argonauts_core::settings::Settings;
 use argonauts_core::status_tab::CliVersionCheck;
 use argonauts_endpoints::runtime_api;
@@ -24,12 +25,17 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 pub(crate) const LOGIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A local runtime that said what it is, with the models it serves.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct LocalServer {
     /// The runtime's id, such as `llamacpp`.
     pub id: String,
     pub base_url: String,
     pub models: Vec<String>,
+    /// The window each model holds, in tokens, where the server says before loading it.
+    pub windows: BTreeMap<String, u64>,
+    /// The models the server sizes only as it loads them, as Ollama does a tag with no window
+    /// of its own, so nothing says before then whether a review fits.
+    pub sized_as_loaded: Vec<String>,
 }
 
 impl LocalServer {
@@ -214,10 +220,18 @@ pub(crate) async fn local_servers(settings: &Settings) -> Vec<LocalServer> {
                 .await
                 .ok()?;
             let served = answered.into_iter().flatten().next()?;
+            let (windows, sized_as_loaded) = match runtime.kind {
+                RuntimeKind::Ollama => {
+                    ollama_windows(&client, &served.base_url, &served.models).await
+                }
+                _ => Default::default(),
+            };
             Some(LocalServer {
                 id: runtime.id.to_owned(),
                 base_url: served.base_url,
                 models: served.models,
+                windows,
+                sized_as_loaded,
             })
         }
     });
@@ -229,9 +243,44 @@ pub(crate) async fn local_servers(settings: &Settings) -> Vec<LocalServer> {
         .collect()
 }
 
+/// What `/api/show` says of each Ollama tag without loading it: the window a tag holds itself to
+/// (`num_ctx`), or that it has none and is sized as it loads. A tag whose facts don't come back
+/// is in neither. All are asked at once, within [`PROBE_TIMEOUT`].
+async fn ollama_windows(
+    client: &reqwest::Client,
+    base_url: &str,
+    tags: &[String],
+) -> (BTreeMap<String, u64>, Vec<String>) {
+    let root = base_url.trim_end_matches('/');
+    let root = root.strip_suffix("/v1").unwrap_or(root);
+    let url = format!("{root}/api/show");
+    let asked = tags.iter().map(|tag| {
+        let request = client.post(&url).json(&serde_json::json!({ "model": tag }));
+        async move {
+            let reply = request.send().await.ok()?.error_for_status().ok()?;
+            let text = reply.text().await.ok()?;
+            let shown = argonauts_registry::models::discovery::parse_show(&text).ok()?;
+            Some((tag.clone(), shown.cap))
+        }
+    });
+    let shown = tokio::time::timeout(PROBE_TIMEOUT, futures::future::join_all(asked))
+        .await
+        .unwrap_or_default();
+    let mut windows = BTreeMap::new();
+    let mut sized_as_loaded = Vec::new();
+    for (tag, cap) in shown.into_iter().flatten() {
+        match cap {
+            Some(window) => {
+                windows.insert(tag, window);
+            }
+            None => sized_as_loaded.push(tag),
+        }
+    }
+    (windows, sized_as_loaded)
+}
+
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
 
     use argonauts_testkit::{FakeKind, FakeModelServer};
 
@@ -239,8 +288,7 @@ mod tests {
 
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        argonauts_testkit::write_script(&path, &format!("#!/bin/sh\n{body}\n")).unwrap();
         path
     }
 
@@ -321,8 +369,63 @@ mod tests {
                 id: "ollama".to_owned(),
                 base_url: server.base_url(),
                 models: vec!["llama3.2".to_owned(), "qwen3".to_owned()],
+                // The fake has no `/api/show`, so nothing is known of either tag's window.
+                ..Default::default()
             }]
         );
+    }
+
+    /// An Ollama that answers `/api/show` as the real one does: `num_ctx` in the parameters of a
+    /// tag made with a window of its own, nothing there for one sized as it loads.
+    fn ollama_show_server() -> std::net::SocketAddr {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; length];
+                let _ = reader.read_exact(&mut body);
+                let asked: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+                let parameters = match asked["model"].as_str() {
+                    Some("qwen3-coder:30b-64k") => "num_ctx                        65536",
+                    _ => "temperature 0.7",
+                };
+                let reply = serde_json::json!({ "parameters": parameters, "model_info": {} });
+                let reply = reply.to_string();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                     connection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn an_ollama_tag_has_a_window_only_when_it_sets_its_own() {
+        let addr = ollama_show_server();
+        let client = runtime_api::local_client(PROBE_TIMEOUT).unwrap();
+        let tags = [
+            "qwen3-coder:30b-64k".to_owned(),
+            "qwen3-coder:30b".to_owned(),
+        ];
+        let (windows, sized) = ollama_windows(&client, &format!("http://{addr}/v1"), &tags).await;
+        assert_eq!(windows, [("qwen3-coder:30b-64k".to_owned(), 65_536)].into());
+        assert_eq!(sized, ["qwen3-coder:30b"]);
     }
 
     /// Off, the setup asks only the servers you have a table for, never one where it listens

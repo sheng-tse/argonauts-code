@@ -32,7 +32,7 @@ const FRESH: &str = "Model lists refreshed just now.";
 
 /// A picture's rows without the blanks that pad them to its width, and its colours, with the
 /// question colour the pictures write as its value named as the role it stands for.
-fn picture(txt: &'static str, html: &'static str) -> (String, String) {
+fn picture(txt: &str, html: &str) -> (String, String) {
     let rows: Vec<&str> = txt.lines().map(str::trim_end).collect();
     (
         rows.join("\n"),
@@ -326,6 +326,7 @@ fn setting(key: &str, value: &str) -> SettingRow {
         safety: false,
         allowed: Vec::new(),
         description: String::new(),
+        picked: None,
     }
 }
 
@@ -379,6 +380,45 @@ fn the_picker_takes_the_inputs_place_with_opencode_counted() {
     let lines = drawn(&picker);
     // The picture's rule is row 23; the rows above it are the conversation's.
     compare("model_picker_after", &picture, 22..33, &lines);
+}
+
+/// The picker's comparison fails once one cell of its picture is changed, a cell in the
+/// question colour the pictures write as its value among them.
+#[test]
+fn a_picture_changed_in_one_cell_no_longer_matches_the_picker() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use argonauts_testkit::picture as page;
+
+    const TXT: &str = include_str!("../../../tests/golden/model_picker_after.txt");
+    const HTML: &str = include_str!("../../../tests/golden/model_picker_after.html");
+    let lines = drawn(&model_picker(&every_choice(), FRESH));
+    let fails = |txt: &str, html: &str| {
+        let picture = picture(txt, html);
+        catch_unwind(AssertUnwindSafe(|| {
+            compare("changed", &picture, 22..33, &lines);
+        }))
+        .is_err()
+    };
+    assert!(!fails(TXT, HTML));
+    let grid = page::grid(HTML);
+    let (row, column) = page::find(&grid[22..33], |cell| {
+        cell.ch.is_alphanumeric() && cell.color.as_deref() == Some("#b1b9f9")
+    });
+    let row = row + 22;
+    let changed =
+        |edit: &dyn Fn(&mut page::Cell)| page::edited(HTML, |grid| edit(&mut grid[row][column]));
+    let recoloured = changed(&|cell| cell.color = Some("var(--term-dim)".to_owned()));
+    assert!(fails(TXT, &recoloured), "a colour changed");
+    assert!(
+        fails(TXT, &changed(&|cell| cell.bold ^= true)),
+        "a weight changed"
+    );
+    let mut rows: Vec<String> = TXT.lines().map(str::to_owned).collect();
+    let mut chars: Vec<char> = rows[row].chars().collect();
+    chars[column] = '#';
+    rows[row] = chars.into_iter().collect();
+    assert!(fails(&rows.join("\n"), HTML), "a character changed");
 }
 
 #[test]
@@ -453,7 +493,7 @@ fn at(hour: u8, minute: u8) -> OffsetDateTime {
         .replace_time(time::Time::from_hms(hour, minute, 0).expect("a time"))
 }
 
-/// Codex, Antigravity CLI and OpenCode, the CLIs that list their models by running, each
+/// Codex, agy and OpenCode, the CLIs that list their models by running, each
 /// read at `listed`, and the ones in `asking` being asked again.
 fn sources(listed: OffsetDateTime, asking: &[&str], failed: &[&str]) -> Vec<ModelSource> {
     ["codex", "antigravity-cli", "opencode"]
@@ -669,7 +709,15 @@ fn ram_choices() -> Vec<ModelChoice> {
         ("ollama/gpt-oss:20b", "GPT-OSS 20B", (16, 14), true),
     ]
     .into_iter()
-    .map(|(route, name, sizes, thinking)| suggestion(route, name, 65_536, sizes, thinking));
+    .map(|(route, name, sizes, thinking)| {
+        let mut choice = suggestion(route, name, 65_536, sizes, thinking);
+        // Where each stands on the pictured Mac: one needs more than is free now.
+        let listed = choice.listed.as_mut().expect("facts");
+        if let Some(memory) = listed.memory.as_mut() {
+            memory.fit = MAC_64.fit(memory.ram);
+        }
+        choice
+    });
     let mut claude = every_choice();
     claude.retain(|choice| choice.worker.agent != "opencode");
     claude
@@ -684,15 +732,15 @@ fn ram_choices() -> Vec<ModelChoice> {
 #[test]
 fn opencodes_level_knows_this_machines_memory() {
     let picture = picture(
-        include_str!("../../../tests/golden/ram_models_after.txt"),
-        include_str!("../../../tests/golden/ram_models_after.html"),
+        include_str!("../../../tests/golden/ram_after.txt"),
+        include_str!("../../../tests/golden/ram_after.html"),
     );
     let choices = ram_choices();
     let mut picker = model_picker(&choices, FRESH);
     picker.flow.memory = Some(MAC_64);
     key(&mut picker, KeyCode::Char('4'));
     down_to(&mut picker, "Qwen3 Coder 30B (64k)");
-    compare("ram_models_after", &picture, 2..21, &drawn(&picker));
+    compare("ram_after", &picture, 4..23, &drawn(&picker));
 
     // Scrolled on to OpenCode Zen's third, then back to the first model not installed, where
     // Enter asks before anything downloads.
@@ -703,7 +751,7 @@ fn opencodes_level_knows_this_machines_memory() {
     assert_eq!(pointed_label(&picker), "Qwen3.5 27B");
     key(&mut picker, KeyCode::Enter);
     assert!(picker.input.is_none() && picker.flow.download_asked.is_some());
-    compare("ram_models_after", &picture, 24..44, &drawn(&picker));
+    compare("ram_after", &picture, 26..47, &drawn(&picker));
     // Esc keeps looking; Enter twice pulls it with Ollama, and the list stays open on it.
     key(&mut picker, KeyCode::Esc);
     assert_eq!(picker.flow.download_asked, None);
@@ -720,14 +768,74 @@ fn opencodes_level_knows_this_machines_memory() {
     assert_eq!(pointed_label(&picker), "Qwen3.5 27B");
 }
 
+/// The memory line on the pictured Mac with no model loaded, then with a 25 GB one: what
+/// models can use, what is free now, and what holds the rest.
+#[test]
+fn the_memory_line_says_what_holds_the_memory() {
+    let picture = picture(
+        include_str!("../../../tests/golden/ram_now.txt"),
+        include_str!("../../../tests/golden/ram_now.html"),
+    );
+    let choices = ram_choices();
+    let nothing_loaded = MachineMemory {
+        in_use: 0,
+        free: 37 * GIB,
+        ..MAC_64
+    };
+    for (memory, row) in [(nothing_loaded, 4), (MAC_64, 8)] {
+        let mut picker = model_picker(&choices, FRESH);
+        picker.flow.memory = Some(memory);
+        key(&mut picker, KeyCode::Char('4'));
+        let lines = drawn(&picker);
+        compare("ram_now", &picture, row..row + 1, &lines[3..4]);
+    }
+}
+
+/// At 80 columns the memory line wraps under its own start, so what macOS and your apps hold
+/// still shows.
+#[test]
+fn the_memory_line_wraps_on_a_narrow_screen() {
+    let choices = ram_choices();
+    let mut picker = model_picker(&choices, FRESH);
+    picker.flow.memory = Some(MAC_64);
+    key(&mut picker, KeyCode::Char('4'));
+    let theme = theme();
+    let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+    let mut bottom = BottomState::new();
+    bottom.composer.label = Some("Opus 5.5".to_owned());
+    bottom.picker = Some(picker);
+    let rows: Vec<String> = bottom
+        .render(&ctx)
+        .lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        })
+        .collect();
+    let at = rows
+        .iter()
+        .position(|row| row.contains("Models can use"))
+        .expect("the memory line");
+    let read: Vec<&str> = rows[at..at + 2].iter().map(|row| row.trim()).collect();
+    assert!(read.join(" ").contains("macOS and your apps"), "{rows:#?}");
+    assert!(!read.join(" ").contains('…'), "{rows:#?}");
+    assert!(
+        rows[at + 1].starts_with("  ") && !rows[at + 1].starts_with("   "),
+        "{rows:#?}"
+    );
+}
+
 /// The memory reading comes in the background after /model opens, and again with each later
 /// list: a level opened before it gets its line and its rows' RAM form once it lands, and the
 /// line says each newer reading's figures.
 #[test]
 fn a_memory_reading_after_the_level_opened_fills_its_line() {
     let picture = picture(
-        include_str!("../../../tests/golden/ram_models_after.txt"),
-        include_str!("../../../tests/golden/ram_models_after.html"),
+        include_str!("../../../tests/golden/ram_after.txt"),
+        include_str!("../../../tests/golden/ram_after.html"),
     );
     let choices = ram_choices();
     let mut picker = model_picker(&choices, FRESH);
@@ -737,7 +845,7 @@ fn a_memory_reading_after_the_level_opened_fills_its_line() {
 
     picker.flow.memory = Some(MAC_64);
     super::models::refresh(&mut picker, &choices);
-    compare("ram_models_after", &picture, 2..21, &drawn(&picker));
+    compare("ram_after", &picture, 4..23, &drawn(&picker));
 
     picker.flow.memory = Some(MachineMemory {
         in_use: 12 * GIB,
@@ -752,15 +860,16 @@ fn a_memory_reading_after_the_level_opened_fills_its_line() {
         .collect();
     assert_eq!(
         line.trim_end(),
-        "  RAM for models: up to 52 GB of this Mac's 64 GB · 12 GB in use · 31 GB free now"
+        "  Models can use up to 52 GB of this Mac's 64 GB · 31 GB free now · models hold 12 GB · \
+         macOS and your apps 21 GB"
     );
 }
 
 #[test]
 fn a_smaller_mac_warns_and_suggests_a_model_that_fits() {
     let picture = picture(
-        include_str!("../../../tests/golden/ram_models_after.txt"),
-        include_str!("../../../tests/golden/ram_models_after.html"),
+        include_str!("../../../tests/golden/ram_after.txt"),
+        include_str!("../../../tests/golden/ram_after.html"),
     );
     let mac_16 = MachineMemory {
         limit: 11 * GIB,
@@ -816,5 +925,5 @@ fn a_smaller_mac_warns_and_suggests_a_model_that_fits() {
     key(&mut picker, KeyCode::Char('4'));
     down_to(&mut picker, "Qwen3 Coder 30B (64k)");
     let lines = drawn(&picker);
-    compare("ram_models_after", &picture, 48..65, &lines);
+    compare("ram_after", &picture, 51..69, &lines);
 }

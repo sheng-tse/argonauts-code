@@ -188,6 +188,7 @@ impl Probe {
             closed: Vec::new(),
             listable: Vec::new(),
             loopback: false,
+            outside: Default::default(),
         }
     }
 

@@ -1,5 +1,6 @@
 ---
 source: crates/tui/src/bottom/tests.rs
+assertion_line: 129
 expression: screen(&view)
 ---
 ────────────────────────────────────────────────────────────────────────────────
@@ -12,14 +13,14 @@ expression: screen(&view)
     4. Abandon the run
     5. Show the diff
 
-  ↑ to answer
+  ↑  to answer
 
 ❯ also add a --csv flag
 ────────────────────────────────────────────────────────────────────── council ─
-❯ ▏↑ to answer the question
+❯ ▏↑  to answer the question
 ────────────────────────────────────────────────────────────────────────────────
-  ǁ supervised mode on · ← 3 agents          ● Claude 5h ▄▄▄▖▄▄ 58%  $0.46/$3.00
+  ǁ supervised mode on · ←  3 agents         ● Claude 5h ▄▄▄▖▄▄ 58%  $0.46/$3.00
 
-  ○ claude-code  task-002                            2/5 · 1m · ↓ 18.1k tokens
-  ○ codex        task-003                            1/5 · 28s · ↓ 12.9k tokens
-  ○ agy          review                              waiting
+  ○ claude-code  task-002                           2/5 · 1m · ↓  18.1k tokens
+  ○ codex        task-003                           1/5 · 28s · ↓  12.9k tokens
+  ○ agy          review                             waiting

@@ -14,10 +14,10 @@
  Two tasks are paused, their work so far kept. same_cli keeps them on Claude Code.
 
  ❯ 1. Wait for Claude Code              your setting · tried again in 4m48s
-   2. One agent for every paused task   Gemini 3.6 Pro on Antigravity CLI fits both
+   2. One agent for every paused task   Gemini 3.6 Pro on agy fits both
    3. Choose per task                   an agent for each, from every installed CLI
 
  Enter to choose · Tab to add a note · Esc to set aside
 
   its row in the bottom list
-  ⏸ Add due dates           ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/3 · 2m46s · ↓ 84.2k tokens · needs you · Claude Code is down
+  ⏸ Add due dates           ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/3 · 2m46s · ↓  84.2k tokens · needs you · Claude Code is down

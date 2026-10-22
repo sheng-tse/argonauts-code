@@ -1,9 +1,9 @@
 ---
-source: crates/tui/tests/snap_overlays.rs
-assertion_line: 886
+source: crates/tui/tests/it/snap_overlays.rs
+assertion_line: 864
 expression: text
 ---
-✔ GPT 5.6 on Codex · worker · task-002 (…   Output  Input  Raw   2m00s · ↓ 12.4k
+✔ GPT 5.6 on Codex · worker · task-002 …   Output  Input  Raw   2m00s · ↓  12.4k
 
      test export::json ... ok
 
@@ -26,4 +26,4 @@ expression: text
 
 ⎿ Queued use serde_json
   arrives after the current tool call
-↑↓ scroll · tab input · r raw · d diff · ← crew · esc back            6-26 of 26
+↑↓  scroll · tab input · r raw · d diff · ←  crew · esc back          6-26 of 26

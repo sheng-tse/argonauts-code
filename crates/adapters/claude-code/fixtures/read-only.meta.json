@@ -1,5 +1,9 @@
 {
   "adapter": "claude-code",
+  "cli_version": "2.1.306",
+  "also_matches": [],
+  "date": "2026-10-21T19:29:33.382802Z",
+  "program": "claude",
   "args": [
     "-p",
     "--output-format",
@@ -11,7 +15,7 @@
     "--permission-prompts",
     "none",
     "--tools",
-    "Read,Glob,Grep",
+    "Read,Glob,Grep,ToolSearch",
     "--disallowedTools",
     "SendMessage",
     "ListAgents",
@@ -24,11 +28,16 @@
     "--effort",
     "low"
   ],
-  "cli_version": "2.1.293",
-  "also_matches": [],
-  "date": "2026-10-08T04:14:22.781516Z",
-  "duration_ms": 2433,
-  "effort": "low",
+  "stdin": "Reply with exactly the word: ok",
+  "session_id": null,
+  "resume_session": null,
+  "keep_input_open": false,
+  "files": [
+    {
+      "path": "/tmp/argonauts-live/claude-code/sessions/read-only/claude-settings.json",
+      "contents": "{\"crossSessionInbound\":\"refuse\",\"attribution\":{\"commit\":\"\",\"pr\":\"\"},\"sandbox\":{\"enabled\":true,\"failIfUnavailable\":true,\"allowUnsandboxedCommands\":false}}"
+    }
+  ],
   "env_removed": [
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -57,24 +66,17 @@
     "CLAUDE_CODE_EFFORT_LEVEL"
   ],
   "env_set": [
-    "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"
+    "DISABLE_AUTOUPDATER=1",
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1",
+    "ENABLE_CLAUDEAI_MCP_SERVERS=false"
   ],
+  "model": "haiku",
+  "effort": "low",
+  "role": "read-only",
   "exit_code": 0,
-  "files": [
-    {
-      "contents": "{\"crossSessionInbound\":\"refuse\",\"attribution\":{\"commit\":\"\",\"pr\":\"\"},\"sandbox\":{\"enabled\":true,\"failIfUnavailable\":true,\"allowUnsandboxedCommands\":false}}",
-      "path": "/tmp/argonauts-live/claude-code/sessions/read-only/claude-settings.json"
-    }
-  ],
+  "duration_ms": 2646,
   "files_after": [
     "README.md",
     "notes.txt"
-  ],
-  "keep_input_open": false,
-  "model": "haiku",
-  "program": "claude",
-  "resume_session": null,
-  "role": "read-only",
-  "session_id": null,
-  "stdin": "Reply with exactly the word: ok"
+  ]
 }

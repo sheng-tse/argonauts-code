@@ -64,7 +64,7 @@ pub(crate) fn take(
     let own_index = git_path(root, "index")?;
     // A copy of yours keeps git's file stats, so only what changed is read again.
     if own_index.is_file() {
-        std::fs::copy(&own_index, index).context("copying the index")?;
+        crate::git::copy_index(&own_index, index).context("copying the index")?;
     }
     let too_big: BTreeMap<String, Stamp> = untracked(root)?
         .into_iter()

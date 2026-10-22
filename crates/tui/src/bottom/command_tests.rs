@@ -89,8 +89,8 @@ fn slash_commands_a_real_one_is_bold_and_an_unknown_one_says_so() {
     assert_matches(
         "slash_commands",
         &lines,
-        include_str!("pictures/slash_commands.txt"),
-        include_str!("pictures/slash_commands.html"),
+        include_str!("../../tests/golden/bottom/slash_commands.txt"),
+        include_str!("../../tests/golden/bottom/slash_commands.html"),
         &theme(),
         &[
             caption(0),

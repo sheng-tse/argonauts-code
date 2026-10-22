@@ -67,8 +67,10 @@ pub fn ask(host: &Host, wait: &JobWait) -> EngineResult<()> {
     let mut picking = false;
     if let Some((opened, decided)) = latest {
         match decided.map(|decided| decided.action) {
-            // Still open: the pick you asked for stays one.
-            None => picking = !offers_a_pick(&opened),
+            // Still open, or answered with an agent: the pick you asked for stays one. Asking
+            // the first question again would find it answered with a pick, and come back here
+            // without end.
+            None | Some(AnswerAction::Candidate { .. }) => picking = !offers_a_pick(&opened),
             Some(AnswerAction::Wait) if still_waits(&opened, wait, test_at) => return Ok(()),
             Some(AnswerAction::OtherCandidates) => picking = true,
             _ => {}

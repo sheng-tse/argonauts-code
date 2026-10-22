@@ -4,6 +4,7 @@
 mod at_words;
 mod cli;
 mod draft;
+mod issue;
 mod mods;
 mod prompts;
 mod shared;
@@ -24,6 +25,7 @@ use crate::settings::ui::NarratorMode;
 pub use at_words::{AtWord, at_word, at_words};
 pub use cli::parse_input_with;
 pub use draft::{DraftCommand, NOT_A_COMMAND, draft_command, is_command_word};
+pub use issue::IssueRef;
 pub use mods::{ModPlaceChange, ModsAction, ViewAction};
 pub use prompts::PromptsAction;
 pub use shared::SHARED_COMMANDS;
@@ -78,6 +80,11 @@ pub enum SlashCommand {
         /// The latest merged run when omitted.
         run: Option<RunId>,
         request: String,
+    },
+    /// Work on a GitHub issue. No issue lists the repository's open ones in the input's place.
+    Issue {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        issue: Option<IssueRef>,
     },
     /// Where each run stands. Zero tokens; `s` in its view asks the narrator for a summary.
     Status {
@@ -539,9 +546,10 @@ pub const SLASH_COMMANDS: &[SlashSpec] = &[
     SlashSpec { name: "captain", args: "<task>", help: "The CLI you talk to does it itself", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "crew", args: "<task>", help: "The crew does it", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "follow-up", args: "[run] <request>", help: "Follow up on a finished run", handler: Handler::App, category: CommandCategory::Work },
+    SlashSpec { name: "issue", args: "[number|url]", help: "Work on a GitHub issue: pick one of the open ones, or name it", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "status", args: "[print|pin]", help: "Where each run stands: goal, plan, tasks, limit, plan usage. Costs nothing. s in it asks the narrator for a summary", handler: Handler::App, category: CommandCategory::Runs },
     SlashSpec { name: "workflows", args: "", help: "The workflow view (Ctrl+T). Its Library tab shows, copies, and diffs workflow files", handler: Handler::Ui, category: CommandCategory::Runs },
-    SlashSpec { name: "context", args: "[all] [print|pin]", help: "Each session's context, cap, calls, and spend", handler: Handler::App, category: CommandCategory::Runs },
+    SlashSpec { name: "context", args: "[all] [print|pin]", help: "What fills the main session's context, and the crew's (all expands every list)", handler: Handler::App, category: CommandCategory::Runs },
     SlashSpec { name: "rewind", args: "[task]", help: "Go back to a checkpoint", handler: Handler::App, category: CommandCategory::Runs },
     SlashSpec { name: "reassign", args: "<task> <agent>", help: "Move a task to another agent", handler: Handler::App, category: CommandCategory::Runs },
     SlashSpec { name: "stop", args: "[run]", help: "Stop a run. Its work is committed", handler: Handler::App, category: CommandCategory::Runs },
@@ -755,6 +763,7 @@ fn parse_slash(name: &str, args: &str) -> Result<SlashCommand, InputError> {
             task: text_arg("a task")?,
         }),
         "follow-up" => parse_follow_up(name, args),
+        "issue" => issue::parse_issue(name, args),
         "status" => mods::parse_status(name, args),
         "workflows" => no_args(SlashCommand::Workflows),
         "context" => mods::parse_context(name, args),
@@ -1625,7 +1634,7 @@ mod tests {
                 spec.name
             );
         }
-        assert_eq!(SLASH_COMMANDS.len(), 46);
+        assert_eq!(SLASH_COMMANDS.len(), 47);
         let mut names: Vec<&str> = SLASH_COMMANDS.iter().map(|spec| spec.name).collect();
         names.sort_unstable();
         names.dedup();
@@ -1650,7 +1659,7 @@ mod tests {
             groups,
             [
                 ("Session", vec!["clear", "resume", "artifacts", "exit"]),
-                ("Work", vec!["ask", "captain", "crew", "follow-up"]),
+                ("Work", vec!["ask", "captain", "crew", "follow-up", "issue"]),
                 (
                     "Runs",
                     vec![

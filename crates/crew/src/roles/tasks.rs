@@ -458,8 +458,8 @@ impl TaskRoles {
         reviewers_for(&self.reviewers, self.other_provider, worker, provider)
     }
 
-    /// Why `worker` can't own a task, in plain words with names, such as "Antigravity CLI is
-    /// the only reviewer you allowed, so Antigravity CLI can't own a task".
+    /// Why `worker` can't own a task, in plain words with names, such as "agy is
+    /// the only reviewer you allowed, so agy can't own a task".
     pub fn why_not_worker(&self, worker: &ModelRef) -> String {
         if let Some((_, why)) = self.left_out.iter().find(|(left, _)| left == worker) {
             return why.clone();

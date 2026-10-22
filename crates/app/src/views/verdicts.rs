@@ -10,11 +10,14 @@ use argonauts_core::events::session::EndReason;
 use argonauts_core::events::task::{ReviewEvent, TaskEvent, TaskState, TryCause};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::sanitize::sanitize_for_terminal;
 use argonauts_core::session_runner::Access;
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::judgment::{ReviewOutput, ReviewVerdict};
 use argonauts_core::steps::plan::Severity;
-use argonauts_core::views::{EarlierFindings, Finding, Findings, ReviewGiven, RowNote, Tone};
+use argonauts_core::views::{
+    EarlierFindings, EarlierVerdict, Finding, Findings, ReviewGiven, RowNote, Tone,
+};
 use argonauts_crew::claude_codes::review_of;
 use argonauts_crew::merge::merger::COMMIT_MESSAGE;
 use serde_json::Value;
@@ -26,6 +29,7 @@ use super::sessions::{RunFacts, SessionFacts};
 struct Reviewed {
     task: Option<TaskId>,
     session: Option<SessionKey>,
+    reviewer: ModelRef,
     round: u32,
     at: OffsetDateTime,
     review: ReviewOutput,
@@ -70,10 +74,19 @@ impl Verdicts {
                 (RunEventKind::Run(RunLifecycle::Started(started)), _) => {
                     verdicts.council = started.workflow == COUNCIL;
                 }
-                (RunEventKind::Review(ReviewEvent::Reviewed { round, review, .. }), task) => {
+                (
+                    RunEventKind::Review(ReviewEvent::Reviewed {
+                        reviewer,
+                        round,
+                        review,
+                        ..
+                    }),
+                    task,
+                ) => {
                     verdicts.reviews.push(Reviewed {
                         task: task.clone(),
                         session: event.session.clone(),
+                        reviewer: reviewer.clone(),
                         round: *round,
                         at: event.ts,
                         review: review.clone(),
@@ -137,15 +150,19 @@ impl Verdicts {
         }
         let asked = matches!(session.started.role, RoleName::Reviewer | RoleName::Judge)
             && session.task.is_none();
+        // A script asks its reviews of read-only agents with no task, which answer the same way.
+        let asked_by_script = session.started.role == RoleName::Worker
+            && session.started.access == Access::ReadOnly
+            && session.task.is_none();
         let answer = session.ended.as_ref()?.structured.as_ref()?;
         // Only an answer with a yes or no is a verdict: a judge that decides answers with a plan.
         let verdict = answer.get("accept").is_some_and(Value::is_boolean);
-        (asked && verdict).then(|| review_of(answer))
+        ((asked || asked_by_script) && verdict).then(|| review_of(answer))
     }
 
     /// What one of a council's agents gave, by its answer: the proposal a judge chose, what a
     /// challenge argued against, or a proposal. A judge's choice reads so in any workflow.
-    fn gave(&self, session: &SessionFacts) -> Option<RowNote> {
+    pub(crate) fn gave(&self, session: &SessionFacts) -> Option<RowNote> {
         let end = session.ended.as_ref()?;
         if end.reason != EndReason::Completed {
             return None;
@@ -169,13 +186,11 @@ impl Verdicts {
         if !proposes {
             return None;
         }
-        let against: Vec<&str> = answer
-            .and_then(|answer| answer.get("against")?.as_array())
-            .map(|names| names.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
-        if against.is_empty() {
+        // A challenge names what it argues against, none at all among them; a proposal doesn't.
+        let Some(against) = answer.and_then(|answer| answer.get("against")?.as_array()) else {
             return Some(RowNote::new("proposal ready", Tone::Good));
-        }
+        };
+        let against: Vec<&str> = against.iter().filter_map(Value::as_str).collect();
         let points = answer
             .and_then(|answer| answer.get("points")?.as_array())
             .map_or(0, Vec::len);
@@ -183,8 +198,13 @@ impl Verdicts {
             1 => "1 point".to_owned(),
             points => format!("{points} points"),
         };
+        let named = if against.is_empty() {
+            "none".to_owned()
+        } else {
+            and_list(&against)
+        };
         Some(RowNote::new(
-            format!("against {} · {points}", and_list(&against)),
+            format!("against {named} · {points}"),
             Tone::Plain,
         ))
     }
@@ -219,6 +239,13 @@ impl Verdicts {
     pub(crate) fn note(&self, facts: &RunFacts, session: &SessionFacts) -> Option<RowNote> {
         if let Some(end) = &session.ended {
             match end.reason {
+                // A run that ended after it cut the session short stopped with it.
+                EndReason::Paused if facts.finished_at.is_some() => {
+                    return Some(RowNote::new(
+                        "stopped with the run · work so far kept",
+                        Tone::Warn,
+                    ));
+                }
                 EndReason::Paused => return Some(cut_short(facts.held.as_ref(), &session.worker)),
                 EndReason::Stopped => return Some(RowNote::new("stopped", Tone::Plain)),
                 _ => {}
@@ -348,33 +375,47 @@ impl Verdicts {
         self.merged.contains(task)
     }
 
-    /// For a reviewer or the judge, the latest earlier review of the same work that sent it
-    /// back, whose findings come with the change it is given.
+    /// For a reviewer, the latest earlier review of the same work that sent it back, whose
+    /// findings come with the change it is given. A judge weighs the work with the latest
+    /// review of its task, whatever that review said. `task` is the one the session works on,
+    /// which for a session a CLI's workflow asked for is that workflow's.
     pub(crate) fn earlier(
         &self,
         facts: &RunFacts,
         session: &SessionFacts,
+        task: Option<&TaskId>,
     ) -> Option<EarlierFindings> {
-        if !matches!(session.started.role, RoleName::Reviewer | RoleName::Judge) {
-            return None;
-        }
-        let sent_back = self.reviews.iter().rev().find(|review| {
-            review.task == session.task
+        let any_verdict = match session.started.role {
+            RoleName::Judge => task.is_some(),
+            RoleName::Reviewer => false,
+            _ => return None,
+        };
+        let latest = self.reviews.iter().rev().find(|review| {
+            review.task.as_ref() == task
                 && review.at <= session.started_at
                 && review.session.as_ref() != Some(&session.key)
-                && review.review.verdict == ReviewVerdict::RequestChanges
+                && (any_verdict || review.review.verdict == ReviewVerdict::RequestChanges)
         })?;
-        let from = sent_back
-            .session
-            .as_ref()
-            .and_then(|key| facts.session(key))
-            .map_or_else(|| "its review".to_owned(), SessionFacts::label);
+        let reviewer = latest.session.as_ref().and_then(|key| facts.session(key));
+        let from = reviewer.map_or_else(|| "its review".to_owned(), SessionFacts::label);
+        // A review a judge is given may have found nothing, so what it said comes with it.
+        let verdict = any_verdict.then(|| {
+            let (said, tone) = verdict_words(latest.review.verdict);
+            let summary = sanitize_for_terminal(latest.review.summary.trim());
+            EarlierVerdict {
+                said: said.to_owned(),
+                tone,
+                by: reviewer.map_or_else(|| latest.reviewer.clone(), |by| by.worker.clone()),
+                summary: (!summary.is_empty()).then_some(summary),
+            }
+        });
         Some(EarlierFindings {
             from,
-            round: sent_back.round,
+            round: latest.round,
             answered_by: None,
-            items: findings(&sent_back.review),
+            items: findings(&latest.review),
             answers: Vec::new(),
+            verdict,
         })
     }
 

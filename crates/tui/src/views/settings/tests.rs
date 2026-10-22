@@ -29,6 +29,7 @@ fn row(key: &str, value: &str, layer: &str, allowed: &[&str]) -> SettingRow {
         safety: false,
         allowed: allowed.iter().map(|value| (*value).to_owned()).collect(),
         description: format!("Sets {key}"),
+        picked: None,
     }
 }
 

@@ -18,8 +18,8 @@ use argonauts_core::journal::JournalError;
 use argonauts_core::limits::{
     AgentHealth, Candidate, CandidateQuery, CheckRequest, CheckRunner, CostEstimate, FallbackNote,
     FallbackPlanner, HealthBoard, HealthSignal, HealthState, LimitsService, ModelHealth,
-    ModelState, PlanUsageBoard, PlanUsageReading, PlanWindows, RecoveryAction, StopContext,
-    TrackRecord, TrackRecords, Trouble, WorkSoFar,
+    ModelState, NetState, PlanUsageBoard, PlanUsageReading, PlanWindows, RecoveryAction,
+    StopContext, TrackRecord, TrackRecords, Trouble, WorkSoFar,
 };
 use argonauts_core::names::{AgentId, ModelRef, RoleName, SessionKey};
 use argonauts_core::policy::{
@@ -35,7 +35,7 @@ use argonauts_core::steps::SchemaStepRunner;
 use argonauts_core::{DiffStat, ErrorCategory, RepoId, RunId, TaskId};
 use time::OffsetDateTime;
 use time::macros::datetime;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::runner::FakeDirectory;
@@ -68,6 +68,7 @@ impl Default for FakeServices {
 
 impl FakeServices {
     pub fn new() -> Self {
+        argonauts_conductor::network::turn_off_in_this_process();
         Self {
             workers: Arc::new(FakeDirectory::new()),
             steps: Arc::new(SchemaStepRunner),
@@ -597,11 +598,12 @@ impl PlanUsageBoard for MemoryPlanUsageBoard {
 /// Health in memory, with a breaker simple enough to predict. Two overload or server errors in
 /// a row take the model they came from out, and two models out take their agent down. Three
 /// network errors in a row put an agent down as well. A success or a passing test task brings
-/// either back. Every change is broadcast.
+/// either back. Every change is broadcast. The internet is up until a test says otherwise.
 pub struct MemoryHealthBoard {
     states: Mutex<BTreeMap<AgentId, (AgentHealth, u32)>>,
     models: Mutex<BTreeMap<ModelRef, (ModelHealth, u32)>>,
     events: broadcast::Sender<AgentStatusEvent>,
+    network: watch::Sender<NetState>,
 }
 
 impl Default for MemoryHealthBoard {
@@ -611,6 +613,7 @@ impl Default for MemoryHealthBoard {
             states: Mutex::new(BTreeMap::new()),
             models: Mutex::new(BTreeMap::new()),
             events,
+            network: watch::Sender::new(NetState::Up),
         }
     }
 }
@@ -645,6 +648,11 @@ impl MemoryHealthBoard {
         };
         lock(&self.models).insert(model.clone(), (health.clone(), 0));
         let _ = self.events.send(AgentStatusEvent::Model(health));
+    }
+
+    /// Says the internet went or came back, and tells everyone waiting on it.
+    pub fn set_network(&self, state: NetState) {
+        self.network.send_replace(state);
     }
 
     fn healthy(agent_id: &AgentId) -> AgentHealth {
@@ -795,6 +803,14 @@ impl HealthBoard for MemoryHealthBoard {
             .map(|(health, _)| health.clone())
             .filter(|health| &health.model.agent_id() == agent_id)
             .collect()
+    }
+
+    fn network(&self) -> NetState {
+        *self.network.borrow()
+    }
+
+    fn network_changes(&self) -> watch::Receiver<NetState> {
+        self.network.subscribe()
     }
 }
 

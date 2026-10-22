@@ -12,7 +12,7 @@ use ratatui::text::Line;
 
 use super::Ui;
 use crate::cell::{HistoryCell, MARK_COL, MARK_MIN_WIDTH, SessionHeader};
-use crate::mascot::{FRAMES, Graphics, Look, Mascot, ROWS, Sent, WIDTH};
+use crate::mascot::{Graphics, Look, Mascot, ROWS, Sent, WIDTH};
 use crate::render::{Clock, RenderCtx};
 use crate::theme::{Brightness, MascotDrawing, Theme};
 
@@ -36,8 +36,8 @@ pub(super) struct HeaderMascot {
     /// The frame the block cells show.
     frame: usize,
     next_id: u32,
-    /// Where the full screen shows the picture, and which frame.
-    placed: Option<(Position, usize)>,
+    /// Where the full screen shows the picture, and which of its pictures.
+    placed: Option<(Position, u32)>,
     /// The full screen was given away, as to a program you ran, and the terminal may have let
     /// its pictures go, so they go out again on its next frame.
     resend: bool,
@@ -96,6 +96,11 @@ impl<W: Write> Ui<W> {
         }
     }
 
+    /// How the terminal takes pictures and the pixels a cell, when it takes them.
+    pub(super) fn picture_terminal(&self) -> Option<(Graphics, (u16, u16))> {
+        self.mascot.graphics.zip(self.mascot.cell)
+    }
+
     /// Tells the header whether a picture takes its mascot's cells, from `ui.mascot` and the
     /// terminal.
     pub(super) fn fit_mascot_to_theme(&mut self) {
@@ -117,10 +122,14 @@ impl<W: Write> Ui<W> {
     }
 
     fn show_mascot(&mut self, now: Instant, printed: bool) {
-        let Some(header) = self.model.history.header() else {
-            return;
+        let (mascot, look) = match self.model.history.header() {
+            Some(header) => header.mascot(self.theme.brightness == Brightness::Light),
+            // Before the header prints, the greeting's argonaut takes its place.
+            None if self.model.history.greets_with_a_picture() => {
+                (Mascot::Argonaut, Look::new(None, false))
+            }
+            None => return,
         };
-        let (mascot, look) = header.mascot(self.theme.brightness == Brightness::Light);
         let same = self
             .mascot
             .shown
@@ -222,7 +231,7 @@ impl<W: Write> Ui<W> {
             return None;
         }
         let clock = Clock::new(since, now);
-        let frame = clock.frame(mascot.frame_time(), FRAMES);
+        let frame = clock.frame(mascot.frame_time(), mascot.frames());
         Some((mascot, frame, clock.next_frame_at(mascot.frame_time())))
     }
 
@@ -273,13 +282,15 @@ impl<W: Write> Ui<W> {
             return (!escapes.is_empty()).then_some((None, escapes));
         };
         let frame = if sent.look.is_ultra() { frame } else { 0 };
-        let wanted = at.map(|at| (at, frame));
+        // Keyed by the picture due, not the clock's frame: frames that look alike place nothing
+        // again, so iTerm2 gets at most its 18 a cycle and kitty's protocol keeps a still part.
+        let wanted = at.map(|at| (at, sent.due_picture(frame)));
         if wanted == self.mascot.placed {
             return (!escapes.is_empty()).then_some((None, escapes));
         }
         let was = self.mascot.placed.take();
         escapes.extend(match (sent.graphics, wanted) {
-            (_, Some((_, frame))) => sent.place(frame).unwrap_or_default(),
+            (_, Some(_)) => sent.place(frame).unwrap_or_default(),
             (Graphics::Kitty, None) => sent.hide(),
             (Graphics::Iterm, None) => Vec::new(),
         });

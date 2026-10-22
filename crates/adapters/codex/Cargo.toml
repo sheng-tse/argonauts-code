@@ -5,7 +5,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# What the crate builds with: build.rs reads the versions the recordings stand for from
+# their .meta.json files. Tests and the recordings themselves stay in the repository.
+include = ["/build.rs", "/fixtures/*.meta.json", "/src/**/*.rs", "/LICENSE", "/NOTICE"]
 
 [dependencies]
 anyhow.workspace = true

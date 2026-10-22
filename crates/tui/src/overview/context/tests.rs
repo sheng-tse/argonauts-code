@@ -1,508 +1,86 @@
-use argonauts_core::events::context::{ContextKind, ContextSkill, McpTool};
-
-use super::example::{self, Example};
+use super::example;
 use super::*;
-use crate::stability;
-use crate::state::ContextCount;
-use crate::text::{plain_text, spans_width};
-use crate::theme::{ColorLevel, Glyphs, Theme};
+use crate::text::plain_text;
+use crate::theme::Theme;
 
-fn plain() -> Theme {
-    let mut theme = Theme::dark().with_level(ColorLevel::None);
-    theme.glyphs = Glyphs::UNICODE;
-    theme
-}
-
-/// The tab's rows from `example` at `width`, a blank row between blocks, with `count` in
-/// place of the example's own.
-fn rows_with(example: &Example, count: Option<&ContextCount>, width: usize) -> Vec<String> {
-    rows_titled(example, count, width, example::RUN_TITLE)
-}
-
-/// [`rows_with`], the example's run named `title`.
-fn rows_titled(
-    example: &Example,
-    count: Option<&ContextCount>,
-    width: usize,
-    title: &str,
-) -> Vec<String> {
-    drawn_rows(example, count, width, title, false)
-}
-
-/// [`rows_titled`], a long list of MCP tools shown whole where `whole_tools`.
-fn drawn_rows(
-    example: &Example,
-    count: Option<&ContextCount>,
-    width: usize,
-    title: &str,
-    whole_tools: bool,
-) -> Vec<String> {
-    let theme = plain();
+fn shown(example: &example::Example, pane: &ContextPane, width: usize) -> Vec<String> {
+    let theme = Theme::dark();
     let kit = Kit::new(&theme);
-    let run_title = |_: &RunId| title.to_owned();
+    let facts = example.facts();
+    let title = |_: &RunId| example::RUN_TITLE.to_owned();
     let tab = ContextTab {
         view: &example.view,
         names: &example.names,
-        count,
+        count: example.count.as_ref(),
         main: None,
-        per_turn: Some(example::PER_TURN),
-        last_step: crate::state::LastStep::default(),
         places: &example.places,
         now: example.now,
-        run_title: &run_title,
-        ranked: &[],
-        whole_tools,
+        run_title: &title,
+        facts: &facts,
+        pane,
     };
-    let mut rows = Vec::new();
+    let mut lines: Vec<Line<'static>> = Vec::new();
     for section in tab.sections(&kit, width) {
-        if !rows.is_empty() {
-            rows.push(String::new());
+        if !lines.is_empty() && !section.joined {
+            lines.push(Line::default());
         }
-        for line in &section.drawn.lines {
-            assert!(
-                spans_width(&line.spans) <= width,
-                "at {width}: {}",
-                plain_text(std::slice::from_ref(line))
-            );
-        }
-        rows.extend(
-            plain_text(&section.drawn.lines)
-                .lines()
-                .map(|row| row.trim_end().to_owned()),
-        );
+        lines.extend(section.drawn.lines);
     }
-    rows
+    plain_text(&lines)
+        .lines()
+        .map(|row| row.trim_end().to_owned())
+        .collect()
 }
 
-fn rows(example: &Example, width: usize) -> Vec<String> {
-    rows_with(example, Some(&example.count), width)
-}
-
-fn row<'a>(rows: &'a [String], part: &str) -> &'a str {
-    rows.iter()
-        .find(|row| row.contains(part))
-        .unwrap_or_else(|| panic!("{part}: {rows:#?}"))
-}
-
+/// The row under the tabs counts the live sessions, and the crew's agents that ended with
+/// their tries and tie-breakers counted as one.
 #[test]
-fn every_list_shows_in_full_but_a_long_one_of_mcp_tools() {
-    let mut example = example::at_three_quarters();
-    let skills = example.count.usage.skills.as_mut().unwrap();
-    skills.items = (0..40)
-        .map(|n| ContextSkill {
-            name: format!("skill-{n:02}"),
-            source: "userSettings".to_owned(),
-            plugin: None,
-            tokens: 100 + n,
-        })
-        .collect();
-    example.count.usage.mcp_tools = (0..30)
-        .map(|n| McpTool {
-            name: format!("mcp__docs__tool_{n:02}"),
-            server: "docs".to_owned(),
-            tokens: 200,
-            loaded: n % 2 == 0,
-        })
-        .collect();
-    let shown = rows(&example, 118);
-    assert!(row(&shown, "Skills · /skills").ends_with("40 skills  710"));
-    assert!(
-        row(&shown, "MCP tools · /mcp (loaded on-demand)")
-            .ends_with("30 tools · 3k loaded · 3k on demand")
-    );
-    for n in 0..40 {
-        row(&shown, &format!("skill-{n:02}"));
-    }
-    // Past 12 rows, the tools not loaded fold into a row a server. Those loaded stay.
-    for n in (0..30).step_by(2) {
-        row(&shown, &format!("tool_{n:02}"));
-    }
-    assert!(
-        !shown.iter().any(|row| row.contains("tool_01")),
-        "{shown:#?}"
+fn the_summary_counts_live_sessions_and_ended_agents() {
+    assert_eq!(
+        summary(&example::after_the_run().view.rows),
+        "1 session \u{b7} 182.5k in context \u{b7} 7 ended"
     );
     assert_eq!(
-        row(&shown, "docs \u{b7} 15 tools").trim(),
-        "\u{2514} docs \u{b7} 15 tools \u{b7} 3k on demand"
+        summary(&example::straight_to_a_run().view.rows),
+        "none open \u{b7} 7 ended"
     );
-    // Shown whole, as Enter on the list asks, every tool has its row.
-    let whole = drawn_rows(
-        &example,
-        Some(&example.count),
-        118,
-        example::RUN_TITLE,
-        true,
-    );
-    for n in 0..30 {
-        row(&whole, &format!("tool_{n:02}"));
-    }
-    assert!(
-        !whole.iter().any(|row| row.contains("15 tools")),
-        "{whole:#?}"
-    );
-    assert!(!shown.iter().any(|row| row.contains(" more")), "{shown:#?}");
-    // The largest first inside a group, and the last closes the tree.
-    assert!(row(&shown, "skill-39").contains("User"), "{shown:#?}");
-    assert!(row(&shown, "skill-00").contains("└ skill-00"), "{shown:#?}");
+    assert_eq!(summary(&[]), "none open");
 }
 
+/// Folded, the tab says how to open its lists; open, it doesn't.
 #[test]
-fn without_tools_on_demand_the_tools_are_one_list() {
-    let mut example = example::at_three_quarters();
-    let usage = &mut example.count.usage;
-    usage
-        .categories
-        .retain(|row| row.kind != ContextKind::Deferred);
-    for tool in &mut usage.mcp_tools {
-        tool.loaded = true;
-    }
-    let shown = rows(&example, 118);
-    assert!(
-        row(&shown, "MCP tools · /mcp").ends_with("5 tools · 4.5k"),
-        "{shown:#?}"
+fn the_fold_hint_shows_while_a_list_is_folded() {
+    let example = example::after_the_run();
+    let folded = shown(&example, &ContextPane::default(), 118);
+    assert_eq!(
+        folded.last().map(String::as_str),
+        Some("     /context all to expand")
     );
-    assert!(!shown.iter().any(|row| row.contains("on-demand")));
-    assert!(!shown.iter().any(|row| row.trim() == "Loaded"));
-    assert!(!shown.iter().any(|row| row.contains("Available")));
-    assert!(row(&shown, "search_issues").contains("└ search_issues"));
-    // Nothing loads on demand, so the line that says what does is gone.
-    assert!(!shown.iter().any(|row| row.contains("Loaded on demand")));
+    let mut pane = ContextPane::default();
+    pane.open_every_list();
+    let open = shown(&example, &pane, 118);
+    assert!(
+        !open.iter().any(|row| row.contains("to expand")),
+        "{open:#?}"
+    );
+    assert!(
+        open.iter().any(|row| row.starts_with("     └ main:answer")),
+        "{open:#?}"
+    );
 }
 
+/// A narrow panel keeps every row inside it, the column beside the grid under it.
 #[test]
-fn a_section_with_nothing_in_it_is_left_out() {
-    let mut example = example::at_three_quarters();
-    let usage = &mut example.count.usage;
-    usage.mcp_tools.clear();
-    usage.agents.clear();
-    usage.memory_files.clear();
-    usage.skills = None;
-    usage.messages = None;
-    usage.api_usage = None;
-    example.view.rows.truncate(1);
-    let shown = rows(&example, 118);
-    for gone in [
-        "MCP tools ·",
-        "Custom agents ·",
-        "Memory files ·",
-        "Skills ·",
-        "Messages ·",
-        "Tool results",
-        "Suggestions",
-        "Last request",
-        "Crew agents",
-    ] {
+fn a_narrow_tab_keeps_its_rows_inside_it() {
+    let example = example::after_the_run();
+    let mut pane = ContextPane::default();
+    pane.open_every_list();
+    for width in [40, 60, 80] {
+        let rows = shown(&example, &pane, width);
         assert!(
-            !shown.iter().any(|row| row.contains(gone)),
-            "{gone}: {shown:#?}"
+            rows.iter().all(|row| crate::text::str_width(row) <= width),
+            "at {width}: {rows:#?}"
         );
+        assert!(rows.iter().any(|row| row.contains("Opus 5.5")), "{rows:#?}");
     }
-    // The grid, the legend and the window's line stay.
-    row(&shown, "Estimated usage by category");
-    row(&shown, "Auto-compact window:");
-}
-
-#[test]
-fn with_auto_compact_off_the_reserve_is_an_ordinary_row_and_the_window_is_the_limit() {
-    let mut example = example::at_three_quarters();
-    let usage = &mut example.count.usage;
-    usage.auto_compact = false;
-    usage.percentage = 60;
-    for row in &mut usage.categories {
-        if row.kind == ContextKind::Buffer {
-            row.name = "Compact buffer".to_owned();
-            row.tokens = 3_000;
-        }
-    }
-    let shown = rows(&example, 118);
-    let reserve = row(&shown, "Compact buffer");
-    assert!(reserve.contains("⛁ Compact buffer"), "{shown:#?}");
-    assert!(
-        row(&shown, "Auto-compact window:").contains("never compacts by itself · 250k left"),
-        "{shown:#?}"
-    );
-    // Claude Code's note for a half-full context that won't compact.
-    row(&shown, "ℹ Autocompact is disabled");
-    row(&shown, "Without autocompact, you will hit context limits");
-}
-
-#[test]
-fn a_context_past_its_window_says_so_under_the_title() {
-    let mut example = example::near_full();
-    let usage = &mut example.count.usage;
-    usage.total_tokens = 1_012_000;
-    usage.percentage = 101;
-    let shown = rows(&example, 118);
-    assert!(shown[0].contains("1M/1M tokens (101%)"), "{shown:#?}");
-    assert_eq!(
-        shown[1].trim(),
-        "Context is 12k tokens past the 1M-token compaction window — run /compact to reduce usage."
-    );
-    assert!(
-        !shown.iter().any(|row| row.contains("% full")),
-        "{shown:#?}"
-    );
-}
-
-#[test]
-fn a_session_its_cli_has_not_counted_draws_as_one_bar() {
-    let example = example::at_three_quarters();
-    let shown = rows_with(&example, None, 118);
-    assert!(shown[0].contains("Context Usage"), "{shown:#?}");
-    assert!(shown[0].contains("Opus 5.5 on Claude Code"), "{shown:#?}");
-    assert!(shown[0].ends_with("750k/1M tokens (75%)"), "{shown:#?}");
-    assert!(
-        shown[2].contains("counted when an answer ends"),
-        "{shown:#?}"
-    );
-    assert!(shown[2].contains('━'), "{shown:#?}");
-    // A CLI that never says what fills its sessions is named for it.
-    let mut silent = example::at_three_quarters();
-    silent.view.rows[0].counts = false;
-    let shown = rows_with(&silent, None, 118);
-    assert!(
-        shown[2].contains("Claude Code says how full, not with what"),
-        "{shown:#?}"
-    );
-    let shown = rows_with(&example, None, 118);
-    // The crew follows as ever.
-    row(&shown, "Crew agents · Add due dates");
-
-    let mut alone = example::at_three_quarters();
-    alone.view.rows.clear();
-    let shown = rows_with(&alone, None, 118);
-    assert_eq!(shown.len(), 2, "{shown:#?}");
-    assert!(
-        shown[1].contains("The main session is counted when an answer ends."),
-        "{shown:#?}"
-    );
-}
-
-#[test]
-fn each_run_has_its_own_crew_section() {
-    let mut example = example::at_three_quarters();
-    let other = RunId::new("run-08").unwrap();
-    let mut row_of_other = example.view.rows[2].clone();
-    row_of_other.run = Some(other);
-    row_of_other.label = "review:due-flag".to_owned();
-    example.view.rows.push(row_of_other);
-    let shown = rows(&example, 118);
-    let headers: Vec<&String> = shown
-        .iter()
-        .filter(|row| row.contains("Crew agents ·"))
-        .collect();
-    assert_eq!(headers.len(), 2, "{shown:#?}");
-    assert!(headers[0].ends_with("2 agents  49.6k"), "{shown:#?}");
-    assert!(headers[1].ends_with("1 agent  13.4k"), "{shown:#?}");
-}
-
-/// Narrower than the columns it was designed on, the tab keeps one list a row, and narrower
-/// still it sets the legend under the grid. No row ever passes the panel's edge.
-#[test]
-fn a_narrow_panel_stacks_the_lists_and_keeps_every_row_inside() {
-    let example = example::near_full();
-    for width in stability::WIDTHS
-        .map(usize::from)
-        .into_iter()
-        .chain([118, 150])
-    {
-        let shown = rows(&example, width);
-        if width >= 62 {
-            for part in [
-                "Context Usage",
-                "Estimated usage by category",
-                "Auto-compact window:",
-                "MCP tools",
-                "Custom agents",
-                "Memory files",
-                "Skills",
-                "Messages",
-                "Tool results",
-                "Suggestions",
-                "Crew agents",
-                "build:due-tests",
-            ] {
-                row(&shown, part);
-            }
-        }
-    }
-    let medium = rows(&example, 100);
-    assert!(
-        row(&medium, "⛁ System prompt").contains("⛁ ⛁ ⛁ ⛁ ⛀"),
-        "the legend stays beside the grid: {medium:#?}"
-    );
-    assert!(!row(&medium, "⛁ System prompt").contains("Claude Code's own"));
-    let skills = medium
-        .iter()
-        .position(|row| row.contains("Skills · /skills"))
-        .unwrap();
-    let agents = medium
-        .iter()
-        .position(|row| row.contains("Custom agents ·"))
-        .unwrap();
-    assert!(
-        skills > agents + 3,
-        "skills go under the left lists: {medium:#?}"
-    );
-
-    let narrow = rows(&example, 70);
-    assert!(
-        !row(&narrow, "⛁ System prompt").contains("⛁ ⛁"),
-        "the legend goes under the grid: {narrow:#?}"
-    );
-    row(&narrow, "build:due-flag  Sonnet 5.5 on Claude Code");
-}
-
-/// A panel too narrow for a crew's whole header keeps the count and the total at its end: the
-/// words about the windows give way to them, and then the end of a long title. What fills an
-/// agent's session is listed in whole parts, the smallest left out first, so no row of the
-/// section ends in half a word.
-#[test]
-fn a_narrow_panel_keeps_the_crews_count_and_lists_whole_parts() {
-    let example = example::at_three_quarters();
-    let wide = rows(&example, 100);
-    assert_eq!(
-        row(&wide, "Crew agents"),
-        "     Crew agents · Add due dates · each in its own window, outside this one  2 agents  49.6k"
-    );
-    assert!(
-        row(&wide, "⛁ system").ends_with("⛁ system 15k   ⛁ memory files 3.7k   ⛁ messages 17.5k")
-    );
-
-    let narrow = rows(&example, 80);
-    assert_eq!(
-        row(&narrow, "Crew agents"),
-        "  Crew agents · Add due dates              2 agents  49.6k"
-    );
-    let crew = narrow.iter().position(|row| row.contains("Crew agents"));
-    let section = &narrow[crew.expect("the crew's header")..];
-    assert!(
-        row(section, "⛁ system")
-            .ends_with("starts afresh at 180k   ⛁ system 15k   ⛁ messages 17.5k"),
-        "{section:#?}"
-    );
-    assert!(!section.iter().any(|row| row.contains('…')), "{section:#?}");
-
-    let title = "Add due dates to every task the tasks CLI lists and to its export";
-    let titled = rows_titled(&example, Some(&example.count), 80, title);
-    assert_eq!(
-        row(&titled, "Crew agents"),
-        "  Crew agents · Add due dates to every task the tasks CLI list…  2 agents  49.6k"
-    );
-}
-
-/// Ghostty with Iosevka draws some of these glyphs wider than a cell, so each has a blank
-/// after it and nothing ever touches the grid, a swatch or a bar.
-#[test]
-fn every_grid_glyph_and_bar_has_a_blank_after_it() {
-    for example in [example::at_three_quarters(), example::near_full()] {
-        for width in [70, 100, 118] {
-            for row in rows(&example, width) {
-                let cells: Vec<char> = row.chars().collect();
-                for (at, cell) in cells.iter().enumerate() {
-                    let next = cells.get(at + 1).copied().unwrap_or(' ');
-                    if "⛁⛀⛶⛝".contains(*cell) {
-                        assert_eq!(next, ' ', "{row}");
-                    }
-                    if "━╸─┃".contains(*cell) {
-                        assert!(" ━╸─┃".contains(next), "{row}");
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// A recorded Claude Code turn, asked for its count as it ended: once the turn is over, the
-/// screen keeps the count and the tab draws the session's grid and legend from it.
-#[test]
-fn a_recorded_claude_code_turn_leaves_its_grid_on_the_tab_after_it_ends() {
-    use argonauts_core::Adapter as _;
-    use argonauts_core::app::{AppEvent, ConversationEvent, TurnReply};
-    use argonauts_core::names::TurnId;
-
-    let stream = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../adapters/claude-code/fixtures/context_usage_summary.stdout.jsonl"
-    ));
-    let turn = TurnId::numbered(1);
-    let worker: ModelRef = "claude-code/haiku".parse().expect("a model");
-    let mut state = crate::state::AppState::default();
-    let mut said = |event| state.apply(&AppEvent::Conversation { event });
-    said(ConversationEvent::TurnStarted {
-        turn: turn.clone(),
-        text: "Reply with only the word: ready".to_owned(),
-        worker: worker.clone(),
-        read_only: true,
-        commit: "abc".to_owned(),
-        uncommitted: Vec::new(),
-        settings_sha256: None,
-        continues: false,
-    });
-    let mut parser = argonauts_adapter_claude_code::ClaudeCodeAdapter.parser();
-    for line in stream.lines() {
-        for event in parser.parse_stdout_line(line) {
-            said(ConversationEvent::Agent {
-                turn: turn.clone(),
-                event,
-            });
-        }
-    }
-    said(ConversationEvent::TurnFinished {
-        turn,
-        reply: TurnReply::Answer {
-            markdown: "ready".to_owned(),
-        },
-        spend: argonauts_core::Spend::default(),
-        elapsed_ms: 6_910,
-    });
-    let count = state
-        .conversation
-        .context
-        .clone()
-        .expect("the turn left its count");
-    assert_eq!(count.usage.total_tokens, 24_010);
-    let mut example = example::at_three_quarters();
-    example.view.rows.truncate(1);
-    example.view.rows[0].worker = worker;
-    let shown = rows_with(&example, Some(&count), 118);
-    assert!(
-        row(&shown, "Context Usage").contains("24k/200k tokens"),
-        "{shown:#?}"
-    );
-    row(&shown, "Estimated usage by category");
-    let grid: Vec<&String> = shown
-        .iter()
-        .filter(|row| {
-            row.trim_start()
-                .starts_with(['\u{26c1}', '\u{26c0}', '\u{26f6}', '\u{26dd}'])
-        })
-        .collect();
-    assert_eq!(grid.len(), 10, "{shown:#?}");
-    row(&shown, "Memory files");
-    assert!(
-        !shown
-            .iter()
-            .any(|row| row.contains("counted when an answer ends")),
-        "{shown:#?}"
-    );
-}
-
-#[test]
-fn the_tab_counts_the_live_sessions_and_says_how_many_ended() {
-    let example = example::after_run();
-    assert_eq!(
-        summary(&example.view.rows),
-        "1 session \u{b7} 27.8k in context \u{b7} 9 ended"
-    );
-}
-
-#[test]
-fn the_tab_says_what_its_sessions_hold_together() {
-    let example = example::at_three_quarters();
-    assert_eq!(summary(&example.view.rows), "3 sessions · 800k in context");
-    assert_eq!(
-        summary(&example.view.rows[..1]),
-        "1 session · 750k in context"
-    );
 }

@@ -319,6 +319,33 @@ async fn fullscreen_keeps_the_alternate_screen_through_views_and_handovers() {
     assert!(rows[1..].iter().all(String::is_empty), "{rows:#?}");
 }
 
+/// The first start's greeting prints before anything the app sends, so it stands on top.
+#[tokio::test]
+async fn the_greeting_prints_first() {
+    let (script, io, terminal, keys) = session();
+    let mut options = inline();
+    options.greeting = Some(crate::welcome::Greeting {
+        version: "0.1.0".to_owned(),
+        usage: Some(("Reports go · stop them".to_owned(), "stop them".to_owned())),
+        picture: false,
+    });
+    let run = run_with(io, options, terminal, keys);
+    let drive = async {
+        script.settle().await;
+        let rows = script.screen.rows();
+        let first = rows.iter().position(|row| !row.is_empty()).unwrap();
+        assert!(rows[first].starts_with("  ▗███▖▐▀▖ ▄▀▀▄"), "{rows:#?}");
+        assert_eq!(
+            rows[first + 4],
+            format!("  {}   v0.1.0", crate::welcome::TAGLINE)
+        );
+        assert_eq!(rows[first + 6], "  Reports go · stop them");
+        script.event(AppEvent::Exit).await;
+    };
+    let (ran, ()) = tokio::join!(timeout(PATIENCE, run), drive);
+    ran.expect("the loop ends").unwrap();
+}
+
 #[tokio::test]
 async fn the_controller_can_close_the_screen() {
     let (script, io, terminal, keys) = session();

@@ -16,7 +16,7 @@ use argonauts_scenarios::{Scenario, past_the_question_guard, scenario_file};
 use argonauts_testkit::{FakeKind, FakeModelServer, FakeRule, FakeScenario, FakeStep, Key, Pty};
 
 /// The keys an Enter-through setup writes, and nothing else.
-const SETUP_KEYS: [&str; 15] = [
+const SETUP_KEYS: [&str; 14] = [
     "crew.main",
     "crew.worker",
     "crew.reviewer",
@@ -32,7 +32,6 @@ const SETUP_KEYS: [&str; 15] = [
     "approvals.autopilot",
     // The limits section ends on its default, which keeps its commented limits inside it.
     "limits.when_reached",
-    "telemetry.enabled",
 ];
 
 const CLOSING_COMMANDS: [&str; 7] = [
@@ -76,9 +75,14 @@ fn walk_setup(
                 return Ok(Some(Some(step)));
             }
             let text = pty.screen().text();
-            let closed = !seen.is_empty() && CLOSING_COMMANDS.iter().all(|c| text.contains(c));
+            // A first setup closes with the commands that change its answers; one over your
+            // settings with its one `/setup` row.
+            let closing =
+                CLOSING_COMMANDS.iter().all(|c| text.contains(c)) || text.contains(" · saved to");
+            let closed = !seen.is_empty() && closing;
             Ok(closed.then_some(None))
-        })?;
+        })
+        .with_context(|| format!("the screen was:\n{}", pty.screen().text()))?;
         let Some(step) = next else {
             return Ok(seen);
         };

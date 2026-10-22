@@ -46,7 +46,7 @@ impl AnsweredPick {
             (
                 theme.glyphs.question,
                 theme.style(Role::Success),
-                " · ↑ to remember this pick".to_owned(),
+                " · ↑  to remember this pick".to_owned(),
             )
         };
         let line = Line::from(vec![

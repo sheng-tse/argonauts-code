@@ -39,6 +39,22 @@ pub struct CrewSettings {
     /// orchestrator. Which files make up a change, and whether a task passed, stay with code.
     #[serde(default)]
     pub merger: Vec<ModelRef>,
+    /// What the orchestrator starts from when it runs on the main agent's CLI: `fork`, a fork
+    /// of your conversation with the brief as its first message, or `brief`, the brief alone.
+    /// On any other CLI it starts from the brief
+    #[serde(default)]
+    pub orchestrator_context: OrchestratorContext,
+}
+
+/// `crew.orchestrator_context`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OrchestratorContext {
+    /// A read-only fork of the main session, so it knows what the conversation said.
+    #[default]
+    Fork,
+    /// The brief alone, as every worker starts.
+    Brief,
 }
 
 /// A `[crew]` table as written, where a role left out is told apart from one set.
@@ -61,6 +77,9 @@ struct WrittenCrew {
     #[serde(deserialize_with = "some_one_or_many")]
     #[schemars(with = "Vec<ModelRef>")]
     merger: Option<Vec<ModelRef>>,
+    /// What the orchestrator starts from on the main agent's CLI: `fork`, a fork of your
+    /// conversation, or `brief`, the brief alone
+    orchestrator_context: OrchestratorContext,
 }
 
 impl From<WrittenCrew> for CrewSettings {
@@ -79,6 +98,7 @@ impl From<WrittenCrew> for CrewSettings {
             judge: follows(written.judge, reviewer_set, everyone.judge),
             worker_workflows: written.worker_workflows,
             merger: written.merger.unwrap_or_default(),
+            orchestrator_context: written.orchestrator_context,
         }
     }
 }
@@ -106,6 +126,7 @@ impl CrewSettings {
             judge: everyone,
             worker_workflows: false,
             merger: Vec::new(),
+            orchestrator_context: OrchestratorContext::Fork,
         }
     }
 
@@ -438,6 +459,17 @@ mod tests {
     }
 
     #[test]
+    fn the_orchestrator_forks_the_conversation_unless_told_to_start_from_the_brief() {
+        let empty: File = toml::from_str("[crew]\n").unwrap();
+        assert_eq!(empty.crew.orchestrator_context, OrchestratorContext::Fork);
+        let brief: File = toml::from_str("[crew]\norchestrator_context = \"brief\"\n").unwrap();
+        assert_eq!(brief.crew.orchestrator_context, OrchestratorContext::Brief);
+        let again: File = toml::from_str(&toml::to_string(&brief).unwrap()).unwrap();
+        assert_eq!(again.crew, brief.crew);
+        assert!(toml::from_str::<File>("[crew]\norchestrator_context = \"all\"\n").is_err());
+    }
+
+    #[test]
     fn a_role_reads_one_model_or_a_list_and_what_is_unset_keeps_its_default() {
         let file: File = toml::from_str(
             "[crew]\norchestrator = \"main\"\nworker = [\"codex/gpt-5.6\", \"claude-code\"]\n\
@@ -491,6 +523,7 @@ mod tests {
             judge: vec![worker("antigravity-cli")],
             worker_workflows: false,
             merger: Vec::new(),
+            orchestrator_context: Default::default(),
         };
         assert_eq!(
             crew.members(),

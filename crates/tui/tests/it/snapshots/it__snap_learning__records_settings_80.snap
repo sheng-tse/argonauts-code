@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_learning.rs
+source: crates/tui/tests/it/snap_learning.rs
+assertion_line: 491
 expression: "screen(&mut picker, 80, HEIGHT)"
 ---
 Records                                        Agents  Predictions  [ Settings ]
@@ -25,4 +26,4 @@ Who is good at what, by kind of work     2 agents · routing bandit, explores 20
 │   How workers are picked                                                     │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · tab next tab · ⏎ change · esc back
+↑↓  select · tab next tab · ⏎ change · esc back

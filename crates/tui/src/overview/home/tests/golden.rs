@@ -9,6 +9,7 @@
 
 use std::time::Instant;
 
+use argonauts_testkit::picture;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
@@ -21,81 +22,15 @@ use crate::state::AppState;
 use crate::theme::{ColorLevel, Glyphs, Role, Theme};
 use crate::views::{View, ViewCtx};
 
-const OVERVIEW_TEXT: &str = include_str!("../pictures/ours_overview.txt");
-const OVERVIEW_COLOURS: &str = include_str!("../pictures/ours_overview.html");
-const MODELS_TEXT: &str = include_str!("../pictures/ours_models.txt");
-const MODELS_COLOURS: &str = include_str!("../pictures/ours_models.html");
+const OVERVIEW_TEXT: &str = include_str!("../../../../tests/golden/home/ours_overview.txt");
+const OVERVIEW_COLOURS: &str = include_str!("../../../../tests/golden/home/ours_overview.html");
+const MODELS_TEXT: &str = include_str!("../../../../tests/golden/home/ours_models.txt");
+const MODELS_COLOURS: &str = include_str!("../../../../tests/golden/home/ours_models.html");
 
 /// The panel's width for the pictures' 118 cells, and its height: its rule, then the
 /// picture's 31 rows.
 const WIDTH: u16 = 120;
 const HEIGHT: u16 = 32;
-
-/// One cell of a picture: its character and how the page colours it.
-#[derive(Debug, Clone)]
-struct Painted {
-    ch: char,
-    fg: Option<String>,
-    bg: Option<String>,
-    bold: bool,
-}
-
-/// The picture's cells, row by row, from its page's spans.
-fn painted(html: &str) -> Vec<Vec<Painted>> {
-    let body = html
-        .split_once("<pre class=\"term grid\">")
-        .and_then(|(_, rest)| rest.split_once("</pre>"))
-        .map(|(body, _)| body)
-        .expect("a picture's grid");
-    body.split('\n').map(painted_row).collect()
-}
-
-fn painted_row(mut line: &str) -> Vec<Painted> {
-    let mut cells = Vec::new();
-    while !line.is_empty() {
-        let (style, text, rest) = match line.strip_prefix("<span style=\"") {
-            Some(span) => {
-                let (style, rest) = span.split_once("\">").expect("a span's style");
-                let (text, rest) = rest.split_once("</span>").expect("a span's end");
-                (style, text, rest)
-            }
-            None => {
-                let end = line.find('<').unwrap_or(line.len());
-                ("", &line[..end], &line[end..])
-            }
-        };
-        let mut fg = None;
-        let mut bg = None;
-        let mut bold = false;
-        for part in style.split(';') {
-            if let Some(value) = part.strip_prefix("color:") {
-                fg = Some(value.to_owned());
-            } else if let Some(value) = part.strip_prefix("background:") {
-                bg = Some(value.to_owned());
-            } else if part == "font-weight:700" {
-                bold = true;
-            }
-        }
-        for ch in unescape(text).chars() {
-            cells.push(Painted {
-                ch,
-                fg: fg.clone(),
-                bg: bg.clone(),
-                bold,
-            });
-        }
-        line = rest;
-    }
-    cells
-}
-
-fn unescape(text: &str) -> String {
-    text.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#x27;", "'")
-        .replace("&amp;", "&")
-}
 
 /// A day's strength in the picture, as its quarter: `25%` is the quietest.
 fn strength(fg: &str) -> Option<usize> {
@@ -198,7 +133,8 @@ impl Screen<'_> {
             .unwrap_or(0);
         let drawn = crate::picture_dump::cut(buf, (1, 1), (width, picture.len()));
         crate::picture_dump::rows(name, &drawn);
-        let cells = painted(self.colours);
+        crate::picture_dump::buffer_page(name, buf, (1, 1), (width, picture.len()), &theme);
+        let cells = picture::grid(self.colours);
         let mut differences = Vec::new();
         for (row, line) in picture.iter().enumerate() {
             if !rows.contains(&row) {
@@ -231,7 +167,7 @@ impl Screen<'_> {
                 let drawn = &buf[(x as u16 + 1, y as u16)];
                 let place = format!("row {row} column {x} {:?}", cell.ch);
                 if self.days.contains(&row) && cell.ch == '█' {
-                    let level = cell.fg.as_deref().and_then(strength).unwrap_or(4);
+                    let level = cell.color.as_deref().and_then(strength).unwrap_or(4);
                     let glyph = ["░", "▒", "▓", "█"][level - 1];
                     if drawn.symbol() != glyph {
                         differences
@@ -239,7 +175,7 @@ impl Screen<'_> {
                     }
                 }
                 let bg = cell
-                    .bg
+                    .background
                     .as_deref()
                     .map_or(Color::Reset, |bg| colour(&theme, bg));
                 if drawn.bg != bg {
@@ -249,7 +185,7 @@ impl Screen<'_> {
                     continue;
                 }
                 let fg = cell
-                    .fg
+                    .color
                     .as_deref()
                     .map_or(Color::Reset, |fg| colour(&theme, fg));
                 if drawn.fg != fg {
@@ -378,6 +314,64 @@ fn the_models_sub_tab_matches_its_picture() {
         )],
     }
     .compare("ours_models", &buf);
+}
+
+/// The models' comparison fails once one cell of the picture is changed: its character, its
+/// colour, its weight or its fill.
+#[test]
+fn a_picture_changed_in_one_cell_no_longer_matches_the_models() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let state = state();
+    let mut view = tab(sample::models());
+    key(&mut view, &state, crossterm::event::KeyCode::Down);
+    key(&mut view, &state, crossterm::event::KeyCode::Right);
+    let buf = render(&mut view, &state, HEIGHT);
+    let fails = |text: &str, colours: &str| {
+        let screen = Screen {
+            text,
+            colours,
+            days: 0..=0,
+            colours_elsewhere: 0..0,
+            instead: &[],
+        };
+        // The row the screen draws otherwise is left out, the rest compared.
+        catch_unwind(AssertUnwindSafe(|| {
+            screen.compare_rows("changed", &buf, 1..16)
+        }))
+        .is_err()
+    };
+    assert!(!fails(MODELS_TEXT, MODELS_COLOURS));
+    let grid = picture::grid(MODELS_COLOURS);
+    let (row, column) = picture::find(&grid[1..16], |cell| {
+        cell.ch.is_alphanumeric() && cell.color.is_some()
+    });
+    let row = row + 1;
+    let changed = |edit: &dyn Fn(&mut picture::Cell)| {
+        picture::edited(MODELS_COLOURS, |grid| edit(&mut grid[row][column]))
+    };
+    let recoloured = changed(&|cell| {
+        let other = match cell.color.as_deref() {
+            Some("var(--term-dim)") => "var(--term-acc)",
+            _ => "var(--term-dim)",
+        };
+        cell.color = Some(other.to_owned());
+    });
+    assert!(fails(MODELS_TEXT, &recoloured), "a colour changed");
+    assert!(
+        fails(MODELS_TEXT, &changed(&|cell| cell.bold ^= true)),
+        "a weight changed"
+    );
+    let filled = changed(&|cell| cell.background = Some("var(--term-band)".to_owned()));
+    assert!(fails(MODELS_TEXT, &filled), "a fill changed");
+    let mut rows: Vec<String> = MODELS_TEXT.lines().map(str::to_owned).collect();
+    let mut chars: Vec<char> = rows[row].chars().collect();
+    chars[column] = '#';
+    rows[row] = chars.into_iter().collect();
+    assert!(
+        fails(&rows.join("\n"), MODELS_COLOURS),
+        "a character changed"
+    );
 }
 
 /// Tab moves the sub-tabs from the models too, so with the keys there Models stays filled as

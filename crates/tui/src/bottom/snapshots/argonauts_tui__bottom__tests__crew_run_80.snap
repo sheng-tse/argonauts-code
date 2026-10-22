@@ -1,14 +1,15 @@
 ---
 source: crates/tui/src/bottom/tests.rs
+assertion_line: 105
 expression: screen(&view)
 ---
-✻ Building… (4m 12s · ↓ 48.2k tokens · 3 agents · $0.21)
+✻ Building… (4m 12s · ↓  48.2k tokens · 3 agents · $0.21)
 
 ────────────────────────────────────────────────────────────────────── council ─
 ❯ ▏
 ────────────────────────────────────────────────────────────────────────────────
-  ǁ supervised mode on (shift+tab to cycle) · ← 3 agents · ↓ to manage
+  ǁ supervised mode on (shift+tab to cycle) · ←  3 agents · ↓  to manage
 
-  ○ claude-code  task-002                             2/5 · 4m · ↓ 18.1k tokens
-  ○ codex        task-003                             1/5 · 3m · ↓ 12.9k tokens
-  ○ agy          review                               waiting
+  ○ claude-code  task-002                            2/5 · 4m · ↓  18.1k tokens
+  ○ codex        task-003                            1/5 · 3m · ↓  12.9k tokens
+  ○ agy          review                              waiting

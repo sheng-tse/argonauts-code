@@ -501,7 +501,7 @@ fn agent_panel_view() {
     let footer = text.lines().last().unwrap();
     assert_eq!(
         footer,
-        "↑↓ move · → open · Space details · Tab filter · x stop · ? keys · esc back"
+        "↑↓  move · →  open · Space details · Tab filter · x stop · ? keys · esc back"
     );
 
     // At 120 columns the details sit beside the list, as in Codex.
@@ -756,7 +756,7 @@ fn session_view_output() {
         "{header}"
     );
     assert!(header.contains(" Output  Input  Raw "), "{header}");
-    assert!(header.ends_with("2m00s · ↓ 12.4k"), "{header}");
+    assert!(header.ends_with("2m00s · ↓  12.4k"), "{header}");
     for needle in [
         "Read(src/export.rs)",
         "test export::json ... ok",
@@ -914,7 +914,7 @@ fn session_view_input_side() {
     let text = screen(&mut view, 100, 32, &state);
     // The launch folds to one line under the parts, and opens to the whole command.
     assert!(
-        text.contains("Launched as codex exec --json '<prompt>' · → expands"),
+        text.contains("Launched as codex exec --json '<prompt>' · →  expands"),
         "{text}"
     );
     assert!(!text.contains("cwd /wt/task-002"), "{text}");
@@ -964,7 +964,7 @@ fn session_view_input_side() {
     press(&mut view, KeyCode::Tab, &long);
     press(&mut view, KeyCode::Down, &long);
     let folded = screen(&mut view, 100, 32, &long);
-    assert!(folded.contains("… +3 lines · → expands"), "{folded}");
+    assert!(folded.contains("… +3 lines · →  expands"), "{folded}");
     assert!(!folded.contains("line 9"));
     press(&mut view, KeyCode::Right, &long);
     assert!(screen(&mut view, 100, 32, &long).contains("line 9"));

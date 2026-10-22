@@ -16,6 +16,7 @@ use argonauts_core::driver::McpServerSpec;
 use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::layout::{self, session_files};
 use argonauts_core::names::{ModelRef, SessionKey};
+use argonauts_core::outside::Outside;
 use argonauts_core::pictures::Picture;
 use argonauts_core::registry::listed::nearest_listed;
 use argonauts_core::registry::{
@@ -42,6 +43,7 @@ use super::report_tool;
 use crate::checks::env::looks_secret;
 use crate::meter;
 use crate::reaper::LAUNCH_MARKER;
+use crate::sandbox::profile::outside_reach;
 
 /// Set on every CLI process. Approval paths refuse any caller that has it.
 pub const SESSION_ENV: &str = "ARGONAUTS_SESSION";
@@ -96,7 +98,7 @@ pub fn session_request(
     let by_tool = id == CLAUDE_CODE && report_tool::reports_by_tool(spec);
     let mcp_config = if id == CLAUDE_CODE {
         let io_error = |err: io::Error| RunnerError::Io(format!("the status tool's config: {err}"));
-        let argonauts = std::env::current_exe().map_err(io_error)?;
+        let argonauts = argonauts_core::paths::this_program().map_err(io_error)?;
         let (schema, report) = (
             report_tool::schema_file(spec),
             report_tool::report_file(spec),
@@ -216,6 +218,7 @@ pub fn session_request(
             .as_ref()
             .map(|asking| asking.asks)
             .unwrap_or_default(),
+        outside: cli_outside(spec),
         cli_command: spec.step == Some(StepName::CliCommand),
         main_session: is_main_session(spec),
         ultracode: spec.cli_workflow.ultracode,
@@ -232,6 +235,24 @@ pub fn session_request(
         standing_note: standing.filter(|_| takes_a_note),
         autopilot: spec.autopilot,
     })
+}
+
+/// What the CLI's own permissions open outside the project, as its sandbox lets it reach.
+/// Where they open anything, the paths the engine keeps from the session join the never-list,
+/// so a CLI that would read anywhere still can't read them.
+fn cli_outside(spec: &SessionSpec) -> Outside {
+    let mut outside = outside_reach(&spec.sandbox);
+    if !outside.is_open() {
+        return Outside::default();
+    }
+    for path in &spec.sandbox.deny_read {
+        for form in argonauts_core::outside::forms(path) {
+            if !outside.never.paths.contains(&form) {
+                outside.never.paths.push(form);
+            }
+        }
+    }
+    outside
 }
 
 /// The window the model's server holds it to: the registry's word on the model itself, else on
@@ -672,6 +693,18 @@ pub fn apply_session_env(command: &mut CommandSpec, key: &SessionKey, env: &[(St
     apply_env(command, key, env, &inherited);
 }
 
+/// What a crew's session sees of gh: a config folder that can't exist, so gh finds no login and
+/// keeps none, and no prompt that would wait for an answer nobody gives.
+pub fn without_gh_login(command: &mut CommandSpec) {
+    for (name, value) in [("GH_CONFIG_DIR", NO_GH_CONFIG), ("GH_PROMPT_DISABLED", "1")] {
+        command.env_set.retain(|(set, _)| set != name);
+        command.env_set.push((name.to_owned(), value.to_owned()));
+    }
+}
+
+/// Under a file, so no folder can ever be made there.
+const NO_GH_CONFIG: &str = "/dev/null/gh";
+
 /// [`apply_session_env`] with the names this process inherited.
 fn apply_env(
     command: &mut CommandSpec,
@@ -743,6 +776,58 @@ mod tests {
 
     fn request_for(adapter: &TestAdapter, spec: &SessionSpec) -> SessionRequest {
         session_request(spec, adapter, &Settings::default(), None).unwrap()
+    }
+
+    #[test]
+    fn the_cli_hears_what_it_may_do_outside_with_the_engines_closed_paths_never_read() {
+        let adapter = TestAdapter::new("true");
+        let mut spec = spec_in(
+            std::path::Path::new("/work/tree"),
+            std::path::Path::new("/work/session"),
+            "Tidy the notes",
+        );
+        spec.sandbox.deny_read = vec![PathBuf::from("/home/you/.argonauts/state")];
+        assert!(request_for(&adapter, &spec).outside.is_closed());
+        spec.sandbox.outside = Outside {
+            read: true,
+            write: true,
+            project: Some(PathBuf::from("/home/you/app")),
+            ..Outside::default()
+        };
+        let outside = request_for(&adapter, &spec).outside;
+        assert!(outside.read && outside.write);
+        assert!(
+            outside
+                .never
+                .refuses_read(std::path::Path::new("/home/you/.argonauts/state/run.json"))
+        );
+
+        // A container shows the CLI only the session's own paths, so its permissions keep to
+        // them too.
+        spec.sandbox.mode = argonauts_core::session_runner::SandboxMode::Container;
+        assert!(request_for(&adapter, &spec).outside.is_closed());
+    }
+
+    #[test]
+    fn a_crews_session_has_no_gh_login_to_find() {
+        let mut command = CommandSpec {
+            env_set: vec![(
+                "GH_CONFIG_DIR".to_owned(),
+                "/Users/you/.config/gh".to_owned(),
+            )],
+            ..CommandSpec::default()
+        };
+        without_gh_login(&mut command);
+        let set = |name: &str| {
+            command
+                .env_set
+                .iter()
+                .filter(|(set, _)| set == name)
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(set("GH_CONFIG_DIR"), ["/dev/null/gh"]);
+        assert_eq!(set("GH_PROMPT_DISABLED"), ["1"]);
     }
 
     #[test]

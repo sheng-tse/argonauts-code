@@ -36,19 +36,6 @@ use crate::usage_ledger::{self, UsageLedger, local_day};
 
 const FEEDBACK_FILE: &str = "feedback.jsonl";
 
-/// What's new, newest release first. Each entry's first line is its heading.
-const RELEASE_NOTES: &[&[&str]] = &[&[
-    "Argonauts Code 0.0.1",
-    "Runs Claude Code, Codex, agy, OpenCode, and model endpoints as one crew, in a screen that \
-     works like Claude Code's.",
-    "Talk with the main agent; with /captain its CLI does the work itself, and /crew hands it \
-     to the crew.",
-    "The commands the agent CLIs share work whatever CLI the main agent is: /compact, /rename, \
-     /branch, /fork, /btw, /recap, /copy, /export, /cd, /add-dir, /plan, /goal, /fast, \
-     /output-style, /diff, /review, /security-review, /usage, /login, and /logout.",
-    "Reviews go to an agent from another provider than the main agent's when the crew has one.",
-]];
-
 /// The span `/usage` adds spend and runs up over, `opens_on` when it names none. PlanUsage
 /// is always now.
 pub(crate) fn parse_period(
@@ -802,23 +789,11 @@ fn logout_of(login: &[String]) -> Option<Vec<String>> {
     })
 }
 
-/// `/release-notes`.
+/// `/release-notes`: what's new in each release, from the changelog built in.
 pub(crate) fn release_notes(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
-    let mut lines = vec![format!(
-        "This is Argonauts Code {}.",
-        env!("CARGO_PKG_VERSION")
-    )];
-    for release in RELEASE_NOTES {
-        let Some((heading, notes)) = release.split_first() else {
-            continue;
-        };
-        lines.push(String::new());
-        lines.push((*heading).to_owned());
-        lines.extend(notes.iter().map(|note| format!("- {note}")));
-    }
     ctx.send(AppEvent::Report {
         title: "Release notes".to_owned(),
-        lines,
+        lines: crate::self_update::release_notes(),
     });
     Ok(Vec::new())
 }
@@ -1171,6 +1146,7 @@ mod tests {
             safety: false,
             allowed: Vec::new(),
             description: String::new(),
+            picked: None,
         };
         let rows = [
             row(SPEND_LIMIT, "5.0"),

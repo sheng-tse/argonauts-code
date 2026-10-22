@@ -13,7 +13,7 @@ use argonauts_core::events::AgentStatusEvent;
 use argonauts_core::events::context::{ContextDetail, ContextUsage};
 use argonauts_core::events::session::{LimitEvent, SessionEvent, Watchdog, loaded_words};
 use argonauts_core::layout::session_files;
-use argonauts_core::limits::{HealthSignal, PlanUsageStatus};
+use argonauts_core::limits::{HealthSignal, PlanUsageStatus, served_on_this_machine};
 use argonauts_core::paths::write_private_file;
 use argonauts_core::session_runner::SessionLimits;
 use argonauts_core::settings::approvals::IsolatedLeak;
@@ -147,6 +147,8 @@ pub struct Observer {
     /// What this session's start-up message lacked of the fields the adapter reads, once it
     /// came. Kept per version beside the unread kinds.
     startup_lacked: Option<Vec<&'static str>>,
+    /// The model runs on this machine, so it works without the internet.
+    on_this_machine: bool,
     /// Output lines looked at for the start-up message so far.
     startup_lines: u8,
     wrap_up_stopped: bool,
@@ -207,6 +209,7 @@ impl Observer {
             let agent = ctx.settings.agents.get(&spec.model.agent);
             agent.and_then(|agent| agent.model.clone())
         });
+        let on_this_machine = served_on_this_machine(&ctx.agent_id.0, asked_for.as_deref());
         let context_watch = match spec.run {
             Some(_) => ContextWatch::of_crew(),
             None => ContextWatch::default(),
@@ -234,6 +237,7 @@ impl Observer {
             cli_version: None,
             unread: BTreeMap::new(),
             startup_lacked: None,
+            on_this_machine,
             startup_lines: 0,
             wrap_up_stopped: false,
             plan_limit_stopped: false,
@@ -430,6 +434,8 @@ impl Observer {
         let mut actions = Vec::new();
         let verdict = self.meter.tick(now.saturating_duration_since(self.started));
         actions.extend(meter_action(verdict));
+        let offline = !self.on_this_machine && self.ctx.health.network().is_down();
+        self.watchdogs.network(offline, now);
         let verdict = self.watchdogs.tick(now, cpu_busy);
         actions.extend(self.watchdog_action(verdict));
         self.limit(false);

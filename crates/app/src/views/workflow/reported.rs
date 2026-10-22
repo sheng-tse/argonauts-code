@@ -9,9 +9,11 @@
 use argonauts_core::events::session::{CliAgent, CliAgentState, CliWorkflowRun};
 use argonauts_core::names::{SessionKey, WorkflowId};
 use argonauts_core::views::{
-    AgentRow, PhaseCount, PhaseRow, RowStatus, WorkflowRow, children_inside,
+    AgentRow, PhaseCount, PhaseRow, RowNote, RowStatus, Tone, WorkflowRow, children_inside,
 };
 use argonauts_core::workflow::{StandardPhase, StepRef};
+
+use time::OffsetDateTime;
 
 use crate::views::sessions::{RunFacts, SessionFacts};
 
@@ -67,12 +69,27 @@ impl StepWorkflow {
         if !agent.label.trim().is_empty() {
             row.label.clone_from(&agent.label);
         }
+        // The session ended well, but the workflow found no answer in it: the agent failed, as
+        // its report says, and its row says why in red, as Claude Code draws a failed agent.
+        let failed = matches!(agent.state, CliAgentState::Failed | CliAgentState::Blocked);
+        if failed && row.status == RowStatus::Done {
+            row.status = RowStatus::Failed;
+            let why = agent
+                .error
+                .as_deref()
+                .map(str::trim)
+                .filter(|why| !why.is_empty())
+                .unwrap_or("ended without an answer");
+            row.note = Some(RowNote::new(why, Tone::Bad));
+        }
         Some(row)
     }
 
     /// The step's newest session under the agent's label. A report sent before the agent's
     /// session started names no session for it yet, and the runner reports again only when the
-    /// agent ends, so until then its label is how its session is known.
+    /// agent ends, so until then its label is how its session is known. A session that started
+    /// before the agent was asked is another's, as a first round's review is to the next
+    /// round's review asked under the same label.
     fn under_label<'a>(
         &self,
         agent: &CliAgent,
@@ -82,9 +99,13 @@ impl StepWorkflow {
         if label.is_empty() {
             return None;
         }
+        let asked = agent.started_at_ms.and_then(|ms| {
+            OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000).ok()
+        });
         sessions.sessions.iter().rev().find(|facts| {
             facts.started.workflow_step.as_ref() == Some(&self.step)
                 && facts.started.label.as_deref().map(str::trim) == Some(label)
+                && asked.is_none_or(|asked| facts.started_at + ASK_SKEW >= asked)
         })
     }
 
@@ -151,6 +172,10 @@ impl StepWorkflow {
         }
     }
 }
+
+/// How far a session's logged start may come before the runner's time for the ask it answers:
+/// the two are written by different parts of the program.
+const ASK_SKEW: time::Duration = time::Duration::seconds(1);
 
 /// Where a phase stands by its agents. One with a session goes by what its session says,
 /// which knows when it waits for you; one still queued has only the report's word.
@@ -358,6 +383,44 @@ mod tests {
         assert_eq!(propose.status, RowStatus::Failed);
         assert_eq!(propose.count, PhaseCount::of(2, 3));
         assert_eq!(shown.phases[1].status, RowStatus::Done);
+    }
+
+    /// OpenCode's challenger ended its session well but never gave the answer its schema asks
+    /// for, so the report says it failed: its row is ✗ with why, in red, though its session
+    /// ended fine, and its phase is marked as Claude Code marks one with a failed agent.
+    #[test]
+    fn a_phase_whose_agent_ended_well_but_gave_no_answer_fails() {
+        let events = [
+            run_started(),
+            started_as(1, 1, "challenge:p0"),
+            session_ended(2, &SessionKey::numbered(1), EndReason::Completed, 16_000),
+            started_as(3, 2, "challenge:p3"),
+            session_ended(4, &SessionKey::numbered(2), EndReason::Completed, 169_000),
+        ];
+        let mut workflow = report(
+            "council",
+            &["Propose", "Challenge"],
+            &[
+                ("propose:p0", Some(1), Done),
+                ("challenge:p0", Some(2), Done),
+                ("challenge:p3", Some(2), Failed),
+            ],
+        );
+        let why = "ended without an answer: it tried to edit files in a read-only session";
+        workflow.agents[2].error = Some(why.to_owned());
+        let shown = view(&events, &workflow, &[(2, 1), (3, 2)]);
+        let challenge = &shown.phases[1];
+        assert_eq!(challenge.status, RowStatus::Failed);
+        assert_eq!(challenge.count, PhaseCount::of(1, 2));
+        let WorkflowRow::Agent(failed) = &challenge.rows[1] else {
+            panic!("an agent row: {:?}", challenge.rows);
+        };
+        assert_eq!(failed.status, RowStatus::Failed);
+        assert_eq!(failed.note, Some(RowNote::new(why, Tone::Bad)));
+        let WorkflowRow::Agent(fine) = &challenge.rows[0] else {
+            panic!("an agent row");
+        };
+        assert_eq!(fine.status, RowStatus::Done);
     }
 
     /// An agent that was stopped part-way is no failure and no ending: its phase is neither
@@ -717,6 +780,91 @@ mod tests {
     /// A council's rows say what each agent gave: a proposal is ready, a challenge says what it
     /// argued against, the judge that decides what it chose, and the sign-off that it read the
     /// task's change. A judge's plan is no verdict, so no review word shows on its row.
+    /// A challenge that argues against no proposal says so, and a review a script asked of a
+    /// read-only agent reads as its verdict, never as a proposal. A session the run's stop cut
+    /// short stopped with the run.
+    #[test]
+    fn a_challenge_against_none_a_scripts_review_and_a_stopped_build_say_what_they_were() {
+        use argonauts_core::events::run::{RunLifecycle, RunOutcome};
+        use serde_json::json;
+        let mut council = crate::client::test_support::run_started(0, "Per key rate limit", None);
+        if let RunEventKind::Run(RunLifecycle::Started(started)) = &mut council.kind {
+            started.workflow = "council".to_owned();
+        }
+        let events = vec![
+            council,
+            run_started(),
+            council_session(1, 1, "challenge:p2", RoleName::Worker, true),
+            answered(2, 1, json!({"against": [], "points": ["both are sound"]})),
+            council_session(3, 2, "review:keying", RoleName::Worker, true),
+            answered(
+                4,
+                2,
+                json!({"accept": false, "findings": ["no Retry-After header", "no test for it"]}),
+            ),
+            started_as(5, 3, "build:keying"),
+            session_ended(6, &SessionKey::numbered(3), EndReason::Paused, 1_000),
+            crate::client::test_support::event(
+                7,
+                RunEventKind::Run(RunLifecycle::Finished {
+                    outcome: RunOutcome::Stopped,
+                    detail: None,
+                }),
+            ),
+        ];
+        let workflow = report(
+            "council",
+            &["Challenge", "Cross-review", "Build"],
+            &[
+                ("challenge:p2", Some(1), Done),
+                ("review:keying", Some(2), Done),
+                ("build:keying", Some(3), Running),
+            ],
+        );
+        let shown = view(&events, &workflow, &[(1, 1), (2, 2), (3, 3)]);
+        let notes: Vec<String> = shown.phases[..3]
+            .iter()
+            .map(|phase| match phase.rows.first() {
+                Some(WorkflowRow::Agent(agent)) => agent
+                    .note
+                    .as_ref()
+                    .map(|note| note.text.clone())
+                    .unwrap_or_default(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(notes[0], "against none · 1 point");
+        assert!(notes[1].starts_with("sent it back"), "{notes:?}");
+        assert_eq!(notes[2], "stopped with the run · work so far kept");
+    }
+
+    /// A review asked again for a later round, under the same label, has no session of its own
+    /// yet: the first round's review is its own row, never this one's as well.
+    #[test]
+    fn a_later_rounds_ask_under_the_same_label_isnt_the_earlier_session() {
+        let ms = |ts: OffsetDateTime| u64::try_from(ts.unix_timestamp_nanos() / 1_000_000).unwrap();
+        let events = vec![
+            run_started(),
+            started_as(1, 1, "review:keying"),
+            session_ended(2, &SessionKey::numbered(1), EndReason::Completed, 1_000),
+        ];
+        let mut workflow = report(
+            "per-key",
+            &["Review"],
+            &[
+                ("review:keying", Some(1), Done),
+                ("review:keying", Some(1), Running),
+            ],
+        );
+        workflow.agents[0].started_at_ms = Some(ms(events[1].ts));
+        workflow.agents[1].started_at_ms = Some(ms(events[2].ts + time::Duration::seconds(5)));
+        let shown = view(&events, &workflow, &[]);
+        let [review, _merge] = shown.phases.as_slice() else {
+            panic!("the review, then the merge: {:?}", shown.phases);
+        };
+        assert_eq!(labels(review), ["review:keying"]);
+    }
+
     #[test]
     fn a_councils_rows_say_what_each_agent_gave() {
         use serde_json::json;

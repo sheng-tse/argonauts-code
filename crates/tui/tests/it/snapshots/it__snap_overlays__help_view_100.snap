@@ -1,9 +1,10 @@
 ---
-source: crates/tui/tests/snap_overlays.rs
+source: crates/tui/tests/it/snap_overlays.rs
+assertion_line: 1243
 expression: "screen(&mut view, width, height, &state)"
 ---
 Help
-The keys in effect, and every command by category                                        68 commands
+The keys in effect, and every command by category                                        69 commands
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Keys                                                                                             │
@@ -33,4 +34,4 @@ The keys in effect, and every command by category                               
 │ ctrl+x q                      show or hide plan usage above the input                            │
 │ ctrl+x b                      show or hide run limits above the input                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-↑↓ scroll · esc back                                                                   1-26 of 137 ↓
+↑↓  scroll · esc back                                                                  1-26 of 139 ↓

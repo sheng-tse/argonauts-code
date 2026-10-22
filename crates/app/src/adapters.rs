@@ -12,7 +12,7 @@ use argonauts_registry::models::endpoint_settings;
 
 use crate::host::clis::RepoModels;
 
-/// Claude Code, Codex, Antigravity CLI, and OpenCode, in the order the setup lists them.
+/// Claude Code, Codex, agy, and OpenCode, in the order the setup lists them.
 pub fn builtin_adapters() -> Vec<Arc<dyn Adapter>> {
     vec![
         Arc::new(ClaudeCodeAdapter::new()),

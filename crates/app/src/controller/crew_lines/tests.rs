@@ -99,6 +99,7 @@ fn a_role_that_follows_says_so() {
         judge: Vec::new(),
         worker_workflows: false,
         merger: Vec::new(),
+        orchestrator_context: Default::default(),
     };
     let words = applied(
         vec![followed(InstructionKind::Review, "astra reviews")],

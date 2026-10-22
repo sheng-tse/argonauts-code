@@ -496,14 +496,14 @@ impl WorkflowPageView {
             None if self.open == Some(self.group) => "⏎ fold",
             None => "⏎ its keys",
             Some(field) if field.choices.is_empty() => "⏎ type",
-            Some(_) => "← → change",
+            Some(_) => "←  →  change",
         };
         Footer::hints(&[
-            ("↑↓ move", 0),
+            ("↑↓  move", 0),
             (act, 0),
             ("a add step", 5),
             ("x remove", 4),
-            ("shift+↑↓ reorder", 2),
+            ("shift+↑↓  reorder", 2),
             ("e editor", 3),
             (panes::ESC_BACK, 0),
         ])

@@ -18,12 +18,12 @@
  │                  │                                                                                               │ 
  │                  │   two levels inside the run is the deepest: date-cases' agents can't start a workflow         │ 
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save                                   
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save                                  
                                                                                                                       
   its rows in the bottom list                                                                                         
-  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  5/7 · 3m17s · ↓ 101k tokens                                         
-    ⎿ ◯ add-due-flag        ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱  4/5 · 2m23s · ↓ 35.1k tokens · run by build:due-flag                
-        ⎿ ◯ date-cases      ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 22s · ↓ 6.6k tokens                                           
+  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  5/7 · 3m17s · ↓  101k tokens                                        
+    ⎿ ◯ add-due-flag        ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱  4/5 · 2m23s · ↓  35.1k tokens · run by build:due-flag               
+        ⎿ ◯ date-cases      ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 22s · ↓  6.6k tokens                                          
                                                                                                                       
                                                                                                                       
  Enter on Build, then on case:bad-date, opens its view, which says in words how deep it is                            
@@ -40,4 +40,4 @@
  │ ❯         ⏺ case:bad-date │   Still running…                                                                     │ 
  │   ✔ build:due-tests       │                                                                                      │ 
  ╰───────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓ agent · j/k scroll · ⏎ expand · esc back · to message or stop it, select build:due-flag                           
+ ↑↓  agent · j/k scroll · ⏎ expand · esc back · to message or stop it, select build:due-flag                          

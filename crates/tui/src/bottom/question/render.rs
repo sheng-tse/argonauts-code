@@ -680,7 +680,7 @@ impl QuestionPrompt {
             parts.push(Part::joined(dot(), part(second), 0));
         };
         if !self.focused {
-            parts.push(Part::new(part("↑ to answer"), KEEP));
+            parts.push(Part::new(part("↑  to answer"), KEEP));
         } else if let Some(list) = &self.checklist {
             if self.note.is_some() {
                 hint("Enter to send", "Esc to go back");

@@ -74,9 +74,13 @@ fn workers_hermes_profile_isolated_home() -> anyhow::Result<()> {
         .into_iter()
         .filter(|call| call.args.first().is_some_and(|arg| arg == "acp"))
         .collect();
-    assert_eq!(calls.len(), 1, "{calls:?}");
-    for name in ["HERMES_HOME", "HERMES_ACP_SKIP_CONFIGURED_MCP"] {
-        assert!(calls[0].env.iter().any(|set| set == name), "{name} not set");
+    // The merger may write the commit message on hermes too, as the task ends, so whether
+    // there is a second call is timing. Each one is kept to its profile.
+    assert!(!calls.is_empty(), "hermes acp never ran");
+    for call in &calls {
+        for name in ["HERMES_HOME", "HERMES_ACP_SKIP_CONFIGURED_MCP"] {
+            assert!(call.env.iter().any(|set| set == name), "{name} not set");
+        }
     }
     let reported = scenario.clis.log()?.into_iter().any(
         |line| matches!(line, LogLine::ReportCall { report, .. } if report["status"] == "done"),

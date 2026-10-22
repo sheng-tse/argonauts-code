@@ -479,6 +479,24 @@ async fn the_registry_fetches_the_catalog_once_a_day_and_keeps_it_in_the_cache()
     );
 }
 
+/// The shipped catalog prices GPT-6.1-Sol as the built-in table does.
+#[test]
+fn the_shipped_catalog_prices_the_newest_sol() {
+    let catalog = shipped_catalog();
+    let price = catalog
+        .prices
+        .iter()
+        .find(|price| price.model == "gpt-6.1-sol")
+        .expect("a price for gpt-6.1-sol");
+    let builtin = argonauts_core::pricing::builtin_price("gpt-6.1-sol").expect("a built-in price");
+    assert_eq!(price.input.0, builtin.input_per_mtok);
+    assert_eq!(price.output.0, builtin.output_per_mtok);
+    assert_eq!(
+        price.cache_read.map(|read| read.0),
+        builtin.cached_input_per_mtok
+    );
+}
+
 /// Every model the shipped catalog lists has a list price in it, and a newer catalog's price
 /// replaces the older one's.
 #[test]

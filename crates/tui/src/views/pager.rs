@@ -241,7 +241,7 @@ impl View for Pager {
         let marks = panes::Marks::for_theme(theme);
         let mark = position_mark(self.offset, height, rows.len(), marks.down);
         let hints = Footer::hints(&[
-            ("↑↓ scroll", 0),
+            ("↑↓  scroll", 0),
             ("pgup pgdn page", 1),
             (panes::ESC_BACK, 0),
         ]);

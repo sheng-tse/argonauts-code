@@ -125,6 +125,8 @@ pub async fn write(host: &Host, writing: &Writing) -> EngineResult<()> {
         reviews: false,
         fresh: true,
         independent_of: Vec::new(),
+        in_place_of: None,
+        fork_of: None,
     };
     if writing.stopped() {
         return Ok(());

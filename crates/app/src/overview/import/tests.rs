@@ -634,10 +634,8 @@ fn lines_that_cant_be_read_are_counted_not_hidden() {
 /// A fake `zstd -dc -- <file>` that prints the file as it is, for made-up compressed
 /// files that are plain text inside.
 fn plain_zstd(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
     let path = dir.join("zstd");
-    fs::write(&path, "#!/bin/sh\nexec cat \"$3\"\n").unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    argonauts_testkit::write_script(&path, "#!/bin/sh\nexec cat \"$3\"\n").unwrap();
     path
 }
 

@@ -1,0 +1,24 @@
+Doctor and Status: always there, seen only when you open them
+
+Claude Code 2.1.296       checked · works               2.1.297 is out · claude update
+Codex 0.158.0             older than supported          0.160.0 needed · brew upgrade codex
+agy 1.3.3                 newer than checked · works    its flags and start-up message match 1.3.1
+OpenCode 1.18.34          checked · works               up to date
+
+At start-up, one dim line once per new version, then nothing until the next version
+
+  Claude Code 2.1.297 is out · claude update · shown once for this version
+
+Before the next run that uses a CLI that must be updated, asked once
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Codex 0.158.0 is older than Argonauts Code supports (0.160.0)
+  Runs with it may misread what it does. Nothing has started yet.
+
+  ❯ 1. Update it now                  brew upgrade codex, then the run starts
+    2. Leave Codex out of this run    its roles go to the next model in your fallback order
+    3. Run with it anyway             and ask again before the next run
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+When a new version stops reporting something Argonauts Code reads, once and in Doctor
+
+  ⚠ Claude Code 2.1.297 no longer reports its context, so /context shows less until Argonauts Code is updated

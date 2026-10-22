@@ -9,7 +9,7 @@ use time::OffsetDateTime;
 use super::run::Party;
 use crate::input::MentionTarget;
 use crate::limits::PlanUsageReading;
-use crate::names::{AgentId, MessageId, ModelRef, RoleName};
+use crate::names::{AgentId, MessageId, ModelRef, RoleName, SessionKey, WorkflowId};
 use crate::session_runner::{Access, RunnerKind};
 use crate::settings::sessions::SessionLifetime;
 use crate::steps::StepName;
@@ -66,6 +66,31 @@ pub struct SessionStarted {
     /// the asked one was out. The step finds the session again by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked: Option<ModelRef>,
+    /// It began as a copy of the main session, made by its CLI.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forked: bool,
+    /// Why another runs in place of `asked` when the step chose it before the start, read on
+    /// from the asked model's name: "whose 64k window can't hold this change".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_why: Option<String>,
+    /// The agent whose ask started it, when another agent's own CLI asked for it, as the
+    /// asking session's latest workflow report named that agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_by: Option<AskedBy>,
+}
+
+/// Who asked for a session: the session whose CLI asked, the workflow its latest report was
+/// about, and the agent running in that workflow when the ask came. The workflow view puts
+/// the asked session in that agent's row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskedBy {
+    pub session: SessionKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<WorkflowId>,
+    /// The agent's label in that report, such as `review:final`. `None` when the report named
+    /// none, or several were running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

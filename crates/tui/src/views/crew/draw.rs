@@ -652,13 +652,13 @@ pub(super) fn keys_lines(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let (open, back) = match (right_closes, vim) {
-        (false, false) => ("→ or Enter", "← or Esc"),
+        (false, false) => ("→  or Enter", "←  or Esc"),
         (false, true) => ("→, l or Enter", "←, h or Esc"),
-        (true, false) => ("Enter", "←, → or Esc"),
-        (true, true) => ("Enter", "← → h l or Esc"),
+        (true, false) => ("Enter", "←, →  or Esc"),
+        (true, true) => ("Enter", "←  →  h l or Esc"),
     };
     let mut keys = vec![
-        (if vim { "↑↓ or j k" } else { "↑↓" }, "move"),
+        (if vim { "↑↓  or j k" } else { "↑↓" }, "move"),
         (
             open,
             "open: answer its question, watch the agent, or carry on",

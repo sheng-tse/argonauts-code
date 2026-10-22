@@ -1,0 +1,35 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
+   Overview    Models    Behaviors                                                                                    
+  Deeper map · 562 actions summarized by Qwen3 Coder 30B on Ollama · by model                                         
+                                                                                                                      
+
+[picture]
+
+Comparing GPT 6 Luna                                                                                                  
+with the other models                                                                                                 
+red: Luna does this more                                                                                              
+blue: Luna does this less                                                                                             
+                                                                                                                      
+○ Haiku 5.5         406                                                                                               
+● GPT 6 Luna         66                                                                                               
+○ GPT 5.6 Luna       49                                                                                               
+○ Haiku 4.5          22                                                                                               
+○ Gemini 3.8 Flash   19                                                                                               
+
+[picture]
+
+                                                                                                                      
+  lit: Accept task completion and the 13 actions summarized most like it                                              
+                                                                                                                      
+  Distinctive to GPT 6 Luna · 66 actions, in the model's words                                                        
+  ❯  new  Accept task completion                                label: returned its structured answer                 
+     new  Reject change due to negative input handling failure  label: returned its structured answer                 
+          Located key code elements and references              label: checked git status or diff and ran a           
+          Run full unit test suite                              label: ran the test suite                             
+          Check current repository status and file changes      label: checked git status or diff and read            
+     new  Confirm task completion                               label: returned its structured answer                 
+                                                                                                                      
+  new: the summary names what its label only groups                                                                   
+                                                                                                                      
+  ←  →  model · ↑  ↓  behavior, lit on the map · enter its actions · g group · p period · esc back                    

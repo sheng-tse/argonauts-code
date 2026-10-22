@@ -13,7 +13,7 @@ use argonauts_core::model_memory::ModelMemory;
 use argonauts_core::names::AgentId;
 use argonauts_core::registry::ModelRegistry;
 use argonauts_core::session_runner::{
-    RunnerCapabilities, SandboxMode, SandboxProfile, SessionSpec,
+    Access, RunnerCapabilities, SandboxMode, SandboxProfile, SessionSpec,
 };
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{SandboxChoice, SandboxSettings};
@@ -171,6 +171,11 @@ impl Context {
             command.program = binary;
         }
         request::apply_session_env(&mut command, &spec.key, &spec.env);
+        // Your own direct session works as its CLI does, gh and all. A crew's never gets your
+        // GitHub login: Argonauts Code makes every GitHub call of a run itself.
+        if spec.access != Access::Direct {
+            request::without_gh_login(&mut command);
+        }
         let task_home = request::task_home_in_use(&request, &command);
         if let Some(home) = &task_home {
             // Its parents sit in the denied `~/.argonauts`, so the agent couldn't make it.

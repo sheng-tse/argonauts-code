@@ -1195,7 +1195,7 @@ mod tests {
         assert_eq!(skipped.len(), 2, "{skipped:?}");
         assert_eq!(
             skipped[0],
-            "Claude Code, Codex, Antigravity CLI, OpenCode: off in your settings"
+            "Claude Code, Codex, agy, OpenCode: off in your settings"
         );
         assert!(skipped[1].starts_with("endpoint gone: "), "{skipped:?}");
     }

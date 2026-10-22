@@ -1,0 +1,12 @@
+ Choosing a hosted model asks once more, since it would read every action, not only its own CLI's                     
+                                                                                                                      
+  ◆ Send 562 actions to Anthropic for summaries?                                                                      
+    Haiku 5.5 on Claude Code would read each action as it ran: commands, file paths and the lines they touched,       
+    including the 115 Codex and 19 agy actions. It uses about 55k tokens of your Claude plan.                         
+    Nothing is sent anywhere else.                                                                                    
+                                                                                                                      
+    ❯ 1. Yes, summarize with Haiku 5.5                                                                                
+      2. Use Qwen3 Coder 30B on this Mac instead           free                                                       
+      3. Not now                                                                                                      
+                                                                                                                      
+    Enter to choose                                                                                                   

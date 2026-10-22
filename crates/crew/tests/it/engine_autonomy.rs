@@ -2213,7 +2213,7 @@ async fn autopilot_waits_on_a_plan_it_cant_approve() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A crew of Claude Code, Codex, and Antigravity CLI, with Codex ready to answer a question.
+/// A crew of Claude Code, Codex, and agy, with Codex ready to answer a question.
 fn three_provider_crew() -> anyhow::Result<Crew> {
     let mut crew = Crew::new()?;
     enlist(&mut crew, "claude-code/opus", "anthropic");
@@ -2279,7 +2279,7 @@ impl Asking {
         let state = argonauts_crew::state::RunState::fold(&history);
         let (mut context, sink, _commands) = crew.context(history)?;
         context.services.policy = real_policy(crew, &context.settings)?;
-        let shared = argonauts_crew::engine::shared::Shared::new(&context, state)?;
+        let shared = crew.shared(&context, state)?;
         let host = argonauts_crew::engine::host::Host::new(Arc::new(shared));
 
         let task = argonauts_core::TaskId::new("task-001")?;

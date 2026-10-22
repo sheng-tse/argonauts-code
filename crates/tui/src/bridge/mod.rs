@@ -246,6 +246,18 @@ impl Bridge {
             }
             _ => None,
         };
+        // `/context all` opens the Context tab with every list open.
+        let every_list = match event {
+            AppEvent::View { data } if !self.state.replaying() && !stale_tab && !unclaimed => {
+                match data.as_ref() {
+                    ViewData::Context { view } if std::mem::take(&mut self.input.context_all) => {
+                        Some(view)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
         {
             let mut cx = Cx {
                 model,
@@ -256,6 +268,13 @@ impl Bridge {
             };
             settings::on_event(event, &mut cx);
             self.input.answers_mid_answer_command(event, &mut cx);
+            if let Some(view) = every_list {
+                cx.out.open(
+                    OverviewView::new(Tab::Context, cx.model.bottom.band.watch.clone())
+                        .with_context(view.clone())
+                        .with_every_list(),
+                );
+            }
             match status_view {
                 // Under its tab of the usage panel, beside Usage and Context.
                 Some(view) => cx.out.open(
@@ -269,7 +288,7 @@ impl Bridge {
             self.questions.on_event(event, &mut cx);
             self.input.on_event(event, &mut cx);
             pull_request::on_event(event, &mut cx);
-            if !unclaimed && !stale_tab {
+            if !unclaimed && !stale_tab && every_list.is_none() {
                 views::on_event(event, &mut cx, &self.refresh);
             }
             status::sync(&mut cx);
@@ -771,10 +790,10 @@ mod view_answer_tests {
         );
     }
 
-    /// Every list on the Context tab shows in full, so `/context all` opens the same tab as a
-    /// plain `/context`.
+    /// `/context all` opens the Context tab with every list open, where a plain `/context`
+    /// opens it folded.
     #[test]
-    fn context_all_opens_the_same_tab() {
+    fn context_all_opens_every_list() {
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
 
@@ -810,10 +829,11 @@ mod view_answer_tests {
                 .join("\n")
         };
         let all = shown(&mut bridge, "/context all");
-        assert!(all.contains("└ search_issues"), "{all}");
-        assert!(all.contains("└ release-notes"), "{all}");
-        assert!(!all.contains(" more"), "{all}");
-        assert_eq!(shown(&mut bridge, "/context"), all);
+        assert!(all.contains("Skills · /skills"), "{all}");
+        assert!(!all.contains("/context all to expand"), "{all}");
+        let folded = shown(&mut bridge, "/context");
+        assert!(folded.contains("/context all to expand"), "{folded}");
+        assert_ne!(folded, all);
     }
 
     /// `/context print` answers with the sessions, and the conversation prints them under the
@@ -844,8 +864,8 @@ mod view_answer_tests {
         let clock = crate::render::Clock::still(Instant::now());
         let ctx = crate::render::RenderCtx::new(118, &theme, clock);
         let text = crate::text::plain_text(&rows.lines(&ctx));
-        assert!(text.starts_with("  ⎿  Context Usage  counted "), "{text}");
-        assert!(text.contains("212k/1M tokens (21%)"), "{text}");
+        assert!(text.starts_with("  ⎿  Context Usage\n"), "{text}");
+        assert!(text.contains("212.2k/1m tokens (21%)"), "{text}");
         assert!(text.contains("Crew agents \u{b7} "), "{text}");
     }
 

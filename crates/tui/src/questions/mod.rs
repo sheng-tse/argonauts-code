@@ -9,6 +9,7 @@ mod approval;
 mod choice;
 mod cli_down;
 mod confirm;
+pub mod deep_map;
 mod item;
 mod options;
 mod plan_workflow;
@@ -714,18 +715,24 @@ impl Questions {
             }
             // Esc on a run's question or approval means "carry on without me":
             // the engine takes an option in your place and its decision closes this, so
-            // nothing sits under "needs you".
+            // nothing sits under "needs you". An issue's question is only set aside, since what
+            // it posts on GitHub waits for your own answer.
             QuestionTarget::Controller(to @ AnswerTarget::Approval { .. }) => {
-                cx.out.send(UiCommand::SetAside { to: to.clone() });
-                if let Some(Source::Approval(opened)) =
-                    self.held.get(&question).map(|held| &held.source)
-                    && !cx.replaying()
-                {
-                    let at = OffsetDateTime::now_utc();
-                    let cell = records::passed_on_cell(opened.kind, at, clock_offset(cx));
-                    cx.model.history.push(cell);
-                    if let AnswerTarget::Approval { run, id } = to {
-                        self.passed_on.insert((run.clone(), id.clone()));
+                let opened = match self.held.get(&question).map(|held| &held.source) {
+                    Some(Source::Approval(opened)) => Some(opened.as_ref()),
+                    _ => None,
+                };
+                if !opened.is_some_and(crate::views::issues::waits_for_you) {
+                    cx.out.send(UiCommand::SetAside { to: to.clone() });
+                    if let Some(opened) = opened
+                        && !cx.replaying()
+                    {
+                        let at = OffsetDateTime::now_utc();
+                        let cell = records::passed_on_cell(opened.kind, at, clock_offset(cx));
+                        cx.model.history.push(cell);
+                        if let AnswerTarget::Approval { run, id } = to {
+                            self.passed_on.insert((run.clone(), id.clone()));
+                        }
                     }
                 }
             }

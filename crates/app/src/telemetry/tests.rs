@@ -163,6 +163,7 @@ async fn a_day_later_one_anonymous_event_goes_and_counts_each_day_once() {
     let found = Found {
         clis: BTreeMap::from([("claude-code".to_owned(), "2.1.295".to_owned())]),
         mods: 2,
+        ..Found::default()
     };
     assert!(send_due(&paths, &on(), &found, &sender(address.clone()), now()).await);
 
@@ -175,6 +176,8 @@ async fn a_day_later_one_anonymous_event_goes_and_counts_each_day_once() {
     assert_eq!(body["api_key"], "phc_test_key");
     assert_eq!(body["event"], "daily_usage");
     assert_eq!(body["distinct_id"].as_str(), Some(state.install.as_str()));
+    let sent_at = body["timestamp"].as_str().unwrap();
+    assert!(sent_at.ends_with("T00:00:00Z"), "the day alone: {sent_at}");
     let properties = &body["properties"];
     assert_eq!(properties["$process_person_profile"], false);
     assert_eq!(properties["clis"]["claude-code"], "2.1.295");
@@ -187,8 +190,9 @@ async fn a_day_later_one_anonymous_event_goes_and_counts_each_day_once() {
     assert_eq!(properties["features"]["workflows"]["council"], 1);
     assert_eq!(properties["features"]["workflows"]["custom"], 1);
     assert_eq!(properties["features"]["goals"], 0);
-    assert_eq!(properties["features"]["ultracode"], false);
+    assert_eq!(properties["features"]["ultracode"], 0);
     assert_eq!(properties["features"]["mods"], 2);
+    assert_eq!(properties["fields"], 3);
     assert!(properties.get("install").is_none());
 
     let kept = State::load(&state_file(&paths)).unwrap();
@@ -256,12 +260,90 @@ fn an_endpoint_on_this_computer_and_a_listed_model_are_named_as_they_are() {
 fn show_says_it_is_off_and_that_this_build_sends_nothing() {
     let home = tempfile::tempdir().unwrap();
     let paths = Paths::new(home.path());
-    let text = show(&paths, &Settings::default(), &Found::default(), true, now());
-    assert!(text.starts_with("Telemetry is off"), "{text}");
+    let mut settings = Settings::default();
+    settings.telemetry.enabled = false;
+    let dnt = |name: &str| (name == "DO_NOT_TRACK").then(|| "1".to_owned());
+    let held = held(&settings, &dnt);
+    let text = show(&paths, &settings, &Found::default(), &held, now(), false);
+    assert!(text.starts_with("Usage reports are off"), "{text}");
     assert!(text.contains("DO_NOT_TRACK is set"), "{text}");
     assert!(text.contains("no PostHog key"), "{text}");
-    assert!(text.contains("\"event\": \"daily_usage\""), "{text}");
+    assert!(text.contains("\n  install    "), "{text}");
+    assert!(!text.contains('\x1b'), "no colour off a terminal: {text}");
     assert!(!state_file(&paths).exists(), "show writes nothing");
+}
+
+/// Nothing goes before the usage line has shown, nor with CI, DO_NOT_TRACK or an agent's
+/// session set, nor with reports off.
+#[test]
+fn nothing_is_sent_before_the_line_or_while_asked_for_quiet() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::new(home.path());
+    let none = |_: &str| None;
+    assert!(!may_send(&paths, &on(), &none), "before the line");
+    assert!(notice::claim_in(&paths, &on(), &none));
+    assert!(may_send(&paths, &on(), &none));
+    for quiet in ["CI", "DO_NOT_TRACK", "ARGONAUTS_SESSION"] {
+        let set = move |name: &str| (name == quiet).then(|| "1".to_owned());
+        assert!(!may_send(&paths, &on(), &set), "{quiet}");
+    }
+    let mut off = on();
+    off.telemetry.enabled = false;
+    assert!(!may_send(&paths, &off, &none));
+}
+
+/// A report goes at the first start of a later day, and never within a day of the last try.
+#[test]
+fn a_report_waits_a_whole_day_after_the_last() {
+    let at = time::macros::datetime!(2026-10-20 14:00 UTC);
+    let today = local_day(at);
+    let mut state = State::new(today);
+    assert_eq!(state.due(at), show::Due::Tomorrow, "counting began today");
+    state.counted_from = today - Duration::days(1);
+    state.tried = today - Duration::days(1);
+    assert_eq!(state.due(at), show::Due::NextStart);
+    state.tried_at = Some(at - Duration::hours(20));
+    let show::Due::After { clock, .. } = state.due(at) else {
+        panic!("{:?}", state.due(at));
+    };
+    assert_eq!(clock, super::clock(at + Duration::hours(4)));
+    state.tried = today;
+    state.tried_at = Some(at);
+    assert!(matches!(state.due(at), show::Due::After { .. }));
+    assert_eq!(state.due(at + Duration::hours(25)), show::Due::NextStart);
+}
+
+#[test]
+fn reports_go_to_the_us_unless_the_build_names_a_host() {
+    assert_eq!(
+        send::capture_address(None),
+        "https://us.i.posthog.com/i/v0/e/"
+    );
+    assert_eq!(
+        send::capture_address(Some("")),
+        "https://us.i.posthog.com/i/v0/e/"
+    );
+    assert_eq!(
+        send::capture_address(Some("https://eu.i.posthog.com/")),
+        "https://eu.i.posthog.com/i/v0/e/"
+    );
+    assert_eq!(
+        send::capture_address(Some("https://ph.example.org/i/v0/e/")),
+        "https://ph.example.org/i/v0/e/"
+    );
+}
+
+/// `argonauts telemetry off` as `telemetry_off` draws it.
+#[test]
+fn off_says_so_and_how_to_turn_them_back_on() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::new(home.path());
+    assert_eq!(turn_off(&paths).unwrap(), OFF);
+    argonauts_testkit::picture_dump::dump("telemetry_off", OFF);
+    let picture = include_str!("../../tests/golden/telemetry_off.txt");
+    assert_eq!(OFF, picture.trim_end());
+    let text = std::fs::read_to_string(paths.global_config()).unwrap();
+    assert!(text.contains("enabled = false"), "{text}");
 }
 
 #[test]
@@ -309,8 +391,9 @@ fn goals_and_ultracode_count_from_runs_and_from_the_conversation() {
     let count =
         |paths: &Paths| usage_between(paths, &on(), &Found::default(), &State::new(day), days);
     assert_eq!(count(&paths).features.goals, 0);
-    assert!(
-        !count(&paths).features.ultracode,
+    assert_eq!(
+        count(&paths).features.ultracode,
+        0,
         "ultracode that's on but unused isn't sent"
     );
 
@@ -322,7 +405,7 @@ fn goals_and_ultracode_count_from_runs_and_from_the_conversation() {
     );
     let features = count(&paths).features;
     assert_eq!(features.goals, 2, "a goal set again is still one");
-    assert!(features.ultracode);
+    assert_eq!(features.ultracode, 1);
 
     let alone = tempfile::tempdir().unwrap();
     let alone = Paths::new(alone.path());
@@ -331,10 +414,129 @@ fn goals_and_ultracode_count_from_runs_and_from_the_conversation() {
     used(&alone, Use::Ultracode);
     let features = count(&alone).features;
     assert_eq!(features.goals, 2);
-    assert!(features.ultracode);
+    assert_eq!(features.ultracode, 1);
     let tomorrow = (day + Duration::days(1), day + Duration::days(2));
     let later = usage_between(&alone, &on(), &Found::default(), &State::new(day), tomorrow);
     assert_eq!(later.features.goals, 0, "a use counts on its own day");
+}
+
+/// A command counts by the word it is typed with and nothing typed after it; a crash by the
+/// part of the code it came from, and a dependency's as `elsewhere`.
+#[test]
+fn commands_and_crashes_count_by_fixed_words() {
+    use argonauts_core::input::{ResumeTarget, SlashCommand};
+
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::new(home.path());
+    let model = SlashCommand::Model {
+        role: None,
+        worker: Some(ModelRef::new("opencode", Some("secret-model".to_owned()))),
+        effort: Some("secret-effort".to_owned()),
+    };
+    used(&paths, Use::command(&model));
+    used(&paths, Use::command(&model));
+    used(&paths, Use::command(&SlashCommand::Resume { target: None }));
+    let resume = SlashCommand::Resume {
+        target: Some(ResumeTarget::Run(argonauts_core::RunId::generate())),
+    };
+    used(&paths, Use::command(&resume));
+    let style = SlashCommand::OutputStyle {
+        style: Some("secret-style".to_owned()),
+    };
+    used(&paths, Use::command(&style));
+    used(&paths, Use::WorkflowView);
+    for file in [
+        "crates/tui/src/app/mod.rs",
+        "crates/adapters/codex/src/parser.rs",
+        "/Users/someone/.cargo/registry/src/index.crates.io-0/ratatui-0.29.0/src/buffer.rs",
+        "crates/secret-fork/src/lib.rs",
+    ] {
+        used(&paths, Use::crash_at(file));
+    }
+
+    let day = today();
+    let usage = usage_between(
+        &paths,
+        &on(),
+        &Found::default(),
+        &State::new(day),
+        (day, day + Duration::days(1)),
+    );
+    let counted: Vec<(&str, u32)> = usage
+        .features
+        .commands
+        .iter()
+        .map(|(name, count)| (name.as_str(), *count))
+        .collect();
+    assert_eq!(
+        counted,
+        [("/model", 2), ("/output-style", 1), ("/resume", 2)]
+    );
+    assert_eq!(usage.features.workflow_view, 1);
+    let places: Vec<(&str, u32)> = usage
+        .health
+        .crashes
+        .iter()
+        .map(|(place, count)| (place.as_str(), *count))
+        .collect();
+    assert_eq!(places, [("adapters", 1), ("elsewhere", 2), ("tui", 1)]);
+    let sent = serde_json::to_string(&usage).unwrap();
+    assert!(!sent.contains("secret"), "{sent}");
+}
+
+/// The app notes each command it runs and each opening of a workflow view while reports are on,
+/// and nothing once they're off.
+#[tokio::test]
+async fn the_app_counts_its_commands_and_workflow_views_only_while_reports_are_on() {
+    use argonauts_core::app::{AppEvent, UiCommand, ViewData, ViewRequest};
+    use argonauts_core::input::SlashCommand;
+
+    use crate::controller::test_support::{CliOptions, TestDriver};
+
+    let mut counted = Vec::new();
+    for flags in [Vec::new(), vec!["telemetry.enabled=false".to_owned()]] {
+        let mut driver = TestDriver::start_with(CliOptions {
+            flags,
+            ..CliOptions::default()
+        })
+        .await;
+        let paths = driver.env.paths.clone();
+        driver
+            .send(UiCommand::Slash {
+                command: SlashCommand::Help,
+            })
+            .await;
+        driver
+            .send(UiCommand::Request {
+                view: ViewRequest::Workflow {
+                    run: argonauts_core::RunId::generate(),
+                    workflow: None,
+                },
+            })
+            .await;
+        // The answer to a request sent after them says both were taken.
+        driver
+            .send(UiCommand::Request {
+                view: ViewRequest::Config,
+            })
+            .await;
+        driver
+            .until(|event| {
+                matches!(event, AppEvent::View { data } if matches!(**data, ViewData::Config { .. }))
+            })
+            .await;
+        let uses: Vec<Use> = uses::read_since(&paths, today())
+            .into_iter()
+            .map(|line| line.used)
+            .filter(|used| !matches!(used, Use::Started { .. }))
+            .collect();
+        counted.push(uses);
+        driver.exit().await;
+    }
+    let help = Use::Command {
+        name: "/help".to_owned(),
+    };
+    assert_eq!(counted, [vec![help, Use::WorkflowView], Vec::new()]);
 }
 
 /// The event counts the work the Overview's records hold for Argonauts Code: the same run lines
@@ -426,4 +628,172 @@ fn the_event_counts_what_the_overviews_records_hold_and_nothing_imported() {
     );
     let tokens: u64 = sent.models.iter().map(|model| model.tokens).sum();
     assert_eq!(tokens, 1_000);
+}
+
+/// Each outcome count, from hand-made ledger lines of one council run and one of yours.
+#[test]
+fn the_event_counts_how_the_work_went() {
+    use crate::work_ledger::{ApprovedBy, FallbackCause};
+    use argonauts_core::events::run::RunOutcome;
+    let day = today();
+    let run = argonauts_core::RunId::generate();
+    let task = argonauts_core::TaskId::new("task-001").unwrap();
+    let luna = ModelRef::new("codex", Some("gpt-6-luna".to_owned()));
+    let opus = ModelRef::new("claude-code", Some("claude-opus-5-5".to_owned()));
+    let line = |what| WorkLine {
+        day,
+        repo: SECRET_REPO.to_owned(),
+        run: run.clone(),
+        what,
+    };
+    let review = |sent_back, findings, blocking| {
+        line(Work::Review {
+            by: luna.clone(),
+            task: Some(task.clone()),
+            judge: false,
+            sent_back,
+            reason: None,
+            checks: Vec::new(),
+            checks_failed: None,
+            ran_own: false,
+            findings,
+            blocking,
+        })
+    };
+    let mut yours = run_line(day, "acme-secret-flow");
+    yours.run = argonauts_core::RunId::generate();
+    let work = vec![
+        review(true, 3, 1),
+        review(false, 1, 0),
+        line(Work::Session {
+            role: "worker".to_owned(),
+            by: luna.clone(),
+            task: Some(task.clone()),
+            kind: None,
+            spent: Default::default(),
+            took: 1,
+            tools: 0,
+            fallback_for: Some(opus.clone()),
+            why: "usage limit, resets 3:45pm".to_owned(),
+            window: None,
+            cause: Some(FallbackCause::UsageLimit),
+        }),
+        line(Work::Task {
+            task: task.clone(),
+            by: opus.clone(),
+            kind: None,
+            sent_back: 1,
+            merged: true,
+            reviewed: true,
+            checks_first: Some(false),
+            checks_last: Some(true),
+        }),
+        line(run_line(day, "council").what),
+        line(Work::Outcome {
+            merged: false,
+            replans: 0,
+            merge: None,
+            merged_by: None,
+            checks_failed: false,
+            ended: Some(RunOutcome::Abandoned),
+            merge_approved_by: Some(ApprovedBy::Autopilot),
+            merge_sent_back: 1,
+        }),
+        yours,
+    ];
+    let usage = event::count(
+        "id",
+        &[],
+        &work,
+        &[],
+        &on(),
+        &Found::default(),
+        (day, day + Duration::days(1)),
+    );
+    assert_eq!(usage.runs["council"].abandoned, 1);
+    assert_eq!(
+        usage.features.workflows["custom"], 1,
+        "yours goes by no name"
+    );
+    assert_eq!(usage.tasks.second_pass, 1);
+    assert_eq!(usage.findings.given, 4);
+    assert_eq!(usage.findings.blocking, 1);
+    assert_eq!(
+        usage.findings.fixed, 3,
+        "the sent-back review's findings, once approved"
+    );
+    assert_eq!(usage.findings.by_reviewer["gpt-6-luna"], 4);
+    assert_eq!(usage.findings.by_builder["claude-opus-5-5"], 4);
+    assert_eq!((usage.checks.tasks_checked, usage.checks.first_try), (1, 0));
+    assert_eq!(usage.checks.after_review, 1);
+    assert_eq!((usage.merges.autopilot, usage.merges.sent_back), (1, 1));
+    assert_eq!(usage.fallbacks.usage_limit, 1);
+    assert_eq!(usage.fallbacks.to["gpt-6-luna"], 1);
+    let sent = serde_json::to_string(&usage).unwrap();
+    assert!(!sent.contains("acme"), "{sent}");
+    assert!(!sent.contains("usage limit"), "no free text: {sent}");
+}
+
+/// The report's fields, under the version they go with (a map's own entries aside). A field
+/// added, taken out or renamed needs a new version, so the notice shows once more, and
+/// PRIVACY.md to name it.
+#[test]
+fn the_field_list_is_the_one_its_version_names() {
+    fn walk(value: &Value, at: &str, fields: &mut Vec<String>) {
+        match value {
+            Value::Object(object) => {
+                for (key, value) in object {
+                    let path = if at.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{at}.{key}")
+                    };
+                    fields.push(path.clone());
+                    walk(value, &path, fields);
+                }
+            }
+            Value::Array(items) => {
+                for item in items.iter().take(1) {
+                    walk(item, &format!("{at}[]"), fields);
+                }
+            }
+            _ => {}
+        }
+    }
+    let day = today();
+    let usage = event::count(
+        "id",
+        &[line(day, "claude-code", Some("claude-opus-5-5"), 10, 0.1)],
+        &[],
+        &[],
+        &on(),
+        &Found::default(),
+        (day, day + Duration::days(1)),
+    );
+    let mut fields = Vec::new();
+    walk(&serde_json::to_value(&usage).unwrap(), "", &mut fields);
+    let expected = [
+        "fields, install, version, os",
+        "machine, machine.chip, machine.ram_gb, machine.cores, machine.terminal",
+        "setup, setup.screen, setup.sandbox, setup.approvals, setup.autopilot, setup.git_repo",
+        "clis, models, models[].cli, models[].model, models[].tokens, models[].input",
+        "models[].output, models[].cached, models[].usd, models[].billing, models[].roles",
+        "models[].efforts, runs, turns",
+        "tasks, tasks.reviewed, tasks.first_pass, tasks.second_pass, tasks.more_rounds",
+        "tasks.never_passed",
+        "findings, findings.given, findings.blocking, findings.fixed, findings.by_reviewer",
+        "findings.by_builder",
+        "checks, checks.tasks_checked, checks.first_try, checks.after_review",
+        "checks.final_check_failed",
+        "merges, merges.you, merges.autopilot, merges.judge, merges.rules, merges.sent_back",
+        "fallbacks, fallbacks.signed_out, fallbacks.usage_limit, fallbacks.down",
+        "fallbacks.model_unavailable, fallbacks.stuck, fallbacks.other, fallbacks.to",
+        "features, features.workflows, features.goals, features.ultracode, features.mods",
+        "features.commands, features.workflow_view",
+        "health, health.crashes, health.not_understood, health.startup",
+        "behaviors, behavior_outcomes, behaviors_unlabelled",
+    ];
+    let expected: Vec<&str> = expected.iter().flat_map(|row| row.split(", ")).collect();
+    assert_eq!(usage.fields, 3);
+    assert_eq!(fields, expected);
 }

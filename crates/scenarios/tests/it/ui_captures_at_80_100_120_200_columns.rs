@@ -136,7 +136,7 @@ fn capture(scenario: &Scenario, look: &Look, cols: u16) -> anyhow::Result<()> {
     let screen = pty.wait_for(r"(?m)^[∙✢✲✶✻✼*] [\w'-]+… \(", WAIT)?;
     // Esc leaves a run's agents going, so the bottom line counts them and makes
     // no offer to interrupt.
-    pty.wait_for(r"← \d+ agents?", WAIT)?;
+    pty.wait_for(r"←  \d+ agents?", WAIT)?;
     check(&screen, cols, "busy");
     shot(&pty, "busy")?;
 

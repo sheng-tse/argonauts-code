@@ -170,7 +170,7 @@ fn down_past_panel_opens_run_tree() {
         .start();
     // Your conversation's row and the run's come first, so four of the seven agents show and
     // three wait below.
-    driver.wait_visible("^  ↓ 3 more");
+    driver.wait_visible("^  ↓  3 more");
     // The first ↓ focuses the run's row; four more reach the fourth agent, the last one shown.
     for _ in 0..5 {
         driver.press(Key::Down);
@@ -178,10 +178,10 @@ fn down_past_panel_opens_run_tree() {
     driver.assert_no_command("request");
     // ↓ on the last visible row scrolls the rest in, a row at a time.
     driver.press(Key::Down);
-    driver.wait_visible("^  ↓ 2 more");
+    driver.wait_visible("^  ↓  2 more");
     driver.assert_no_command("request");
     driver.press(Key::Down);
-    driver.wait_gone("^  ↓ \\d+ more");
+    driver.wait_gone("^  ↓  \\d+ more");
     driver.assert_no_command("request");
     driver.press(Key::Down);
     // The panel ends the screen, so the last agent is on its last row.
@@ -272,8 +272,8 @@ fn panel_row_enter_opens_workflow_view() {
     let (crew, events) = declared_run(3);
     let script = with_views(Script::idle().all(0, events), &crew, 1);
     let mut driver = TestDriver::start(script);
-    let screen = driver.wait_visible("↓ to manage");
-    let mode = expect_row(&screen, "↓ to manage");
+    let screen = driver.wait_visible("↓  to manage");
+    let mode = expect_row(&screen, "↓  to manage");
     assert!(
         screen.visible[mode + 1..]
             .iter()
@@ -485,7 +485,7 @@ fn a_hint_from_a_key_stays_on_the_notice_line() {
     let mut driver = TestDriver::launch(script)
         .ui("motion = \"reduced\"")
         .start();
-    let before = driver.wait_visible("↓ to manage");
+    let before = driver.wait_visible("↓  to manage");
     let shown = items(&before);
     for _ in 0..10 {
         driver.press(Key::Esc);
@@ -499,7 +499,7 @@ fn a_hint_from_a_key_stays_on_the_notice_line() {
         "one notice, on the bottom line:\n{}",
         after.text()
     );
-    let mode = expect_row(&after, "↓ to manage|for shortcuts");
+    let mode = expect_row(&after, "↓  to manage|for shortcuts");
     let notice = expect_row(&after, "its run host exited. /resume");
     assert!(notice >= mode, "{}", after.text());
 }
@@ -552,7 +552,7 @@ fn the_view_opened_before_any_agent_starts_follows_the_run() {
     driver.press(Key::Ctrl('t'));
     let waiting = driver.wait_visible("Waiting for the main agent to start designing the workflow");
     assert!(
-        row_of(&waiting, "↓ to manage").is_none(),
+        row_of(&waiting, "↓  to manage").is_none(),
         "{}",
         waiting.text()
     );

@@ -1,0 +1,22 @@
+  ◆ Summarize your agents' actions?                                                                                   
+    Each action gets one line from a model, embedded and mapped beside the others. It runs in the background and keeps
+    every summary, so later runs only add their new actions.                                                          
+                                                                                                                      
+    ❯ 1. Everything: 562 actions in 6 projects             about 2 minutes with your local model                      
+      2. This project only: 124 actions in council         under a minute                                             
+      3. The last 7 days: 301 actions                      about a minute                                             
+      4. Not now                                                                                                      
+                                                                                                                      
+    Enter to choose · Esc to keep the label map                                                                       
+                                                                                                                      
+ Then who summarizes (auto chooses your local model, so nothing leaves this Mac):                                     
+                                                                                                                      
+  ◆ Summarize with                                                                                                    
+    One model writes every summary, so the map compares the agents, not their summarizers.                            
+                                                                                                                      
+    ❯ 1. Qwen3 Coder 30B on Ollama (recommended)           free · on this Mac · 18 GB, fits now                       
+      2. Gemma 3 12B on Ollama                             free · on this Mac · faster, a little rougher              
+      3. Haiku 5.5 on Claude Code                          your Claude plan · about 55k tokens                        
+      4. GPT 6 Luna on Codex                               your ChatGPT plan · about 55k tokens                       
+                                                                                                                      
+    Enter to choose · the embedder is nomic-embed-text on Ollama (274 MB, asked once)                                 

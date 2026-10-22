@@ -4,11 +4,14 @@
 mod command;
 mod level;
 pub mod models;
+mod outside;
 mod parser;
 pub mod private_server;
 mod provider;
 mod providers;
 mod sessions;
+#[cfg(test)]
+mod test_script;
 mod user_config;
 
 use std::path::PathBuf;

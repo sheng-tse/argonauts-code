@@ -1,0 +1,10 @@
+ Spec-first, Review: Qwen reviews with the change in its prompt; Codex takes a change Qwen can't hold                 
+                                                                                                                      
+ ╭ Phases ──────────┬ Review · 2 agents ────────────────────────────────────────────────────────────────────────────╮ 
+ │   ✔ Plan     1/1 │  ✔ review:cap-bucket-refills  Qwen3 Coder 30B · 1.9k tok · approved                       19s │ 
+ │   ✔ Build    2/2 │  ✔ review:per-api-key         GPT 6 Luna · 71.3k tok · approved · in place of Qwen3 Code…  9s │ 
+ │ ❯ ✔ Review   2/2 │                                                                                               │ 
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                                                      
+ Enter on each: the first view says "Reviewed with the change and the checks in its prompt, no tools";                
+ the second, "In place of Qwen3 Coder 30B, whose 64k window can't hold this change".                                  

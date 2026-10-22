@@ -67,8 +67,8 @@ fn templates_lists_the_workflows_and_the_prompts_and_shows_the_folder() {
     assert_matches(
         "templates",
         &lines,
-        include_str!("pictures/templates.txt"),
-        include_str!("pictures/templates.html"),
+        include_str!("../../../tests/golden/transcript/templates.txt"),
+        include_str!("../../../tests/golden/transcript/templates.html"),
         &theme,
         &[
             Unlike {

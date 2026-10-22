@@ -117,8 +117,8 @@ fn vim_label_nothing_in_normal_and_insert_dim_first() {
     assert_matches(
         "vim_label",
         &lines,
-        &trimmed(include_str!("pictures/vim_label.txt")),
-        include_str!("pictures/vim_label.html"),
+        &trimmed(include_str!("../../tests/golden/bottom/vim_label.txt")),
+        include_str!("../../tests/golden/bottom/vim_label.html"),
         &theme(),
         &[
             caption(0),
@@ -208,8 +208,8 @@ fn vim_jk_history_then_the_list_and_back() {
     assert_matches(
         "vim_jk",
         &lines,
-        &trimmed(include_str!("pictures/vim_jk.txt")),
-        include_str!("pictures/vim_jk.html"),
+        &trimmed(include_str!("../../tests/golden/bottom/vim_jk.txt")),
+        include_str!("../../tests/golden/bottom/vim_jk.html"),
         &theme(),
         &unlike,
     );

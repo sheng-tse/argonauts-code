@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_overlays.rs
+source: crates/tui/tests/it/snap_overlays.rs
+assertion_line: 1079
 expression: "screen(&mut view, width, 24, &state)"
 ---
 ╭──────────────────────────────────────────────────────────────────────────────╮
@@ -10,5 +11,5 @@ expression: "screen(&mut view, width, 24, &state)"
 │     Argonauts Code    what does export do?          2h ago        3 turns    │
 │     Claude Code       Rename the CSV writer         yesterday     3 turns    │
 │                                                                              │
-│ ↑↓ pick · enter continues it · / search · esc                                │
+│ ↑↓  pick · enter continues it · / search · esc                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯

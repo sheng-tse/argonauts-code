@@ -8,4 +8,4 @@
  │   ✔ Merge    1/1 │  ✔ build:c-demo-tests      Opus 5.5                                                           │ 
  │   4 Look     3/4 │                                                                                               │ 
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓ select · ⏎ open · m message · x stop · r restart · p pause · f filter · esc back · s save                         
+ ↑↓  select · ⏎ open · m message · x stop · r restart · p pause · f filter · esc back · s save                        

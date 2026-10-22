@@ -1,5 +1,6 @@
 ---
 source: crates/tui/tests/it/snap_settings.rs
+assertion_line: 55
 expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────
@@ -16,4 +17,4 @@ expression: "picker_lines(picker, width)"
 
   ◉ high effort (default)  ←/→  to adjust
 
-  Enter to choose · ↑↓ to move · type to filter · Esc to go back
+  Enter to choose · ↑↓  to move · type to filter · Esc to go back

@@ -379,6 +379,24 @@ mod tests {
         picture.assert_drawn(3..5, &buffer_of(&ended.lines(&ctx), 118), 0);
     }
 
+    /// The fork picture's Workflow call is the same under either start: the run's words and its
+    /// workflow, and where to watch it. The picture names the workflow `Orchestrator`, as a
+    /// Captain task's call says `Captain`; the call names it `orchestrator workflow`, as the
+    /// workflow transcript's picture has it.
+    #[test]
+    fn the_fork_starts_workflow_call_reads_as_its_picture() {
+        let theme = on_macos();
+        let ctx = RenderCtx::new(118, &theme, Clock::still(Instant::now()));
+        let mut picture = picture!("fork_start");
+        for row in [7, 36] {
+            picture.recolour(row, 0, theme.style(Role::Success).fg);
+            picture.reword(row, "· Orchestrator)", "· orchestrator workflow)");
+        }
+        let started = buffer_of(&start().item(None).lines(&ctx), 118);
+        picture.assert_drawn(7..9, &started, 0);
+        picture.assert_drawn(36..38, &started, 0);
+    }
+
     /// A Captain task's own CLI running its workflow: the line names the run by its words and
     /// its mode, once the phases are known, and again with how it ended.
     #[test]
@@ -399,9 +417,33 @@ mod tests {
             ToolCall::call(ToolKind::Other, "Workflow", start.title()).with_state(ToolState::Done);
         ended.push(ToolItem::Workflow(WorkflowResult::Ended {
             how: WorkflowEnd::Completed,
-            counts: "1m 31s · 6 agents · 157k tokens · merged onto main".to_owned(),
+            counts: "1m 31s · 5 agents · 153k tokens · merged onto main".to_owned(),
         }));
         done.assert_drawn(2..4, &buffer_of(&ended.lines(&ctx), 118), 0);
+    }
+
+    /// The same call in the Captain run's own picture: where to watch it as it starts, and
+    /// once merged, the run's time, agents and tokens, and the merge.
+    #[test]
+    fn the_captain_runs_calls_read_as_its_picture() {
+        let theme = on_macos();
+        let ctx = RenderCtx::new(118, &theme, Clock::still(Instant::now()));
+        let mut picture = picture!("captain_after");
+        for row in [58, 92] {
+            picture.recolour(row, 0, theme.style(Role::Success).fg);
+        }
+        let mut start = start();
+        start.name = "fix-the-money-rounding".to_owned();
+        start.captain = true;
+        picture.assert_drawn(92..94, &buffer_of(&start.item(None).lines(&ctx), 118), 0);
+
+        let mut ended =
+            ToolCall::call(ToolKind::Other, "Workflow", start.title()).with_state(ToolState::Done);
+        ended.push(ToolItem::Workflow(WorkflowResult::Ended {
+            how: WorkflowEnd::Completed,
+            counts: "1m 23s · 4 agents · 90.4k tokens · merged onto main".to_owned(),
+        }));
+        picture.assert_drawn(58..60, &buffer_of(&ended.lines(&ctx), 118), 0);
     }
 
     /// Claude Code's second Workflow call for the task prints as it prints every one, under

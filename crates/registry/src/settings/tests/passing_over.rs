@@ -198,6 +198,7 @@ fn a_flag_you_typed_still_stops_with_its_error() {
 #[test]
 fn only_your_own_file_turns_telemetry_on() {
     let repo = Repo::new();
+    repo.global("[telemetry]\nenabled = false\n");
     repo.project("[telemetry]\nenabled = true\n");
     let resolved = resolve(&repo.forgiving()).unwrap();
     assert!(!resolved.settings.telemetry.enabled);
@@ -211,6 +212,32 @@ fn only_your_own_file_turns_telemetry_on() {
             .settings
             .telemetry
             .enabled
+    );
+}
+
+/// Turning usage reports off only takes something away, so a project's own settings may do it.
+#[test]
+fn a_project_may_turn_telemetry_off() {
+    let repo = Repo::new();
+    repo.project("[telemetry]\nenabled = false\n");
+    let resolved = resolve(&repo.forgiving()).unwrap();
+    assert!(!resolved.settings.telemetry.enabled);
+    assert!(
+        !resolved
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("telemetry.enabled")),
+        "{:?}",
+        resolved.warnings
+    );
+    repo.project("");
+    assert!(
+        resolve(&repo.forgiving())
+            .unwrap()
+            .settings
+            .telemetry
+            .enabled,
+        "on by default"
     );
 }
 

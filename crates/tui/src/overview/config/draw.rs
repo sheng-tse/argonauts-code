@@ -22,6 +22,8 @@ const MOST_ROWS: usize = 20;
 const LABEL_COLUMN: usize = 43;
 const POINTER: &str = "  ❯ ";
 const NO_POINTER: &str = "    ";
+/// Between a row's value and what its values mean.
+const DESCRIBED_GAP: &str = "   ";
 const PLACEHOLDER: &str = "Search settings…";
 
 /// Rows the tab takes under its tabs for `rows` setting rows: two blank, the search box, a
@@ -176,8 +178,8 @@ fn row_line(
     let words = tab.words(row, state);
     let (before, after) = match row.row.control {
         Control::Choice(_) if pointed => ("‹ ", " ›"),
-        Control::Opens(_) if words.is_empty() => ("", "›"),
-        Control::Opens(_) => ("", " ›"),
+        Control::Opens(_) | Control::BehaviorsMap if words.is_empty() => ("", "›"),
+        Control::Opens(_) | Control::BehaviorsMap => ("", " ›"),
         _ => ("", ""),
     };
     let held = row.held_by().map(|who| format!(" · set by {who}"));
@@ -194,7 +196,25 @@ fn row_line(
     if let Some(held) = held {
         line.push(kit.dim(held));
     }
+    if let Some(note) = note(row.row.key).map(|note| format!("{DESCRIBED_GAP}{note}")) {
+        if spans_width(&line) + str_width(&note) <= width {
+            line.push(kit.dim(note));
+        }
+    } else if let Some(meaning) = row.meaning() {
+        let room = width.saturating_sub(spans_width(&line) + DESCRIBED_GAP.len());
+        if room > 0 {
+            line.push(kit.dim(format!("{DESCRIBED_GAP}{}", cut(meaning, room))));
+        }
+    }
     line
+}
+
+/// What a row's setting does, dim after its value while the row has room for all of it.
+fn note(key: &str) -> Option<&'static str> {
+    match key {
+        "telemetry.enabled" => Some("one anonymous report a day · PRIVACY.md"),
+        _ => None,
+    }
 }
 
 /// What the rows on screen leave out: `↓ 25 more below`, with the last row's name while it
@@ -207,9 +227,9 @@ fn more_words(tab: &ConfigTab, shown: &[Shown<'_>], room: usize) -> String {
             .filter(|row| row.row.control == Control::AllSettings)
             .map(|row| format!(" · the last row is \"{} ›\"", tab.label(row.row)))
             .unwrap_or_default();
-        format!("{NO_POINTER}↓ {below} more below{last}")
+        format!("{NO_POINTER}↓  {below} more below{last}")
     } else if tab.offset > 0 {
-        format!("{NO_POINTER}↑ {} more above", tab.offset)
+        format!("{NO_POINTER}↑  {} more above", tab.offset)
     } else {
         String::new()
     }

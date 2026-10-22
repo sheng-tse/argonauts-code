@@ -23,7 +23,6 @@ struct FakeCodex {
 
 impl FakeCodex {
     fn new(on_update: &str) -> Self {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let fake = Self { dir };
         std::fs::write(fake.version_file(), format!("{OLD}\n")).unwrap();
@@ -33,8 +32,7 @@ impl FakeCodex {
             "#!/bin/sh\ncase \"$1\" in\n  --version) echo \"codex-cli $(cat '{version}')\" ;;\n  \
              update) {on_update} ;;\nesac\n"
         );
-        std::fs::write(fake.binary(), script).unwrap();
-        std::fs::set_permissions(fake.binary(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        argonauts_testkit::write_script(&fake.binary(), &script).unwrap();
         fake
     }
 
@@ -110,6 +108,7 @@ fn request(mode: RunMode) -> StartRun {
         instructions: Vec::new(),
         request_settings: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     }
 }
 
@@ -196,7 +195,7 @@ fn the_question_reads_as_its_picture() {
         let label = format!("{:<width$}", option.label, width = label_width + 4);
         drawn.push(format!("  {pointer} {}. {label}{detail}", index + 1));
     }
-    let picture = include_str!("../../../../tui/src/overview/pictures/versions.txt");
+    let picture = include_str!("../../../../tui/tests/golden/overview/versions.txt");
     let pictured: Vec<&str> = picture.lines().skip(13).take(6).collect();
     assert_eq!(drawn, pictured);
     let keys: Vec<(char, AnswerAction)> = options

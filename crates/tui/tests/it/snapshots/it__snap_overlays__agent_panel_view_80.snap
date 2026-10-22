@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_overlays.rs
+source: crates/tui/tests/it/snap_overlays.rs
+assertion_line: 449
 expression: "screen(&mut view, width, height, &state)"
 ---
 argonauts › crew                                Claude 72% · Codex 41% · agy 90%
@@ -25,4 +26,4 @@ Sessions
 
 
 
-↑↓ move · → open · Space details · Tab filter · x stop · ? keys · esc back
+↑↓  move · →  open · Space details · Tab filter · x stop · ? keys · esc back

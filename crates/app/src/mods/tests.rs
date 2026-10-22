@@ -1,7 +1,6 @@
 //! `/mods` end to end, through the real controller: the files it lists, what a page's save,
 //! reset and trust do on disk, and when a mod's command runs.
 
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use argonauts_core::app::{AppEvent, UiCommand, ViewData, ViewRequest};
@@ -17,8 +16,7 @@ const CLOCK: &str =
 fn script(dir: &Path, name: &str, body: &str) {
     std::fs::create_dir_all(dir).unwrap();
     let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    argonauts_testkit::write_script(&path, &format!("#!/bin/sh\n{body}\n")).unwrap();
 }
 
 /// The test driver with the sandbox off, so a test's command runs as it is.

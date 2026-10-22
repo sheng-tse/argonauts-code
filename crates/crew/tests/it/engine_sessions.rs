@@ -68,6 +68,8 @@ fn plan(worker: &ModelRef, access: Access, host: &Host) -> SessionPlan {
         reviews: false,
         fresh: false,
         independent_of: Vec::new(),
+        in_place_of: None,
+        fork_of: None,
     }
 }
 

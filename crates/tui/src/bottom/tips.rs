@@ -5,7 +5,7 @@
 pub const TIPS: &[&str] = &[
     "Shift+Tab cycles the approval mode: supervised, auto, autopilot",
     "Type ultracode in a prompt to send that request through a workflow",
-    "← on an empty prompt opens the agent panel",
+    "←  on an empty prompt opens the agent panel",
     "Ctrl+T shows the workflow a run follows",
     "Ctrl+O shows the whole transcript",
     "Ctrl+R searches the prompts you sent before",

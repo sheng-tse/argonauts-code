@@ -338,10 +338,10 @@ impl SettingsPage {
             "s save to yours"
         };
         vec![
-            "↑↓ setting",
-            "← → change",
+            "↑↓  setting",
+            "←  →  change",
             "space tick",
-            "shift+← → order",
+            "shift+←  →  order",
             "r reset",
             save,
         ]

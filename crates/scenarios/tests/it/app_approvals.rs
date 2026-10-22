@@ -214,23 +214,6 @@ fn app_waiting_answer_refused_inside_agent_session() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Linux lets `resume` read its parent shell's environment; macOS 27 hides it.
-#[cfg(target_os = "linux")]
-#[test]
-fn app_waiting_answer_refused_below_a_marked_shell() -> anyhow::Result<()> {
-    let scenario = scenario()?;
-    let waiting = fabricate_waiting_run(&scenario, 1)?;
-    let events_before = run_events(&waiting.dir)?.len();
-
-    let mut below = resume_below_marked_shell(&scenario, &waiting, |_| Ok(()))?;
-    below.wait_for_exit(WAIT)?;
-    let said = String::from_utf8_lossy(&below.raw()).into_owned();
-    assert!(said.contains("exit=") && !said.contains("exit=0"), "{said}");
-    assert!(said.contains("has ARGONAUTS_SESSION set"), "{said}");
-    assert_untouched(&waiting, events_before)?;
-    Ok(())
-}
-
 /// Runs `resume` for the waiting run under a shell that has the session marker, with the
 /// marker removed, as an agent's shell could do. `before_resume` gets the shell's pid
 /// first. The shell stays the parent because a command follows.

@@ -170,10 +170,15 @@ fn agent_row(agent: &AgentCheck, check: Option<&CliVersionCheck>) -> String {
 
 fn verdict(report: &DoctorReport, checks: &VersionChecks) -> String {
     if !report.ready() {
-        return format!(
-            "Not ready: install git and at least one of {}.",
-            quoted_binaries(report)
-        );
+        // Only what's missing: git when no git ran, a CLI when none can be used.
+        let no_git = report.git.version.is_none();
+        let no_cli = !report.agents.iter().any(AgentCheck::usable);
+        let missing = match (no_git, no_cli) {
+            (true, true) => format!("git and at least one of {}", quoted_binaries(report)),
+            (true, false) => "git".to_owned(),
+            (false, _) => format!("at least one of {}", quoted_binaries(report)),
+        };
+        return format!("Not ready: install {missing}.");
     }
     let usable = report.agents.iter().filter(|agent| agent.usable()).count();
     let total = report.agents.len();
@@ -204,11 +209,18 @@ fn verdict(report: &DoctorReport, checks: &VersionChecks) -> String {
     verdict
 }
 
+/// Each program once, in the order the CLIs come: OpenCode and its ACP way both run
+/// `opencode`.
 fn quoted_binaries(report: &DoctorReport) -> String {
-    report
-        .agents
+    let mut binaries: Vec<&str> = Vec::new();
+    for agent in &report.agents {
+        if !binaries.contains(&agent.binary.as_str()) {
+            binaries.push(&agent.binary);
+        }
+    }
+    binaries
         .iter()
-        .map(|agent| format!("`{}`", agent.binary))
+        .map(|binary| format!("`{binary}`"))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -339,12 +351,7 @@ mod tests {
         let agents = vec![
             named("claude-code", "Claude Code", AgentStatus::Tested, "2.1.296"),
             named("codex", "Codex", AgentStatus::Untested, "0.158.0"),
-            named(
-                "antigravity-cli",
-                "Antigravity CLI",
-                AgentStatus::Untested,
-                "1.3.3",
-            ),
+            named("antigravity-cli", "agy", AgentStatus::Untested, "1.3.3"),
             named("opencode", "OpenCode", AgentStatus::Tested, "1.18.34"),
         ];
         let stands = |standing, works| CliVersionCheck {
@@ -397,13 +404,127 @@ mod tests {
             [
                 "Claude Code 2.1.296       checked · works               2.1.297 is out · claude update",
                 "Codex 0.158.0             older than supported          0.160.0 needed · brew upgrade codex",
-                "Antigravity CLI 1.3.3     newer than checked · works    its flags and start-up message match 1.3.1",
+                "agy 1.3.3                 newer than checked · works    its flags and start-up message match 1.3.1",
                 "OpenCode 1.18.34          checked · works               up to date",
             ]
         );
         // A version that must be updated is said on its row, and nothing plays it down.
         assert!(!text.contains("may still work"), "{text}");
         assert!(text.contains("git 2.54.0\n"), "{text}");
+    }
+
+    /// `argonauts doctor` on a machine without git, as its picture draws it at 118 columns:
+    /// the five CLIs, git, and the verdict. The picture's other half, the output before, names
+    /// the CLIs and git's failure as they no longer read, so only this half is kept.
+    const PICTURE: &str = include_str!("../tests/golden/doctor_after.txt");
+
+    /// The picture's lines of the doctor's own output after the change, between the
+    /// command and the caption under it.
+    fn pictured_after() -> Vec<&'static str> {
+        let lines: Vec<&str> = PICTURE.lines().map(str::trim_end).collect();
+        let after = lines
+            .iter()
+            .position(|line| *line == " After")
+            .expect("the picture has an After");
+        let command = after
+            + lines[after..]
+                .iter()
+                .position(|line| *line == "$ argonauts doctor")
+                .expect("the command");
+        let mut shown: Vec<&str> = lines[command + 1..]
+            .iter()
+            .take_while(|line| !line.starts_with(" ("))
+            .copied()
+            .collect();
+        while shown.last() == Some(&"") {
+            shown.pop();
+        }
+        shown
+    }
+
+    fn missing(id: &str, display_name: &str, binary: &str) -> AgentCheck {
+        AgentCheck {
+            display_name: display_name.to_owned(),
+            binary: binary.to_owned(),
+            ..check(id, AgentStatus::NotInstalled, None)
+        }
+    }
+
+    /// Nothing installed and no git: each CLI not installed, git not installed rather than
+    /// its raw failure, and each program named once.
+    #[test]
+    fn doctor_on_a_machine_without_git_matches_its_picture() {
+        let report = DoctorReport {
+            agents: vec![
+                missing("claude-code", "Claude Code", "claude"),
+                missing("codex", "Codex", "codex"),
+                missing("antigravity-cli", "agy", "agy"),
+                missing("opencode", "OpenCode", "opencode"),
+                missing("opencode-acp", "OpenCode ACP", "opencode"),
+            ],
+            git: GitCheck {
+                version: None,
+                problem: Some(argonauts_conductor::GitError::NotInstalled.to_string()),
+            },
+        };
+        let text = render(
+            &report,
+            &VersionChecks::new(),
+            &DoctorExtras::default(),
+            &[],
+        );
+        argonauts_testkit::picture_dump::dump("doctor_after", &text);
+        let drawn: Vec<&str> = text.lines().collect();
+        assert_eq!(drawn, pictured_after());
+        assert!(drawn.iter().all(|line| line.chars().count() <= 118));
+    }
+
+    /// The verdict names git only when no git ran, and a CLI only when none can be used.
+    #[test]
+    fn the_verdict_names_only_whats_missing() {
+        let verdict_of = |report: DoctorReport| {
+            let text = render(
+                &report,
+                &VersionChecks::new(),
+                &DoctorExtras::default(),
+                &[],
+            );
+            text.lines()
+                .find(|line| line.starts_with("Not ready"))
+                .map(str::to_owned)
+        };
+        let no_cli = report(
+            vec![check("a", AgentStatus::NotInstalled, None)],
+            Some("2.54.0"),
+        );
+        assert_eq!(
+            verdict_of(no_cli).as_deref(),
+            Some("Not ready: install at least one of `a`.")
+        );
+        let no_git = report(vec![check("a", AgentStatus::Tested, Some("1.0.0"))], None);
+        assert_eq!(
+            verdict_of(no_git).as_deref(),
+            Some("Not ready: install git.")
+        );
+        let neither = report(vec![check("a", AgentStatus::NotInstalled, None)], None);
+        assert_eq!(
+            verdict_of(neither).as_deref(),
+            Some("Not ready: install git and at least one of `a`.")
+        );
+    }
+
+    /// OpenCode and its ACP way run one program, which the verdict names once.
+    #[test]
+    fn a_program_two_clis_run_is_named_once() {
+        let report = report(
+            vec![
+                missing("opencode", "OpenCode", "opencode"),
+                missing("opencode-acp", "OpenCode ACP", "opencode"),
+                missing("codex", "Codex", "codex"),
+            ],
+            Some("2.54.0"),
+        );
+        assert_eq!(quoted_binaries(&report), "`opencode`, `codex`");
     }
 
     #[test]

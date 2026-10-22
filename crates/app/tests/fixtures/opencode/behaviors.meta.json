@@ -1,0 +1,7 @@
+{
+  "adapter": "opencode",
+  "scenario": "behaviors",
+  "source": "tool calls from Argonauts run records, 2026-10-03 to 2026-10-20, as the adapter parsed them",
+  "cli_version": null,
+  "changed": "home paths, user names and repo hashes replaced; structured answers' and workflow scripts' fields elided"
+}

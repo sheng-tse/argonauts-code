@@ -659,7 +659,7 @@ pub fn config_schema() -> serde_json::Value {
     schemars::schema_for!(Settings).to_value()
 }
 
-fn home() -> anyhow::Result<Paths> {
+pub(crate) fn home() -> anyhow::Result<Paths> {
     Paths::from_env().map_err(|_| anyhow!("can't find your home directory; set ARGONAUTS_HOME"))
 }
 
@@ -682,7 +682,7 @@ fn required(repo: Option<&Path>) -> anyhow::Result<AppEnv> {
 
 /// The settings for this repo with each project file's trust, or the global file alone outside
 /// one.
-fn resolve_here(
+pub(crate) fn resolve_here(
     repo: Option<&Path>,
     overrides: Vec<String>,
 ) -> anyhow::Result<(Option<AppEnv>, ResolvedSettings)> {

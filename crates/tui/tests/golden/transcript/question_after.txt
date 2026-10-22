@@ -1,0 +1,15 @@
+◆ build:fix-the-money asks · Haiku 5.5 on Claude Code
+  Should the judge's "not ready" block the merge, or only warn?
+  ❯ 1. Block the merge   2. Only warn   3. Let the agent decide
+
+  (you press shift+tab: auto →  autopilot)
+
+⏺ Autopilot answered build:fix-the-money's question
+  ⎿  Block the merge · Opus 5.5, the main agent: the sign-off already decides, so a "not ready" stops it
+     the task goes on to its review rounds; the merge question will show the question and this answer
+
+  (and when a run does end without a merge, its line gives the real reason instead of "it recorded no reason")
+⏺ The run ended · Nothing was merged: build:fix-the-money stopped before its checks passed
+  ⎿  it was blocked on a question · the branch is kept · /resume carries it on
+
+⏺ Claude Code is signed out (its sign-in was revoked) · run claude /login · Codex answers meanwhile

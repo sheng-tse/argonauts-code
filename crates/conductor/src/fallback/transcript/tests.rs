@@ -69,6 +69,9 @@ impl Log {
             workflow_step: None,
             label: None,
             asked: None,
+            asked_by: None,
+            asked_why: None,
+            forked: false,
         };
         self.session(session, SessionEvent::Started(Box::new(started)));
     }

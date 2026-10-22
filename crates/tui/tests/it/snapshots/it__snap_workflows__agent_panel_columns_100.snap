@@ -1,8 +1,9 @@
 ---
-source: crates/tui/tests/snap_workflows.rs
+source: crates/tui/tests/it/snap_workflows.rs
+assertion_line: 1408
 expression: text
 ---
   ● main
   ◯ fix the export race  1/3 · 4m12s · via desktop-client · ↷ GPT 5.6 for Claude Code
-    ○ task-001  thinking                    ctx 120k/200k · +3 subagents · 4m · ↓ 18.1k tokens
-    ○ task-002  thinking                    ◌ needs review · ↷ for Claude Code · 4m · ↓ 2.4k tokens
+    ○ task-001  thinking                   ctx 120k/200k · +3 subagents · 4m · ↓  18.1k tokens
+    ○ task-002  thinking                   ◌ needs review · ↷ for Claude Code · 4m · ↓  2.4k tokens

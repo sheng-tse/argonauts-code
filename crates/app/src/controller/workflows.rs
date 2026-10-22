@@ -790,7 +790,7 @@ fn who_would_take(ctx: &Ctx, row: &Row) -> String {
     }
 }
 
-/// `Gemini 3.6 Pro` of `Gemini 3.6 Pro on Antigravity CLI`.
+/// `Gemini 3.6 Pro` of `Gemini 3.6 Pro on agy`.
 fn model_alone(ctx: &Ctx, worker: &ModelRef) -> String {
     let full = ctx.names.worker(worker);
     let cli = ctx.names.cli(&worker.agent);

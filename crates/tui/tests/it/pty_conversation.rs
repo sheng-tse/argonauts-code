@@ -269,7 +269,7 @@ fn busy_screen_keeps_its_layout() {
         .ui("[panel]\nagents = true")
         .start();
     driver.wait_visible("^    ○ task-003 ");
-    let screen = driver.wait_visible("← 3 agents · ↓ to manage");
+    let screen = driver.wait_visible("←  3 agents · ↓  to manage");
     assert_order(
         &screen,
         &[
@@ -280,7 +280,7 @@ fn busy_screen_keeps_its_layout() {
             // A run's agents keep going past Esc, so with only a run at work
             // the bottom line makes no offer to interrupt. At 100 columns the chips take the room
             // of the mode's first two hints.
-            "^  ǁ supervised mode on( \\(shift\\+tab to cycle\\))?( · \\? for shortcuts)? · ← 3 agents · ↓ to manage( {2,}\\S.*)?$",
+            "^  ǁ supervised mode on( \\(shift\\+tab to cycle\\))?( · \\? for shortcuts)? · ←  3 agents · ↓  to manage( {2,}\\S.*)?$",
             // The list is Claude Code's: your conversation as `main`, then a row per run,
             // named by its workflow and title, with its agents
             // under it, each by its name, what it's doing, and how long and how many tokens.
@@ -288,13 +288,13 @@ fn busy_screen_keeps_its_layout() {
             &format!("^  {BULLET} main$"),
             "^  ◯ Council · Add a --json flag to export +▱+ +0/3 · ",
             &format!(
-                "^    ○ task-002 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓ [\\d.]+k tokens$"
+                "^    ○ task-002 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓  [\\d.]+k tokens$"
             ),
             &format!(
-                "^    ○ task-003 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓ [\\d.]+k tokens$"
+                "^    ○ task-003 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓  [\\d.]+k tokens$"
             ),
             &format!(
-                "^    ○ task-004 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓ [\\d.]+k tokens$"
+                "^    ○ task-004 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓  [\\d.]+k tokens$"
             ),
         ],
     );
@@ -419,7 +419,7 @@ fn esc_stops_the_main_turn_and_leaves_its_subagents_running() {
     let screen = driver.wait_gone("esc to interrupt");
     let row = expect_row(
         &screen,
-        "○ Count slowly +Counting to four hundred +\\d+s · ↓ 11.8k tokens",
+        "○ Count slowly +Counting to four hundred +\\d+s · ↓  11.8k tokens",
     );
     assert!(row > interrupted, "{}", screen.visible_text());
     driver.press(Key::Esc);

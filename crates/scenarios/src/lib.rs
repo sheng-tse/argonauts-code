@@ -204,7 +204,6 @@ mod tests {
 
     #[test]
     fn a_dropped_scenario_stops_the_run_hosts_it_left() {
-        use std::os::unix::fs::PermissionsExt as _;
         use std::os::unix::process::CommandExt as _;
         use std::time::Instant;
 
@@ -215,9 +214,12 @@ mod tests {
         // A fake `argonauts host`, leading its own group as the real one does,
         // with a child in that group.
         let script = dir.path().join("argonauts");
-        std::fs::write(&script, "#!/bin/sh\nsleep 30 &\nwait\n").unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut run_host = std::process::Command::new(&script)
+        std::fs::write(&script, "sleep 30 &\nwait\n").unwrap();
+        // The shell reads the script rather than the kernel running it. On Linux, running a
+        // file just written fails with "Text file busy" while a fork on another test's thread
+        // still holds it open, and the command line is the same either way.
+        let mut run_host = std::process::Command::new("/bin/sh")
+            .arg(&script)
             .arg("host")
             .arg("--repo")
             .arg(scenario.repo.root())

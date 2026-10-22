@@ -9,4 +9,4 @@
  │   3 Sign-off     │                                                                                               │
  │   4 Merge        │                                                                                               │
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
- ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save

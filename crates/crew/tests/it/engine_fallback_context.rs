@@ -39,13 +39,14 @@ use argonauts_core::steps::StepName;
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
 use argonauts_core::{AgentEvent, DiffStat, NoteLevel, RepoId, RunId, TaskId};
 use argonauts_crew::engine::host::Host;
-use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::fallback::{self, rules};
 use argonauts_crew::state::RunState;
 use argonauts_crew::task::{pipeline, prompt};
 use argonauts_testkit::repo::TempRepo;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
+
+use crate::support::shared_in;
 
 const OPUS: &str = "claude-code/opus";
 const CODEX: &str = "codex/gpt-5.6";
@@ -186,7 +187,7 @@ impl Bench {
                 context.sink = Arc::new(OnDisk::new(sink.clone(), &run_dir, &history)?);
             }
         }
-        let shared = Shared::new(&context, RunState::fold(&history))?;
+        let shared = shared_in(&repo, &context, RunState::fold(&history))?;
         Ok(Self {
             services,
             host: Host::new(Arc::new(shared)),
@@ -960,6 +961,7 @@ fn started(repo: &TempRepo, base: &str) -> RunEventKind {
         outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     })))
 }
 

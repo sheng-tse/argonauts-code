@@ -1,5 +1,5 @@
 //! The checks, a reviewer and a sign-off as the conversation prints them, compared cell for cell
-//! with the drawing in `golden/review_after.txt`, from the same example: a rate limiter made per
+//! with the drawing in `tests/golden/transcript/review_after.txt`, from the same example: a rate limiter made per
 //! API key, its tests passing, one reviewer and one sign-off on Haiku 4.5.
 
 use std::path::PathBuf;
@@ -30,8 +30,8 @@ use crate::render::{Clock, RenderCtx};
 use crate::text::plain_text;
 use crate::theme::{Glyphs, Role, Theme};
 
-const PICTURE: &str = include_str!("../../golden/review_after.txt");
-const COLOURS: &str = include_str!("../../golden/review_after.html");
+const PICTURE: &str = include_str!("../../tests/golden/transcript/review_after.txt");
+const COLOURS: &str = include_str!("../../tests/golden/transcript/review_after.html");
 const WIDTH: u16 = 118;
 
 struct Run {
@@ -81,6 +81,9 @@ impl Run {
             workflow_step: None,
             label: Some(label.to_owned()),
             asked: None,
+            asked_by: None,
+            asked_why: None,
+            forked: false,
         };
         self.send(
             Some(session),
@@ -201,6 +204,7 @@ fn reviewed_run() -> Run {
             outside_agent: None,
             instructions: Vec::new(),
             required_steps: Vec::new(),
+            starts_from: None,
         }))),
     );
     // The builder is still at work, so only its label reaches the conversation, on the checks' row.

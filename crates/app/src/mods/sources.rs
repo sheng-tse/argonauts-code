@@ -418,6 +418,7 @@ mod tests {
                 categories: Vec::new(),
                 recorded: None,
                 ended: None,
+                answered_for: None,
             }),
             ..Numbers::default()
         }

@@ -19,7 +19,6 @@ use argonauts_core::steps::task::AcceptanceTestsInput;
 use argonauts_core::workflow::{StandardPhase, Step, StepRef};
 use argonauts_core::{RepoId, RunId, TaskId};
 use argonauts_crew::engine::host::Host;
-use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::review::{self, Verdict, endpoint_tests};
 use argonauts_crew::state::RunState;
 use argonauts_crew::task::worktree;
@@ -27,6 +26,8 @@ use argonauts_crew::workflow::{StepAt, StepCall};
 use argonauts_testkit::repo::TempRepo;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, engine_context_in};
+
+use crate::support::shared_in;
 
 const CLAUDE: &str = "claude-code/claude-opus";
 const CODEX: &str = "codex/gpt-5";
@@ -78,7 +79,7 @@ impl Bench {
         };
         let (context, sink, _commands) =
             engine_context_in(&services, all, context, history.clone());
-        let shared = Shared::new(&context, RunState::fold(&history))?;
+        let shared = shared_in(&repo, &context, RunState::fold(&history))?;
         Ok(Self {
             services,
             _repo: repo,

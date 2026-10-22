@@ -5,7 +5,7 @@ expression: text
 Argonauts Code 0.1.0, ~/code/api, workflow council
 agent: Claude Code 2.1.284, ready
 agent: Codex 0.158.0, ready
-agent: Antigravity CLI 1.2.13, ready
+agent: agy 1.2.13, ready
 Type a message and press Enter. /help lists the commands. Ctrl+D leaves.
 you: hi
 claude-code: Hello there.

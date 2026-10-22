@@ -57,7 +57,7 @@ mod tests {
     const CLI: &str = "listed-cli";
 
     /// What discovery says of the built-in CLIs [`only_the_given_list`] turns off.
-    const OFF: &str = "Claude Code, Codex, Antigravity CLI, OpenCode: off in your settings";
+    const OFF: &str = "Claude Code, Codex, agy, OpenCode: off in your settings";
 
     /// Nothing but the given list is asked: every built-in CLI and local server is off.
     fn only_the_given_list() -> Settings {

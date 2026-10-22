@@ -296,10 +296,10 @@ fn tight_space_drops_parts_in_order() {
     let without_working = text_within(16);
     assert!(!without_working.contains("Building"));
     assert!(without_working.contains("3 files"));
-    assert!(without_working.contains("\n  ↑ to answer\n"));
+    assert!(without_working.contains("\n  ↑  to answer\n"));
     let without_hints = text_within(13);
     assert!(
-        !without_hints.contains("\n  ↑ to answer\n"),
+        !without_hints.contains("\n  ↑  to answer\n"),
         "{without_hints}"
     );
     assert!(without_hints.contains("3 files"), "{without_hints}");
@@ -320,7 +320,7 @@ fn tight_space_drops_parts_in_order() {
     // The mode's hints make room for the line's parts, the footer's and the cycle hint first.
     let clipped = plain_text(&clipped.lines);
     assert!(
-        clipped.contains("mode on · ← 3 agents · ↓ to manage"),
+        clipped.contains("mode on · ←  3 agents · ↓  to manage"),
         "{clipped}"
     );
     assert!(clipped.ends_with("  plan usage 42%"), "{clipped}");

@@ -1,756 +1,784 @@
-//! The crew's agents, last on the Context tab: each works in a window of its own, outside the
-//! main session's. A row an agent with its window as a bar, what it used, its calls and its
-//! spend, and under it where its session starts afresh and what fills it. An agent whose session
-//! ended keeps the row its session left, marked done or failed, with when it ended.
+//! A run's crew on the Context tab: one folded line for the run, a line an agent once it opens,
+//! and an agent's own block in the main session's form.
+//!
+//! An agent is every session one label had in one run. Its tries count as one agent, with the
+//! newest try's numbers, and a tie-breaker counts under the agent whose question it answered,
+//! as its row says.
 
+use std::collections::BTreeMap;
+
+use argonauts_core::RunId;
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::context::{ContextCategory, ContextKind};
-use argonauts_core::views::{ContextRow, EndedHow, SessionLeft};
-use ratatui::style::Style;
+use argonauts_core::names::{ModelRef, SessionKey};
+use argonauts_core::views::{ContextRow, ContextView, EndedHow};
 use ratatui::text::Span;
 use time::OffsetDateTime;
 
-use super::pane::Section;
-use super::place::{Columns, GAP, at, clip, ending, place};
-use super::usage::{GridGlyphs, bold, level_role, tinted};
-use super::words::{color_role, count, deferred_name, time_of};
-use crate::format;
-use crate::kit::{Drawn, Kit, Level, Levels, bars, merge};
-use crate::text::{
-    KEEP, Part, join_parts, parts_that_fit, sanitize_line, spans_width, str_width, truncate_spans,
-};
-use crate::theme::Role;
+use super::block::{self, Block, INDENT, Part};
+use super::lists::{branch, folded, title};
+use super::words::{cc_style, count, time_of};
+use crate::format::context_tokens;
+use crate::kit::{Drawn, Kit};
+use crate::state::AppState;
+use crate::text::{sanitize_line, str_width, truncate_spans};
 
-/// The cells of an agent's window.
-const BAR_CELLS: usize = 20;
-/// The table's columns, from the section's start: the model, the window, and where the
-/// used tokens, the percent, the calls and the spend end.
-const MODEL: usize = 22;
-const WINDOW: usize = 49;
-const USED_END: usize = 82;
-const PERCENT_END: usize = 88;
-const CALLS_END: usize = 95;
-const SPEND_END: usize = 105;
-
-/// One run's agents, as the section draws them.
-pub(super) struct Crew<'a> {
-    /// The run's name, as the conversation knows it.
-    pub title: String,
-    /// When the run finished, for one listed after it did.
-    pub finished: Option<OffsetDateTime>,
-    pub rows: Vec<&'a ContextRow>,
+/// What the screen knows of the crew's sessions beyond their rows: how much Argonauts Code
+/// sent each.
+#[derive(Debug, Clone, Default)]
+pub struct CrewFacts {
+    /// The tokens of every prompt part sent, by its own count.
+    prompts: BTreeMap<(RunId, SessionKey), u64>,
 }
 
-/// How full an agent's session is against the point where it starts afresh, since that is
-/// where something happens to it.
-pub(super) fn row_level(row: &ContextRow) -> Level {
-    let against = row.cap.or(row.window).filter(|against| *against > 0);
-    match against {
-        Some(against) => Levels::CONTEXT.level(row.used as f64 / against as f64 * 100.0),
-        None => Level::Ok,
-    }
-}
-
-/// `~13.4k/272k`: what the session holds of its window, marked where it is worked out.
-pub(super) fn used_of(row: &ContextRow) -> String {
-    let about = if row.estimated { "~" } else { "" };
-    match row.window.or(row.cap).filter(|window| *window > 0) {
-        Some(window) => format!(
-            "{about}{}/{}",
-            format::tokens_beside(row.used, window),
-            format::window(window)
-        ),
-        None => format!("{about}{}", format::tokens(row.used)),
-    }
-}
-
-/// A count measured in the session's window, in the window's divisor.
-fn in_window(row: &ContextRow, tokens: u64) -> String {
-    match row.window.or(row.cap).filter(|window| *window > 0) {
-        Some(window) => format::tokens_beside(tokens, window),
-        None => format::tokens(tokens),
-    }
-}
-
-/// The session's fill of its window in whole percent.
-pub(super) fn percent(row: &ContextRow) -> Option<String> {
-    let window = row.window.or(row.cap).filter(|window| *window > 0)?;
-    Some(format!(
-        "{:.0}%",
-        (row.used as f64 / window as f64 * 100.0).round()
-    ))
-}
-
-/// What fills a session, as the bar and the line under it show it: Claude Code's own two rows
-/// as one, then each other row that holds something, each with its colour.
-pub(super) fn parts(categories: &[ContextCategory]) -> Vec<(String, u64, Role)> {
-    let used = categories
-        .iter()
-        .filter(|row| row.kind == ContextKind::Used && row.tokens > 0);
-    let mut parts: Vec<(String, u64, Role)> = Vec::new();
-    for row in used {
-        // Claude Code 2.1.296's names for what it brings itself.
-        if matches!(row.name.as_str(), "System prompt" | "System tools") {
-            match parts.iter_mut().find(|(name, _, _)| name == "system") {
-                Some((_, tokens, _)) => *tokens += row.tokens,
-                None => parts.push(("system".to_owned(), row.tokens, Role::Dim)),
-            }
-        } else {
-            parts.push((
-                deferred_name(sanitize_line(&row.name).trim()),
-                row.tokens,
-                color_role(&row.color),
-            ));
-        }
-    }
-    parts
-}
-
-/// An agent's window as a thin bar: its parts in their colours where its CLI says what fills
-/// it, else all of it in `own`. The rest is track, with a dim `┃` where the session starts
-/// afresh. `None` while the window isn't known.
-pub(super) fn window_bar(
-    kit: &Kit<'_>,
-    row: &ContextRow,
-    own: Style,
-) -> Option<Vec<Span<'static>>> {
-    let window = row.window.filter(|window| *window > 0)?;
-    // A session that ended never starts afresh.
-    let tick = row.cap.filter(|cap| *cap < window && row.ended.is_none());
-    if !kit.has_color() {
-        // Without colour the parts can't be told apart, so the bar says only how full.
-        let ratio = row.used as f64 / window as f64;
-        let tick = tick.map(|cap| cap as f64 / window as f64);
-        return Some(bars::line_meter(kit, ratio, BAR_CELLS, Role::BarFill, tick));
-    }
-    let cells_of = |tokens: u64| {
-        let cells = (tokens as f64 / window as f64 * BAR_CELLS as f64).round_ties_even();
-        (cells.max(0.0) as usize).max(1)
-    };
-    let mut cells: Vec<Option<Style>> = Vec::with_capacity(BAR_CELLS);
-    let parts = parts(&row.categories);
-    if parts.is_empty() {
-        if row.used > 0 {
-            cells.extend(vec![Some(own); cells_of(row.used)]);
-        }
-    } else {
-        for (_, tokens, role) in parts {
-            cells.extend(vec![Some(kit.fg(role)); cells_of(tokens)]);
-        }
-    }
-    cells.resize(BAR_CELLS, None);
-    let tick = tick.map(|cap| {
-        let cell = (cap as f64 / window as f64 * BAR_CELLS as f64).round_ties_even() as usize;
-        cell.min(BAR_CELLS - 1)
-    });
-    let glyphs = kit.glyphs;
-    let bar = cells
-        .into_iter()
-        .enumerate()
-        .map(|(cell, style)| match style {
-            Some(style) => Span::styled(glyphs.line_fill, style),
-            None if Some(cell) == tick => Span::styled(glyphs.line_tick, kit.fg(Role::Dim)),
-            None => Span::styled(glyphs.line_fill, kit.fg(Role::Faint)),
-        })
-        .collect();
-    Some(merge(bar))
-}
-
-/// `starts afresh at 180k`, or how far that is once the session is close, in the colour of how
-/// close. Nothing where no point is set.
-pub(super) fn afresh(kit: &Kit<'_>, row: &ContextRow) -> Vec<Span<'static>> {
-    let Some(cap) = row.cap.filter(|cap| *cap > 0 && row.ended.is_none()) else {
-        return Vec::new();
-    };
-    let level = row_level(row);
-    let words = match (level, cap.checked_sub(row.used)) {
-        (_, None | Some(0)) => "starts afresh now".to_owned(),
-        (Level::Ok, _) => format!("starts afresh at {}", in_window(row, cap)),
-        (_, Some(left)) => format!("starts afresh in {}", in_window(row, left)),
-    };
-    vec![
-        kit.dim(format!("{} ", kit.glyphs.line_tick)),
-        kit.span(words, level_role(level).unwrap_or(Role::Dim)),
-    ]
-}
-
-/// What fills the session, a swatch and a few words a part, in `room` cells: where they
-/// don't all fit, parts are left out whole, the smallest first. A session its CLI hasn't
-/// counted yet says when it will be, and one whose CLI never says says that.
-pub(super) fn filled_with(
-    kit: &Kit<'_>,
-    row: &ContextRow,
-    names: &DisplayNames,
-    room: usize,
-) -> Vec<Span<'static>> {
-    let filling = parts(&row.categories);
-    if filling.is_empty() && row.counts {
-        return vec![kit.dim(not_counted(row, names))];
-    }
-    if filling.is_empty() {
-        return vec![kit.dim(format!(
-            "{} says how full, not with what",
-            names.cli(&row.worker.agent)
-        ))];
-    }
-    let swatch = GridGlyphs::for_kit(kit).whole;
-    // A part's rank is how many of the others are smaller, and the largest always stays.
-    let smaller = |tokens: u64| {
-        filling
-            .iter()
-            .filter(|(_, other, _)| *other < tokens)
-            .count()
-    };
-    let largest = filling.iter().map(|(_, tokens, _)| *tokens).max();
-    let filling: Vec<Part> = filling
-        .iter()
-        .map(|(name, tokens, role)| {
-            let spans = vec![
-                Span::styled(format!("{swatch} "), kit.fg(*role)),
-                kit.dim(entry(row, name, *tokens)),
-            ];
-            let rank = if Some(*tokens) == largest {
-                KEEP
-            } else {
-                smaller(*tokens) as u16
-            };
-            Part::joined(Span::raw("   "), spans, rank)
-        })
-        .collect();
-    join_parts(&filling, &parts_that_fit(&filling, room))
-}
-
-/// Why a session whose CLI counts has no count: the main session is counted as each answer
-/// ends, a run's agent while it works, and one that ended first never was.
-fn not_counted(row: &ContextRow, names: &DisplayNames) -> String {
-    match (&row.run, &row.ended) {
-        (None, _) => "counted when an answer ends".to_owned(),
-        (Some(_), None) => "counting\u{2026}".to_owned(),
-        (Some(_), Some(_)) => {
-            let cli = sanitize_line(&names.cli(&row.worker.agent))
-                .trim()
-                .to_owned();
-            format!("ended before {cli} counted it")
-        }
-    }
-}
-
-/// The cells between two parts of what fills a session.
-const PART_GAP: usize = 3;
-
-/// What fills each agent's session, a column a part across the whole crew, each as wide as
-/// its widest entry, so every swatch and name stays in place from row to row. Where the
-/// columns don't all fit, a part's column is left out, the smallest first, and the largest
-/// always stays. A row's part whose column was left out takes a column that row has nothing
-/// in, where it fits, so a row loses a part only when it has no such place.
-struct Legend {
-    /// Each part's name and the cells its column takes, in the order the parts first come.
-    columns: Vec<(String, usize)>,
-}
-
-impl Legend {
-    fn across(rows: &[&ContextRow], swatch: &str, room: usize) -> Self {
-        // A part's name, its column's cells, and its largest count, by which it is kept.
-        let mut columns: Vec<(String, usize, u64)> = Vec::new();
-        for row in rows {
-            for (name, tokens, _) in parts(&row.categories) {
-                let cells = str_width(swatch) + 1 + str_width(&entry(row, &name, tokens));
-                match columns.iter_mut().find(|(known, ..)| *known == name) {
-                    Some((_, widest, largest)) => {
-                        *widest = (*widest).max(cells);
-                        *largest = (*largest).max(tokens);
-                    }
-                    None => columns.push((name, cells, tokens)),
-                }
-            }
-        }
-        let cells = |columns: &[(String, usize, u64)]| {
-            let gaps = PART_GAP * columns.len().saturating_sub(1);
-            columns.iter().map(|(_, cells, _)| cells).sum::<usize>() + gaps
-        };
-        while columns.len() > 1 && cells(&columns) > room {
-            let smallest = columns
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, (_, _, largest))| *largest)
-                .map(|(at, _)| at)
-                .unwrap_or_default();
-            columns.remove(smallest);
-        }
-        Self {
-            columns: columns
-                .into_iter()
-                .map(|(name, cells, _)| (name, cells))
-                .collect(),
-        }
-    }
-
-    /// `row`'s parts in their columns, blank where it has none of a part. A row its CLI
-    /// hasn't said what fills reads as [`filled_with`] has it.
-    fn row(
-        &self,
-        kit: &Kit<'_>,
-        row: &ContextRow,
-        names: &DisplayNames,
-        room: usize,
-    ) -> Vec<Span<'static>> {
-        let filling = parts(&row.categories);
-        if filling.is_empty() {
-            return filled_with(kit, row, names, room);
-        }
-        let swatch = GridGlyphs::for_kit(kit).whole;
-        let width = |(name, tokens, _): &(String, u64, Role)| {
-            str_width(swatch) + 1 + str_width(&entry(row, name, *tokens))
-        };
-        // The row's parts with no column of their own, largest first.
-        let mut unplaced: Vec<&(String, u64, Role)> = filling
-            .iter()
-            .filter(|(part, ..)| !self.columns.iter().any(|(name, _)| name == part))
-            .collect();
-        unplaced.sort_by_key(|(_, tokens, _)| std::cmp::Reverse(*tokens));
-        let mut spans = Vec::new();
-        // Blank cells owed before the next part shown.
-        let mut owed = 0;
-        for (nth, (name, cells)) in self.columns.iter().enumerate() {
-            if nth > 0 {
-                owed += PART_GAP;
-            }
-            let own = filling.iter().find(|(part, ..)| part == name);
-            let shown = own.or_else(|| {
-                let fits = unplaced.iter().position(|part| width(part) <= *cells)?;
-                Some(unplaced.remove(fits))
-            });
-            let Some((name, tokens, role)) = shown else {
-                owed += cells;
+impl CrewFacts {
+    /// The facts of the sessions `view` lists, as the screen's state has them.
+    pub fn of(state: &AppState, view: &ContextView) -> Self {
+        let mut facts = Self::default();
+        for row in &view.rows {
+            let Some(run) = &row.run else {
                 continue;
             };
-            if owed > 0 {
-                spans.push(Span::raw(" ".repeat(owed)));
-            }
-            let words = entry(row, name, *tokens);
-            owed = cells.saturating_sub(str_width(swatch) + 1 + str_width(&words));
-            spans.push(Span::styled(format!("{swatch} "), kit.fg(*role)));
-            spans.push(kit.dim(words));
-        }
-        spans
-    }
-}
-
-/// `messages 4.9k`, the count beside the window taking its divisor.
-fn entry(row: &ContextRow, name: &str, tokens: u64) -> String {
-    format!("{name} {}", in_window(row, tokens))
-}
-
-/// `Sonnet 5.5 on Claude Code`, the model in its colour.
-pub(super) fn model(
-    kit: &Kit<'_>,
-    row: &ContextRow,
-    names: &DisplayNames,
-    own: Style,
-) -> Vec<Span<'static>> {
-    let worker = names.running(&row.worker);
-    let cli = sanitize_line(&names.cli(&worker.agent)).trim().to_owned();
-    match names.model(&worker.agent, worker.model.as_deref()) {
-        Some(model) => vec![
-            Span::styled(sanitize_line(&model).trim().to_owned(), own),
-            kit.dim(format!(" on {cli}")),
-        ],
-        None => vec![Span::styled(cli, own)],
-    }
-}
-
-/// What the session spent, a dim `local` for one on this machine that spent nothing, and
-/// nothing for any other that spent nothing.
-fn spend(kit: &Kit<'_>, row: &ContextRow, local: bool) -> Vec<Span<'static>> {
-    if row.spent.cost_usd > 0.0 || row.spent.cost_partial {
-        vec![Span::raw(format::spend(&row.spent))]
-    } else if local {
-        vec![kit.dim("local")]
-    } else {
-        Vec::new()
-    }
-}
-
-fn label(kit: &Kit<'_>, row: &ContextRow) -> Vec<Span<'static>> {
-    let glyphs = &kit.theme.glyphs;
-    let (mark, role) = match row.ended.as_ref().map(|left| &left.how) {
-        None => (
-            glyphs.agent_working.first().copied().unwrap_or("*"),
-            Role::StateWorking,
-        ),
-        Some(EndedHow::Done) => (glyphs.agent_done, Role::Success),
-        Some(EndedHow::Failed { .. }) => (glyphs.agent_failed, Role::Danger),
-        Some(EndedHow::Stopped) => (glyphs.agent_done, Role::Dim),
-    };
-    // A label wider than its column would push the row's numbers out of line: it ends with
-    // room for the gap before the model.
-    let label = clip(sanitize_line(&row.label).trim(), MODEL - 2 - GAP);
-    vec![
-        Span::styled(format!("{mark} "), kit.fg(role)),
-        Span::styled(label, kit.fg(Role::Label)),
-    ]
-}
-
-/// `as it ended, 3:02 AM`, for a session that ended: why, in red, for one that failed, and
-/// whom it stood in for, for a fallback. At most `room` cells.
-fn as_it_ended(
-    kit: &Kit<'_>,
-    left: &SessionLeft,
-    names: &DisplayNames,
-    now: OffsetDateTime,
-    room: usize,
-) -> Span<'static> {
-    let at = time_of(left.at, now);
-    let (words, role) = match (&left.how, &left.fallback_for) {
-        (EndedHow::Failed { why }, _) => {
-            let why = sanitize_line(why).trim().to_owned();
-            (format!("{why} \u{b7} {at}"), Role::Danger)
-        }
-        (EndedHow::Stopped, _) => (format!("stopped \u{b7} {at}"), Role::Dim),
-        (EndedHow::Done, Some(stood_in_for)) => {
-            let model = names
-                .model(&stood_in_for.agent, stood_in_for.model.as_deref())
-                .unwrap_or_else(|| names.cli(&stood_in_for.agent));
-            let model = sanitize_line(&model).trim().to_owned();
-            (format!("fallback for {model} \u{b7} {at}"), Role::Dim)
-        }
-        (EndedHow::Done, None) => (format!("as it ended, {at}"), Role::Dim),
-    };
-    kit.span(clip(&words, room), role)
-}
-
-/// One run's agents: a header block, then a block an agent, the first under the column
-/// heads. `own` gives the colour an agent's model draws in, `local` whether it runs on this
-/// machine, and `now` what an ended agent's time is read against.
-pub(super) fn sections(
-    kit: &Kit<'_>,
-    columns: &Columns,
-    crew: &Crew<'_>,
-    names: &DisplayNames,
-    own: &dyn Fn(&ContextRow) -> Style,
-    local: &dyn Fn(&ContextRow) -> bool,
-    now: OffsetDateTime,
-) -> Vec<Section> {
-    let start = columns.indent();
-    let total: u64 = crew.rows.iter().map(|row| row.used).sum();
-    let counted = vec![
-        kit.dim(format!("{}  ", count(crew.rows.len(), "agent"))),
-        bold(kit, format::tokens(total)),
-    ];
-    let name = bold(kit, "Crew agents");
-    let title = sanitize_line(&crew.title).trim().to_owned();
-    let mut hint = String::new();
-    if !title.is_empty() {
-        hint.push_str(&format!(" \u{b7} {title}"));
-    }
-    // The count is never what a narrow row loses: the words about the windows go first, and
-    // then the end of the run's title.
-    let about = match crew.finished {
-        Some(at) => format!(
-            " \u{b7} ended {}, each as its session left it",
-            time_of(at, now)
-        ),
-        None => " \u{b7} each in its own window, outside this one".to_owned(),
-    };
-    let about = about.as_str();
-    let taken = start + spans_width(std::slice::from_ref(&name)) + GAP + spans_width(&counted);
-    let room = columns.width.saturating_sub(taken);
-    let hint = if str_width(&hint) + str_width(about) <= room {
-        format!("{hint}{about}")
-    } else {
-        clip(&hint, room)
-    };
-    let mut header = Drawn::new();
-    header.push(place([
-        at(start, vec![name, kit.dim(hint)]),
-        ending(columns.second().end, counted),
-    ]));
-    let mut sections = vec![Section::of(header)];
-    let table = columns.designed();
-    let room = columns.width.saturating_sub(start + WINDOW);
-    let legend = Legend::across(&crew.rows, GridGlyphs::for_kit(kit).whole, room);
-    for (nth, row) in crew.rows.iter().enumerate() {
-        let mut drawn = Drawn::new();
-        let heads = table && nth == 0;
-        if heads {
-            drawn.push(place([
-                at(start + 2, vec![kit.dim("agent")]),
-                at(start + MODEL, vec![kit.dim("model")]),
-                at(start + WINDOW, vec![kit.dim("window")]),
-                ending(start + USED_END, vec![kit.dim("used")]),
-                ending(start + CALLS_END, vec![kit.dim("calls")]),
-                ending(start + SPEND_END, vec![kit.dim("spend")]),
-            ]));
-        }
-        let level = row_level(row);
-        let spent = spend(kit, row, local(row));
-        let own = own(row);
-        let bar = window_bar(kit, row, own).unwrap_or_default();
-        let used = tinted(kit, used_of(row), level_role(level));
-        let percent: Vec<Span<'static>> = percent(row)
-            .map(|percent| kit.span(percent, level_role(level).unwrap_or(Role::Dim)))
-            .into_iter()
-            .collect();
-        let hang = kit.dim(format!("{}  ", kit.theme.glyphs.result));
-        if table {
-            drawn.push(place([
-                at(start, label(kit, row)),
-                at(
-                    start + MODEL,
-                    truncate_spans(&model(kit, row, names, own), WINDOW - MODEL - GAP),
-                ),
-                at(start + WINDOW, bar),
-                ending(start + USED_END, vec![used]),
-                ending(start + PERCENT_END, percent),
-                ending(
-                    start + CALLS_END,
-                    vec![Span::raw(row.tool_calls.to_string())],
-                ),
-                ending(start + SPEND_END, spent),
-            ]));
-            let mut under = vec![hang];
-            match &row.ended {
-                Some(left) => {
-                    let room = WINDOW.saturating_sub(2 + spans_width(&under) + GAP);
-                    under.push(as_it_ended(kit, left, names, now, room));
-                }
-                None => under.extend(afresh(kit, row)),
-            }
-            drawn.push(place([
-                at(start + 2, under),
-                at(start + WINDOW, legend.row(kit, row, names, room)),
-            ]));
-        } else {
-            // Too narrow for the table: the agent and its model, then its numbers, then what
-            // fills it.
-            let mut first = label(kit, row);
-            first.push(Span::raw("  "));
-            first.extend(model(kit, row, names, own));
-            drawn.push(place([at(start, first)]));
-            let mut numbers = vec![hang];
-            numbers.extend(bar);
-            numbers.push(Span::raw("  "));
-            numbers.push(used);
-            for percent in percent {
-                numbers.push(Span::raw("  "));
-                numbers.push(percent);
-            }
-            numbers.push(kit.dim(format!("  {}", count(row.tool_calls as usize, "call"))));
-            if !spent.is_empty() {
-                numbers.push(Span::raw("  "));
-                numbers.extend(spent);
-            }
-            drawn.push(place([at(start + 2, numbers)]));
-            let mut under = match &row.ended {
-                Some(left) => {
-                    let room = columns.width.saturating_sub(start + 5);
-                    vec![as_it_ended(kit, left, names, now, room)]
-                }
-                None => afresh(kit, row),
+            let Some(session) = state
+                .runs
+                .get(run)
+                .and_then(|known| known.sessions.get(&row.session))
+            else {
+                continue;
             };
-            if !under.is_empty() {
-                under.push(Span::raw("   "));
+            let key = (run.clone(), row.session.clone());
+            let sent: u64 = session
+                .inputs
+                .iter()
+                .flat_map(|input| &input.parts)
+                .map(|part| u64::from(part.approx_tokens))
+                .sum();
+            if sent > 0 {
+                facts.prompts.insert(key, sent);
             }
-            let room = columns
-                .width
-                .saturating_sub(start + 5 + spans_width(&under));
-            under.extend(filled_with(kit, row, names, room));
-            drawn.push(place([at(start + 5, under)]));
         }
-        sections.push(Section {
-            drawn,
-            pointer_row: usize::from(heads),
-            agent: row.run.clone().map(|run| (run, row.session.clone())),
-            fold: None,
-        });
+        facts
     }
-    sections
+
+    fn prompt(&self, row: &ContextRow) -> Option<u64> {
+        let run = row.run.as_ref()?;
+        self.prompts
+            .get(&(run.clone(), row.session.clone()))
+            .copied()
+    }
+}
+
+/// One crew agent: the sessions one label had in one run.
+pub(super) struct Agent<'a> {
+    pub run: &'a RunId,
+    pub label: &'a str,
+    /// Its tries' sessions, in the order they started.
+    sessions: Vec<&'a ContextRow>,
+    /// How many tie-breakers answered its questions.
+    tie_breakers: usize,
+}
+
+impl<'a> Agent<'a> {
+    /// The session its numbers come from: the newest that started.
+    fn newest(&self) -> Option<&'a ContextRow> {
+        self.sessions
+            .iter()
+            .rev()
+            .find(|row| !never_started(row))
+            .copied()
+    }
+
+    /// The last session it had, started or not.
+    fn last(&self) -> &'a ContextRow {
+        self.sessions[self.sessions.len() - 1]
+    }
+
+    /// When its last session ended, once every one has.
+    pub fn ended(&self) -> Option<OffsetDateTime> {
+        self.sessions
+            .iter()
+            .map(|row| row.ended.as_ref().map(|left| left.at))
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .max()
+    }
+
+    /// Whether any of its sessions started: one that never did has no numbers to draw.
+    pub fn started(&self) -> bool {
+        self.newest().is_some()
+    }
+
+    /// What its window holds, by its newest session.
+    pub fn used(&self) -> u64 {
+        self.newest().map_or(0, |row| row.used)
+    }
+
+    /// Its tries, a try a model in a row: each model with whether it started.
+    fn tries(&self) -> Vec<(&'a ModelRef, bool)> {
+        let mut tries: Vec<(&ModelRef, bool)> = Vec::new();
+        for row in &self.sessions {
+            let started = !never_started(row);
+            match tries.last_mut() {
+                Some((worker, any)) if *worker == &row.worker => *any |= started,
+                _ => tries.push((&row.worker, started)),
+            }
+        }
+        tries
+    }
+}
+
+/// A session that never started: it failed before its CLI said anything, so it has no numbers
+/// to draw.
+fn never_started(row: &ContextRow) -> bool {
+    let failed = matches!(
+        row.ended.as_ref().map(|left| &left.how),
+        Some(EndedHow::Failed { .. })
+    );
+    failed && row.used == 0 && row.window.is_none() && row.tool_calls == 0
+}
+
+/// The agents of `run` among `rows`, in the order they first started. A tie-breaker counts
+/// under the agent whose question it answered, not as a try.
+pub(super) fn agents<'a>(rows: &'a [ContextRow], run: &'a RunId) -> Vec<Agent<'a>> {
+    let mut agents: Vec<Agent<'a>> = Vec::new();
+    let mut breakers: Vec<(&'a SessionKey, &'a ContextRow)> = Vec::new();
+    for row in rows.iter().filter(|row| row.run.as_ref() == Some(run)) {
+        if let Some(asker) = &row.answered_for {
+            breakers.push((asker, row));
+            continue;
+        }
+        match agents.iter_mut().find(|agent| agent.label == row.label) {
+            Some(agent) => agent.sessions.push(row),
+            None => agents.push(Agent {
+                run,
+                label: &row.label,
+                sessions: vec![row],
+                tie_breakers: 0,
+            }),
+        }
+    }
+    for (asker, row) in breakers {
+        let asked = agents
+            .iter()
+            .position(|agent| agent.sessions.iter().any(|try_| try_.session == *asker));
+        match asked {
+            Some(at) => agents[at].tie_breakers += 1,
+            // One whose asker the tab doesn't list is an agent of its own.
+            None => agents.push(Agent {
+                run,
+                label: &row.label,
+                sessions: vec![row],
+                tie_breakers: 0,
+            }),
+        }
+    }
+    agents
+}
+
+/// How many agents of the runs in `rows` are at work and how many have ended, each run's tries
+/// and tie-breakers counted as the tab counts them.
+pub(super) fn tally(rows: &[ContextRow]) -> (usize, usize) {
+    let mut runs: Vec<&RunId> = Vec::new();
+    for run in rows.iter().filter_map(|row| row.run.as_ref()) {
+        if !runs.contains(&run) {
+            runs.push(run);
+        }
+    }
+    let mut tally = (0, 0);
+    for run in runs {
+        for agent in agents(rows, run) {
+            match agent.ended() {
+                // An agent that never started didn't end any work either.
+                Some(_) if !agent.started() => {}
+                Some(_) => tally.1 += 1,
+                None => tally.0 += 1,
+            }
+        }
+    }
+    tally
+}
+
+/// One run's crew, as the tab lists it.
+pub(super) struct Crew<'a> {
+    pub run: &'a RunId,
+    pub title: String,
+    pub agents: Vec<Agent<'a>>,
+    /// The tab has no session of the conversation, so the run's answer came from its own.
+    pub no_conversation: bool,
+}
+
+impl Crew<'_> {
+    /// `Crew agents · the last run, Make the rate limiter per API key`.
+    pub fn title(&self, kit: &Kit<'_>) -> Vec<Span<'static>> {
+        let which = if self.agents.iter().all(|agent| agent.ended().is_some()) {
+            "the last run"
+        } else {
+            "the run at work"
+        };
+        let name = sanitize_line(&self.title).trim().to_owned();
+        title(kit, "Crew agents", &format!(" \u{b7} {which}, {name}"))
+    }
+
+    /// `└ 7 agents · 126.7k tokens · all ended by 8:33 AM`, `└ 1 agent · 13.3k tokens · ended
+    /// 8:31 AM`, or `└ 1 agent · couldn't start` when none of them started.
+    pub fn folded(&self, kit: &Kit<'_>, now: OffsetDateTime) -> Vec<Span<'static>> {
+        let tokens: u64 = self.agents.iter().map(Agent::used).sum();
+        let at_work = self
+            .agents
+            .iter()
+            .filter(|agent| agent.ended().is_none())
+            .count();
+        let answered_by = self
+            .agents
+            .iter()
+            .find(|agent| agent.label == ANSWER)
+            .filter(|_| self.no_conversation && at_work == 0);
+        let agents = count(self.agents.len(), "agent");
+        if at_work == 0 && !self.agents.iter().any(Agent::started) {
+            return folded(kit, &format!("{agents} \u{b7} couldn't start"));
+        }
+        let last = self.agents.iter().filter_map(Agent::ended).max();
+        let state = match (answered_by, last) {
+            (Some(answer), _) => format!("its answer came from {}", answer.label),
+            _ if at_work > 0 => format!("{at_work} at work"),
+            (None, Some(last)) if self.agents.len() == 1 => format!("ended {}", time_of(last, now)),
+            (None, Some(last)) => format!("all ended by {}", time_of(last, now)),
+            (None, None) => String::new(),
+        };
+        let mut whole = format!("{agents} \u{b7} {} tokens", context_tokens(tokens));
+        if !state.is_empty() {
+            whole.push_str(&format!(" \u{b7} {state}"));
+        }
+        folded(kit, &whole)
+    }
+
+    /// A line an agent: its label, its model, what its window holds and when it ended. A label
+    /// longer than [`LABEL_AT_MOST`] is cut, and where `width` can't hold every column the model
+    /// goes first, so what the window holds and when it ended stay.
+    pub fn lines(
+        &self,
+        kit: &Kit<'_>,
+        names: &DisplayNames,
+        now: OffsetDateTime,
+        width: usize,
+    ) -> Vec<Vec<Span<'static>>> {
+        let labels: Vec<String> = self
+            .agents
+            .iter()
+            .map(|agent| {
+                let label = sanitize_line(agent.label).trim().to_owned();
+                truncate_spans(&[Span::raw(label)], LABEL_AT_MOST)
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        let models: Vec<String> = self
+            .agents
+            .iter()
+            .map(|agent| {
+                on_cli(
+                    names,
+                    &agent.newest().unwrap_or_else(|| agent.last()).worker,
+                )
+            })
+            .collect();
+        let label_cells = labels
+            .iter()
+            .map(|label| str_width(label))
+            .max()
+            .unwrap_or(0)
+            + 2;
+        let mut model_cells = models
+            .iter()
+            .map(|model| str_width(model))
+            .max()
+            .unwrap_or(0)
+            + 2;
+        // What the window holds and when it ended, or that it couldn't start.
+        let tails: Vec<(Option<String>, String)> = self
+            .agents
+            .iter()
+            .map(|agent| match agent.newest() {
+                Some(row) => (
+                    Some(used_of_window(row)),
+                    match agent.ended() {
+                        Some(at) => format!(" \u{b7} ended {}", time_of(at, now)),
+                        None => " \u{b7} at work".to_owned(),
+                    },
+                ),
+                None => {
+                    let at = agent.last().ended.as_ref().map(|left| left.at);
+                    let when = at.map(|at| format!(" \u{b7} {}", time_of(at, now)));
+                    (None, format!("couldn't start{}", when.unwrap_or_default()))
+                }
+            })
+            .collect();
+        let widest_tail = tails
+            .iter()
+            .map(|(used, said)| used.as_deref().map_or(0, str_width) + str_width(said))
+            .max()
+            .unwrap_or(0);
+        if INDENT + BRANCH + label_cells + model_cells + widest_tail > width {
+            model_cells = 0;
+        }
+        let pad = |text: &str, cells: usize| {
+            format!(
+                "{text}{}",
+                " ".repeat(cells.saturating_sub(str_width(text)))
+            )
+        };
+        (0..self.agents.len())
+            .map(|at| {
+                let mut line = vec![
+                    Span::raw(" ".repeat(INDENT)),
+                    kit.dim(branch(at, self.agents.len())),
+                    Span::raw(pad(&labels[at], label_cells)),
+                ];
+                if model_cells > 0 {
+                    line.push(kit.dim(pad(&models[at], model_cells)));
+                }
+                let (used, said) = &tails[at];
+                if let Some(used) = used {
+                    line.push(Span::raw(used.clone()));
+                }
+                line.push(kit.dim(said.clone()));
+                line
+            })
+            .collect()
+    }
+}
+
+/// The label of the run's closing answer.
+const ANSWER: &str = "main:answer";
+/// The most cells a label takes in the crew's list; a longer one is cut.
+const LABEL_AT_MOST: usize = 28;
+/// The cells of the branch before each agent's label.
+const BRANCH: usize = 2;
+
+/// `13.3k/1m (1%)`, or the count alone while the window isn't known.
+fn used_of_window(row: &ContextRow) -> String {
+    match row.window.filter(|window| *window > 0) {
+        Some(window) => format!(
+            "{}/{} ({}%)",
+            context_tokens(row.used),
+            context_tokens(window),
+            (row.used as f64 / window as f64 * 100.0).round()
+        ),
+        None => context_tokens(row.used),
+    }
+}
+
+/// `Haiku 5.5 on Claude Code`.
+fn on_cli(names: &DisplayNames, worker: &ModelRef) -> String {
+    let cli = names.cli(&worker.agent);
+    match model_name(names, worker) {
+        Some(model) => sanitize_line(&format!("{model} on {cli}"))
+            .trim()
+            .to_owned(),
+        None => sanitize_line(&cli).trim().to_owned(),
+    }
+}
+
+/// The model's name, or its id where the names don't know it.
+fn model_name(names: &DisplayNames, worker: &ModelRef) -> Option<String> {
+    names
+        .model(&worker.agent, worker.model.as_deref())
+        .or_else(|| worker.model.clone())
+}
+
+/// An agent's own block, in the form of the main session's: the grid and what fills it, then
+/// what the tab knows of its tries beside.
+pub(super) fn agent_block(
+    kit: &Kit<'_>,
+    agent: &Agent<'_>,
+    names: &DisplayNames,
+    facts: &CrewFacts,
+    width: usize,
+) -> Drawn {
+    let label = sanitize_line(agent.label).trim().to_owned();
+    let mut drawn = Drawn::new();
+    drawn.push(usage_title(kit, Some(&label)));
+    let Some(row) = agent.newest() else {
+        drawn.push(vec![
+            Span::raw(" ".repeat(INDENT)),
+            kit.dim(format!(
+                "{} couldn't start, so it holds nothing.",
+                on_cli(names, &agent.last().worker)
+            )),
+        ]);
+        return drawn;
+    };
+    // What was sent to the newest try, every session of it.
+    let sent: u64 = agent
+        .sessions
+        .iter()
+        .rev()
+        .take_while(|session| session.worker == row.worker)
+        .filter_map(|session| facts.prompt(session))
+        .sum();
+    let filled = Filled {
+        row,
+        model: on_cli(names, &row.worker),
+        sent: (sent > 0).then_some(sent),
+        notes: history(agent, names),
+    };
+    drawn.append(row_usage(kit, &filled, names, width));
+    drawn
+}
+
+/// `Context Usage`, and `· build:per-api-key` for an agent's own.
+pub(super) fn usage_title(kit: &Kit<'_>, label: Option<&str>) -> Vec<Span<'static>> {
+    let mut title = vec![
+        Span::raw(" ".repeat(INDENT)),
+        Span::styled("Context Usage", kit.bold(crate::theme::Role::Text)),
+    ];
+    if let Some(label) = label {
+        title.push(kit.dim(format!(" \u{b7} {label}")));
+    }
+    title
+}
+
+/// A session the tab knows by its row: what its CLI said fills it, or how full it is.
+pub(super) struct Filled<'a> {
+    pub row: &'a ContextRow,
+    /// The model as the block names it.
+    pub model: String,
+    /// What Argonauts Code sent it, where the screen counted it.
+    pub sent: Option<u64>,
+    /// Lines the block ends with.
+    pub notes: Vec<String>,
+}
+
+/// A session's block from its row: Claude Code's categories where its CLI said them, else
+/// its whole fill, said to be only that.
+pub(super) fn row_usage(
+    kit: &Kit<'_>,
+    filled: &Filled<'_>,
+    names: &DisplayNames,
+    width: usize,
+) -> Drawn {
+    use argonauts_core::events::context::ContextKind;
+
+    let row = filled.row;
+    let cli = sanitize_line(&names.cli(&row.worker.agent))
+        .trim()
+        .to_owned();
+    let mut notes = Vec::new();
+    let held = |kind| {
+        row.categories
+            .iter()
+            .filter(|category| category.kind == kind)
+            .map(|category| category.tokens)
+            .sum::<u64>()
+    };
+    let (heading, parts, free, buffer) = if row.categories.is_empty() {
+        notes.push(if row.counts {
+            format!("{cli} says what fills it when its answer ends.")
+        } else {
+            format!("{cli} reports how full, not with what.")
+        });
+        if let Some(sent) = filled.sent {
+            notes.push(format!(
+                "Our prompt in it: {} tokens.",
+                context_tokens(sent)
+            ));
+        }
+        let used = Part {
+            name: "Used".to_owned(),
+            tokens: row.used,
+            style: cc_style(kit, USED_COLOR),
+        };
+        let free = row.window.unwrap_or(0).saturating_sub(row.used);
+        (format!("As {cli} reports it"), vec![used], free, 0)
+    } else {
+        let parts = row
+            .categories
+            .iter()
+            .filter(|category| category.kind == ContextKind::Used && category.tokens > 0)
+            .map(|category| Part {
+                name: category.name.clone(),
+                tokens: category.tokens,
+                style: cc_style(kit, &category.color),
+            })
+            .collect();
+        let buffer = held(ContextKind::Buffer);
+        let free = match held(ContextKind::Free) {
+            0 => row
+                .window
+                .unwrap_or(0)
+                .saturating_sub(row.used)
+                .saturating_sub(buffer),
+            free => free,
+        };
+        (
+            "Estimated usage by category".to_owned(),
+            parts,
+            free,
+            buffer,
+        )
+    };
+    notes.extend(filled.notes.iter().cloned());
+    let Some(window) = row.window.filter(|window| *window > 0) else {
+        let mut drawn = Drawn::new();
+        let line = |spans: Vec<Span<'static>>| {
+            let mut line = vec![Span::raw(" ".repeat(INDENT))];
+            line.extend(spans);
+            line
+        };
+        drawn.push(line(vec![Span::raw(filled.model.clone())]));
+        drawn.push(line(vec![
+            kit.dim(format!("{} tokens", context_tokens(row.used))),
+        ]));
+        for note in notes {
+            drawn.push(line(vec![kit.dim(note)]));
+        }
+        return drawn;
+    };
+    let block = Block {
+        model: Some(filled.model.clone()),
+        model_id: row.worker.model.as_deref(),
+        used: row.used,
+        window,
+        percent: None,
+        heading,
+        parts,
+        free,
+        buffer,
+        grid: None,
+        usage: None,
+        notes,
+    };
+    block::rows(kit, &block, width)
+}
+
+/// The colour Claude Code's messages draw in, which a session's whole fill takes where its
+/// CLI says only how full it is.
+const USED_COLOR: &str = "purple_FOR_SUBAGENTS_ONLY";
+
+/// `2 tries: Haiku 5.5, then GPT 6 Luna;` and `3 tie-breakers answered its questions.`
+fn history(agent: &Agent<'_>, names: &DisplayNames) -> Vec<String> {
+    let tries = agent.tries();
+    let mut lines = Vec::new();
+    if tries.len() > 1 {
+        let named: Vec<String> = tries
+            .iter()
+            .map(|(worker, started)| {
+                let name = model_name(names, worker).unwrap_or_else(|| names.cli(&worker.agent));
+                let name = sanitize_line(&name).trim().to_owned();
+                if *started {
+                    name
+                } else {
+                    format!("{name}, which couldn't start")
+                }
+            })
+            .collect();
+        let (last, first) = named.split_last().expect("two tries or more");
+        lines.push(format!(
+            "{} tries: {}, then {last}",
+            tries.len(),
+            first.join(", ")
+        ));
+    }
+    match agent.tie_breakers {
+        0 => {}
+        1 => lines.push("1 tie-breaker answered its question".to_owned()),
+        n => lines.push(format!("{n} tie-breakers answered its questions")),
+    }
+    let last = lines.len().saturating_sub(1);
+    for (at, line) in lines.iter_mut().enumerate() {
+        line.push(if at == last { '.' } else { ';' });
+    }
+    lines
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use argonauts_core::Spend;
-    use argonauts_core::names::SessionKey;
+    use argonauts_core::views::SessionLeft;
+    use time::macros::datetime;
 
-    fn row(used: u64, window: Option<u64>, cap: Option<u64>) -> ContextRow {
+    fn row(n: u32, label: &str, worker: &str, used: u64, ended: Option<EndedHow>) -> ContextRow {
         ContextRow {
-            run: None,
-            session: SessionKey::numbered(1),
-            label: "build:due-flag".to_owned(),
-            worker: "claude-code/claude-sonnet-5-5".parse().unwrap(),
+            run: Some(RunId::new("run-1").unwrap()),
+            session: SessionKey::numbered(n),
+            label: label.to_owned(),
+            worker: worker.parse().unwrap(),
             used,
-            window,
-            cap,
-            tool_calls: 14,
+            window: (used > 0).then_some(1_000_000),
+            cap: None,
+            tool_calls: u32::from(used > 0),
             spent: Spend::default(),
             rotations: 0,
             estimated: false,
             counts: false,
             categories: Vec::new(),
             recorded: None,
-            ended: None,
+            ended: ended.map(|how| SessionLeft {
+                at: datetime!(2026-10-20 12:30 UTC) + time::Duration::minutes(i64::from(n)),
+                how,
+                fallback_for: None,
+            }),
+            answered_for: None,
         }
     }
 
-    fn category(name: &str, tokens: u64, color: &str) -> ContextCategory {
-        ContextCategory {
-            name: name.to_owned(),
-            tokens,
-            color: color.to_owned(),
-            kind: ContextKind::Used,
-        }
-    }
-
+    /// Tries are one agent with the newest try's numbers, a tie-breaker counts under the agent
+    /// whose question it answered, and a start that never happened draws nothing.
     #[test]
-    fn a_session_is_measured_against_where_it_starts_afresh() {
+    fn tries_and_tie_breakers_make_one_agent() {
+        let run = RunId::new("run-1").unwrap();
+        let failed = || {
+            Some(EndedHow::Failed {
+                why: "refused".to_owned(),
+            })
+        };
+        let rows = vec![
+            row(
+                1,
+                "build:x",
+                "claude-code/claude-haiku-5-5",
+                20_000,
+                Some(EndedHow::Done),
+            ),
+            row(2, "build:x", "claude-code/claude-opus-5-5", 0, failed()),
+            row(
+                3,
+                "build:x",
+                "codex/gpt-6-luna",
+                30_000,
+                Some(EndedHow::Done),
+            ),
+            ContextRow {
+                answered_for: Some(SessionKey::numbered(3)),
+                ..row(
+                    4,
+                    "build:x",
+                    "claude-code/claude-opus-5-5",
+                    9_000,
+                    Some(EndedHow::Done),
+                )
+            },
+            row(5, "review:x", "ollama/qwen3-coder:30b", 0, failed()),
+        ];
+        let agents = agents(&rows, &run);
+        assert_eq!(agents.len(), 2);
+        let build = &agents[0];
+        assert_eq!(build.used(), 30_000);
         assert_eq!(
-            row_level(&row(36_200, Some(200_000), Some(180_000))),
-            Level::Ok
+            build.newest().map(|row| &row.session),
+            Some(&SessionKey::numbered(3))
         );
+        assert_eq!(build.tie_breakers, 1);
+        let names = crate::overview::sample::names();
         assert_eq!(
-            row_level(&row(150_000, Some(200_000), Some(180_000))),
-            Level::Warn
+            history(build, &names),
+            [
+                "3 tries: Haiku 5.5, Opus 5.5, which couldn't start, then GPT 6 Luna;",
+                "1 tie-breaker answered its question."
+            ]
         );
-        assert_eq!(
-            row_level(&row(171_400, Some(200_000), Some(180_000))),
-            Level::Danger
-        );
-        assert_eq!(row_level(&row(171_400, Some(200_000), None)), Level::Warn);
-        assert_eq!(row_level(&row(171_400, None, None)), Level::Ok);
+        assert!(agents[1].newest().is_none());
+        // The agent that never started ended no work, so the ended count leaves it out.
+        assert_eq!(tally(&rows), (0, 1));
     }
 
-    #[test]
-    fn what_a_session_holds_reads_against_its_window() {
-        let mut worked_out = row(13_400, Some(272_000), Some(244_800));
-        worked_out.estimated = true;
-        assert_eq!(used_of(&worked_out), "~13.4k/272k");
-        assert_eq!(percent(&worked_out).as_deref(), Some("5%"));
-        assert_eq!(used_of(&row(36_200, None, None)), "36.2k");
-        assert_eq!(percent(&row(36_200, None, None)), None);
-    }
-
-    fn kit_text(spans: &[Span<'_>]) -> String {
+    fn text(spans: &[Span<'_>]) -> String {
         spans.iter().map(|span| span.content.as_ref()).collect()
     }
 
-    #[test]
-    fn a_crews_legend_lines_up_and_puts_a_part_left_out_where_its_row_has_room() {
-        let mut theme = crate::theme::Theme::dark();
-        theme.glyphs = crate::theme::Glyphs::UNICODE;
-        let kit = Kit::new(&theme);
-        let names = DisplayNames::default();
-        let counted = |system: u64, mcp: u64, instructions: u64, messages: u64| {
-            let mut row = row(20_000, Some(1_000_000), None);
-            row.categories = vec![
-                category("System prompt", 2_497, "promptBorder"),
-                category("System tools", system, "inactive"),
-                category("MCP tools", mcp, "cyan_FOR_SUBAGENTS_ONLY"),
-                category(
-                    "MCP server instructions",
-                    instructions,
-                    "green_FOR_SUBAGENTS_ONLY",
-                ),
-                category("Messages", messages, "purple_FOR_SUBAGENTS_ONLY"),
-            ];
-            row
-        };
-        let rows = [
-            counted(4_407, 153, 273, 4_921),
-            counted(9_868, 153, 273, 5_989),
-            counted(6_131, 167, 0, 5_291),
-        ];
-        let rows: Vec<&ContextRow> = rows.iter().collect();
-        let legend = Legend::across(&rows, "\u{26c1}", 64);
-        let shown: Vec<String> = rows
-            .iter()
-            .map(|row| kit_text(&legend.row(&kit, row, &names, 64)))
-            .collect();
-        assert_eq!(
-            shown,
-            [
-                "\u{26c1} system 6.9k    \u{26c1} MCP server instructions 273   \u{26c1} messages 4.9k",
-                "\u{26c1} system 12.4k   \u{26c1} MCP server instructions 273   \u{26c1} messages 6k",
-                "\u{26c1} system 8.6k    \u{26c1} MCP tools 167                 \u{26c1} messages 5.3k",
-            ]
-        );
-        // A row with no place for it goes without it.
-        let full = [counted(4_407, 153, 273, 4_921)];
-        let full: Vec<&ContextRow> = full.iter().collect();
-        let tight = Legend::across(&full, "\u{26c1}", 64);
-        let shown = kit_text(&tight.row(&kit, full[0], &names, 64));
-        assert!(!shown.contains("MCP tools"), "{shown}");
-        // With room for every part, none is left out.
-        let wide = Legend::across(&rows, "\u{26c1}", 120);
-        assert!(kit_text(&wide.row(&kit, rows[2], &names, 120)).contains("MCP tools 167"));
-    }
-
-    /// A label longer than its column is cut where the gap before the model starts, so every
-    /// model starts in one column. One as long as the longest pictured keeps every letter.
-    #[test]
-    fn a_long_label_is_cut_before_the_models_column() {
-        let mut theme = crate::theme::Theme::dark();
-        theme.glyphs = crate::theme::Glyphs::UNICODE;
-        let kit = Kit::new(&theme);
-        let labelled = |name: &str| {
-            let mut row = row(20_000, Some(1_000_000), None);
-            row.label = name.to_owned();
-            kit_text(&label(&kit, &row))
-        };
-        for name in [
-            "main",
-            "review:due-dates-2",
-            "build:add-due-dates",
-            "sign-off:add-due-dates",
-        ] {
-            let drawn = labelled(name);
-            assert!(str_width(&drawn) + GAP <= MODEL, "{name}: {drawn}");
+    fn crew<'a>(rows: &'a [ContextRow], run: &'a RunId) -> Crew<'a> {
+        Crew {
+            run,
+            title: "Make the rate limiter per API key".to_owned(),
+            agents: agents(rows, run),
+            no_conversation: false,
         }
-        assert!(labelled("review:due-dates-2").ends_with("review:due-dates-2"));
-        assert!(labelled("build:add-due-dates").ends_with("build:add-due-dat\u{2026}"));
     }
 
+    /// A crew none of whose agents started says so, and a crew of one says when it ended.
     #[test]
-    fn a_session_with_no_count_says_when_it_is_counted() {
-        let names = DisplayNames::default();
-        let mut main = row(27_755, Some(1_000_000), None);
-        main.counts = true;
-        assert_eq!(not_counted(&main, &names), "counted when an answer ends");
-        let mut working = main.clone();
-        working.run = Some(argonauts_core::RunId::new("run-07").unwrap());
-        assert_eq!(not_counted(&working, &names), "counting\u{2026}");
-        let mut ended = working.clone();
-        ended.ended = Some(SessionLeft {
-            at: OffsetDateTime::UNIX_EPOCH,
-            how: EndedHow::Done,
-            fallback_for: None,
+    fn a_folded_crew_says_it_couldnt_start_or_when_its_one_agent_ended() {
+        let theme = crate::theme::Theme::dark();
+        let kit = Kit::new(&theme);
+        let run = RunId::new("run-1").unwrap();
+        let now = datetime!(2026-10-20 13:00 UTC);
+        let failed = Some(EndedHow::Failed {
+            why: "refused".to_owned(),
         });
-        assert_eq!(
-            not_counted(&ended, &names),
-            "ended before Claude Code counted it"
+        let never = [row(1, "review:x", "ollama/qwen3-coder:30b", 0, failed)];
+        let folded = text(&crew(&never, &run).folded(&kit, now));
+        assert!(
+            folded.ends_with("1 agent \u{b7} couldn't start"),
+            "{folded}"
+        );
+        assert_eq!(tally(&never), (0, 0));
+
+        let one = [row(
+            1,
+            "build:x",
+            "claude-code/claude-haiku-5-5",
+            20_000,
+            Some(EndedHow::Done),
+        )];
+        let folded = text(&crew(&one, &run).folded(&kit, now));
+        assert!(
+            folded.ends_with("1 agent \u{b7} 20k tokens \u{b7} ended 12:31 PM"),
+            "{folded}"
         );
     }
 
+    /// A label past the cap is cut, and a list too narrow for every column gives up the model
+    /// first, keeping what the window holds and when the agent ended.
     #[test]
-    fn claude_codes_own_rows_read_as_one_part() {
+    fn a_long_label_is_cut_and_a_narrow_list_gives_up_the_model() {
+        let theme = crate::theme::Theme::dark();
+        let kit = Kit::new(&theme);
+        let names = crate::overview::sample::names();
+        let run = RunId::new("run-1").unwrap();
+        let now = datetime!(2026-10-20 13:00 UTC);
+        let long = format!("review:{}", "a-very-long-task-name-".repeat(3));
         let rows = [
-            category("System prompt", 2_900, "promptBorder"),
-            category("System tools", 12_100, "inactive"),
-            category("MCP tools", 0, "cyan_FOR_SUBAGENTS_ONLY"),
-            category("Memory files", 3_700, "claude"),
-            category("Messages", 17_500, "purple_FOR_SUBAGENTS_ONLY"),
-            ContextCategory {
-                kind: ContextKind::Free,
-                ..category("Free space", 130_800, "promptBorder")
-            },
+            row(
+                1,
+                "review:task-1",
+                "claude-code/claude-haiku-5-5",
+                20_000,
+                Some(EndedHow::Done),
+            ),
+            row(2, &long, "codex/gpt-6-luna", 30_000, Some(EndedHow::Done)),
         ];
-        assert_eq!(
-            parts(&rows),
-            [
-                ("system".to_owned(), 15_000, Role::Dim),
-                ("memory files".to_owned(), 3_700, Role::CliClaude),
-                ("messages".to_owned(), 17_500, Role::Label),
-            ]
+        let crew = crew(&rows, &run);
+        let wide: Vec<String> = crew
+            .lines(&kit, &names, now, 118)
+            .iter()
+            .map(|line| text(line))
+            .collect();
+        let cut = &wide[1];
+        assert!(
+            cut.contains("review:a-very-long-task-nam\u{2026}  "),
+            "{cut}"
+        );
+        assert!(
+            wide.iter()
+                .all(|line| line.contains("Haiku 5.5") || line.contains("GPT 6 Luna"))
+        );
+        assert!(wide.iter().all(|line| str_width(line) <= 118), "{wide:#?}");
+        let narrow: Vec<String> = crew
+            .lines(&kit, &names, now, 80)
+            .iter()
+            .map(|line| text(line))
+            .collect();
+        assert!(
+            narrow
+                .iter()
+                .all(|line| !line.contains("Haiku") && !line.contains("Luna")),
+            "{narrow:#?}"
+        );
+        assert!(narrow[0].ends_with(" \u{b7} ended 12:31 PM"), "{narrow:#?}");
+        assert!(
+            narrow.iter().all(|line| str_width(line) <= 80),
+            "{narrow:#?}"
         );
     }
 }

@@ -277,7 +277,7 @@ mod tests {
         table.row(vec![
             TableCell::text("Acceptance tests for the load test"),
             TableCell::dim("1"),
-            TableCell::dim("Gemini 3.6 Flash Low on Antigravity CLI"),
+            TableCell::dim("Gemini 3.6 Flash Low on agy"),
         ]);
         let narrow = table.plain(50, 2);
         let text = narrow.join("\n");
@@ -286,9 +286,6 @@ mod tests {
         assert!(text.contains("Acceptance tests for t…"), "{text}");
         assert!(narrow.iter().all(|line| str_width(line) <= 50), "{text}");
         let wide = table.plain(120, 2).join("\n");
-        assert!(
-            wide.contains("Gemini 3.6 Flash Low on Antigravity CLI"),
-            "{wide}"
-        );
+        assert!(wide.contains("Gemini 3.6 Flash Low on agy"), "{wide}");
     }
 }

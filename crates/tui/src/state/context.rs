@@ -66,15 +66,6 @@ impl ContextGrowth {
         let turns = u64::try_from(self.added.len()).ok().filter(|n| *n > 0)?;
         Some(self.added.iter().sum::<u64>() / turns).filter(|tokens| *tokens > 0)
     }
-
-    /// A growth that averages `tokens` a turn, for a screen drawn from example numbers.
-    #[cfg(test)]
-    pub(crate) fn of(tokens: u64) -> Self {
-        Self {
-            added: VecDeque::from([tokens]),
-            ..Self::default()
-        }
-    }
 }
 
 #[cfg(test)]

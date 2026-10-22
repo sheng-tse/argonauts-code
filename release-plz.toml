@@ -1,0 +1,58 @@
+# release-plz prepares each release as a pull request: the next version, from the Conventional Commits since the
+# last release, and the changelog section for it. Merging the pull request changes nothing else; the release itself
+# starts when the maintainer runs release.yml with the tag, and dist makes the tag and the GitHub release. So
+# release-plz makes neither, and publishes the crates only when release.yml calls it (publish-crates.yml).
+[workspace]
+git_tag_enable = false
+git_release_enable = false
+# One changelog for the whole program, kept by argonauts-code below, rather than one per crate.
+changelog_update = false
+# The crates are published for `cargo install argonauts-code`, not as libraries, so their public API isn't held to
+# semver: the version follows what changed for people who run the program.
+semver_check = false
+pr_labels = ["release"]
+
+[[package]]
+name = "argonauts-code"
+changelog_update = true
+# At the root, where dist takes the release notes from and the release checks read it. The app crate builds it in
+# for /release-notes through its own CHANGELOG.md, a link to this one. The path is from the workspace root.
+changelog_path = "CHANGELOG.md"
+# The program is built from every crate, so a change anywhere belongs in its changelog.
+changelog_include = [
+    "argonauts-adapter-acp",
+    "argonauts-adapter-antigravity-cli",
+    "argonauts-adapter-claude-code",
+    "argonauts-adapter-codex",
+    "argonauts-adapter-manifest",
+    "argonauts-adapter-opencode",
+    "argonauts-app",
+    "argonauts-conductor",
+    "argonauts-core",
+    "argonauts-crew",
+    "argonauts-endpoints",
+    "argonauts-learning",
+    "argonauts-mcp",
+    "argonauts-policy",
+    "argonauts-registry",
+    "argonauts-runner",
+    "argonauts-tui",
+]
+
+# release-plz's own section, without the compare link it would put in the heading: /release-notes and the release
+# checks read headings as `## [X.Y.Z] - YYYY-MM-DD`.
+[changelog]
+trim = true
+body = """
+## [{{ version }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+
+{% for commit in commits %}
+{%- if commit.scope -%}
+- *({{commit.scope}})* {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}{%- if commit.links %} ({% for link in commit.links %}[{{link.text}}]({{link.href}}) {% endfor -%}){% endif %}
+{% else -%}
+- {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}
+{% endif -%}
+{% endfor -%}
+{% endfor %}"""

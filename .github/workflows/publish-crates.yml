@@ -1,0 +1,59 @@
+# Publishes the workspace's crates to crates.io with release-plz, so `cargo install argonauts-code` works. Called
+# by release.yml in its publish step, with dist's plan.
+#
+# release-plz publishes each crate whose version isn't on crates.io yet, in dependency order, so a rerun after a
+# failure picks up where it stopped. It makes no tag and no GitHub release: dist does both (release-plz.toml).
+# crates.io's trusted publishing trades this run's identity for a short-lived token, so no token is stored. Betas
+# never go to crates.io.
+#
+# The first release can't come through here: crates.io sets up trusted publishing only for a crate that exists,
+# and it takes a few new crates at once, then about one every ten minutes. So 0.1.0 is published by hand, from a
+# maintainer's machine with a crates.io token: `cargo publish -p <crate>` for each crate in dependency order
+# (`cargo publish --workspace --dry-run` lists it), waiting out the limit when crates.io names a time. Then each
+# crate gets this repository's release.yml and the `release` environment as its trusted publisher, the token is
+# revoked, and every later release comes through here. A run the limit stops waits once and tries again.
+name: Publish to crates.io
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  crates:
+    if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
+    runs-on: ubuntu-24.04
+    # Waits for the maintainer's approval once the repository is public.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup update stable --no-self-update && rustup default stable
+      - name: Publish
+        id: publish
+        continue-on-error: true
+        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Wait out crates.io's limit on new crates
+        if: ${{ steps.publish.outcome == 'failure' }}
+        run: sleep 660
+      - name: Publish what's left
+        if: ${{ steps.publish.outcome == 'failure' }}
+        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

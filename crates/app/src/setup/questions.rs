@@ -55,8 +55,6 @@ pub(crate) enum Step {
     /// Which of its agent's models fills the role at this key.
     RoleModel(String),
     Approvals,
-    /// Whether to send the day's anonymous usage counts.
-    Telemetry,
     Trust,
     ProjectFolder,
     /// Whether the guide pages go into this repo's `.argonauts/` too, asked once per repo.
@@ -84,6 +82,8 @@ pub(crate) struct SetupView {
     pub models: BTreeMap<String, Vec<ModelOption>>,
     /// The workflows you can pick: the built-ins, then yours and the repo's.
     pub workflows: Vec<String>,
+    /// Captain has its work reviewed (`captain.review`), so it has a reviewer to fill.
+    pub captain_reviews: bool,
 }
 
 impl SetupView {
@@ -248,7 +248,7 @@ pub(crate) fn question(step: &Step, view: &SetupView, answers: &Answers) -> Opti
         }),
         Step::Agents => Some(agents_question(view)),
         Step::Servers => None,
-        Step::Server(server) => Some(server_question(server, view)),
+        Step::Server(server) => server_question(server, view),
         Step::MainAgent => main_agent_question(view),
         Step::Workflow => Some(workflow_question(view)),
         Step::Orchestrator => orchestrator_question(view, answers),
@@ -256,7 +256,6 @@ pub(crate) fn question(step: &Step, view: &SetupView, answers: &Answers) -> Opti
         Step::RoleAgent(key) => roles::agent_question(view, answers, key),
         Step::RoleModel(key) => roles::model_question(view, answers, key),
         Step::Approvals => Some(approvals_question(view)),
-        Step::Telemetry => Some(telemetry_question(view)),
         Step::Trust => trust_question(view),
         Step::ProjectFolder => folder_question(view),
         Step::Guides => guides_question(view, answers),
@@ -303,46 +302,88 @@ fn agent_line(agent: &FoundAgent) -> String {
     parts.join(" · ")
 }
 
-fn server_question(server: &LocalServer, view: &SetupView) -> Question {
-    let picked = view.current_list("roles.reviewer.models");
-    let current = server
+/// A review on a local model reads the change in its prompt, beside the checks' output and its
+/// answer, so a model whose window holds less than this isn't offered.
+pub(crate) const REVIEW_WINDOW: u64 = 32_768;
+
+/// Whether `workflow` has a reviewer to fill, so a local model could take that part. Captain
+/// has one only while its review is on; a workflow of yours may hold a review, so it's asked.
+pub(crate) fn has_reviewer(workflow: &str, view: &SetupView) -> bool {
+    workflow != CAPTAIN || view.captain_reviews
+}
+
+/// The models of `server` that may review, those whose window is known to hold one first, the
+/// biggest first, then the rest in the server's order. A model sized only as it loads, or with a
+/// window too small, can't be checked against a review, so it isn't offered.
+fn reviewing_models(server: &LocalServer) -> Vec<&String> {
+    let mut fit: Vec<&String> = server
         .models
         .iter()
+        .filter(|model| !server.sized_as_loaded.contains(model))
+        .filter(|model| {
+            server
+                .windows
+                .get(*model)
+                .is_none_or(|window| *window >= REVIEW_WINDOW)
+        })
+        .collect();
+    fit.sort_by_key(|model| std::cmp::Reverse(server.windows.get(*model).copied()));
+    fit
+}
+
+/// `None` when none of the server's models can review.
+fn server_question(server: &LocalServer, view: &SetupView) -> Option<Question> {
+    let offered = reviewing_models(server);
+    if offered.is_empty() {
+        return None;
+    }
+    let picked = view.current_list("roles.reviewer.models");
+    let current = offered
+        .iter()
+        .copied()
         .find(|model| picked.contains(&format!("{}/{model}", server.id)));
-    let mut options = vec![option('n', "Not now", choose(NOT_NOW), current.is_none())];
-    // Keys skip `n`, which Not now keeps.
-    let keys = ('a'..='z').filter(|key| *key != 'n');
-    let names: Vec<String> = server
-        .models
+    // A window the server said holds a review makes its model the one to take; without one,
+    // nothing says a model fits, so the answer is to leave it for now.
+    let recommended = current.or_else(|| {
+        offered
+            .first()
+            .copied()
+            .filter(|model| server.windows.contains_key(*model))
+    });
+    let names: Vec<String> = offered
         .iter()
         .map(|model| display_name_from_id(model))
         .collect();
-    for ((model, name), key) in server.models.iter().zip(&names).zip(keys) {
-        let mut model_option = option(
-            key,
-            name,
-            choose(model),
-            current.is_some_and(|current| current == model),
-        );
+    let mut models = Vec::new();
+    // Keys skip `n`, which Not now keeps.
+    let keys = ('a'..='z').filter(|key| *key != 'n');
+    for ((model, name), key) in offered.iter().zip(&names).zip(keys) {
+        let mut model_option = option(key, name, choose(model), recommended == Some(*model));
         // Tags such as `qwen3:8b` and `qwen3:8B` can read as one name; their ids tell them apart.
         if names.iter().filter(|other| *other == name).count() > 1 {
-            model_option.detail = Some(model.clone());
+            model_option.detail = Some((*model).clone());
         }
-        options.push(model_option);
+        models.push(model_option);
     }
-    // Enter takes the first option, so the one you use now goes first.
-    options.sort_by_key(|option| !option.recommended);
-    Question {
+    // Enter takes the first option, so the recommended one goes first and Not now after it.
+    let not_now = option('n', "Not now", choose(NOT_NOW), recommended.is_none());
+    let mut options = Vec::with_capacity(models.len() + 1);
+    if let Some(at) = models.iter().position(|option| option.recommended) {
+        options.push(models.remove(at));
+    }
+    options.push(not_now);
+    options.extend(models);
+    Some(Question {
         kind: ChoiceKind::Init,
         title: format!("A local model server: {}", server.name()),
         body: vec![format!(
-            "{} answers at {}. Use one of its models to review your crew's work? It runs on \
-             this machine.",
+            "{} answers at {}. Use one of its models to review your crew's work? It reads the \
+             change in its prompt, with no tools, and runs on this machine.",
             server.name(),
             server.base_url
         )],
         options,
-    }
+    })
 }
 
 fn main_agent_question(view: &SetupView) -> Option<Question> {
@@ -365,7 +406,7 @@ fn main_agent_question(view: &SetupView) -> Option<Question> {
     })
 }
 
-/// The first ready of Claude Code, Codex, and Antigravity CLI, else the first ready one.
+/// The first ready of Claude Code, Codex, and agy, else the first ready one.
 fn recommended_agent(view: &SetupView) -> Option<String> {
     PREFERRED_AGENTS
         .iter()
@@ -521,37 +562,6 @@ fn approvals_question(view: &SetupView) -> Question {
     }
 }
 
-/// Off until you say yes, so No comes first unless you said yes before.
-fn telemetry_question(view: &SetupView) -> Question {
-    let no = described(
-        "no",
-        "No",
-        "Nothing is sent. argonauts telemetry on turns it on later.",
-    );
-    let yes = described(
-        "yes",
-        "Yes, send it",
-        "Once a day. argonauts telemetry off or DO_NOT_TRACK=1 stops it.",
-    );
-    let on = view
-        .current_value("telemetry.enabled")
-        .and_then(toml::Value::as_bool)
-        == Some(true);
-    let answers = if on { [yes, no] } else { [no, yes] };
-    Question {
-        kind: ChoiceKind::Init,
-        title: "Usage counts".to_owned(),
-        body: vec![
-            "Argonauts Code can send one anonymous event a day: its version, your system, the CLIs \
-             and models you use with their tokens and value, and which features you use. Never \
-             prompts, code, or names of files, folders, repositories, accounts or keys. \
-             argonauts telemetry show prints it."
-                .to_owned(),
-        ],
-        options: init_options(&answers),
-    }
-}
-
 fn trust_question(view: &SetupView) -> Option<Question> {
     if view.untrusted.is_empty() {
         return None;
@@ -624,6 +634,16 @@ fn guides_question(view: &SetupView, answers: &Answers) -> Option<Question> {
 
 /// Records the answer and returns the line the transcript keeps. The caller checked that the
 /// question offered `value`.
+/// How to log each agent of yours back in that's logged out: `Codex is logged out: codex login.`
+pub(crate) fn logged_out_fixes(view: &SetupView) -> Vec<String> {
+    view.agents
+        .iter()
+        .filter(|agent| agent.installed() && agent.enabled)
+        .filter(|agent| agent.login == LoginState::LoggedOut)
+        .filter_map(|agent| Some(format!("{} is logged out: {}.", agent.name, agent.fix()?)))
+        .collect()
+}
+
 pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut Answers) -> String {
     match step {
         Step::Terms => "You read the note on your plan's terms.".to_owned(),
@@ -636,15 +656,9 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
                 format!("Your crew: {}.", names.join(", "))
             };
             // The question closes on the answer, so the transcript keeps how to log back in.
-            let logged_out = view
-                .agents
-                .iter()
-                .filter(|agent| agent.installed() && agent.enabled)
-                .filter(|agent| agent.login == LoginState::LoggedOut);
-            for agent in logged_out {
-                if let Some(fix) = agent.fix() {
-                    line.push_str(&format!(" {} is logged out: {fix}.", agent.name));
-                }
+            for fix in logged_out_fixes(view) {
+                line.push(' ');
+                line.push_str(&fix);
             }
             line
         }
@@ -694,14 +708,6 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
             match answers.approvals {
                 Some(_) => format!("Approvals: {value}."),
                 None => "Approvals: each approval keeps its mode.".to_owned(),
-            }
-        }
-        Step::Telemetry => {
-            answers.telemetry = Some(value == "yes");
-            if value == "yes" {
-                "Usage counts: one anonymous event a day.".to_owned()
-            } else {
-                "Usage counts: nothing is sent.".to_owned()
             }
         }
         Step::Trust => {
@@ -788,7 +794,7 @@ mod tests {
         let view = view(vec![
             agent("claude-code", "Claude Code", AgentStatus::NotInstalled),
             agent("codex", "Codex", AgentStatus::Tested),
-            agent("antigravity-cli", "Antigravity CLI", AgentStatus::Untested),
+            agent("antigravity-cli", "agy", AgentStatus::Untested),
             agent("opencode", "OpenCode", AgentStatus::Tested),
         ]);
         let question = main_agent_question(&view).unwrap();
@@ -1044,8 +1050,9 @@ mod tests {
             id: "ollama".to_owned(),
             base_url: "http://localhost:11434/v1".to_owned(),
             models: (0..14).map(|n| format!("m{n}")).collect(),
+            ..Default::default()
         };
-        let question = server_question(&server, &view(Vec::new()));
+        let question = server_question(&server, &view(Vec::new())).unwrap();
         assert_eq!(question.options[0].key, 'n');
         assert!(question.options[0].recommended);
         let keys: Vec<char> = question.options.iter().map(|option| option.key).collect();
@@ -1062,8 +1069,9 @@ mod tests {
             id: "llamacpp".to_owned(),
             base_url: "http://127.0.0.1:9931/v1".to_owned(),
             models: vec!["qwen3-8b-q4.gguf".to_owned()],
+            ..Default::default()
         };
-        let question = server_question(&server, &view(Vec::new()));
+        let question = server_question(&server, &view(Vec::new())).unwrap();
         assert_eq!(question.title, "A local model server: llama-server");
         let mut answers = Answers::default();
         let said = apply(
@@ -1104,8 +1112,9 @@ mod tests {
                 "llama3.2:latest".to_owned(),
                 "llama3.2".to_owned(),
             ],
+            ..Default::default()
         };
-        let question = server_question(&server, &view(Vec::new()));
+        let question = server_question(&server, &view(Vec::new())).unwrap();
         let shown: Vec<(&str, Option<&str>)> = question.options[1..]
             .iter()
             .map(|option| (option.label.as_str(), option.detail.as_deref()))
@@ -1121,15 +1130,124 @@ mod tests {
         assert_eq!(values(&question)[1], "qwen3-coder:30b");
     }
 
+    /// The setup picture's Ollama, where only the tags made with a window of their own say how much
+    /// they hold.
+    fn ollama() -> LocalServer {
+        let tags = [
+            "gemma3:12b-32k",
+            "qwen3-coder:30b",
+            "qwen3-coder:30b-64k",
+            "gemma3:12b",
+            "gemma2:9b",
+            "gemma4:e2b",
+            "llama3.2:latest",
+            "qwen3:8b-8k",
+        ];
+        LocalServer {
+            id: "ollama".to_owned(),
+            base_url: "http://localhost:11434/v1".to_owned(),
+            models: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+            windows: [
+                ("gemma3:12b-32k".to_owned(), 32_768),
+                ("qwen3-coder:30b-64k".to_owned(), 65_536),
+                ("qwen3:8b-8k".to_owned(), 8_192),
+            ]
+            .into(),
+            sized_as_loaded: tags[1..7]
+                .iter()
+                .filter(|tag| !tag.ends_with("-64k"))
+                .map(|tag| (*tag).to_owned())
+                .collect(),
+        }
+    }
+
+    /// A tag sized only as it loads can't be checked against a review, and one with a small
+    /// window can't hold one, so neither is offered; the biggest window is recommended, with
+    /// Not now right after it, as the setup picture draws it.
     #[test]
-    fn usage_counts_are_off_first_unless_you_said_yes() {
+    fn a_server_offers_only_models_whose_window_holds_a_review() {
+        let question = server_question(&ollama(), &view(Vec::new())).unwrap();
+        let shown: Vec<(&str, bool)> = question
+            .options
+            .iter()
+            .map(|option| (option.label.as_str(), option.recommended))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Qwen3 Coder 30B 64K", true),
+                ("Not now", false),
+                ("Gemma3 12B 32K", false),
+            ]
+        );
+        assert_eq!(
+            question.body,
+            [
+                "Ollama answers at http://localhost:11434/v1. Use one of its models to review your \
+              crew's work? It reads the change in its prompt, with no tools, and runs on this \
+              machine."
+            ]
+        );
+    }
+
+    /// The server question as `setup_after` draws it on Orchestrator, at its width.
+    #[test]
+    fn the_server_question_reads_as_the_picture_draws_it() {
+        use crate::golden::{assert_looks, drawn_rows, picture_rows, still, theme};
+        let question = server_question(&ollama(), &view(Vec::new())).unwrap();
+        let choice = crate::choices::app_choice(
+            argonauts_core::names::ChoiceId::numbered(1),
+            question.kind,
+            question.title,
+            question.body,
+            question.options,
+        );
+        let theme = theme();
+        let lines = argonauts_tui::questions::choice_question(1, &choice).lines(&still(&theme));
+        crate::golden::dump("server_question", &lines);
+        assert_eq!(
+            drawn_rows(&lines),
+            picture_rows(include_str!("../../tests/golden/server_question.txt"))
+        );
+        assert_looks(
+            &theme,
+            &lines,
+            include_str!("../../tests/golden/server_question.html"),
+        );
+    }
+
+    /// Your reviewer from before goes first on a rerun, with Not now after it.
+    #[test]
+    fn a_rerun_recommends_the_local_reviewer_you_have() {
         let mut view = view(Vec::new());
-        assert_eq!(values(&telemetry_question(&view)), ["no", "yes"]);
-        view.current = toml::from_str("[telemetry]\nenabled = true\n").unwrap();
-        assert_eq!(values(&telemetry_question(&view)), ["yes", "no"]);
-        let mut answers = Answers::default();
-        apply(&Step::Telemetry, "yes", &view, &mut answers);
-        assert_eq!(answers.telemetry, Some(true));
+        view.current =
+            toml::from_str("[roles.reviewer]\nmodels = [\"ollama/gemma3:12b-32k\"]\n").unwrap();
+        let question = server_question(&ollama(), &view).unwrap();
+        assert_eq!(
+            values(&question),
+            ["gemma3:12b-32k", NOT_NOW, "qwen3-coder:30b-64k"]
+        );
+        assert!(question.options[0].recommended);
+    }
+
+    #[test]
+    fn a_server_with_no_model_that_can_review_asks_nothing() {
+        let mut server = ollama();
+        server
+            .models
+            .retain(|model| !model.ends_with("-32k") && !model.ends_with("-64k"));
+        assert!(server_question(&server, &view(Vec::new())).is_none());
+    }
+
+    #[test]
+    fn only_captain_without_review_has_no_reviewer() {
+        let mut view = view(Vec::new());
+        assert!(!has_reviewer(CAPTAIN, &view));
+        assert!(has_reviewer(ORCHESTRATOR, &view));
+        assert!(has_reviewer(COUNCIL, &view));
+        assert!(has_reviewer("my-flow", &view));
+        view.captain_reviews = true;
+        assert!(has_reviewer(CAPTAIN, &view));
     }
 
     #[test]
@@ -1159,6 +1277,7 @@ mod tests {
             id: "ollama".to_owned(),
             base_url: "http://localhost:11434/v1".to_owned(),
             models: vec!["llama3.2".to_owned()],
+            ..Default::default()
         };
         assert_eq!(
             line(&Step::Server(server.clone()), "llama3.2"),

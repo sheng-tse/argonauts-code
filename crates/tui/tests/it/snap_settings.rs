@@ -37,6 +37,7 @@ fn row(key: &str, value: &str, layer: &str, allowed: &[&str], description: &str)
         safety: key.starts_with("approvals.") || key.starts_with("limits."),
         allowed: allowed.iter().map(|value| (*value).to_owned()).collect(),
         description: description.to_owned(),
+        picked: None,
     }
 }
 
@@ -1134,7 +1135,7 @@ fn all_settings_view_opens_an_editor_with_right_and_left_goes_back() {
         ViewOutcome::Consumed
     ));
     let list = screen(&mut view, 120, 32, &state);
-    assert!(!list.contains("dark ✓"), "← leaves the editor\n{list}");
+    assert!(!list.contains("dark ✓"), "←  leaves the editor\n{list}");
     assert!(list.contains("1 of 8 match"), "{list}");
 }
 

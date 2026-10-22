@@ -28,6 +28,10 @@ pub fn keyboard_protocol() -> bool {
 /// [`TerminalModes::restore`] know to leave it.
 static ALTERNATE_SCREEN: AtomicBool = AtomicBool::new(false);
 
+/// Whether the inline screen reports the mouse, as while a map shows, so the panic hook and
+/// [`TerminalModes::restore`] know to turn it off.
+static MOUSE_REPORTED: AtomicBool = AtomicBool::new(false);
+
 /// Set once the panic hook gave the terminal back, so a screen still running draws nothing more.
 static GIVEN_BACK: AtomicBool = AtomicBool::new(false);
 
@@ -35,8 +39,10 @@ static GIVEN_BACK: AtomicBool = AtomicBool::new(false);
 /// app can select text. The terminal's own selection still works with its bypass key held,
 /// such as Shift.
 pub(crate) const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
-/// Turns off every kind of mouse reporting the app uses, and alternate scroll mode.
-pub(crate) const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1007l";
+/// Turns off every kind of mouse reporting the app uses, a map's motion and pixels among
+/// them, and alternate scroll mode.
+pub(crate) const MOUSE_OFF: &str =
+    "\x1b[?1016l\x1b[?1003l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1007l";
 
 /// Raw mode, bracketed paste, focus events, and keyboard disambiguation where the terminal
 /// supports it. Dropping it restores the terminal.
@@ -98,6 +104,9 @@ impl TerminalModes {
         if ALTERNATE_SCREEN.swap(false, Ordering::Relaxed) {
             keep(execute!(stdout, Print(MOUSE_OFF), LeaveAlternateScreen));
         }
+        if MOUSE_REPORTED.swap(false, Ordering::Relaxed) {
+            keep(execute!(stdout, Print(MOUSE_OFF)));
+        }
         if self.keyboard_pushed {
             keep(execute!(stdout, PopKeyboardEnhancementFlags));
             self.keyboard_pushed = false;
@@ -126,6 +135,10 @@ pub(crate) fn note_alternate_screen(active: bool) {
     ALTERNATE_SCREEN.store(active, Ordering::Relaxed);
 }
 
+pub(crate) fn note_mouse(active: bool) {
+    MOUSE_REPORTED.store(active, Ordering::Relaxed);
+}
+
 /// Whether a panic already gave the terminal back to the shell.
 pub(crate) fn given_back_after_panic() -> bool {
     GIVEN_BACK.load(Ordering::Relaxed)
@@ -149,6 +162,9 @@ fn restore_after_panic() {
     let mut stdout = io::stdout();
     if ALTERNATE_SCREEN.swap(false, Ordering::Relaxed) {
         let _ = queue!(stdout, Print(MOUSE_OFF), LeaveAlternateScreen);
+    }
+    if MOUSE_REPORTED.swap(false, Ordering::Relaxed) {
+        let _ = queue!(stdout, Print(MOUSE_OFF));
     }
     if KEYBOARD_PUSHED.swap(false, Ordering::Relaxed) {
         let _ = queue!(stdout, PopKeyboardEnhancementFlags);
@@ -293,6 +309,49 @@ fn ask(
     Some(answer)
 }
 
+/// Whether the terminal reports the mouse in pixels when asked (SGR-Pixels, mode 1016), by its
+/// answer to DECRQM. A terminal that doesn't know the mode, or doesn't answer within `timeout`,
+/// reports cells, which its environment alone can't tell: a terminal started from Ghostty keeps
+/// Ghostty's variables. The question goes with DA1, which every terminal answers after it, so
+/// the wait ends at that answer. Raw mode must be on, and nothing else may read input meanwhile.
+pub fn probe_pixel_mouse(timeout: std::time::Duration) -> bool {
+    #[cfg(unix)]
+    {
+        ask(b"\x1b[?1016$p\x1b[c", attributes_said, timeout)
+            .is_some_and(|answer| knows_mode(&answer, 1016))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = timeout;
+        false
+    }
+}
+
+/// Whether `answer` holds the terminal's answer to DA1, `CSI ? <attributes> c`.
+fn attributes_said(answer: &[u8]) -> bool {
+    answer.windows(3).enumerate().any(|(at, start)| {
+        start == b"\x1b[?"
+            && answer[at + 3..]
+                .iter()
+                .find(|byte| !byte.is_ascii_digit() && **byte != b';')
+                == Some(&b'c')
+    })
+}
+
+/// Reads DECRQM's `CSI ? <mode> ; <state> $ y`: a state of 1 to 4 means the terminal knows
+/// the mode, 0 that it doesn't.
+pub fn knows_mode(answer: &[u8], mode: u16) -> bool {
+    let text = String::from_utf8_lossy(answer);
+    let asked = format!("[?{mode};");
+    let Some(start) = text.find(&asked) else {
+        return false;
+    };
+    let rest = &text[start + asked.len()..];
+    rest.find("$y")
+        .and_then(|end| rest[..end].parse::<u8>().ok())
+        .is_some_and(|state| (1..=4).contains(&state))
+}
+
 /// An OSC answer ends with BEL or ST.
 fn osc_complete(bytes: &[u8]) -> bool {
     bytes.ends_with(b"\x07") || bytes.ends_with(b"\x1b\\")
@@ -326,6 +385,24 @@ pub fn is_light((r, g, b): (u8, u8, u8)) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_terminal_that_knows_pixel_mouse_reports_says_so() {
+        assert!(super::knows_mode(b"\x1b[?1016;2$y", 1016));
+        assert!(super::knows_mode(b"junk\x1b[?1016;1$y", 1016));
+        assert!(
+            !super::knows_mode(b"\x1b[?1016;0$y", 1016),
+            "not recognized"
+        );
+        assert!(!super::knows_mode(b"\x1b[?1004;2$y", 1016), "another mode");
+        assert!(!super::knows_mode(b"", 1016), "no answer");
+        assert!(super::attributes_said(b"\x1b[?1016;2$y\x1b[?62;22c"));
+        assert!(super::attributes_said(b"\x1b[?1;2c"));
+        assert!(
+            !super::attributes_said(b"\x1b[?1016;2$y"),
+            "DECRQM's answer alone"
+        );
+    }
+
     #[test]
     fn a_cell_is_the_pixels_over_the_cells() {
         assert_eq!(super::cell_of((1062, 1344), (118, 64)), Some((9, 21)));

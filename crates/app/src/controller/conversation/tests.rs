@@ -1127,3 +1127,34 @@ async fn autopilot_coming_on_has_the_next_agent_answer_a_turn_that_waited_for_yo
     assert_eq!(codex.specs().len(), 1);
     driver.exit().await;
 }
+
+/// With the internet gone, a turn the network ended stays the main agent's: it fails with its
+/// CLI's words and goes to no fallback, which would meet the same network.
+#[tokio::test]
+async fn a_turn_the_network_ended_while_it_is_down_goes_to_no_fallback() {
+    let mut driver = TestDriver::start_with(with_codex_fallback()).await;
+    let codex = driver
+        .directory
+        .add(FakeRunner::cli("codex", "openai").then(answer("From codex.")));
+    driver
+        .health
+        .set_network(argonauts_core::limits::NetState::Down {
+            since: OffsetDateTime::now_utc(),
+        });
+    driver.agent.push(FakeSession::ended(EndReason::CliError {
+        category: argonauts_core::event::ErrorCategory::Network,
+        message: "Unable to connect to API (ConnectionRefused)".into(),
+    }));
+    driver.submit("hi").await;
+    let failed = driver.until(finished).await;
+    assert!(matches!(
+        conversation_event(&failed),
+        Some(ConversationEvent::TurnFailed { error, .. }) if error.contains("Unable to connect")
+    ));
+    let events = driver.exit().await;
+    assert!(!events.iter().any(|event| matches!(
+        conversation_event(event),
+        Some(ConversationEvent::TurnStarted { worker, .. }) if worker.agent == "codex"
+    )));
+    assert!(codex.specs().is_empty());
+}

@@ -14,9 +14,10 @@ use std::time::Duration;
 use argonauts_core::Paths;
 use argonauts_core::clock::{Clock, SystemClock};
 use argonauts_core::events::AgentStatusEvent;
+use argonauts_core::future::BoxFuture;
 use argonauts_core::limits::{
-    AgentHealth, HealthBoard, HealthSignal, HealthState, ModelHealth, ModelState, PlanUsageStatus,
-    TEST_TASK_SUCCEEDED,
+    AgentHealth, HealthBoard, HealthSignal, HealthState, ModelHealth, ModelState, NetState,
+    PlanUsageStatus, TEST_TASK_SUCCEEDED, served_on_this_machine,
 };
 use argonauts_core::names::{AgentId, ModelRef, SessionKey};
 use argonauts_core::registry::{ModelRegistry, model_run};
@@ -25,10 +26,11 @@ use argonauts_core::settings::sessions::HealthSettings;
 use argonauts_core::{ErrorCategory, RetryReason};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::agents_file::{AgentRecord, AgentsFile, AgentsStore, Holder};
 use crate::model_health::{self, MODELS_OUT_TO_DOWN};
+use crate::network::{Internet, Network};
 use crate::plan_usage::registered_prober;
 
 /// Marks kept when `health.window` is `none`, so the file stays small.
@@ -127,6 +129,8 @@ pub struct Breaker {
     testing_task: bool,
     /// When a session that went straight out last finished its work.
     direct_success_at: Option<OffsetDateTime>,
+    /// What the network check knows, so an outage of the internet blames nobody.
+    internet: Internet,
 }
 
 impl Breaker {
@@ -142,6 +146,7 @@ impl Breaker {
             marks: Vec::new(),
             testing_task: false,
             direct_success_at: None,
+            internet: Internet::Unchecked,
         }
     }
 
@@ -211,6 +216,11 @@ impl Breaker {
 
     /// The reset the agent reported, such as when its plan usage comes back. While it's down, the
     /// test waits for this instead of the cool-down.
+    /// Counts network errors only as far as the network check knows the internet is there.
+    pub fn knowing(&mut self, internet: Internet) {
+        self.internet = internet;
+    }
+
     pub fn set_reported_reset(&mut self, reset: Option<OffsetDateTime>) {
         self.reported_reset = reset;
         if self.state == HealthState::Down {
@@ -226,7 +236,9 @@ impl Breaker {
     /// Like [`Breaker::observe`], with sessions counted as `<scope>/<session>`, so sessions
     /// of different processes stay apart, and `proxied` when the session went out through the
     /// sandbox's proxy. Its network errors don't count toward Down while sessions that go
-    /// straight out still finish their work.
+    /// straight out still finish their work. While the internet is down, network errors and
+    /// errors nobody understood aren't marked at all, and a network error counts only once
+    /// the internet was found up after it.
     pub fn observe_from(
         &mut self,
         signal: &HealthSignal,
@@ -275,6 +287,9 @@ impl Breaker {
         if matches!(self.state, HealthState::Down | HealthState::Testing) {
             return None;
         }
+        if self.internet.is_down() && may_be_the_network(signal) {
+            return None;
+        }
         self.marks.push(HealthMark {
             at: now,
             session: if scope.is_empty() {
@@ -287,13 +302,21 @@ impl Breaker {
             proxied,
         });
         self.prune(now);
+        self.judge(now)
+    }
 
+    /// Takes the agent down, or calls it degraded, by the marks that count. A network error
+    /// counts only once the internet was found up after it, which may be a while after it came.
+    fn judge(&mut self, now: OffsetDateTime) -> Option<HealthState> {
         let direct_works = self.direct_success_at.is_some_and(|at| {
             span(&self.settings.window, "health.window").is_none_or(|window| at > now - window)
         });
+        let internet = self.internet;
+        let blamed = |mark: &&HealthMark| !mark.network || internet.blames(mark.at);
         let unreachable: Vec<&HealthMark> = self
             .marks
             .iter()
+            .filter(blamed)
             .filter(|mark| mark.network && !(mark.proxied && direct_works))
             .collect();
         let sessions: BTreeSet<&str> = unreachable.iter().map(|m| m.session.as_str()).collect();
@@ -307,14 +330,11 @@ impl Breaker {
             let reason = format!("network errors on {on} in {}", self.settings.window.0);
             return self.go_down(now, reason);
         }
+        let counted = self.marks.iter().filter(blamed).count();
         if self.state == HealthState::Healthy
-            && self.marks.len() >= at_least_one(self.settings.degraded_after)
+            && counted >= at_least_one(self.settings.degraded_after)
         {
-            let reason = format!(
-                "{} errors or retries in {}",
-                self.marks.len(),
-                self.settings.window.0
-            );
+            let reason = format!("{counted} errors or retries in {}", self.settings.window.0);
             return self.set(HealthState::Degraded, now, Some(reason));
         }
         None
@@ -346,9 +366,26 @@ impl Breaker {
                     format!("no test task finished within {minutes} minutes"),
                 )
             }
-            HealthState::Degraded => self.recover_if_quiet(now),
-            HealthState::Healthy | HealthState::Testing => None,
+            HealthState::Degraded => self.recount(now).or_else(|| self.recover_if_quiet(now)),
+            HealthState::Healthy => self.recount(now),
+            HealthState::Testing => None,
         }
+    }
+
+    /// Network errors the check has since found the internet up after count now. Without a
+    /// check, each one counted when it came.
+    fn recount(&mut self, now: OffsetDateTime) -> Option<HealthState> {
+        let internet = self.internet;
+        let confirmed = internet != Internet::Unchecked
+            && self
+                .marks
+                .iter()
+                .any(|mark| mark.network && internet.blames(mark.at));
+        if !confirmed {
+            return None;
+        }
+        self.prune(now);
+        self.judge(now)
     }
 
     /// Starts the one test task an agent in Testing takes, and its time limit with it. `false`
@@ -462,8 +499,12 @@ pub(crate) fn is_agent_trouble(category: ErrorCategory) -> bool {
 }
 
 /// What a signal says about the agent under test: a success passes it, and an error of the
-/// kinds that take an agent or its models out fails it. `None` when it says neither.
-fn test_verdict(signal: &HealthSignal) -> Option<bool> {
+/// kinds that take an agent or its models out fails it. `None` when it says neither, as a
+/// network error says nothing while the internet is down.
+fn test_verdict(signal: &HealthSignal, internet: Internet) -> Option<bool> {
+    if internet.is_down() && may_be_the_network(signal) {
+        return None;
+    }
     match signal {
         HealthSignal::Success { .. } => Some(true),
         HealthSignal::Error {
@@ -543,6 +584,8 @@ pub struct FileHealthBoard {
     models: Option<Arc<dyn ModelRegistry>>,
     /// The spelling found for each name asked about so far, since every read asks again.
     spelled: Mutex<BTreeMap<(String, Option<String>), String>>,
+    /// Whether the internet is there at all, which a network error makes it check.
+    network: Arc<Network>,
 }
 
 impl FileHealthBoard {
@@ -571,7 +614,14 @@ impl FileHealthBoard {
             scope,
             models: None,
             spelled: Mutex::default(),
+            network: Arc::new(default_network()),
         }
+    }
+
+    /// Checks the internet with `network`, as tests do with a probe of their own.
+    pub fn with_network(mut self, network: Network) -> Self {
+        self.network = Arc::new(network.with_clock(self.clock.clone()));
+        self
     }
 
     /// Keeps each model under the one name `registry` gives it, and counts what a session
@@ -606,6 +656,9 @@ impl FileHealthBoard {
 
     /// Uses `clock` instead of the system time, as tests do.
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        if let Some(network) = Arc::get_mut(&mut self.network) {
+            network.set_clock(clock.clone());
+        }
         self.clock = clock;
         self
     }
@@ -722,7 +775,7 @@ impl FileHealthBoard {
                 true
             }
         };
-        if holds && let Some(ok) = test_verdict(signal) {
+        if holds && let Some(ok) = test_verdict(signal, breaker.internet) {
             breaker.test_result(ok, now);
         }
     }
@@ -744,6 +797,7 @@ impl FileHealthBoard {
             .filter(|plan_usage| plan_usage.status == PlanUsageStatus::Rejected)
             .and_then(|plan_usage| plan_usage.resets_at);
         breaker.set_reported_reset(reset);
+        breaker.knowing(self.network.internet());
         breaker
     }
 
@@ -930,12 +984,56 @@ fn pin_suggestion(agent_id: &AgentId) -> String {
     }
 }
 
+/// The check a board starts with: a TCP connect to the providers' hosts. This crate's own tests
+/// never reach past the machine, so theirs never checks unless a test gives it a probe, and
+/// `ARGONAUTS_NETWORK_CHECK=off` turns it off for anything else.
+fn default_network() -> Network {
+    if cfg!(test) || crate::network::check_is_off() {
+        Network::unchecked()
+    } else {
+        Network::probing(Arc::new(crate::network::TcpProbe::of_providers()))
+    }
+}
+
+/// A network retry or error, or a timeout: what makes the board check the internet.
+fn says_the_network(signal: &HealthSignal) -> bool {
+    match signal {
+        HealthSignal::Retry { reason, .. } => *reason == RetryReason::Network,
+        HealthSignal::Error { category, .. } => {
+            matches!(category, ErrorCategory::Network | ErrorCategory::Timeout)
+        }
+        HealthSignal::Success { .. } | HealthSignal::AdapterBroken { .. } => false,
+    }
+}
+
+/// [`says_the_network`], or an error nobody understood, as an offline CLI's often is: while the
+/// internet is down, none of these is held against anyone.
+fn may_be_the_network(signal: &HealthSignal) -> bool {
+    match signal {
+        HealthSignal::Retry { reason, .. } => *reason == RetryReason::Network,
+        HealthSignal::Error { category, .. } => matches!(
+            category,
+            ErrorCategory::Network | ErrorCategory::Timeout | ErrorCategory::Unknown
+        ),
+        HealthSignal::Success { .. } | HealthSignal::AdapterBroken { .. } => false,
+    }
+}
+
 impl HealthBoard for FileHealthBoard {
     fn observe(&self, signal: HealthSignal) {
         let (HealthSignal::Retry { agent_id, .. }
         | HealthSignal::Error { agent_id, .. }
         | HealthSignal::Success { agent_id, .. }
         | HealthSignal::AdapterBroken { agent_id, .. }) = &signal;
+        match &signal {
+            HealthSignal::Success { model, .. }
+                if !served_on_this_machine(&agent_id.0, model.as_deref()) =>
+            {
+                self.network.answered();
+            }
+            _ if says_the_network(&signal) => self.network.suspect(),
+            _ => {}
+        }
         match &signal {
             HealthSignal::AdapterBroken { detail, .. } => {
                 self.disable_adapter(agent_id, detail);
@@ -979,7 +1077,10 @@ impl HealthBoard for FileHealthBoard {
                 }
                 HealthState::Healthy | HealthState::Degraded => {
                     breaker.observe_from(&signal, &self.scope, through_proxy(&signal), now);
-                    self.observe_model(breaker, entry, &signal, name, now);
+                    // An outage of the internet is no model's doing either.
+                    if !(breaker.internet.is_down() && may_be_the_network(&signal)) {
+                        self.observe_model(breaker, entry, &signal, name, now);
+                    }
                 }
             }
         });
@@ -1051,6 +1152,18 @@ impl HealthBoard for FileHealthBoard {
             .into_iter()
             .find(|health| health.model.model.as_deref().unwrap_or_default() == name)
             .unwrap_or_else(|| ModelHealth::healthy(model))
+    }
+
+    fn network(&self) -> NetState {
+        self.network.state()
+    }
+
+    fn network_changes(&self) -> watch::Receiver<NetState> {
+        self.network.changes()
+    }
+
+    fn check_network(&self) -> BoxFuture<'_, NetState> {
+        Box::pin(self.network.settled())
     }
 
     fn models(&self, agent_id: &AgentId) -> Vec<ModelHealth> {
@@ -1879,5 +1992,141 @@ mod tests {
         board.observe(success(2));
         let reason = board.state(&codex()).disabled.expect("still disabled");
         assert_eq!(disable_scope(&reason), DisableScope::Every);
+    }
+
+    /// Always answers the same.
+    struct Answers(bool);
+
+    impl crate::network::Probe for Answers {
+        fn answers(&self) -> BoxFuture<'_, bool> {
+            let answer = self.0;
+            Box::pin(async move { answer })
+        }
+    }
+
+    fn offline_board(home: &std::path::Path, clock: &Arc<ManualClock>) -> FileHealthBoard {
+        board(home, clock).with_network(Network::probing(Arc::new(Answers(false))))
+    }
+
+    async fn network_down(board: &FileHealthBoard) {
+        let mut changes = board.network_changes();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            changes.wait_for(|state| state.is_down()),
+        )
+        .await
+        .expect("the network went down")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_network_error_checks_the_internet_and_a_providers_answer_brings_it_back() {
+        let home = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(t0());
+        let board = offline_board(home.path(), &clock);
+        assert_eq!(board.network(), NetState::Up);
+        board.observe(retry(1, RetryReason::Network));
+        network_down(&board).await;
+        assert_eq!(board.network(), NetState::Down { since: t0() });
+        // A model on this machine works offline, so its answer says nothing of the internet.
+        board.observe(HealthSignal::Success {
+            agent_id: AgentId("opencode".to_owned()),
+            model: Some("ollama/qwen3-coder:30b".to_owned()),
+            session: SessionKey::numbered(2),
+        });
+        assert!(board.network().is_down());
+        board.observe(success(3));
+        assert_eq!(board.network(), NetState::Up);
+    }
+
+    #[tokio::test]
+    async fn network_errors_while_offline_never_take_an_agent_down() {
+        let home = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(t0());
+        let board = offline_board(home.path(), &clock);
+        board.observe(retry(1, RetryReason::Network));
+        network_down(&board).await;
+        for session in 1..=4 {
+            board.observe(retry(session, RetryReason::Network));
+            board.observe(error(session, ErrorCategory::Network));
+            board.observe(error(session, ErrorCategory::Timeout));
+            // An offline CLI's failure often reads as nothing anyone understood.
+            board.observe(error(session, ErrorCategory::Unknown));
+        }
+        let health = board.state(&codex());
+        assert_eq!(health.state, HealthState::Healthy, "{:?}", health.reason);
+        let models = board.models(&codex());
+        assert!(
+            models
+                .iter()
+                .all(|model| model.state == ModelState::Healthy),
+            "{models:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn network_errors_count_once_the_internet_is_confirmed_up() {
+        let home = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(t0());
+        let board =
+            board(home.path(), &clock).with_network(Network::probing(Arc::new(Answers(true))));
+        // Before the check has said anything, the error blames nobody.
+        board.observe(error(1, ErrorCategory::Network));
+        assert_eq!(board.state(&codex()).state, HealthState::Healthy);
+        board.check_network().await;
+        // The internet answered after these, so they are the provider's own outage.
+        board.observe(error(1, ErrorCategory::Network));
+        board.observe(error(2, ErrorCategory::Network));
+        let health = board.state(&codex());
+        assert_eq!(health.state, HealthState::Down);
+        assert_eq!(
+            health.reason.as_deref(),
+            Some("network errors on 2 sessions in 2m")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_network_errors_counts_once_a_check_after_its_last_finds_the_internet_up() {
+        let home = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(t0());
+        let pace = crate::network::Pace {
+            at_most_every: std::time::Duration::from_millis(300),
+            ..crate::network::Pace::default()
+        };
+        let network = Network::probing(Arc::new(Answers(true))).with_pace(pace);
+        let board = board(home.path(), &clock).with_network(network);
+        board.observe(error(1, ErrorCategory::Network));
+        board.check_network().await;
+        // Two more, after the check that just found the internet up.
+        clock.advance(Delta::seconds(1));
+        board.observe(error(1, ErrorCategory::Network));
+        clock.advance(Delta::seconds(1));
+        board.observe(error(2, ErrorCategory::Network));
+        assert_eq!(board.state(&codex()).state, HealthState::Healthy);
+        // One more check comes once the pace allows, after them all.
+        board.check_network().await;
+        let health = board.state(&codex());
+        assert_eq!(health.state, HealthState::Down);
+        assert_eq!(
+            health.reason.as_deref(),
+            Some("network errors on 2 sessions in 2m")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_test_tasks_network_error_while_offline_is_no_verdict() {
+        let home = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(t0());
+        take_down(&board(home.path(), &clock));
+        clock.advance(Delta::minutes(5));
+        let board = offline_board(home.path(), &clock);
+        assert_eq!(board.state(&codex()).state, HealthState::Testing);
+        board.observe(retry(4, RetryReason::Network));
+        network_down(&board).await;
+        assert_eq!(test_task(&board).as_deref(), Some("s-004"));
+        board.observe(error(4, ErrorCategory::Network));
+        assert_eq!(board.state(&codex()).state, HealthState::Testing);
+        board.observe(success(4));
+        assert_eq!(board.state(&codex()).state, HealthState::Healthy);
     }
 }

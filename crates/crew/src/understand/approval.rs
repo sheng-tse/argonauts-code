@@ -735,7 +735,7 @@ pub fn decider(party: &Party) -> Decider {
     match party {
         // Leaving it was your call.
         Party::User | Party::Declined => Decider::You,
-        Party::Rules | Party::Config | Party::ArgonautsCode => Decider::Rules,
+        Party::Rules | Party::Config | Party::ArgonautsCode | Party::Network => Decider::Rules,
         _ => Decider::MainAgent,
     }
 }

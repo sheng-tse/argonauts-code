@@ -1,0 +1,39 @@
+# The .deb and .rpm of a release, built by .github/workflows/linux-packages.yml from the static musl builds, which run
+# on every distribution. nfpm runs from the folder dist's archive unpacked into, and fills in the ${…} values from
+# the environment:
+#   VERSION   the release's version, such as 0.1.0 or 0.1.0-beta.1
+#   ARCH      amd64 or arm64 (nfpm names it each format's own way)
+name: argonauts-code
+version: ${VERSION}
+arch: ${ARCH}
+platform: linux
+section: devel
+priority: optional
+# Only a name for now: an address goes here once there's one meant for packages.
+maintainer: Sheng-Tse Lin
+homepage: https://github.com/sheng-tse/argonauts-code
+license: Apache-2.0
+description: |-
+  Orchestrate any mix of coding agents and models, from Claude Code and Codex to open-weight models on your own
+  machine.
+# git is how Argonauts keeps each agent's work apart. The agent CLIs are installed on their own.
+depends:
+  - git
+contents:
+  - src: ./argonauts
+    dst: /usr/bin/argonauts
+    file_info:
+      mode: 0755
+  - src: ./LICENSE
+    dst: /usr/share/doc/argonauts-code/LICENSE
+  - src: ./NOTICE
+    dst: /usr/share/doc/argonauts-code/NOTICE
+  - src: ./THIRD_PARTY_NOTICES.md
+    dst: /usr/share/doc/argonauts-code/THIRD_PARTY_NOTICES.md
+rpm:
+  compression: xz
+  # Signed once the maintainer makes the packages key: its signing subkey goes in the PACKAGES_GPG_KEY secret.
+  # signature:
+  #   key_file: ${PACKAGES_GPG_KEY_FILE}
+deb:
+  compression: xz

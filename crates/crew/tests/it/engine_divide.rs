@@ -30,13 +30,14 @@ use argonauts_core::{RepoId, RunId};
 use argonauts_crew::approvals;
 use argonauts_crew::divide;
 use argonauts_crew::engine::host::Host;
-use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::merge::branch;
 use argonauts_crew::state::RunState;
 use argonauts_crew::workflow::{StepAt, StepCall, StepDone, runner, yaml};
 use argonauts_testkit::repo::TempRepo;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, engine_context_in};
+
+use crate::support::shared_in;
 
 const CREW: [(&str, &str); 3] = [
     ("claude-code/claude-opus", "anthropic"),
@@ -103,7 +104,7 @@ impl Stage {
         let history = history(&run, &context, &base, new_dependencies)?;
         let (engine, sink, _commands) =
             engine_context_in(&services, settings, context, history.clone());
-        let shared = Shared::new(&engine, RunState::fold(&history))?;
+        let shared = shared_in(&repo, &engine, RunState::fold(&history))?;
         Ok(Self {
             repo,
             host: Host::new(Arc::new(shared)),
@@ -577,6 +578,7 @@ fn history(
         outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     };
     let kinds = vec![
         RunEventKind::Run(RunLifecycle::Started(Box::new(started))),

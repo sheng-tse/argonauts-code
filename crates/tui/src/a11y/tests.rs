@@ -741,3 +741,89 @@ fn a_signed_out_fallback_says_how_to_sign_in_again() {
     assert!(lines[0].contains("is signed out"), "{lines:?}");
     assert!(lines[0].ends_with("signs it in again"), "{lines:?}");
 }
+
+/// A start Argonauts Code turned down is said once the turn ends, in the screen's short words,
+/// and not at all when a later start in the same turn works.
+#[test]
+fn a_refused_start_is_said_at_the_turns_end_unless_a_retry_worked() {
+    use argonauts_core::app::{ConversationEvent, TurnReply};
+    use argonauts_core::names::{ModelRef, TurnId};
+    use argonauts_core::{AgentEvent, Spend};
+
+    const START: &str = "mcp__argonauts_status__argonauts_start_workflow";
+    const WHY_NOT: &str = "No workflow started. With Captain, one starts only when you asked \
+        for a workflow in this message or the one before, and you said how it should run.";
+    let turn = TurnId::numbered(1);
+    let said = |reader: &mut Reader, event| {
+        reader
+            .event(&AppEvent::Conversation { event })
+            .lines
+            .join("\n")
+    };
+    let agent = |event| ConversationEvent::Agent {
+        turn: turn.clone(),
+        event,
+    };
+    let start = |id: &str, how: Option<&str>| {
+        agent(AgentEvent::ToolStarted {
+            id: id.into(),
+            name: START.into(),
+            input: json!({"request": "fix the money", "how_to_run": how}),
+            parent: None,
+        })
+    };
+    let answered = |id: &str, output: &str| {
+        agent(AgentEvent::ToolFinished {
+            id: id.into(),
+            ok: true,
+            output: Some(output.into()),
+            parent: None,
+        })
+    };
+    let finished = || ConversationEvent::TurnFinished {
+        turn: turn.clone(),
+        reply: TurnReply::Answer {
+            markdown: "Done.".into(),
+        },
+        spend: Spend::default(),
+        elapsed_ms: 4_000,
+    };
+    let asked = |reader: &mut Reader| {
+        said(
+            reader,
+            ConversationEvent::TurnStarted {
+                turn: turn.clone(),
+                text: "use a workflow for this".into(),
+                worker: ModelRef::new("claude-code", Some("claude-haiku-5-5".into())),
+                read_only: false,
+                commit: "8b41d07".into(),
+                uncommitted: Vec::new(),
+                settings_sha256: None,
+                continues: false,
+            },
+        )
+    };
+
+    let mut reader = Reader::new(&UiOptions::default());
+    asked(&mut reader);
+    assert_eq!(said(&mut reader, start("s1", None)), "");
+    assert_eq!(said(&mut reader, answered("s1", WHY_NOT)), "");
+    let ended = said(&mut reader, finished());
+    assert!(
+        ended.starts_with("claude-code: No workflow started\n"),
+        "{ended}"
+    );
+    assert!(!ended.contains("With Captain"), "{ended}");
+
+    let mut reader = Reader::new(&UiOptions::default());
+    asked(&mut reader);
+    said(&mut reader, start("s1", None));
+    said(&mut reader, answered("s1", WHY_NOT));
+    said(&mut reader, start("s2", Some("captain")));
+    assert_eq!(
+        said(&mut reader, answered("s2", "Starting a workflow: Captain.")),
+        ""
+    );
+    let ended = said(&mut reader, finished());
+    assert!(!ended.contains("No workflow started"), "{ended}");
+}

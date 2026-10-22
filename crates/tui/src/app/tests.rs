@@ -87,6 +87,29 @@ fn live(ui: &Ui<vt100::Parser>) -> Vec<String> {
 
 mod over_question;
 
+/// The first start after an update shows its row above the input, and your first key takes
+/// it away.
+#[test]
+fn the_updated_row_shows_until_the_first_key() {
+    let (mut ui, t0) = ui();
+    ui.model_mut().bottom.updated = Some("Updated to 0.1.1 · /release-notes".to_owned());
+    ui.frame(t0).unwrap();
+    let rows = live(&ui);
+    assert_eq!(rows[0], "● Updated to 0.1.1 · /release-notes", "{rows:#?}");
+    assert_eq!(rows[1], "", "{rows:#?}");
+    assert!(rows[2].starts_with('─'), "the input under it: {rows:#?}");
+
+    let later = t0 + Duration::from_millis(100);
+    press(&mut ui, KeyCode::Char('h'), later);
+    ui.frame(later).unwrap();
+    let rows = live(&ui);
+    assert!(rows.iter().any(|row| row == "❯ h"), "{rows:#?}");
+    assert!(
+        !rows.iter().any(|row| row.contains("Updated to")),
+        "{rows:#?}"
+    );
+}
+
 #[test]
 fn ctrl_c_clears_then_asks_twice_to_exit() {
     let (mut ui, t0) = ui();
@@ -591,7 +614,7 @@ fn a_question_that_needs_you_keeps_typing_out_until_passed_on() {
     press(&mut ui, KeyCode::Up, t0);
     assert!(
         ui.model().bottom.focused_question().is_none(),
-        "↑ never brings back what you passed on"
+        "↑  never brings back what you passed on"
     );
 }
 
@@ -897,7 +920,7 @@ fn down_past_the_last_option_goes_back_to_the_input() {
     assert!(!waiting.focused && !waiting.dismissed);
     ui.frame(t0).unwrap();
     let rows = screen(&ui);
-    assert!(rows.iter().any(|row| row == "  ↑ to answer"), "{rows:#?}");
+    assert!(rows.iter().any(|row| row == "  ↑  to answer"), "{rows:#?}");
     assert!(rows.iter().any(|row| row.starts_with("❯ ")), "{rows:#?}");
 
     type_text(&mut ui, "hi", t0);
@@ -1955,6 +1978,7 @@ fn a_paste_goes_to_the_view_on_top() {
         safety: false,
         allowed: Vec::new(),
         description: String::new(),
+        picked: None,
     };
     ui.push_view(Box::new(
         crate::views::settings::all_settings::AllSettingsView::new(vec![
@@ -2487,7 +2511,7 @@ fn up_picks_the_answered_fallback_pick_and_m_remembers_it() {
     let rows = live(&ui);
     assert!(
         rows.iter()
-            .any(|row| row == "◆ task-003 fell back to Codex · ↑ to remember this pick"),
+            .any(|row| row == "◆ task-003 fell back to Codex · ↑  to remember this pick"),
         "{rows:#?}"
     );
 
@@ -2495,7 +2519,7 @@ fn up_picks_the_answered_fallback_pick_and_m_remembers_it() {
     assert!(ui.model().bottom.pick_selected());
     assert!(
         ui.model().bottom.composer.is_empty(),
-        "↑ went to the pick first"
+        "↑  went to the pick first"
     );
     ui.frame(t0 + Duration::from_secs(1)).unwrap();
     let rows = live(&ui);

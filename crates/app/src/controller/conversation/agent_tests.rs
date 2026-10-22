@@ -75,6 +75,9 @@ fn started(worker: &str, role: RoleName, step: StepName, access: Access) -> RunE
         workflow_step: None,
         label: Some(label.to_owned()),
         asked: None,
+        asked_by: None,
+        asked_why: None,
+        forked: false,
     })))
 }
 
@@ -874,9 +877,17 @@ async fn rewind_puts_back_a_carried_on_turns_files_in_the_worktree() {
                 parent: None,
             })
         };
+        let changed = |path: &Path| {
+            RunnerEvent::Agent(AgentEvent::FileChanged {
+                path: path.to_string_lossy().into_owned(),
+                kind: "update".into(),
+            })
+        };
         worker_turn("Flipped the sign.")
             .with_event(tool("t1", "Edit", &root.join("money.py")))
+            .with_event(changed(&root.join("money.py")))
             .with_event(tool("t2", "Write", &root.join(".env")))
+            .with_event(changed(&root.join(".env")))
     });
     turn(&mut driver, said_text("flip the sign")).await;
     assert_eq!(driver.agent.specs()[0].workdir, worktree);

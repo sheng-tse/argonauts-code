@@ -12,6 +12,9 @@ pub enum Control {
     Choice(&'static [Choice]),
     /// `value ›`: Enter opens the command's own picker, as `/theme` and `/model` do.
     Opens(&'static str),
+    /// `value ›`: Enter opens the Behaviors map, beside Overview and Models, where d asks who
+    /// summarizes and sets up the embedder.
+    BehaviorsMap,
     /// A value you type, edited as All settings edits a key.
     Typed,
     /// Whether a card shows on the bottom line, which keeps a file of its own.
@@ -69,6 +72,19 @@ const fn row(label: &'static str, key: &'static str, control: Control) -> Row {
         label,
         key,
         control,
+    }
+}
+
+/// What a row's values mean, dim after its value, for a key whose words alone don't say.
+pub fn described(key: &str, value: &str) -> Option<&'static str> {
+    let auto = matches!(value.trim().trim_matches('"'), "" | "auto");
+    match key {
+        "behaviors.map" => Some("labels, or labels and summaries"),
+        "behaviors.summarizer" if auto => {
+            Some("a model on this computer, else your main CLI's cheapest")
+        }
+        "behaviors.embedder" if auto => Some("nomic-embed-text on Ollama, else word vectors"),
+        _ => None,
     }
 }
 
@@ -173,6 +189,11 @@ pub const ROWS: &[Row] = &[
     row("Terminal progress bar", "ui.progress_bar", BOOL),
     row("Copy on select", "ui.copy_on_select", BOOL),
     row("Auto-scroll", "ui.autoscroll", BOOL),
+    row(
+        "Auto-update channel",
+        "updates.channel",
+        Control::Choice(&[choice("\"stable\"", "stable"), choice("\"beta\"", "beta")]),
+    ),
     row("Open agents view by default", "ui.agents_view", BOOL),
     row("Notifications", "notifications.os", BOOL),
     row("Output style", "ui.output_style", ALLOWED),
@@ -215,6 +236,47 @@ pub const ROWS: &[Row] = &[
     row("Mods", "", Control::Opens("mods")),
     row("Bottom line", "", Control::Opens("mods bottom-line")),
     row("Keep the Mac awake", "awake.while_working", BOOL),
-    row("Usage data", "telemetry.enabled", BOOL),
+    row(
+        "Behaviors map",
+        "behaviors.map",
+        Control::Choice(&[
+            choice("\"labels\"", "labels"),
+            choice("\"deeper\"", "deeper"),
+        ]),
+    ),
+    row(
+        "Behaviors summarizer",
+        "behaviors.summarizer",
+        Control::BehaviorsMap,
+    ),
+    row(
+        "Behaviors embedder",
+        "behaviors.embedder",
+        Control::BehaviorsMap,
+    ),
+    row("Auto-updates", "updates.auto", BOOL),
+    row("Usage reports", "telemetry.enabled", BOOL),
     row("All settings", "", Control::AllSettings),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The channel sits where Claude Code's own is, after Auto-scroll, and whether Argonauts
+    /// Code updates itself sits with Argonauts Code's own rows.
+    #[test]
+    fn updates_have_their_rows() {
+        let at = |key: &str| ROWS.iter().position(|row| row.key == key).unwrap();
+        let channel = ROWS[at("updates.channel")];
+        assert_eq!(at("updates.channel"), at("ui.autoscroll") + 1);
+        assert_eq!(channel.label, "Auto-update channel");
+        let Control::Choice(values) = channel.control else {
+            panic!("{channel:?}");
+        };
+        let words: Vec<&str> = values.iter().map(|value| value.words).collect();
+        assert_eq!(words, ["stable", "beta"]);
+        let auto = ROWS[at("updates.auto")];
+        assert_eq!((auto.label, auto.control), ("Auto-updates", BOOL));
+    }
+}

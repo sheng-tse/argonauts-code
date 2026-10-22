@@ -124,7 +124,7 @@ fn a_new_question_waits_without_the_keys() {
     let lines = question.lines(&ctx);
     assert_eq!(plain_text(&lines[4..5]), "    1. Merge");
     assert_eq!(lines[4].spans[3].style, theme.style(Role::Text));
-    assert_eq!(last_row(&question, &ctx), "  ↑ to answer");
+    assert_eq!(last_row(&question, &ctx), "  ↑  to answer");
     for code in [
         KeyCode::Char('y'),
         KeyCode::Char('1'),
@@ -923,7 +923,7 @@ fn a_question_you_set_off_holds_the_keys_until_answered() {
             QuestionEvent::Moved
         );
     }
-    assert!(question.focused, "↓ past the last option keeps the keys");
+    assert!(question.focused, "↓  past the last option keeps the keys");
     assert_eq!(question.selected, 3);
     assert_eq!(question.handle_key(key(KeyCode::Char('2'))), answered(1));
     assert_eq!(
@@ -953,7 +953,7 @@ fn a_question_that_needs_you_takes_the_keys_until_set_aside() {
             QuestionEvent::Moved
         );
     }
-    assert!(question.focused, "↓ past the last option keeps the keys");
+    assert!(question.focused, "↓  past the last option keeps the keys");
     assert_eq!(
         question.handle_key(key(KeyCode::Esc)),
         QuestionEvent::Dismissed
@@ -1080,7 +1080,7 @@ fn a_question_that_just_showed_holds_off_all_but_the_arrows() {
     question.focus();
     assert!(
         !question.held_off(&key(KeyCode::Char('2')), soon),
-        "↑ hands it over"
+        "↑  hands it over"
     );
 
     let mut yours = merge_question().yours();

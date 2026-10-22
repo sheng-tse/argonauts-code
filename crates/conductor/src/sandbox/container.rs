@@ -51,7 +51,7 @@ impl Container {
         Self {
             runtime,
             image: image.trim().to_owned(),
-            launcher: std::env::current_exe().ok(),
+            launcher: argonauts_core::paths::this_program().ok(),
         }
     }
 
@@ -59,7 +59,7 @@ impl Container {
         Self {
             runtime: Some(runtime.into()),
             image: image.trim().to_owned(),
-            launcher: std::env::current_exe().ok(),
+            launcher: argonauts_core::paths::this_program().ok(),
         }
     }
 
@@ -568,6 +568,77 @@ mod tests {
             closed: Vec::new(),
             listable: Vec::new(),
             loopback: false,
+            outside: Default::default(),
+        }
+    }
+
+    /// On autopilot a session reads and writes anywhere, but a container still shows it only
+    /// its own paths: nothing of this machine's root or your home outside the project goes in.
+    #[test]
+    fn a_container_on_autopilot_keeps_to_the_sessions_own_paths() {
+        use argonauts_core::outside::Outside;
+        use argonauts_core::session_runner::Access;
+        use argonauts_core::settings::approvals::ApprovalMode;
+        use argonauts_core::settings::outside::OutsideSettings;
+
+        use crate::sandbox::profile::{ProfileInput, session_profile};
+
+        let (home, project, session) = (at(""), at("/work/app"), at("/.argonauts/s1"));
+        let disk = FakeDisk::new(&[
+            &format!("{HOME}/work/app/src/lib.rs"),
+            &format!("{HOME}/Downloads/x.png"),
+            &format!("{HOME}/.argonauts/s1/status.json"),
+        ]);
+        let input = ProfileInput {
+            access: Access::Direct,
+            agent_id: "claude-code",
+            workdir: &project,
+            session_dir: &session,
+            argonauts_home: &at("/.argonauts"),
+            user_home: &home,
+            base_worktree: None,
+            status_file: None,
+            extra_writable: &[],
+            sees_other_worktrees: false,
+            commits: false,
+        };
+        let outside = Outside::for_mode(
+            &OutsideSettings::default(),
+            ApprovalMode::Autopilot,
+            Some(&project),
+            &home,
+        );
+        let in_mode = |mode: SandboxMode| {
+            let requested = SandboxProfile {
+                mode,
+                outside: outside.clone(),
+                ..SandboxProfile::default()
+            };
+            SandboxProfile {
+                mode,
+                ..session_profile(&requested, &input)
+            }
+        };
+
+        let os = in_mode(SandboxMode::Os);
+        assert!(os.writable.contains(&PathBuf::from("/")));
+        assert!(os.outside.is_open());
+
+        let contained = in_mode(SandboxMode::Container);
+        assert!(contained.outside.is_closed());
+        let mounts = plan_mounts(&contained, &disk);
+        let mounted: Vec<&Path> = mounts
+            .list
+            .iter()
+            .map(|mount| mount.path.as_path())
+            .collect();
+        assert!(mounted.contains(&project.as_path()), "{mounted:?}");
+        for unseen in [Path::new("/"), home.as_path(), &at("/Downloads")] {
+            assert!(
+                !mounted.contains(&unseen),
+                "{} in {mounted:?}",
+                unseen.display()
+            );
         }
     }
 

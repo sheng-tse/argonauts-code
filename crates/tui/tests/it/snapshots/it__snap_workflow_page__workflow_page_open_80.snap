@@ -1,5 +1,6 @@
 ---
 source: crates/tui/tests/it/snap_workflow_page.rs
+assertion_line: 195
 expression: "screen(&mut view, width, height)"
 ---
 Workflows › Spec-first
@@ -25,4 +26,4 @@ Write the spec first, then build to it.     .argonauts/workflows/spec-first.toml
 │ Who takes it. The [crew] settings say which model fills each role.           │
 │ ✓ the file is valid · about 9 to 13 agents if Spec lists 3 tasks             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ move · ← → change · a add step · x remove · e editor · esc back  1-14 of 19 ↓
+↑↓  move · ←  →  change · a add step · x remove · esc back          1-14 of 19 ↓

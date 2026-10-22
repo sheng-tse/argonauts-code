@@ -27,6 +27,9 @@ pub struct UiOptions {
     /// `workflows.ultracode_trigger` at start, which the app sets: the word `ultracode` in a
     /// prompt asks for a workflow.
     pub ultracode_trigger: bool,
+    /// The first start's greeting, which the app sets on that start alone. The screen prints
+    /// it before anything else.
+    pub greeting: Option<crate::welcome::Greeting>,
 }
 
 impl UiOptions {
@@ -46,6 +49,7 @@ impl UiOptions {
             settings: ui.clone(),
             history_file: None,
             ultracode_trigger: true,
+            greeting: None,
         }
     }
 }

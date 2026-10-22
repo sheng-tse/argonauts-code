@@ -96,6 +96,7 @@ fn setting(key: &str) -> SettingRow {
         safety: false,
         allowed: vec!["\"x\"".into(), "\"y\"".into()],
         description: format!("Sets {key}"),
+        picked: None,
     }
 }
 

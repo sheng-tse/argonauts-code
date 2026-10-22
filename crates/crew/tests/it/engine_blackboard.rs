@@ -28,7 +28,6 @@ use argonauts_crew::blackboard::{self, Post, commands, delivery, records};
 use argonauts_crew::consultant;
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::live::LiveSession;
-use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::state::RunState;
 use argonauts_crew::state::tasks::TaskEntry;
 use argonauts_testkit::runner::FakeSession;
@@ -287,7 +286,7 @@ fn settled_question_reopens_only_with_new_evidence() {
 /// A host over the fakes, with the sink it records to.
 fn host(crew: &support::Crew) -> anyhow::Result<(Host, Arc<MemorySink>)> {
     let (context, sink, _commands) = crew.context(Vec::new())?;
-    let host = Host::new(Arc::new(Shared::new(&context, RunState::default())?));
+    let host = Host::new(Arc::new(crew.shared(&context, RunState::default())?));
     Ok((host, sink))
 }
 
@@ -339,6 +338,9 @@ fn run_session(
             workflow_step: None,
             label: None,
             asked: None,
+            asked_by: None,
+            asked_why: None,
+            forked: false,
         }))),
     )?;
     let (control, controls) = mpsc::channel(8);

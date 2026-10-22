@@ -832,7 +832,9 @@ fn who_runs_it(role: &str, shade: Option<ModelShade>, theme: &Theme) -> Vec<Span
 /// headers side by side cut their tasks alike.
 const MIN_CUT_COLUMNS: usize = 4;
 
-const AGENT_TASK_MIN_WIDTH: usize = 64;
+/// Under this width every agent header drops its task: an agent on a long CLI name with its
+/// stats fills about this much.
+const AGENT_TASK_MIN_WIDTH: usize = 65;
 
 pub(crate) fn running_bullet(ctx: &RenderCtx<'_>) -> Span<'static> {
     blinking_bullet(ctx, Role::Dim)

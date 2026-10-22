@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_learning.rs
+source: crates/tui/tests/it/snap_learning.rs
+assertion_line: 491
 expression: "screen(&mut picker, 80, HEIGHT)"
 ---
 Memory                                 Notes  Flagged  Conventions  [ Settings ]
@@ -25,4 +26,4 @@ Notes the crew keeps, and the conventions       1 note · 1 flagged waits for yo
 │   Notes a task may propose                                                   │
 │   A safety key: changing it asks you to confirm.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · tab next tab · ⏎ change · esc back
+↑↓  select · tab next tab · ⏎ change · esc back

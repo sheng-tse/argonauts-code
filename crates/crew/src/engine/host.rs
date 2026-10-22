@@ -16,10 +16,10 @@ use argonauts_core::display_names::DisplayNames;
 use argonauts_core::engine::{RepoContext, Services};
 use argonauts_core::events::agent_status::SpendEvent;
 use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
-use argonauts_core::events::run::Party;
+use argonauts_core::events::run::{ForkFrom, Party};
 use argonauts_core::events::run::{RunLifecycle, RunMode};
 use argonauts_core::events::session::{
-    EndReason, InputPart, InputPartKind, SessionEnd, SessionEvent, SessionStarted,
+    AskedBy, EndReason, InputPart, InputPartKind, SessionEnd, SessionEvent, SessionStarted,
 };
 use argonauts_core::events::task::{CheckOutcome, TaskKind};
 use argonauts_core::events::{RunEvent, RunEventKind};
@@ -60,6 +60,8 @@ use crate::status::folder::Folder;
 use crate::status::{self, Viewer};
 use crate::workflow::StepAt;
 
+mod network;
+
 const CONDUCTOR: &str = "argonauts-code";
 
 /// What a session resumed after a pause or a crash is told, instead of its task again.
@@ -93,6 +95,9 @@ pub struct Ask<I> {
     /// Continue this earlier session, such as a drafting agent revising its own plan. Blind roles
     /// are always fresh.
     pub resume: Option<SessionKey>,
+    /// Start as a copy of this main session, made by its CLI, when the ask's worker runs on
+    /// that CLI.
+    pub fork_of: Option<ForkFrom>,
     /// Tells apart two asks of the same worker in the same step and round, for replay. Slots
     /// count up from 0 in the order the asks start, which is how the log matches them.
     pub slot: u32,
@@ -135,6 +140,7 @@ impl<I> Ask<I> {
             input,
             parts: Vec::new(),
             resume: None,
+            fork_of: None,
             slot: 0,
             blind: false,
             label: None,
@@ -170,6 +176,8 @@ pub struct SessionPlan {
     /// The report schema the session must end with, when there is one.
     pub json_schema: Option<Value>,
     pub resume: Option<SessionKey>,
+    /// As [`Ask::fork_of`].
+    pub fork_of: Option<ForkFrom>,
     /// Counts up from 0 in start order, like [`Ask::slot`].
     pub slot: u32,
     /// What its row is called when its step can't say, such as the label a workflow's script
@@ -184,6 +192,16 @@ pub struct SessionPlan {
     /// Who built the work a reviewer or a judge reads, whose provider a fallback for this
     /// session may not share. Empty for every other job.
     pub independent_of: Vec<ModelRef>,
+    /// The model the step asked, when it gave the session to `worker` before the start.
+    pub in_place_of: Option<InPlaceOf>,
+}
+
+/// The model a step asked for a session, and why it gave the session to another.
+#[derive(Debug, Clone)]
+pub struct InPlaceOf {
+    pub asked: ModelRef,
+    /// Read on from the asked model's name: "whose 64k window can't hold this change".
+    pub why: String,
 }
 
 /// A started session. Steer or stop it with [`Host::control`]; its events are recorded as
@@ -234,6 +252,27 @@ pub enum Fallbacks {
 struct Again {
     record: SessionRecord,
     worker: ModelRef,
+    /// The internet took it: the same worker carries on in the same conversation, where the
+    /// CLI gave it one, with the short note a resumed session gets. A resume that fails
+    /// starts fresh, as any session its CLI lost does.
+    carry_on: bool,
+}
+
+impl Again {
+    fn fresh(record: SessionRecord, worker: ModelRef) -> Self {
+        Self {
+            record,
+            worker,
+            carry_on: false,
+        }
+    }
+
+    /// Whether it goes on in the conversation its record holds.
+    fn carries_on(&self) -> bool {
+        self.carry_on
+            && self.worker == self.record.started.worker
+            && self.record.cli_session.is_some()
+    }
 }
 
 impl Job {
@@ -345,6 +384,10 @@ struct Launch {
     identity: Identity,
     /// The worker the step asked, when another runs the session in its place.
     asked: Option<ModelRef>,
+    /// As [`InPlaceOf::why`], when the step chose the other before the start.
+    asked_why: Option<String>,
+    /// The session and the agent of a task's CLI workflow that asked for it, when one did.
+    asked_by: Option<AskedBy>,
     earlier: Option<SessionRecord>,
     access: Access,
     workdir: Option<PathBuf>,
@@ -364,6 +407,14 @@ struct Launch {
     time_limit: Option<Duration>,
     /// What becomes of it where the run pauses because its limit has no room for it.
     refused: Refused,
+    /// The main session it starts as a copy of, on the CLI that runs it.
+    fork_of: Option<ForkFrom>,
+}
+
+/// `fork` when `worker` runs on the CLI whose session it copies. A fallback on another CLI
+/// can't read that session, so it starts from the brief alone.
+fn on_its_cli(fork: Option<ForkFrom>, worker: &ModelRef) -> Option<ForkFrom> {
+    fork.filter(|fork| fork.worker.agent == worker.agent)
 }
 
 /// What becomes of a session the run's limit has no room for, where the run pauses for that
@@ -689,6 +740,7 @@ impl Host {
             input,
             parts,
             resume,
+            fork_of,
             slot,
             blind,
             label,
@@ -708,6 +760,7 @@ impl Host {
             template,
             parts,
             resume,
+            fork_of,
             slot,
             blind,
             label,
@@ -749,8 +802,17 @@ impl Host {
                     let Some(record) = record else {
                         return Err(EngineError::Step(err));
                     };
-                    let worker = job_fallback::next(self, &record, &job).await?;
-                    again = Some(Again { record, worker });
+                    again = Some(if self.lost_the_network_in(&record).await {
+                        job_fallback::hold_against_nobody(self, &record);
+                        Again {
+                            worker: record.started.worker.clone(),
+                            record,
+                            carry_on: true,
+                        }
+                    } else {
+                        let worker = job_fallback::next(self, &record, &job).await?;
+                        Again::fresh(record, worker)
+                    });
                 }
                 answered => return answered,
             }
@@ -771,9 +833,16 @@ impl Host {
     ) -> EngineResult<Answered<S::Output>> {
         let mut identity = identity.clone();
         let earlier = match again {
-            // A fresh start on the same session, so the step finds it again on a replay.
-            Some(Again { mut record, worker }) => {
-                record.cli_session = None;
+            // A fresh start on the same session, so the step finds it again on a replay. One
+            // the internet took carries on in its conversation.
+            Some(again) => {
+                let carries_on = again.carries_on();
+                let Again {
+                    mut record, worker, ..
+                } = again;
+                if !carries_on {
+                    record.cli_session = None;
+                }
                 identity.worker = worker;
                 Some(record)
             }
@@ -798,6 +867,7 @@ impl Host {
                 identity.worker = taker;
             }
         }
+        self.wait_for_the_network(&identity.worker).await?;
         self.admitted().await?;
         let mut parts = vec![
             part(InputPartKind::Prompt, "prompt", ask.template),
@@ -809,6 +879,8 @@ impl Host {
         }
         let launched = self.launch(Launch {
             asked: Some(ask.worker.clone()).filter(|asked| *asked != identity.worker),
+            asked_by: None,
+            asked_why: None,
             identity: identity.clone(),
             earlier,
             access: ask.access,
@@ -823,6 +895,7 @@ impl Host {
             reviews: false,
             time_limit: ask.time_limit,
             refused: Refused::EndsPaused,
+            fork_of: on_its_cli(ask.fork_of.clone(), &identity.worker),
         })?;
         let Launched {
             key,
@@ -977,6 +1050,9 @@ impl Host {
             workflow_step: Some(at.step.clone()),
             label: Some(label),
             asked: None,
+            asked_by: None,
+            asked_why: None,
+            forked: false,
         };
         let task = identity.task.as_ref();
         self.record(
@@ -1146,6 +1222,8 @@ impl Host {
         plan.worker = job_fallback::listed(self, &plan.worker);
         let job = Job::of(&plan);
         let allowed = fallbacks == Fallbacks::Allowed;
+        // Before the turn, so a session waiting for the internet holds up no local model's.
+        self.wait_for_the_network(&plan.worker).await?;
         let running = {
             let _turn = self.shared.start_turn.lock().await;
             let identity = Identity::of(&plan);
@@ -1185,7 +1263,17 @@ impl Host {
                 return Ok(Ran { key, worker, end });
             };
             if start_over {
-                let again = Again { record, worker };
+                let again = Again::fresh(record, worker);
+                running = self.start_with(plan.clone(), Some(again), None).await?;
+                continue;
+            }
+            if self.lost_the_network(&worker, &end).await {
+                job_fallback::hold_against_nobody(self, &record);
+                let again = Again {
+                    record,
+                    worker,
+                    carry_on: true,
+                };
                 running = self.start_with(plan.clone(), Some(again), None).await?;
                 continue;
             }
@@ -1197,10 +1285,7 @@ impl Host {
                     None => return Ok(Ran { key, worker, end }),
                 }
             };
-            let again = Again {
-                record,
-                worker: next,
-            };
+            let again = Again::fresh(record, next);
             running = self.start_with(plan.clone(), Some(again), None).await?;
         }
     }
@@ -1216,8 +1301,12 @@ impl Host {
     ) -> EngineResult<Running> {
         let mut identity = Identity::of(&plan);
         let earlier = match again {
-            Some(Again { mut record, worker }) => {
-                if plan.resume.is_none() || worker != record.started.worker {
+            Some(again) => {
+                let carries_on = again.carries_on();
+                let Again {
+                    mut record, worker, ..
+                } = again;
+                if !carries_on && (plan.resume.is_none() || worker != record.started.worker) {
                     record.cli_session = None;
                 }
                 identity.worker = worker;
@@ -1247,12 +1336,18 @@ impl Host {
         {
             identity.worker = taker;
         }
+        self.wait_for_the_network(&identity.worker).await?;
         self.admitted().await?;
         let mut plan = plan;
         if earlier.is_none() {
             plan.parts = prompts::writer::written(self, agent_of(&identity), plan.parts).await?;
         }
         let running = identity.worker.clone();
+        let asked_by = crate::claude_codes::asked_by(self, &plan);
+        let (asked, asked_why) = match plan.in_place_of {
+            Some(InPlaceOf { asked, why }) => (asked, Some(why)),
+            None => (plan.worker, None),
+        };
         let Launched {
             key,
             worker,
@@ -1262,7 +1357,9 @@ impl Host {
             deliveries,
             no_room,
         } = self.launch(Launch {
-            asked: Some(plan.worker).filter(|asked| *asked != identity.worker),
+            asked_by,
+            asked: Some(asked).filter(|asked| *asked != identity.worker),
+            asked_why,
             identity,
             earlier,
             access: plan.access,
@@ -1277,6 +1374,7 @@ impl Host {
             fresh: plan.fresh,
             time_limit: None,
             refused: Refused::LeftOut,
+            fork_of: on_its_cli(plan.fork_of, &running),
         })?;
         let task = live.task.clone();
         let (sender, ended) = oneshot::channel();
@@ -1398,6 +1496,14 @@ impl Host {
                 crate::workflow::naming::inner_workflow_name(state, &workflow.id, &workflow.name)
             });
         }
+        let outside_note = match &event {
+            RunnerEvent::Agent(agent) => self.outside_note(key, agent),
+            RunnerEvent::Session(SessionEvent::Ended(_)) => {
+                lock(&self.shared.outside_writes).ended(key);
+                None
+            }
+            _ => None,
+        };
         let kinds: Vec<RunEventKind> = match event {
             RunnerEvent::Agent(agent) => {
                 let now = self.now();
@@ -1416,7 +1522,31 @@ impl Host {
         for kind in kinds {
             self.record_as(source, task, Some(key), kind)?;
         }
+        if let Some(text) = outside_note {
+            let note = RunEventKind::Note(argonauts_core::Note {
+                level: argonauts_core::NoteLevel::Quiet,
+                text,
+            });
+            self.record_as(source, task, Some(key), note)?;
+        }
         Ok(())
+    }
+
+    /// The line a worker's write outside the project leaves once it's done. Its own folder,
+    /// your checkout, the run's worktrees, and Argonauts Code's state are the project's.
+    fn outside_note(&self, key: &SessionKey, event: &argonauts_core::AgentEvent) -> Option<String> {
+        let repo = &self.shared.repo;
+        let state = repo.run_dir.ancestors().nth(3);
+        let project: Vec<&Path> = [
+            Some(repo.root.as_path()),
+            Some(repo.worktrees.as_path()),
+            state,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        lock(&self.shared.outside_writes).follow(key, event, &project, home.as_deref())
     }
 
     /// The session's held deltas, then `kind`, so the log keeps the order they happened in.
@@ -1599,6 +1729,8 @@ impl Host {
         let Launch {
             identity,
             asked,
+            asked_why,
+            asked_by,
             earlier,
             access,
             workdir,
@@ -1612,19 +1744,23 @@ impl Host {
             fresh,
             time_limit,
             refused,
+            fork_of,
         } = launch;
+        // A copy of the main session is a session of its own: nothing earlier carries on.
+        let fork = fork_of.filter(|_| earlier.is_none());
         let worker = self.shared.services.workers.get(&identity.worker)?;
         let settings = self.shared.settings.clone();
         let mut lease = None;
         let mut kept_label = None;
         let mut carries_on_in_role = false;
-        let (earlier_key, resume, continuing) = match &earlier {
-            Some(record) => (
+        let (earlier_key, resume, continuing) = match (&earlier, &fork) {
+            (Some(record), _) => (
                 Some(record.key.clone()),
                 record.cli_session.clone(),
                 record.cli_session.is_some(),
             ),
-            None => {
+            (None, Some(fork)) => (None, Some(fork.cli_session.clone()), false),
+            (None, None) => {
                 let fresh_by_role = lifetime::always_fresh(&settings, identity.role);
                 let asked = resume
                     .filter(|_| !blind && !fresh_by_role)
@@ -1701,6 +1837,8 @@ impl Host {
 
         let session_dir = layout::session_dir(&self.shared.repo.run_dir, &key);
         create_private_dir_all(&session_dir)?;
+        // Its CLI finds the session it copies in the folder that session ran in.
+        let workdir = fork.as_ref().map(|fork| fork.folder.clone()).or(workdir);
         let workdir = match (workdir, access) {
             (Some(workdir), _) => workdir,
             (None, Access::NoTools) => {
@@ -1730,7 +1868,7 @@ impl Host {
             Some(label) => label,
             None => self.agent_label(&key, &identity, &provider),
         };
-        if resume.is_none() {
+        if resume.is_none() || fork.is_some() {
             job_fallback::say_listed(self, &agent_label, &identity.worker, identity.task.as_ref())?;
         }
         let started = SessionStarted {
@@ -1746,11 +1884,15 @@ impl Host {
             // carried on, so its step later starts it afresh, with its whole prompt.
             resumed_from: resume
                 .clone()
+                .filter(|_| fork.is_none())
                 .filter(|_| no_room.is_none() || refused != Refused::EndsPaused),
             follow_key: None,
             workflow_step: identity.at.as_ref().map(|at| at.step.clone()),
             label: Some(agent_label),
             asked,
+            forked: fork.is_some(),
+            asked_why,
+            asked_by,
         };
         self.record(
             identity.task.as_ref(),
@@ -1791,11 +1933,15 @@ impl Host {
         });
         let status_part = status_part || status.is_none();
         // A session carrying on already read its frame and instructions.
-        let parts = if continuing || carries_on_in_role {
+        let mut parts = if continuing || carries_on_in_role {
             parts
         } else {
             prompts::assemble::head(self, &agent_of(&identity), parts)
         };
+        // A copy of the main session reads first that it now orchestrates the run.
+        if fork.is_some() {
+            parts.insert(0, crate::orchestrated::forked_opening());
+        }
         let built = self
             .prompt(
                 &key,
@@ -1823,6 +1969,7 @@ impl Host {
                         prompt,
                         json_schema,
                         resume,
+                        fork: fork.is_some(),
                         lifetime,
                         limits: within(
                             self.capped_by_run(
@@ -1846,9 +1993,11 @@ impl Host {
                             .is_some_and(|task| self.shared.may_run_its_own_workflow(task)),
                         autopilot: self.approval_mode() == ApprovalMode::Autopilot,
                         reviews,
+                        outside: self.outside(),
                     },
                 )?;
                 let mut spec = spec;
+                lock(&self.shared.outside_writes).began(&key, &spec.workdir);
                 let own = identity
                     .task
                     .as_ref()
@@ -2001,6 +2150,21 @@ impl Host {
         }
         lock(&self.shared.stopped).insert(key.clone(), task);
         let _ = control.try_send(stop);
+    }
+
+    /// What the run's sessions read and write outside the project without asking, as
+    /// `[outside]` says for the run's mode. Inside the project they still write only their
+    /// worktrees.
+    fn outside(&self) -> argonauts_core::outside::Outside {
+        let Some(home) = std::env::var_os("HOME") else {
+            return argonauts_core::outside::Outside::default();
+        };
+        argonauts_core::outside::Outside::for_mode(
+            &self.settings().outside,
+            self.approval_mode(),
+            Some(&self.shared.repo.root),
+            Path::new(&home),
+        )
     }
 
     /// The state directory, `~/.ssh`, and every other worktree of the run, and your checkout

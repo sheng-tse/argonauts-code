@@ -91,6 +91,7 @@ fn setting(key: &str, value: &str, description: &str, safety: bool) -> SettingRo
         safety,
         allowed: Vec::new(),
         description: description.to_owned(),
+        picked: None,
     }
 }
 

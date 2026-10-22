@@ -475,3 +475,68 @@ async fn a_fixed_task_list_replaces_the_planners() {
         "The tasks are fixed. Plan these and no others:\n- Rename the flag\n- Update the docs"
     ));
 }
+
+/// A plan where the second task comes after the first.
+fn one_after_another() -> argonauts_runner::AgentEnd {
+    support::said(json!({"summary": "the plan", "tasks": [
+        {"title": "Cap bucket refills", "done_when": ["refills stop at capacity"]},
+        {"title": "Per api key", "done_when": ["each key has a bucket"],
+         "after": ["Cap bucket refills"]},
+    ]}))
+}
+
+/// A task that comes after another starts once that one is built and reviewed, and its calls
+/// name the task it builds on, so its work starts from that one's accepted result.
+#[tokio::test]
+async fn a_task_after_another_names_it_in_its_calls() {
+    let host = Fake::new(|call| match call.phase.as_deref() {
+        Some("Plan") => one_after_another(),
+        Some("Review") => accept(),
+        _ => text("built"),
+    });
+    let script = steps(built_in("orchestrator").expect("built in"));
+    let ended = run(&script, request("rate limits", 1, 1), &host).await;
+    assert!(ended.result.is_ok(), "{:?}", ended.result);
+
+    let asked = host.asked();
+    let built = |label: &str| asked.iter().position(|call| call.starts_with(label));
+    assert!(
+        built("review:cap-bucket") < built("build:per-api-key"),
+        "{asked:#?}"
+    );
+    assert_eq!(
+        host.call("build:per-api-key", 1).after,
+        ["cap-bucket-refills"]
+    );
+    assert_eq!(
+        host.call("review:per-api-key", 1).after,
+        ["cap-bucket-refills"]
+    );
+    assert!(host.call("build:cap-bucket-refills", 1).after.is_empty());
+}
+
+/// Work that comes after a task nobody accepted is skipped, and the workflow says why.
+#[tokio::test]
+async fn a_task_after_one_never_accepted_is_skipped() {
+    let host = Fake::new(|call| match call.phase.as_deref() {
+        Some("Plan") => one_after_another(),
+        Some("Review") => reject(&["the refill overshoots"]),
+        _ => text("built"),
+    });
+    let script = steps(built_in("orchestrator").expect("built in"));
+    let ended = run(&script, request("rate limits", 1, 1), &host).await;
+
+    let asked = host.asked();
+    assert!(
+        !asked.iter().any(|call| call.contains("per-api-key")),
+        "{asked:#?}"
+    );
+    assert!(ended.result.is_ok(), "{:?}", ended.result);
+    let logged = host.logs.lock().unwrap().join("\n");
+    assert!(
+        logged.contains(
+            "Per api key: skipped, since it comes after Cap bucket refills, which wasn't accepted"
+        ),
+        "{logged}"
+    );
+}

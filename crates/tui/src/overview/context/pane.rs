@@ -1,17 +1,24 @@
-//! The Context tab's rows in the panel. Every list shows in full, so the tab is often taller
-//! than the panel: it scrolls by rows, and in the cards ↑ and ↓ step through its blocks, a
-//! page at a time inside a block taller than the panel.
+//! The Context tab's rows in the panel. The tab can be taller than the panel: it scrolls by
+//! rows, and in the cards ↑ and ↓ step through its blocks, a page at a time inside a block
+//! taller than the panel. The pane keeps which lists are open and which agent's block shows.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 
 use argonauts_core::RunId;
-use argonauts_core::names::SessionKey;
 use crossterm::event::KeyCode;
 use ratatui::text::{Line, Span};
 
-use super::lists::Fold;
+pub use super::lists::List;
 use crate::kit::{Drawn, Kit};
 use crate::theme::Role;
+
+/// What Enter does on a block: folds or opens a list, or opens a crew agent's own block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    List(List),
+    Agent { run: RunId, label: String },
+}
 
 /// One block of the tab.
 #[derive(Debug, Clone, Default)]
@@ -19,10 +26,10 @@ pub struct Section {
     pub drawn: Drawn,
     /// The row the pointer goes on while the keys are on this block.
     pub pointer_row: usize,
-    /// The crew agent the block is about, which Enter opens.
-    pub agent: Option<(RunId, SessionKey)>,
-    /// A list long enough to fold, which Enter folds or shows whole.
-    pub fold: Option<Fold>,
+    /// What Enter does while the keys are on it.
+    pub target: Option<Target>,
+    /// It follows the block before with no blank row between, as a list's lines do.
+    pub joined: bool,
 }
 
 impl Section {
@@ -34,13 +41,24 @@ impl Section {
     }
 }
 
+/// The sections as blocks a blank row apart, each joined one part of the block above.
+pub fn blocks(sections: Vec<Section>) -> Vec<Drawn> {
+    let mut blocks: Vec<Drawn> = Vec::new();
+    for section in sections {
+        match blocks.last_mut() {
+            Some(above) if section.joined => above.append(section.drawn),
+            _ => blocks.push(section.drawn),
+        }
+    }
+    blocks
+}
+
 /// What the last frame laid out.
 #[derive(Debug, Default)]
 struct Laid {
     /// Each block's first row and its height.
     blocks: Vec<(usize, usize)>,
-    agents: Vec<Option<(RunId, SessionKey)>>,
-    folds: Vec<Option<Fold>>,
+    targets: Vec<Option<Target>>,
     rows: usize,
     /// The rows the panel had for them.
     room: usize,
@@ -52,13 +70,30 @@ impl Laid {
     }
 }
 
-/// Where the tab is scrolled to, and the block the keys are on.
+/// Where the tab is scrolled to, the block the keys are on, the lists open, and the agent
+/// whose block shows.
 #[derive(Debug, Default)]
 pub struct ContextPane {
     /// The first row shown.
     top: usize,
     focus: usize,
     laid: RefCell<Laid>,
+    /// Every list opens, as `/context all` asks.
+    every_list: bool,
+    /// The lists Enter turned the other way from how they start.
+    turned: BTreeSet<List>,
+    /// The agent whose own block shows, with where the list was when it opened.
+    opened: Option<Opened>,
+}
+
+/// A crew agent's block, open in the tab's place.
+#[derive(Debug, Clone)]
+struct Opened {
+    run: RunId,
+    label: String,
+    /// The list's place, which Esc goes back to.
+    top: usize,
+    focus: usize,
 }
 
 impl ContextPane {
@@ -77,14 +112,15 @@ impl ContextPane {
             ..Laid::default()
         };
         self.focus = self.focus.min(sections.len().saturating_sub(1));
+        // An agent's own block has nothing to choose in it.
+        let pointer = pointer.filter(|_| self.opened.is_none());
         let mut rows: Vec<Line<'static>> = Vec::new();
         for (nth, section) in sections.into_iter().enumerate() {
-            if !rows.is_empty() {
+            if !rows.is_empty() && !section.joined {
                 rows.push(Line::default());
             }
             laid.blocks.push((rows.len(), section.drawn.height()));
-            laid.agents.push(section.agent);
-            laid.folds.push(section.fold);
+            laid.targets.push(section.target);
             for (row, line) in section.drawn.lines.into_iter().enumerate() {
                 let pointed = nth == self.focus && row == section.pointer_row;
                 rows.push(match pointer.filter(|_| pointed) {
@@ -106,14 +142,65 @@ impl ContextPane {
         self.focus == 0 && self.top == 0
     }
 
-    /// The crew agent the keys are on, if they are on one.
-    pub fn agent(&self) -> Option<(RunId, SessionKey)> {
-        self.laid.borrow().agents.get(self.focus).cloned().flatten()
+    /// What Enter does where the keys are.
+    pub fn target(&self) -> Option<Target> {
+        self.laid
+            .borrow()
+            .targets
+            .get(self.focus)
+            .cloned()
+            .flatten()
     }
 
-    /// How the list the keys are on shows, where it is long enough to fold.
-    pub fn fold(&self) -> Option<Fold> {
-        self.laid.borrow().folds.get(self.focus).copied().flatten()
+    /// Whether `list` shows a line each.
+    pub fn is_open(&self, list: &List) -> bool {
+        self.every_list != self.turned.contains(list)
+    }
+
+    /// Every list shows a line each, as `/context all` asks.
+    pub fn open_every_list(&mut self) {
+        self.every_list = true;
+        self.turned.clear();
+    }
+
+    /// The crew agent whose own block shows, by its run and label.
+    pub fn opened(&self) -> Option<(&RunId, &str)> {
+        self.opened
+            .as_ref()
+            .map(|opened| (&opened.run, opened.label.as_str()))
+    }
+
+    /// Enter: folds or opens the list the keys are on, or opens the agent's own block. False
+    /// where the keys are on neither.
+    pub fn enter(&mut self) -> bool {
+        match self.target() {
+            Some(Target::List(list)) => {
+                if !self.turned.remove(&list) {
+                    self.turned.insert(list);
+                }
+                true
+            }
+            Some(Target::Agent { run, label }) => {
+                self.opened = Some(Opened {
+                    run,
+                    label,
+                    top: self.top,
+                    focus: self.focus,
+                });
+                (self.top, self.focus) = (0, 0);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Back from an agent's block to the list, where the keys were. False with none open.
+    pub fn back(&mut self) -> bool {
+        let Some(opened) = self.opened.take() else {
+            return false;
+        };
+        (self.top, self.focus) = (opened.top, opened.focus);
+        true
     }
 
     /// Whether the tab is taller than the panel.
@@ -298,25 +385,67 @@ mod tests {
         assert!(!pane.key(KeyCode::Char('x')));
     }
 
+    /// Enter opens the agent the keys are on, Esc comes back to where the keys were, and a
+    /// list's lines follow its title with no blank row between.
     #[test]
-    fn enter_has_the_agent_of_the_block_with_the_keys() {
+    fn enter_opens_the_agent_with_the_keys_and_back_returns_to_it() {
         let mut pane = ContextPane::default();
-        let agent = (RunId::new("run-03").unwrap(), SessionKey::numbered(2));
+        let agent = Target::Agent {
+            run: RunId::new("run-03").unwrap(),
+            label: "build:x".to_owned(),
+        };
         let sections = || {
             vec![
                 block("a", 2),
                 Section {
-                    agent: Some((RunId::new("run-03").unwrap(), SessionKey::numbered(2))),
-                    pointer_row: 1,
-                    ..block("b", 3)
+                    target: Some(Target::List(List::Skills)),
+                    ..block("b", 1)
+                },
+                Section {
+                    target: Some(agent.clone()),
+                    joined: true,
+                    ..block("c", 1)
                 },
             ]
         };
+        let rows = shown(&mut pane, sections(), 20);
+        assert_eq!(rows[3], "     b0");
+        assert_eq!(rows[4], "     c0", "joined to the block above");
+        assert!(!pane.enter(), "nothing to open on the first block");
+        pane.key(KeyCode::Down);
         shown(&mut pane, sections(), 20);
-        assert_eq!(pane.agent(), None);
+        assert!(!pane.is_open(&List::Skills));
+        assert!(pane.enter());
+        assert!(pane.is_open(&List::Skills));
         pane.key(KeyCode::Down);
         let rows = shown(&mut pane, sections(), 20);
-        assert_eq!(pane.agent(), Some(agent));
-        assert_eq!(rows[4], "   > b1", "under the column heads");
+        assert_eq!(rows[4], "   > c0");
+        assert_eq!(pane.target(), Some(agent.clone()));
+        assert!(pane.enter());
+        assert_eq!(
+            pane.opened(),
+            Some((&RunId::new("run-03").unwrap(), "build:x"))
+        );
+        assert!(pane.back());
+        assert_eq!(pane.opened(), None);
+        shown(&mut pane, sections(), 20);
+        assert_eq!(pane.target(), Some(agent));
+        assert!(!pane.back());
+    }
+
+    /// `/context all` opens every list, and Enter still folds one.
+    #[test]
+    fn every_list_opens_and_one_still_folds() {
+        let mut pane = ContextPane::default();
+        pane.open_every_list();
+        assert!(pane.is_open(&List::McpTools));
+        let sections = vec![Section {
+            target: Some(Target::List(List::McpTools)),
+            ..block("a", 1)
+        }];
+        shown(&mut pane, sections, 5);
+        assert!(pane.enter());
+        assert!(!pane.is_open(&List::McpTools));
+        assert!(pane.is_open(&List::Skills));
     }
 }

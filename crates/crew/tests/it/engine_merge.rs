@@ -46,7 +46,6 @@ use argonauts_core::workflow::{StandardPhase, Step, StepKind, StepRef, Workflow}
 use argonauts_core::{RepoId, RunId, TaskId, unborn};
 use argonauts_crew::approvals;
 use argonauts_crew::engine::host::Host;
-use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::error::EngineError;
 use argonauts_crew::merge::in_the_way::{MERGE_LATER, MOVE_ASIDE, TRY_AGAIN};
 use argonauts_crew::merge::step::merge_step;
@@ -57,6 +56,8 @@ use argonauts_crew::workflow::{Flow, StepAt, StepCall, StepDone};
 use argonauts_testkit::repo::TempRepo;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
+
+use crate::support::shared_in;
 
 const OPUS: &str = "claude-code/opus";
 const CODEX: &str = "codex/gpt-5.6";
@@ -170,7 +171,7 @@ impl Bench {
             .collect();
         let (context, sink, commands) =
             engine_context_in(&services, settings, layout, history.clone());
-        let shared = Shared::new(&context, RunState::fold(&history))?;
+        let shared = shared_in(&repo, &context, RunState::fold(&history))?;
         let host = Host::new(Arc::new(shared));
 
         // Each task's work, merged into the run branch as Argonauts Code does.
@@ -469,6 +470,7 @@ fn started(repo: &TempRepo, base: &str) -> RunEventKind {
         outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     })))
 }
 

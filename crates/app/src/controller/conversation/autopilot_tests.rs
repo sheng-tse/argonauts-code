@@ -43,7 +43,7 @@ fn reply(kind: &str, how_to_run: Vec<Value>) -> FakeSession {
     }))
 }
 
-/// A session whose settings turn autopilot on, with Codex and Antigravity CLI installed too.
+/// A session whose settings turn autopilot on, with Codex and agy installed too.
 async fn on_autopilot() -> TestDriver {
     with_approvals("autopilot = true").await
 }
@@ -412,7 +412,7 @@ async fn autopilot_coming_on_lets_agy_run_what_it_was_refused() {
     let outcome = closed_by_autopilot(&mut driver, &question).await;
     assert_eq!(
         outcome,
-        "Decided on autopilot · Antigravity CLI continues, running commands without asking"
+        "Decided on autopilot · agy continues, running commands without asking"
     );
     driver.until(turn_ended).await;
     driver.exit().await;

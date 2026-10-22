@@ -87,10 +87,11 @@ pub enum InstructionKind {
     Plan,
     /// Who checks the goal.
     Check,
-    /// Which agents make up the crew.
+    /// Which agents make up the crew, as in "use only Claude" or "just Codex and agy".
     Crew,
     /// The model every agent but the one the user talks to runs on, as in "all the other agents
-    /// need to be Opus". A role another instruction names keeps that one.
+    /// need to be Opus". A role another instruction names keeps that one. Words that name the
+    /// only agents to use, as in "use only Claude", are `crew`.
     Others,
     /// An agent to leave out.
     Exclude,
@@ -98,6 +99,9 @@ pub enum InstructionKind {
     Model,
     /// How much effort.
     Effort,
+    /// What the run's models cost, as in "keep it cheap": every agent in the crew on its
+    /// cheapest model. The crew itself stays as it is.
+    Cost,
     Approvals,
     Merge,
     Limit,

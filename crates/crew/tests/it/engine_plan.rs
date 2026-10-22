@@ -35,13 +35,14 @@ use argonauts_core::steps::plan::{JudgeInput, LabeledPlan, MapInput, Orchestrate
 use argonauts_core::workflow::{StandardPhase, Step, StepRef};
 use argonauts_core::{PhaseStatus, RepoId, RunId, sha256_hex};
 use argonauts_crew::engine::host::Host;
-use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::state::RunState;
 use argonauts_crew::workflow::{Flow, StepAt, StepCall, StepDone, runner, yaml};
 use argonauts_crew::{approvals, divide, orchestrated, plan, tie_breaker};
 use argonauts_testkit::repo::TempRepo;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, engine_context_in};
+
+use crate::support::shared_in;
 
 const CLAUDE: &str = "claude-code/claude-opus";
 const CODEX: &str = "codex/gpt-5";
@@ -92,7 +93,7 @@ impl Bench {
         };
         let (context, sink, _commands) =
             engine_context_in(&services, all, context, history.clone());
-        let shared = Shared::new(&context, RunState::fold(&history))?;
+        let shared = shared_in(&repo, &context, RunState::fold(&history))?;
         let host = Host::new(Arc::new(shared));
         Ok(Self {
             services,
@@ -1331,7 +1332,7 @@ async fn a_drafting_agents_fallback_seals_the_plan_under_its_own_name() -> anyho
     assert_eq!(sealed.len(), 3, "{sealed:?}");
     assert!(sealed.contains(&QWEN.to_owned()), "{sealed:?}");
     assert!(!sealed.contains(&CLAUDE.to_owned()), "{sealed:?}");
-    // Codex and Antigravity draft once each, as themselves.
+    // Codex and agy draft once each, as themselves.
     assert_eq!(bench.specs_of(CODEX, StepName::Draft).len(), 1);
     assert_eq!(bench.specs_of(AGY, StepName::Draft).len(), 1);
     assert_eq!(bench.specs_of(QWEN, StepName::Draft).len(), 1);
@@ -1343,7 +1344,7 @@ const GPT_OSS: &str = "opencode/gpt-oss";
 /// A judge that scores GPT OSS's draft over Qwen's.
 const OSS_WINS: &[(&str, f64)] = &[("OSS", 9.0), ("QWEN", 4.0)];
 
-/// Claude, Codex and Antigravity draft, with Qwen and GPT OSS as the fallbacks that may take a
+/// Claude, Codex and agy draft, with Qwen and GPT OSS as the fallbacks that may take a
 /// drafting agent's place, two at once. Claude answers its draft sessions as `claude` says.
 fn bench_with_two_fallbacks(
     claude: impl Fn(&SessionSpec) -> FakeSession + Send + Sync + 'static,
@@ -1419,7 +1420,7 @@ async fn two_fallbacks_draft_at_once_and_a_judge_picks_the_drafting_agents_plan(
     for drafted_once in [CODEX, AGY, QWEN, GPT_OSS] {
         assert_eq!(bench.specs_of(drafted_once, StepName::Draft).len(), 1);
     }
-    // Antigravity judges: Codex shares a provider with GPT OSS.
+    // agy judges: Codex shares a provider with GPT OSS.
     let picks = bench.specs_of(AGY, StepName::Judge);
     assert_eq!(picks.len(), 1, "{said:?}");
     let shown = prompt_text(&picks[0]);
@@ -1740,9 +1741,9 @@ async fn orchestrator_assigns_tasks_in_its_answer() -> anyhow::Result<()> {
 }
 
 /// "Codex orchestrates and Gemini reviews": the settings the request layer sets for it (the
-/// app's tests resolve the same keys from those words). Codex alone orchestrates, Antigravity
-/// CLI alone reviews, and a plan that gives the review to anyone else has it moved to
-/// Antigravity CLI by code, with one note, instead of going back to Codex.
+/// app's tests resolve the same keys from those words). Codex alone orchestrates, agy alone
+/// reviews, and a plan that gives the review to anyone else has it moved to agy by code,
+/// with one note, instead of going back to Codex.
 #[tokio::test]
 async fn codex_orchestrates_and_gemini_reviews_with_exactly_those_roles() -> anyhow::Result<()> {
     use argonauts_core::settings::protocol::{JudgingMethod, PlanningBy, ReviewAssignment};
@@ -1839,8 +1840,8 @@ async fn codex_orchestrates_and_gemini_reviews_with_exactly_those_roles() -> any
     assert!(
         moved[0].starts_with(
             "Code moved who owns or reviews 1 of the orchestrator's tasks to agents your rules \
-             allow.\n`store`: Gemini 3 on Antigravity CLI reviews it, not GPT 5 on Codex, since \
-             only Gemini 3 on Antigravity CLI may review tasks."
+             allow.\n`store`: Gemini 3 on agy reviews it, not GPT 5 on Codex, since \
+             only Gemini 3 on agy may review tasks."
         ),
         "{moved:?}"
     );

@@ -13,6 +13,7 @@ mod isolation;
 mod json;
 mod keywords;
 mod models;
+mod outside;
 mod parser;
 mod patch;
 mod plan_limits;

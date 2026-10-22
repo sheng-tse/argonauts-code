@@ -151,8 +151,6 @@ impl FakeOpenAi {
 impl Drop for FakeOpenAi {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        // Wake the accept loop so it sees the flag.
-        let _ = TcpStream::connect(self.addr);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -160,18 +158,11 @@ impl Drop for FakeOpenAi {
 }
 
 fn accept(listener: &TcpListener, state: &Arc<Mutex<State>>, stop: &AtomicBool) {
-    for stream in listener.incoming() {
-        if stop.load(Ordering::SeqCst) {
-            return;
-        }
-        let Ok(stream) = stream else { continue };
-        let state = state.clone();
-        let _ = thread::Builder::new()
-            .name("argonauts-fake-openai-conn".to_owned())
-            .spawn(move || {
-                let _ = serve(stream, &state);
-            });
-    }
+    let state = state.clone();
+    let name = "argonauts-fake-openai-conn";
+    crate::accept::accept_until(listener, stop, name, move |stream| {
+        let _ = serve(stream, &state);
+    });
 }
 
 fn serve(stream: TcpStream, state: &Mutex<State>) -> std::io::Result<()> {

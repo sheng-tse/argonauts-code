@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_workflow_page.rs
+source: crates/tui/tests/it/snap_workflow_page.rs
+assertion_line: 180
 expression: "screen(&mut view, width, height)"
 ---
 Workflows › Spec-first
@@ -25,4 +26,4 @@ Write the spec first, then build to it.     .argonauts/workflows/spec-first.toml
 │                                                                              │
 │ ✓ the file is valid · about 9 to 13 agents if Spec lists 3 tasks             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ move · ⏎ its keys · a add step · x remove · e editor · esc back
+↑↓  move · ⏎ its keys · a add step · x remove · e editor · esc back

@@ -4,7 +4,12 @@
   "name": "Add due dates",
   "description": "Tasks get a due date, shown in the list",
   "style": "workflow",
-  "breadcrumb": [],
+  "status_lines": [
+    {
+      "kind": "note",
+      "text": "review: GPT 5.6 Luna on Codex sent Haiku 4.5's change back · GPT 5.6 Luna on Codex signs off"
+    }
+  ],
   "agents_done": 2,
   "agents_total": 3,
   "elapsed_ms": 96000,

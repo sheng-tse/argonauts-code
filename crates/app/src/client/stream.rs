@@ -44,8 +44,11 @@ pub(crate) async fn subscribe(
             None
         }
     };
+    // A run host that holds the run but can't be reached is starting or on its way out. It
+    // counts as live, so its letting go reaches the stream as a change.
+    let held = connection.is_some() || RunLock::is_held(&run_dir);
     let (sender, events) = mpsc::channel(STREAM_BUFFER);
-    let (live_sender, live) = watch::channel(connection.is_some());
+    let (live_sender, live) = watch::channel(held);
     let follower = Follower {
         run_dir,
         events_path,

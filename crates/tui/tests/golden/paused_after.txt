@@ -1,0 +1,18 @@
+ A paused run: paused in the header, p resume in the keys, paused on the agent that was running                       
+                                                                                                                      
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Per key rate limiter                                                                                                 
+ Council · Give each X-Api-Key its own token bucket with one shared bucket for requests…  7/8 agents · 3m24s · paused 
+                                                                                                                      
+ ╭ Phases ──────────────┬ Challenge · 4 agents ─────────────────────────────────────────────────────────────────────╮ 
+ │   ✔ Propose      4/4 │  ✔ challenge:p0  Haiku 5.5 · 54.7k tok · against p1 and p2 · 6 points                 16s │ 
+ │ ❯ 2 Challenge    3/4 │  ✔ challenge:p1  GPT 6 Luna · 17.4k tok · against p0 · 3 points                        7s │ 
+ │   3 Decide           │  ✔ challenge:p2  Gemini 3.8 Flash · 44.1k tok · against p0 and p1 · 5 points          22s │ 
+ │   4 Build            │  ◌ challenge:p3  Gemma4 E2b · 8.1k tok · paused                                     1m10s │ 
+ │   5 Cross-review     │                                                                                           │ 
+ │   6 Sign-off         │                                                                                           │ 
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
+ ↑↓  select · enter opens its agents · x stop workflow · p resume · esc back · s save                                 
+                                                                                                                      
+  its row in the bottom list                                                                                          
+❯ ⏸ Per key rate limiter  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱  7/8 · 3m24s · ↓  328.1k tokens · paused by you · /resume carries it on 

@@ -145,7 +145,7 @@ pub fn usage() -> UsageSummary {
         },
         PlanUsage {
             agent: "antigravity-cli".to_owned(),
-            name: "Antigravity CLI".to_owned(),
+            name: "agy".to_owned(),
             plan: Some("Pro".to_owned()),
             windows: vec![reading(
                 "antigravity-cli",
@@ -235,6 +235,7 @@ pub fn limits() -> Vec<SettingRow> {
         safety: false,
         allowed: Vec::new(),
         description: String::new(),
+        picked: None,
     };
     vec![
         row("spend_per_run", ""),
@@ -372,6 +373,7 @@ pub fn context() -> ContextView {
             categories: Vec::new(),
             recorded: None,
             ended: None,
+            answered_for: None,
         };
     let (opus, gpt) = ("claude-code/claude-opus-5-5", "codex/gpt-5.6");
     ContextView::of(vec![

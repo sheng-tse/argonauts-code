@@ -71,7 +71,7 @@ fn a_run_keeps_a_hidden_history_and_writes_its_work_back() -> anyhow::Result<()>
         WAIT,
     )?;
     pty.wait_for(
-        r"\u{2714} \S+(?: \S+)* +\u{25b0}+  2/2 · \S+ · \u{2193} \S+ tokens · written into your folder",
+        r"\u{2714} \S+(?: \S+)* +\u{25b0}+  2/2 · \S+ · \u{2193}  \S+ tokens · written into your folder",
         WAIT,
     )?;
     Ok(())

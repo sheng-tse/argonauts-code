@@ -67,6 +67,9 @@ pub struct Picker {
     /// In the warning colour where the effort line goes, such as why the model under the
     /// pointer won't fit, or the question Enter asks before a download.
     pub note: Option<String>,
+    /// Labels are sentences, such as issue titles, so they take the room the other columns
+    /// leave rather than being cut short.
+    pub wide_labels: bool,
     pub flow: Flow,
 }
 
@@ -90,12 +93,21 @@ pub struct PickerRow {
     /// What state the row's thing is in, drawn as that state's glyph in its color before the
     /// description, whose first word names it: `✔ on`, `✗ not installed`.
     pub state: Option<State>,
+    /// The description's last words, after a ` · `, which go on a line of their own in its
+    /// column where the row is too wide to hold them, such as whether a model fits.
+    pub tail: Option<String>,
     /// Words of the description drawn in the danger colour, such as "too big", so a row that
     /// can't be used here stands out.
     pub danger: Option<String>,
     /// What the filter matches beside the label and the description, such as a model's id,
     /// so `qwen3-coder:30b` finds the row named "Qwen3 Coder 30B (64k)".
     pub also_matches: Option<String>,
+    /// Drawn dim in place of the row's position, for rows that go by a number of their own,
+    /// such as an issue's `#42`.
+    pub number: Option<String>,
+    /// A dim column after the descriptions, lined up across the rows, such as how long ago an
+    /// issue last changed.
+    pub aside: Option<String>,
 }
 
 impl PickerRow {

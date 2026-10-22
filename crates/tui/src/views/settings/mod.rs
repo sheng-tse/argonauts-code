@@ -283,6 +283,9 @@ fn open_picker(mut picker: Picker, cx: &mut Cx<'_>) {
 /// Acts on a key the open picker took: moves on to the next question, previews a palette,
 /// asks the controller, sends a command and stays, or sends the change and closes.
 pub fn on_picker(event: &PickerEvent, cx: &mut Cx<'_>) {
+    if super::issues::owns(cx) {
+        return super::issues::on_picker(event, cx);
+    }
     let Some(picker) = cx.model.bottom.picker.as_mut() else {
         return;
     };

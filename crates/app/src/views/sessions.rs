@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use argonauts_conductor::fallback::why::{category_words, stop_line};
 use argonauts_core::agent_panel::{
@@ -12,10 +13,11 @@ use argonauts_core::events::approval::{ApprovalEvent, ApprovalPacket};
 use argonauts_core::events::context::ContextCategory;
 use argonauts_core::events::run::{RunLifecycle, WaitReason};
 use argonauts_core::events::session::{
-    EndReason, LimitEvent, SessionEnd, SessionEvent, SessionStarted, SubagentUpdate,
+    EndReason, InputPartKind, LimitEvent, SessionEnd, SessionEvent, SessionStarted, SubagentUpdate,
 };
 use argonauts_core::events::task::{TaskEvent, TaskState};
 use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::limits::{network_down_in, served_on_this_machine, waiting_for_the_network};
 use argonauts_core::names::{ApprovalId, ModelRef, RoleName, SessionKey};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::sessions::RotateAt;
@@ -42,6 +44,14 @@ fn larger_tokens(a: Spend, b: Spend) -> Spend {
     } else {
         a
     }
+}
+
+/// Where one part of a session's prompt starts in it.
+pub(crate) struct PartAt {
+    pub kind: InputPartKind,
+    pub label: String,
+    /// The line of the prompt it starts on, from 0.
+    pub line: usize,
 }
 
 pub(crate) struct ToolCall {
@@ -79,6 +89,8 @@ pub(crate) struct SessionFacts {
     pub subagents: Vec<SubagentUpdate>,
     /// Every input part, in order: the prompt, then what each delivery added.
     pub prompt: String,
+    /// Each of those parts, where it starts.
+    pub parts: Vec<PartAt>,
     /// Where it was launched, from its first input.
     pub cwd: Option<PathBuf>,
     /// The worker it replaced after a fallback.
@@ -151,6 +163,8 @@ pub(crate) struct RunFacts {
     /// What the run waits for, while its log ends on a wait. A session the wait cut short ends
     /// `Paused` whatever the run waits for, so its row says this instead.
     pub held: Option<WaitReason>,
+    /// When the internet went, while the log says it's still down.
+    pub network_down: Option<OffsetDateTime>,
 }
 
 impl RunFacts {
@@ -163,6 +177,7 @@ impl RunFacts {
         let mut rotate_at = Settings::default().sessions.rotate_at;
         let mut finished_at = None;
         let mut held = None;
+        let mut network_down = None;
         // Each CLI's model from the run's settings (`agents.<cli>.model`).
         let mut configured: BTreeMap<String, String> = BTreeMap::new();
         // Each task's current try, where its latest report is in the log, and its worker
@@ -173,6 +188,9 @@ impl RunFacts {
         // Where each session starts in the log.
         let mut starts: Vec<usize> = Vec::new();
         for (at_event, event) in events.iter().enumerate() {
+            if let Some(down) = network_down_in(&event.kind) {
+                network_down = down.then_some(event.ts);
+            }
             match &event.kind {
                 RunEventKind::Task(task_event) => {
                     let Some(task) = &event.task_id else { continue };
@@ -269,6 +287,7 @@ impl RunFacts {
                     let fallback_why = fallback
                         .map(|(.., why)| why.trim().to_owned())
                         .filter(|why| !why.is_empty())
+                        .or_else(|| asked.and(started.asked_why.clone()))
                         .or_else(|| {
                             why_it_stopped(&sessions, event.task_id.as_ref(), started, asked?)
                         });
@@ -303,6 +322,7 @@ impl RunFacts {
                         context_rows: Vec::new(),
                         subagents: Vec::new(),
                         prompt: String::new(),
+                        parts: Vec::new(),
                         cwd: None,
                         fallback_for,
                         fallback_why,
@@ -353,6 +373,7 @@ impl RunFacts {
             rotate_at,
             verdicts: Verdicts::of(events),
             held,
+            network_down,
         }
     }
 
@@ -419,14 +440,38 @@ impl RunFacts {
             fallback_for: facts.fallback_for.clone(),
             answered: false,
             tries: Vec::new(),
-            // A fallback's row says why it runs until it has something of its own to say.
-            note: self.verdicts.note(self, facts).or_else(|| {
-                let why = facts.fallback_why.as_deref()?;
-                Some(RowNote::new(why, Tone::Warn))
-            }),
+            // A fallback's row says why it runs until it has something of its own to say. Why
+            // a step chose another before the start reads on from the asked model's name, which
+            // only the agent view has room for.
+            note: self
+                .held_by_the_network(facts)
+                .or_else(|| self.verdicts.note(self, facts))
+                .or_else(|| {
+                    let why = facts.fallback_why.as_deref()?;
+                    let chosen = facts.started.asked_why.is_some();
+                    (!chosen).then(|| RowNote::new(why, Tone::Warn))
+                }),
             inner: None,
             left_out: false,
+            fallback_why: facts
+                .fallback_why
+                .clone()
+                .filter(|_| facts.fallback_for.is_some()),
         }
+    }
+
+    /// What a running session's row says while the internet is down: how long it has waited.
+    /// A session served on this machine needs no internet, so it says nothing of it.
+    fn held_by_the_network(&self, facts: &SessionFacts) -> Option<RowNote> {
+        let since = self.network_down?;
+        let worker = &facts.worker;
+        if self.status(facts) != RowStatus::Running
+            || served_on_this_machine(&worker.agent, worker.model.as_deref())
+        {
+            return None;
+        }
+        let held = Duration::from_millis(self.since(since));
+        Some(RowNote::new(waiting_for_the_network(held), Tone::Plain))
     }
 
     /// Earlier sessions of the same task and role that ended because their context filled.
@@ -595,8 +640,15 @@ impl SessionFacts {
                 if self.worker.model.is_none() {
                     self.worker.model = input.launch.model().map(str::to_owned);
                 }
+                let mut line = self.prompt.matches('\n').count();
                 for part in &input.parts {
+                    self.parts.push(PartAt {
+                        kind: part.kind,
+                        label: part.label.clone(),
+                        line,
+                    });
                     self.prompt.push_str(&part.text);
+                    line += part.text.matches('\n').count();
                 }
             }
             RunEventKind::Session(SessionEvent::Limit(LimitEvent::Spend(status))) => {
@@ -952,5 +1004,76 @@ mod tests {
         // With no run host an agent with no end isn't working: it waits to be resumed.
         let waiting = crew_rows(&events, &run, "~/app", false);
         assert_eq!(waiting[1].state, CrewState::Waiting);
+    }
+
+    /// While the internet is down, a running session's row says how long it has waited for
+    /// it. A model served on this machine works on, and once the internet is back no row
+    /// waits.
+    #[test]
+    fn a_running_row_waits_for_the_network_while_it_is_down() {
+        use argonauts_core::events::workflow::{RunNote, WorkflowEvent};
+        use argonauts_core::limits::{NETWORK_BACK, NETWORK_DOWN};
+
+        let (cloud, local) = (SessionKey::numbered(1), SessionKey::numbered(2));
+        let note = |seq, text: &str| {
+            event(
+                seq,
+                RunEventKind::Workflow(WorkflowEvent::Note(RunNote {
+                    text: text.to_owned(),
+                    workflow: None,
+                    left: false,
+                })),
+            )
+        };
+        let mut served_here = session_started(1, &local, None, RoleName::Reviewer, "opencode");
+        if let RunEventKind::Session(SessionEvent::Started(started)) = &mut served_here.kind {
+            started.worker = "opencode/ollama/qwen3-coder:30b".parse().unwrap();
+        }
+        let mut events = vec![
+            session_started(0, &cloud, None, RoleName::Worker, "claude-code"),
+            served_here,
+            note(10, NETWORK_DOWN),
+            note(140, "Proposals are in"),
+        ];
+        let said = |events: &[RunEvent], key| {
+            let facts = RunFacts::of(events);
+            let row = facts.agent_row(facts.session(key).unwrap());
+            row.note.map(|note| (note.text, note.tone))
+        };
+        assert_eq!(
+            said(&events, &cloud),
+            Some(("waiting for the network · 2m 10s".to_owned(), Tone::Plain))
+        );
+        assert_eq!(
+            said(&events, &local),
+            None,
+            "a local model needs no internet"
+        );
+
+        events.push(note(150, NETWORK_BACK));
+        assert_eq!(said(&events, &cloud), None);
+    }
+
+    /// A step that gives a session to another model before it starts says why, and the
+    /// fallback's agent view reads it on from the asked model's name. Its row says only
+    /// whose place it took.
+    #[test]
+    fn a_fallback_chosen_before_the_start_says_why_in_its_agent_view() {
+        let key = SessionKey::numbered(1);
+        let qwen: ModelRef = "ollama/qwen3-coder:30b-64k".parse().unwrap();
+        let mut started = session_started(0, &key, None, RoleName::Reviewer, "codex");
+        if let RunEventKind::Session(SessionEvent::Started(session)) = &mut started.kind {
+            session.label = Some("review:per-api-key".to_owned());
+            session.asked = Some(qwen.clone());
+            session.asked_why = Some("whose 64k window can't hold this change".to_owned());
+        }
+        let facts = RunFacts::of(&[started]);
+        let row = facts.agent_row(facts.session(&key).unwrap());
+        assert_eq!(row.fallback_for, Some(qwen));
+        assert_eq!(
+            row.fallback_why.as_deref(),
+            Some("whose 64k window can't hold this change")
+        );
+        assert_eq!(row.note, None);
     }
 }

@@ -83,7 +83,7 @@ fn plan_usage_has_a_row_for_each_window_grouped_by_cli() {
     );
     let claude = &rows[3];
     assert!(
-        claude.starts_with(" │ Claude Code      Max    5-hour   ━"),
+        claude.starts_with(" │ Claude Code  Max    5-hour   ━"),
         "{claude}"
     );
     assert!(
@@ -92,7 +92,7 @@ fn plan_usage_has_a_row_for_each_window_grouped_by_cli() {
     );
     let week = &rows[4];
     assert!(
-        week.starts_with(" │                         week     ━"),
+        week.starts_with(" │                     week     ━"),
         "{week}"
     );
     assert!(
@@ -101,19 +101,19 @@ fn plan_usage_has_a_row_for_each_window_grouped_by_cli() {
     );
     let codex = &rows[6];
     assert!(
-        codex.starts_with(" │ Codex            Plus   5-hour"),
+        codex.starts_with(" │ Codex        Plus   5-hour"),
         "{codex}"
     );
     assert!(codex.contains(" 92%   resets in 1h 15m"), "{codex}");
     assert!(rows[7].contains(" 41%   resets in 3d 20h"), "{rows:#?}");
     assert!(
         rows[9].contains(
-            "│ Antigravity CLI  Pro    out until Tue 3:45pm · its tasks moved to GPT 5.6 on Codex"
+            "│ agy          Pro    out until Tue 3:45pm · its tasks moved to GPT 5.6 on Codex"
         ),
         "{rows:#?}"
     );
     assert!(
-        rows[11].contains("│ OpenRouter              pays per token, so there is no plan to track"),
+        rows[11].contains("│ OpenRouter          pays per token, so there is no plan to track"),
         "{rows:#?}"
     );
     // Every row's bar, share and reset words start in the same column.
@@ -175,7 +175,7 @@ fn a_narrow_card_gives_up_the_reset_words_then_the_plan_and_keeps_every_window()
         "{rows:#?}"
     );
     assert!(at("resets").is_none(), "{rows:#?}");
-    let narrowest = self::rows(&sample::usage(), UsageCard::PlanUsage, Form::Compact, 45);
+    let narrowest = self::rows(&sample::usage(), UsageCard::PlanUsage, Form::Compact, 42);
     assert!(
         narrowest
             .iter()
@@ -183,7 +183,7 @@ fn a_narrow_card_gives_up_the_reset_words_then_the_plan_and_keeps_every_window()
         "then the plan goes and the names shorten: {narrowest:#?}"
     );
     assert!(!narrowest.iter().any(|row| row.contains("Plus")));
-    let wider = self::rows(&sample::usage(), UsageCard::PlanUsage, Form::Compact, 90);
+    let wider = self::rows(&sample::usage(), UsageCard::PlanUsage, Form::Compact, 86);
     assert!(
         wider
             .iter()

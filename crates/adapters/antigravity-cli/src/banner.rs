@@ -1,4 +1,4 @@
-//! Who Antigravity CLI is signed in as. agy has no command that prints the account: it shows
+//! Who agy is signed in as. agy has no command that prints the account: it shows
 //! the address and the plan only in the banner it draws as it starts. This reads that screen
 //! as text; nothing is ever sent to agy, and its token files are never read.
 //!
@@ -14,7 +14,8 @@ use std::sync::LazyLock;
 use argonauts_core::adapter::BannerAccount;
 use regex::Regex;
 
-/// The banner's first line, such as `Antigravity CLI 1.3.3`. The account is on the next one.
+/// The banner's first line, where agy 1.3 names itself in full: `Antigravity CLI 1.3.3`. The
+/// account is on the next one.
 static TITLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"Antigravity CLI\s+v?\d+(?:\.\d+)+").expect("the title pattern compiles")
 });

@@ -40,7 +40,7 @@ impl ProcessLauncher {
     /// This process's own binary.
     pub(crate) fn current() -> anyhow::Result<Self> {
         Ok(Self {
-            binary: std::env::current_exe()?,
+            binary: argonauts_core::paths::this_program()?,
             exits: Arc::default(),
         })
     }
@@ -152,9 +152,7 @@ mod tests {
     fn a_launched_run_host_writes_to_its_log() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-argonauts");
-        std::fs::write(&script, "#!/bin/sh\necho \"args: $*\"\n").unwrap();
-        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
+        argonauts_testkit::write_script(&script, "#!/bin/sh\necho \"args: $*\"\n").unwrap();
         let run = RunId::new("run-20260930-101500-00ab").unwrap();
         ProcessLauncher::with_binary(script)
             .launch(Path::new("/code/app"), &run, dir.path())
@@ -179,9 +177,7 @@ mod tests {
     fn a_failed_run_host_is_remembered_until_the_next_launch() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-argonauts");
-        std::fs::write(&script, "#!/bin/sh\nexit 3\n").unwrap();
-        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
+        argonauts_testkit::write_script(&script, "#!/bin/sh\nexit 3\n").unwrap();
         let run = RunId::new("run-20260930-101500-00ab").unwrap();
         let launcher = ProcessLauncher::with_binary(script.clone());
         launcher

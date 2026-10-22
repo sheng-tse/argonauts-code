@@ -329,7 +329,7 @@ fn part_lines(part: &AskedPart, index: usize, draw: &Draw<'_>) -> Vec<Line<'stat
         ));
     }
     if shown < rows.len() {
-        let more = format!("  … +{} lines · → expands", rows.len() - shown);
+        let more = format!("  … +{} lines · →  expands", rows.len() - shown);
         lines.push(Line::from(Span::styled(
             panes::key_names(&more, theme),
             dim,
@@ -378,7 +378,7 @@ fn launch_lines(launch: &LaunchRecord, index: usize, draw: &Draw<'_>) -> Vec<Lin
         .join(" ");
     let selected = index == draw.selected;
     if draw.expanded != Some(index) {
-        let hint = panes::key_names(" · → expands", theme);
+        let hint = panes::key_names(" · →  expands", theme);
         let opening = "Launched as ";
         let room = draw
             .width
@@ -563,7 +563,7 @@ mod tests {
              From your request\n\
              \x20 focus on date parsing\n\
              \n\
-             Launched as codex exec --json --sandbox workspace-write '<p… · → expands"
+             Launched as codex exec --json --sandbox workspace-write '<… · →  expands"
         );
     }
 
@@ -649,7 +649,7 @@ mod tests {
         };
         let folded = drawn(std::slice::from_ref(&input), 0, None);
         assert!(
-            folded.contains("  line 6\n  … +3 lines · → expands"),
+            folded.contains("  line 6\n  … +3 lines · →  expands"),
             "{folded}"
         );
         assert!(!folded.contains("line 7"), "{folded}");

@@ -181,7 +181,7 @@ mod tests {
             codex,
         ];
         let skipped = [
-            "Claude Code, Antigravity CLI: off in this repo",
+            "Claude Code, agy: off in this repo",
             "LM Studio: not running",
         ];
         assert_eq!(
@@ -190,7 +190,7 @@ mod tests {
              ollama/qwen3-coder:30b · alibaba · endpoint · local · window up to 256k\n\
              codex/gpt-6-luna · openai · CLI · subscription · 872k window\n\
              Skipped\n\
-             \x20 Claude Code, Antigravity CLI: off in this repo\n\
+             \x20 Claude Code, agy: off in this repo\n\
              \x20 LM Studio: not running\n"
         );
         assert_eq!(

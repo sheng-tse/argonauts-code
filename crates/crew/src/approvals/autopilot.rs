@@ -484,7 +484,7 @@ fn ending_line(opened: &ApprovalOpened, label: &str, why: Option<&str>) -> Strin
 
 /// Says that your rules alone decided an approval in autopilot, since no model could check it:
 /// which question, why none could, and what fixes that when the policy says, in plain words:
-/// `"Run this workflow?": Antigravity CLI worked on this, so it can't approve it; your rules
+/// `"Run this workflow?": agy worked on this, so it can't approve it; your rules
 /// decided. Pick another judge in /approvals.` An agent's passing error comes with no fix.
 pub(super) fn rules_alone(host: &Host, opened: &ApprovalOpened, why: &str) -> EngineResult<()> {
     note(host, opened, rules_alone_line(&opened.title, why))
@@ -879,11 +879,11 @@ mod tests {
     fn rules_alone_says_why_in_plain_words() {
         // As the judge's independence check says it when the only agent from another provider
         // wrote the work.
-        let why = "Antigravity CLI worked on this, so it can't approve it. Pick another judge \
+        let why = "agy worked on this, so it can't approve it. Pick another judge \
                    in /approvals";
         assert_eq!(
             rules_alone_line("Run this workflow?", why),
-            "\"Run this workflow?\": Antigravity CLI worked on this, so it can't approve it; your \
+            "\"Run this workflow?\": agy worked on this, so it can't approve it; your \
              rules decided. Pick another judge in /approvals."
         );
         // An agent's passing error names the judge, and asks nothing of you.

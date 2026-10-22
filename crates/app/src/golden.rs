@@ -4,6 +4,7 @@
 
 use std::time::Instant;
 
+use argonauts_testkit::picture;
 use argonauts_tui::render::{Clock, RenderCtx};
 use argonauts_tui::theme::{ColorLevel, Glyphs, Role, Theme};
 use ratatui::style::{Color, Modifier};
@@ -45,18 +46,63 @@ pub(crate) fn picture_rows(text: &str) -> Vec<String> {
     text.lines().map(|row| row.trim_end().to_owned()).collect()
 }
 
-/// Writes `lines` as text into the folder `ARGONAUTS_PICTURE_DUMP` names, as `<name>.txt`, so a
-/// drawing can be put beside its picture. Nothing is written when the variable isn't set.
+/// Writes `lines` into the folder `ARGONAUTS_PICTURE_DUMP` names, as `<name>.txt` and as
+/// `<name>.html` in the pictures' own form, colours included, so a drawing can be put beside
+/// its picture. Nothing is written when the variable isn't set.
 pub(crate) fn dump(name: &str, lines: &[Line<'_>]) {
     let Some(dir) = std::env::var_os("ARGONAUTS_PICTURE_DUMP") else {
         return;
     };
     let dir = std::path::PathBuf::from(dir);
     let text = drawn_rows(lines).join("\n") + "\n";
+    let page = format!(
+        "<div class=\"scroll\">{}</div>\n",
+        drawn_page(&theme(), lines)
+    );
     if let Err(err) = std::fs::create_dir_all(&dir)
         .and_then(|()| std::fs::write(dir.join(format!("{name}.txt")), text))
+        .and_then(|()| std::fs::write(dir.join(format!("{name}.html")), page))
     {
         eprintln!("couldn't write the drawing of {name}: {err}");
+    }
+}
+
+/// `lines` as a picture's page: each cell in the colour the picture names it by, or spelled
+/// out where no name draws in it, and its weight.
+fn drawn_page(theme: &Theme, lines: &[Line<'_>]) -> String {
+    let grid: Vec<Vec<picture::Cell>> = lines
+        .iter()
+        .map(|line| {
+            let mut row: Vec<picture::Cell> = line
+                .spans
+                .iter()
+                .flat_map(|span| {
+                    let style = line.style.patch(span.style);
+                    span.content.chars().map(move |ch| picture::Cell {
+                        ch,
+                        color: match colour_name(theme, style.fg) {
+                            None => None,
+                            Some("another colour") => style.fg.map(spelled_out),
+                            Some(name) => Some(format!("var(--term-{name})")),
+                        },
+                        background: None,
+                        bold: style.add_modifier.contains(Modifier::BOLD),
+                    })
+                })
+                .collect();
+            while row.last().is_some_and(|cell| cell.ch == ' ') {
+                row.pop();
+            }
+            row
+        })
+        .collect();
+    picture::page(&grid)
+}
+
+fn spelled_out(colour: Color) -> String {
+    match colour {
+        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        other => format!("{other:?}"),
     }
 }
 
@@ -110,45 +156,10 @@ pub(crate) fn assert_looks_except(
 }
 
 fn picture_looks(html: &str) -> Vec<Vec<(char, Look)>> {
-    let body = html
-        .split_once("<pre")
-        .and_then(|(_, rest)| rest.split_once('>'))
-        .and_then(|(_, rest)| rest.split_once("</pre>"))
-        .map(|(body, _)| body)
-        .expect("the picture's cells");
-    let plain = Look {
-        colour: None,
-        bold: false,
-    };
-    let mut lines = vec![Vec::new()];
-    let mut rest = body;
-    while !rest.is_empty() {
-        let (look, text, after) = match rest.strip_prefix("<span style=\"") {
-            Some(span) => {
-                let (style, after) = span.split_once("\">").expect("a span's style");
-                let (text, after) = after.split_once("</span>").expect("a span's end");
-                (look_of(style), text, after)
-            }
-            None => {
-                let end = rest.find("<span").unwrap_or(rest.len());
-                (plain.clone(), &rest[..end], &rest[end..])
-            }
-        };
-        let text = text
-            .replace("&gt;", ">")
-            .replace("&lt;", "<")
-            .replace("&quot;", "\"")
-            .replace("&#x27;", "'")
-            .replace("&amp;", "&");
-        for c in text.chars() {
-            if c == '\n' {
-                lines.push(Vec::new());
-            } else {
-                lines.last_mut().unwrap().push((c, look.clone()));
-            }
-        }
-        rest = after;
-    }
+    let mut lines: Vec<Vec<(char, Look)>> = picture::grid(html)
+        .iter()
+        .map(|row| row.iter().map(|cell| (cell.ch, look_of(cell))).collect())
+        .collect();
     // A picture ends its last row with a newline, or with spaces up to its width.
     while lines
         .last()
@@ -159,18 +170,18 @@ fn picture_looks(html: &str) -> Vec<Vec<(char, Look)>> {
     lines
 }
 
-fn look_of(style: &str) -> Look {
-    let colour = if style.contains("#b1b9f9") {
-        Some("acc")
-    } else {
-        ROLES
+fn look_of(cell: &picture::Cell) -> Look {
+    let colour = match cell.color.as_deref() {
+        Some("#b1b9f9") => Some("acc"),
+        Some(colour) => ROLES
             .into_iter()
             .map(|(name, _)| name)
-            .find(|name| style.contains(&format!("color:var(--term-{name})")))
+            .find(|name| colour == format!("var(--term-{name})")),
+        None => None,
     };
     Look {
         colour,
-        bold: style.contains("font-weight:700"),
+        bold: cell.bold,
     }
 }
 
@@ -185,4 +196,62 @@ fn colour_name(theme: &Theme, colour: Option<Color>) -> Option<&'static str> {
         .into_iter()
         .find(|(_, role)| theme.style(*role).fg == colour);
     named.map(|(name, _)| name).or(Some("another colour"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use argonauts_testkit::picture;
+    use ratatui::style::Style;
+    use ratatui::text::Span;
+
+    use super::*;
+
+    const HTML: &str = include_str!("../tests/golden/trust_question.html");
+
+    /// The picture's own cells, each drawn in the role its colour names.
+    fn painted(theme: &Theme) -> Vec<Line<'static>> {
+        picture_looks(HTML)
+            .into_iter()
+            .map(|row| {
+                let spans = row.into_iter().map(|(c, look)| {
+                    let role = ROLES
+                        .into_iter()
+                        .find(|(name, _)| Some(*name) == look.colour);
+                    let mut style = role.map_or(Style::default(), |(_, role)| theme.style(role));
+                    if look.bold {
+                        style = style.add_modifier(Modifier::BOLD);
+                    }
+                    Span::styled(c.to_string(), style)
+                });
+                Line::from(spans.collect::<Vec<_>>())
+            })
+            .collect()
+    }
+
+    fn fails(theme: &Theme, lines: &[Line<'_>], html: &str) -> bool {
+        catch_unwind(AssertUnwindSafe(|| assert_looks(theme, lines, html))).is_err()
+    }
+
+    #[test]
+    fn one_changed_cell_fails_the_comparison() {
+        let theme = theme();
+        let lines = painted(&theme);
+        assert_looks(&theme, &lines, HTML);
+        let grid = picture::grid(HTML);
+        let (row, column) = picture::find(&grid, |cell| cell.color.is_some());
+        let recoloured = picture::edited(HTML, |grid| {
+            let cell = &mut grid[row][column];
+            cell.color = match cell.color.as_deref() {
+                Some("var(--term-red)") => Some("var(--term-dim)".to_owned()),
+                _ => Some("var(--term-red)".to_owned()),
+            };
+        });
+        assert!(fails(&theme, &lines, &recoloured), "a colour changed");
+        let respelled = picture::edited(HTML, |grid| grid[row][column].ch = '#');
+        assert!(fails(&theme, &lines, &respelled), "a character changed");
+        let bolder = picture::edited(HTML, |grid| grid[row][column].bold ^= true);
+        assert!(fails(&theme, &lines, &bolder), "a weight changed");
+    }
 }

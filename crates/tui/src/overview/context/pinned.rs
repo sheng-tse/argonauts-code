@@ -79,12 +79,21 @@ fn parts(categories: &[ContextCategory]) -> Vec<ContextPart> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::example;
     use super::*;
+
+    /// Claude Code's count of a session at 75% of its window.
+    const AT_THREE_QUARTERS: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../adapters/claude-code/tests/data/context-usage-full.usage.json"
+    ));
 
     #[test]
     fn the_pinned_card_draws_the_used_rows_and_where_the_session_compacts() {
-        let card = conversation(&example::at_three_quarters().count);
+        let count = ContextCount {
+            usage: serde_json::from_str(AT_THREE_QUARTERS).expect("the kept count"),
+            counted: time::OffsetDateTime::UNIX_EPOCH,
+        };
+        let card = conversation(&count);
         let parts: Vec<(&str, Option<u64>)> = card
             .parts
             .iter()

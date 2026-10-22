@@ -2,19 +2,11 @@
 //! the colors, boldness and backgrounds with the `.html` that draws the same grid. A picture
 //! names its colors as the panel's own (`--term-dim` and so on), which map to theme roles.
 
+use argonauts_testkit::picture;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 
 use crate::theme::{Role, Theme};
-
-/// One cell of a picture: its character and how the picture styles it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Painted {
-    pub ch: char,
-    pub color: Option<String>,
-    pub background: Option<String>,
-    pub bold: bool,
-}
 
 /// A cell the screen is known to draw otherwise than its picture, and why.
 #[derive(Debug, Clone, Copy)]
@@ -23,62 +15,6 @@ pub struct Unlike {
     /// The first and last column, both included.
     pub cols: (usize, usize),
     pub why: &'static str,
-}
-
-/// The picture's rows, from its `.html`.
-pub fn painted(html: &str) -> Vec<Vec<Painted>> {
-    let body = html
-        .split_once("<pre class=\"term grid\">")
-        .map_or(html, |(_, rest)| rest);
-    let body = body.rsplit_once("</pre>").map_or(body, |(grid, _)| grid);
-    let mut rows = vec![Vec::new()];
-    let mut rest = body;
-    while !rest.is_empty() {
-        let (style, text, after) = match rest.strip_prefix("<span style=\"") {
-            Some(span) => {
-                let (style, inner) = span.split_once("\">").expect("a span's style ends");
-                let (text, after) = inner.split_once("</span>").expect("a span ends");
-                (style, text, after)
-            }
-            None => {
-                let end = rest.find("<span").unwrap_or(rest.len());
-                ("", &rest[..end], &rest[end..])
-            }
-        };
-        let mut color = None;
-        let mut background = None;
-        let mut bold = false;
-        for part in style.split(';').filter(|part| !part.is_empty()) {
-            match part.split_once(':') {
-                Some(("color", value)) => color = Some(value.to_owned()),
-                Some(("background", value)) => background = Some(value.to_owned()),
-                Some(("font-weight", "700")) => bold = true,
-                _ => {}
-            }
-        }
-        for ch in unescape(text).chars() {
-            if ch == '\n' {
-                rows.push(Vec::new());
-                continue;
-            }
-            rows.last_mut().expect("a row").push(Painted {
-                ch,
-                color: color.clone(),
-                background: background.clone(),
-                bold,
-            });
-        }
-        rest = after;
-    }
-    rows
-}
-
-fn unescape(text: &str) -> String {
-    text.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#x27;", "'")
-        .replace("&amp;", "&")
 }
 
 /// A color the picture spells out, `#rrggbb`, as the theme's color level draws it. `None` for
@@ -150,8 +86,9 @@ pub fn assert_matches(
     unlike: &[Unlike],
 ) {
     crate::picture_dump::lines(name, lines);
+    crate::picture_dump::lines_page(name, lines, theme);
     let want: Vec<&str> = txt.trim_end_matches('\n').split('\n').collect();
-    rows_match(name, lines, &want, &painted(html), theme, unlike);
+    rows_match(name, lines, &want, &picture::grid(html), theme, unlike);
 }
 
 /// Asserts the drawn `lines` are the picture's rows `rows`, but for the cells `unlike` names,
@@ -167,8 +104,9 @@ pub fn assert_rows_match(
 ) {
     let part = format!("{name}-rows-{}-{}", rows.start, rows.end);
     crate::picture_dump::lines(&part, lines);
+    crate::picture_dump::lines_page(&part, lines, theme);
     let want: Vec<&str> = txt.split('\n').collect();
-    let painted = painted(html);
+    let painted = picture::grid(html);
     rows_match(
         &part,
         lines,
@@ -183,7 +121,7 @@ fn rows_match(
     name: &str,
     lines: &[Line<'_>],
     want: &[&str],
-    painted: &[Vec<Painted>],
+    painted: &[Vec<picture::Cell>],
     theme: &Theme,
     unlike: &[Unlike],
 ) {
@@ -278,4 +216,96 @@ fn plain(fg: Option<Color>, theme: &Theme) -> bool {
         || [Role::Text, Role::Bright]
             .iter()
             .any(|role| theme.style(*role).fg == fg)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use ratatui::text::Span;
+
+    use super::*;
+    use crate::theme::Glyphs;
+
+    const TXT: &str = include_str!("../../../tests/golden/waiting_rows.txt");
+    const HTML: &str = include_str!("../../../tests/golden/waiting_rows.html");
+
+    fn theme() -> Theme {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        theme
+    }
+
+    /// The picture's own cells, each drawn in the first role its colour stands for.
+    fn painted_lines(theme: &Theme) -> Vec<Line<'static>> {
+        let colour = |value: Option<&str>, of: fn(Style) -> Option<Color>| {
+            let value = value?;
+            if let Some(spelled) = spelled_out(value, theme) {
+                return spelled;
+            }
+            roles_of(value)
+                .first()
+                .and_then(|role| of(theme.style(*role)))
+        };
+        picture::grid(HTML)
+            .into_iter()
+            .take(rows().len())
+            .map(|row| {
+                let spans: Vec<Span<'static>> = row
+                    .into_iter()
+                    .map(|cell| {
+                        let mut style = Style::default();
+                        style.fg = colour(cell.color.as_deref(), |style| style.fg);
+                        style.bg = colour(cell.background.as_deref(), |style| style.bg);
+                        if cell.bold {
+                            style = style.add_modifier(Modifier::BOLD);
+                        }
+                        Span::styled(cell.ch.to_string(), style)
+                    })
+                    .collect();
+                Line::from(spans)
+            })
+            .collect()
+    }
+
+    /// The picture's rows without the spaces that pad them to its width, which a screen never
+    /// draws.
+    fn rows() -> Vec<String> {
+        TXT.lines().map(|row| row.trim_end().to_owned()).collect()
+    }
+
+    fn fails(lines: &[Line<'_>], txt: &str, html: &str) -> bool {
+        let theme = theme();
+        catch_unwind(AssertUnwindSafe(|| {
+            assert_matches("changed", lines, txt, html, &theme, &[]);
+        }))
+        .is_err()
+    }
+
+    #[test]
+    fn one_changed_cell_fails_the_comparison() {
+        let lines = painted_lines(&theme());
+        let txt = rows().join("\n");
+        assert!(!fails(&lines, &txt, HTML));
+        let grid = picture::grid(HTML);
+        let (row, column) = picture::find(&grid, |cell| {
+            cell.ch.is_alphanumeric() && cell.color.as_deref() == Some("var(--term-dim)")
+        });
+        let changed = |edit: &dyn Fn(&mut picture::Cell)| {
+            picture::edited(HTML, |grid| edit(&mut grid[row][column]))
+        };
+        let recoloured = changed(&|cell| cell.color = Some("var(--term-red)".to_owned()));
+        assert!(fails(&lines, &txt, &recoloured), "a colour changed");
+        assert!(
+            fails(&lines, &txt, &changed(&|cell| cell.bold ^= true)),
+            "a weight changed"
+        );
+        let filled = changed(&|cell| cell.background = Some("var(--term-band)".to_owned()));
+        assert!(fails(&lines, &txt, &filled), "a fill changed");
+        let mut rows = rows();
+        let mut chars: Vec<char> = rows[row].chars().collect();
+        chars[column] = '#';
+        rows[row] = chars.into_iter().collect();
+        assert!(fails(&lines, &rows.join("\n"), HTML), "a character changed");
+    }
 }

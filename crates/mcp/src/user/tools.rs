@@ -414,6 +414,7 @@ async fn start_run(
         instructions: Vec::new(),
         request_settings: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     };
     let handle = match server.api().start(start).await {
         Ok(handle) => handle,

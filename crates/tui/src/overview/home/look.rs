@@ -155,7 +155,7 @@ pub fn since_word(day: Date, today: Date) -> String {
     }
 }
 
-/// How a CLI is named on the Overview: Antigravity CLI is `agy`, as its command is.
+/// How a CLI is named on the Overview: agy is `agy`, as its command is.
 pub fn cli_word(names: &DisplayNames, agent: &str) -> String {
     match agent {
         "antigravity-cli" => "agy".to_owned(),

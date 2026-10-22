@@ -853,6 +853,7 @@ async fn context_lists_the_conversation_then_the_runs_sessions_each_capped_by_it
         categories: Vec::new(),
         recorded: None,
         ended: None,
+        answered_for: None,
     };
 
     let rows = context_view(&mut rig, &conversation).await.rows;
@@ -965,6 +966,7 @@ async fn a_carried_on_conversation_lists_the_run_it_ended_with() {
         categories: Vec::new(),
         recorded: None,
         ended: None,
+        answered_for: None,
     };
     let view = context_view(&mut rig, &conversation).await;
     let runs: Vec<Option<&str>> = view
@@ -1364,6 +1366,26 @@ async fn the_workflow_view_before_a_workflow_starts_says_so_plainly() {
     };
     assert_eq!(text, "This run hasn't started a workflow yet.");
     assert!(!text.contains(run.as_str()), "{text}");
+}
+
+#[tokio::test]
+async fn a_run_of_another_project_is_read_from_that_projects_records() {
+    let rig = Rig::new();
+    let run = RunId::new("run-20261020-123036-4e50").unwrap();
+    let elsewhere = rig
+        .ctx
+        .env
+        .paths
+        .home()
+        .join("state/elsewhere-3f9a1c2b4d5e/runs")
+        .join(run.as_str());
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let line = serde_json::json!({"seq": 0, "ts": "2026-10-20T12:30:36Z", "run_id": run.as_str(),
+        "source": "test", "kind": {"type": "agent", "data": {"type": "message", "text": "hi", "parent": null}}});
+    std::fs::write(elsewhere.join("events.jsonl"), format!("{line}\n")).unwrap();
+    assert!(!rig.ctx.env.run_dir(&run).exists(), "not this project's");
+    let events = super::views::run_events(&rig.ctx, &rig.runs, &run);
+    assert_eq!(events.len(), 1, "the other project's log");
 }
 
 /// A steer that can't be sent answers text you typed, not a key, so it stays in the transcript

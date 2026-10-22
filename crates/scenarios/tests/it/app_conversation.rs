@@ -15,9 +15,6 @@ use argonauts_scenarios::{Scenario, WAIT};
 use argonauts_testkit::{Key, Pty};
 use regex::Regex;
 
-/// A Captain change whose worker sits in a tool call until stopped, so a pause stays pending.
-const TASK_IN_A_TOOL_CALL: &str = "rename the config loader while the build runs";
-
 /// The turn end, whichever done word the app picked, such as `✻ Sailed for 3s`.
 const TURN_END: &str = r"✻ \w+ for \d";
 
@@ -201,7 +198,10 @@ fn app_routes_input_by_mode() -> anyhow::Result<()> {
     wait_turns_finished(&scenario, 1)?;
 
     // Working: plain text is guidance for the run, not another turn.
-    submit(&mut pty, &format!("/captain {TASK_IN_A_TOOL_CALL}"))?;
+    submit(
+        &mut pty,
+        &format!("/captain {}", requests::TASK_IN_A_TOOL_CALL),
+    )?;
     wait_mode(&scenario, "the run to work", |m| {
         matches!(m, AppMode::Working { .. })
     })?;

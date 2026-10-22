@@ -1,8 +1,8 @@
 {
   "adapter": "claude-code",
-  "cli_version": "2.1.304",
+  "cli_version": "2.1.306",
   "also_matches": [],
-  "date": "2026-10-20T02:36:30.403765Z",
+  "date": "2026-10-21T19:29:49.497015Z",
   "program": "claude",
   "args": [
     "-p",
@@ -79,7 +79,7 @@
   "effort": "low",
   "role": "build",
   "exit_code": 0,
-  "duration_ms": 6103,
+  "duration_ms": 10969,
   "files_after": [
     "README.md",
     "hello.txt",

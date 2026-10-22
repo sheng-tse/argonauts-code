@@ -6,7 +6,7 @@
 ● Claude Code 2.1.303 is newer than 2.1.295, the newest version Argonauts Code was checked with. It should work.      
   /doctor lists anything it sends that Argonauts Code doesn't read yet.                                               
                                                                                                                       
-● Antigravity CLI 1.4.2 is newer than 1.3.1, the newest version Argonauts Code was checked with. It should work.      
+● agy 1.4.2 is newer than 1.3.1, the newest version Argonauts Code was checked with. It should work.                  
   /doctor lists anything it sends that Argonauts Code doesn't read yet.                                               
                                                                                                                       
 ❯ /model                                                                                                              
@@ -24,11 +24,11 @@
   Main agent                                                                                                          
   Who answers in conversation, works as Captain, and steps in last when others stop. Model lists refreshed just now.  
                                                                                                                       
-  ❯ 1. Claude Code ✓     default, Opus 5.5 · subscription · 92% used                                                  
-    2. Codex             7 models · subscription · 2% used                                                            
-    3. Antigravity CLI   6 models · subscription · 0% used                                                            
-    4. OpenCode          17 models · 7 local, 10 free                                                                 
-    5. Roles…            each role's own model                                                                        
+  ❯ 1. Claude Code ✓   default, Opus 5.5 · subscription · 92% used                                                    
+    2. Codex           7 models · subscription · 2% used                                                              
+    3. agy             6 models · subscription · 0% used                                                              
+    4. OpenCode        17 models · 7 local, 10 free                                                                   
+    5. Roles…          each role's own model                                                                          
                                                                                                                       
   Enter to see its models · j/k to move · / to filter · Esc to close                                                  
                                                                                                                       

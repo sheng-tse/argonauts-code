@@ -7,7 +7,8 @@ use argonauts_core::events::approval::{
     ApprovalEvent, ApprovalOpened, ApprovalPacket, MergePacket,
 };
 use argonauts_core::events::run::{
-    PhaseChange, RunLifecycle, RunMode, RunNamed, RunOutcome, RunPhase, RunSnapshot, WaitReason,
+    Party, PhaseChange, RunLifecycle, RunMode, RunNamed, RunOutcome, RunPhase, RunSnapshot,
+    WaitReason,
 };
 use argonauts_core::events::session::{CliWorkflowRun, QueuedMessage, SessionEvent};
 use argonauts_core::events::shared::BlackboardEvent;
@@ -38,6 +39,9 @@ pub struct RunState {
     pub started: Option<OffsetDateTime>,
     pub phase: Option<RunPhase>,
     pub pausing: bool,
+    /// Who asked for its pause, from the request until it carries on, so the pause is told
+    /// as theirs: yours, the network's, or your limit's.
+    pub paused_by: Option<Party>,
     pub waiting: Option<WaitReason>,
     pub finished: Option<RunOutcome>,
     /// When it finished, so its time stops there everywhere it shows.
@@ -89,9 +93,25 @@ pub struct RunState {
     pub summary: Option<StatusSummary>,
     /// When its last event happened.
     pub updated: Option<OffsetDateTime>,
+    /// The pull request it opened, as the app's newest look at GitHub found it.
+    pub followed: Option<argonauts_core::app::FollowedPullRequest>,
 }
 
 impl RunState {
+    /// Its pause in a few words, as its row says it: `paused by you`, `paused for the network`.
+    pub fn paused_words(&self) -> String {
+        match &self.paused_by {
+            Some(Party::User) | None => "paused by you".to_owned(),
+            Some(Party::Network) => "paused for the network".to_owned(),
+            Some(Party::Rules) => "paused at your limit".to_owned(),
+            // The name is the client's own, so it's drawn as text, never as escapes.
+            Some(Party::OutsideAgent { client }) => format!(
+                "paused by {}",
+                argonauts_core::sanitize::sanitize_for_terminal(client)
+            ),
+            Some(_) => "paused".to_owned(),
+        }
+    }
     /// The run's own workflow waits for the report that names its phases, so nothing of it
     /// draws yet: no row, no view, and no agent's item in the conversation.
     pub fn awaits_its_shape(&self) -> bool {
@@ -109,6 +129,7 @@ impl RunState {
             started: None,
             phase: None,
             pausing: false,
+            paused_by: None,
             waiting: None,
             finished: None,
             ended: None,
@@ -136,6 +157,7 @@ impl RunState {
             spend: None,
             summary: None,
             updated: None,
+            followed: None,
         }
     }
 
@@ -538,12 +560,19 @@ impl RunState {
                 }
                 self.waiting = None;
                 self.pausing = false;
+                self.paused_by = None;
                 self.stopping = false;
                 self.finished = None;
                 self.ended = None;
             }
-            RunLifecycle::PauseRequested { .. } => self.pausing = true,
-            RunLifecycle::PauseCancelled => self.pausing = false,
+            RunLifecycle::PauseRequested { by, .. } => {
+                self.pausing = true;
+                self.paused_by = Some(by.clone());
+            }
+            RunLifecycle::PauseCancelled => {
+                self.pausing = false;
+                self.paused_by = None;
+            }
             RunLifecycle::Paused { .. } => self.pausing = false,
             RunLifecycle::ApprovalModeChanged { mode, .. } => self.approval = Some(*mode),
             RunLifecycle::StopRequested { .. } => self.stopping = true,

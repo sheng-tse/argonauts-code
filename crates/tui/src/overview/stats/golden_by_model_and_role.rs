@@ -151,12 +151,12 @@ fn keys_at<'a>(compared: &Compared<'a>, row: usize) -> Compared<'a> {
 #[test]
 fn in_the_cards_the_chosen_sub_tab_stays_filled() {
     use KeyCode::{Down, Right, Tab};
-    let html = include_str!("screens/by_model.html");
+    let html = include_str!("../../../tests/golden/stats/by_model.html");
     let theme = theme();
     for keys in [[Down, Right, Down], [Down, Down, Tab]] {
         let screen = screen(&theme, crew().usage(UsagePeriod::All), now(), &keys, SCREEN);
         assert!(
-            text(&screen).contains("↑↓ model"),
+            text(&screen).contains("↑↓  model"),
             "{keys:?}: the keys are in the cards"
         );
         let compared = Compared {
@@ -206,7 +206,7 @@ fn by_model_matches_its_drawing() {
     ];
     weeks(&mut example, parts, (tokens, work));
     let screen = sub_tab(example, 1);
-    let html = include_str!("screens/by_model.html");
+    let html = include_str!("../../../tests/golden/stats/by_model.html");
     // The panel's rule is the screen's first row, a row above the drawing's first.
     let at = Offset {
         rows: 1,
@@ -282,7 +282,7 @@ fn by_role_matches_its_drawing() {
     // named a conversation by a word the app no longer uses. Row 30 has the turns, the
     // conversations they were in and how many go to each, `61 in 9 · 7 each`, where it was
     // drawn with the count first; row 32 has `16m each`; and row 33 costs `a conversation`.
-    let html = include_str!("screens/by_role.html");
+    let html = include_str!("../../../tests/golden/stats/by_role.html");
     // The drawing starts at the row under the tabs, two rows down the screen.
     let at = Offset {
         rows: 2,
@@ -467,7 +467,7 @@ fn a_model_opened_matches_its_drawing() {
     let keys = [KeyCode::Down, KeyCode::Right, KeyCode::Down, KeyCode::Enter];
     let theme = theme();
     let screen = screen(&theme, usage, saturday(), &keys, SCREEN);
-    let html = include_str!("screens/by_model_opened.html");
+    let html = include_str!("../../../tests/golden/stats/by_model_opened.html");
     let at = Offset {
         rows: row_of(&screen, "■ Haiku 5.5 on Claude Code") as isize - 1,
         columns: 1,
@@ -496,7 +496,7 @@ fn the_period_keys_start_the_key_line_as_their_drawing_has_it() {
     let usage = crew().usage(UsagePeriod::Month);
     let theme = theme();
     let screen = screen(&theme, usage, now(), &[KeyCode::Down], SCREEN);
-    let html = include_str!("screens/periods_keys.html");
+    let html = include_str!("../../../tests/golden/stats/periods_keys.html");
     let at = Offset {
         rows: 1,
         columns: 1,

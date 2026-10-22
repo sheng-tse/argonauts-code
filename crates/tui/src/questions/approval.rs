@@ -94,6 +94,7 @@ pub fn approval_question_local(
     if question.question.as_deref() == Some(opened.title.trim()) {
         question.question = None;
     }
+    crate::views::issues::shape_approval(&mut question, opened);
     question
 }
 
@@ -486,7 +487,7 @@ fn fallback_question(
 }
 
 /// Which way the stopped agent's tasks move, such as `Claude Code's 3 tasks will be spread
-/// across Codex and Antigravity CLI`.
+/// across Codex and agy`.
 fn strategy_line(plan: &FallbackPlan, names: &DisplayNames) -> Option<String> {
     let stopped = names.cli(&plan.stopped.agent);
     let moving = u32::try_from(plan.also_moving.len() + 1).unwrap_or(u32::MAX);

@@ -707,7 +707,7 @@ mod tests {
     fn failures(found: &Discovery) -> &[String] {
         assert_eq!(
             found.skipped.first().map(String::as_str),
-            Some("Claude Code, Codex, Antigravity CLI, OpenCode: off in your settings")
+            Some("Claude Code, Codex, agy, OpenCode: off in your settings")
         );
         &found.skipped[1..]
     }
@@ -910,10 +910,7 @@ mod tests {
             ..Sources::default()
         };
         let found = discover_with_reasons(&settings, &sources).await;
-        assert_eq!(
-            found.skipped,
-            ["Claude Code, Codex, Antigravity CLI: off in this repo"]
-        );
+        assert_eq!(found.skipped, ["Claude Code, Codex, agy: off in this repo"]);
         let entry = |id: &str| {
             found
                 .models
@@ -1084,7 +1081,7 @@ mod tests {
 
     #[test]
     fn a_source_is_named_as_lists_name_it() {
-        assert_eq!(name_of("antigravity-cli"), "Antigravity CLI");
+        assert_eq!(name_of("antigravity-cli"), "agy");
         assert_eq!(name_of("ollama"), "Ollama");
         assert_eq!(name_of("lmstudio"), "LM Studio");
         assert_eq!(name_of("llamacpp"), "llama-server");

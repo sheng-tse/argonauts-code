@@ -5,11 +5,12 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::RunId;
 use argonauts_core::api::{RunState as ApiRunState, RunSummary};
-use argonauts_core::app::HeaderAndBottomLine;
+use argonauts_core::app::{HeaderAndBottomLine, PullRequestStands};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::run::{RunMode, RunOutcome, WaitReason};
 use argonauts_core::events::session::{CliAgentState, CliWorkflowRun, SubagentStatus};
 use argonauts_core::hidden_git::MergedInto;
+use argonauts_core::names::SessionKey;
 use argonauts_core::settings::limit::LimitUnit;
 use argonauts_core::views::{cli_workflow_run_id, conversation_run};
 use argonauts_core::{Spend, TodoStatus};
@@ -17,6 +18,7 @@ use time::OffsetDateTime;
 
 use crate::bottom::{AgentRow, AgentState, RowKind, WorkflowRow, WorkflowRowState};
 use crate::state::{AppState, RunState, RunTotals, SessionState, SessionStatus, binding_reading};
+use crate::views::asks::{Ask, label_stem};
 use crate::views::panes;
 
 use super::Cx;
@@ -178,7 +180,7 @@ pub(super) fn the_runs_own(run: &RunState) -> Option<&CliWorkflowRun> {
 /// A run's agents done and in all, its time and its tokens: the one count its row here and
 /// its closing row in the conversation show, as its workflow view's header does. A run that
 /// is its task's CLI workflows counts every agent of each of them, and never switches from one
-/// to the next, then the agents of its own that work after them, such as the merge's.
+/// to the next; their phases are the run's, so nothing of its own after them counts.
 pub(crate) fn run_totals(run: &RunState, wall: OffsetDateTime) -> RunTotals {
     let mut totals = run.totals(wall);
     let own = the_tasks_own(run);
@@ -208,60 +210,70 @@ pub(crate) fn run_totals(run: &RunState, wall: OffsetDateTime) -> RunTotals {
         .filter(|session| !session.workflows.is_empty())
         .filter_map(|session| session.workflow_step.as_ref().map(|step| step.phase))
         .collect();
-    let after = run.sessions_in_order().filter(|session| {
-        argonauts_core::views::is_workflow_agent(session.step, session.workflow_step.as_ref())
-            && session
-                .workflow_step
-                .as_ref()
-                .is_some_and(|step| !hosts.contains(&step.phase))
-    });
-    let (after_done, after_all) = after.fold((0, 0), |(done, all), session| {
-        (
-            done + usize::from(session.status == SessionStatus::Done),
-            all + 1,
-        )
-    });
     let (asked_done, asked_all) = asked_of_its_own(run, &own, &hosts);
-    totals.agents_done = u32::try_from(done + after_done + asked_done).unwrap_or(u32::MAX);
-    totals.agents_total =
-        u32::try_from(agents().count() + after_all + asked_all).unwrap_or(u32::MAX);
+    totals.agents_done = u32::try_from(done + asked_done).unwrap_or(u32::MAX);
+    totals.agents_total = u32::try_from(agents().count() + asked_all).unwrap_or(u32::MAX);
     totals
 }
 
 /// The reviewers and judges the task's workflows asked of Argonauts Code, done and in all, that
-/// fill no row of those workflows: each answer joins the row that asked, by the label its ask
-/// kept, so only an ask under a label none of their agents has, as between two of its
-/// workflows, is a row of its own in the view, and an agent once across its rounds.
+/// fill no row of those workflows: each answer joins the agent that asked, as the workflow
+/// view joins it, so only an ask that joins none is a row of its own in the view, and an agent
+/// once across its rounds.
 fn asked_of_its_own(run: &RunState, own: &[&CliWorkflowRun], hosts: &[u32]) -> (usize, usize) {
-    let named = |label: &str| {
-        own.iter()
-            .flat_map(|workflow| &workflow.agents)
-            .any(|agent| agent.label.trim() == label)
-    };
-    let mut asks: std::collections::BTreeMap<&str, bool> = Default::default();
-    for session in run.sessions_in_order() {
-        let in_a_host = session
-            .workflow_step
-            .as_ref()
-            .is_some_and(|step| hosts.contains(&step.phase));
-        let asked = in_a_host
-            && session.workflows.is_empty()
-            && argonauts_core::views::is_workflow_agent(
-                session.step,
-                session.workflow_step.as_ref(),
-            );
-        let label = session.label.as_deref().map(str::trim).unwrap_or_default();
-        if !asked || label.is_empty() {
-            continue;
-        }
-        let stem = argonauts_core::views::round_stem(label).unwrap_or(label);
-        if named(label) || named(stem) {
-            continue;
-        }
-        asks.insert(stem, session.status == SessionStatus::Done);
+    let asked: Vec<_> = run
+        .sessions_in_order()
+        .filter(|session| {
+            session
+                .workflow_step
+                .as_ref()
+                .is_some_and(|step| hosts.contains(&step.phase))
+                && session.workflows.is_empty()
+                && argonauts_core::views::is_workflow_agent(
+                    session.step,
+                    session.workflow_step.as_ref(),
+                )
+                && session
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| !label.trim().is_empty())
+        })
+        .collect();
+    let asks: Vec<Ask<'_>> = asked
+        .iter()
+        .map(|session| Ask {
+            key: &session.key,
+            label: session.label.as_deref().unwrap_or_default(),
+            started_ms: u64::try_from(
+                (session.started - OffsetDateTime::UNIX_EPOCH).whole_milliseconds(),
+            )
+            .ok(),
+            asked_by: None,
+        })
+        .collect();
+    let joined: std::collections::BTreeSet<SessionKey> = own
+        .iter()
+        .filter_map(|workflow| {
+            let host = run.sessions_in_order().find(|session| {
+                session
+                    .workflows
+                    .iter()
+                    .any(|known| known.id == workflow.id)
+            })?;
+            Some(crate::views::asks::joins(&asks, &host.key, workflow))
+        })
+        .flat_map(|joined| joined.into_values())
+        .collect();
+    let mut left: std::collections::BTreeMap<&str, bool> = Default::default();
+    for session in asked
+        .iter()
+        .filter(|session| !joined.contains(&session.key))
+    {
+        let label = session.label.as_deref().unwrap_or_default();
+        left.insert(label_stem(label), session.status == SessionStatus::Done);
     }
-    let done = asks.values().filter(|done| **done).count();
-    (done, asks.len())
+    let done = left.values().filter(|done| **done).count();
+    (done, left.len())
 }
 
 /// A `⎿` row for each workflow at work inside the run, a level further in for each one that
@@ -432,22 +444,23 @@ fn background_row(run: &RunSummary) -> WorkflowRow {
 fn listed_state(run: &RunSummary) -> WorkflowRowState {
     if run.needs_you() {
         WorkflowRowState::NeedsYou
-    } else if run.state == ApiRunState::Pausing {
+    } else if run.state == ApiRunState::Pausing || paused_by_you(run) {
         WorkflowRowState::Paused
     } else if run.state == ApiRunState::Waiting {
-        // The listing words why it waits, as its journal ends.
-        let why = run.stopped_at.as_str();
-        // Only a pause you asked for reads paused.
-        if why.starts_with("stopped") {
+        if run.stopped_at.starts_with("stopped") {
             WorkflowRowState::Stopped
-        } else if why == "paused" {
-            WorkflowRowState::Paused
         } else {
             WorkflowRowState::Waiting
         }
     } else {
         WorkflowRowState::Running
     }
+}
+
+/// Whether a listed run waits on a pause you asked for. The listing words why a run waits as
+/// its journal ends, and only that pause reads `paused`.
+pub(crate) fn paused_by_you(run: &RunSummary) -> bool {
+    run.state == ApiRunState::Waiting && run.stopped_at == "paused"
 }
 
 /// A held run's row once it goes on off screen: what this screen last saw of its agents, with
@@ -520,6 +533,14 @@ fn run_row(
 /// What a run's row says at its end, when there is something to say: how it ended, or the
 /// question that waits for you.
 fn row_says(run: &RunState) -> Option<String> {
+    // The pull request it opened says where it stands, once the run that opened it ended.
+    if let Some(followed) = run.followed.as_ref().filter(|_| run.finished.is_some()) {
+        let said = followed.said.trim().to_owned();
+        return Some(match followed.stands {
+            PullRequestStands::NeedsYou => format!("needs you · {said}"),
+            _ => said,
+        });
+    }
     if let Some(outcome) = run.finished {
         return Some(match (outcome, run.merged_onto.as_deref()) {
             // In a folder without git the work was written in: no branch of yours took it.
@@ -533,7 +554,7 @@ fn row_says(run: &RunState) -> Option<String> {
         });
     }
     match &run.waiting {
-        Some(WaitReason::Paused) => return Some("paused by you".to_owned()),
+        Some(WaitReason::Paused) => return Some(run.paused_words()),
         Some(WaitReason::NoFallback { .. }) => return Some("stopped".to_owned()),
         Some(WaitReason::AllAgentsOut { until }) => return Some(waiting_for("an agent", *until)),
         Some(WaitReason::WaitingForAgent { agent_id, until }) => {
@@ -594,6 +615,15 @@ fn filling_in(run: &RunState, names: &DisplayNames) -> Option<String> {
 }
 
 fn row_state(run: &RunState) -> WorkflowRowState {
+    if let Some(followed) = run.followed.as_ref().filter(|_| run.finished.is_some()) {
+        match followed.stands {
+            PullRequestStands::Waits => return WorkflowRowState::PullRequestWaits,
+            PullRequestStands::Works | PullRequestStands::NeedsYou => {
+                return WorkflowRowState::PullRequest;
+            }
+            PullRequestStands::Ended => {}
+        }
+    }
     match (&run.finished, &run.waiting) {
         (Some(outcome), _) => WorkflowRowState::ended(*outcome),
         (None, _) if !run.approvals.is_empty() => WorkflowRowState::NeedsYou,
@@ -795,7 +825,7 @@ fn millis(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::events::run::RunOutcome;
+    use argonauts_core::events::run::{Party, RunOutcome};
     use argonauts_core::settings::approvals::ApprovalMode;
     use argonauts_core::settings::limit::LimitAmount;
     use argonauts_core::settings::ui::NarratorMode;
@@ -1144,6 +1174,64 @@ mod tests {
         );
     }
 
+    /// Once a run that opened a pull request ended, its row follows the pull request: amber
+    /// while a round works on it or it needs you, dim while it waits, and done once GitHub
+    /// merged or closed it.
+    #[test]
+    fn a_row_follows_the_pull_request_its_run_opened() {
+        use argonauts_core::app::FollowedPullRequest;
+        use argonauts_core::events::run::RunOutcome;
+
+        let wall = OffsetDateTime::now_utc();
+        let now = Instant::now();
+        let names = DisplayNames::default();
+        let mut run = run_state("run-a", wall);
+        run.finished = Some(RunOutcome::PullRequest);
+        let row = |run: &RunState| {
+            let row = run_row(run, None, &names, wall, now);
+            (row.state, row.said)
+        };
+        assert_eq!(
+            row(&run),
+            (
+                WorkflowRowState::Done,
+                Some("a pull request is open".to_owned())
+            )
+        );
+        for (stands, said, state, says) in [
+            (
+                PullRequestStands::Works,
+                "#57 · fixing CI, round 1 of 3",
+                WorkflowRowState::PullRequest,
+                "#57 · fixing CI, round 1 of 3",
+            ),
+            (
+                PullRequestStands::Waits,
+                "#57 · CI running",
+                WorkflowRowState::PullRequestWaits,
+                "#57 · CI running",
+            ),
+            (
+                PullRequestStands::NeedsYou,
+                "#57 · reviewers disagree",
+                WorkflowRowState::PullRequest,
+                "needs you · #57 · reviewers disagree",
+            ),
+            (
+                PullRequestStands::Ended,
+                "#57 merged on GitHub",
+                WorkflowRowState::Done,
+                "#57 merged on GitHub",
+            ),
+        ] {
+            run.followed = Some(FollowedPullRequest {
+                said: said.to_owned(),
+                stands,
+            });
+            assert_eq!(row(&run), (state, Some(says.to_owned())), "{stands:?}");
+        }
+    }
+
     #[test]
     fn a_row_follows_its_run() {
         let wall = OffsetDateTime::now_utc();
@@ -1177,10 +1265,17 @@ mod tests {
         assert_eq!(row(&run).state, WorkflowRowState::Stopped);
         assert_eq!(row(&run).said.as_deref(), Some("stopped"));
         assert_eq!(row(&run).carry_on.as_deref(), Some("/resume carries it on"));
-        // Only a pause you asked for says paused.
+        // A pause says who asked for it.
         run.waiting = Some(WaitReason::Paused);
+        run.paused_by = Some(Party::User);
         assert_eq!(row(&run).said.as_deref(), Some("paused by you"));
         assert_eq!(row(&run).carry_on.as_deref(), Some("/resume carries it on"));
+        run.paused_by = Some(Party::Network);
+        assert_eq!(row(&run).said.as_deref(), Some("paused for the network"));
+        assert_eq!(row(&run).carry_on.as_deref(), Some("/resume carries it on"));
+        run.paused_by = Some(Party::Rules);
+        assert_eq!(row(&run).said.as_deref(), Some("paused at your limit"));
+        run.paused_by = None;
 
         // A finished run's time stops at its end.
         run.waiting = None;

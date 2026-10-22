@@ -71,26 +71,25 @@ impl Own {
     }
 }
 
-/// A start Argonauts Code turned down, as one plain line: its answer's first line, such as
-/// `No workflow started.` The session reads the rest, which says why, and tries again.
+/// What a start Argonauts Code turned down shows: one dim `No workflow started`, in the look
+/// of a refused call, never a failure's red. Why goes to the session, which reads it and may
+/// try again, and to the full transcript; the conversation holds the line until the turn ends,
+/// and drops it when a later start in the same turn works.
 pub(crate) fn turned_down(ok: bool, output: Option<&str>) -> Option<ToolCall> {
-    let first = output
-        .and_then(|text| text.lines().map(str::trim).find(|line| !line.is_empty()))
-        .map(|line| sanitize_line(line).into_owned());
     let refused = !ok
-        || first
-            .as_deref()
-            .is_some_and(|line| line.starts_with("No workflow started"));
+        || output
+            .and_then(|text| text.lines().map(str::trim).find(|line| !line.is_empty()))
+            .is_some_and(|line| line.starts_with(NOT_STARTED));
     if !refused {
         return None;
     }
-    let mut call = ToolCall::described(
-        ToolKind::Other,
-        first.unwrap_or_else(|| "No workflow started".to_owned()),
-    );
-    call.finish(false);
+    let mut call = ToolCall::described(ToolKind::Other, NOT_STARTED.to_owned());
+    call.refuse();
     Some(call)
 }
+
+/// The start tool's answer when it starts nothing begins with these words.
+const NOT_STARTED: &str = "No workflow started";
 
 #[cfg(test)]
 mod tests {
@@ -139,16 +138,21 @@ mod tests {
         assert_eq!(line(Own::StartWorkflow, json!({"request": "x"})), None);
     }
 
+    /// The start tool's own answer, one line from its first words to why, draws only its
+    /// first words, refused and never failed.
     #[test]
     fn only_a_start_turned_down_has_a_line() {
         assert!(turned_down(true, Some("Started on this.")).is_none());
-        let refused = turned_down(
-            true,
-            Some("No workflow started.\n\"use codex\" (review): dropped, name a CLI"),
-        )
-        .expect("a line");
-        assert_eq!(refused.title.plain(), "No workflow started.");
-        assert_eq!(refused.state, ToolState::Failed);
-        assert!(turned_down(false, None).is_some());
+        for answer in [
+            "No workflow started.\n\"use codex\" (review): dropped, name a CLI",
+            "No workflow started. With Captain, one starts only when you asked for a workflow \
+             in this message or the one before, and you said how it should run (how_to_run).",
+        ] {
+            let refused = turned_down(true, Some(answer)).expect("a line");
+            assert_eq!(refused.title.plain(), "No workflow started");
+            assert_eq!(refused.state, ToolState::Refused);
+        }
+        let failed = turned_down(false, None).expect("a line");
+        assert_eq!(failed.state, ToolState::Refused);
     }
 }

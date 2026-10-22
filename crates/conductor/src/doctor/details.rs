@@ -501,7 +501,7 @@ esac"#;
             .find(|r| r.role == RoleName::Consultant)
             .unwrap();
         assert!(!consultant.compaction_off);
-        assert!(consultant.compaction.starts_with("off → not possible"));
+        assert!(consultant.compaction.starts_with("off →  not possible"));
         assert!(details.to_string().contains("  plan usage probe  failed, "));
     }
 

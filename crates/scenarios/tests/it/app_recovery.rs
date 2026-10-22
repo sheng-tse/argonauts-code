@@ -45,6 +45,10 @@ fn exit_watchers(run_host: u32) -> anyhow::Result<Vec<u32>> {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "on Linux a worker gets SIGKILL when its run host dies (PR_SET_PDEATHSIG), so no worker is left to recover"
+)]
 fn app_crash_recovery_rebuilds_from_log() -> anyhow::Result<()> {
     let scenario = scenario()?;
     let mut pty = start(&scenario)?;

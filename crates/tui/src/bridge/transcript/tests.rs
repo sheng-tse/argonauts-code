@@ -138,6 +138,7 @@ fn started() -> AppEvent {
             outside_agent: None,
             instructions: Vec::new(),
             required_steps: Vec::new(),
+            starts_from: None,
         },
     ))))
 }
@@ -308,6 +309,39 @@ fn an_attached_runs_history_only_joins_ctrl_o() {
     // Live events print again.
     driver.send(paused());
     assert!(driver.printed().contains("You paused the run"));
+}
+
+/// A pause is told as whoever asked for it: the network that stayed down, your limit, or you.
+#[test]
+fn a_pause_says_who_asked_for_it() {
+    let asked = |by: Party| {
+        run_event(RunEventKind::Run(RunLifecycle::PauseRequested {
+            by,
+            now: true,
+        }))
+    };
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    driver.send(asked(Party::Network));
+    driver.send(paused());
+    let printed = driver.printed();
+    assert!(
+        printed.contains("The run paused while the network was down · /resume"),
+        "{printed}"
+    );
+    assert!(!printed.contains("You paused"), "{printed}");
+
+    driver.send(asked(Party::Rules));
+    driver.send(paused());
+    assert!(
+        driver
+            .printed()
+            .contains("The run paused at your limit · /resume")
+    );
+
+    driver.send(asked(Party::User));
+    driver.send(paused());
+    assert!(driver.printed().contains("You paused the run · /resume"));
 }
 
 /// A run that nothing can carry on says it stopped and how to carry it on, and never that it
@@ -842,7 +876,7 @@ fn an_outage_that_stays_on_one_cli_reads_as_its_picture() {
     let printed = driver.printed_at(120);
     let rows: Vec<&str> = printed.lines().map(str::trim_end).collect();
     let drawn = rows.join("\n");
-    let picture = include_str!("pictures/fallback_same_cli.txt");
+    let picture = include_str!("../../../tests/golden/transcript/fallback_same_cli.txt");
     assert_eq!(drawn.trim(), picture.trim(), "{drawn}");
 }
 
@@ -978,7 +1012,7 @@ fn a_quiet_line_has_no_mark() {
         "Claude Code 2.1.297 is out · claude update · shown once for this version",
     ));
     let printed = driver.printed();
-    let picture = include_str!("../../overview/pictures/versions.txt");
+    let picture = include_str!("../../../tests/golden/overview/versions.txt");
     let drawn = picture.lines().nth(9).unwrap();
     assert!(
         printed.lines().any(|line| line.trim_end() == drawn),
@@ -1005,7 +1039,7 @@ fn the_header_changes_in_place_when_the_setup_saves() {
         .take_header_redrawn()
         .expect("the header, redrawn");
     let redrawn = plain_text(&redrawn);
-    assert!(redrawn.contains("Antigravity CLI · Captain"), "{redrawn}");
+    assert!(redrawn.contains("agy · Captain"), "{redrawn}");
     assert!(!redrawn.contains("Claude Code"), "{redrawn}");
     assert_eq!(headers(&driver), 1, "the transcript keeps one header");
 }

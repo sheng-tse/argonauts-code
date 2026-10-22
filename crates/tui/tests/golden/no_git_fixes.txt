@@ -29,11 +29,11 @@
 
   Enter to choose · Tab to add a note · Esc to set aside
 
- ╭ Phases ──────────┬ Merge · 2 steps ──────────────────────────────────────────────────────────────────────────────╮
- │   ✔ Build    2/2 │  ✔ final check             npm test · 15 of 16 pass, as at the start                       7s │
- │   ✔ Review   2/2 │  ✔ write into your folder  history kept by Argonauts · 2 tasks                             2s │
- │   ✔ Sign-off 1/1 │                                                                                               │
- │ ❯ ✔ Merge        │   no model writes a commit message here: only /rewind reads the history                       │
+ ╭ Phases ──────────┬ Sign-off · 1 agent ───────────────────────────────────────────────────────────────────────────╮
+ │   ✔ Build    2/2 │  ✔ sign-off:add-due-dates  Opus 5.5 · 12.1k tok · approved                                33s │
+ │   ✔ Review   2/2 │                                                                                               │
+ │ ❯ ✔ Sign-off 1/1 │                                                                                               │
+ │                  │                                                                                               │
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
 
 ● Written into your folder · 4 files +52 −6 · history kept by Argonauts
@@ -41,5 +41,5 @@
 
 Folder        ~/code/todo · no git, workflows keep a hidden history · history.git 18 MB · /git clean
 
-● Cleaned this folder's hidden history · 18 MB → 7 MB
+● Cleaned this folder's hidden history · 18 MB →  7 MB
   ⎿  removed what 3 ended runs left behind and packed the rest · a paused run keeps its copies for /resume

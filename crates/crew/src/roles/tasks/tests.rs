@@ -27,7 +27,7 @@ fn provider(worker: &ModelRef) -> String {
     .to_owned()
 }
 
-/// The crew of the orchestrated sample repo: Claude Code, Codex, and Antigravity CLI.
+/// The crew of the orchestrated sample repo: Claude Code, Codex, and agy.
 fn settings(building: &[&str], reviewers: &[&str]) -> Settings {
     let mut settings = Settings {
         crew: workers(&[CLAUDE, CODEX, AGY]).into(),
@@ -67,7 +67,7 @@ fn the_requests_reviewer_and_the_rest_as_workers_hold() {
         [
             "`claude-code` is Claude Code, from claude: it may own tasks, not review them.",
             "`codex` is Codex, from gpt: it may own tasks, not review them.",
-            "`antigravity-cli` is Antigravity CLI, from gemini: it may review tasks, not \
+            "`antigravity-cli` is agy, from gemini: it may review tasks, not \
              own them.",
         ]
     );
@@ -86,8 +86,7 @@ fn the_only_reviewer_is_left_out_of_the_workers() {
     let settled = settle(&settings(&[], &[AGY]), Layers::default(), &provider);
     assert_eq!(settled.workers, workers(&[CLAUDE, CODEX]));
     assert_eq!(settled.relaxed, None);
-    let why =
-        "Antigravity CLI is the only reviewer you allowed, so Antigravity CLI can't own a task";
+    let why = "agy is the only reviewer you allowed, so agy can't own a task";
     assert_eq!(settled.left_out, [(worker(AGY), why.to_owned())]);
     assert_eq!(settled.why_not_worker(&worker(AGY)), why);
     assert!(
@@ -107,7 +106,7 @@ fn the_only_reviewer_is_left_out_of_the_workers() {
     );
 }
 
-/// Antigravity CLI alone may own and alone may review: the rules can't all hold. The workers'
+/// agy alone may own and alone may review: the rules can't all hold. The workers'
 /// pin is from your settings and the reviewers' from your request, so the workers give way, and
 /// one line says so.
 #[test]
@@ -125,14 +124,12 @@ fn the_lowest_rule_gives_way_and_says_so() {
         lines.next(),
         Some(
             "Your rules for who owns and reviews tasks can't all hold, so the one from your \
-             settings gives way: any of the crew may own a task, not only Antigravity CLI."
+             settings gives way: any of the crew may own a task, not only agy."
         )
     );
     assert_eq!(
         lines.next(),
-        Some(
-            "Antigravity CLI is the only reviewer you allowed, so Antigravity CLI can't own a task."
-        )
+        Some("agy is the only reviewer you allowed, so agy can't own a task.")
     );
 
     // The other way round, the reviewers' pin is the lower one.
@@ -148,7 +145,7 @@ fn the_lowest_rule_gives_way_and_says_so() {
             .relaxed
             .as_deref()
             .unwrap_or_default()
-            .contains("any of the crew may review, not only Antigravity CLI"),
+            .contains("any of the crew may review, not only agy"),
         "{:?}",
         settled.relaxed
     );
@@ -227,11 +224,12 @@ fn layers_come_from_the_runs_start() {
             says: "gemini review it".to_owned(),
             kind: InstructionKind::Review,
             outcome: InstructionOutcome::Followed {
-                said: "Antigravity CLI reviews".to_owned(),
+                said: "agy reviews".to_owned(),
                 note: None,
             },
         }],
         required_steps: Vec::new(),
+        starts_from: None,
     };
     let layers = Layers::of(Some(&started));
     assert_eq!(layers.workers, Layer::Command);

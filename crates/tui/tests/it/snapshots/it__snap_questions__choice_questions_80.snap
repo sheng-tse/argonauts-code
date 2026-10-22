@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_questions.rs
+source: crates/tui/tests/it/snap_questions.rs
+assertion_line: 850
 expression: text(&lines)
 ---
 ────────────────────────────────────────────────────────────────────────────────
@@ -25,7 +26,7 @@ expression: text(&lines)
 ────────────────────────────────────────────────────────────────────────────────
 ◆ Change a safety setting?
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
-  approvals.merge.mode: supervised → auto
+  approvals.merge.mode: supervised →  auto
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
   ❯ 1. Change it
     2. Keep it as it is

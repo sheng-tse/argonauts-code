@@ -173,7 +173,7 @@ fn driver_start(ctx: &Context, launch: &Launch) -> Result<DriverStart, String> {
         report: &report_file,
     });
     let mcp_servers = if ctx.capabilities.status_tool {
-        let argonauts = std::env::current_exe()
+        let argonauts = argonauts_core::paths::this_program()
             .map_err(|err| format!("could not find the argonauts binary: {err}"))?;
         session_server(&argonauts, spec.status_file.as_deref(), report, None)
             .into_iter()

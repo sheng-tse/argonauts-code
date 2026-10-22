@@ -1,25 +1,25 @@
-❯ Use a workflow for this, with Codex as the reviewer, and choose everything else yourself. Fix the money …           
-                                                                                                                      
-⏺ Workflow(Fix the money rounding · Captain)                                                                          
-  ⎿  ✔ Completed in 1m 31s · 6 agents · 157k tokens · merged onto main                                                
-                                                                                                                      
-⏺ The three failing tests pass, and with_tax adds tax rounding half a cent up, with tests. Codex sent the first       
-  change back over "-$1.50"; that one was already right, but "$-1.50" wasn't, so I fixed it. Codex then approved,     
-  Gemini 3.8 Flash on Antigravity CLI signed it off, and it's merged onto main as 3f9c2a1. One note is yours to       
-  decide: "1.234" becomes 1234 cents, which your request didn't cover.                                                
-                                                                                                                      
+❯ Use a workflow for this, with Codex as the reviewer, and choose everything else yourself. Fix the money …
+
+⏺ Workflow(Fix the money rounding · Captain)
+  ⎿  ✔ Completed in 1m 31s · 5 agents · 153k tokens · merged onto main
+
+⏺ The three failing tests pass, and with_tax adds tax rounding half a cent up, with tests. Codex sent the first
+  change back over "-$1.50"; that one was already right, but "$-1.50" wasn't, so I fixed it. Codex then approved,
+  Gemini 3.8 Flash on agy signed it off, and it's merged onto main as 3f9c2a1. One note is yours to
+  decide: "1.234" becomes 1234 cents, which your request didn't cover.
+
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Fix the money rounding                                                                                               
- Captain · Claude Code's workflow fix-money-rounding · Codex reviews, as you asked          6/6 agents · 1m31s · done 
- ✔ Merged onto main · 3f9c2a1 · 3 files +40 −5 · Haiku 5.5 built it, GPT 6 Luna reviewed, Gemini 3.8 Flash signed off 
-                                                                                                                      
- ╭ Phases ──────────┬ Merge · 3 steps ──────────────────────────────────────────────────────────────────────────────╮ 
- │   ✔ Build    1/1 │  ✔ final check             python3 -m unittest · 14 of 14 pass, 3 failed at the start      1s │ 
- │   ✔ Review   2/2 │  ✔ commit message          Haiku 5.5 · 4.1k tok · given the diff, no tools                 8s │ 
- │   ✔ Final    2/2 │  ✔ merge onto main         git · 1 task · no conflicts                                     1s │ 
- │ ❯ ✔ Merge    1/1 │                                                                                               │ 
- ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save                                   
-                                                                                                                      
-  its row in the bottom list                                                                                          
-  ✔ Fix the money rounding  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  6/6 · 1m31s · ↓ 157k tokens · merged onto main                      
+ Fix the money rounding
+ Captain · Claude Code's workflow fix-money-rounding · Codex reviews, as you asked          5/5 agents · 1m31s · done
+ ✔ Merged onto main · 3f9c2a1 · 3 files +40 −5 · Haiku 5.5 built it, GPT 6 Luna reviewed, Gemini 3.8 Flash signed off
+
+ ╭ Phases ──────────┬ Final · 2 agents ─────────────────────────────────────────────────────────────────────────────╮
+ │   ✔ Build    1/1 │  ✔ review:final    GPT 6 Luna on Codex · 16.8k tok · approved · 1 note                     4s │
+ │   ✔ Review   2/2 │  ✔ sign-off:money  Gemini 3.8 Flash on agy · 12.3k tok · approved                          6s │
+ │ ❯ ✔ Final    2/2 │                                                                                               │
+ │                  │                                                                                               │
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  select · enter opens its agents · esc back · s save
+
+  its row in the bottom list
+  ✔ Fix the money rounding  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  5/5 · 1m31s · ↓  153k tokens · merged onto main

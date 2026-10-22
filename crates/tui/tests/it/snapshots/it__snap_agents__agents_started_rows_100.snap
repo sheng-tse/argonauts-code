@@ -1,8 +1,9 @@
 ---
-source: crates/tui/tests/snap_agents.rs
+source: crates/tui/tests/it/snap_agents.rs
+assertion_line: 379
 expression: text(lines)
 ---
-● 3 agents started (↓ to manage)
+● 3 agents started (↓  to manage)
    ├ GPT 5.6 on Codex · worker · task-002 Redis store
    ├ Opus on Claude Code · worker · task-003 Middleware
-   └ Gemini 3.6 Flash on Antigravity CLI · worker · task-004 Docs
+   └ Gemini 3.6 Flash on agy · worker · task-004 Docs

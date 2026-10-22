@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! ✢ The run waits · nothing could take propose:p3's place · it tries again at 1:58 AM
-//!   ⎿  Antigravity CLI can't run Gemini 3.6 Flash (Low), the model this run started with
+//!   ⎿  agy can't run Gemini 3.6 Flash (Low), the model this run started with
 //!      propose:p1 and propose:p2 stopped, their work so far kept
 //! ```
 //!

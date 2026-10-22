@@ -289,7 +289,7 @@ phases:
     assert_eq!(
         problems_of(find("outer", &dirs)),
         [
-            "phase \"Do\", step 1 (workflow): can't find nowhere (outer → nowhere)",
+            "phase \"Do\", step 1 (workflow): can't find nowhere (outer →  nowhere)",
             "phase \"Do\", step 2 (workflow): {{area}} in params isn't declared in params",
             "phase \"Do\", step 2 (workflow): passes \"depth\", which inner doesn't declare in its params",
             "phase \"Do\", step 2 (workflow): passes \"focus\", which inner doesn't declare in its params",
@@ -304,7 +304,7 @@ phases:
     assert_eq!(
         problems_of(find("top", &dirs)),
         [
-            "phase \"Do\", step 1 (workflow): nests too deep: top → middle → bottom is 3 deep, and the most is 2"
+            "phase \"Do\", step 1 (workflow): nests too deep: top →  middle →  bottom is 3 deep, and the most is 2"
         ]
     );
     assert!(find("middle", &dirs).is_ok());
@@ -312,7 +312,7 @@ phases:
     assert_eq!(
         check_workflow(&middle, Some("middle"), &dirs, 1),
         [
-            "phase \"Do\", step 1 (workflow): nests too deep: middle → bottom is 2 deep, and the most is 1"
+            "phase \"Do\", step 1 (workflow): nests too deep: middle →  bottom is 2 deep, and the most is 1"
         ]
     );
     // A setting above the ceiling is held to it.
@@ -325,12 +325,12 @@ phases:
     write(&folders.global, "pong.yaml", &nesting("pong", "ping"));
     assert_eq!(
         problems_of(find("ping", &dirs)),
-        ["phase \"Do\", step 1 (workflow): loops back to ping: ping → pong → ping"]
+        ["phase \"Do\", step 1 (workflow): loops back to ping: ping →  pong →  ping"]
     );
     write(&folders.global, "itself.yaml", &nesting("itself", "itself"));
     assert_eq!(
         problems_of(find("itself", &dirs)),
-        ["phase \"Do\", step 1 (workflow): loops back to itself: itself → itself"]
+        ["phase \"Do\", step 1 (workflow): loops back to itself: itself →  itself"]
     );
 
     // A nested workflow that doesn't parse says why.
@@ -343,7 +343,7 @@ phases:
     assert_eq!(problems.len(), 1);
     assert!(
         problems[0].starts_with(
-            "phase \"Do\", step 1 (workflow): broken doesn't load (uses-broken → broken): "
+            "phase \"Do\", step 1 (workflow): broken doesn't load (uses-broken →  broken): "
         ),
         "{problems:?}"
     );

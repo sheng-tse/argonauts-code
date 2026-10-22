@@ -18,6 +18,7 @@ pub mod divide;
 pub mod engine;
 pub mod error;
 pub mod fallback;
+pub mod follow;
 pub mod git;
 pub mod goal;
 pub mod idempotency;

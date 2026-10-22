@@ -356,10 +356,8 @@ pub(crate) mod tests {
             body: &str,
             tested: &'static [&'static str],
         ) -> Self {
-            use std::os::unix::fs::PermissionsExt;
             let path = dir.join(format!("{id}-cli"));
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::testutil::write_script(&path, &format!("#!/bin/sh\n{body}\n"));
             Self {
                 binary: Box::leak(path.display().to_string().into_boxed_str()),
                 tested,
@@ -538,10 +536,8 @@ pub(crate) mod tests {
 
     impl VersionOnly {
         fn script(dir: &Path, body: &str, tested: &'static [&'static str]) -> Self {
-            use std::os::unix::fs::PermissionsExt;
             let path = dir.join("fake-cli");
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::testutil::write_script(&path, &format!("#!/bin/sh\n{body}\n"));
             let binary: &'static str = Box::leak(path.display().to_string().into_boxed_str());
             Self { binary, tested }
         }

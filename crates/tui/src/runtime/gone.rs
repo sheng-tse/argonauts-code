@@ -26,26 +26,43 @@ const GRACE: Duration = Duration::from_secs(3);
 #[error("the terminal went away")]
 pub struct TerminalGone;
 
-/// Whether the terminal on stdin or stdout hung up, which is what closing its window does.
-/// A stream that isn't a terminal says nothing either way.
-pub(super) fn terminal_gone() -> bool {
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut fds = Vec::with_capacity(2);
-    if stdin.is_terminal() {
-        fds.push(PollFd::new(stdin.as_fd(), PollFlags::POLLIN));
+/// Which of stdin and stdout are terminals, taken while the terminal is there: on Linux, closing
+/// a terminal's window hangs up its other side, which then stops being a terminal at all.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct Terminals {
+    stdin: bool,
+    stdout: bool,
+}
+
+impl Terminals {
+    pub(super) fn now() -> Self {
+        Self {
+            stdin: io::stdin().is_terminal(),
+            stdout: io::stdout().is_terminal(),
+        }
     }
-    if stdout.is_terminal() {
-        fds.push(PollFd::new(stdout.as_fd(), PollFlags::POLLOUT));
+
+    /// Whether the terminal on stdin or stdout hung up, which is what closing its window does.
+    /// A stream that wasn't a terminal says nothing either way.
+    pub(super) fn gone(self) -> bool {
+        let stdin = io::stdin();
+        let stdout = io::stdout();
+        let mut fds = Vec::with_capacity(2);
+        if self.stdin {
+            fds.push(PollFd::new(stdin.as_fd(), PollFlags::POLLIN));
+        }
+        if self.stdout {
+            fds.push(PollFd::new(stdout.as_fd(), PollFlags::POLLOUT));
+        }
+        if fds.is_empty() || poll(&mut fds, PollTimeout::ZERO).is_err() {
+            return false;
+        }
+        let hung_up = PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL;
+        fds.iter().any(|fd| {
+            fd.revents()
+                .is_some_and(|events| events.intersects(hung_up))
+        })
     }
-    if fds.is_empty() || poll(&mut fds, PollTimeout::ZERO).is_err() {
-        return false;
-    }
-    let hung_up = PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL;
-    fds.iter().any(|fd| {
-        fd.revents()
-            .is_some_and(|events| events.intersects(hung_up))
-    })
 }
 
 /// After a first SIGTERM or SIGHUP the app has [`GRACE`] to close the way `/exit` does; then,

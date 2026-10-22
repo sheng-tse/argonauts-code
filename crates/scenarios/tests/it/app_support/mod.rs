@@ -5,6 +5,7 @@
 
 mod files;
 mod journal;
+mod pids;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -90,6 +91,9 @@ pub mod requests {
     pub const UNCLEAR_SMALL: &str = "tidy the changelog";
     /// A Captain change whose worker works until stopped.
     pub const SLOW_TASK: &str = "rename the config loader everywhere";
+    /// A Captain change whose worker writes its notes, then sits in a tool call until stopped,
+    /// so a pause stays pending.
+    pub const TASK_IN_A_TOOL_CALL: &str = "rename the config loader while the build runs";
     /// A Captain change whose worker takes a few seconds, then reports.
     pub const TIMED_TASK: &str = "rename the settings reader in a few seconds";
     /// A conversation turn the fake never finishes.
@@ -549,6 +553,7 @@ pub fn sessions_of(scenario: &Scenario, program: &str) -> anyhow::Result<Vec<Inv
                     .iter()
                     .any(|arg| matches!(arg.as_str(), "--version" | "--help" | "login"))
         })
+        .map(pids::as_seen_here)
         .collect())
 }
 

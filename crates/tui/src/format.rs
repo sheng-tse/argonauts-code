@@ -66,8 +66,13 @@ pub fn thousands(n: u64) -> String {
 }
 
 /// What was spent, marked the same on every screen: `~$0.24` when estimated from token counts,
-/// `$0.24+` when some usage had no price, and `<$0.01` for less than would show as a cent.
+/// `$0.24+` when some usage had no price, and `<$0.01` for less than would show as a cent, which
+/// says on its own that it isn't exact.
 pub fn spend(spent: &Spend) -> String {
+    let partial = if spent.cost_partial { "+" } else { "" };
+    if spent.cost_usd > 0.0 && spent.cost_usd < UNDER_A_CENT {
+        return format!("<$0.01{partial}");
+    }
     // A free model, such as one on your own server, is priced at exactly nothing.
     let free = spent.cost_usd == 0.0 && !spent.cost_partial;
     let estimated = if spent.cost_estimated && !free {
@@ -75,13 +80,23 @@ pub fn spend(spent: &Spend) -> String {
     } else {
         ""
     };
-    let partial = if spent.cost_partial { "+" } else { "" };
-    let amount = if spent.cost_usd > 0.0 && spent.cost_usd < UNDER_A_CENT {
-        "<$0.01".to_owned()
+    format!("{estimated}{}{partial}", usd(spent.cost_usd))
+}
+
+/// Token counts as Claude Code's `/context` writes them: the count itself under a thousand,
+/// then one decimal with `.0` dropped, `4.4k`, `182.5k`, `33k`, and `1m` from 999,950 on.
+pub fn context_tokens(count: u64) -> String {
+    if count < 1_000 {
+        return count.to_string();
+    }
+    let (value, unit) = if count < 999_950 {
+        (count as f64 / 1_000.0, "k")
     } else {
-        usd(spent.cost_usd)
+        (count as f64 / 1_000_000.0, "m")
     };
-    format!("{estimated}{amount}{partial}")
+    let digits = format!("{value:.1}");
+    let trimmed = digits.strip_suffix(".0").unwrap_or(&digits);
+    format!("{trimmed}{unit}")
 }
 
 /// What rounds to `$0.00`, though something was spent.
@@ -203,6 +218,9 @@ impl Default for WallClock {
 fn local_offset_at(at: OffsetDateTime) -> Option<UtcOffset> {
     use nix::libc;
 
+    // libc deprecates musl's `time_t` because its width will change on 32-bit targets, and
+    // `try_from` checks the width whatever it is.
+    #[allow(deprecated)]
     let seconds = libc::time_t::try_from(at.unix_timestamp()).ok()?;
     let mut tm = std::mem::MaybeUninit::<libc::tm>::zeroed();
     // SAFETY: `localtime_r` only reads `seconds` and writes the `tm` it is given, which lives
@@ -324,6 +342,24 @@ mod tests {
     }
 
     #[test]
+    fn context_counts_read_as_claude_codes_context_writes_them() {
+        for (count, words) in [
+            (960, "960"),
+            (4_400, "4.4k"),
+            (6_000, "6k"),
+            (182_460, "182.5k"),
+            (784_540, "784.5k"),
+            (872_000, "872k"),
+            (999_949, "999.9k"),
+            (999_950, "1m"),
+            (1_000_000, "1m"),
+            (1_260_000, "1.3m"),
+        ] {
+            assert_eq!(context_tokens(count), words, "{count}");
+        }
+    }
+
+    #[test]
     fn spend_under_a_cent_is_not_written_as_nothing() {
         let spent = |cost_usd, cost_estimated| Spend {
             cost_usd,
@@ -331,7 +367,7 @@ mod tests {
             ..Spend::default()
         };
         assert_eq!(spend(&spent(0.004_531_5, false)), "<$0.01");
-        assert_eq!(spend(&spent(0.000_8, true)), "~<$0.01");
+        assert_eq!(spend(&spent(0.000_8, true)), "<$0.01");
         assert_eq!(spend(&spent(0.006, false)), "$0.01");
         assert_eq!(spend(&spent(0.0, false)), "$0.00");
     }
@@ -401,7 +437,7 @@ mod tests {
     #[test]
     fn agents_and_values_read_as_words() {
         assert_eq!(agent_label("claude-code"), "Claude Code");
-        assert_eq!(agent_label("antigravity-cli"), "Antigravity CLI");
+        assert_eq!(agent_label("antigravity-cli"), "agy");
         assert_eq!(agent_label("agy"), "agy");
         assert_eq!(setting_value("\"auto\""), "auto");
         assert_eq!(setting_value("'dark'"), "dark");

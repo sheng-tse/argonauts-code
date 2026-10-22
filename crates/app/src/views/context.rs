@@ -1,6 +1,11 @@
+use std::collections::BTreeMap;
+
 use argonauts_conductor::fallback::why::{category_words, stop_line};
-use argonauts_core::events::RunEvent;
+use argonauts_core::events::run::Party;
 use argonauts_core::events::session::EndReason;
+use argonauts_core::events::shared::{BlackboardEvent, BlackboardKind};
+use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::names::{RoleName, SessionKey};
 use argonauts_core::views::{ContextRow, EndedHow, RowStatus, SessionLeft};
 use argonauts_core::{ErrorCategory, RunId};
 use time::OffsetDateTime;
@@ -9,8 +14,18 @@ use super::sessions::{RunFacts, SessionFacts};
 
 /// Each session's context use, cap (`sessions.rotate_at`), tool calls, spend, and rotations,
 /// in the order they started. One that ended keeps what it held as it ended, and says how.
+///
+/// A tie-breaker goes by the label of the agent whose question it answered, so the tab counts
+/// it under that agent and not as one of its own.
 pub(crate) fn context_rows(events: &[RunEvent], run: &RunId, cap: u64) -> Vec<ContextRow> {
     let facts = RunFacts::of(events);
+    let answered_for = answered_for(events);
+    let asker = |session: &SessionFacts| {
+        answered_for
+            .get(&session.key)
+            .filter(|_| session.started.role == RoleName::TieBreaker)
+            .and_then(|asker| facts.session(asker))
+    };
     facts
         .sessions
         .iter()
@@ -19,7 +34,7 @@ pub(crate) fn context_rows(events: &[RunEvent], run: &RunId, cap: u64) -> Vec<Co
             ContextRow {
                 run: Some(run.clone()),
                 session: session.key.clone(),
-                label: session.label(),
+                label: asker(session).unwrap_or(session).label(),
                 worker: session.worker.clone(),
                 used,
                 window,
@@ -32,9 +47,43 @@ pub(crate) fn context_rows(events: &[RunEvent], run: &RunId, cap: u64) -> Vec<Co
                 categories: session.context_rows.clone(),
                 recorded: None,
                 ended: left(&facts, session),
+                answered_for: asker(session).map(|asker| asker.key.clone()),
             }
         })
         .collect()
+}
+
+/// Each session that answered another agent's question on the board, with the session that
+/// asked it.
+fn answered_for(events: &[RunEvent]) -> BTreeMap<SessionKey, SessionKey> {
+    let agent = |party: &Party| match party {
+        Party::Agent { session, .. } => Some(session.clone()),
+        _ => None,
+    };
+    let mut askers = BTreeMap::new();
+    let mut answered = BTreeMap::new();
+    for event in events {
+        let RunEventKind::Blackboard(BlackboardEvent::Posted(message)) = &event.kind else {
+            continue;
+        };
+        match (message.kind, &message.in_reply_to) {
+            (BlackboardKind::Question, _) => {
+                if let Some(asker) = agent(&message.from) {
+                    askers.insert(message.id.clone(), asker);
+                }
+            }
+            (BlackboardKind::Answer, Some(question)) => {
+                let asker = askers.get(question);
+                if let (Some(by), Some(asker)) = (agent(&message.from), asker)
+                    && by != *asker
+                {
+                    answered.insert(by, asker.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    answered
 }
 
 /// When the run finished, where its log says it has.
@@ -307,5 +356,79 @@ mod tests {
         );
         assert_eq!(ended(EndReason::Stopped), Some(EndedHow::Stopped));
         assert_eq!(ended(EndReason::Completed), Some(EndedHow::Done));
+    }
+
+    /// A tie-breaker that answered a worker's question goes by the worker's label; one that
+    /// answered nobody's keeps its own, and so does an agent that answers another.
+    #[test]
+    fn a_tie_breaker_goes_by_the_agent_whose_question_it_answered() {
+        use argonauts_core::events::RunEventKind;
+        use argonauts_core::events::run::Party;
+        use argonauts_core::events::shared::{
+            BlackboardEvent, BlackboardKind, BlackboardMessage, Recipient,
+        };
+        use argonauts_core::names::MessageId;
+        use argonauts_core::names::ModelRef;
+
+        use crate::client::test_support::session_event;
+
+        let (worker, judge, idle, other) = (
+            SessionKey::numbered(1),
+            SessionKey::numbered(2),
+            SessionKey::numbered(3),
+            SessionKey::numbered(4),
+        );
+        let labelled = |seq, key: &SessionKey, role, label: &str| {
+            let mut event = session_started(seq, key, None, role, "claude-code");
+            if let RunEventKind::Session(argonauts_core::events::SessionEvent::Started(started)) =
+                &mut event.kind
+            {
+                started.label = Some(label.to_owned());
+            }
+            event
+        };
+        let posted = |seq, id: u32, kind, from: &SessionKey, reply: Option<u32>| {
+            session_event(
+                seq,
+                from,
+                None,
+                RunEventKind::Blackboard(BlackboardEvent::Posted(BlackboardMessage {
+                    id: MessageId::numbered(id),
+                    kind,
+                    from: Party::Agent {
+                        session: from.clone(),
+                        worker: ModelRef::new("claude-code", None),
+                    },
+                    to: Recipient::All,
+                    text: "Which header names the key?".to_owned(),
+                    in_reply_to: reply.map(MessageId::numbered),
+                    refs: Vec::new(),
+                })),
+            )
+        };
+        let mut events = vec![labelled(0, &worker, RoleName::Worker, "build:per-api-key")];
+        events.extend([
+            labelled(1, &judge, RoleName::TieBreaker, "tie-breaker"),
+            labelled(2, &idle, RoleName::TieBreaker, "tie-breaker-2"),
+            labelled(3, &other, RoleName::Reviewer, "review:per-api-key"),
+            posted(4, 1, BlackboardKind::Question, &worker, None),
+            posted(5, 2, BlackboardKind::Answer, &judge, Some(1)),
+            posted(6, 3, BlackboardKind::Question, &worker, None),
+            posted(7, 4, BlackboardKind::Answer, &other, Some(3)),
+        ]);
+        let rows = context_rows(&events, &run_id(), 0);
+        let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "build:per-api-key",
+                "build:per-api-key",
+                "tie-breaker-2",
+                "review:per-api-key"
+            ]
+        );
+        let answered: Vec<Option<&SessionKey>> =
+            rows.iter().map(|row| row.answered_for.as_ref()).collect();
+        assert_eq!(answered, [None, Some(&worker), None, None]);
     }
 }

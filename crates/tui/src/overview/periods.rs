@@ -115,12 +115,12 @@ mod tests {
     fn the_hint_comes_first_and_once() {
         let keys = |keys: &[&str]| keys.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
         assert_eq!(
-            hint_first(keys(&["↑ tabs", CYCLE_HINT, "ctrl+s to copy"])),
-            keys(&[CYCLE_HINT, "↑ tabs", "ctrl+s to copy"])
+            hint_first(keys(&["↑  tabs", CYCLE_HINT, "ctrl+s to copy"])),
+            keys(&[CYCLE_HINT, "↑  tabs", "ctrl+s to copy"])
         );
         assert_eq!(
-            hint_first(keys(&["↑↓ card"])),
-            keys(&[CYCLE_HINT, "↑↓ card"])
+            hint_first(keys(&["↑↓  card"])),
+            keys(&[CYCLE_HINT, "↑↓  card"])
         );
     }
 

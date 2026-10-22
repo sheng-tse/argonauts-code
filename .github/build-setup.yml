@@ -1,0 +1,23 @@
+# Steps dist puts at the start of every build job in release.yml, right after the checkout
+# (`github-build-setup` in dist-workspace.toml). This sits outside .github/workflows so GitHub doesn't take it for
+# a workflow of its own.
+
+# The usage-report key and host are read when the program is compiled. A build without the key sends nothing, so
+# forks and dry runs without the secrets stay silent.
+- name: Pass the usage-report settings to the build
+  shell: bash
+  env:
+    POSTHOG_KEY: ${{ secrets.ARGONAUTS_POSTHOG_KEY }}
+    POSTHOG_HOST: ${{ secrets.ARGONAUTS_POSTHOG_HOST }}
+  run: |
+    {
+      echo "ARGONAUTS_POSTHOG_KEY=${POSTHOG_KEY}"
+      echo "ARGONAUTS_POSTHOG_HOST=${POSTHOG_HOST}"
+    } >> "$GITHUB_ENV"
+
+# aws-lc builds its jitter entropy source without optimization, and zig's C compiler, which the ARM musl cross build
+# uses, adds sanitizer hooks to unoptimized code that nothing links. The operating system's entropy is used instead.
+- name: Leave out aws-lc's jitter entropy for the ARM musl cross build
+  if: ${{ contains(join(matrix.targets, ' '), 'aarch64-unknown-linux-musl') }}
+  shell: bash
+  run: echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"

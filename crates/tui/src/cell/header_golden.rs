@@ -1,4 +1,4 @@
-//! The welcome header with each mode's mascot in block cells, as `golden/mascot_headers` draws
+//! The welcome header with each mode's mascot in block cells, as `tests/golden/mascot/mascot_headers` draws
 //! it: the three mascots in amber, with Claude Code's ultracode on, and with Codex at its ultra
 //! effort, each beside the header's three lines. The picture's words after the folder, such as
 //! `(Argonaut, normal)`, say which header it is and are not drawn.
@@ -52,7 +52,7 @@ fn drawn(header: &SessionHeader) -> Buffer {
 
 #[test]
 fn each_mode_draws_its_mascot_beside_the_header_as_its_picture_does() {
-    let picture = Picture::screen("mascot_headers");
+    let picture = Picture::screen("mascot", "mascot_headers");
     let theme = theme();
     let looks = [None, Some(UltraColour::Purple), Some(UltraColour::Blue)];
     let modes = ["captain", "orchestrator", "council"];

@@ -540,8 +540,9 @@ impl SessionView {
         numbers.push(panes::elapsed(u64::try_from(elapsed).unwrap_or(u64::MAX)));
         if session.tokens() > 0 {
             numbers.push(format!(
-                "{} {}",
+                "{}{}{}",
                 theme.glyphs.tokens,
+                crate::theme::glyphs::gap_after(theme.glyphs.tokens),
                 format::tokens(session.tokens())
             ));
         }
@@ -669,7 +670,7 @@ impl SessionView {
                 return Footer::Hints(hints);
             }
             Tab::Goal => {
-                parts.push(("↑↓ scroll", 1));
+                parts.push(("↑↓  scroll", 1));
                 if let Some(hold) = self.goal_hold(state) {
                     parts.push((hold.hint, 5));
                 }
@@ -689,7 +690,7 @@ impl SessionView {
                 parts.push((tab, 2));
             }
             Tab::Input => {
-                parts.extend([("↑↓ select", 0), ("→ expand", 3), (tab, 4)]);
+                parts.extend([("↑↓  select", 0), ("→  expand", 3), (tab, 4)]);
                 if message {
                     parts.push(("m message it", 2));
                 }
@@ -701,12 +702,12 @@ impl SessionView {
                 if !self.following {
                     parts.push(("End follow", 0));
                 }
-                parts.push(("↑↓ scroll", if self.following { 0 } else { 9 }));
+                parts.push(("↑↓  scroll", if self.following { 0 } else { 9 }));
                 if more {
                     let hint = if self.results_open {
-                        "→ fold"
+                        "→  fold"
                     } else {
-                        "→ expand"
+                        "→  expand"
                     };
                     parts.push((hint, 5));
                 }
@@ -725,7 +726,7 @@ impl SessionView {
                     parts.push(("d diff", 5));
                 }
                 if self.following {
-                    parts.push(("← crew", 3));
+                    parts.push(("←  crew", 3));
                 }
             }
         }

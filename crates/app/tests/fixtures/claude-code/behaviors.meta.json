@@ -1,0 +1,7 @@
+{
+  "adapter": "claude-code",
+  "scenario": "behaviors",
+  "source": "tool calls from Argonauts run records, 2026-10-03 to 2026-10-20, as the adapter parsed them",
+  "cli_version": "2.1.295 to 2.1.304",
+  "changed": "home paths, user names and repo hashes replaced; structured answers' and workflow scripts' fields elided"
+}

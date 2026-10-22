@@ -21,7 +21,8 @@ use argonauts_runner::{AgentCall, AgentEnd, Kept};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::bridge::{Bridge, lock, shown_change};
+use super::bridge::reading::Change;
+use super::bridge::{Bridge, lock};
 use crate::engine::host::{Host, Ran};
 use crate::error::{EngineError, EngineResult};
 use crate::review::{Verdict, with_findings};
@@ -34,6 +35,10 @@ use crate::workflow::StepAt;
 /// What a call works on when it names no task and asks for no worktree of its own: the
 /// request, which every such writer shares.
 const THE_REQUEST: &str = "the-request";
+
+/// How the reason starts when a call's work is skipped, as its row says it and its note says it
+/// after the call's label.
+pub(super) const SKIPPED: &str = "skipped, since";
 
 /// The tasks a script's writers work on. It is kept beside the run, so a run that picks its
 /// script up again still knows which tasks its reviews accepted.
@@ -206,6 +211,15 @@ pub(super) async fn work(
     let host = bridge.host;
     let at = &bridge.call.at;
     let entry = bridge.tasks.entry(&name_of(call))?;
+    // Before its own turn, so two tasks that each name the other never wait on each other.
+    let depends_on = if host.read(|state| state.tasks.get(&entry.task).is_none()) {
+        match merge_first(bridge, call, at).await? {
+            Ok(merged) => merged,
+            Err(skipped) => return Ok(AgentEnd::failed(skipped)),
+        }
+    } else {
+        Vec::new()
+    };
     let _turn = entry.turn.lock().await;
     let task = &entry.task;
     let nests = call.own_workflow
@@ -232,7 +246,7 @@ pub(super) async fn work(
     let state = if host.read(|state| state.tasks.get(task).is_none()) {
         // The brief is the call's words, under the name of whoever wrote them.
         crate::prompts::instructions::brief_written_by(host, task, bridge.author(call))?;
-        task::create(host, spec(host, call, task, worker))?;
+        task::create(host, spec(host, call, task, worker, depends_on))?;
         // A step kept going `until` a condition has its task worked as that goal from the
         // writer's first turn.
         if let Some(until) = call.until.as_deref().filter(|_| call.writes) {
@@ -297,7 +311,13 @@ pub(super) async fn work(
     Ok(end)
 }
 
-fn spec(host: &Host, call: &AgentCall, task: &TaskId, worker: &ModelRef) -> TaskSpec {
+fn spec(
+    host: &Host,
+    call: &AgentCall,
+    task: &TaskId,
+    worker: &ModelRef,
+    depends_on: Vec<TaskId>,
+) -> TaskSpec {
     let criteria = host.read(|state| {
         state
             .goal
@@ -319,7 +339,7 @@ fn spec(host: &Host, call: &AgentCall, task: &TaskId, worker: &ModelRef) -> Task
         read_only_paths: Vec::new(),
         forbidden_paths: Vec::new(),
         hidden_paths: Vec::new(),
-        depends_on: Vec::new(),
+        depends_on,
         criteria,
         worker: Some(worker.clone()),
         // The script's own steps review it.
@@ -334,7 +354,7 @@ fn spec(host: &Host, call: &AgentCall, task: &TaskId, worker: &ModelRef) -> Task
 pub(super) async fn change_of(
     bridge: &Bridge<'_>,
     call: &AgentCall,
-) -> EngineResult<Option<(PathBuf, String)>> {
+) -> EngineResult<Option<(PathBuf, Change)>> {
     let Some(entry) = call
         .task
         .as_deref()
@@ -352,7 +372,7 @@ pub(super) async fn change_of(
         Some(head) => git.review_diff(&tree.path, &tree.base, &head).await?,
         None => String::new(),
     };
-    Ok(Some((tree.path, shown_change(change))))
+    Ok(Some((tree.path, Change::of_one(change))))
 }
 
 /// A task of the script's with committed work: its worktree, its newest commit and its change.
@@ -396,20 +416,20 @@ async fn changed_tasks(bridge: &Bridge<'_>) -> EngineResult<Vec<Changed>> {
 
 /// What a reviewer or a judge about no one task reads: every task's change so far, each under
 /// its name, as they will merge into the run. `None` before any task has a change.
-pub(super) async fn combined_change(bridge: &Bridge<'_>) -> EngineResult<Option<String>> {
-    let parts: Vec<String> = changed_tasks(bridge)
+pub(super) async fn combined_change(bridge: &Bridge<'_>) -> EngineResult<Option<Change>> {
+    let changes: Vec<(String, String)> = changed_tasks(bridge)
         .await?
         .into_iter()
         .map(|changed| {
             let name = if changed.name == THE_REQUEST {
-                "the request"
+                "the request".to_owned()
             } else {
-                changed.name.as_str()
+                changed.name
             };
-            format!("# {name}\n{}", shown_change(changed.change))
+            (name, changed.change)
         })
         .collect();
-    Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
+    Ok(Change::of_tasks(changes))
 }
 
 /// The folder a reader or a check about no one task works in, so the files it reads and the
@@ -693,31 +713,87 @@ pub(super) async fn finish(bridge: &Bridge<'_>, at: &StepAt) -> EngineResult<usi
     let entries = lock(&bridge.tasks.entries).clone();
     let mut merged = 0;
     for entry in entries {
-        let task = &entry.task;
-        if entry.dropped || host.read(|state| state.tasks.get(task).is_none()) {
+        if entry.dropped || host.read(|state| state.tasks.get(&entry.task).is_none()) {
             continue;
         }
-        if state_of(host, task)? == TaskState::InReview {
-            if entry.accepted == Some(false) {
-                let what = match entry.sent_back {
-                    0 => "the workflow's reviewers didn't accept it".to_owned(),
-                    n => format!(
-                        "the workflow's reviewers didn't accept it after {}",
-                        rounds_of_fixes(n)
-                    ),
-                };
-                let why = with_findings(what, &newest_findings(host, task));
-                pipeline::transition(host, task, Trigger::ChangesRequestedAgain, &why)?;
-            } else {
-                let why = "the workflow's own steps accepted it";
-                pipeline::transition(host, task, Trigger::Approved, why)?;
-            }
-        }
-        if pipeline::run_task(host, task, at).await? == TaskState::Merged {
+        if settle(bridge, &entry, at).await? == TaskState::Merged {
             merged += 1;
         }
     }
     Ok(merged)
+}
+
+/// Takes the script's verdict on a built task to its end: accepted work merges into the run,
+/// and work the reviewers didn't accept goes to its next round or to you.
+async fn settle(bridge: &Bridge<'_>, entry: &Entry, at: &StepAt) -> EngineResult<TaskState> {
+    let host = bridge.host;
+    let task = &entry.task;
+    if state_of(host, task)? == TaskState::InReview {
+        if entry.accepted == Some(false) {
+            let what = match entry.sent_back {
+                0 => "the workflow's reviewers didn't accept it".to_owned(),
+                n => format!(
+                    "the workflow's reviewers didn't accept it after {}",
+                    rounds_of_fixes(n)
+                ),
+            };
+            let why = with_findings(what, &newest_findings(host, task));
+            pipeline::transition(host, task, Trigger::ChangesRequestedAgain, &why)?;
+        } else {
+            let why = "the workflow's own steps accepted it";
+            pipeline::transition(host, task, Trigger::Approved, why)?;
+        }
+    }
+    pipeline::run_task(host, task, at).await
+}
+
+/// Merges into the run each task the call's task comes after, once the script accepted it,
+/// so the task's worktree starts from that work and its change leaves it out. The tasks
+/// merged, or why the call is skipped: a task it comes after that nobody accepted. A name
+/// the script never gave a task waits for nothing.
+async fn merge_first(
+    bridge: &Bridge<'_>,
+    call: &AgentCall,
+    at: &StepAt,
+) -> EngineResult<Result<Vec<TaskId>, String>> {
+    let host = bridge.host;
+    let mut merged = Vec::new();
+    for name in &call.after {
+        let Some(entry) = bridge.tasks.known(name) else {
+            continue;
+        };
+        // Its writer may still be at work on it.
+        let turn = entry.turn.clone();
+        let _turn = turn.lock().await;
+        let Some(entry) = bridge.tasks.known(name) else {
+            continue;
+        };
+        let built = host.read(|state| state.tasks.get(&entry.task).is_some());
+        let why = match built.then(|| state_of(host, &entry.task)).transpose()? {
+            Some(TaskState::Merged) => None,
+            Some(TaskState::InReview) if !entry.dropped && entry.accepted != Some(false) => {
+                unmerged_why(settle(bridge, &entry, at).await?)
+            }
+            _ => Some("which wasn't accepted"),
+        };
+        if let Some(why) = why {
+            return Ok(Err(format!("{SKIPPED} it comes after {name}, {why}")));
+        }
+        merged.push(entry.task.clone());
+    }
+    Ok(Ok(merged))
+}
+
+/// Why an accepted task the call comes after isn't in the run, by where its merge left it.
+/// `None` once it merged.
+fn unmerged_why(state: TaskState) -> Option<&'static str> {
+    match state {
+        TaskState::Merged => None,
+        TaskState::NeedsYou | TaskState::NeedsDecision | TaskState::Blocked => {
+            Some("which couldn't merge into the run and waits for you")
+        }
+        _ => Some("which couldn't merge into the run"),
+    }
 }
 
 /// What the task's newest round of reviews asked for, in the reviewers' words: their findings,
@@ -781,6 +857,19 @@ mod tests {
             sandboxed: true,
             skipped: false,
         }
+    }
+
+    #[test]
+    fn an_accepted_task_that_didnt_merge_says_why_its_dependents_wait() {
+        assert_eq!(unmerged_why(TaskState::Merged), None);
+        assert_eq!(
+            unmerged_why(TaskState::NeedsYou),
+            Some("which couldn't merge into the run and waits for you")
+        );
+        assert_eq!(
+            unmerged_why(TaskState::Failed),
+            Some("which couldn't merge into the run")
+        );
     }
 
     #[test]

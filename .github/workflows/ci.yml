@@ -1,0 +1,261 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+# A newer push to the same pull request or branch cancels the run it replaces.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Keeps each shard's cache small; a panic still names its line.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # The workspace's rust-version. A new Rust release brings new lints, so moving this is its
+  # own change rather than something every pull request picks up on the day.
+  RUST_TOOLCHAIN: "1.95.0"
+
+jobs:
+  changes:
+    name: Changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      rust: ${{ steps.pick.outputs.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Pick the jobs this change needs
+        id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          # A pull request is checked out as its merge commit, whose first parent is the base,
+          # so HEAD^1..HEAD is exactly what the pull request changes. Main always runs it all.
+          rust=true
+          if [[ "$EVENT" == pull_request ]]; then
+            rust=false
+            while IFS= read -r path; do
+              case "$path" in
+                crates/*) rust=true ;;
+                *.md | assets/* | .github/ISSUE_TEMPLATE/*) ;;
+                *) rust=true ;;
+              esac
+            done < <(git diff --name-only HEAD^1 HEAD)
+          fi
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "Rust jobs: $rust"
+
+  fmt:
+    name: Format
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt --no-self-update && rustup default "$RUST_TOOLCHAIN"
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Lint
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy --no-self-update && rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: Tests (${{ matrix.os }}, ${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # A macOS minute costs about ten Linux minutes while the repository is private, so
+        # macOS runs on main only. Once it's public, pull requests get both.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-24.04", "macos-15"]') || fromJSON('["ubuntu-24.04"]') }}
+        shard: [scenarios, crew, app, rest]
+        include:
+          # The slowest test programs get a shard each. The last takes every other package, so
+          # a new crate is tested without anyone listing it here.
+          - shard: scenarios
+            packages: -p argonauts-scenarios
+          - shard: crew
+            packages: -p argonauts-crew
+          - shard: app
+            packages: -p argonauts-app -p argonauts-code
+          - shard: rest
+            packages: >-
+              --workspace --exclude argonauts-scenarios --exclude argonauts-crew
+              --exclude argonauts-app --exclude argonauts-code
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update && rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.shard }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Ubuntu 24.04's AppArmor takes every capability from an unprivileged user namespace, and
+      # the Linux sandbox mounts each session's view of the files in one.
+      - name: Allow user namespaces
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: cargo test
+        env:
+          PACKAGES: ${{ matrix.packages }}
+        run: |
+          read -ra packages <<< "$PACKAGES"
+          cargo test --locked --no-fail-fast "${packages[@]}"
+
+  names:
+    name: Names
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update && rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # It reads every tracked file, Markdown included, so it runs for a docs-only change too.
+      # ARGONAUTS_DOCS stays unset, so only tracked files are checked.
+      - run: cargo test --locked -p argonauts-testkit --test retired_names
+
+  packages:
+    name: Packages
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update && rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo publish --workspace --dry-run --locked
+
+  licenses:
+    name: Licenses
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --locked check licenses advisories sources
+
+  packaging:
+    name: Install script
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The curl install script, the update manifest's drafting script and the crash watch,
+      # against a fake curl, a release folder and query rows the tests make.
+      - run: python3 -m unittest discover -s packaging/tests
+
+  workflows:
+    name: Workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: zizmor@1.30.1
+      - name: zizmor
+        env:
+          # Lets zizmor look up pinned commits and known vulnerable actions.
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --format=github .github/
+      - name: actionlint
+        run: |
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$tarball"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
+  title:
+    name: Title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      # A squash merge makes the title the commit's subject, so it follows the commit rules.
+      - name: The title is a Conventional Commit
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|refactor|perf|test|docs|chore|ci|build)(\([a-z0-9-]+\))?!?: [^ ].*$'
+          if [[ "$TITLE" =~ $pattern ]]; then
+            echo "Title: $TITLE"
+          else
+            echo "::error title=Pull request title::Write the title as type(scope): subject, such as \"fix(tui): keep the cursor on the input\". The types are feat, fix, refactor, perf, test, docs, chore, ci and build; the scope is optional."
+            exit 1
+          fi

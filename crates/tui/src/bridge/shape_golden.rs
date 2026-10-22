@@ -188,7 +188,7 @@ const NO_ESC: Unlike = Unlike {
 const NOTHING_TO_MANAGE: Unlike = Unlike {
     row: 5,
     cols: (56, WIDTH as usize - 1),
-    why: "with no row under the input there is nothing to manage, so ↓ to manage is left out",
+    why: "with no row under the input there is nothing to manage, so ↓  to manage is left out",
 };
 
 /// `⏵⏵ autopilot on` on the line under the input.
@@ -289,7 +289,7 @@ fn a_run_draws_no_row_until_its_workflow_has_its_phases() {
 }
 
 /// The council run's own record, the one its resumed conversation is drawn from.
-const COUNCIL: &str = include_str!("../../golden/resumed_council/events.jsonl");
+const COUNCIL: &str = include_str!("../../tests/golden/transcript/resumed_council/events.jsonl");
 
 fn council() -> Vec<RunEvent> {
     COUNCIL

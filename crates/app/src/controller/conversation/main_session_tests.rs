@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use argonauts_core::app::{AppEvent, ChoiceKind, ConversationEvent, TurnReply, UiCommand};
 use argonauts_core::asking::{Ask, AskLine, AskReply};
-use argonauts_core::events::run::RunMode;
+use argonauts_core::events::run::{RunMode, StartsFrom};
 use argonauts_core::input::SlashCommand;
 use argonauts_core::session_runner::{Access, SessionSpec};
 use argonauts_testkit::FakeSession;
@@ -682,6 +682,182 @@ async fn slash_plan_has_the_workflow_plan_first() {
             .any(|set| set == "approvals.plan.mode=\"supervised\""),
         "{:?}",
         start.overrides
+    );
+    driver.exit().await;
+}
+
+/// Captain, with the main agent on a Claude Code whose CLI forks its sessions.
+const FORKING: &str = "[captain_or_crew]\nforce = \"captain\"\n\n[crew]\nmain = \
+                       \"claude-code/opus-5-5\"\n";
+const FORKING_MAIN: &str = "claude-code/opus-5-5";
+const WORKED_OUT: &str =
+    "Run what we just worked out as an orchestrator workflow, with Codex building it.";
+
+/// A fake CLI with a fork of its own.
+fn forking(worker: &str) -> argonauts_testkit::FakeRunner {
+    use argonauts_core::session_runner::{RunnerCapabilities, SessionRunner as _};
+    let runner = argonauts_testkit::FakeRunner::cli(worker, "anthropic");
+    let capabilities = RunnerCapabilities {
+        fork: true,
+        ..runner.capabilities()
+    };
+    runner.with_capabilities(capabilities)
+}
+
+/// The `n`th session `runner` started.
+async fn spec_of(runner: &argonauts_testkit::FakeRunner, n: usize) -> SessionSpec {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        if let Some(spec) = runner.specs().into_iter().nth(n) {
+            return spec;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no session started");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// A conversation with one turn behind it, whose session the main agent's CLI can copy, and
+/// the start tool's call in its second turn, whose words ask for the orchestrator's workflow
+/// with Codex building, so the run is Argonauts Code's own rather than Claude Code's.
+async fn worked_out(config: &'static str) -> (TestDriver, tokio::task::JoinHandle<AskReply>) {
+    let mut driver = claude_code(config).await;
+    let main = driver.directory.add(forking(FORKING_MAIN));
+    driver
+        .directory
+        .add(argonauts_testkit::FakeRunner::cli("codex", "openai"));
+    main.push(
+        FakeSession::completed("Due dates go in the store, and the cli prints them.")
+            .with_cli_session("main-session-1"),
+    );
+    driver.submit("How should due dates work?").await;
+    driver.until(turn_ended).await;
+    main.push(FakeSession::completed("Starting it.").with_delay(Duration::from_secs(3)));
+    driver.submit(WORKED_OUT).await;
+    let spec = spec_of(&main, 1).await;
+    let how_to_run = json!([
+        {"says": "as an orchestrator workflow", "kind": "mode", "value": "crew"},
+        {"says": "with Codex building it", "kind": "build", "who": "codex"},
+    ]);
+    let arguments = json!({ "request": "Add due dates.", "how_to_run": how_to_run });
+    (driver, calling(&spec, START_WORKFLOW, arguments))
+}
+
+/// An orchestrator on the main session's CLI is a copy of the session, made after the start
+/// tool answered: the answer comes as soon as the run is taken, before any agent started, and
+/// the line it gives the session says the orchestrator carries the conversation.
+#[tokio::test]
+async fn an_orchestrator_that_copies_the_session_hears_the_answer_first() {
+    let (driver, answer) = worked_out(FORKING).await;
+    let run = followed_run(&driver).await;
+    let answer = tokio::time::timeout(WAIT, answer)
+        .await
+        .expect("answered before any agent started")
+        .unwrap();
+    assert!(!answer.is_error, "{answer:?}");
+    assert!(
+        answer.text.contains(
+            "Starting a workflow: Orchestrator, **Opus 5.5 on Claude Code**, carrying this \
+             conversation; **"
+        ) && answer.text.contains("Codex** builds."),
+        "{answer:?}"
+    );
+    // The run's request names the session the orchestrator copies, where it ran.
+    let starts_from = driver
+        .conductor
+        .starts()
+        .last()
+        .and_then(|start| start.starts_from.clone());
+    match starts_from {
+        Some(StartsFrom::Fork(fork)) => {
+            assert_eq!(fork.cli_session, "main-session-1");
+            assert_eq!(fork.worker.agent, "claude-code");
+            assert_eq!(fork.folder, driver.repo.root());
+        }
+        other => panic!("a fork of the main session, not {other:?}"),
+    }
+    // The run went on as any other, its failures told later.
+    driver.conductor.push(&run, agent_started(&run, 1)).await;
+    driver.exit().await;
+}
+
+/// A main agent that answers with a change rather than through the start tool, as Codex's
+/// does, starts a crew run whose orchestrator copies the main session all the same.
+#[tokio::test]
+async fn a_crew_run_from_a_change_reply_copies_the_main_session_too() {
+    const CREW: &str = "[captain_or_crew]\nforce = \"crew\"\n\n[crew]\nmain = \
+                        \"claude-code/opus-5-5\"\n";
+    let mut driver = TestDriver::start_with(with_config(CREW)).await;
+    let main = driver.directory.add(forking(FORKING_MAIN));
+    main.push(
+        FakeSession::completed("Due dates go in the store, and the cli prints them.")
+            .with_cli_session("main-session-1"),
+    );
+    driver.submit("How should due dates work?").await;
+    driver.until(turn_ended).await;
+    // The second turn carries the same session on, as the CLI resumes it.
+    main.push(
+        FakeSession::structured(json!({
+            "kind": "change",
+            "answer_markdown": "Adding due dates.",
+            "estimate": {
+                "task_type": "api-feature",
+                "summary": "Add due dates",
+                "files_likely": ["src/store.js", "src/cli.js"],
+                "file_count": 2,
+                "risk_labels": [],
+                "tests_exist": true,
+                "unknowns": []
+            }
+        }))
+        .with_cli_session("main-session-1"),
+    );
+    driver.submit("Add due dates.").await;
+    let _run = followed_run(&driver).await;
+    let starts_from = driver
+        .conductor
+        .starts()
+        .last()
+        .and_then(|start| start.starts_from.clone());
+    match starts_from {
+        Some(StartsFrom::Fork(fork)) => {
+            assert_eq!(fork.cli_session, "main-session-1");
+            assert_eq!(fork.worker.agent, "claude-code");
+        }
+        other => panic!("a fork of the main session, not {other:?}"),
+    }
+    driver.exit().await;
+}
+
+/// With `crew.orchestrator_context = "brief"` the orchestrator starts from the brief, so the
+/// answer waits for the run to be under way, as it always did.
+#[tokio::test]
+async fn an_orchestrator_from_the_brief_waits_for_the_run() {
+    const BRIEF: &str = "[captain_or_crew]\nforce = \"captain\"\n\n[crew]\nmain = \
+                         \"claude-code/opus-5-5\"\norchestrator_context = \"brief\"\n";
+    let (driver, answer) = worked_out(BRIEF).await;
+    let run = followed_run(&driver).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !answer.is_finished(),
+        "the tool answered before the run began"
+    );
+    driver.conductor.push(&run, agent_started(&run, 1)).await;
+    let answer = answer.await.unwrap();
+    assert!(
+        answer.text.contains(
+            "Starting a workflow: Orchestrator, **Opus 5.5 on Claude Code**, starting from the \
+             brief; **"
+        ),
+        "{answer:?}"
+    );
+    let starts_from = driver
+        .conductor
+        .starts()
+        .last()
+        .and_then(|start| start.starts_from.clone());
+    assert!(
+        matches!(&starts_from, Some(StartsFrom::Brief(brief)) if brief.why.is_none()),
+        "{starts_from:?}"
     );
     driver.exit().await;
 }

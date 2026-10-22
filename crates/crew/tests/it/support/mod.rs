@@ -25,7 +25,7 @@ use argonauts_core::settings::{Settings, Span};
 use argonauts_core::steps::StepName;
 use argonauts_core::{AgentEvent, RepoId, RunId};
 use argonauts_crew::engine::host::Host;
-use argonauts_crew::engine::shared::{Shared, with_git_env};
+use argonauts_crew::engine::shared::{Shared, building_with_git_env, with_git_env};
 use argonauts_crew::prompts::trust;
 use argonauts_crew::state::RunState;
 use argonauts_testkit::repo::TempRepo;
@@ -40,6 +40,8 @@ pub struct Crew {
     /// A `PATH` for the engine's git and the tools it runs beside it, where a scenario stands
     /// in for one, such as `gh`.
     pub path: Option<String>,
+    /// What the orchestrator begins from, as a run your words in a conversation records it.
+    pub starts_from: Option<argonauts_core::events::run::StartsFrom>,
 }
 
 /// A run going on in its own task.
@@ -78,6 +80,7 @@ impl Crew {
             repo: TempRepo::new()?,
             settings,
             path: None,
+            starts_from: None,
         })
     }
 
@@ -129,12 +132,15 @@ impl Crew {
     /// The temp repo's home and git config, for the engine's git.
     pub fn git_env(&self) -> Vec<(String, String)> {
         let path = self.path.clone().map(|path| ("PATH".to_owned(), path));
-        self.repo
-            .envs()
-            .into_iter()
-            .map(|(name, value)| (name, value.to_string_lossy().into_owned()))
-            .chain(path)
-            .collect()
+        git_env_of(&self.repo).into_iter().chain(path).collect()
+    }
+
+    /// The engine's shared state over `context`, built by hand, its git on the temp repo's
+    /// home and config.
+    pub fn shared(&self, context: &EngineContext, state: RunState) -> anyhow::Result<Shared> {
+        Ok(building_with_git_env(self.git_env(), || {
+            Shared::new(context, state)
+        })?)
     }
 
     /// Runs `request` to its end, answering each approval it waits on with its recommended
@@ -269,6 +275,7 @@ impl Crew {
             outside_agent: None,
             instructions: Vec::new(),
             required_steps: Vec::new(),
+            starts_from: self.starts_from.clone(),
         };
         Ok(RunEvent {
             seq: 0,
@@ -291,7 +298,7 @@ impl Crew {
     pub fn host_over(&self, history: Vec<RunEvent>) -> anyhow::Result<(Host, Arc<MemorySink>)> {
         let state = RunState::fold(&history);
         let (context, sink, _) = self.context(history)?;
-        let shared = Shared::new(&context, state)?;
+        let shared = self.shared(&context, state)?;
         Ok((Host::new(Arc::new(shared)), sink))
     }
 
@@ -638,4 +645,24 @@ pub fn recorded_run(text: &str, fill: &[(&str, &str)]) -> Vec<RunEvent> {
             serde_json::from_str(&line).expect("a recorded event")
         })
         .collect()
+}
+
+/// `repo`'s home and git config, for the engine's git. Without them it reads the process's own,
+/// which tests holding [`TempRepo::env_guard`] change meanwhile.
+pub fn git_env_of(repo: &TempRepo) -> Vec<(String, String)> {
+    repo.envs()
+        .into_iter()
+        .map(|(name, value)| (name, value.to_string_lossy().into_owned()))
+        .collect()
+}
+
+/// The engine's shared state over `context`, built by hand, its git on `repo`'s home and config.
+pub fn shared_in(
+    repo: &TempRepo,
+    context: &EngineContext,
+    state: RunState,
+) -> anyhow::Result<Shared> {
+    Ok(building_with_git_env(git_env_of(repo), || {
+        Shared::new(context, state)
+    })?)
 }

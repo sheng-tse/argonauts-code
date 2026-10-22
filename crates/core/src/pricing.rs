@@ -37,6 +37,8 @@ const PRICES: &[(&str, f64, f64, f64)] = &[
     ("gpt-5.6-sol", 2.00, 10.00, 0.20),
     ("gpt-6-luna", 0.10, 0.50, 0.01),
     ("gpt-6-sol", 2.00, 10.00, 0.20),
+    // OpenAI's own list price on 2026-10-20, for prompts up to 272K tokens.
+    ("gpt-6.1-sol", 2.00, 10.00, 0.10),
     ("gpt-6-astra", 10.00, 50.00, 1.00),
     ("gemini-3.6-flash", 0.75, 3.75, 0.075),
     // Its introductory price, which matches 3.6's.
@@ -345,6 +347,17 @@ mod tests {
         ] {
             assert!(builtin_price(model).is_some(), "{model}");
         }
+    }
+
+    /// GPT-6.1-Sol has a price of its own: Sol's input and output, half its cache reads.
+    #[test]
+    fn a_point_release_is_priced_apart_from_its_model() {
+        let sol = builtin_price("gpt-6-sol").unwrap();
+        let newer = builtin_price("gpt-6.1-sol").unwrap();
+        assert_eq!(newer.input_per_mtok, 2.0);
+        assert_eq!(newer.output_per_mtok, 10.0);
+        assert_eq!(newer.cached_input_per_mtok, Some(0.10));
+        assert_eq!(sol.cached_input_per_mtok, Some(0.20));
     }
 
     #[test]

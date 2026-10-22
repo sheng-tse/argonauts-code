@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_settings.rs
+source: crates/tui/tests/it/snap_settings.rs
+assertion_line: 55
 expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -11,4 +12,4 @@ expression: "picker_lines(picker, width)"
     3. Ollama          1 model · local
     4. Roles…          each role's own model
 
-  Enter to see its models · ↑↓ to move · type to filter · Esc to close
+  Enter to see its models · ↑↓  to move · type to filter · Esc to close

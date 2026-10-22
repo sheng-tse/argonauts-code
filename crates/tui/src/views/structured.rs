@@ -237,9 +237,9 @@ impl Plan {
             .collect();
         if self.has_more() && draw.hints {
             let hint = if draw.expanded {
-                "→ folds the tasks"
+                "→  folds the tasks"
             } else {
-                "→ expands the tasks"
+                "→  expands the tasks"
             };
             notes.push(panes::key_names(hint, theme));
         }
@@ -471,17 +471,17 @@ mod tests {
         );
         assert_eq!(
             rows[2],
-            "  iface  Due-date stubs          Claude Code  Gemini on Antigravity CLI"
+            "  iface  Due-date stubs          Claude Code  Gemini on agy"
         );
         assert_eq!(
             rows[3],
-            "  impl   Store, list, overdue    Codex        Gemini on Antigravity CLI"
+            "  impl   Store, list, overdue    Codex        Gemini on agy"
         );
         assert_eq!(
             rows[4],
-            "  tests  Tests for each command  Claude Code  Gemini on Antigravity CLI"
+            "  tests  Tests for each command  Claude Code  Gemini on agy"
         );
-        assert_eq!(rows[5], "  ⎿  impl waits on iface · → expands the tasks");
+        assert_eq!(rows[5], "  ⎿  impl waits on iface · →  expands the tasks");
         assert_eq!(rows.len(), 6, "{text}");
         assert!(more);
         assert!(!text.contains('{'), "{text}");
@@ -495,7 +495,7 @@ mod tests {
             text.contains("    owns src/store.rs and src/list.rs"),
             "{text}"
         );
-        assert!(text.contains("→ folds the tasks"), "{text}");
+        assert!(text.contains("→  folds the tasks"), "{text}");
     }
 
     #[test]

@@ -26,7 +26,11 @@ allowed_in = [
     # drawing
     "crates/tui/src/mods/**",
     "crates/tui/src/overview/**",
-    "crates/tui/golden/resumed_after.*",
+    "crates/tui/tests/golden/overview/**",
+    "crates/tui/tests/golden/home/**",
+    "crates/tui/tests/golden/stats/**",
+    "crates/tui/tests/golden/behaviors/**",
+    "crates/tui/tests/golden/transcript/resumed_after.*",
     "crates/tui/src/kit/**",
     "crates/tui/src/bottom/band*.rs",
     "crates/tui/src/bottom/mod.rs",
@@ -56,7 +60,7 @@ allowed_in = [
     "crates/scenarios/tests/it/app_settings.rs",
     "crates/core/src/settings/mods/**",
     "crates/core/src/settings/mods.rs",
-    "templates/mods/**",
+    "crates/core/templates/mods/**",
     "crates/core/src/settings/stats.rs",
     "crates/core/src/settings/ui/mods.rs",
     "crates/core/src/settings/ui/places.rs",
@@ -200,7 +204,8 @@ new = "judge"
 old = ["seat", "seats", "seated"]
 new = "a role's model"
 
-# Antigravity CLI numbers its retries "attempt N", and Claude Code's retry line has the key.
+# agy numbers its retries "attempt N", and Claude Code's retry line has the key and says it,
+# as the working line does while Claude Code retries.
 [[word]]
 old = ["attempt", "attempts", "attempted"]
 new = "try"
@@ -211,6 +216,9 @@ allowed_in = [
     "crates/adapters/claude-code/src/parser.rs",
     "crates/adapters/claude-code/src/workflows.rs",
     "crates/scenarios/scenarios/limits/*.toml",
+    "crates/tui/src/bottom/retry.rs",
+    "crates/tui/tests/golden/network_after.html",
+    "crates/tui/tests/golden/network_after.txt",
 ]
 
 [[word]]
@@ -226,8 +234,8 @@ old = ["refute", "refutes", "refuted"]
 new = "critique"
 
 # Going back to a checkpoint is a rewind. The word is let through only where it is git's own:
-# the files that run `git revert`, and the ones that read a commit of yours that undid an
-# auto-merge.
+# the files that run `git revert` or label an agent's `git revert`, and the ones that read a
+# commit of yours that undid an auto-merge.
 [[word]]
 old = ["revert", "reverts", "reverted", "reverting"]
 new = "rewind (rewound); undo for plain uses"
@@ -238,6 +246,7 @@ allowed_in = [
     "crates/crew/src/approvals/mod.rs",
     "crates/app/src/host/mod.rs",
     "crates/app/src/host/revert_check.rs",
+    "crates/app/src/behaviors/labeller/shell.rs",
     "crates/app/src/example_prompt.rs",
     "crates/policy/src/parts.rs",
     "crates/policy/src/autonomy/**",
@@ -309,7 +318,7 @@ new = "approval"
 
 [[phrase]]
 old = ["gemini cli"]
-new = "Antigravity CLI (agy)"
+new = "agy"
 
 [[phrase]]
 old = ["argonauts init"]
@@ -366,6 +375,16 @@ new = "approval-NNN, task-NNN, experiment-NNN, conversation-NNN"
 old = 'serde\(\s*alias'
 new = "one name for the key: no alias"
 
+# The CLI is called agy. Its id, antigravity-cli, stays in settings, crate names and code.
+[[pattern]]
+old = '(?i)\bantigravity cli\b'
+new = "agy"
+
+# The telemetry setting's one name.
+[[pattern]]
+old = '\bUsage (counts|data)\b'
+new = "Usage reports"
+
 [[pattern]]
 old = '\b(7d|30d)\b'
 new = "week, month"
@@ -408,10 +427,13 @@ also = [
 # the neutral folders and a reserved mail domain.
 
 [private]
-neutral_homes = ["you", "me", "someone", "user", "alice", "a"]
+# linuxbrew is the folder Homebrew installs into on Linux, no person's.
+neutral_homes = ["you", "me", "someone", "user", "alice", "a", "linuxbrew"]
 neutral_mail_endings = ["example.com", "example.org", "example.net", "example", "invalid", "test", "localhost", "127.0.0.1"]
 # `@notes.txt` names a file, not an address.
 file_endings = ["md", "txt", "rs", "toml", "json", "jsonl", "yaml", "yml", "sh", "py", "js", "ts", "lock", "log", "html", "css", "snap", "star"]
+# Other projects' licenses, with their authors' own addresses in the copyright lines.
+authors_addresses_in = ["THIRD_PARTY_NOTICES.md"]
 home_fix = "a neutral folder, such as /Users/you"
 mail_fix = "a reserved address, such as you@example.com"
 # Claude Code's scratch folder sits under the temp folder, named "claude-" and the user's id,
@@ -549,6 +571,11 @@ text = "in the left-out seat"
 why = "the picture's own caption"
 
 [[allow]]
+path = "crates/tui/tests/golden/fork_start.*"
+text = "then on plan:orchestrator: its card"
+why = "the picture's own caption"
+
+[[allow]]
 path = "crates/**"
 text = "--max-budget-usd"
 why = "Claude Code's own flag"
@@ -659,6 +686,11 @@ text = " Widget}"
 why = "ratatui's own trait"
 
 [[allow]]
+path = "crates/core/src/settings/mods/check.rs"
+text = '("mode-line", "bottom-line")'
+why = "the one place word that changed, so a mod file still using it is told its new one and offered the edit"
+
+[[allow]]
 path = "crates/app/src/controller/settings/renamed.rs"
 text = 'workflow = "solo"'
 why = "a file an older build wrote, which the start question offers to rename"
@@ -674,14 +706,24 @@ text = 'workflow = &quot;solo&quot;'
 why = "the rename question's picture, naming an old value the file still uses"
 
 [[allow]]
-path = "crates/tui/golden/mascot_terminal.html"
+path = "crates/tui/tests/golden/mascot/mascot_terminal.html"
 text = "font-family"
 why = "CSS of the page that draws the header's pictures"
 
 [[allow]]
-path = "crates/tui/golden/mascot_terminal.html"
+path = "crates/tui/tests/golden/mascot/mascot_terminal.html"
 text = "box-shadow"
 why = "CSS of the page that draws the header's pictures"
+
+[[allow]]
+path = "crates/adapters/antigravity-cli/src/banner.rs"
+text = "Antigravity CLI"
+why = "agy's own banner names it in full, and the reader matches that title"
+
+[[allow]]
+path = "crates/app/src/controller/banner.rs"
+text = "Antigravity CLI"
+why = "agy's own sign-in screen, as the tests feed it to the banner reader"
 
 # ── Files whose words aren't read ────────────────────────────────────────────────────────
 
@@ -698,5 +740,17 @@ path = "Cargo.lock"
 why = "the names of other people's packages"
 
 [[unread]]
+path = ".github/workflows/release.yml"
+why = "written by `dist generate` from dist-workspace.toml, never by hand, and in dist's own words"
+
+[[unread]]
+path = "THIRD_PARTY_NOTICES.md"
+why = "other projects' license texts, as they wrote them"
+
+[[unread]]
 path = "LICENSE"
 why = "the license's own wording"
+
+[[unread]]
+path = "crates/**/LICENSE"
+why = "the license's own wording, linked into each published crate's folder"

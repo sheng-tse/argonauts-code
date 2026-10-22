@@ -324,7 +324,14 @@ impl HistorySearch {
             )
         };
         let mut parts = vec![
-            hint(format!("{} to navigate", marks.navigate), 2),
+            hint(
+                format!(
+                    "{}{}to navigate",
+                    marks.navigate,
+                    crate::theme::glyphs::gap_after(marks.navigate)
+                ),
+                2,
+            ),
             hint("Enter to use".to_owned(), KEEP),
             hint("Esc to cancel".to_owned(), KEEP),
             hint("ctrl+s to scope".to_owned(), 1),

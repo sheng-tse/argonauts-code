@@ -7,12 +7,14 @@
 //! [`can_read`](super::can_read) and [`can_write`](super::can_write) follow, so the most specific
 //! path wins here too.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
+use argonauts_core::outside::name_matches;
 use argonauts_core::session_runner::SandboxProfile;
 use serde::{Deserialize, Serialize};
 
-use super::profile::{PathRule, RuleKind, is_git_lock, ordered_rules};
+use super::profile::{PathRule, RuleKind, is_git_lock, ordered_rules, resolve_path};
 
 /// What is at a path when the session starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +30,12 @@ pub trait Disk {
     /// Doesn't follow a final symlink, so a link is `Other` and never opens a folder it points to.
     fn entry(&self, path: &Path) -> Entry;
     fn children(&self, dir: &Path) -> Vec<PathBuf>;
+
+    /// The file `path` opens, by its real path once symlinks are followed. None for a folder or
+    /// a link to nothing.
+    fn file_at(&self, path: &Path) -> Option<PathBuf> {
+        (self.entry(path) == Entry::Other).then(|| path.to_path_buf())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +65,9 @@ pub struct View {
 enum Cover {
     Hidden,
     Shown,
+    /// A folder shown only for the files in it, inside a writable area: read-only, with each
+    /// writable path in it bound again.
+    Kept,
 }
 
 /// The mounts placed so far, to tell whether a path is still visible.
@@ -79,7 +90,12 @@ impl Covers {
     }
 
     fn shown(&self, path: &Path) -> bool {
-        matches!(self.nearest(path), Some((at, Cover::Shown)) if at == path)
+        matches!(self.nearest(path), Some((at, Cover::Shown | Cover::Kept)) if at == path)
+    }
+
+    /// Inside a folder shown read-only, so a writable path there needs a bind of its own.
+    fn kept(&self, path: &Path) -> bool {
+        matches!(self.nearest(path), Some((at, Cover::Kept)) if at != path)
     }
 }
 
@@ -158,6 +174,13 @@ pub fn plan(profile: &SandboxProfile, disk: &dyn Disk) -> View {
                 if found == Entry::Missing {
                     continue;
                 }
+                if write && covers.kept(path) {
+                    view.steps.push(Step::Show {
+                        path: path.to_path_buf(),
+                        dir: found == Entry::Dir,
+                    });
+                    covers.0.push((path.to_path_buf(), Cover::Shown));
+                }
                 if write && rule.kind == RuleKind::Write {
                     view.writable.push(path.to_path_buf());
                 } else if !write && under_writable(&rules, path) {
@@ -169,6 +192,96 @@ pub fn plan(profile: &SandboxProfile, disk: &dyn Disk) -> View {
         }
     }
     view
+}
+
+/// At most this many entries are searched for the never-list's names in one launch, so a huge
+/// tree can't hold a session up. The nearest are searched first, which is where such files sit.
+const MOST_SEARCHED: usize = 100_000;
+
+/// Folders that hold what git keeps or what was installed, never a file of yours.
+const UNSEARCHED: &[&str] = &[".git", "node_modules"];
+
+/// Covers each file the never-list names, such as `.env`, where the session would see it:
+/// throughout `workdir` and your checkout, and in each folder above them. Mounts can't match a
+/// name in every folder the way Seatbelt does, so the files are found at launch, and one made
+/// later or past [`MOST_SEARCHED`] is held only by the CLI's own rules. A link is covered at the
+/// file it opens, so that file is hidden by every name it has.
+pub fn cover_names(view: &mut View, profile: &SandboxProfile, disk: &dyn Disk, workdir: &Path) {
+    let names = &profile.outside.never.names;
+    if names.is_empty() {
+        return;
+    }
+    let named = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| names.iter().any(|glob| name_matches(glob, name)))
+    };
+    let rules = ordered_rules(profile);
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for root in std::iter::once(workdir).chain(profile.outside.project.as_deref()) {
+        let root = resolve_path(root);
+        if !roots.iter().any(|kept| root.starts_with(kept)) {
+            roots.retain(|kept| !kept.starts_with(&root));
+            roots.push(root);
+        }
+    }
+    let mut above: Vec<PathBuf> = Vec::new();
+    for folder in roots.iter().flat_map(|root| root.ancestors().skip(1)) {
+        if !above.iter().any(|kept| kept == folder) {
+            above.push(folder.to_path_buf());
+        }
+    }
+
+    let mut covered: Vec<PathBuf> = view
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::HideFile { path } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut cover = |path: &Path| {
+        let Some(file) = disk.file_at(path) else {
+            return;
+        };
+        if reads(&rules, &file) && !covered.contains(&file) {
+            covered.push(file.clone());
+            view.steps.push(Step::HideFile { path: file });
+        }
+    };
+
+    for folder in above.iter().filter(|folder| reads(&rules, folder)) {
+        for child in disk.children(folder) {
+            if disk.entry(&child) == Entry::Other && named(&child) {
+                cover(&child);
+            }
+        }
+    }
+    let mut queue = VecDeque::from(roots);
+    let mut searched = 0;
+    while let Some(folder) = queue.pop_front() {
+        if !reads(&rules, &folder) {
+            continue;
+        }
+        for child in disk.children(&folder) {
+            searched += 1;
+            if searched > MOST_SEARCHED {
+                return;
+            }
+            match disk.entry(&child) {
+                Entry::Dir if !unsearched(&child) => queue.push_back(child),
+                Entry::Other if named(&child) => cover(&child),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn unsearched(folder: &Path) -> bool {
+    folder
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| UNSEARCHED.contains(&name))
 }
 
 fn hide(path: &Path, entry: Entry, pass: bool) -> Option<Step> {
@@ -216,7 +329,16 @@ fn show(
         path: folder.clone(),
         dir: true,
     });
-    covers.0.push((folder.clone(), Cover::Shown));
+    // A writable area around the folder would let the session add to it or change what else
+    // it holds, which only the paths shown in it may be.
+    if under_writable(rules, &folder) && !writes(rules, &folder) {
+        view.steps.push(Step::ReadOnly {
+            path: folder.clone(),
+        });
+        covers.0.push((folder.clone(), Cover::Kept));
+    } else {
+        covers.0.push((folder.clone(), Cover::Shown));
+    }
     for child in disk.children(&folder) {
         if reads(rules, &child) || writes(rules, &child) {
             continue;
@@ -318,49 +440,77 @@ impl Disk for RealDisk {
         children.sort();
         children
     }
+
+    fn file_at(&self, path: &Path) -> Option<PathBuf> {
+        let file = std::fs::canonicalize(path).ok()?;
+        std::fs::metadata(&file).ok()?.is_file().then_some(file)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
+    use argonauts_core::outside::{Never, Outside};
     use argonauts_core::session_runner::SandboxMode;
 
     use super::*;
 
     /// A made-up disk: each path is a folder when it ends in `/`, otherwise a file.
-    struct FakeDisk(BTreeMap<PathBuf, Entry>);
+    #[derive(Default)]
+    struct FakeDisk {
+        entries: BTreeMap<PathBuf, Entry>,
+        /// Symlinks, by where they point.
+        links: BTreeMap<PathBuf, PathBuf>,
+    }
 
     impl FakeDisk {
         fn new(paths: &[&str]) -> Self {
-            let mut map = BTreeMap::new();
+            let mut disk = Self::default();
             for path in paths {
                 let entry = if path.ends_with('/') {
                     Entry::Dir
                 } else {
                     Entry::Other
                 };
-                let path = PathBuf::from(path.trim_end_matches('/'));
-                for parent in path.ancestors().skip(1) {
-                    map.entry(parent.to_path_buf()).or_insert(Entry::Dir);
-                }
-                map.insert(path, entry);
+                disk.add(PathBuf::from(path.trim_end_matches('/')), entry);
             }
-            Self(map)
+            disk
+        }
+
+        fn link(mut self, link: &str, target: &str) -> Self {
+            self.add(p(link), Entry::Other);
+            self.links.insert(p(link), p(target));
+            self
+        }
+
+        fn add(&mut self, path: PathBuf, entry: Entry) {
+            for parent in path.ancestors().skip(1) {
+                self.entries
+                    .entry(parent.to_path_buf())
+                    .or_insert(Entry::Dir);
+            }
+            self.entries.insert(path, entry);
         }
     }
 
     impl Disk for FakeDisk {
         fn entry(&self, path: &Path) -> Entry {
-            self.0.get(path).copied().unwrap_or(Entry::Missing)
+            self.entries.get(path).copied().unwrap_or(Entry::Missing)
         }
 
         fn children(&self, dir: &Path) -> Vec<PathBuf> {
-            self.0
+            self.entries
                 .keys()
                 .filter(|path| path.parent() == Some(dir))
                 .cloned()
                 .collect()
+        }
+
+        fn file_at(&self, path: &Path) -> Option<PathBuf> {
+            let file = self.links.get(path).map_or(path, PathBuf::as_path);
+            (self.entry(file) == Entry::Other && !self.links.contains_key(file))
+                .then(|| file.to_path_buf())
         }
     }
 
@@ -377,6 +527,7 @@ mod tests {
             closed: Vec::new(),
             listable: Vec::new(),
             loopback: false,
+            outside: Default::default(),
         }
     }
 
@@ -663,6 +814,47 @@ mod tests {
         assert_eq!(view.writable, vec![p(&at("/.claude"))]);
     }
 
+    /// A worker that writes anywhere: Landlock allows writes under `/`, the never-list is
+    /// covered, and your checkout and the system folders are bound read-only.
+    #[test]
+    fn writing_anywhere_keeps_the_never_list_hidden_and_the_checkout_read_only() {
+        let disk = FakeDisk::new(&[
+            &at("/.ssh/id_rsa"),
+            &at("/work/app/src/"),
+            &at("/Downloads/"),
+            "/usr/bin/",
+        ]);
+        let view = plan(
+            &profile(
+                &["/", &at("/.argonauts/worktrees/app/run/task")],
+                &[&at("/work/app"), "/usr/bin"],
+                &[&at("/.ssh")],
+            ),
+            &disk,
+        );
+        assert!(view.writable.contains(&p("/")));
+        for step in [
+            Step::HideDir {
+                path: p(&at("/.ssh")),
+                pass: false,
+            },
+            Step::ReadOnly {
+                path: p(&at("/work/app")),
+            },
+            Step::ReadOnly {
+                path: p("/usr/bin"),
+            },
+        ] {
+            assert!(view.steps.contains(&step), "{step:?} in {:?}", view.steps);
+        }
+        assert!(
+            !view
+                .steps
+                .iter()
+                .any(|step| matches!(step, Step::ReadOnly { path } if path.ends_with("Downloads")))
+        );
+    }
+
     #[test]
     fn a_writable_path_that_is_also_denied_stays_hidden_and_unwritable() {
         let disk = FakeDisk::new(&[&at("/both/file")]);
@@ -748,5 +940,179 @@ mod tests {
                 pass: false
             })
         );
+    }
+
+    /// Writing anywhere puts a session's own folder inside a writable area. It is shown for the
+    /// files in it, read-only, so the session can't add to it or change what else it holds, and
+    /// what it writes there is bound again.
+    #[test]
+    fn writing_anywhere_keeps_the_session_folder_read_only_but_for_its_own_files() {
+        let session = at("/.argonauts/state/app/s-1");
+        let disk = FakeDisk::new(&[
+            &format!("{session}/report.json"),
+            &format!("{session}/home/"),
+            &format!("{session}/status.json"),
+            &format!("{session}/stdout.raw"),
+        ]);
+        let view = plan(
+            &profile(
+                &[
+                    "/",
+                    &format!("{session}/report.json"),
+                    &format!("{session}/home"),
+                ],
+                &[&format!("{session}/status.json")],
+                &[&at("/.argonauts")],
+            ),
+            &disk,
+        );
+        let position = |step: Step| {
+            view.steps
+                .iter()
+                .position(|made| *made == step)
+                .unwrap_or_else(|| panic!("{step:?} in {:?}", view.steps))
+        };
+        let shown = position(Step::Show {
+            path: p(&session),
+            dir: true,
+        });
+        let kept = position(Step::ReadOnly { path: p(&session) });
+        let report = position(Step::Show {
+            path: p(&format!("{session}/report.json")),
+            dir: false,
+        });
+        let home = position(Step::Show {
+            path: p(&format!("{session}/home")),
+            dir: true,
+        });
+        assert!(
+            shown < kept && kept < report && kept < home,
+            "{:?}",
+            view.steps
+        );
+        position(Step::HideFile {
+            path: p(&format!("{session}/stdout.raw")),
+        });
+        assert!(
+            !view.steps.iter().any(|step| matches!(
+                step,
+                Step::Show { path, .. } if path.ends_with("status.json")
+            )),
+            "status.json is read through the read-only folder: {:?}",
+            view.steps
+        );
+    }
+
+    fn with_never_names(mut profile: SandboxProfile, project: &str) -> SandboxProfile {
+        profile.outside = Outside {
+            read: true,
+            write: true,
+            project: Some(p(project)),
+            never: Never {
+                names: vec![".env".to_owned(), ".env.*".to_owned()],
+                ..Never::default()
+            },
+        };
+        profile
+    }
+
+    fn covered(view: &View) -> Vec<String> {
+        view.steps
+            .iter()
+            .filter_map(|step| match step {
+                Step::HideFile { path } => Some(path.display().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Mounts can't match a name everywhere the way Seatbelt does, so the never-list's names are
+    /// found at launch: throughout the folder, and in each folder above it.
+    #[test]
+    fn the_never_lists_names_are_covered_in_the_folder_and_above_it() {
+        let repo = at("/repo");
+        let disk = FakeDisk::new(&[
+            &at("/.env"),
+            &at("/repo/.env"),
+            &at("/repo/app/config/.env.local"),
+            &at("/repo/app/.envrc"),
+            &at("/repo/src/main.rs"),
+            &at("/repo/tools/.env/bin/python"),
+            &at("/repo/.git/.env"),
+            &at("/repo/node_modules/pkg/.env"),
+            &at("/other/.env"),
+        ]);
+        let profile = with_never_names(profile(&["/"], &[], &[]), &repo);
+        let mut view = plan(&profile, &disk);
+        cover_names(&mut view, &profile, &disk, Path::new(&repo));
+        assert_eq!(
+            covered(&view),
+            [
+                at("/.env"),
+                at("/repo/.env"),
+                at("/repo/app/config/.env.local")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_worker_has_your_checkout_searched_and_each_file_is_covered_once() {
+        let checkout = at("/work/app");
+        let worktree = at("/.argonauts/worktrees/app/run/task");
+        let disk = FakeDisk::new(&[
+            &at("/work/app/.env"),
+            &at("/work/app/src/lib.rs"),
+            &at("/.argonauts/worktrees/app/run/task/src/lib.rs"),
+        ]);
+        let profile = with_never_names(profile(&["/", &worktree], &[&checkout], &[]), &checkout);
+        for workdir in [worktree.clone(), at("/work/app/src")] {
+            let mut view = plan(&profile, &disk);
+            cover_names(&mut view, &profile, &disk, Path::new(&workdir));
+            assert_eq!(covered(&view), [at("/work/app/.env")], "from {workdir}");
+        }
+    }
+
+    /// A link is covered at the file it opens, so neither name reads it. A link to a folder or
+    /// to nothing has nothing to cover.
+    #[test]
+    fn a_named_link_is_covered_at_the_file_it_opens() {
+        let repo = at("/repo");
+        let disk = FakeDisk::new(&[&at("/secrets/prod.env"), &at("/shared/")])
+            .link(&at("/repo/.env"), &at("/secrets/prod.env"))
+            .link(&at("/repo/app/.env"), &at("/gone"))
+            .link(&at("/repo/lib/.env"), &at("/shared"));
+        let profile = with_never_names(profile(&["/"], &[], &[]), &repo);
+        let mut view = plan(&profile, &disk);
+        cover_names(&mut view, &profile, &disk, Path::new(&repo));
+        assert_eq!(covered(&view), [at("/secrets/prod.env")]);
+    }
+
+    #[test]
+    fn a_file_already_hidden_gets_no_second_cover() {
+        let repo = at("/repo");
+        let disk = FakeDisk::new(&[
+            &at("/repo/.env"),
+            &at("/repo/.env.prod"),
+            &at("/repo/private/.env"),
+        ])
+        .link(&at("/repo/app/.env"), &at("/repo/private/.env"));
+        let profile = with_never_names(
+            profile(&["/"], &[], &[&at("/repo/private"), &at("/repo/.env.prod")]),
+            &repo,
+        );
+        let mut view = plan(&profile, &disk);
+        cover_names(&mut view, &profile, &disk, Path::new(&repo));
+        assert_eq!(covered(&view), [at("/repo/.env.prod"), at("/repo/.env")]);
+    }
+
+    #[test]
+    fn without_never_names_nothing_is_searched() {
+        let repo = at("/repo");
+        let disk = FakeDisk::new(&[&at("/repo/.env")]);
+        let mut profile = with_never_names(profile(&["/"], &[], &[]), &repo);
+        profile.outside.never.names.clear();
+        let mut view = plan(&profile, &disk);
+        cover_names(&mut view, &profile, &disk, Path::new(&repo));
+        assert!(view.steps.is_empty(), "{:?}", view.steps);
     }
 }

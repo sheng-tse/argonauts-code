@@ -204,6 +204,9 @@ pub enum UiCommand {
         mode: NarratorMode,
     },
     CancelTurn,
+    /// Stops the command at work now, such as `/update`, as Esc does while its working line
+    /// shows. With no command at work it does nothing.
+    StopCommand,
     /// So the controller knows when an OS notification helps.
     Focus {
         focused: bool,
@@ -290,6 +293,13 @@ pub enum UiCommand {
         run: RunId,
         id: ApprovalId,
     },
+    /// Makes or adds to the deeper Behaviors map as its questions were answered, in the
+    /// background. Its progress arrives as `DeepProgress` and its end as `DeepDone`.
+    DeepStart {
+        start: crate::deep_map::DeepStart,
+    },
+    /// `x` while the deeper map is being made: it stops, keeping every summary it finished.
+    DeepStop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -386,6 +396,9 @@ pub enum ViewRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         import: Option<bool>,
     },
+    /// The Behaviors map of every action recorded, grouped, for a period and a scope.
+    /// Answered with `Behaviors`, and never with a model call.
+    Behaviors(crate::behavior_map::MapRequest),
     /// The agent panel's "All repos" tab: runs in every repo with a live run host, read from
     /// `~/.argonauts/registry.json` and each repo's journal ends.
     AllRepos,
@@ -400,6 +413,11 @@ pub enum ViewRequest {
     Learning {
         area: LearningArea,
     },
+    /// `/issue`'s list: the repository's open issues, yours first. Answered with `Issues`.
+    Issues,
+    /// What `d` on the Behaviors map asks before the deeper map is made: what to summarize and
+    /// who summarizes. Answered with `DeepOffer`, and never with a model call.
+    DeepOffer,
 }
 
 impl ViewRequest {
@@ -431,6 +449,28 @@ pub enum CommandWork {
     Checking,
 }
 
+/// A followed pull request, as its run's row in the list of everything running says it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FollowedPullRequest {
+    /// What the row says, such as `#57 · fixing CI, round 1 of 3`.
+    pub said: String,
+    pub stands: PullRequestStands,
+}
+
+/// Where a followed pull request stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PullRequestStands {
+    /// Nothing to do but wait for GitHub, as while its checks run.
+    Waits,
+    /// A round of fixes works on what GitHub said.
+    Works,
+    /// Only you can say what happens next.
+    NeedsYou,
+    /// Merged or closed on GitHub, so following it ended.
+    Ended,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AppEvent {
@@ -460,6 +500,16 @@ pub enum AppEvent {
         /// Its effort level: the one set, else the one the CLI starts that model at, when known.
         #[serde(default)]
         effort: Option<String>,
+    },
+    /// A pull request a run opened, as the newest look at GitHub found it, for its run's row.
+    PullRequestFollowed {
+        run: RunId,
+        followed: FollowedPullRequest,
+    },
+    /// The first start after a newer version took over: its row above the input, such as
+    /// `Updated to 0.1.1 · /release-notes`, until your first key.
+    Updated {
+        words: String,
     },
     /// Events for this run follow, from its latest snapshot or from `seq` 0, and the TUI
     /// rebuilds its state and the Ctrl+O history from them. Up to `ReplayDone` it prints none of
@@ -675,6 +725,15 @@ pub enum AppEvent {
         event: ShellEvent,
     },
     Exit,
+    /// The deeper Behaviors map's update has done another request's worth.
+    DeepProgress {
+        progress: crate::deep_map::DeepProgress,
+    },
+    /// The deeper map's update ended: done, stopped, or failed. The map it kept is asked for
+    /// again.
+    DeepDone {
+        done: crate::deep_map::DeepDone,
+    },
 }
 
 /// A `!` command's life, numbered from 1 in each app session.
@@ -1240,6 +1299,10 @@ pub enum ViewData {
     Overview {
         overview: Box<crate::overview::OverviewData>,
     },
+    /// What the Behaviors map draws.
+    Behaviors {
+        map: Box<crate::behavior_map::BehaviorMap>,
+    },
     AllRepos {
         /// This repo first, then the others by their newest update.
         repos: Vec<RepoRuns>,
@@ -1273,6 +1336,38 @@ pub enum ViewData {
         task: Option<TaskId>,
         checkpoints: Vec<CheckpointRow>,
     },
+    /// `/issue`'s list, drawn in the input's place.
+    Issues {
+        /// The repository, such as `team/app`, as the list's title names it.
+        repo: String,
+        /// Yours first, then the others.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        issues: Vec<IssueRow>,
+        /// Why there is no list, such as gh not being signed in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<String>,
+        /// How many issues are open, when the list holds only the newest of them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        open: Option<usize>,
+    },
+    /// The deeper map's questions, with this machine's choices and the recorded actions.
+    DeepOffer {
+        offer: Box<crate::deep_map::DeepOffer>,
+    },
+}
+
+/// One open issue in `/issue`'s list. Its title and labels are anyone's words, drawn as text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueRow {
+    pub number: u64,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated: time::OffsetDateTime,
+    /// You opened it, or it's assigned to you.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub yours: bool,
 }
 
 /// One conversation with the main agent, read from `conversation/<conversation>.jsonl`.
@@ -1324,6 +1419,10 @@ pub struct SettingRow {
     /// Values the picker offers, as TOML text.
     pub allowed: Vec<String>,
     pub description: String,
+    /// What an `auto` value comes to here, when that's known without asking anything, such as
+    /// `Qwen3 Coder 30B on Ollama` for the summarizer the deeper Behaviors map was made with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picked: Option<String>,
 }
 
 /// An agent CLI that isn't installed, as `/agents` lists it.

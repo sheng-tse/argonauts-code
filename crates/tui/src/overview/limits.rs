@@ -242,11 +242,8 @@ impl LimitsCards<'_> {
             block.push(truncate_spans(&line, width));
         }
         if rows.len() > LIMIT_ROWS {
-            block.push(vec![kit.dim(format!(
-                "   {} of {} · ↑↓ shows the rest",
-                picked + 1,
-                rows.len()
-            ))]);
+            let rest = format!("   {} of {} · ↑↓  shows the rest", picked + 1, rows.len());
+            block.push(truncate_spans(&[kit.dim(rest)], width));
         }
         Some(block)
     }

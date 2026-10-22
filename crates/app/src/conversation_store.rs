@@ -147,6 +147,18 @@ impl ConversationStore {
     pub(crate) fn append(&self, event: &ConversationEvent) -> anyhow::Result<()> {
         let mut value = serde_json::to_value(event).context("encoding a conversation event")?;
         redact_json(&mut value);
+        // A turn's start says when it was, which the Behaviors map dates its actions by. Every
+        // reader of the event leaves the extra key alone.
+        if let (ConversationEvent::TurnStarted { .. }, Some(line)) = (event, value.as_object_mut())
+        {
+            let now = time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .context("writing a turn's time")?;
+            line.insert(
+                crate::behaviors::turn_times::STARTED_AT.to_owned(),
+                serde_json::Value::String(now),
+            );
+        }
         let mut line = serde_json::to_vec(&value).context("encoding a conversation event")?;
         line.push(b'\n');
         self.make_dir()?;

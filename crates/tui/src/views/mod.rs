@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod artifacts;
+pub mod asks;
 pub mod columns;
 #[cfg(test)]
 mod council_golden_tests;
@@ -19,11 +20,17 @@ pub mod goal;
 mod goal_keys;
 pub mod goal_panel;
 pub mod help;
+pub(crate) mod issues;
+#[cfg(test)]
+mod launch_golden_tests;
 pub mod layout;
 pub mod learning;
 pub mod library;
 mod line_edit;
 pub mod list;
+pub mod map;
+#[cfg(test)]
+mod network_golden_tests;
 pub mod pager;
 pub mod panes;
 pub mod prompts;
@@ -65,7 +72,7 @@ use std::time::Instant;
 
 use argonauts_core::agent_sessions::AgentSessionRef;
 use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand, ViewData, ViewRequest};
-use argonauts_core::events::run::RunOutcome;
+use argonauts_core::events::run::{RunOutcome, WaitReason};
 use argonauts_core::input::{ResumeTarget, SlashCommand};
 use argonauts_core::names::{RoleName, SessionKey};
 use argonauts_core::steps::StepName;
@@ -134,6 +141,11 @@ pub trait View: fmt::Debug + Send {
     /// moved on, such as the main agent's session once it starts. `None` keeps it.
     fn follow(&mut self, ctx: &ViewCtx<'_>) -> Option<Follow> {
         let _ = ctx;
+        None
+    }
+
+    /// The map it draws, which can take a picture and the mouse, when it draws one.
+    fn map(&mut self) -> Option<&mut dyn map::MapView> {
         None
     }
 }
@@ -406,6 +418,54 @@ pub(crate) fn stop(run: &RunId, state: &AppState) -> UiCommand {
     }
 }
 
+/// `p`'s word in a run's views, the workflow's and an open agent's alike: `p resume` while
+/// the run is pausing or paused, `p pause` otherwise.
+pub(crate) fn pause_hint(state: &AppState, run: &RunId) -> &'static str {
+    match pause_state(state, run) {
+        Some(Held::Pausing | Held::Paused) => "p resume",
+        None => "p pause",
+    }
+}
+
+/// What `p` does in a run's views: a pause still under way is taken back, a paused run goes
+/// on, and any other run on screen pauses at its next safe point.
+pub(crate) fn pause_key(run: &RunId, ctx: &ViewCtx<'_>) -> ViewOutcome {
+    match pause_state(ctx.state, run) {
+        Some(Held::Paused) => ViewOutcome::Send(UiCommand::Resume {
+            run: Some(run.clone()),
+        }),
+        // Nothing waits yet, so there is no wait to resume from: the pause is called off.
+        Some(Held::Pausing) if ctx.state.attached.as_ref() == Some(run) => {
+            ViewOutcome::Send(UiCommand::CancelPause)
+        }
+        _ => pause(run, ctx),
+    }
+}
+
+/// How far a pause has come.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// Asked for; the agents finish their tool calls first.
+    Pausing,
+    /// The run waits for you.
+    Paused,
+}
+
+fn pause_state(state: &AppState, run: &RunId) -> Option<Held> {
+    let Some(run) = state.runs.get(run) else {
+        // A run from an earlier session opens paused from its listing.
+        let listed = state.background.iter().find(|listed| listed.run == *run)?;
+        return crate::bridge::panel::paused_by_you(listed).then_some(Held::Paused);
+    };
+    if matches!(run.waiting, Some(WaitReason::Paused)) {
+        Some(Held::Paused)
+    } else if run.pausing {
+        Some(Held::Pausing)
+    } else {
+        None
+    }
+}
+
 /// `p` in a run's view. A pause acts on the run on screen, so another run's view says so.
 pub(crate) fn pause(run: &RunId, ctx: &ViewCtx<'_>) -> ViewOutcome {
     if ctx.state.attached.as_ref() == Some(run) {
@@ -503,10 +563,16 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
             cx.out.open(learning::LearningPicker::new((**view).clone()));
         }
         // The state keeps it for the Usage tab and the cards above the input.
-        ViewData::Status { .. } | ViewData::Usage { .. } | ViewData::Overview { .. } => {}
+        ViewData::Status { .. }
+        | ViewData::Usage { .. }
+        | ViewData::Overview { .. }
+        | ViewData::Behaviors { .. } => {}
         // The conversation prints it.
         ViewData::ContextPrint { .. } => {}
         // Only the usage panel's Status tab draws it, and one that closed takes nothing.
         ViewData::StatusTab { .. } => {}
+        // Only the Behaviors tab asks it, and draws its questions in the tab.
+        ViewData::DeepOffer { .. } => {}
+        ViewData::Issues { .. } => issues::open(data, cx),
     }
 }

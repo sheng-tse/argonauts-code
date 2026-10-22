@@ -216,7 +216,7 @@ fn a_long_list_scrolls_under_the_picked_limit_and_a_narrow_one_drops_the_keys() 
     let limits = sample::limits();
     let top = list(&limits, 110, 0);
     assert_eq!(top.len(), 1 + 8 + 1, "{top:#?}");
-    assert!(top.last().unwrap().contains("1 of 10 · ↑↓ shows the rest"));
+    assert!(top.last().unwrap().contains("1 of 10 · ↑↓  shows the rest"));
     assert!(!top.iter().any(|row| row.contains("Share for review")));
     let end = list(&limits, 110, 9);
     assert!(end[8].contains("❯ Share for review"), "{end:#?}");

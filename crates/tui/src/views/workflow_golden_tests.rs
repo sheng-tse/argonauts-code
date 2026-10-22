@@ -83,6 +83,7 @@ fn a_long_list_scrolls_with_claude_codes_mark() {
 #[test]
 fn a_fallback_at_work_reads_as_its_picture() {
     let mut picture = picture!("workflow_fallback");
+    picture.in_place_of(6, "Opus 5.5", None);
     // The status line colours the model that does the job as its row does, and leaves the
     // one it stands in for dim.
     picture.colour_as_its_row(3, &["Sonnet 5.5"]);
@@ -95,7 +96,6 @@ fn a_fallback_at_work_reads_as_its_picture() {
 fn a_run_paused_on_a_cli_that_is_down_reads_as_its_picture() {
     let mut picture = picture!("workflow_cli_down");
     build_in_its_own_column(&mut picture);
-    picture.respell_tokens(6, "44.0k", "44k");
     // The picture says paused, which now only a pause you asked for reads: these tasks wait
     // for their CLI.
     picture.reword(3, "2 tasks paused", "2 tasks wait for it");
@@ -212,7 +212,7 @@ fn r_twice_starts_a_running_agents_task_over() {
         key(&mut view, KeyCode::Esc),
         super::ViewOutcome::Consumed
     ));
-    assert!(keys(&mut view).starts_with("↑↓ select · ⏎ open"));
+    assert!(keys(&mut view).starts_with("↑↓  select · ⏎ open"));
 
     key(&mut view, KeyCode::Char('r'));
     let outcome = key(&mut view, KeyCode::Char('r'));
@@ -294,121 +294,48 @@ fn r_twice_starts_an_agent_a_script_called_over() {
     assert_eq!(said, "build:due-flag has no task of its own to start again");
 }
 
-/// The Merge phase's rows of `picture` in the column Merge's own labels give them. The pictures
-/// of a merged run give every phase the widest label of the whole workflow; each phase is laid
-/// out by its own, as Claude Code's view lays out its own.
-fn merge_in_its_own_column(picture: &mut Picture, rows: &[usize], width: usize) {
-    for &row in rows {
-        let text = picture.text(row..row + 1).remove(0);
-        let label = [
-            "merge the tasks",
-            "settle conflict",
-            "catch up with main",
-            "fix after main moved",
-            "final check",
-            "commit message",
-            "merge onto main",
-        ]
-        .into_iter()
-        .find(|label| text.contains(&format!("{label}  ")))
-        .unwrap_or_else(|| panic!("row {row} names no Merge step: {text}"));
-        picture.label_column(row, label, width);
-    }
-}
-
 #[test]
 fn a_merged_run_reads_as_its_picture() {
-    let mut picture = picture!("workflow_done");
-    merge_in_its_own_column(&mut picture, &[6, 7, 8], "merge onto main  ".len());
+    let picture = picture!("workflow_done");
     let mut view = WorkflowView::new(examples::done(Merge::Clean));
     picture.assert_drawn(0..12, &drawn(&mut view, 12), 0);
 }
 
-/// The Merge phase of a folder without git as the picture of that phase alone draws it: the
-/// two steps, and under them why no commit message is among them.
-const NO_GIT_FIXES: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/golden/no_git_fixes.txt"
-));
-
-/// The six rows of that picture's box, from its top border.
-fn no_git_merge_phase() -> Vec<&'static str> {
-    let rows: Vec<&str> = NO_GIT_FIXES.lines().collect();
-    let top = rows
-        .iter()
-        .position(|row| row.starts_with(" ╭ Phases "))
-        .expect("the Merge phase's box");
-    rows[top..top + 6].to_vec()
-}
-
-/// Two pictures draw this run's Merge phase. The one of the whole view leaves the right pane
-/// empty under its two steps, and the one of the phase alone says there why no commit message
-/// was written. The phase's own picture is the one followed, so its note is written into the
-/// whole view's picture here, in the colour a phase's note has.
+/// A folder without git: code wrote the work into your folder and no model wrote a commit
+/// message, so the Merge phase has no agent and isn't listed. The view opens on the last phase
+/// that is, Sign-off.
 #[test]
 fn a_run_in_a_folder_without_git_reads_as_its_picture() {
-    let mut picture = picture!("workflow_done_no_git");
-    let theme = dark();
-    let noted = no_git_merge_phase()[4];
-    let at = noted
-        .chars()
-        .position(|ch| ch == 'n')
-        .expect("the phase's note");
-    assert_eq!(
-        noted
-            .chars()
-            .skip(at)
-            .take(examples::NO_COMMIT_MESSAGE.len())
-            .collect::<String>(),
-        examples::NO_COMMIT_MESSAGE
-    );
-    picture.write(
-        9,
-        at,
-        examples::NO_COMMIT_MESSAGE,
-        theme.style(crate::theme::Role::Dim).fg,
-    );
+    let picture = picture!("workflow_done_no_git");
     let mut view = WorkflowView::new(examples::done(Merge::NoGit));
     picture.assert_drawn(0..12, &drawn(&mut view, 12), 0);
 }
 
-/// The same run's box beside the picture of its Merge phase alone, cell for cell.
+/// The picture of that run's questions and closing rows draws the same box.
 #[test]
-fn the_merge_phase_of_a_folder_without_git_reads_as_its_picture() {
-    let mut view = WorkflowView::new(examples::done(Merge::NoGit));
-    let buf = drawn(&mut view, ABOVE_BOX + 7);
-    let rows: Vec<String> = (0..6)
-        .map(|row| {
-            let text: String = (0..SCREEN)
-                .map(|x| buf[(x, ABOVE_BOX + row)].symbol())
-                .collect();
-            text.trim_end().to_owned()
-        })
+fn the_box_of_a_folder_without_git_reads_as_its_picture() {
+    let wanted = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/golden/no_git_fixes.txt"
+    ));
+    let rows: Vec<&str> = wanted.lines().collect();
+    let top = rows
+        .iter()
+        .position(|row| row.starts_with(" ╭ Phases "))
+        .expect("the run's box");
+    let picture = picture!("workflow_done_no_git");
+    let box_rows: Vec<String> = rows[top..top + 6]
+        .iter()
+        .map(|row| row.trim_end().to_owned())
         .collect();
-    assert_eq!(rows, no_git_merge_phase(), "{rows:#?}");
-    // The note is dim, as every phase's note is.
-    let theme = dark();
-    let note_at = rows[4].chars().position(|ch| ch == 'n').unwrap() as u16;
-    assert_eq!(
-        Some(buf[(note_at, ABOVE_BOX + 4)].fg),
-        theme.style(crate::theme::Role::Dim).fg
-    );
+    assert_eq!(box_rows, picture.text(5..11));
+    let mut view = WorkflowView::new(examples::done(Merge::NoGit));
+    picture.assert_drawn(5..11, &drawn(&mut view, ABOVE_BOX + 7), ABOVE_BOX);
 }
 
 #[test]
 fn the_merge_phase_reads_as_its_pictures_in_each_case() {
-    let mut picture = picture!("merge_cases");
-    merge_in_its_own_column(&mut picture, &[2, 3, 4], "merge onto main  ".len());
-    merge_in_its_own_column(
-        &mut picture,
-        &[10, 11, 12, 13, 14],
-        "settle conflict  ".len(),
-    );
-    merge_in_its_own_column(
-        &mut picture,
-        &[19, 20, 21, 22, 23, 24],
-        "fix after main moved  ".len(),
-    );
+    let picture = picture!("merge_cases");
     for (merge, rows) in [
         (Merge::Clean, 1..7),
         (Merge::Conflict, 9..16),
@@ -439,11 +366,13 @@ fn open(view: &mut WorkflowView, agent: AgentData) {
 fn a_worker_sent_back_opens_as_its_picture() {
     let mut picture = picture!("workflow_agent_worker");
     blocking_and_notes(&mut picture, 8, 9);
+    // Claude Code leaves a blank line between an open agent's sections.
+    let spaced = picture.space_sections(0, &["Findings to fix", "Activity", "Outcome"]);
     let mut view = WorkflowView::new(examples::running());
     press(&mut view, KeyCode::Enter);
     open(&mut view, examples::worker_opened());
-    let frame = ABOVE_BOX + 18;
-    picture.assert_drawn(0..18, &drawn(&mut view, frame), ABOVE_BOX);
+    let frame = ABOVE_BOX + 18 + spaced as u16;
+    picture.assert_drawn(0..18 + spaced, &drawn(&mut view, frame), ABOVE_BOX);
 }
 
 #[test]
@@ -462,13 +391,20 @@ fn the_reviewer_that_sent_it_back_opens_as_its_picture() {
     for column in verdict..verdict + "sent it back".len() {
         picture.recolour(11, column, warn);
     }
+    // A blank line between the sections, and no stop or restart once it's done.
+    let spaced = picture.space_sections(0, &["Activity", "Outcome"]);
+    picture.reword(
+        15 + spaced,
+        "m message · x stop · r restart · p pause",
+        "m message · p pause",
+    );
     let mut view = WorkflowView::new(examples::running());
     press(&mut view, KeyCode::Down);
     press(&mut view, KeyCode::Enter);
     press(&mut view, KeyCode::Down);
     open(&mut view, examples::reviewer_opened());
-    let frame = ABOVE_BOX + 16;
-    picture.assert_drawn(0..16, &drawn(&mut view, frame), ABOVE_BOX);
+    let frame = ABOVE_BOX + 16 + spaced as u16;
+    picture.assert_drawn(0..16 + spaced, &drawn(&mut view, frame), ABOVE_BOX);
 }
 
 #[test]
@@ -549,7 +485,7 @@ fn claude_codes_own_workflow_draws_in_the_same_view() {
     assert!(reviewer.contains(" · sent it back"), "{rows:#?}");
     let keys = rows.last().unwrap().trim_end();
     assert!(
-        keys.starts_with(" ↑↓ select · enter opens its agents"),
+        keys.starts_with(" ↑↓  select · enter opens its agents"),
         "{keys}"
     );
 }

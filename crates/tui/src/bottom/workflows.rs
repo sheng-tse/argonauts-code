@@ -129,6 +129,11 @@ pub enum WorkflowRowState {
     /// It waits out an outage you chose to wait out, and tries again on its own.
     Waiting,
     Stopped,
+    /// The pull request it opened is followed, and a round of fixes works on it or it needs
+    /// you.
+    PullRequest,
+    /// The pull request it opened is followed, and waits for GitHub.
+    PullRequestWaits,
 }
 
 impl WorkflowRowState {
@@ -152,6 +157,7 @@ impl WorkflowRowState {
             Self::Paused => "paused",
             Self::Waiting => "waiting",
             Self::Stopped => "stopped",
+            Self::PullRequest | Self::PullRequestWaits => "following its pull request",
         }
     }
 }
@@ -556,6 +562,10 @@ fn run_line(
         WorkflowRowState::Waiting => (pick("◯", "o"), Role::Dim),
         WorkflowRowState::Done => (pick("✔", "*"), Role::StateDone),
         WorkflowRowState::Failed | WorkflowRowState::Stopped => (pick("✘", "x"), Role::StateFailed),
+        // A followed pull request is half done: amber while there's work on it, dim while it
+        // waits.
+        WorkflowRowState::PullRequest => (pick("◐", "o"), Role::Warn),
+        WorkflowRowState::PullRequestWaits => (pick("◐", "o"), Role::Dim),
     };
     let mut spans = if selected {
         vec![Span::styled(
@@ -624,9 +634,10 @@ fn run_stats(row: &WorkflowRow, ctx: &RenderCtx<'_>) -> Vec<Part> {
     if row.tokens > 0 {
         push(
             format!(
-                "{} {} tokens",
+                "{}{}{} tokens",
                 theme.glyphs.tokens,
-                format::tokens(row.tokens)
+                crate::theme::glyphs::gap_after(theme.glyphs.tokens),
+                run_tokens(row.tokens)
             ),
             dim,
             1,
@@ -679,7 +690,8 @@ fn said(row: &WorkflowRow, mark: &str) -> Option<(String, Role)> {
         WorkflowRowState::Done => Role::StateDone,
         WorkflowRowState::Failed | WorkflowRowState::Stopped => Role::StateFailed,
         WorkflowRowState::Paused => Role::Text,
-        WorkflowRowState::Waiting => Role::Warn,
+        WorkflowRowState::Waiting | WorkflowRowState::PullRequest => Role::Warn,
+        WorkflowRowState::PullRequestWaits => Role::Dim,
     };
     let words = match (row.state, own) {
         (WorkflowRowState::NeedsYou, Some(why)) => format!("needs you · {why}"),
@@ -753,6 +765,16 @@ impl PanelColumns {
     }
 }
 
+/// A run's tokens with one decimal in the thousands whatever their size, `538.7k`, as its
+/// workflow view keeps them, and none when it is `.0`: `128k`. Millions as every count has them.
+fn run_tokens(count: u64) -> String {
+    if !(1_000..999_500).contains(&count) {
+        return format::tokens(count);
+    }
+    let thousands = format!("{:.1}", count as f64 / 1_000.0);
+    format!("{}k", thousands.strip_suffix(".0").unwrap_or(&thousands))
+}
+
 #[cfg(test)]
 mod tests {
     use crossterm::event::KeyEvent;
@@ -801,7 +823,7 @@ mod tests {
         let mut agents = AgentPanel::default();
         panel.focus();
         let text = plain_text(&panel_lines(&panel, &agents, &ctx));
-        assert!(text.ends_with("  ↓ 3 more"), "{text}");
+        assert!(text.ends_with("  ↓  3 more"), "{text}");
         assert!(!text.contains("workflow-2"), "{text}");
 
         for expected in 1..5 {
@@ -814,7 +836,7 @@ mod tests {
             assert!(text.contains(&format!("❯ ◯ workflow-{expected}")), "{text}");
         }
         let text = plain_text(&panel_lines(&panel, &agents, &ctx));
-        assert!(text.starts_with("  ↑ 3 more"), "{text}");
+        assert!(text.starts_with("  ↑  3 more"), "{text}");
         assert_eq!(
             handle_panel_key(&mut panel, &mut agents, key(KeyCode::Down)),
             PanelEvent::PastEnd
@@ -956,7 +978,7 @@ mod tests {
         assert!(rows[1].starts_with("  ◯ workflow-0"), "{wide}");
         assert!(
             rows[2].starts_with("    ○ build:flag   Update(src/export.rs)")
-                && rows[2].ends_with("↓ 18.1k tokens"),
+                && rows[2].ends_with("↓  18.1k tokens"),
             "{wide}"
         );
         assert!(
@@ -982,7 +1004,7 @@ mod tests {
         let agent_rows: Vec<&str> = narrow.lines().filter(|row| row.contains(":flag")).collect();
         assert!(
             agent_rows[0].starts_with("    ○ build:flag")
-                && agent_rows[0].contains("↓ 18.1k tokens")
+                && agent_rows[0].contains("↓  18.1k tokens")
                 && !agent_rows[0].contains("Update"),
             "{narrow}"
         );
@@ -1288,7 +1310,7 @@ mod tests {
             row.tokens = tokens;
             row
         };
-        let mut merged = captain(6, 6, 91, 157_000);
+        let mut merged = captain(5, 5, 91, 153_000);
         merged.state = WorkflowRowState::Done;
         merged.said = Some("merged onto main".to_owned());
         let cases = [
@@ -1336,7 +1358,7 @@ mod tests {
         assert_eq!(
             plain_text(&lines),
             format!(
-                "  ◯ argonauts-ui-kit{pad}  {done}{left}  8/9 · 2h44m · ↓ 1.8M tokens · ! 85% of limit · /workflows to stop"
+                "  ◯ argonauts-ui-kit{pad}  {done}{left}  8/9 · 2h44m · ↓  1.8M tokens · ! 85% of limit · /workflows to stop"
             )
         );
         let notice = lines[0].spans.last().map(|span| span.style);
@@ -1471,7 +1493,7 @@ mod tests {
                     let rows: Vec<&str> = text.lines().collect();
                     assert!(rows[1].starts_with("    ○ claude-code/opus"), "{text}");
                     assert!(rows[3].starts_with("    ○ agy/gemini-3.6-flash"), "{text}");
-                    assert!(rows[1].ends_with("2/5 · 4m · ↓ 18.1k tokens"), "{text}");
+                    assert!(rows[1].ends_with("2/5 · 4m · ↓  18.1k tokens"), "{text}");
                     // The agents' stats start in one column.
                     let column = |row: &str, part: &str| str_width(&row[..row.find(part).unwrap()]);
                     assert_eq!(column(rows[1], "2/5"), column(rows[3], "0/5"), "{text}");

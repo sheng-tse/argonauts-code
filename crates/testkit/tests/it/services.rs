@@ -1,6 +1,6 @@
 use argonauts_core::engine::EventSink;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::limits::{HealthBoard, HealthSignal, HealthState, PlanUsageBoard};
+use argonauts_core::limits::{HealthBoard, HealthSignal, HealthState, NetState, PlanUsageBoard};
 use argonauts_core::names::{AgentId, ModelRef, SessionKey};
 use argonauts_core::registry::{ModelEntry, ModelRegistry};
 use argonauts_core::settings::Settings;
@@ -59,4 +59,31 @@ fn the_static_registry_falls_back_to_the_cli_provider() {
     .unwrap();
     registry.add(entry);
     assert_eq!(provider("codex/house-model"), "meta");
+}
+
+#[tokio::test]
+async fn the_memory_board_reports_the_network_a_test_sets() {
+    let services = FakeServices::new();
+    assert_eq!(services.health.network(), NetState::Up);
+    assert_eq!(services.health.check_network().await, NetState::Up);
+
+    let mut changes = services.health.network_changes();
+    let since = time::macros::datetime!(2030-01-01 12:00 UTC);
+    services.health.set_network(NetState::Down { since });
+    changes.changed().await.unwrap();
+    assert_eq!(*changes.borrow(), NetState::Down { since });
+    assert!(services.health.network().is_down());
+    assert!(services.health.check_network().await.is_down());
+
+    services.health.set_network(NetState::Up);
+    changes.changed().await.unwrap();
+    assert_eq!(*changes.borrow_and_update(), NetState::Up);
+}
+
+/// Code a test runs in its own process never checks the internet, whatever its environment
+/// says, once it has a temp repo or the fake services.
+#[test]
+fn a_test_process_never_checks_the_internet() {
+    let _repo = argonauts_testkit::TempRepo::new().expect("a temp repo");
+    assert!(argonauts_conductor::network::check_is_off());
 }

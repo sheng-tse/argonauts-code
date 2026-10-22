@@ -6,6 +6,7 @@ use std::fs::{self, DirBuilder, OpenOptions, Permissions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::ids::{RepoId, RunId, TaskId};
 
@@ -133,6 +134,52 @@ impl Paths {
             .join(run.as_str())
             .join(task.as_str())
     }
+}
+
+/// This program's own file, with every link followed, for the helpers it starts and for nothing
+/// saved. Found once, the first time it's asked for, which `main` does before an update can
+/// swap the link it was started by: macOS gives that link's path for the running program, so a
+/// helper started from it after a swap would run another version than the app.
+pub fn this_program() -> io::Result<PathBuf> {
+    static FOUND: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    FOUND
+        .get_or_init(|| find_this_program().map_err(|err| err.to_string()))
+        .clone()
+        .map_err(io::Error::other)
+}
+
+fn find_this_program() -> io::Result<PathBuf> {
+    if let Some(running) = running_image() {
+        return Ok(running);
+    }
+    let started_as = std::env::current_exe()?;
+    Ok(fs::canonicalize(&started_as).unwrap_or(started_as))
+}
+
+/// The file the kernel runs this process from, whatever link started it.
+#[cfg(target_os = "macos")]
+fn running_image() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+
+    let size = usize::try_from(nix::libc::PROC_PIDPATHINFO_MAXSIZE).ok()?;
+    let mut path = vec![0u8; size];
+    let pid = i32::try_from(std::process::id()).ok()?;
+    // SAFETY: the buffer is `size` bytes long, the most proc_pidpath writes, and it's told so.
+    let written = unsafe {
+        nix::libc::proc_pidpath(pid, path.as_mut_ptr().cast(), u32::try_from(size).ok()?)
+    };
+    path.truncate(
+        usize::try_from(written)
+            .ok()
+            .filter(|written| *written > 0)?,
+    );
+    Some(PathBuf::from(std::ffi::OsString::from_vec(path)))
+}
+
+/// Linux's `/proc/self/exe` is the running file already, which `current_exe` reads.
+#[cfg(not(target_os = "macos"))]
+fn running_image() -> Option<PathBuf> {
+    None
 }
 
 pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
@@ -295,6 +342,22 @@ fn shared_git_dir(repo_root: &Path) -> io::Result<Option<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn this_program_is_its_own_file_with_links_followed() {
+        let program = this_program().unwrap();
+        assert!(program.is_absolute());
+        assert_eq!(fs::canonicalize(&program).unwrap(), program);
+        // Found once: what it says doesn't follow the path it was started by afterwards.
+        assert_eq!(this_program().unwrap(), program);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_running_image_is_the_file_itself() {
+        let started_as = std::env::current_exe().unwrap();
+        assert_eq!(running_image(), Some(fs::canonicalize(started_as).unwrap()));
+    }
 
     fn ids() -> (RepoId, RunId, TaskId) {
         (

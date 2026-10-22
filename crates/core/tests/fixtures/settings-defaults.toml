@@ -23,6 +23,7 @@ judge = [
 ]
 worker_workflows = false
 merger = []
+orchestrator_context = "fork"
 
 [agents.antigravity-cli]
 enabled = true
@@ -762,10 +763,72 @@ fast = false
 language = ""
 
 [telemetry]
-enabled = false
+enabled = true
 
 [overview]
 year_colors = "cli"
 
 [periods]
 week_starts = "sunday"
+
+[updates]
+channel = "stable"
+auto = true
+check = true
+
+[issue]
+comment = "none"
+labels = false
+assign_me = false
+
+[pr]
+max_rounds = 3
+review_bots = []
+
+[network]
+hold_minutes = 30
+
+[outside]
+read = [
+    "auto",
+    "autopilot",
+]
+write = [
+    "auto",
+    "autopilot",
+]
+never = [
+    "~/.ssh",
+    "~/.aws",
+    "~/.gnupg",
+    "~/Library/Keychains",
+    "~/.local/share/keyrings",
+    ".env",
+    ".env.*",
+    "~/.claude/.credentials.json",
+    "~/.codex/auth.json",
+    "~/.gemini/oauth_creds.json",
+    "~/.local/share/opencode/auth.json",
+    "~/Library/Application Support/Google/Chrome",
+    "~/Library/Application Support/Chromium",
+    "~/Library/Application Support/BraveSoftware",
+    "~/Library/Application Support/Microsoft Edge",
+    "~/Library/Application Support/Arc",
+    "~/Library/Application Support/Firefox",
+    "~/Library/Safari",
+    "~/Library/Cookies",
+    "~/.config/google-chrome",
+    "~/.config/chromium",
+    "~/.config/BraveSoftware",
+    "~/.config/microsoft-edge",
+    "~/.mozilla",
+    "/System",
+    "/usr",
+    "/etc",
+]
+
+[behaviors]
+map = "labels"
+summarizer = "auto"
+embedder = "auto"
+update = "off"

@@ -7,6 +7,7 @@ mod frames;
 mod fullscreen;
 mod input;
 mod live;
+mod map_picture;
 mod mascot;
 mod overlay;
 mod run;
@@ -195,6 +196,8 @@ pub struct Ui<W: Write> {
     next_animation: Option<Instant>,
     /// The header's mascot as a picture, and its frames.
     mascot: mascot::HeaderMascot,
+    /// A docked view's map as a picture, and the mouse over it.
+    map: map_picture::DockedMap,
     keymap: Keymap,
     /// Keys come with the time they arrived, so a paste a terminal types out key by key reads
     /// as one paste. Tests that hand keys over at one made-up time leave it off.
@@ -238,6 +241,7 @@ impl<W: Write> Ui<W> {
             modes: None,
             next_animation: None,
             mascot: mascot::HeaderMascot::default(),
+            map: map_picture::DockedMap::default(),
             keymap,
             key_times: false,
         }
@@ -460,8 +464,10 @@ impl<W: Write> Ui<W> {
                 } else {
                     None
                 };
+                let map = self.place_map();
                 self.draw_alternate(now, state)?;
                 self.send_placing(placing)?;
+                self.send_map_placing(map)?;
             }
             self.frame_done(now);
             return Ok(wrote || self.terminal.frame_bytes() != before);
@@ -552,6 +558,8 @@ impl<W: Write> Ui<W> {
         let screen = self.terminal.screen_size();
         let busy = self.is_busy();
         let as_panel = self.views_as_panel;
+        let pictures = self.places_map_pictures();
+        let cell = self.picture_terminal().map(|(_, cell)| cell);
         let question_rows = self.question_over_view().then(|| {
             let ctx = RenderCtx::new(screen.width, &self.theme, Clock::new(self.started, now))
                 .with_rows(screen.height);
@@ -562,6 +570,10 @@ impl<W: Write> Ui<W> {
             .views
             .last_mut()
             .filter(|view| view.docked() || as_panel)?;
+        // A map laid out for its picture takes fewer rows, so this comes before its height.
+        if let Some(map) = view.map() {
+            map.place_pictures(pictures);
+        }
         let empty;
         let state = match state {
             Some(state) => state,
@@ -594,6 +606,11 @@ impl<W: Write> Ui<W> {
         } else {
             crate::views::dock::render_in_panel(view.as_mut(), area, &mut buffer, &ctx, busy);
         }
+        // The dock's rows are the screen's last, but for a question's under it, which takes the
+        // keys and has the map put away.
+        let map = view.map().filter(|_| question_rows.is_none());
+        self.map
+            .saw(map, screen.height.saturating_sub(rows), cell, &ctx);
         let mut lines = crate::views::dock::lines(&buffer);
         if question_rows.is_some() {
             lines.pop();
@@ -667,6 +684,7 @@ impl<W: Write> Ui<W> {
     /// its child without blocking: the live region clears and the terminal's modes come off.
     pub fn suspend(&mut self) -> io::Result<()> {
         self.dirty = true;
+        self.let_go_of_map()?;
         // The child gets the main screen. An open view comes back on the next frame.
         if self.on_alternate {
             if self.scrollback.is_some() {
@@ -714,6 +732,7 @@ impl<W: Write> Ui<W> {
     /// fullscreen app leaves the alternate screen instead, and prints only `exit_lines`.
     pub fn finish_with(&mut self, exit_lines: Vec<String>) -> io::Result<()> {
         self.terminal.set_progress(false)?;
+        self.let_go_of_map()?;
         if self.scrollback.is_some() {
             return self.finish_fullscreen(exit_lines);
         }
@@ -868,6 +887,7 @@ impl<W: Write> Ui<W> {
         };
         let (trailing, pinned) = view.lines.split_at(view.trailing.min(view.lines.len()));
         let rows = |lines: &[Line<'_>]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        let map = self.place_map();
         self.terminal
             .draw_live(rows(trailing), rows(pinned), |frame| {
                 frame.paint_trailing(trailing);
@@ -878,7 +898,8 @@ impl<W: Write> Ui<W> {
                 {
                     frame.set_cursor(column, row);
                 }
-            })
+            })?;
+        self.send_map_placing(map)
     }
 
     fn frame_done(&mut self, now: Instant) {

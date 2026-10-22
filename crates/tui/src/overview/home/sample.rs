@@ -1,5 +1,5 @@
 //! The example the Overview's pictures draw: Claude Code since October 2025, Codex since
-//! February, Antigravity CLI since June, 118.4b tokens in all, and the year of days and the
+//! February, agy since June, 118.4b tokens in all, and the year of days and the
 //! three lines of the Models chart exactly as the pictures have them.
 
 use argonauts_core::overview::{

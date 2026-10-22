@@ -14,6 +14,10 @@ use super::{
 };
 use crate::input::SLASH_COMMANDS;
 
+/// Place words that changed, each old word beside the one it became. An old word never reads
+/// as its new one: until the file says the new word, the mod doesn't load.
+pub const RENAMED_PLACES: &[(&str, &str)] = &[("mode-line", "bottom-line")];
+
 const KEYS: [&str; 10] = [
     "name", "title", "body", "places", "shown", "form", "key", "data", "levels", "colors",
 ];
@@ -202,9 +206,10 @@ impl Reader<'_> {
             match item.as_str().map(|word| (word, ModPlace::from_word(word))) {
                 Some((_, Some(place))) if !places.contains(&place) => places.push(place),
                 Some((_, Some(_))) => {}
-                Some((word, None)) => {
-                    self.problem(format!("{word} isn't a place; use {}", place_words()));
-                }
+                Some((word, None)) => match RENAMED_PLACES.iter().find(|(old, _)| *old == word) {
+                    Some((old, new)) => self.problem(format!("{old} is now {new}")),
+                    None => self.problem(format!("{word} isn't a place; use {}", place_words())),
+                },
                 None => self.problem(format!("a place must be one of {}", place_words())),
             }
         }
@@ -469,6 +474,25 @@ timeout = "2s"
 
     fn problems(stem: &str, text: &str) -> Vec<String> {
         read(stem, text).unwrap_err()
+    }
+
+    /// A mod written before a place was renamed still says the old word. It doesn't load as
+    /// the new place's, and its problem names the word it's now.
+    #[test]
+    fn an_old_place_word_says_its_new_one_and_still_does_not_read() {
+        let branch = |place: &str| {
+            format!(
+                "name = \"branch\"\nbody = \"text\"\nplaces = [\"{place}\"]\nform = \"line\"\n\
+                 [data]\ncommand = [\"git\", \"branch\", \"--show-current\"]\n"
+            )
+        };
+        for (old, new) in RENAMED_PLACES {
+            assert_eq!(
+                problems("branch", &branch(old)),
+                [format!("{old} is now {new}")]
+            );
+            assert!(read("branch", &branch(new)).is_ok());
+        }
     }
 
     #[test]

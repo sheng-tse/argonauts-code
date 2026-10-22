@@ -1,22 +1,24 @@
 //! `opencode run --format json --model <provider/model>` with the prompt on stdin, resumed with
-//! `--session <id>`. Never `--continue`, which picks the last session of whoever ran OpenCode
-//! last, and never `--fork`.
+//! `--session <id>`, and copied with `--session <id> --fork`. Never `--continue`, which picks the
+//! last session of whoever ran OpenCode last.
 //!
 //! OpenCode 2 sends a plain `run` to a background service it keeps for the whole computer,
 //! which runs the session's tools outside Argonauts' sandbox and never sees the config
 //! Argonauts sends. So every OpenCode 2 session, new or resumed, gets `--standalone`: a private
 //! server that is the client's own child, starts inside the sandbox with the session's
 //! variables, and ends when the client is stopped. OpenCode 1.18 has neither the service nor
-//! the flag. `run --help` at 2.0.32 lists `--standalone`, `--session`, `--model`, `--format`
-//! and `--thinking`; 1.18.33's flags were read from `packages/opencode/src/cli/cmd/run.ts`.
+//! the flag. `run --help` at 2.0.32 lists `--standalone`, `--session`, `--fork`, `--model`,
+//! `--format` and `--thinking`; 1.18.33's flags were read from `packages/opencode/src/cli/cmd/run.ts`,
+//! where `--fork` has been since 1.1.54.
 //! A level goes inside the model, as [`level`] says.
 
 use std::path::PathBuf;
 
-use anyhow::bail;
+use anyhow::{bail, ensure};
 use argonauts_core::{AuthMode, CommandSpec, SessionRequest, env_remove_except};
 
 use crate::level;
+use crate::outside;
 use crate::private_server::{ApiCall, PrivateServer, private_server_flags};
 use crate::provider::{self, LocalUrls};
 use crate::user_config;
@@ -72,10 +74,20 @@ pub(crate) fn build_with(
         cmd = cmd.arg("--model").arg(model);
     }
     cmd = cmd.args(model.flags);
+    ensure!(
+        !req.fork_session || req.resume_session.is_some(),
+        "a fork needs the session to copy"
+    );
     if let Some(session) = &req.resume_session {
         cmd = cmd.arg("--session").arg(session);
+        // The copy gets an id of its own, which its first event names, and the session it
+        // came from is left as it was.
+        if req.fork_session {
+            cmd = cmd.arg("--fork");
+        }
     }
     cmd = cmd.args(req.extra_args.iter().cloned());
+    outside::apply(&mut cmd, req);
     guard_env(&mut cmd, req, route.as_deref());
     // OpenCode reads stdin to its end before it starts, so it can't stay open for steering.
     // It has no flag that holds a run to a schema.
@@ -296,6 +308,52 @@ mod tests {
                 .to_string();
             assert!(err.contains("provider/model"), "{bad}: {err}");
         }
+    }
+
+    /// A fork copies the session it names and carries the copy on with the new prompt, every
+    /// flag given again as on a resume. Without a session there is nothing to copy.
+    #[test]
+    fn a_fork_carries_on_a_copy_of_the_session() {
+        let forked = SessionRequest {
+            resume_session: Some("ses_abc123".to_owned()),
+            fork_session: true,
+            prompt: "You are now the orchestrator of the run you just started.".to_owned(),
+            ..request()
+        };
+        let cmd = build_with(&forked, &[], &LocalUrls::new()).unwrap();
+        assert_eq!(
+            cmd.args,
+            [
+                "run",
+                "--standalone",
+                "--format",
+                "json",
+                "--model",
+                "openrouter/z-ai/glm-5",
+                "--session",
+                "ses_abc123",
+                "--fork"
+            ]
+        );
+        assert_eq!(
+            cmd.stdin.as_deref(),
+            Some("You are now the orchestrator of the run you just started.")
+        );
+        let resumed = SessionRequest {
+            fork_session: false,
+            ..forked.clone()
+        };
+        let cmd = build_with(&resumed, &[], &LocalUrls::new()).unwrap();
+        assert!(!cmd.args.iter().any(|a| a == "--fork"));
+        let nothing = SessionRequest {
+            resume_session: None,
+            ..forked
+        };
+        let err = build_with(&nothing, &[], &LocalUrls::new()).unwrap_err();
+        assert!(
+            err.to_string().contains("a fork needs the session"),
+            "{err}"
+        );
     }
 
     #[test]

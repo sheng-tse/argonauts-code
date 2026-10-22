@@ -152,11 +152,15 @@ impl<W: Write> Ui<W> {
         let _ = self.terminal.resize(size, cursor);
         self.measure_cells();
         self.fit_mascot_to_width();
+        self.resend_map();
         self.clear_selection();
         self.dirty = true;
     }
 
     fn handle_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) {
+        if self.model.bottom.updated.take().is_some() {
+            self.dirty = true;
+        }
         if self.overlay.is_some() {
             if self.keymap.action_for(Layer::Overlay, &key) == Some(Action::Transcript) {
                 self.close_overlay();

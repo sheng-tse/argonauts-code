@@ -393,6 +393,7 @@ fn setting(key: &str, value: &str, allowed: &[String], description: &str) -> Set
         safety: false,
         allowed: allowed.to_vec(),
         description: description.to_owned(),
+        picked: None,
     }
 }
 

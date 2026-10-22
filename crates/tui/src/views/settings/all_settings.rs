@@ -86,6 +86,7 @@ impl AllSettingsView {
                 safety: entry.safety,
                 allowed: Vec::new(),
                 description: String::new(),
+                picked: None,
             })
             .collect();
         Self::new(rows)
@@ -273,7 +274,7 @@ impl View for AllSettingsView {
             "type to search"
         };
         let hints = Footer::hints(&[
-            ("↑↓ select", 0),
+            ("↑↓  select", 0),
             ("⏎ edit", 2),
             (search, 1),
             (panes::ESC_BACK, 0),

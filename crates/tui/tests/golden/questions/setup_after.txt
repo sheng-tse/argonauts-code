@@ -1,0 +1,34 @@
+ A second /setup on Captain: one row in the conversation, as /config's
+
+
+  ▗███▖▐▀▖ Argonauts Code v0.0.1
+  ▐▝█▘▙▟   Claude Code · Opus 5.5 with xhigh effort · Captain
+  ▞▐ ▌▚    ~/github/argonauts-code
+
+
+❯ /setup
+  ⎿  Captain · Claude Code · auto mode · Usage reports on · saved to ~/.argonauts/config.toml
+
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────── Opus 5.5 ─
+❯
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  -- INSERT -- ⏵⏵ auto mode on          ● Claude 5h ▄▄▄▄▄▄ 2% 7d ▄▄▄▄▄▄ 87%  ○ Codex 7d ▄▄▄▄▄▄ 3%  ○ agy 7d ▄▄▄▄▄▄ 0%
+
+ (it replaces "Going through the setup again.", "Your crew: …", a row per step and "Saved to …")
+ (Captain without review is asked no local server question)
+
+
+ On Orchestrator, after "Who you talk to", "How the crew works" and the orchestrator's questions, setup asks:
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ A local model server: Ollama
+ Ollama answers at http://localhost:11434/v1. Use one of its models to review your crew's work? It reads the change in
+ its prompt, with no tools, and runs on this machine.
+
+ ❯ 1. Qwen3 Coder 30B 64K (recommended)
+   2. Not now
+   3. Gemma3 12B 32K
+
+ Enter to choose
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

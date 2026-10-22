@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_workflows.rs
+source: crates/tui/tests/it/snap_workflows.rs
+assertion_line: 1123
 expression: text
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -7,20 +8,24 @@ expression: text
 
 
  ╭ worker · task-002 ───────────────────────────────────────────────────────────────────────╮
- │ ↷ Running · GPT 5.6 on Codex · for Opus                                                  │
- │ 181k tok · 195 tool calls · 10m 12s                                                      │
+ │ ↷ Running · GPT 5.6 on Codex · in place of Opus                                          │
+ │ 181.0k tok · 195 tool calls · 10m 12s                                                    │
  │                                                                                          │
  │ Prompt · 14 lines · ⏎ expand                                                             │
  │   Build the terminal and the whole bottom region of the UI kit.                          │
  │   … 13 more lines                                                                        │
+ │                                                                                          │
  │ Activity · last 3 of 195 tool calls · ⏎ expand                                           │
  │   ⏺ Bash(cargo test -p argonauts-tui composer) · error                                   │
  │   ⏺ Bash(cargo clippy -p argonauts-tui --all-targets -- -D warnings)                     │
  │   ⏺ Bash(cargo test -p argonauts-tui) · running                                          │
+ │                                                                                          │
  │ Diff · 4 files · +120 -18 · d open                                                       │
+ │                                                                                          │
  │ Threads · 2 · steps not streamed                                                         │
  │   ◐ thread thr_1  running                                                                │
  │   ✔ thread thr_2  done                                                                   │
+ │                                                                                          │
  │ Outcome · 11 lines · ⏎ expand                                                            │
  │   Report: the terminal and the bottom region are done, with no stubs left.               │
  │                                                                                          │
@@ -36,9 +41,5 @@ expression: text
  │                                                                                          │
  │                                                                                          │
  │                                                                                          │
- │                                                                                          │
- │                                                                                          │
- │                                                                                          │
- │                                                                                          │
  ╰──────────────────────────────────────────────────────────────────────────────────────────╯
- ↑↓ agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back
+ ↑↓  agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back

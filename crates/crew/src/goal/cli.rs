@@ -11,7 +11,7 @@
 //!   goal is only in its messages, so the prompt asks for one last line, `goal: <status> ·
 //!   <note>`, read back from its goal tool.
 //!
-//! Claude Code and Antigravity CLI have no goal of their own, so Argonauts Code keeps theirs.
+//! Claude Code and agy have no goal of their own, so Argonauts Code keeps theirs.
 //! Either way Argonauts Code runs the check itself: a CLI saying "complete" is never enough.
 
 use argonauts_core::display_names::builtin_cli_name;

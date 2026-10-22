@@ -1,15 +1,16 @@
 ---
-source: crates/tui/tests/snap_live.rs
+source: crates/tui/tests/it/snap_live.rs
+assertion_line: 639
 expression: "format!(\"{}\\n---\\n{}\", text(&lines), styled(&narrator))"
 ---
 ※ narrator: task-003 fell back to Codex while Claude waits for its 5h reset; two
   tasks are merged.
-✻ Rowing… (4m 12s · ↓ 48.2k tokens · Build · 2/5 tasks · 3 agents · $0.21)
+✻ Rowing… (4m 12s · ↓  48.2k tokens · Build · 2/5 tasks · 3 agents · $0.21)
 
 ─────────────────────────────────────────────────────────────── Council · Opus ─
 ❯
 ────────────────────────────────────────────────────────────────────────────────
-  ǁ supervised mode on (shift+tab to cycle) · ← 3 agents  ● Claude 5h ▄▄▖▄▄▄ 38%
+  ǁ supervised mode on (shift+tab to cycle) · ←  3 agents ● Claude 5h ▄▄▖▄▄▄ 38%
 ---
 [fg=#999999]※[/] [fg=#999999]narrator: [/][fg=#999999 i]task-003 fell back to Codex while Claude waits for its 5h reset; two[/]
   [fg=#999999 i]tasks are merged.[/]

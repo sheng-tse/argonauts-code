@@ -9,6 +9,7 @@ use anyhow::{Context as _, anyhow, bail};
 use argonauts_conductor::cli_versions::CliVersions;
 use argonauts_conductor::{AgentCheck, AgentStatus, DoctorReport, doctor};
 use argonauts_core::NoteLevel;
+use argonauts_core::Paths;
 use argonauts_core::api::ConductorApi;
 use argonauts_core::app::{AgentReady, AppEvent};
 use argonauts_core::clock::SystemClock;
@@ -21,6 +22,8 @@ use argonauts_core::text::sentence_case;
 use argonauts_registry::{
     SettingsWarning, WorkflowUpgrade, WorkflowUpgradeOutcome, upgrade_workflows,
 };
+use argonauts_tui::theme::{ColorEnv, Theme};
+use argonauts_tui::welcome;
 use argonauts_tui::{AppIo, UiOptions, history_file_in, run_app, run_screen_reader, stop_signal};
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
@@ -68,6 +71,7 @@ async fn run_once(
     options: &InteractiveOptions,
     first: FirstView,
 ) -> anyhow::Result<Option<PathBuf>> {
+    let opened = std::time::Instant::now();
     let env = AppEnv::discover(options.repo.as_deref())?;
     crate::prompts::catalog::use_files_of(&env);
     if env.agent_session {
@@ -89,6 +93,16 @@ async fn run_once(
     // `argonauts run` attaches to the run it just started and never opens the setup.
     let guided_setup = options.guided_setup
         || (!matches!(first, FirstView::Attach(_)) && needs_guided_setup(&env.paths));
+    // The usage line shows once, at the first start, before any report goes.
+    let usage_line = crate::telemetry::notice::claim(&env.paths, settings.settings());
+    let var = |name: &str| std::env::var(name).ok();
+    let reader = screen_reader || ui.screen_reader;
+    let top = if may_greet(guided_setup, reader, &var) && claim_greeting(&env.paths) {
+        ui.greeting = Some(greeting(usage_line));
+        Top::Greeting
+    } else {
+        Top::Header { usage_line }
+    };
 
     let env = Arc::new(env);
     let services = services(&env, &settings)?;
@@ -117,7 +131,7 @@ async fn run_once(
     // The screen draws at once; the header and the controller follow on their own task.
     let app = tokio::spawn(async move {
         let mut ctx = ctx;
-        greet(&mut ctx).await;
+        greet(&mut ctx, top, opened).await;
         let controller = Controller::new(ctx, internal_rx)?;
         controller
             .run(
@@ -211,17 +225,57 @@ fn services(env: &Arc<AppEnv>, settings: &AppSettings) -> anyhow::Result<AppServ
     })
 }
 
-/// The header first, then the one-time notices. The names go before the header, so it names
-/// the agent as the rest of the screen will.
-async fn greet(ctx: &mut Ctx) {
+/// What a start shows on top, before the one-time notices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Top {
+    /// The header, with the usage line under it when this start shows it.
+    Header { usage_line: bool },
+    /// The greeting the screen printed, which holds the usage line. The header follows the
+    /// setup, which sends it as it saves.
+    Greeting,
+}
+
+/// The first start in a terminal greets you before its setup, never in CI.
+fn may_greet(
+    guided_setup: bool,
+    screen_reader: bool,
+    var: &dyn Fn(&str) -> Option<String>,
+) -> bool {
+    guided_setup && !screen_reader && !in_ci(var)
+}
+
+/// The greeting, with the usage line under it when this start shows that too.
+fn greeting(usage_line: bool) -> welcome::Greeting {
+    use crate::telemetry::notice::{LINE, STOP_COMMAND};
+    welcome::Greeting {
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        usage: usage_line.then(|| (LINE.to_owned(), STOP_COMMAND.to_owned())),
+        picture: false,
+    }
+}
+
+/// The header first, unless the greeting stands on top, then the usage line when this start
+/// shows it, then the one-time notices. The names go before the header, so it names the agent
+/// as the rest of the screen will.
+async fn greet(ctx: &mut Ctx, top: Top, opened: std::time::Instant) {
     crate::controller::names::send(ctx);
-    let runs = run_counts(ctx.services.conductor.as_ref()).await;
     let report = doctor(&builtin_adapters(), ctx.settings()).await;
     let found = crate::telemetry::found(Some(&ctx.env), &report);
     crate::telemetry::send_when_due(&ctx.env.paths, ctx.settings(), found);
     ctx.cli_facts.checked(report.clone());
-    let hello = welcome_from(ctx, &report, runs);
-    ctx.send(hello);
+    if let Top::Header { usage_line } = top {
+        let runs = run_counts(ctx.services.conductor.as_ref()).await;
+        let hello = welcome_from(ctx, &report, runs);
+        ctx.send(hello);
+        if usage_line {
+            ctx.notice(NoteLevel::Quiet, crate::telemetry::notice::LINE);
+        }
+    }
+    say_it_updated(ctx);
+    for (level, text) in crate::self_update::daily::at_start(&ctx.env.paths, ctx.settings()) {
+        ctx.notice(level, text);
+    }
+    crate::telemetry::count(ctx, crate::telemetry::Use::started(opened.elapsed()));
     for (level, text) in start_notices(ctx) {
         ctx.notice(level, text);
     }
@@ -232,6 +286,13 @@ async fn greet(ctx: &mut Ctx) {
         ctx.notice(level, text);
     }
     crate::controller::cli_updates::ask_newest(ctx, &report);
+}
+
+/// The first start after a newer version took over says so above the input, once.
+fn say_it_updated(ctx: &Ctx) {
+    if let Some(words) = crate::self_update::daily::updated_row(&ctx.env.paths) {
+        ctx.send(AppEvent::Updated { words });
+    }
 }
 
 /// Once per new version, each installed CLI newer than the newest one its adapter was checked
@@ -483,6 +544,55 @@ fn first_time(dir: &Path, marker: &str) -> bool {
     }
     let _ = create_private_dir_all(dir).and_then(|()| write_private_file(&path, b""));
     true
+}
+
+/// `argonauts welcome`: the first start's greeting, which the install script shows once it has
+/// installed, with what to do next. Only on a terminal and never in CI, so a script that runs
+/// it prints nothing. The first start then needn't greet again.
+pub fn welcome() -> std::process::ExitCode {
+    use std::io::IsTerminal as _;
+    let var = |name: &str| std::env::var(name).ok();
+    if !std::io::stdout().is_terminal() || in_ci(&var) {
+        return std::process::ExitCode::SUCCESS;
+    }
+    if let Ok(paths) = Paths::from_env() {
+        claim_greeting(&paths);
+    }
+    let theme = Theme::detect(&ColorEnv::from_process());
+    let lines = welcome::greeting(env!("CARGO_PKG_VERSION"), Some(welcome::NEXT_STEP), &theme);
+    // A blank line sets it apart from the installer's own lines above it.
+    print!("\n{}", welcome::printed(&lines, theme.has_color()));
+    std::process::ExitCode::SUCCESS
+}
+
+/// The marker that the greeting showed, beside the usage line's.
+const GREETED: &str = "welcomed";
+
+/// Whether this start is the one to greet: the first one, on a terminal, outside CI. Made with
+/// `create_new`, so of two first starts together only one greets.
+pub(crate) fn claim_greeting(paths: &Paths) -> bool {
+    let marker = paths.home().join("state").join(GREETED);
+    let made = marker
+        .parent()
+        .map_or(Ok(()), create_private_dir_all)
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&marker)
+                .map(drop)
+        });
+    made.is_ok()
+}
+
+/// `CI` set to anything but empty, `0` or `false`.
+fn in_ci(var: &dyn Fn(&str) -> Option<String>) -> bool {
+    var("CI").is_some_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false"
+        )
+    })
 }
 
 #[cfg(test)]
@@ -982,5 +1092,55 @@ mod tests {
     fn workflows_are_checked_only_in_the_global_folder_you_have() {
         let dir = tempfile::tempdir().unwrap();
         assert!(workflow_notices(&dir.path().join("workflows")).is_empty());
+    }
+
+    /// The first start in a terminal greets, once. A later start, a screen reader and CI never
+    /// do, and the greeting holds the usage line only when this start shows it.
+    /// The first start after an update says so once; the very first start, and the starts
+    /// after, say nothing of it.
+    #[tokio::test]
+    async fn the_first_start_after_an_update_says_so_once() {
+        let (mut parts, _) = TestCtx::new(CliOptions::default());
+        let updated = |parts: &mut TestCtx| {
+            say_it_updated(&parts.ctx);
+            let mut said = Vec::new();
+            while let Ok(event) = parts.events.try_recv() {
+                if let AppEvent::Updated { words } = event {
+                    said.push(words);
+                }
+            }
+            said
+        };
+        assert!(updated(&mut parts).is_empty(), "the very first start");
+        let last = parts.env.paths.home().join("state").join("last-version");
+        std::fs::write(&last, "0.0.1\n").unwrap();
+        let running = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            updated(&mut parts),
+            [format!("Updated to {running} · /release-notes")]
+        );
+        assert!(updated(&mut parts).is_empty(), "once");
+    }
+
+    #[test]
+    fn only_the_first_start_in_a_terminal_greets() {
+        let nothing = |_: &str| None;
+        let ci = |value: &'static str| move |name: &str| (name == "CI").then(|| value.to_owned());
+        assert!(may_greet(true, false, &nothing));
+        assert!(may_greet(true, false, &ci("false")));
+        assert!(!may_greet(false, false, &nothing), "a later start");
+        assert!(!may_greet(true, true, &nothing), "a screen reader");
+        assert!(!may_greet(true, false, &ci("true")), "CI");
+
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::new(home.path());
+        assert!(claim_greeting(&paths));
+        assert!(!claim_greeting(&paths), "once");
+
+        use crate::telemetry::notice::{LINE, STOP_COMMAND};
+        assert_eq!(greeting(false).usage, None);
+        let usage = Some((LINE.to_owned(), STOP_COMMAND.to_owned()));
+        assert_eq!(greeting(true).usage, usage);
+        assert_eq!(greeting(true).version, env!("CARGO_PKG_VERSION"));
     }
 }

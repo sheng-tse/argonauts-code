@@ -7,9 +7,10 @@ use argonauts_core::settings::protocol::CaptainKind;
 use argonauts_core::{AgentEvent, NoteLevel};
 
 use crate::bridge::tools::is_own;
+use crate::bridge::transcript::own_calls::Own;
 use crate::state::AppState;
 
-use super::agent::agent_lines;
+use super::agent::{StartedCall, agent_lines};
 use super::questions::QuestionList;
 use super::run::run_lines;
 use super::views::view_lines;
@@ -45,6 +46,8 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
         }
         AppEvent::SettingRefused { why, .. } => labeled("error", why),
         AppEvent::Hint { text } => labeled("notice", text),
+        AppEvent::Updated { words } => labeled("notice", words),
+        AppEvent::PullRequestFollowed { followed, .. } => labeled("pull request", &followed.said),
         AppEvent::View { data } => view_lines(data, &state.names),
         AppEvent::Recap { text, .. } => labeled("recap", text),
         AppEvent::TakenBack { texts } => texts
@@ -114,6 +117,11 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
         }
         // Said once, whole, when its report comes.
         AppEvent::ReportSoFar { .. } | AppEvent::CommandWorking { .. } => Vec::new(),
+        // The tab shows where an update is; its end is said.
+        AppEvent::DeepProgress { .. } => Vec::new(),
+        AppEvent::DeepDone { done } => {
+            labeled("deeper map", &crate::overview::deep_lines::ended(done))
+        }
         AppEvent::Templates { list } => {
             let said = |label: &str, entries: &[argonauts_core::template_list::TemplateEntry]| {
                 let names: Vec<String> = entries
@@ -292,7 +300,21 @@ fn conversation_lines(event: &ConversationEvent, state: &AppState) -> Vec<String
             Vec::new()
         }
         ConversationEvent::Agent { event, .. } => {
-            agent_lines(agent_id, agent_id, event, state, None, None)
+            // The answer to one of the session's own calls reads by what that call asked.
+            let own = match event {
+                AgentEvent::ToolFinished { id, .. } => state
+                    .conversation
+                    .tools
+                    .iter()
+                    .rev()
+                    .find(|tool| tool.id == *id && Own::named(&tool.name).is_some())
+                    .map(|tool| StartedCall {
+                        name: &tool.name,
+                        input: &tool.input,
+                    }),
+                _ => None,
+            };
+            agent_lines(agent_id, agent_id, event, state, own, None)
         }
         ConversationEvent::TurnFinished { reply, .. } => match reply {
             TurnReply::Answer { markdown } | TurnReply::Unclear { markdown, .. } => {

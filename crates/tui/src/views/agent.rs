@@ -13,8 +13,8 @@ use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::settings::ui::CliInternals;
 use argonauts_core::steps::plan::Severity;
 use argonauts_core::views::{
-    AgentRow, AgentView as AgentData, AskedFor, Finding, Moved, PhaseRow, RowStatus, StatusLine,
-    WorkflowRow,
+    AgentRow, AgentView as AgentData, AskedFor, Finding, Moved, PhaseRow, RowStatus, StartedFrom,
+    StatusLine, Tone, WorkflowRow,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
@@ -64,6 +64,8 @@ const MOST_LEFT_NAMED: usize = 64;
 
 /// What the box takes beside its two panes: its borders and the blank cell inside each.
 const BOX_EDGES: usize = 7;
+/// Below this many columns the list beside an open agent keeps to a quarter of the box.
+const NARROW: u16 = 120;
 
 /// Longer subagent names are cut, so their states still line up.
 const MAX_CHILD_LABEL: usize = 24;
@@ -80,6 +82,9 @@ pub struct AgentView {
     siblings: Vec<AgentRow>,
     /// The phase's outline as its workflow view had it open, when it was opened from one.
     outline: Option<AgentOutline>,
+    /// How its run stands, as the workflow view it was opened from has it, which knows a run
+    /// read from its journal that this session never watched.
+    pub run_state: Option<argonauts_core::views::WorkflowState>,
     selected: usize,
     scroll: usize,
     /// Enter shows every section whole, and folds them again.
@@ -118,6 +123,7 @@ impl AgentView {
             phase: None,
             siblings,
             outline: None,
+            run_state: None,
             selected: 0,
             scroll: 0,
             expanded: false,
@@ -269,6 +275,14 @@ impl AgentView {
             } else {
                 MOST_LEFT
             };
+            // On a narrow screen the list keeps to a quarter of the box, as Claude Code's does,
+            // and its title is cut to fit. Labels that need their agent's name to be told apart
+            // keep their room.
+            let most = if area.width < NARROW && !named {
+                most.min(panes / 4).max(LEAST_LEFT)
+            } else {
+                most
+            };
             let left_width = (LIST_MARGIN + longest)
                 .max(str_width(&phase_title))
                 .clamp(LEAST_LEFT, most)
@@ -333,23 +347,32 @@ impl AgentView {
         if let Some(host) = self.place().host.filter(|_| self.data.row.inner.is_some()) {
             let elsewhere = format!("to message or stop it, select {host}");
             return Footer::hints(&[
-                ("↑↓ agent", 0),
+                ("↑↓  agent", 0),
                 ("j/k scroll", 3),
                 (enter, 2),
                 (panes::ESC_BACK, 0),
                 (&elsewhere, 1),
             ]);
         }
-        let mut hints = vec![("↑↓ agent", 0), ("j/k scroll", 6), (enter, 7)];
+        let mut hints = vec![("↑↓  agent", 0), ("j/k scroll", 6), (enter, 7)];
         // With vim keys on, `g` is the top of the list.
         if self.loaded() && self.data.goal.is_some() && !list::vim(ctx.state) {
             hints.push(("g its goal", 5));
         }
-        hints.extend([("m message", 5), ("x stop", 4), ("r restart", 4)]);
-        if !self.running() && super::run_ended(ctx.state, &self.data.run) {
+        hints.push(("m message", 5));
+        // As in Claude Code, an agent stops or starts over only while it runs.
+        if self.running() {
+            hints.extend([("x stop", 4), ("r restart", 4)]);
+        }
+        let ended = super::run_ended(ctx.state, &self.data.run)
+            || self.run_state.is_some_and(|state| state.has_ended());
+        if !self.running() && ended {
             hints.push(("c continue", 3));
         }
-        hints.push(("p pause", 3));
+        // A run that ended has nothing left to pause; a paused one says p resumes it.
+        if !ended {
+            hints.push((super::pause_hint(ctx.state, &self.data.run), 3));
+        }
         hints.push((panes::ESC_BACK, 0));
         if self.phase.is_some() {
             hints.push(("s save", 1));
@@ -452,10 +475,30 @@ impl AgentView {
             lines.push(Line::from(Span::styled("Loading…", theme.style(Role::Dim))));
             return lines;
         }
+        // Claude Code leaves a blank line between an open agent's sections.
+        let mut first = true;
+        let mut section = |lines: &mut Vec<Line<'static>>| {
+            if !std::mem::take(&mut first) {
+                lines.push(Line::default());
+            }
+        };
+        if let Some(from) = &self.data.started_from {
+            section(&mut lines);
+            lines.extend(started_from_lines(from, width, ctx));
+        }
         if let Some(moved) = &self.data.moved {
+            section(&mut lines);
             lines.extend(moved_lines(moved, models, width, ctx));
         }
+        if let Some(given) = self.data.given.as_deref() {
+            section(&mut lines);
+            lines.push(Line::from(Span::styled(
+                cut(sanitize_line(given).trim(), usize::from(width)),
+                theme.style(Role::Text),
+            )));
+        }
         if let Some(asked) = &self.data.asked_for {
+            section(&mut lines);
             lines.extend(asked_for_lines(asked, &self.data.row, models, width, ctx));
         }
         // Nothing ran for a job left out, so it has no prompt, calls or outcome to show.
@@ -473,7 +516,7 @@ impl AgentView {
         let blocks = [
             self.prompt(width, open, inner_cli.as_deref(), theme),
             self.to_fix(width, theme),
-            self.earlier(width, theme),
+            self.earlier(width, &ctx.state.names, theme),
             self.activity(width, open, inner_cli.as_deref(), theme),
             self.diff(),
             self.subagents(width, open, internals, theme),
@@ -498,6 +541,7 @@ impl AgentView {
                 }
                 _ => section_title(&title, hint.as_deref(), theme),
             };
+            section(&mut lines);
             lines.push(line);
             lines.extend(body);
         }
@@ -543,9 +587,16 @@ impl AgentView {
         let indent = [Span::raw("  ")];
         let foldable = folds(all.len(), PROMPT_PREVIEW);
         let cli = cli.filter(|_| !text.trim().is_empty());
+        // A session a handover started was given the main agent's brief as its prompt.
+        let brief = if self.data.started_from.is_some() {
+            "the brief, "
+        } else {
+            ""
+        };
         let title = match cli {
             Some(cli) => format!("Prompt · shortened by {cli}"),
-            None if foldable => format!("Prompt · {}", panes::count(all.len(), "line")),
+            None if foldable => format!("Prompt · {brief}{}", panes::count(all.len(), "line")),
+            None if !brief.is_empty() => "Prompt · the brief".to_owned(),
             None => "Prompt".to_owned(),
         };
         let mut body = Vec::new();
@@ -554,8 +605,11 @@ impl AgentView {
                 body.extend(wrap_text(line, dim, usize::from(width), &indent, &indent));
             }
         } else {
-            // The first lines with text: a blank line between parts says nothing in a preview.
-            let shown: Vec<usize> = (0..all.len())
+            // The first lines with text of the prompt's own words, past the frame every agent
+            // of its role gets: a blank line between parts says nothing in a preview.
+            let about = self.data.prompt_about.as_ref();
+            let start = about.map_or(0, |about| about.first.min(all.len()));
+            let shown: Vec<usize> = (start..all.len())
                 .filter(|at| !all[*at].trim().is_empty())
                 .take(PROMPT_PREVIEW)
                 .collect();
@@ -565,10 +619,19 @@ impl AgentView {
                     Span::styled(cut(all[*at], inner), dim),
                 ]));
             }
-            let after = shown.last().map_or(0, |last| last + 1);
-            if all.len() > after {
-                let mut more = more_lines(all.len() - after);
-                let parts = prompt_parts(&all[after..]);
+            let after = shown.last().map_or(start, |last| last + 1);
+            // Every line the preview leaves out counts, the frame above it too.
+            let hidden = all.len() - (after - start);
+            if hidden > 0 {
+                let mut more = more_lines(hidden);
+                let parts = match about.filter(|about| !about.holds.is_empty()) {
+                    Some(about) => about
+                        .holds
+                        .iter()
+                        .map(|holds| sanitize_line(holds).trim().to_owned())
+                        .collect(),
+                    None => prompt_parts(&all[after..]),
+                };
                 if !parts.is_empty() {
                     more.push_str(&format!(": {}", argonauts_core::text::listed(&parts)));
                 }
@@ -616,8 +679,9 @@ impl AgentView {
         ))
     }
 
-    /// For a reviewer, the earlier round's findings it was given, each with its answer.
-    fn earlier(&self, width: u16, theme: &Theme) -> Option<Block> {
+    /// For a reviewer, the earlier round's findings it was given, each with its answer, and for
+    /// a judge the latest review, which may have found nothing.
+    fn earlier(&self, width: u16, names: &DisplayNames, theme: &Theme) -> Option<Block> {
         let earlier = self.data.earlier.as_ref()?;
         let mut title = format!(
             "Earlier findings · {}, round {}",
@@ -627,7 +691,47 @@ impl AgentView {
         if let Some(by) = earlier.answered_by.as_deref().map(str::trim) {
             title.push_str(&format!(" · answered by {}", sanitize_line(by)));
         }
-        let body = finding_lines(&earlier.items, &earlier.answers, width, theme);
+        let text = theme.style(Role::Text);
+        let dim = theme.style(Role::Dim);
+        // What the review said of the work, `approved by GPT 6 Luna on Codex`, after `none`
+        // when it found nothing.
+        let mut said = Vec::new();
+        if earlier.items.is_empty() {
+            said.push(Span::styled("  none", text));
+        }
+        if let Some(verdict) = &earlier.verdict {
+            said.push(Span::styled(
+                if said.is_empty() { "  " } else { " · " },
+                text,
+            ));
+            said.push(Span::styled(
+                sanitize_line(&verdict.said).trim().to_owned(),
+                theme.style(tone_role(verdict.tone)),
+            ));
+            let cli = sanitize_line(&names.cli(&verdict.by.agent)).into_owned();
+            let by = match names.model(&verdict.by.agent, verdict.by.model.as_deref()) {
+                Some(model) => format!(" by {} on {cli}", sanitize_line(&model)),
+                None => format!(" by {cli}"),
+            };
+            said.push(Span::styled(by, dim));
+        }
+        let mut body = Vec::new();
+        if !said.is_empty() {
+            body.push(Line::from(truncate_spans(&said, usize::from(width))));
+        }
+        let summary = earlier.verdict.as_ref().and_then(|v| v.summary.as_deref());
+        if let Some(summary) = summary.map(|summary| sanitize_line(summary).trim().to_owned()) {
+            body.push(Line::from(Span::styled(
+                cut(&format!("  \"{summary}\""), usize::from(width)),
+                dim,
+            )));
+        }
+        body.extend(finding_lines(
+            &earlier.items,
+            &earlier.answers,
+            width,
+            theme,
+        ));
         Some((title, None, body))
     }
 
@@ -906,10 +1010,45 @@ impl AgentView {
                 title.push_str(&format!(" · {}", finding_counts(&review.findings)));
             }
             let mut body = finding_lines(&review.findings, &[], width, theme);
+            // With no findings, what it gave is its own lines, a challenger's points, each one
+            // row cut at the pane as findings are.
+            if body.is_empty() {
+                let text = theme.style(Role::Text);
+                body = self
+                    .data
+                    .outcome
+                    .as_deref()
+                    .unwrap_or_default()
+                    .lines()
+                    .map(|line| sanitize_line(line).trim().to_owned())
+                    .filter(|line| !line.is_empty())
+                    .map(|line| {
+                        let span = Span::styled(format!("  {line}"), text);
+                        Line::from(truncate_spans(&[span], usize::from(width)))
+                    })
+                    .collect();
+            }
             if body.is_empty() {
                 body = rendered.unwrap_or_default();
             }
             return (title, None, body);
+        }
+        // A failed agent's outcome is why it failed, in the failure's colour, as Claude Code
+        // draws every failed agent's.
+        let failed = theme.style(Role::Danger);
+        let why = self
+            .data
+            .row
+            .note
+            .as_ref()
+            .filter(|note| note.tone == Tone::Bad && self.data.row.status == RowStatus::Failed)
+            .map(|note| {
+                argonauts_core::text::sentence_case(sanitize_line(note.text.trim()).trim())
+            });
+        if let Some(why) = why.filter(|why| !why.is_empty()) {
+            let indent = [Span::raw("  ")];
+            let body = wrap_text(&why, failed, usize::from(width), &indent, &indent);
+            return ("Outcome".to_owned(), None, body);
         }
         let Some(rendered) = rendered else {
             let said = match self.data.row.status {
@@ -925,10 +1064,9 @@ impl AgentView {
             return ("Outcome".to_owned(), None, vec![line]);
         };
         let mut rendered = rendered;
-        // Why one of its CLI's own agents failed is all it ended with, and reads in the
-        // failure's colour, as in Claude Code's own view.
-        if self.data.row.inner.is_some() && self.data.row.status == RowStatus::Failed {
-            let failed = theme.style(Role::Danger);
+        // What a failed agent ended with reads in the failure's colour, as in Claude Code's
+        // own view.
+        if self.data.row.status == RowStatus::Failed {
             for span in rendered.iter_mut().flat_map(|line| &mut line.spans) {
                 span.style = failed;
             }
@@ -1296,9 +1434,15 @@ fn status_line(
         RowStatus::Done => "Done".to_owned(),
         RowStatus::Failed => "Failed".to_owned(),
     };
+    // As Claude Code draws it, a failure's word is in the failure's colour.
+    let word_style = match row.status {
+        RowStatus::Failed if !row.left_out => theme.style(role),
+        _ => theme.style(Role::Text),
+    };
     let mut spans = vec![
         Span::styled(format!("{glyph} "), theme.style(role)),
-        Span::styled(format!("{word} · "), theme.style(Role::Text)),
+        Span::styled(word, word_style),
+        Span::styled(" · ", theme.style(Role::Text)),
     ];
     let cli = sanitize_line(&names.cli(&row.worker.agent)).into_owned();
     // The model a job left out was meant for never ran, so it's dim.
@@ -1326,7 +1470,7 @@ fn status_line(
     if let Some(first) = row.fallback_for.as_ref().filter(|_| !said_below) {
         spans.push(Span::styled(" · ", dim));
         spans.push(Span::styled(
-            format!("for {}", sanitize_line(&names.short(first))),
+            format!("in place of {}", sanitize_line(&names.short(first))),
             theme.style(Role::Warn),
         ));
     }
@@ -1337,9 +1481,52 @@ fn status_line(
     Line::from(truncate_spans(&spans, usize::from(width)))
 }
 
-/// Why the job came to this model: `Fallback for GPT 5.6 Luna on Codex, which crashed`, the
-/// model it stands in for in that model's colour, or `Left out, because Antigravity CLI is
-/// signed out`, each with what more is known under it.
+/// What an orchestrator began from, as a line and a dim one under it: `Forked from your main
+/// session · 48.2k tokens of conversation`, or `Started from the brief · written by Opus 5.5
+/// from this conversation`.
+fn started_from_lines(from: &StartedFrom, width: u16, ctx: &ViewCtx<'_>) -> Vec<Line<'static>> {
+    const BESIDE: &str = "your conversation goes on beside the run";
+    let theme = ctx.theme;
+    let (said, under) = match from {
+        StartedFrom::Fork { tokens } => {
+            let mut said = "Forked from your main session".to_owned();
+            if let Some(tokens) = tokens {
+                said.push_str(&format!(
+                    " · {} tokens of conversation",
+                    crate::format::context_tokens(*tokens)
+                ));
+            }
+            (
+                said,
+                format!("the brief came as its first message · {BESIDE}"),
+            )
+        }
+        StartedFrom::Brief(brief) => {
+            let by = ctx.state.names.short(&brief.written_by);
+            let said = format!(
+                "Started from the brief · written by {} from this conversation",
+                sanitize_line(&by)
+            );
+            let under = match brief.why.as_deref() {
+                Some(why) => format!("{} · {BESIDE}", sanitize_line(why).trim()),
+                None => BESIDE.to_owned(),
+            };
+            (said, under)
+        }
+    };
+    let width = usize::from(width);
+    vec![
+        Line::from(Span::styled(cut(&said, width), theme.style(Role::Text))),
+        Line::from(Span::styled(
+            cut(&format!("  {under}"), width),
+            theme.style(Role::Dim),
+        )),
+    ]
+}
+
+/// Why the job came to this model: `In place of Qwen3 Coder 30B, whose 64k window can't hold
+/// this change`, the model it stands in for in that model's colour, or `Left out, because agy
+/// is signed out`, each with what more is known under it.
 fn moved_lines(
     moved: &Moved,
     models: &Models,
@@ -1358,17 +1545,18 @@ fn moved_lines(
             let model = names
                 .model(&asked.agent, asked.model.as_deref())
                 .unwrap_or_else(|| names.cli(&asked.agent));
+            // Why reads on from the model's name: "whose window can't hold…", "which crashed".
+            let which = sanitize_line(which);
+            let which = which.trim();
+            let clause = if which.starts_with("whose ") || which.starts_with("which ") {
+                which.to_owned()
+            } else {
+                format!("which {which}")
+            };
             let spans = vec![
-                Span::styled("Fallback for ", text),
+                Span::styled("In place of ", text),
                 Span::styled(sanitize_line(&model).into_owned(), models.style(asked, ctx)),
-                Span::styled(
-                    format!(
-                        " on {}, which {}",
-                        sanitize_line(&names.cli(&asked.agent)),
-                        sanitize_line(which).trim()
-                    ),
-                    text,
-                ),
+                Span::styled(format!(", {clause}"), text),
             ];
             (spans, lines)
         }
@@ -1422,12 +1610,21 @@ fn asked_for_lines(
         ],
         usize::from(width),
     ));
-    let what = format!(
-        "  it gave {} the change, waited, and passed the verdict back · {} · {}",
+    // While the one asked still reads, the agent that asked waits for its verdict.
+    let did = if matches!(row.status, RowStatus::Running | RowStatus::Queued) {
+        "the change and waits for the verdict"
+    } else {
+        "the change, waited, and passed the verdict back"
+    };
+    let mut what = format!(
+        "  it gave {} {did}",
         sanitize_line(&names.cli(&row.worker.agent)),
-        panes::tokens(asked.tokens),
-        panes::elapsed(asked.elapsed_ms),
     );
+    // Claude Code reports an agent's tokens only once it ends.
+    if asked.tokens > 0 {
+        what.push_str(&format!(" · {}", panes::tokens(asked.tokens)));
+    }
+    what.push_str(&format!(" · {}", panes::elapsed(asked.elapsed_ms)));
     let did = Line::from(truncate_spans(
         &[Span::styled(what, theme.style(Role::Dim))],
         usize::from(width),
@@ -1631,7 +1828,7 @@ impl View for AgentView {
                     Err(why) => ViewOutcome::Notice(why),
                 }
             }
-            KeyCode::Char('p') if plain => super::pause(&self.data.run, ctx),
+            KeyCode::Char('p') if plain => super::pause_key(&self.data.run, ctx),
             // ← goes up, as Esc does.
             KeyCode::Esc | KeyCode::Left => ViewOutcome::Close,
             _ => ViewOutcome::Ignored,
@@ -1700,6 +1897,7 @@ mod tests {
                 note: None,
                 inner: None,
                 left_out: false,
+                fallback_why: None,
             },
             prompt: "Build the history cells.".into(),
             activity: Vec::new(),
@@ -1714,7 +1912,10 @@ mod tests {
             asked_for: None,
             earlier: None,
             moved: None,
+            given: None,
+            prompt_about: None,
             review: None,
+            started_from: None,
         }
     }
 
@@ -1813,7 +2014,7 @@ mod tests {
         for width in [60, 80, 100] {
             let text = draw_in(&mut in_phase("Done."), width, &state);
             let footer = footer(&text);
-            assert!(footer.starts_with("↑↓ agent"), "{footer}");
+            assert!(footer.starts_with("↑↓  agent"), "{footer}");
             let end = footer.trim_end();
             assert!(
                 end.ends_with("esc back") || end.ends_with("s save"),
@@ -1828,8 +2029,24 @@ mod tests {
         }
     }
 
-    /// The keys are Claude Code's for an open agent, whoever is open and however its run
-    /// stands, and one that can't act says why. Enter's word says what it does now.
+    /// An agent of a run read from its journal, which this session never watched, ended with
+    /// its run as the workflow view says: it can be carried on, and nothing is left to pause.
+    #[test]
+    fn an_agent_of_a_run_read_from_its_journal_offers_to_carry_on() {
+        let mut done = data("Done.");
+        done.row.status = RowStatus::Done;
+        let row = done.row.clone();
+        let mut view = AgentView::in_phase(done, &phase(vec![WorkflowRow::Agent(row)]));
+        view.run_state = Some(argonauts_core::views::WorkflowState::Done);
+        let text = draw_in(&mut view, 124, &AppState::default());
+        let keys = footer(&text);
+        assert!(keys.contains("c continue"), "{keys}");
+        assert!(!keys.contains("p pause"), "{keys}");
+    }
+
+    /// The keys are Claude Code's for an open agent: stop and restart only while it runs, and
+    /// nothing to pause once its run ended. One that can't act says why when pressed anyway.
+    /// Enter's word says what it does now.
     #[test]
     fn the_keys_hold_still_and_say_why_when_they_cant_act() {
         let mut done = data(&"A line of the outcome.\n".repeat(12));
@@ -1844,8 +2061,7 @@ mod tests {
         let text = draw_in(&mut view, 124, &finished);
         assert_eq!(
             footer(&text).trim(),
-            "↑↓ agent · j/k scroll · ⏎ expand · m message · x stop · r restart · c continue · \
-             p pause · esc back · s save"
+            "↑↓  agent · j/k scroll · ⏎ expand · m message · c continue · esc back · s save"
         );
         // Pressed anyway, they say what happened and what to do instead.
         for c in ['t', 'm', 'r'] {
@@ -2120,6 +2336,40 @@ mod tests {
         ));
     }
 
+    /// The view's `p` is the workflow view's: it reads `p resume` on a paused run and resumes
+    /// it, and takes back a pause still under way.
+    #[test]
+    fn the_agent_views_p_toggles_as_the_workflow_views_does() {
+        let mut view = in_phase("");
+        let run = view.data.run.clone();
+        let mut paused = live_state();
+        paused.attached = Some(run.clone());
+        if let Some(held) = paused.runs.get_mut(&run) {
+            held.waiting = Some(argonauts_core::events::run::WaitReason::Paused);
+        }
+        let text = draw_in(&mut view, 124, &paused);
+        assert!(footer(&text).contains("p resume"), "{text}");
+        assert!(matches!(
+            key_in(&mut view, KeyCode::Char('p'), KeyModifiers::NONE, &paused),
+            ViewOutcome::Send(UiCommand::Resume { run: Some(_) })
+        ));
+        let mut pausing = paused.clone();
+        if let Some(held) = pausing.runs.get_mut(&run) {
+            held.waiting = None;
+            held.pausing = true;
+        }
+        assert!(matches!(
+            key_in(&mut view, KeyCode::Char('p'), KeyModifiers::NONE, &pausing),
+            ViewOutcome::Send(UiCommand::CancelPause)
+        ));
+        let mut going = pausing.clone();
+        if let Some(held) = going.runs.get_mut(&run) {
+            held.pausing = false;
+        }
+        let text = draw_in(&mut view, 124, &going);
+        assert!(footer(&text).contains("p pause"), "{text}");
+    }
+
     /// Through the terminal's diff, as a pty shows it: the code span stays before the long word.
     #[test]
     fn the_outcome_keeps_a_code_span_before_a_long_word() {
@@ -2157,6 +2407,7 @@ mod tests {
             note: None,
             inner: None,
             left_out: false,
+            fallback_why: None,
         }
     }
 
@@ -2179,7 +2430,10 @@ mod tests {
             asked_for: None,
             earlier: None,
             moved: None,
+            given: None,
+            prompt_about: None,
             review: None,
+            started_from: None,
         };
         let siblings = vec![
             WorkflowRow::Agent(row("s-001", RowStatus::Done)),
@@ -2211,7 +2465,7 @@ mod tests {
             .position(|line| line.contains("⏺ Running · Opus on Claude Code · worker · worktree"))
             .unwrap_or_else(|| panic!("{text}"));
         assert!(
-            lines[head + 1].contains("381k tok · 23 tool calls · 6m 2s · context 31% of 200k"),
+            lines[head + 1].contains("381.0k tok · 23 tool calls · 6m 2s · context 31% of 200k"),
             "{text}"
         );
         assert!(!text.contains("run-01"), "{text}");

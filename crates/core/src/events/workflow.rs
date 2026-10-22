@@ -128,7 +128,7 @@ pub struct AgentLeftOut {
     pub meant_for: ModelRef,
     /// What its CLI said, in a few words for its row: `signed out`.
     pub why: String,
-    /// The same, whole, for its agent view: `Antigravity CLI is signed out`. Empty in a run
+    /// The same, whole, for its agent view: `agy is signed out`. Empty in a run
     /// recorded before it was kept.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub said: String,

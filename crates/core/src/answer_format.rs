@@ -4,6 +4,7 @@
 //! with only what it requires required. The answer is read back as the format was written,
 //! those nulls left out again, and mended when its fields ran on inside one string.
 
+mod in_reply;
 mod leaked;
 #[cfg(test)]
 mod report_tests;
@@ -12,6 +13,7 @@ use serde_json::{Map, Value, json};
 
 use crate::steps::{strict_schema, written_schema};
 
+pub use in_reply::json_in;
 pub use leaked::mended;
 
 /// The format as Claude Code takes it: the subset every CLI accepts, with a field that has a

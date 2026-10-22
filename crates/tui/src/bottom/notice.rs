@@ -18,7 +18,7 @@ const MAX_CHARS: usize = 240;
 const STAR: &str = "✦";
 const BUTTON_GAP: &str = "   ";
 /// The bottom line while the notice has the keys.
-pub const NOTICE_KEYS: &str = "←/→ to choose · enter to press · esc for the input";
+pub const NOTICE_KEYS: &str = "←/→  to choose · enter to press · esc for the input";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Notice {

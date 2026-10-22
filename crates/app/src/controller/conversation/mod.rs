@@ -31,9 +31,12 @@ mod copies;
 mod crew;
 mod direct;
 #[cfg(test)]
+mod direct_outside_tests;
+#[cfg(test)]
 mod direct_tests;
 mod edits;
 mod excerpt;
+mod fork;
 mod goal;
 mod handover;
 mod keep;
@@ -1682,6 +1685,32 @@ pub(crate) fn cli_command(
     Ok(effects)
 }
 
+/// [`cli_command`] that only reads, whatever the conversation's mode: `prompt` holds words anyone
+/// may have written, so its session gets no tool that writes or runs a command, in your
+/// checkout or anywhere, before you approve what comes of it.
+pub(crate) fn reading_cli_command(
+    ctx: &mut Ctx,
+    conversation: &mut ConversationState,
+    command: &CliCommand,
+    args: &str,
+    prompt: String,
+) -> anyhow::Result<Vec<Effect>> {
+    if conversation.turn.is_some() {
+        conversation.queue(Queued::Cli {
+            name: command.name.clone(),
+            args: args.trim().to_owned(),
+        });
+        return Ok(Vec::new());
+    }
+    let shown = command.invocation(args);
+    let effects = name_the_conversation(conversation, &shown);
+    begin(ctx, conversation, shown, |_| TurnStep::Cli {
+        prompt,
+        direct: None,
+    })?;
+    Ok(effects)
+}
+
 pub(crate) fn owns_choice(conversation: &ConversationState, id: &ChoiceId) -> bool {
     offer::owns_choice(conversation, id)
         || keep::owns(conversation, id)
@@ -1964,6 +1993,7 @@ fn run_request(
         instructions: Vec::new(),
         request_settings: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     }
 }
 

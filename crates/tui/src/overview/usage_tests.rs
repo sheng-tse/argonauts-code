@@ -177,7 +177,7 @@ fn summary() -> UsageSummary {
         plans: vec![
             plan("claude-code", "Claude Code", claude, true),
             plan("codex", "Codex", codex, false),
-            plan("antigravity-cli", "Antigravity CLI", agy, false),
+            plan("antigravity-cli", "agy", agy, false),
         ],
         conversation: Some(argonauts_core::Spend {
             cost_usd: 0.42,
@@ -310,7 +310,7 @@ fn a_wide_panel_draws_the_three_cards_side_by_side_as_the_picture() {
         "{rows:#?}"
     );
     assert!(
-        rows[2].starts_with("  All CLIs    Claude Code    Codex    Antigravity CLI"),
+        rows[2].starts_with("  All CLIs    Claude Code    Codex    agy"),
         "{rows:#?}"
     );
     assert!(
@@ -319,7 +319,7 @@ fn a_wide_panel_draws_the_three_cards_side_by_side_as_the_picture() {
     );
     let head = find(&rows, "● Claude Code");
     assert_eq!(head, find(&rows, "● Codex"), "side by side: {rows:#?}");
-    assert_eq!(head, find(&rows, "● Antigravity CLI"));
+    assert_eq!(head, find(&rows, "● agy"));
     assert!(rows[head].contains("Max · in use"), "{rows:#?}");
     assert!(rows[head].contains("Plus"));
     let session = find(&rows, "session");
@@ -360,7 +360,7 @@ fn a_wide_panel_draws_the_three_cards_side_by_side_as_the_picture() {
     );
     assert!(
         rows.last().unwrap().starts_with(
-            " r to cycle dates · tab · ← → tabs · ↓ CLIs · ctrl+r reads again · esc closes"
+            " r to cycle dates · tab · ←  →  tabs · ↓  CLIs · ctrl+r reads again · esc closes"
         ),
         "{rows:#?}"
     );
@@ -372,7 +372,7 @@ fn below_130_columns_the_cards_stack_each_whole() {
     let rows = rows(&mut usage_view(), &state, 129);
     let claude = find(&rows, "● Claude Code");
     let codex = find(&rows, "● Codex");
-    let agy = find(&rows, "● Antigravity CLI");
+    let agy = find(&rows, "● agy");
     assert!(claude < codex && codex < agy, "{rows:#?}");
     // Each card is whole: its reset lines under it, none cut.
     assert!(
@@ -414,14 +414,14 @@ fn a_cli_sub_tab_lays_out_like_claude_codes_usage() {
     assert!(
         page.last()
             .unwrap()
-            .starts_with(" r to cycle dates · tab · ← → CLIs · ↓ into the cards · ↑ tabs"),
+            .starts_with(" r to cycle dates · tab · ←  →  CLIs · ↓  into the cards · ↑  tabs"),
         "{page:#?}"
     );
     // ←→ wrap around the sub-tabs.
     key(&mut view, &state, KeyCode::Left);
     key(&mut view, &state, KeyCode::Left);
     let agy = rows(&mut view, &state, 100);
-    assert!(agy[2].contains("[Antigravity CLI]"), "{agy:#?}");
+    assert!(agy[2].contains("[agy]"), "{agy:#?}");
     let gpt = find(&agy, "Claude and GPT · 5-hour limit");
     assert_eq!(agy[gpt + 2], " Resets in 1h 28m · today 9:40pm");
     let week = find(&agy, "Claude and GPT · weekly limit");
@@ -581,21 +581,18 @@ fn on_a_small_screen_the_keys_reach_every_card() {
             .collect::<Vec<String>>()
     };
     let first = rows_on(&mut view);
+    assert!(!first.iter().any(|row| row.contains("● agy")), "{first:#?}");
     assert!(
-        !first.iter().any(|row| row.contains("● Antigravity CLI")),
+        first.iter().any(|row| row.contains("↓  more")),
         "{first:#?}"
     );
-    assert!(first.iter().any(|row| row.contains("↓ more")), "{first:#?}");
     key(&mut view, &state, KeyCode::Down);
     let mut seen = Vec::new();
     for _ in 0..6 {
         key(&mut view, &state, KeyCode::Down);
         seen.extend(rows_on(&mut view));
     }
-    assert!(
-        seen.iter().any(|row| row.contains("● Antigravity CLI")),
-        "{seen:#?}"
-    );
+    assert!(seen.iter().any(|row| row.contains("● agy")), "{seen:#?}");
 }
 
 #[test]

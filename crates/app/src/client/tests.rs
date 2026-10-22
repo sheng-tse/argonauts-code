@@ -40,6 +40,7 @@ fn request(text: &str) -> StartRun {
         instructions: Vec::new(),
         request_settings: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     }
 }
 
@@ -937,6 +938,24 @@ async fn a_stream_stays_live_while_the_run_host_holds_the_run() {
     server.stop();
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(*stream.live.borrow(), "a dropped socket isn't an exit");
+    drop(lock);
+    tokio::time::timeout(Duration::from_secs(5), stream.live.wait_for(|live| !live))
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+/// A stream can open while a run host holds the run with no socket up, on its way in or out.
+/// It counts as live from the start, so its letting go is seen as a change.
+#[tokio::test]
+async fn a_stream_opened_on_a_run_held_without_a_socket_sees_it_go() {
+    let home = TestHome::new();
+    let client = app_client(&home, Arc::new(FakeRunHost::default()));
+    let run = other_run("0903");
+    let run_dir = home.run_with(&client.env, &run, &[]);
+    let lock = RunLock::try_acquire(&run_dir).unwrap().unwrap();
+    let mut stream = client.subscribe(&run, 0).await.unwrap();
+    assert!(*stream.live.borrow(), "a run host still holds the run");
     drop(lock);
     tokio::time::timeout(Duration::from_secs(5), stream.live.wait_for(|live| !live))
         .await

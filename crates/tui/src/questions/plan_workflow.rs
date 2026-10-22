@@ -90,7 +90,7 @@ fn flow(workflow: &Workflow) -> String {
         .map(phase_words)
         .filter(|words| !words.is_empty())
         .collect::<Vec<_>>()
-        .join(" → ")
+        .join(" →  ")
 }
 
 fn phase_words(phase: &Phase) -> String {

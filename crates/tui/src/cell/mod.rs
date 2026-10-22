@@ -61,6 +61,12 @@ pub trait HistoryCell: fmt::Debug + Send {
     fn continues_previous(&self) -> bool {
         false
     }
+
+    /// Its rows take the mascot's picture where the header's would go, before any header
+    /// prints: the greeting's argonaut.
+    fn takes_the_mascot_picture(&self) -> bool {
+        false
+    }
 }
 
 /// Keeps the first row and the newest rows, with a dim `… +N lines` row between them.
@@ -174,6 +180,10 @@ impl HistoryCell for Cell {
 
     fn continues_previous(&self) -> bool {
         self.inner().continues_previous()
+    }
+
+    fn takes_the_mascot_picture(&self) -> bool {
+        self.inner().takes_the_mascot_picture()
     }
 }
 

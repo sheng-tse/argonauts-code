@@ -1,0 +1,39 @@
+# Once a day: how often the newest version crashes against the version before it, from the usage reports in
+# PostHog, with an issue when the newest one crashes more (packaging/crashes/watch.py). It needs the repository
+# variable POSTHOG_PROJECT_ID and the secret POSTHOG_QUERY_KEY, a personal API key that may only run queries, and
+# POSTHOG_API_HOST for a region other than the US. Without them it says so and passes.
+#
+# Halting a rollout stays the maintainer's act: the issue says what rose and where.
+name: Crash watch
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: crash-watch
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    name: Crashes by version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compare the newest version with the one before
+        env:
+          POSTHOG_QUERY_KEY: ${{ secrets.POSTHOG_QUERY_KEY }}
+          POSTHOG_PROJECT_ID: ${{ vars.POSTHOG_PROJECT_ID }}
+          POSTHOG_API_HOST: ${{ vars.POSTHOG_API_HOST }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 -I packaging/crashes/watch.py

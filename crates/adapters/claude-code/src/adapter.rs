@@ -599,6 +599,61 @@ mod tests {
         })
     }
 
+    /// On autopilot a direct turn's file tools reach anywhere without asking, in its own
+    /// sandbox or ours, and the never-list stays closed. Supervised asks as before.
+    #[test]
+    fn a_direct_turn_on_autopilot_reads_and_writes_anywhere_but_the_never_list() {
+        use argonauts_core::outside::{Never, Outside};
+        let outside = Outside {
+            read: true,
+            write: true,
+            project: Some("/home/you/app".into()),
+            never: Never {
+                paths: vec!["/home/you/.ssh".into()],
+                names: vec![".env".to_owned()],
+                unwritten: vec!["/etc".into()],
+            },
+        };
+        for sandbox_off in [true, false] {
+            let spec = command(&SessionRequest {
+                asks: Asks::Never,
+                tool_sandbox_off: sandbox_off,
+                outside: outside.clone(),
+                mcp_config: Some("/tmp/state/t-001/mcp.json".into()),
+                scratch_dir: Some("/tmp/state/t-001".into()),
+                ..request(SessionRole::Direct)
+            });
+            assert_eq!(value_after(&spec, "--permission-mode"), Some("acceptEdits"));
+            let permissions = &settings_file(&spec)["permissions"];
+            let has_rule = |list: &str, rule: &str| {
+                permissions[list]
+                    .as_array()
+                    .is_some_and(|rules| rules.iter().any(|r| r == rule))
+            };
+            for rule in ["Read(//**)", "Edit(//**)", "Write(//**)", "Bash"] {
+                assert!(has_rule("allow", rule), "{rule}: {permissions}");
+            }
+            for rule in [
+                "Read(//home/you/.ssh/**)",
+                "Edit(//home/you/.ssh/**)",
+                "Read(//**/.env)",
+                "Edit(//etc/**)",
+                "Edit(.argonauts/**)",
+            ] {
+                assert!(has_rule("deny", rule), "{rule}: {permissions}");
+            }
+        }
+        let supervised = command(&SessionRequest {
+            asks: Asks::LikeCli,
+            mcp_config: Some("/tmp/state/t-001/mcp.json".into()),
+            scratch_dir: Some("/tmp/state/t-001".into()),
+            ..request(SessionRole::Direct)
+        });
+        assert!(has(&supervised, "--permission-prompt-tool"));
+        let permissions = settings_file(&supervised)["permissions"].to_string();
+        assert!(!permissions.contains("//"), "{permissions}");
+    }
+
     /// A direct turn is Claude Code as you run it: its default tools and no `--tools` list,
     /// your memory, no schema. Auto mode accepts edits and allows commands and fetches inside
     /// our sandbox, and anything else that would ask is refused.

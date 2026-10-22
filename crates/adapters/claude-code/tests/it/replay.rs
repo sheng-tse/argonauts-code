@@ -267,10 +267,6 @@ fn write_creates_a_file_and_returns_a_structured_report() {
             "file_changed",
             "usage",
             "context_fill",
-            "text_delta",
-            "message",
-            "usage",
-            "context_fill",
             "tool_pending",
             "usage",
             "tool_started",
@@ -301,17 +297,14 @@ fn write_creates_a_file_and_returns_a_structured_report() {
         kind: "add".into()
     }));
 
-    let (_, structured, _) = result(&events);
+    let (text, structured, _) = result(&events);
     let report = Report::from_value(&structured.expect("structured output")).unwrap();
     assert_eq!(report.status, ReportStatus::Done);
     assert_eq!(report.files_changed, ["hello.txt"]);
 
-    // The report also survives in the final message text, for CLIs without a schema.
-    let last_message = events.iter().rev().find_map(|e| match e {
-        AgentEvent::Message { text, .. } => Some(text.clone()),
-        _ => None,
-    });
-    let from_text = Report::from_text(&last_message.unwrap()).unwrap();
+    // The report also survives as text, for CLIs without a schema: the result's own text, as
+    // this recording's session went from the write straight to its report.
+    let from_text = Report::from_text(&text.expect("the result's text")).unwrap();
     assert_eq!(from_text.status, ReportStatus::Done);
 }
 
@@ -370,10 +363,10 @@ fn shell_runs_one_command() {
 
 #[test]
 fn claude_partial_text_streams() {
+    let mut checked = 0;
     for name in every_fixture() {
         let events = replay(name);
         let mut streamed = String::new();
-        let mut checked = 0;
         for event in &events {
             match event {
                 AgentEvent::TextDelta { text, parent } => {
@@ -389,12 +382,14 @@ fn claude_partial_text_streams() {
                 _ => {}
             }
         }
-        assert!(checked > 0, "{name} has no main-session text");
         assert!(
             streamed.is_empty(),
             "{name} streamed text never arrived whole"
         );
     }
+    // A session may go from one tool straight to the next with no text of its own between, as
+    // the write recording does, so the text is counted over every recording.
+    assert!(checked > 0, "no recording has main-session text");
     // Subagent text arrives whole, with no deltas before it.
     let events = replay("stream-input");
     assert!(events.iter().any(|e| matches!(

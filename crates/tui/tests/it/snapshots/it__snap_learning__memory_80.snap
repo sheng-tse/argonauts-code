@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_learning.rs
+source: crates/tui/tests/it/snap_learning.rs
+assertion_line: 481
 expression: "screen(&mut picker, width, HEIGHT)"
 ---
 Memory                                 Notes  [ Flagged ]  Conventions  Settings
@@ -25,4 +26,4 @@ Notes the crew keeps, and the conventions       1 note · 1 flagged waits for yo
 │   Flagged: addresses agents: "Reviewers should"                              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · tab next tab · a accept on a branch · d drop · esc back
+↑↓  select · tab next tab · a accept on a branch · d drop · esc back

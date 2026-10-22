@@ -1,6 +1,8 @@
 //! A settings file that still uses names that changed gets one question at start, with the
 //! exact edit: rename them, keeping a copy of the file, or leave them and be asked again only
-//! once the file changes. Until then each old name does nothing, and /doctor lists them.
+//! once the file changes. Until then each old name does nothing, and /doctor lists them. A mod
+//! file that still names a place by its old word is asked about the same way, since until then
+//! the mod doesn't load.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -9,7 +11,7 @@ use argonauts_core::app::{AppChoice, AppEvent, ChoiceKind};
 use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::names::ChoiceId;
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
-use argonauts_registry::{Rename, rename_in_file, renames_in};
+use argonauts_registry::{Rename, mod_renames_in, rename_in_file, rename_in_mod_file, renames_in};
 
 use super::save;
 use crate::choices;
@@ -30,6 +32,14 @@ struct Asked {
     file: PathBuf,
     /// The file as you were asked about it.
     hash: String,
+    kind: FileKind,
+}
+
+/// What a file asked about is, which says what its old names do and how it's read again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileKind {
+    Settings,
+    Mod,
 }
 
 pub(crate) fn owns_choice(state: &RenamedState, id: &ChoiceId) -> bool {
@@ -49,6 +59,33 @@ fn files(ctx: &Ctx) -> Vec<PathBuf> {
     files
 }
 
+/// The mod files the start may ask about: each of yours, and each of the project's you trusted
+/// as it is, which the edit keeps trusted.
+fn mod_files(ctx: &Ctx) -> Vec<PathBuf> {
+    let dirs = crate::mods::ModDirs::of(&ctx.env);
+    let mut files = toml_files_in(&dirs.yours);
+    files.extend(
+        toml_files_in(&dirs.project)
+            .into_iter()
+            .filter(|file| ctx.settings.trust().was_trusted(file)),
+    );
+    files
+}
+
+/// The `*.toml` files right in `dir`, by name, as the mods folder loads them.
+fn toml_files_in(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "toml") && path.is_file())
+        .collect();
+    files.sort();
+    files
+}
+
 /// Whether the start says this file's old names itself, by asking or because you left them,
 /// so its lines among the start's warnings would say them twice.
 pub(crate) fn said_at_start(ctx: &Ctx, file: &Path) -> bool {
@@ -58,11 +95,18 @@ pub(crate) fn said_at_start(ctx: &Ctx, file: &Path) -> bool {
 /// At start: one question for each file that uses old names, unless you left it as it is.
 pub(crate) fn ask_at_start(ctx: &mut Ctx, state: &mut RenamedState) {
     let left = left_files(ctx);
-    for file in files(ctx) {
+    let settings = files(ctx)
+        .into_iter()
+        .map(|file| (file, FileKind::Settings));
+    let mods = mod_files(ctx).into_iter().map(|file| (file, FileKind::Mod));
+    for (file, kind) in settings.chain(mods).collect::<Vec<_>>() {
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
         };
-        let renames = renames_in(&text);
+        let renames = match kind {
+            FileKind::Settings => renames_in(&text),
+            FileKind::Mod => mod_renames_in(&text),
+        };
         let Some(hash) = hash_of(&file).filter(|_| !renames.is_empty()) else {
             continue;
         };
@@ -71,16 +115,38 @@ pub(crate) fn ask_at_start(ctx: &mut Ctx, state: &mut RenamedState) {
         }
         let id = ctx.next_choice_id();
         let shown = ctx.env.display(&file);
-        ctx.send(AppEvent::Choice {
-            choice: question(id.clone(), &shown, &renames),
-        });
-        state.pending.insert(id, Asked { file, hash });
+        let choice = match kind {
+            FileKind::Settings => question(id.clone(), &shown, &renames),
+            FileKind::Mod => mod_question(id.clone(), &shown, &renames),
+        };
+        ctx.send(AppEvent::Choice { choice });
+        state.pending.insert(id, Asked { file, hash, kind });
     }
 }
 
 /// The question, worded from the file's own lines: two headed columns, each line as the file has
 /// it and as Rename writes it, then what renaming does and what leaving them does.
 pub(crate) fn question(id: ChoiceId, shown: &str, renames: &[Rename]) -> AppChoice {
+    worded(
+        id,
+        shown,
+        renames,
+        "Until they're renamed they are skipped, and the defaults are used instead.",
+    )
+}
+
+/// The same question about a mod file, whose old place word keeps the whole mod from loading.
+fn mod_question(id: ChoiceId, shown: &str, renames: &[Rename]) -> AppChoice {
+    worded(
+        id,
+        shown,
+        renames,
+        "Until it's renamed the mod doesn't load, and the rest work without it.",
+    )
+}
+
+/// The question with `until`, what the old names do until they're renamed, under its lines.
+fn worded(id: ChoiceId, shown: &str, renames: &[Rename], until: &str) -> AppChoice {
     const NOW: &str = "In the file now";
     const AFTER: &str = "After Rename them";
     let count = match renames.len() {
@@ -99,9 +165,7 @@ pub(crate) fn question(id: ChoiceId, shown: &str, renames: &[Rename]) -> AppChoi
         }
     }
     body.push(String::new());
-    body.push(
-        "\t  Until they're renamed they are skipped, and the defaults are used instead.".to_owned(),
-    );
+    body.push(format!("\t  {until}"));
     let backup = Path::new(shown)
         .file_name()
         .map(|name| format!("{}.bak", name.to_string_lossy()))
@@ -155,6 +219,10 @@ fn rename(ctx: &mut Ctx, id: ChoiceId, asked: &Asked) -> Handled {
         );
         return Ok(Vec::new());
     }
+    if asked.kind == FileKind::Mod {
+        rename_mod(ctx, id, asked)?;
+        return Ok(Vec::new());
+    }
     let before = ctx.settings().clone();
     let values_before = values(ctx);
     let renamed = match rename_in_file(&asked.file) {
@@ -194,6 +262,33 @@ fn rename(ctx: &mut Ctx, id: ChoiceId, asked: &Asked) -> Handled {
         .collect();
     effects.push(Effect::SettingsApplied { keys });
     Ok(effects)
+}
+
+/// Renames a mod file's old place words. The mods read the file again as it changes, so
+/// nothing else is reloaded, and a project file you trusted as it was stays trusted.
+fn rename_mod(ctx: &mut Ctx, id: ChoiceId, asked: &Asked) -> anyhow::Result<()> {
+    let shown = ctx.env.display(&asked.file);
+    let trusted = ctx.settings.trust().was_trusted(&asked.file);
+    let renamed = match rename_in_mod_file(&asked.file) {
+        Ok(renamed) => renamed,
+        Err(err) => {
+            close(ctx, id, format!("{shown} is left as it was: {err}"));
+            return Ok(());
+        }
+    };
+    if trusted {
+        ctx.settings.trust_mut().trust(&asked.file)?;
+    }
+    let backup = ctx.env.display(&renamed.backup);
+    close(
+        ctx,
+        id,
+        format!(
+            "Renamed {} in {shown}. The file as it was is {backup}.",
+            counted(renamed.renames.len())
+        ),
+    );
+    Ok(())
 }
 
 /// Each setting's value in effect now, by key.
@@ -385,6 +480,96 @@ mode = "supervised"
                 .any(|(_, text)| text.contains("main_agent") || text.contains("approvals.goal")),
             "{said:#?}"
         );
+    }
+
+    /// The branch starter as an older build wrote it, under the line's old place word, with
+    /// its own comments.
+    fn older_branch() -> String {
+        let (old, _) = argonauts_core::settings::mods::check::RENAMED_PLACES[0];
+        format!(
+            r#"# The branch you're on, as one line of words.
+name   = "branch"
+title  = "branch"
+body   = "text"                # stack · meters · list · columns · sparkline · marks · text
+places = ["{old}"]         # where it shows
+form   = "line"                # full · compact · line
+
+[data]
+command = ["git", "branch", "--show-current"]
+every   = "10s"
+timeout = "2s"
+"#
+        )
+    }
+
+    /// An older mod file doesn't load, is asked about at start, and once renamed loads on the
+    /// bottom line, its comments kept and the file as it was beside it.
+    #[tokio::test]
+    async fn an_older_mod_file_is_asked_about_and_renamed() {
+        let (old, new) = argonauts_core::settings::mods::check::RENAMED_PLACES[0];
+        let (mut parts, _) = TestCtx::new(CliOptions {
+            prepare: Some(Box::new(|repo: &TempRepo| {
+                let mods = repo.home().join("mods");
+                std::fs::create_dir_all(&mods).unwrap();
+                std::fs::write(mods.join("branch.toml"), older_branch()).unwrap();
+            })),
+            ..CliOptions::default()
+        });
+        let file = crate::mods::ModDirs::of(&parts.ctx.env)
+            .yours
+            .join("branch.toml");
+        let shown = parts.ctx.env.display(&file);
+        let before = crate::mods::loaded(&parts.ctx.env);
+        let why: Vec<&String> = before
+            .problems
+            .iter()
+            .flat_map(|problem| &problem.problems)
+            .collect();
+        assert_eq!(why, [&format!("{old} is now {new}")]);
+
+        let mut state = RenamedState::default();
+        ask_at_start(&mut parts.ctx, &mut state);
+        let choice = asked(&mut parts).expect("the rename question");
+        assert_eq!(choice.title, format!("{shown} uses 1 name that changed"));
+        let row = format!("places = [\"{old}\"]\t\tplaces = [\"{new}\"]\t");
+        assert!(choice.body.contains(&row), "{:#?}", choice.body);
+        assert!(
+            choice
+                .body
+                .iter()
+                .any(|line| line.contains("Until it's renamed the mod doesn't load")),
+            "{:#?}",
+            choice.body
+        );
+        let effects =
+            answer_choice(&mut parts.ctx, &mut state, choice.id, AnswerAction::Approve).unwrap();
+        assert!(
+            effects.is_empty(),
+            "nothing but the mods reads the file again"
+        );
+        assert_eq!(
+            closed(&mut parts),
+            format!("Renamed 1 name in {shown}. The file as it was is {shown}.bak.")
+        );
+        let backup = file.with_file_name("branch.toml.bak");
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), older_branch());
+        let now = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            now,
+            older_branch().replace(old, new),
+            "only the word changes"
+        );
+
+        let after = crate::mods::loaded(&parts.ctx.env);
+        assert!(after.problems.is_empty(), "{:#?}", after.problems);
+        let branch = after
+            .mods
+            .iter()
+            .find(|loaded| loaded.file.name == "branch")
+            .expect("the branch mod loads");
+        assert!(branch.asks_for_line, "on the bottom line");
+        ask_at_start(&mut parts.ctx, &mut state);
+        assert!(asked(&mut parts).is_none(), "nothing is left to ask");
     }
 
     /// The picture's file: the same three names, with the values it shows.

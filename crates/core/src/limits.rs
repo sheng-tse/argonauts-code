@@ -6,18 +6,20 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::events::run::WaitReason;
-use crate::events::session::SessionEnd;
+use crate::events::session::{EndReason, SessionEnd};
 use crate::events::task::{CheckOutcome, TaskSpec, TaskState};
-use crate::events::{AgentStatusEvent, RunEvent};
+use crate::events::workflow::WorkflowEvent;
+use crate::events::{AgentStatusEvent, RunEvent, RunEventKind};
 use crate::fallback::CheckpointTag;
 use crate::future::BoxFuture;
 use crate::names::{AgentId, ModelRef, RoleName, SessionKey};
 use crate::session_runner::{SandboxProfile, SessionLimits};
 use crate::settings::fallback::{FallbackEntry, FallbackStrategy, Pick};
 use crate::settings::limit::{LimitAmount, OnHit};
+use crate::steps::StepError;
 use crate::steps::task::TaskReport;
 use crate::{ErrorCategory, RetryReason, RunId, TaskId, TodoItem};
 
@@ -292,6 +294,82 @@ pub enum HealthSignal {
     AdapterBroken { agent_id: AgentId, detail: String },
 }
 
+/// Whether the internet answers at all, as this process last found it. While it's down no
+/// agent is blamed for the network, and sessions that need a provider wait for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NetState {
+    #[default]
+    Up,
+    /// No provider answered, since `since`.
+    Down { since: OffsetDateTime },
+}
+
+impl NetState {
+    pub fn is_down(self) -> bool {
+        matches!(self, Self::Down { .. })
+    }
+}
+
+/// Said in the conversation and under each workflow's header when the internet goes.
+pub const NETWORK_DOWN: &str =
+    "The network is down · sessions wait for it, nothing moves to another agent";
+/// Said when it's back.
+pub const NETWORK_BACK: &str = "The network is back · carrying on";
+
+/// What a run's log says of the internet at `kind`: `Some(true)` where it went, `Some(false)`
+/// where it's back, `None` anywhere else. Each change is a note under the workflows' headers.
+pub fn network_down_in(kind: &RunEventKind) -> Option<bool> {
+    let RunEventKind::Workflow(WorkflowEvent::Note(note)) = kind else {
+        return None;
+    };
+    match note.text.as_str() {
+        NETWORK_DOWN => Some(true),
+        NETWORK_BACK => Some(false),
+        _ => None,
+    }
+}
+
+/// What a workflow's row says of a session the internet has held for `held`:
+/// `waiting for the network · 2m 10s`.
+pub fn waiting_for_the_network(held: Duration) -> String {
+    let seconds = held.as_secs();
+    let held = match (seconds / 3600, seconds / 60 % 60, seconds % 60) {
+        (0, 0, seconds) => format!("{seconds}s"),
+        (0, minutes, seconds) => format!("{minutes}m {seconds}s"),
+        (hours, minutes, _) => format!("{hours}h {minutes}m"),
+    };
+    format!("waiting for the network · {held}")
+}
+
+/// Whether a session that ended for `reason` may have lost the internet: a network error, a
+/// timeout, or a crash, as an offline CLI's failure often reads.
+pub fn may_have_lost_the_network(reason: &EndReason) -> bool {
+    match reason {
+        EndReason::CliError { category, .. } => {
+            matches!(category, ErrorCategory::Network | ErrorCategory::Timeout)
+        }
+        EndReason::Crashed { .. } => true,
+        _ => false,
+    }
+}
+
+/// Whether the internet took a step's session with it: the session may have lost the network,
+/// and `network` is down. The main agent's own turn then fails with its CLI's reason, as Claude
+/// Code's does once its retries run out, and goes to no other agent, which would meet the same
+/// network.
+pub fn lost_to_the_network(err: &StepError, network: NetState) -> bool {
+    network.is_down()
+        && matches!(err, StepError::Session(end) if may_have_lost_the_network(&end.reason))
+}
+
+/// Whether a session of `agent` on `model` runs on a server on this machine, which works
+/// without the internet: a local runtime as its agent, or a model routed to one, as OpenCode's
+/// `ollama/qwen3-coder:30b` is.
+pub fn served_on_this_machine(agent: &str, model: Option<&str>) -> bool {
+    crate::runtimes::runtime(agent).is_some()
+        || model.and_then(crate::runtimes::local_route).is_some()
+}
+
 /// Plan usage across every run and the app, persisted in `~/.argonauts/agents.json`.
 pub trait PlanUsageBoard: Send + Sync {
     /// Keeps the reading as its agent's for its window.
@@ -361,6 +439,21 @@ pub trait HealthBoard: Send + Sync {
     fn models(&self, agent_id: &AgentId) -> Vec<ModelHealth> {
         let _ = agent_id;
         Vec::new()
+    }
+    /// Whether the internet answers. A board that never checks says it does.
+    fn network(&self) -> NetState {
+        NetState::Up
+    }
+    /// Each change of [`HealthBoard::network`]. A board that never checks sends none, so a
+    /// wait on it ends at once.
+    fn network_changes(&self) -> watch::Receiver<NetState> {
+        watch::channel(self.network()).1
+    }
+    /// The internet as the latest check found it, once the check under way, if any, has said,
+    /// for a session that just ended on a network error the check may still be asking about.
+    fn check_network(&self) -> BoxFuture<'_, NetState> {
+        let state = self.network();
+        Box::pin(async move { state })
     }
 }
 
@@ -619,6 +712,100 @@ mod tests {
             .iter()
             .map(|r| (r.window.as_deref(), r.used))
             .collect()
+    }
+
+    /// A board that keeps nothing and never checks the internet.
+    struct Forgetful;
+
+    impl HealthBoard for Forgetful {
+        fn observe(&self, _: HealthSignal) {}
+        fn state(&self, agent_id: &AgentId) -> AgentHealth {
+            AgentHealth {
+                agent_id: agent_id.clone(),
+                state: HealthState::Healthy,
+                since: OffsetDateTime::UNIX_EPOCH,
+                reason: None,
+                next_test_at: None,
+                disabled: None,
+            }
+        }
+        fn all(&self) -> Vec<AgentHealth> {
+            Vec::new()
+        }
+        fn subscribe(&self) -> broadcast::Receiver<AgentStatusEvent> {
+            broadcast::channel(1).1
+        }
+        fn test_result(&self, _: &AgentId, _: bool) {}
+    }
+
+    #[tokio::test]
+    async fn a_board_that_never_checks_says_the_internet_is_there() {
+        let board = Forgetful;
+        assert_eq!(board.network(), NetState::Up);
+        assert_eq!(board.check_network().await, NetState::Up);
+        // Nothing will ever change, so a wait for a change ends at once.
+        assert!(board.network_changes().changed().await.is_err());
+    }
+
+    #[test]
+    fn only_a_session_the_network_ended_while_it_is_down_was_lost_to_it() {
+        let ended = |reason| {
+            StepError::Session(Box::new(SessionEnd {
+                cli_session: None,
+                exit_code: Some(1),
+                signal: None,
+                duration_ms: 180_000,
+                reason,
+                spend: crate::Spend::default(),
+                tool_calls: 0,
+                result_text: None,
+                structured: None,
+                last_message: None,
+                raw_log: None,
+            }))
+        };
+        let unreachable = || {
+            ended(EndReason::CliError {
+                category: ErrorCategory::Network,
+                message: "API Error: Unable to connect to API. Check your internet connection"
+                    .to_owned(),
+            })
+        };
+        let down = NetState::Down {
+            since: OffsetDateTime::UNIX_EPOCH,
+        };
+        assert!(lost_to_the_network(&unreachable(), down));
+        assert!(!lost_to_the_network(&unreachable(), NetState::Up));
+        let limited = ended(EndReason::RateLimited);
+        assert!(!lost_to_the_network(&limited, down));
+    }
+
+    #[test]
+    fn a_runs_log_says_when_the_network_went_and_came_back() {
+        use crate::events::workflow::RunNote;
+        let said = |text: &str| {
+            network_down_in(&RunEventKind::Workflow(WorkflowEvent::Note(RunNote {
+                text: text.to_owned(),
+                workflow: None,
+                left: false,
+            })))
+        };
+        assert_eq!(said(NETWORK_DOWN), Some(true));
+        assert_eq!(said(NETWORK_BACK), Some(false));
+        assert_eq!(said("Gemma4 E2B is up next"), None);
+        let elsewhere = RunEventKind::Note(crate::Note {
+            level: crate::NoteLevel::Info,
+            text: NETWORK_DOWN.to_owned(),
+        });
+        assert_eq!(network_down_in(&elsewhere), None);
+    }
+
+    #[test]
+    fn a_held_row_says_how_long_the_network_has_held_it() {
+        let held = |seconds| waiting_for_the_network(Duration::from_secs(seconds));
+        assert_eq!(held(9), "waiting for the network · 9s");
+        assert_eq!(held(130), "waiting for the network · 2m 10s");
+        assert_eq!(held(3 * 3600 + 125), "waiting for the network · 3h 2m");
     }
 
     #[test]

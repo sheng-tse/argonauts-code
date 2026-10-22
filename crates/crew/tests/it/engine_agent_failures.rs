@@ -555,7 +555,7 @@ async fn when_every_agent_fails_the_run_waits_and_says_why() -> anyhow::Result<(
         None,
         "an agent error never ends the run"
     );
-    // Antigravity's CLI says it's logged out, so it isn't asked again and gets the login line.
+    // agy says it's logged out, so it isn't asked again and gets the login line.
     assert_eq!(designs_after_understand(&crew, GEMINI), 1);
     let stopped = stop_lines(&outcome.exit).with_context(|| "the stop says why")?;
     assert!(
@@ -583,7 +583,7 @@ async fn when_every_agent_fails_the_run_waits_and_says_why() -> anyhow::Result<(
         EngineExit::Finished(RunOutcome::Merged),
         "{said:?}"
     );
-    // Codex, Claude Code and Antigravity once each, then Codex again after the resume.
+    // Codex, Claude Code and agy once each, then Codex again after the resume.
     let sessions = design_sessions(&resumed.events);
     let again: Vec<_> = sessions.iter().filter(|(_, starts)| *starts > 1).collect();
     assert_eq!(again.len(), 1, "{sessions:?}");
@@ -1010,7 +1010,7 @@ async fn two_fallbacks_review_at_once_in_the_place_of_a_reviewer_thats_out() -> 
     assert!(
         shared[0].starts_with("Haiku on Claude Code and Qwen3 Coder on OpenCode both review")
             && shared[0].ends_with(
-                "in place of Gemini 3.6 Flash Low on Antigravity CLI · every finding from each \
+                "in place of Gemini 3.6 Flash Low on agy · every finding from each \
                  is kept · /fallback changes this"
             ),
         "{said:?}"
@@ -1167,7 +1167,7 @@ async fn a_reviewer_that_loaded_your_plugins_hands_its_place_to_one_that_keeps_t
         }
         answers(spec)
     });
-    // Claude Code's and OpenCode's CLIs keep your plugins out; Antigravity's can't.
+    // Claude Code's and OpenCode's CLIs keep your plugins out; agy can't.
     crew.services.workers.isolating("claude-code");
     crew.services.workers.isolating("opencode");
     let outcome = drive(&crew).await?;
@@ -1566,7 +1566,7 @@ async fn a_fallback_keeps_the_job_for_the_same_agents_later_asks() -> anyhow::Re
         "{said:?}"
     );
     // Claude Code designs in Codex's place each time, the brief turned down and the one asked
-    // for after it in the same step included, and Antigravity CLI never does.
+    // for after it in the same step included, and agy never does.
     assert!(designs_after_understand(&crew, CLAUDE) >= 2, "{said:?}");
     assert_eq!(designs_after_understand(&crew, GEMINI), 0, "{said:?}");
     Ok(())
@@ -1985,7 +1985,7 @@ async fn a_reviewers_fallback_stays_on_its_cli_when_the_role_says_so() -> anyhow
         .find(|note| note.starts_with("Still overloaded · fell back to"))
         .context("one line says who took the review")?;
     assert!(
-        fell_back.ends_with("\nsame_cli is on, so Antigravity CLI isn't asked"),
+        fell_back.ends_with("\nsame_cli is on, so agy isn't asked"),
         "{fell_back}"
     );
     let stayed = format!(
@@ -2544,7 +2544,7 @@ const OPENCODE_ACP: &str = "opencode-acp";
 /// A CLI outside the crew that starts, from a fifth provider.
 const SPARE: &str = "kimi/kimi-k2";
 
-/// A council run of Claude Code, Codex, and Antigravity CLI, whose CLI can't start, with OpenCode
+/// A council run of Claude Code, Codex, and agy, whose CLI can't start, with OpenCode
 /// and OpenCode over ACP installed but no model set for either, and `spare` installed too. Each
 /// of those keeps your plugins out, so it may take a blind job such as a draft.
 fn council_with_opencode_unset(spare: Option<&str>) -> anyhow::Result<Crew> {
@@ -2671,4 +2671,47 @@ fn stop_lines(exit: &EngineExit) -> Option<Vec<String>> {
             .chain(stop.lines())
             .collect(),
     )
+}
+
+/// A CLI that crashed as it started because the internet was gone did nothing wrong: once the
+/// internet is back, one more crash with the same words is its first, so the CLI isn't taken
+/// out for the run.
+#[tokio::test]
+async fn startup_crashes_while_offline_dont_take_a_cli_out() -> anyhow::Result<()> {
+    use crate::engine_fallback::{Internet, said};
+
+    let mut crew = crate::support::Crew::new()?;
+    let codex = crew.answering_worker(CODEX, "openai");
+    crew.answering_worker(CLAUDE, "anthropic");
+    let internet = Internet::over(&crew);
+    let started = Arc::new(AtomicUsize::new(0));
+    let lost = internet.clone();
+    codex.respond(move |spec| {
+        let crash = || {
+            FakeSession::ended(EndReason::Crashed {
+                message: "fetch failed".to_owned(),
+            })
+            .without_cli_session()
+        };
+        match started.fetch_add(1, Ordering::SeqCst) {
+            0 => {
+                lost.drop_for(std::time::Duration::from_millis(300));
+                crash()
+            }
+            1 => crash(),
+            _ => crate::support::smallest_answer(spec),
+        }
+    });
+    let outcome = internet
+        .start(&crew, RunMode::Crew, "add a --verbose flag")
+        .await?;
+    let notes = said(&outcome.events);
+    assert!(
+        notes
+            .iter()
+            .all(|(_, text)| !text.contains("as it started")),
+        "{notes:?}"
+    );
+    assert!(codex.specs().len() >= 3, "{notes:?}");
+    Ok(())
 }

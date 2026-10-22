@@ -28,7 +28,9 @@ impl Git {
 
     /// Forgets worktrees whose folders are gone.
     pub async fn prune_worktrees(&self, repo: &Path) -> Result<(), GitError> {
-        self.run(repo, &["worktree", "prune"]).await.map(drop)
+        self.run_on_worktrees(repo, &["worktree", "prune"])
+            .await
+            .map(drop)
     }
 
     /// The branches whose names start with `prefix`, such as `argonauts/<run>/`.

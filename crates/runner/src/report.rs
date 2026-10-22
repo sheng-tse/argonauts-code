@@ -110,13 +110,19 @@ impl Progress {
         agent.started_at_ms = Some(now_ms);
     }
 
-    pub fn ended(&mut self, agent: usize, end: &AgentTotals, result: Option<&str>) {
+    /// The agent's answer, or why it gave none, which its row keeps so the view can say it.
+    pub fn ended(&mut self, agent: usize, end: &AgentTotals, answer: Result<&str, &str>) {
         let row = &mut self.workflow.agents[agent];
+        let (result, error) = match answer {
+            Ok(text) => (Some(text), None),
+            Err(why) => (None, Some(why.trim()).filter(|why| !why.is_empty())),
+        };
         row.state = if result.is_some() {
             CliAgentState::Done
         } else {
             CliAgentState::Failed
         };
+        row.error = error.map(str::to_owned);
         if end.model.is_some() {
             row.model.clone_from(&end.model);
         }

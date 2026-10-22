@@ -49,6 +49,36 @@ const LAUNCHERS: &str = r#"(deny process-exec
     (literal "/usr/bin/automator"))
 "#;
 
+/// gh, wherever `path` finds it, run by no session: its login, in your keychain on macOS, would
+/// let anything push as you, and Argonauts Code makes every GitHub call itself. Your own direct
+/// session isn't sandboxed this way.
+fn no_gh(path: Option<&std::ffi::OsStr>) -> String {
+    let Some(path) = path else {
+        return String::new();
+    };
+    let found: std::collections::BTreeSet<String> = std::env::split_paths(path)
+        .map(|dir| dir.join("gh"))
+        .filter(|gh| gh.is_file())
+        .flat_map(|gh| {
+            let real = std::fs::canonicalize(&gh).unwrap_or_else(|_| gh.clone());
+            [gh, real]
+        })
+        .map(|gh| {
+            gh.to_string_lossy()
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+        })
+        .collect();
+    if found.is_empty() {
+        return String::new();
+    }
+    let literals: Vec<String> = found
+        .iter()
+        .map(|gh| format!("    (literal \"{gh}\")"))
+        .collect();
+    format!("(deny process-exec\n{})\n", literals.join("\n"))
+}
+
 /// Services that act for you outside the sandbox: LaunchServices opens apps and URLs, Apple
 /// Events drive other apps, the pasteboard is your clipboard, and the window server takes
 /// synthetic keystrokes. No CLI needs them, and the agents' own sandboxes close them too.
@@ -102,6 +132,14 @@ pub fn render_profile(profile: &SandboxProfile) -> String {
     for rule in ordered_rules(profile) {
         push_rule(&mut sbpl, &rule, profile.network);
     }
+    // Last, so a file of this name is closed in a writable folder too.
+    for name in &profile.outside.never.names {
+        if let Some(regex) = name_regex(name) {
+            sbpl.push_str(&format!(
+                "(deny file-read* file-write* (regex #\"{regex}\"))\n"
+            ));
+        }
+    }
     if !profile.network {
         sbpl.push_str(NETWORK_OFF);
         match profile.proxy_port {
@@ -151,7 +189,9 @@ fn push_rule(sbpl: &mut String, rule: &PathRule, network: bool) {
     // folder could offer are other programs', such as tmux's or an editor's in temp.
     let sockets = match rule.kind {
         RuleKind::Deny => "deny network-outbound",
-        RuleKind::Write if network => "allow network-outbound",
+        // Writing anywhere opens no socket outside the session's own folders: one in your home
+        // or temp is another program's, such as a password manager's agent.
+        RuleKind::Write if network && rule.resolved.parent().is_some() => "allow network-outbound",
         RuleKind::Write | RuleKind::Stat | RuleKind::List | RuleKind::Read | RuleKind::ReadOnly => {
             return;
         }
@@ -161,6 +201,27 @@ fn push_rule(sbpl: &mut String, rule: &PathRule, network: bool) {
         .map(|path| format!("(remote unix-socket {path})"))
         .collect();
     push_action(sbpl, sockets, &remote);
+}
+
+/// A regex for a file of this name in any folder, `*` standing for any part of the name. A
+/// name that could end the regex early gets none.
+fn name_regex(name: &str) -> Option<String> {
+    if name.is_empty() || name.contains(['/', '"', '\\']) || name.chars().any(char::is_control) {
+        return None;
+    }
+    let mut regex = String::from("/");
+    for c in name.chars() {
+        match c {
+            '*' => regex.push_str("[^/]*"),
+            c if c.is_alphanumeric() || c == '_' || c == '-' => regex.push(c),
+            c => {
+                regex.push('\\');
+                regex.push(c);
+            }
+        }
+    }
+    regex.push('$');
+    Some(regex)
 }
 
 fn push_action(sbpl: &mut String, action: &str, filters: &[String]) {
@@ -204,7 +265,9 @@ impl SandboxWrap for Seatbelt {
         )
         .map_err(|err| SandboxError::Invalid(format!("can't sandbox the command: {err}")))?;
 
-        let mut args = vec!["-p".to_owned(), render_profile(profile)];
+        let mut sbpl = render_profile(profile);
+        sbpl.push_str(&no_gh(std::env::var_os("PATH").as_deref()));
+        let mut args = vec!["-p".to_owned(), sbpl];
         args.push(program.to_string_lossy().into_owned());
         args.extend(command.args);
         Ok(CommandSpec {
@@ -281,6 +344,7 @@ mod tests {
             closed: Vec::new(),
             listable: Vec::new(),
             loopback: false,
+            outside: Default::default(),
         }
     }
 
@@ -1267,6 +1331,24 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
                 "{agent_id}: {stdout}"
             );
         }
+    }
+
+    #[test]
+    fn no_session_runs_gh_wherever_path_finds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("gh"), "#!/bin/sh\n").unwrap();
+        let path = std::env::join_paths([bin.as_path(), Path::new("/nowhere")]).unwrap();
+        let rule = no_gh(Some(&path));
+        assert!(rule.starts_with("(deny process-exec\n"), "{rule}");
+        let real = std::fs::canonicalize(bin.join("gh")).unwrap();
+        assert!(
+            rule.contains(&format!("(literal \"{}\")", real.display())),
+            "{rule}"
+        );
+        assert_eq!(no_gh(Some(std::ffi::OsStr::new("/nowhere"))), "");
+        assert_eq!(no_gh(None), "");
     }
 
     #[test]

@@ -37,7 +37,7 @@ fn a_model_its_cli_no_longer_lists_is_said_in_one_line() {
     let mut screen = Screen::on_macos();
     screen.app(run_event(RunEventKind::Note(Note {
         level: NoteLevel::Warn,
-        text: "propose:p3 runs on Gemini 3.8 Flash (Low): Antigravity CLI no longer offers \
+        text: "propose:p3 runs on Gemini 3.8 Flash (Low): agy no longer offers \
                Gemini 3.6 Flash (Low)"
             .into(),
     })));
@@ -45,8 +45,8 @@ fn a_model_its_cli_no_longer_lists_is_said_in_one_line() {
     assert_matches(
         "waiting_nearest",
         &lines,
-        include_str!("pictures/waiting_nearest.txt"),
-        include_str!("pictures/waiting_nearest.html"),
+        include_str!("../../../tests/golden/transcript/waiting_nearest.txt"),
+        include_str!("../../../tests/golden/transcript/waiting_nearest.html"),
         &Screen::theme(),
         &[],
     );
@@ -60,14 +60,14 @@ fn a_run_that_cant_go_on_says_why_what_was_tried_and_how_to_carry_on() {
             "propose:p2 · Codex crashed twice as it started: \"Failed to synchronize managed \
              preferences\""
                 .into(),
-            "propose:p3 · Antigravity CLI is signed out".into(),
+            "propose:p3 · agy is signed out".into(),
         ],
         tried: vec![
             "OpenCode has no model set".into(),
             "you said no to a second proposal from Claude Code".into(),
         ],
         kept: vec!["propose:p1".into()],
-        waits_for: vec!["Codex".into(), "Antigravity CLI".into()],
+        waits_for: vec!["Codex".into(), "agy".into()],
     };
     let mut screen = Screen::on_macos();
     screen.app(run_event(RunEventKind::Run(RunLifecycle::Waiting {
@@ -82,8 +82,8 @@ fn a_run_that_cant_go_on_says_why_what_was_tried_and_how_to_carry_on() {
     assert_matches(
         "waiting_stopped",
         &lines,
-        include_str!("pictures/waiting_stopped.txt"),
-        include_str!("pictures/waiting_stopped.html"),
+        include_str!("../../../tests/golden/transcript/waiting_stopped.txt"),
+        include_str!("../../../tests/golden/transcript/waiting_stopped.html"),
         &Screen::theme(),
         &[],
     );
@@ -113,6 +113,9 @@ fn paused_session(n: u32, label: &str) -> [AppEvent; 2] {
         workflow_step: None,
         label: Some(label.to_owned()),
         asked: None,
+        asked_by: None,
+        asked_why: None,
+        forked: false,
     };
     let end = SessionEnd {
         cli_session: None,
@@ -162,8 +165,8 @@ fn only_a_pause_you_asked_for_says_paused() {
     assert_matches(
         "waiting_paused",
         lines,
-        include_str!("pictures/waiting_paused.txt"),
-        include_str!("pictures/waiting_paused.html"),
+        include_str!("../../../tests/golden/transcript/waiting_paused.txt"),
+        include_str!("../../../tests/golden/transcript/waiting_paused.html"),
         &Screen::theme(),
         &[],
     );

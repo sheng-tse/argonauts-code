@@ -246,7 +246,7 @@ fn watch_for_exit(_run_host: u32, _record: &AgentGroup, _launch: &str) -> io::Re
 mod tests {
     use super::*;
     use crate::process::{AgentProcess, ProcessEvent, Stream, signal_group};
-    use crate::testutil::{sh_spec, wait_until_gone};
+    use crate::testutil::{bash_spec, sh_spec, wait_until_gone};
     use argonauts_core::StopSignal;
     use std::time::{Duration, Instant};
 
@@ -286,7 +286,7 @@ mod tests {
 
     /// An agent that stays until its input closes.
     fn waiting_agent(dir: &std::path::Path, script: &str) -> AgentProcess {
-        let mut spec = sh_spec(dir, &format!("{script}; read line"));
+        let mut spec = bash_spec(dir, &format!("{script}; read line"));
         spec.keep_stdin_open = true;
         AgentProcess::spawn(&spec).unwrap()
     }
@@ -341,7 +341,7 @@ mod tests {
     /// Returns the agent, its record, and the leftover's pid.
     async fn agent_with_a_leftover(dir: &std::path::Path) -> (AgentProcess, AgentGroup, i32) {
         let mut agent =
-            AgentProcess::spawn(&sh_spec(dir, "set -m; sleep 30 & echo $!; wait")).unwrap();
+            AgentProcess::spawn(&bash_spec(dir, "set -m; sleep 30 & echo $!; wait")).unwrap();
         let record = agent.record().unwrap();
         let leftover = printed_pids(&mut agent, 1).await[0];
         let leftover_group = nix::unistd::getpgid(Some(Pid::from_raw(leftover))).unwrap();

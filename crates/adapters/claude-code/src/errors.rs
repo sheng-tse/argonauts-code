@@ -168,12 +168,21 @@ const TEXT_HINTS: &[(ErrorCategory, &[&str])] = &[
         ErrorCategory::Network,
         &[
             "unable to connect",
+            "connection error",
             "connection refused",
+            "connection dropped",
+            "connection to the api was lost",
+            "can't reach the api",
             "socket is closed",
             "no internet",
             "timed out",
             "econnreset",
+            "econnrefused",
             "enotfound",
+            "eai_again",
+            "etimedout",
+            "enetunreach",
+            "ehostunreach",
         ],
     ),
     (
@@ -370,6 +379,24 @@ mod tests {
             assert_eq!(from_text(text), Some(want), "{text}");
         }
         assert_eq!(from_text("something odd happened"), None);
+    }
+
+    /// Claude Code 2.1.304's words for an API it couldn't reach, after its retries.
+    #[test]
+    fn offline_messages_are_the_network() {
+        for text in [
+            "API Error: Connection error.",
+            "API Error: Unable to connect to API. Check your internet connection",
+            "API Error: Connection dropped (ECONNRESET)",
+            "API Error: Connection refused \u{2014} a firewall or proxy may be blocking it \
+             (ECONNREFUSED)",
+            "API Error: Can't reach the API server \u{2014} check your internet or DNS (EAI_AGAIN)",
+            "API Error: No internet route \u{2014} check your connection or VPN (ENETUNREACH)",
+            "API Error: Connection to the API was lost (ETIMEDOUT). This is usually temporary \
+             \u{2014} try again.",
+        ] {
+            assert_eq!(from_text(text), Some(ErrorCategory::Network), "{text}");
+        }
     }
 
     #[test]

@@ -184,7 +184,7 @@ mod tests {
         newest_is(&path, "2.1.297");
         let said = lines_once(&claude(), &path, &installed);
         // The line as the versions picture has it, under its two cells of margin.
-        let picture = include_str!("../../../tui/src/overview/pictures/versions.txt");
+        let picture = include_str!("../../../tui/tests/golden/overview/versions.txt");
         let drawn = picture.lines().nth(9).unwrap();
         assert_eq!(format!("  {}", said[0].1), drawn);
         assert_eq!(said[0].0, NoteLevel::Quiet);

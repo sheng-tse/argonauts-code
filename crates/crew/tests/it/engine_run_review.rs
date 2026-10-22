@@ -22,13 +22,14 @@ use argonauts_core::steps::StepName;
 use argonauts_core::steps::task::{MemoryProposal, Predictions, ReportStatus, TaskReport};
 use argonauts_core::{PhaseStatus, RepoId, RunId, TaskId};
 use argonauts_crew::engine::host::Host;
-use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::merge::branch;
 use argonauts_crew::run_review;
 use argonauts_crew::state::RunState;
 use argonauts_testkit::repo::TempRepo;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, engine_context_in};
+
+use crate::support::shared_in;
 
 const CREW: [(&str, &str); 2] = [
     ("claude-code/claude-opus", "anthropic"),
@@ -60,7 +61,11 @@ async fn run_review_keeps_notes_and_one_candidate() -> anyhow::Result<()> {
     let history = history(&run, &context, base.trim())?;
     let (engine, sink, _commands) =
         engine_context_in(&services, settings, context, history.clone());
-    let host = Host::new(Arc::new(Shared::new(&engine, RunState::fold(&history))?));
+    let host = Host::new(Arc::new(shared_in(
+        &repo,
+        &engine,
+        RunState::fold(&history),
+    )?));
 
     let worktree = branch::ensure_run_branch(&host).await?;
     let before = repo.git(&["rev-parse", &branch::run_branch(&run)])?;
@@ -291,6 +296,7 @@ fn history(run: &RunId, context: &RepoContext, base: &str) -> anyhow::Result<Vec
         outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     };
     let kinds = vec![
         (

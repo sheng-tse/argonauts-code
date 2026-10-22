@@ -16,19 +16,22 @@ use argonauts_core::TaskId;
 use argonauts_core::asking::{Ask, AskLine, AskReply};
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::run::account_in;
-use argonauts_core::events::session::InputPartKind;
+use argonauts_core::events::session::{
+    AskedBy, CliAgent, CliAgentState, CliWorkflowRun, InputPartKind,
+};
 use argonauts_core::events::task::{
     CheckOutcome, ReviewEvent, TaskKind, TaskLimit, TaskSpec, TaskState,
 };
 use argonauts_core::events::workflow::{RunNote, WorkflowEvent};
 use argonauts_core::labels;
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::required::{Required, brief, check};
 use argonauts_core::session_runner::{Access, Asking, SessionSpec};
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::sha256_hex;
 use argonauts_core::steps::judgment::{ReviewComment, ReviewOutput, ReviewVerdict};
 use argonauts_core::steps::plan::Severity;
+use argonauts_core::views::cli_workflow_run_id;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use serde_json::{Value, json};
@@ -59,12 +62,19 @@ impl OwnSession {
         spec.asking = Some(self.asking.clone());
         if let Some(model) = &self.subagent_model {
             spec.env.push((SUBAGENT_MODEL.to_owned(), model.clone()));
+            spec.env
+                .push((WORKFLOW_SUBAGENT_MODEL.to_owned(), model.clone()));
         }
     }
 }
 
 /// Claude Code's default model for the agents it starts, workflows' included (2.1.293).
 const SUBAGENT_MODEL: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
+
+/// The model a workflow's agents run on even where its script names another. Without it a
+/// script's `model: 'haiku'` can put the workers on the reviewer's model when reviews stay
+/// within one provider.
+const WORKFLOW_SUBAGENT_MODEL: &str = "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL";
 
 /// A review asked through the tools, and the change it read.
 #[derive(Debug, Clone)]
@@ -855,6 +865,8 @@ impl Asks<'_> {
             reviews: false,
             fresh: false,
             independent_of: builders,
+            in_place_of: None,
+            fork_of: None,
         };
         let ran = host
             .run_session_in_turn(plan, None, Fallbacks::Allowed, &|_| Ok(()))
@@ -1136,6 +1148,94 @@ fn said_by(who: &str, review: &ReviewOutput) -> String {
     text
 }
 
+/// Who asked for the session `plan` starts, when it answers an ask from a task's own CLI
+/// workflow: the task's session running that workflow, and the agent its latest report had at
+/// work. A session starts as its ask comes, so the state now is the state at the ask. `None`
+/// for any other session, and before the workflow's first report.
+pub fn asked_by(host: &Host, plan: &SessionPlan) -> Option<AskedBy> {
+    let asked = matches!(plan.role, RoleName::Reviewer | RoleName::Judge) && plan.task.is_none();
+    let (at, label) = (plan.at.as_ref()?, plan.label.as_deref()?);
+    if !asked {
+        return None;
+    }
+    host.read(|state| {
+        let asking = state
+            .sessions
+            .in_order()
+            .into_iter()
+            .rev()
+            .find(|session| {
+                session.task.is_some()
+                    && session.end.is_none()
+                    && session.workflow.is_some()
+                    && session.started.workflow_step.as_ref() == Some(&at.step)
+            })?;
+        let workflow = asking.workflow.as_deref()?;
+        Some(asker_in(&asking.key, workflow, plan.role, label))
+    })
+}
+
+/// The agent of `workflow` that asked under `label`: the one at work, else the one at work
+/// whose label is the ask's but for its round, else the one at work named for the ask's role.
+/// Its `agent` is `None` when that still leaves none or several.
+fn asker_in(
+    session: &SessionKey,
+    workflow: &CliWorkflowRun,
+    role: RoleName,
+    label: &str,
+) -> AskedBy {
+    let at_work: Vec<&CliAgent> = workflow
+        .agents
+        .iter()
+        .filter(|agent| matches!(agent.state, CliAgentState::Running | CliAgentState::Other))
+        .collect();
+    let word = match role {
+        RoleName::Judge => "sign-off",
+        _ => "review",
+    };
+    let only = |found: Vec<&&CliAgent>| match found.as_slice() {
+        [one] => Some(one.label.clone()),
+        _ => None,
+    };
+    let agent = only(at_work.iter().collect())
+        .or_else(|| {
+            only(
+                at_work
+                    .iter()
+                    .filter(|agent| label_stem(&agent.label) == label_stem(label))
+                    .collect(),
+            )
+        })
+        .or_else(|| {
+            only(
+                at_work
+                    .iter()
+                    .filter(|agent| agent.label.starts_with(word))
+                    .collect(),
+            )
+        });
+    AskedBy {
+        session: session.clone(),
+        workflow: Some(cli_workflow_run_id(&workflow.id)),
+        agent,
+    }
+}
+
+/// A label without the round its script or the crew numbered it by: `review:money` for
+/// `review:money#2`, and for the crew's `review:money · round 2`.
+pub fn label_stem(label: &str) -> &str {
+    fn numbered<'a>((stem, n): (&'a str, &str)) -> Option<&'a str> {
+        n.trim().parse::<u32>().is_ok().then_some(stem)
+    }
+    let label = label.trim();
+    label
+        .rsplit_once(" · round ")
+        .and_then(numbered)
+        .or_else(|| label.rsplit_once('#').and_then(numbered))
+        .unwrap_or(label)
+        .trim_end()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1146,6 +1246,99 @@ mod tests {
     use crate::state::RunState;
     use crate::state::tests::{envelope, session_started};
     use crate::testutil::task_spec;
+
+    /// Claude Code's workflow as its report gives it, each agent by its label and state.
+    fn reported(agents: &[(&str, CliAgentState)]) -> CliWorkflowRun {
+        CliWorkflowRun {
+            id: "worx86tbc".to_owned(),
+            call: None,
+            name: "fix-money-rounding".to_owned(),
+            description: String::new(),
+            phases: Vec::new(),
+            agents: agents
+                .iter()
+                .zip(1..)
+                .map(|((label, state), index)| CliAgent {
+                    index,
+                    label: (*label).to_owned(),
+                    state: *state,
+                    ..CliAgent::default()
+                })
+                .collect(),
+            status: argonauts_core::events::session::SubagentStatus::Running,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 0,
+            summary: None,
+            started_at_ms: None,
+        }
+    }
+
+    fn asker(workflow: &CliWorkflowRun, role: RoleName, label: &str) -> Option<String> {
+        asker_in(&SessionKey::numbered(1), workflow, role, label).agent
+    }
+
+    /// Haiku's script numbers its agents by round and asks under the bare label, so the label
+    /// alone never matched: the agent at work is the one that asked.
+    #[test]
+    fn the_asker_is_the_one_agent_at_work_whatever_its_label() {
+        use CliAgentState::{Done, Running};
+        let workflow = reported(&[
+            ("build:fix-the-money", Done),
+            ("review:fix-the-money#1", Done),
+            ("sign-off:fix-the-money#1", Running),
+        ]);
+        assert_eq!(
+            asker(&workflow, RoleName::Judge, "sign-off:fix-the-money").as_deref(),
+            Some("sign-off:fix-the-money#1")
+        );
+        let by = asker_in(
+            &SessionKey::numbered(1),
+            &workflow,
+            RoleName::Judge,
+            "anything",
+        );
+        assert_eq!(by.session, SessionKey::numbered(1));
+        assert_eq!(by.workflow, Some(cli_workflow_run_id("worx86tbc")));
+        assert_eq!(by.agent.as_deref(), Some("sign-off:fix-the-money#1"));
+    }
+
+    /// With several at work the label without its round says which, then the role's word, and
+    /// when neither does no agent is named.
+    #[test]
+    fn with_several_at_work_the_label_then_the_role_says_which() {
+        use CliAgentState::Running;
+        let workflow = reported(&[
+            ("build:fix-the-money", Running),
+            ("review:fix-the-money#2", Running),
+            ("sign-off:fix-the-money#1", Running),
+        ]);
+        assert_eq!(
+            asker(
+                &workflow,
+                RoleName::Reviewer,
+                "review:fix-the-money · round 2"
+            )
+            .as_deref(),
+            Some("review:fix-the-money#2")
+        );
+        assert_eq!(
+            asker(&workflow, RoleName::Judge, "final").as_deref(),
+            Some("sign-off:fix-the-money#1")
+        );
+        let two_reviews = reported(&[("review:a", Running), ("review:b", Running)]);
+        assert_eq!(asker(&two_reviews, RoleName::Reviewer, "review:c"), None);
+        let none = reported(&[("build:a", CliAgentState::Done)]);
+        assert_eq!(asker(&none, RoleName::Reviewer, "review:a"), None);
+    }
+
+    #[test]
+    fn a_labels_stem_drops_either_rounds_number() {
+        assert_eq!(label_stem("review:money#2"), "review:money");
+        assert_eq!(label_stem("review:money · round 3"), "review:money");
+        assert_eq!(label_stem("review:money"), "review:money");
+        assert_eq!(label_stem("review:issue#x"), "review:issue#x");
+    }
 
     fn review(verdict: ReviewVerdict, summary: &str) -> ReviewOutput {
         ReviewOutput {
@@ -1489,6 +1682,42 @@ mod tests {
         assert!(
             spec.env
                 .contains(&(SUBAGENT_MODEL.to_owned(), "opus-5-5".to_owned()))
+        );
+        // A model the workflow's script names for an agent doesn't move it off this one.
+        assert!(
+            spec.env
+                .contains(&(WORKFLOW_SUBAGENT_MODEL.to_owned(), "opus-5-5".to_owned()))
+        );
+    }
+
+    /// Workers that follow the orchestrator leave its agents on the session's own model, so
+    /// neither variable is set.
+    #[test]
+    fn no_worker_model_sets_no_subagent_model() {
+        let own = OwnSession {
+            asking: Asking {
+                asks: argonauts_core::Asks::Never,
+                endpoint: "127.0.0.1:9".into(),
+                token: "t".into(),
+                tools: Vec::new(),
+                standing: None,
+                roles: vec![CrewRole::Reviewer],
+            },
+            subagent_model: None,
+        };
+        let mut spec = argonauts_testkit::runner::session_spec(
+            "claude-code",
+            Access::Build,
+            std::path::Path::new("/tmp/work"),
+        );
+        own.apply(&mut spec);
+        assert!(
+            !spec
+                .env
+                .iter()
+                .any(|(name, _)| name == SUBAGENT_MODEL || name == WORKFLOW_SUBAGENT_MODEL),
+            "{:?}",
+            spec.env
         );
     }
 }

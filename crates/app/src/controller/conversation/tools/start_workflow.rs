@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use super::{Call, MainTool};
 use crate::controller::conversation::{
-    ConversationState, handover, keep, planned, run_news, run_request, standing,
+    ConversationState, fork, handover, keep, planned, run_news, run_request, standing,
 };
 use crate::controller::instructions::{self, Applied, Roster};
 use crate::controller::recap::mode_name;
@@ -139,21 +139,46 @@ fn call(ctx: &mut Ctx, conversation: &mut ConversationState, call: Call) -> Vec<
         ),
     };
     let main = &ctx.settings().crew.main;
-    let crew = match &in_use {
+    let claude_codes_own = orchestrated && runs_as_claude_codes_own(ctx, &start.request_settings);
+    let mut crew = match &in_use {
         Some(workflow) => Crew::asked(workflow, &applied),
-        None if orchestrated && runs_as_claude_codes_own(ctx, &start.request_settings) => {
-            Crew::claude_codes_own(main, &applied)
-        }
+        None if claude_codes_own => Crew::claude_codes_own(main, &applied),
         None if mode == RunMode::Crew => Crew::orchestrated(main, &applied),
         None => Crew::checked(main, &applied),
     };
+    // Claude Code's own workflow plans in a session of its own, from the brief.
+    let begins = crew_lines::with_request(ctx.settings(), &start.request_settings)
+        .filter(|_| mode == RunMode::Crew && !claude_codes_own)
+        .map(|settings| match (&in_use, &crew.plans) {
+            (None, Some(plans)) => fork::start_on(ctx, conversation, &settings, plans),
+            _ => fork::start(ctx, conversation, &settings),
+        });
+    if in_use.is_none() {
+        crew.starts = begins
+            .as_ref()
+            .map(|begins| begins.words(|id| ctx.names.cli(id)));
+    }
+    let written_by = conversation
+        .session
+        .as_ref()
+        .map_or(main, |session| &session.worker);
+    let tokens = conversation.context.as_ref().map(|context| context.used);
+    start.starts_from = begins
+        .as_ref()
+        .map(|begins| begins.starts_from(written_by, tokens, |id| ctx.names.cli(id)));
     let line = crew.line(|worker| ctx.names.worker(&ctx.names.running(worker)));
     let began = format!(
         "{began} Your whole reply to the user is this one line, word for word, with nothing \
          before or after it: {line}"
     );
-    // The answer waits until the run is under way or has failed, so it tells the truth.
-    run_news::hold(conversation, call.reply, what, began);
+    // The answer waits until the run is under way or has failed, so it tells the truth. An
+    // orchestrator that copies this session hears it once the run is taken, so the copy holds
+    // the answer rather than a call still waiting for one.
+    let when = match &begins {
+        Some(begins) if begins.forks() => run_news::Answer::WhenTaken,
+        _ => run_news::Answer::WhenUnderWay,
+    };
+    run_news::hold(conversation, call.reply, what, began, when);
     vec![handover::start(start)]
 }
 
@@ -273,6 +298,8 @@ struct Crew {
     plans: Option<ModelRef>,
     /// Who builds, likewise.
     builds: Vec<ModelRef>,
+    /// What the orchestrator starts from, said after its name: `carrying this conversation`.
+    starts: Option<String>,
 }
 
 impl Crew {
@@ -283,6 +310,7 @@ impl Crew {
             reviewers: reviewers_asked(applied),
             plans: applied.main_agent.clone(),
             builds: builders_asked(applied),
+            starts: None,
         }
     }
 
@@ -303,6 +331,7 @@ impl Crew {
             reviewers: reviewers_asked(applied),
             plans: Some(plans),
             builds,
+            starts: None,
         }
     }
 
@@ -322,6 +351,7 @@ impl Crew {
             workflow: "Captain, in a checked worktree".to_owned(),
             reviewers: reviewers_asked(applied),
             plans: None,
+            starts: None,
             builds: vec![
                 applied
                     .captain_main_agent
@@ -332,7 +362,10 @@ impl Crew {
     }
 
     /// "Starting a workflow: Orchestrator, with **GPT 5.6 Luna on Codex** reviewing as you
-    /// asked; **Haiku 5.5 on Claude Code** plans and builds."
+    /// asked; **Haiku 5.5 on Claude Code** plans and builds." Once the line knows what the
+    /// orchestrator starts from, it names the orchestrator first: "Starting a workflow:
+    /// Orchestrator, **Opus 5.5 on Claude Code**, carrying this conversation; **GPT 6 Luna on
+    /// Codex** reviews as you asked, and **Haiku 5.5 on Claude Code** builds."
     fn line(&self, name: impl Fn(&ModelRef) -> String) -> String {
         let names = |workers: &[ModelRef]| {
             let named: Vec<String> = workers
@@ -342,17 +375,43 @@ impl Crew {
             named.join(" and ")
         };
         let mut line = format!("Starting a workflow: {}", self.workflow);
+        let one = |workers: &[ModelRef], singular: &'static str, plural: &'static str| {
+            if workers.len() == 1 { singular } else { plural }
+        };
+        if let (Some(plans), Some(starts)) = (&self.plans, &self.starts) {
+            line.push_str(&format!(
+                ", {}, {starts}",
+                names(std::slice::from_ref(plans))
+            ));
+            let mut doing = Vec::new();
+            if !self.reviewers.is_empty() {
+                doing.push(format!(
+                    "{} {} as you asked",
+                    names(&self.reviewers),
+                    one(&self.reviewers, "reviews", "review")
+                ));
+            }
+            if !self.builds.is_empty() {
+                doing.push(format!(
+                    "{} {}",
+                    names(&self.builds),
+                    one(&self.builds, "builds", "build")
+                ));
+            }
+            if !doing.is_empty() {
+                line.push_str("; ");
+                line.push_str(&doing.join(", and "));
+            }
+            line.push('.');
+            return line;
+        }
         if !self.reviewers.is_empty() {
             line.push_str(&format!(
                 ", with {} reviewing as you asked",
                 names(&self.reviewers)
             ));
         }
-        let build = if self.builds.len() == 1 {
-            "builds"
-        } else {
-            "build"
-        };
+        let build = one(&self.builds, "builds", "build");
         let doing = match (&self.plans, self.builds.as_slice()) {
             (Some(plans), [builds]) if plans == builds => Some(format!(
                 "{} plans and builds",
@@ -400,11 +459,12 @@ fn asked(applied: &Applied, kind: InstructionKind, role: RoleName) -> Vec<ModelR
 }
 
 /// Why no workflow started in Captain, instruction by instruction, so the session can correct its
-/// call when your words did ask for one, and otherwise knows to do the work itself.
+/// call when your words did ask for one, and otherwise knows to do the work itself. The first
+/// line alone is what the screen shows; the rest is for the session.
 fn why_not(applied: &Applied) -> String {
     let mut text = String::from(
-        "No workflow started. With Captain, one starts only when the user's own words ask for the \
-         crew or a workflow, a checked worktree, or other agents in roles.",
+        "No workflow started.\nWith Captain, one starts only when the user's own words ask for \
+         the crew or a workflow, a checked worktree, or other agents in roles.",
     );
     if applied.instructions.is_empty() {
         text.push_str(
@@ -609,7 +669,7 @@ mod tests {
             said(Review, "have codex review it", "codex", ""),
         ];
         let refused = leaves(false, &settings, &checked(&settings, message, &list)).unwrap_err();
-        assert!(refused.starts_with("No workflow started."), "{refused}");
+        assert_eq!(refused.lines().next(), Some("No workflow started."));
         assert!(
             refused.contains("\"on max effort\" (effort): followed"),
             "{refused}"
@@ -628,6 +688,7 @@ mod tests {
         assert!(refused.contains("never a role"), "{refused}");
         let nothing = leaves(false, &settings, &checked(&settings, message, &[])).unwrap_err();
         assert!(nothing.contains("passed no instruction"), "{nothing}");
+        assert_eq!(nothing.lines().next(), Some("No workflow started."));
     }
 
     /// The instructions come as a list, as the tool asks, and also as one alone or as JSON
@@ -742,6 +803,63 @@ mod tests {
             rows[3].trim()
         );
         assert_eq!(line.replace("**", ""), pictured);
+    }
+
+    /// The Starting line names the orchestrator and what it starts from, the reviewer you
+    /// asked for and the builder, as both of its pictures have it: a fork on the main
+    /// session's CLI, and agy, which starts from the brief.
+    #[test]
+    fn the_fork_start_lines_read_as_their_picture() {
+        use crate::controller::conversation::fork::{Brief, MainSession, Start};
+        use argonauts_core::display_names::DisplayNames;
+        const PICTURE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tui/tests/golden/fork_start.txt"
+        ));
+        let model = |text: &str| -> ModelRef { text.parse().unwrap() };
+        let name = |worker: &ModelRef| {
+            match (worker.agent.as_str(), worker.model.as_deref()) {
+                ("codex", _) => "GPT 6 Luna on Codex",
+                ("antigravity-cli", _) => "Gemini 3.6 Pro on agy",
+                (_, Some("opus-5-5")) => "Opus 5.5 on Claude Code",
+                _ => "Haiku 5.5 on Claude Code",
+            }
+            .to_owned()
+        };
+        let names = DisplayNames::default();
+        let cli = |id: &str| names.cli(id);
+        let opus = model("claude-code/opus-5-5");
+        let forked = Start::Fork(MainSession {
+            worker: opus.clone(),
+            cli_session: "main-session-1".to_owned(),
+            folder: "/repo".into(),
+        });
+        let from_the_brief = Start::Brief(Brief::OtherCli {
+            orchestrator: "antigravity-cli".to_owned(),
+            main: "claude-code".to_owned(),
+        });
+        let rows: Vec<&str> = PICTURE.lines().collect();
+        for (plans, start) in [(opus, forked), (model("antigravity-cli"), from_the_brief)] {
+            let crew = Crew {
+                workflow: "Orchestrator".to_owned(),
+                reviewers: vec![model("codex")],
+                plans: Some(plans.clone()),
+                builds: vec![model("claude-code/haiku-5-5")],
+                starts: Some(start.words(cli)),
+            };
+            let line = crew.line(name).replace("**", "");
+            let head = format!("⏺ Starting a workflow: Orchestrator, {},", name(&plans));
+            let at = rows
+                .iter()
+                .position(|row| row.starts_with(&head))
+                .unwrap_or_else(|| panic!("no row starts {head:?}"));
+            let pictured = format!(
+                "{} {}",
+                rows[at].trim_start_matches("⏺ ").trim_end(),
+                rows[at + 1].trim()
+            );
+            assert_eq!(line, pictured);
+        }
     }
 
     /// With a workflow in use the session's call is enough, and your words still decide for

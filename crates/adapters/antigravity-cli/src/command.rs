@@ -29,6 +29,10 @@ pub fn user_message_line(content: &str) -> String {
 ///
 /// A direct turn that asks like agy gets neither: its own `request-review` applies, so edits go
 /// through and the commands it would ask about are refused and listed after the turn.
+///
+/// Work outside the project in auto and autopilot needs nothing more inside ours, which holds
+/// the never-list. agy 1.2.13 has no rule that keeps a folder closed, and `--add-dir` opens a
+/// folder whole, so under its own sandbox it keeps to its workspace.
 fn own_sandbox(req: &SessionRequest) -> Option<&'static str> {
     if req.role == SessionRole::Direct && req.asks != Asks::Never {
         None
@@ -357,6 +361,30 @@ mod tests {
             Some("argonauts-read-only")
         );
         assert!(!read_only.files[0].contents.contains("run_command"));
+    }
+
+    #[test]
+    fn work_outside_is_ours_to_hold_and_its_own_sandbox_keeps_to_the_workspace() {
+        let outside = argonauts_core::outside::Outside {
+            read: true,
+            write: true,
+            ..Default::default()
+        };
+        let ours = build(&SessionRequest {
+            goal_hash: Some("abc".into()),
+            tool_sandbox_off: true,
+            outside: outside.clone(),
+            ..request(SessionRole::Direct)
+        });
+        assert!(has_arg(&ours, "--dangerously-skip-permissions"));
+        assert!(!has_arg(&ours, "--add-dir"));
+        let own = build(&SessionRequest {
+            goal_hash: Some("abc".into()),
+            outside,
+            ..request(SessionRole::Direct)
+        });
+        assert!(has_arg(&own, "--sandbox"));
+        assert!(!has_arg(&own, "--add-dir"));
     }
 
     #[test]

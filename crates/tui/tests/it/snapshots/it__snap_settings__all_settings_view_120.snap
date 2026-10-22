@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_settings.rs
+source: crates/tui/tests/it/snap_settings.rs
+assertion_line: 1049
 expression: "screen(&mut view, width, height, &state)"
 ---
 All settings
@@ -33,4 +34,4 @@ Every setting and the layer it comes from. ! marks a safety key                 
 │                                                                                                                      │
 │                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · ⏎ edit · type to search · esc back
+↑↓  select · ⏎ edit · type to search · esc back

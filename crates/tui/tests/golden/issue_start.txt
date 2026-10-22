@@ -1,0 +1,30 @@
+ /issue 42: what the crew will read, what it left out, then the main agent's plan to approve                          
+                                                                                                                      
+❯ /issue 42                                                                                                           
+                                                                                                                      
+● Issue #42 · Rate limiter shares one bucket across API keys                                                          
+  ⎿  Read: the title, the body, 3 comments by people with write access                                                
+     Left out: 2 comments by others (/issue 42 --all-comments reads them) · hidden text removed                       
+     Works on branch issue-42-per-key-limiter                                                                         
+                                                                                                                      
+⏺ Here is #42 in my words: all requests share one token bucket, so one busy API key slows every other key. The plan:  
+                                                                                                                      
+  1. Give each X-Api-Key its own bucket in ratelimit/bucket.py, made on the key's first request.                      
+  2. Requests with no key share one anonymous bucket, as the maintainer's comment on the issue asks.                  
+  3. Tests that two keys don't drain each other's bucket, and that the anonymous bucket still limits.                 
+                                                                                                                      
+  The crew works on it as a Council, on its own branch, and it ends as a draft pull request that you see before       
+  anything is sent.                                                                                                   
+                                                                                                                      
+                                                                                                                      
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Start the crew on this plan?                                                                                        
+  The crew gets this plan. The issue's text goes with it as a description of the task, never as instructions.         
+                                                                                                                      
+  ❯ 1. Yes, start                                                                                                     
+    2. Change the plan   say what to change, and the main agent writes it again                                       
+    3. No                nothing starts, and nothing is posted on the issue                                           
+                                                                                                                      
+  Enter to choose · Tab to add a note · Esc to set aside                                                              
+                                                                                                                      
+  -- INSERT -- ⏵⏵ auto mode on          ● Claude 5h ▄▄▄▄▄▄ 2% 7d ▄▄▄▄▄▄ 87%  ○ Codex 7d ▄▄▄▄▄▄ 3%  ○ agy 7d ▄▄▄▄▄▄ 0% 

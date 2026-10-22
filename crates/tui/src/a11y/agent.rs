@@ -22,6 +22,12 @@ pub struct StartedCall<'a> {
     pub input: &'a Value,
 }
 
+/// For the answer to a call of `name`: whether Argonauts Code turned down the workflow it
+/// asked to start, and `None` for any other call.
+pub(super) fn start_turned_down(name: &str, ok: bool, output: Option<&str>) -> Option<bool> {
+    (Own::named(name) == Some(Own::StartWorkflow)).then(|| turned_down(ok, output).is_some())
+}
+
 /// Lines for `event` from `who`. `agent` is the adapter id, which names its tools. `said` is
 /// the last whole message already spoken, so a result that repeats it stays quiet. Argonauts Code's
 /// own calls, such as the report, say nothing.

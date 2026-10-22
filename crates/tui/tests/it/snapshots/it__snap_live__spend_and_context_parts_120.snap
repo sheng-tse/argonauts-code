@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_live.rs
+source: crates/tui/tests/it/snap_live.rs
+assertion_line: 261
 expression: styled(&render(width))
 ---
-  [fg=#999999]ǁ supervised mode on[/] [fg=#999999](shift+tab to cycle)[/][fg=#999999] · [/][fg=#999999]? for shortcuts[/][fg=#999999] · [/][fg=#999999]← 3 agents[/]             [fg=#999999]$0.21/$5.00[/]  [fg=#999999]context · [/][fg=#af87ff]worker[/] 75%
+  [fg=#999999]ǁ supervised mode on[/] [fg=#999999](shift+tab to cycle)[/][fg=#999999] · [/][fg=#999999]? for shortcuts[/][fg=#999999] · [/][fg=#999999]←  3 agents[/]            [fg=#999999]$0.21/$5.00[/]  [fg=#999999]context · [/][fg=#af87ff]worker[/] 75%

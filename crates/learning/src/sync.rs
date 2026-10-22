@@ -21,7 +21,7 @@ pub struct SyncReport {
     /// Written, or under [`SyncMode::Check`], what would be.
     pub written: Vec<PathBuf>,
     pub unchanged: Vec<PathBuf>,
-    /// Such as `AGENTS.md` nearing Codex's 32 KiB or Antigravity CLI's 24,000-byte cut.
+    /// Such as `AGENTS.md` nearing Codex's 32 KiB or agy's 24,000-byte cut.
     pub warnings: Vec<String>,
     /// Files edited by hand since the last sync.
     pub edited: Vec<PathBuf>,
@@ -31,11 +31,11 @@ pub struct SyncReport {
 }
 
 /// The CLIs that read `AGENTS.md` by itself.
-const AGENTS_READERS: &str = "Codex and Antigravity CLI";
+const AGENTS_READERS: &str = "Codex and agy";
 
 /// Codex reads `AGENTS.md` files up to this many bytes combined and drops the rest.
 pub const CODEX_CAP: usize = 32 * 1024;
-/// Antigravity CLI cuts each instruction file at this many bytes.
+/// agy cuts each instruction file at this many bytes.
 pub const ANTIGRAVITY_CAP: usize = 24_000;
 /// Warn once a file is this close to a cap, in percent.
 const NEAR_CAP_PERCENT: usize = 90;
@@ -247,7 +247,7 @@ fn size_warnings(agents: &str) -> Vec<String> {
     let mut warnings = Vec::new();
     for (cli, cap, cap_text) in [
         ("Codex", CODEX_CAP, "32 KiB"),
-        ("Antigravity CLI", ANTIGRAVITY_CAP, "24,000 bytes"),
+        ("agy", ANTIGRAVITY_CAP, "24,000 bytes"),
     ] {
         if bytes > cap {
             warnings.push(format!(

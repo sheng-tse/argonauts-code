@@ -34,7 +34,6 @@ use argonauts_core::steps::StepName;
 use argonauts_core::workflow::{StandardPhase, StepRef};
 use argonauts_core::{RunId, TaskId};
 use argonauts_crew::engine::host::Host;
-use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::git::Git;
 use argonauts_crew::merge::final_check::FinalCheck;
 use argonauts_crew::merge::{branch, conductor, merge_packet};
@@ -101,7 +100,7 @@ async fn merge_in_dependency_order() -> anyhow::Result<()> {
             "Merge task-003: Build task-003",
         ]
     );
-    let git = Git::new();
+    let git = Git::with_env(crew.git_env());
     for (task, sha) in &merged {
         let parents = git.parents(root, sha).await?;
         assert_eq!(parents.len(), 2, "{task} was fast-forwarded");
@@ -301,7 +300,7 @@ async fn only_the_conductor_commits() -> anyhow::Result<()> {
     .await?;
     bench.build().await?;
 
-    let git = Git::new();
+    let git = Git::with_env(crew.git_env());
     let run = RunId::new("run-01")?;
     let head = git
         .branch_head(crew.repo.root(), &branch::run_branch(&run))
@@ -692,10 +691,10 @@ impl Bench {
         if let Some(checks) = checks {
             context.services.checks = checks;
         }
-        Git::new()
+        Git::with_env(crew.git_env())
             .add_detached_worktree(crew.repo.root(), &context.repo.base_worktree, &base)
             .await?;
-        let shared = Shared::new(&context, RunState::fold(&context.history))?;
+        let shared = crew.shared(&context, RunState::fold(&context.history))?;
         Ok(Self {
             host: Host::new(Arc::new(shared)),
             sink,
@@ -752,6 +751,7 @@ fn history(crew: &Crew, base: &str, tasks: &[TaskSpec]) -> anyhow::Result<Vec<Ru
         outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     };
     let goal = GoalFile {
         run: run.clone(),

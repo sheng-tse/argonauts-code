@@ -487,6 +487,7 @@ fn party(party: &Party) -> String {
         Party::Config => "a setting".to_owned(),
         Party::Autopilot => "autopilot".to_owned(),
         Party::ArgonautsCode => "Argonauts Code".to_owned(),
+        Party::Network => "the network".to_owned(),
         Party::Agent { worker, .. } => worker.to_string(),
         // The name is the client's own, so code says it's an outside agent: a client calling
         // itself "you" must not read as you.

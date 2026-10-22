@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_overlays.rs
+source: crates/tui/tests/it/snap_overlays.rs
+assertion_line: 402
 expression: "screen(&mut view, width, height, &state)"
 ---
 argonauts › crew                                                    Claude 72% · Codex 41% · agy 90%
@@ -7,12 +8,12 @@ argonauts › crew                                                    Claude 72%
 
 ◆ Add a --json flag to export · needs you
   ❯ ◆ question           asks: Merge this run into main?                                    just now
-    ◆ build:json-writer  asks: Keep a CSV fallback?                                           2m ago
-    ● build:json-flag    Update(src/mw/limit.ts)                                              5m ago
-    ○ review:json-flag   waiting on other work                                                1m ago
-    ✓ build:csv-writer   Merged task-001.                                                     3m ago
-    ✓ reader             done                                                                15m ago
-    ✓ draft              done                                                                15m ago
+    ◆ build:json-writer  asks: Keep a CSV fallback?                  GPT 5.6 on Codex         2m ago
+    ● build:json-flag    Update(src/mw/limit.ts)                     Opus on Claude Code      5m ago
+    ○ review:json-flag   waiting on other work                       Gemini 3.6 Pro on agy    1m ago
+    ✓ build:csv-writer   Merged task-001.                            GPT 5.6 on Codex         3m ago
+    ✓ reader             done                                        Haiku on Claude Code    15m ago
+    ✓ draft              done                                        Haiku on Claude Code    15m ago
 
 Listing conversations and CLI sessions…
 
@@ -33,4 +34,4 @@ Listing conversations and CLI sessions…
 
 
 
-↑↓ move · → open · Space details · Tab filter · ? keys · esc back
+↑↓  move · →  open · Space details · Tab filter · ? keys · esc back

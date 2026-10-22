@@ -2,7 +2,8 @@
 //! out its own. Two sub-tabs, Overview and Models, and a period line that `r` cycles. Overview
 //! has the year of days, its numbers in three groups, the tokens drawn by kind and by CLI, a
 //! fun fact, what's worth knowing and where the numbers came from; Models has the top models'
-//! tokens a day and each model with its CLI, value and sessions. No boxes. The first time it
+//! tokens a day and each model with its CLI, value and sessions; Behaviors maps what the agents
+//! did. No boxes. The first time it
 //! opens it asks once whether to import what Claude Code and Codex recorded; the import runs
 //! in the app, and the tab says how far it got.
 
@@ -12,6 +13,8 @@ pub(super) mod look;
 mod models;
 mod numbers;
 mod year;
+
+use std::cell::Cell;
 
 use argonauts_core::api::UsagePeriod;
 use argonauts_core::app::ViewRequest;
@@ -26,6 +29,7 @@ use self::look::{cli_word, model_colors, since_word};
 use self::models::{Models, last_page, page_word};
 use self::numbers::{Numbers, periods};
 use self::year::Year;
+use super::stats::behaviors::{BehaviorsTab, GroupColours, MapKey};
 use super::subtabs::{self, Level};
 use crate::kit::{Drawn, Frame, Kit};
 use crate::text::truncate_spans;
@@ -37,15 +41,17 @@ pub enum SubTab {
     #[default]
     Overview,
     Models,
+    Behaviors,
 }
 
 impl SubTab {
-    const ALL: [SubTab; 2] = [SubTab::Overview, SubTab::Models];
+    const ALL: [SubTab; 3] = [SubTab::Overview, SubTab::Models, SubTab::Behaviors];
 
     fn title(self) -> &'static str {
         match self {
             SubTab::Overview => "Overview",
             SubTab::Models => "Models",
+            SubTab::Behaviors => "Behaviors",
         }
     }
 }
@@ -65,6 +71,9 @@ pub struct HomeTab {
     found: Option<String>,
     /// Which models the Models sub-tab shows, for the key line.
     page: String,
+    pub behaviors: BehaviorsTab,
+    /// The rows the panel has under its tabs, which the Behaviors list fills.
+    room: Cell<usize>,
 }
 
 /// What a key on the tab asks of the panel.
@@ -73,6 +82,8 @@ pub enum HomeKey {
     Moved,
     Ask(ViewRequest),
     Copy(String),
+    /// A command for the app, such as the deeper map's update starting.
+    Send(argonauts_core::app::UiCommand),
     /// Enter on the models: Stats opens the first one shown, for the same span of days.
     OpenModel {
         agent: String,
@@ -144,13 +155,63 @@ impl HomeTab {
             .unwrap_or(0)
     }
 
-    /// The other sub-tab, `by` places along, wrapping.
+    /// The other sub-tab, `by` places along, wrapping. Behaviors asks for its map each time
+    /// it opens.
     pub fn step_sub_tab(&mut self, by: isize) -> HomeKey {
         let at = (self.sub_index() as isize + by).rem_euclid(SubTab::ALL.len() as isize);
         self.sub = SubTab::ALL[at as usize];
         self.picked = 0;
         self.turn_page();
+        if self.sub == SubTab::Behaviors {
+            return HomeKey::Ask(self.behaviors.ask());
+        }
         HomeKey::Moved
+    }
+
+    /// The Behaviors sub-tab, as Config's Behaviors rows open it, with what to ask for its map.
+    pub fn show_behaviors(&mut self) -> ViewRequest {
+        self.sub = SubTab::Behaviors;
+        self.picked = 0;
+        self.turn_page();
+        self.behaviors.ask()
+    }
+
+    pub fn on_behaviors(&self) -> bool {
+        self.sub == SubTab::Behaviors
+    }
+
+    /// The colour of each of the Behaviors map's groups, as the rest of the tab colours them.
+    pub fn behavior_colours(&self, kit: &Kit<'_>, names: &DisplayNames) -> GroupColours {
+        let models = self.all_time_models().unwrap_or_default();
+        match self.behaviors.map() {
+            Some(map) => GroupColours::new(kit, map, models, names),
+            None => GroupColours::default(),
+        }
+    }
+
+    /// ↑ from the rows goes back to the sub-tabs.
+    pub fn on_first(&self) -> bool {
+        match self.sub {
+            SubTab::Behaviors => self.behaviors.on_first(),
+            _ => self.picked == 0,
+        }
+    }
+
+    /// Behaviors answers this key before the panel does.
+    pub fn claims(&self, code: KeyCode) -> bool {
+        self.sub == SubTab::Behaviors
+            && (matches!(code, KeyCode::Char('g' | 'p' | 'r' | 'd' | 'x'))
+                || self.level != Level::Tabs)
+            && self.behaviors.claims(code, self.level == Level::Cards)
+    }
+
+    pub fn accept_map(&mut self, map: &argonauts_core::behavior_map::BehaviorMap) {
+        self.behaviors.accept(map);
+    }
+
+    /// The rows the panel has for the tab's blocks.
+    pub fn set_room(&self, rows: usize) {
+        self.room.set(rows);
     }
 
     /// ` Overview    Models `, the one shown filled while Tab moves them.
@@ -162,6 +223,11 @@ impl HomeTab {
 
     /// The tab's blocks top to bottom, and the one to keep in view.
     pub fn blocks(&self, kit: &Kit<'_>, names: &DisplayNames, width: usize) -> (Vec<Drawn>, usize) {
+        if self.sub == SubTab::Behaviors {
+            let colours = self.behavior_colours(kit, names);
+            let blocks = self.behaviors.blocks(kit, &colours, width, self.room.get());
+            return (blocks, 0);
+        }
         let Some(data) = &self.data else {
             return (vec![note(kit, "Reading every CLI's history…")], 0);
         };
@@ -209,6 +275,8 @@ impl HomeTab {
                 let last = blocks.len() - 1;
                 (blocks, last)
             }
+            // Drawn before the numbers are needed, above.
+            SubTab::Behaviors => (blocks, 0),
         }
     }
 
@@ -303,19 +371,25 @@ impl HomeTab {
     /// The keys, in display order.
     pub fn keys(&self) -> Vec<&str> {
         if self.asking() {
-            return vec!["↑↓ choose", "enter answer", "1 2 answer"];
+            return vec!["↑↓  choose", "enter answer", "1 2 answer"];
+        }
+        if self.sub == SubTab::Behaviors && self.level == Level::Cards {
+            return Vec::new();
         }
         // The period's key comes first, as on every tab that has periods.
         let mut keys = vec![super::periods::CYCLE_HINT];
+        if self.sub == SubTab::Behaviors {
+            keys.clear();
+        }
         if self.level == Level::Tabs {
-            keys.extend(["tab · ← → tabs", "↓ Overview or Models"]);
+            keys.extend(["tab · ←  →  tabs", "↓  Overview, Models, Behaviors"]);
         } else {
             if self.sub == SubTab::Models && !self.page.is_empty() {
                 keys.push(self.page.as_str());
             }
-            keys.push("↑ tabs");
+            keys.push("↑  tabs");
             if self.sub == SubTab::Overview {
-                keys.push("tab Overview or Models");
+                keys.push("tab Overview, Models, Behaviors");
             }
         }
         keys.push("ctrl+s to copy");
@@ -338,6 +412,14 @@ impl HomeTab {
         }
         if self.asking() {
             return self.question_key(code);
+        }
+        if self.sub == SubTab::Behaviors {
+            return match self.behaviors.key(code)? {
+                MapKey::Moved => Some(HomeKey::Moved),
+                MapKey::Ask(request) => Some(HomeKey::Ask(request)),
+                MapKey::Copy(text) => Some(HomeKey::Copy(text)),
+                MapKey::Send(command) => Some(HomeKey::Send(command)),
+            };
         }
         if code == KeyCode::Char('i') {
             return Some(HomeKey::Ask(self.request(Some(true))));
@@ -407,6 +489,12 @@ impl HomeTab {
 
     /// Ctrl+S: what the sub-tab shows, as plain lines, with each bar as its shares in words.
     pub fn summary_text(&self, names: &DisplayNames) -> Option<String> {
+        if self.sub == SubTab::Behaviors {
+            let map = self.behaviors.map()?;
+            let mut lines = vec!["Argonauts Code · Behaviors".to_owned(), String::new()];
+            lines.extend(super::stats::behaviors::spoken(map));
+            return Some(lines.join("\n"));
+        }
         let data = self.data.as_ref()?;
         let theme = crate::theme::Theme::dark().with_level(crate::theme::ColorLevel::None);
         let kit = Kit::new(&theme);
@@ -439,6 +527,8 @@ impl HomeTab {
                     blocks.push(models.columns(&kit, width, first));
                 }
             }
+            // Its own words, above.
+            SubTab::Behaviors => {}
         }
         for block in blocks {
             lines.push(String::new());

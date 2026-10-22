@@ -5,10 +5,17 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# What the crate builds with. Tests and the pictures, snapshots and recordings they read
+# stay in the repository.
+include = ["/src/script/phases.yaml", "/src/**/*.rs", "/LICENSE", "/NOTICE"]
 
 [dependencies]
 argonauts-core.workspace = true
+argonauts-conductor.workspace = true
 argonauts-learning.workspace = true
 argonauts-runner.workspace = true
 futures.workspace = true
@@ -28,7 +35,6 @@ which.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
-argonauts-conductor.workspace = true
 argonauts-policy.workspace = true
 argonauts-testkit.workspace = true
 tempfile.workspace = true

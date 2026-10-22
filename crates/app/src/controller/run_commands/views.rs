@@ -30,7 +30,7 @@ use crate::views;
 
 /// The run's log, or the events this app holds when the log can't be read.
 pub(super) fn run_events(ctx: &Ctx, runs: &RunsState, run: &RunId) -> Vec<RunEvent> {
-    let path = ctx.env.run_dir(run).join(run_files::EVENTS);
+    let path = run_dir_of(ctx, run).join(run_files::EVENTS);
     if let Ok(back) = journal::read_all(&path) {
         return back.events;
     }
@@ -39,6 +39,27 @@ pub(super) fn run_events(ctx: &Ctx, runs: &RunsState, run: &RunId) -> Vec<RunEve
         .filter(|attached| &attached.run == run)
         .map(|attached| attached.events.clone())
         .unwrap_or_default()
+}
+
+/// The run's folder in this project, or in whichever project recorded it: the Behaviors map
+/// covers every project, and its examples open their runs.
+fn run_dir_of(ctx: &Ctx, run: &RunId) -> PathBuf {
+    let here = ctx.env.run_dir(run);
+    if here.exists() {
+        return here;
+    }
+    std::fs::read_dir(ctx.env.paths.home().join("state"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|project| {
+            project
+                .path()
+                .join(layout::repo_state::RUNS)
+                .join(run.as_str())
+        })
+        .find(|dir| dir.join(run_files::EVENTS).is_file())
+        .unwrap_or(here)
 }
 
 /// Before the main agent's brief holds, Ctrl+T and Enter on the run's row open the main agent at
@@ -151,8 +172,11 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
         ViewRequest::Usage { .. } => anyhow::bail!("usage isn't one run's view"),
         ViewRequest::ReadPlanUsage => anyhow::bail!("plan usage isn't one run's"),
         ViewRequest::Overview { .. } => anyhow::bail!("the Overview isn't one run's view"),
+        ViewRequest::Behaviors(_) => anyhow::bail!("the Behaviors map isn't one run's view"),
         ViewRequest::RepoFiles => anyhow::bail!("the repo's files aren't a run's"),
         ViewRequest::Learning { .. } => anyhow::bail!("the Learning pickers aren't run views"),
+        ViewRequest::Issues => anyhow::bail!("the issue list isn't a run's"),
+        ViewRequest::DeepOffer => anyhow::bail!("the deeper map's questions aren't a run's"),
     }
     Ok(Vec::new())
 }
@@ -562,6 +586,7 @@ fn show_workflow(
         });
     };
     views::required::mark(&mut view, &ctx.env, &kept_steps(&events));
+    views::followed_heading(&mut view, &ctx.env.state_dir);
     show(
         ctx,
         ViewData::Workflow {
@@ -694,6 +719,7 @@ mod window_tests {
             categories: Vec::new(),
             recorded: None,
             ended: None,
+            answered_for: None,
         };
         let mut settings = Settings::default();
         let rows = [

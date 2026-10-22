@@ -55,7 +55,7 @@ pub fn other_models(registry: &dyn ModelRegistry, worker: &ModelRef) -> Vec<Mode
 }
 
 /// The line said before `who` starts on `runs`, the model its CLI lists nearest to `gone`:
-/// `propose:p3 runs on Gemini 3.8 Flash (Low): Antigravity CLI no longer offers Gemini 3.6
+/// `propose:p3 runs on Gemini 3.8 Flash (Low): agy no longer offers Gemini 3.6
 /// Flash (Low)`.
 pub fn runs_in_place(
     registry: &dyn ModelRegistry,

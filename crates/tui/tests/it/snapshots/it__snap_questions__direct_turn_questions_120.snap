@@ -27,7 +27,7 @@ expression: text(&lines)
   Enter to choose · Esc for No
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◆ Let Antigravity CLI run what it was refused?
+◆ Let agy run what it was refused?
   python -m pytest -q
 
   ❯ 1. Yes, and continue

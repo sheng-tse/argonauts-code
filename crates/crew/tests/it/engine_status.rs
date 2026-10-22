@@ -21,7 +21,6 @@ use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::steps::understand::{Read, ReadInput};
 use argonauts_core::{RunId, Spend, TaskId};
 use argonauts_crew::engine::host::{Ask, Host};
-use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::state::RunState;
 use argonauts_crew::status::files::StatusFiles;
 use argonauts_crew::status::folder::Folder;
@@ -246,7 +245,7 @@ async fn status_summary_injected_at_session_start() -> anyhow::Result<()> {
         "open_questions": []
     })));
     let (context, sink, _commands) = crew.context(Vec::new())?;
-    let host = Host::new(Arc::new(Shared::new(&context, RunState::default())?));
+    let host = Host::new(Arc::new(crew.shared(&context, RunState::default())?));
     let task = TaskId::new("task-001")?;
     host.record(
         Some(&task),
@@ -313,7 +312,7 @@ async fn at_the_run_limit(autopilot: bool) -> anyhow::Result<(bool, bool, Vec<St
     let mut crew = support::Crew::new()?;
     crew.settings.limits.spend.spend_per_run = Some(0.02);
     let (context, sink, _commands) = crew.context(Vec::new())?;
-    let host = Host::new(Arc::new(Shared::new(&context, RunState::default())?));
+    let host = Host::new(Arc::new(crew.shared(&context, RunState::default())?));
     if autopilot {
         host.record(
             None,

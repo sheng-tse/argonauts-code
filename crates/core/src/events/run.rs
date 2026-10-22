@@ -161,6 +161,44 @@ pub struct RunStarted {
     /// Steps a setup kept for the conversation or the request that started the run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_steps: Vec<RequiredStep>,
+    /// What the orchestrator begins from, when your words in a conversation started the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_from: Option<StartsFrom>,
+}
+
+/// What the orchestrator of a run your words started begins from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartsFrom {
+    /// A copy of the main session, made by the CLI they share: the whole conversation, with
+    /// the brief as its first message.
+    Fork(ForkFrom),
+    /// The brief alone, as every worker starts.
+    Brief(BriefFrom),
+}
+
+/// The main session an orchestrator's fork copies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkFrom {
+    pub worker: ModelRef,
+    /// The CLI's own id for it.
+    pub cli_session: String,
+    /// Where it ran, which is where its CLI resumes it: Claude Code keeps sessions by folder.
+    pub folder: PathBuf,
+    /// How many tokens the conversation held when the run started, when its CLI said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+}
+
+/// The brief an orchestrator starts from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BriefFrom {
+    /// The main agent, which wrote it from the conversation.
+    pub written_by: ModelRef,
+    /// Why the orchestrator can't carry the conversation, when that's why: "agy can't carry a
+    /// Claude Code conversation".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 /// One instruction from a request, after code checked it.
@@ -379,7 +417,7 @@ pub enum WaitReason {
 pub struct RunStop {
     /// Such as `a council needs two proposals, and only propose:p1 can make one`.
     pub why: String,
-    /// Each job nothing could take: `propose:p3 · Antigravity CLI is signed out`.
+    /// Each job nothing could take: `propose:p3 · agy is signed out`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<String>,
     /// Why nothing else could take them: `OpenCode has no model set`.
@@ -456,6 +494,9 @@ pub enum Party {
     Declined,
     /// Argonauts Code itself, by a fixed rule.
     ArgonautsCode,
+    /// The internet, gone for `network.hold_minutes`: the run pauses rather than hold its
+    /// sessions open.
+    Network,
     Agent {
         session: SessionKey,
         worker: ModelRef,

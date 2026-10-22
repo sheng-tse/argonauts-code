@@ -15,6 +15,7 @@ mod narrator;
 mod notice;
 pub mod picker;
 mod question;
+mod retry;
 mod tips;
 pub mod verbs;
 mod workflows;
@@ -54,6 +55,7 @@ pub use question::{
     QuestionAgent, QuestionChip, QuestionEvent, QuestionNote, QuestionOption, QuestionPrompt,
     QuestionView,
 };
+pub use retry::RetryNote;
 pub use workflows::{
     PanelRowId, StopAsk, WorkflowPanel, WorkflowRow, WorkflowRowState, ask_before_stop,
     handle_panel_key, panel_has_rows, panel_lines,
@@ -100,6 +102,8 @@ pub struct BottomState {
     pub workflows: WorkflowPanel,
     /// The narrator's latest line, shown just above the working line.
     pub narrator: Option<String>,
+    /// The first start after an update says so above the input until your first key.
+    pub updated: Option<String>,
     /// A settings picker open under the input, in place of the bottom rule and what follows.
     pub picker: Option<Picker>,
     /// Prompt history search, open in place of the input and everything below it.
@@ -143,9 +147,9 @@ pub struct Synced {
     pub approval: Option<ApprovalMode>,
 }
 
-pub const QUESTION_PLACEHOLDER_RUN: &str = "↑ to answer the question, or type to guide the run";
+pub const QUESTION_PLACEHOLDER_RUN: &str = "↑  to answer the question, or type to guide the run";
 
-pub const QUESTION_PLACEHOLDER: &str = "↑ to answer the question";
+pub const QUESTION_PLACEHOLDER: &str = "↑  to answer the question";
 
 /// How long the screen says the draft asks for a workflow, as Claude Code does. The word
 /// keeps its color after.
@@ -564,7 +568,12 @@ impl BottomState {
                 working.push(Line::default());
             }
             _ if !working.is_empty() => working.push(Line::default()),
-            _ => {}
+            _ => {
+                if let Some(words) = &self.updated {
+                    let row = crate::bridge::status::updated_row(words, theme);
+                    working.extend([truncate_line(&row, width), Line::default()]);
+                }
+            }
         }
         // A queued message looks like a sent one, dimmed until it's delivered.
         let band = theme.style(Role::UserBand);

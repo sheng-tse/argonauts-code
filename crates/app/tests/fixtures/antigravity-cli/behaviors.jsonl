@@ -1,0 +1,12 @@
+{"type": "tool_started", "id": "call-1", "name": "find_by_name", "input": {"Pattern": "*", "SearchDirectory": "/home/user/.argonauts/worktrees/textkit-0123456789ab/run-20261003-161928-6941/base"}, "parent": null}
+{"type": "tool_finished", "id": "call-1", "ok": true, "output": null, "parent": null}
+{"type": "tool_started", "id": "call-2", "name": "view_file", "input": {"AbsolutePath": "/home/user/.argonauts/worktrees/textkit-0123456789ab/run-20261003-161928-6941/base/textkit/__init__.py"}, "parent": null}
+{"type": "tool_finished", "id": "call-2", "ok": true, "output": null, "parent": null}
+{"type": "tool_started", "id": "call-3", "name": "view_file", "input": {"AbsolutePath": "/home/user/.argonauts/worktrees/textkit-0123456789ab/run-20261003-161928-6941/base/tests/test_textkit.py"}, "parent": null}
+{"type": "tool_finished", "id": "call-3", "ok": true, "output": null, "parent": null}
+{"type": "tool_started", "id": "call-4", "name": "view_file", "input": {"AbsolutePath": "/home/user/.argonauts/worktrees/captain-0123456789ab/run-20261017-065849-0dff/task-fix-the-money-rounding/tests/test_money.py"}, "parent": null}
+{"type": "tool_finished", "id": "call-4", "ok": true, "output": null, "parent": null}
+{"type": "tool_started", "id": "call-5", "name": "view_file", "input": {"AbsolutePath": "/home/user/.argonauts/worktrees/captain-0123456789ab/run-20261017-065849-0dff/task-fix-the-money-rounding/tests/test_totals.py"}, "parent": null}
+{"type": "tool_finished", "id": "call-5", "ok": true, "output": null, "parent": null}
+{"type": "tool_started", "id": "call-6", "name": "list_dir", "input": {"DirectoryPath": "/home/user/.argonauts/state/council-0123456789ab/runs/run-20261020-122145-c25f/sessions/s-004/agy-agent"}, "parent": null}
+{"type": "tool_finished", "id": "call-6", "ok": true, "output": null, "parent": null}

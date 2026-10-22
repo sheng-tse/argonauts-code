@@ -74,7 +74,7 @@ pub(super) fn given(host: &Host, task: &TaskId, round: u32, by: &ModelRef) -> Op
 }
 
 /// `Sonnet 5.5 on Claude Code and GPT 5.6 on Codex both review build:add-due in place of
-/// Gemini 3.6 Pro on Antigravity CLI`, and how their reviews count. `more` are about to be
+/// Gemini 3.6 Pro on agy`, and how their reviews count. `more` are about to be
 /// asked beside `already`, who have the job. Says nothing when the log has the review of
 /// each of `more`, since it was said then.
 pub(super) fn say_who_reviews(

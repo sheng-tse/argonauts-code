@@ -24,7 +24,7 @@ pub const CIRCLE_PERIOD: Duration = Duration::from_millis(250);
 /// The keys of the focused list, in Claude Code's words (2.1.292: `enter` to view, `x` to stop
 /// it, and `ctrl+x ctrl+k` to stop all agents).
 pub const LIST_KEYS: &str =
-    "↑/↓ to select · enter to view · x to stop it · ctrl+x ctrl+k to stop all agents";
+    "↑/↓  to select · enter to view · x to stop it · ctrl+x ctrl+k to stop all agents";
 
 /// What the conversation's own row is called, as in Claude Code.
 pub const MAIN: &str = "main";
@@ -552,11 +552,10 @@ impl AgentPanel {
                     parts.push(plain(elapsed(end.saturating_duration_since(start))));
                 }
                 if row.tokens_down > 0 {
-                    // The space after the arrow is Claude Code's. Fonts like Iosevka draw the
-                    // arrow two cells wide, so it covers the space instead of the first digit.
                     parts.push(plain(format!(
-                        "{} {} tokens",
+                        "{}{}{} tokens",
                         ctx.theme.glyphs.tokens,
+                        crate::theme::glyphs::gap_after(ctx.theme.glyphs.tokens),
                         format::tokens(row.tokens_down)
                     )));
                 }
@@ -678,12 +677,15 @@ fn joined(
     spans
 }
 
-/// `↓ N more` under a panel's window, or `↑ N more` over it.
+/// `↓  N more` under a panel's window, or `↑  N more` over it.
 pub(super) fn more_line(below: bool, count: usize, ctx: &RenderCtx<'_>) -> Line<'static> {
     let marks = Marks::for_theme(ctx.theme);
     let arrow = if below { marks.down } else { marks.up };
     let line = Line::from(Span::styled(
-        format!("  {arrow} {count} more"),
+        format!(
+            "  {arrow}{}{count} more",
+            crate::theme::glyphs::gap_after(arrow)
+        ),
         ctx.theme.style(Role::Dim),
     ));
     truncate_line(&line, usize::from(ctx.width))
@@ -845,9 +847,9 @@ mod tests {
         assert_eq!(
             plain_text(&lines),
             "  ○ main\n\
-             \x20 ● build:scan-checks  Splitting input checks in scan_triton.py         1h 7m · ↓ 491k tokens\n\
-             \x20 ○ read:readme        Reading README.md for rescreen mentions          29m · ↓ 285k tokens\n\
-             \x20 ○ test:quantize      Testing quantize_int in test_quant_integer.py    21m · ↓ 522k tokens"
+             \x20 ● build:scan-checks  Splitting input checks in scan_triton.py        1h 7m · ↓  491k tokens\n\
+             \x20 ○ read:readme        Reading README.md for rescreen mentions         29m · ↓  285k tokens\n\
+             \x20 ○ test:quantize      Testing quantize_int in test_quant_integer.py   21m · ↓  522k tokens"
         );
         // The selected agent's dot and name take the chosen option's color, lavender, what
         // each agent does reads as text, and the stats are dim.
@@ -903,12 +905,12 @@ mod tests {
         let text = plain_text(&lines);
         let rows: Vec<&str> = text.lines().collect();
         assert!(
-            rows[1].ends_with("2/5 · wrapping up · 1h 7m · ↓ 491k tokens"),
+            rows[1].ends_with("2/5 · wrapping up · 1h 7m · ↓  491k tokens"),
             "{text}"
         );
         assert!(rows[2].starts_with("  ✢ read:readme"), "{text}");
         assert!(
-            rows[3].ends_with("⧉ test-report · 21m · ↓ 522k tokens"),
+            rows[3].ends_with("⧉ test-report · 21m · ↓  522k tokens"),
             "{text}"
         );
         assert!(
@@ -932,13 +934,13 @@ mod tests {
         };
         assert_eq!(
             row(62),
-            "  ○ build:scan-checks  Splitting inpu…  1h 7m · ↓ 491k tokens"
+            "  ○ build:scan-checks  Splitting inp…  1h 7m · ↓  491k tokens"
         );
         assert_eq!(
             row(58),
-            "  ○ build:scan-checks               1h 7m · ↓ 491k tokens"
+            "  ○ build:scan-checks              1h 7m · ↓  491k tokens"
         );
-        assert_eq!(row(38), "  ○ build:sca…  1h 7m · ↓ 491k tokens");
+        assert_eq!(row(38), "  ○ build:sc…  1h 7m · ↓  491k tokens");
     }
 
     #[test]
@@ -979,21 +981,21 @@ mod tests {
         let lines = panel.lines(&ctx);
         assert_eq!(lines.len(), 6);
         assert_eq!(plain_text(&lines[..1]), "  ● main");
-        assert_eq!(plain_text(&lines[5..]), "  ↓ 3 more");
+        assert_eq!(plain_text(&lines[5..]), "  ↓  3 more");
 
         panel.selected = Some(5);
         let lines = panel.lines(&ctx);
         assert_eq!(lines.len(), 6);
-        assert_eq!(plain_text(&lines[..1]), "  ↑ 2 more");
+        assert_eq!(plain_text(&lines[..1]), "  ↑  2 more");
         assert!(plain_text(&lines[4..5]).starts_with("  ● extra-1"));
-        assert_eq!(plain_text(&lines[5..]), "  ↓ 2 more");
+        assert_eq!(plain_text(&lines[5..]), "  ↓  2 more");
 
         panel.selected = Some(7);
         let text = plain_text(&panel.lines(&ctx));
-        assert!(text.starts_with("  ↑ 3 more\n"), "{text}");
+        assert!(text.starts_with("  ↑  3 more\n"), "{text}");
         assert!(text.contains("  ● extra-3"), "{text}");
         assert!(
-            !text.contains("main") && !text.contains("↓ 1 more"),
+            !text.contains("main") && !text.contains("↓  1 more"),
             "{text}"
         );
         assert_eq!(text.lines().count(), 6, "{text}");

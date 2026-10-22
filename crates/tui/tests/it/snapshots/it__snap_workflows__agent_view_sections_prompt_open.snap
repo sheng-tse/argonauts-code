@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_workflows.rs
+source: crates/tui/tests/it/snap_workflows.rs
+assertion_line: 783
 expression: text
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -8,7 +9,7 @@ expression: text
 
  ╭ build:a-terminal-bottom ─────────────────────────────────────────────────────────────────╮
  │ ✔ Done · Opus on Claude Code                                                             │
- │ 381k tok · 195 tool calls · 6m 2s                                                        │
+ │ 381.0k tok · 195 tool calls · 6m 2s                                                      │
  │                                                                                          │
  │ Prompt · 14 lines · ⏎ collapse                                                           │
  │   Build the terminal and the whole bottom region of the UI kit.                          │
@@ -25,12 +26,12 @@ expression: text
  │   Step 10: build one part, test it, and report what changed.                             │
  │   Step 11: build one part, test it, and report what changed.                             │
  │   Step 12: build one part, test it, and report what changed.                             │
+ │                                                                                          │
  │ Activity · last 5 of 195 tool calls · ⏎ collapse                                         │
  │   ⏺ Read(crates/tui/src/bottom/mod.rs)                                                   │
  │   ⏺ Edit(crates/tui/src/bottom/composer/layout.rs)                                       │
  │   ⏺ Bash(cargo test -p argonauts-tui composer) · error                                   │
  │   ⏺ Bash(cargo clippy -p argonauts-tui --all-targets -- -D warnings)                     │
  │   ◌ Bash(cargo test -p argonauts-tui) · no result                                        │
- │ Diff · 4 files · +120 -18 · d open                                                       │
- ╰─────────────────────────────────────────────────────────────────────────   1–25 of 42 ↓ ─╯
- ↑↓ agent · j/k scroll · ⏎ collapse · m message · x stop · r restart · p pause · esc back
+ ╰────────────────────────────────────────────────────────────────────────    1–25 of 46 ↓ ─╯
+ ↑↓  agent · j/k scroll · ⏎ collapse · m message · p pause · esc back

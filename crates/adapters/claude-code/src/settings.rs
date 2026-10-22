@@ -9,6 +9,8 @@ use argonauts_core::settings::workflows::WorkflowSize;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::outside::{PathRules, is_path_rule};
+
 /// The server name the worker gives the status tool in `mcp.json`.
 pub const STATUS_SERVER: &str = "argonauts_status";
 
@@ -163,6 +165,14 @@ struct Sandbox {
     auto_allow_bash_if_sandboxed: Option<bool>,
 }
 
+/// What the session's tools reach without asking beyond its tool list: the commands a reader's
+/// Bash runs, and the paths outside its folder.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Rules<'a> {
+    pub shell: Commands<'a>,
+    pub paths: Option<&'a PathRules>,
+}
+
 /// The shell commands a session's Bash may run: any its tool list and sandbox allow, or only
 /// those listed, each with any arguments after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -211,9 +221,9 @@ pub fn session_settings(
     left_out: &LeftOut,
     own: &OwnWorkflow,
     manner: Manner<'_>,
-    shell: Commands<'_>,
+    rules: Rules<'_>,
 ) -> anyhow::Result<String> {
-    let limited = matches!(shell, Commands::Only(_));
+    let limited = matches!(rules.shell, Commands::Only(_));
     let sandbox = match commands {
         CommandSandbox::Own => Sandbox {
             enabled: true,
@@ -229,7 +239,7 @@ pub fn session_settings(
         },
     };
     let mut allow = Vec::new();
-    if let Commands::Only(lines) = shell {
+    if let Commands::Only(lines) = rules.shell {
         allow.extend(lines.iter().flat_map(|line| command_rules(line)));
     }
     match allowed {
@@ -246,12 +256,16 @@ pub fn session_settings(
         allow.push(WORKFLOW.to_owned());
     }
     // Only the main session works in your checkout; a run's agents work in worktrees.
-    let deny: Vec<String> = match allowed {
+    let mut deny: Vec<String> = match allowed {
         Allowed::Everything | Allowed::AsTheCliAsks => {
             SETUP_DENIED.iter().map(|rule| (*rule).to_owned()).collect()
         }
         Allowed::Listed => Vec::new(),
     };
+    if let Some(paths) = rules.paths {
+        allow.extend(paths.allow.iter().cloned());
+        deny.extend(paths.deny.iter().cloned());
+    }
     let settings = SessionSettings {
         cross_session_inbound: "refuse",
         attribution: Attribution { commit: "", pr: "" },
@@ -425,15 +439,19 @@ fn check_permissions(value: &Value) -> anyhow::Result<()> {
             };
             if key == "deny" {
                 ensure!(
-                    SETUP_DENIED.contains(&rule),
-                    "permissions.deny only takes the rules that keep .argonauts/ closed, not {rule}"
+                    SETUP_DENIED.contains(&rule) || is_path_rule(rule),
+                    "permissions.deny only takes the rules that keep .argonauts/ and the \
+                     never-list closed, not {rule}"
                 );
                 continue;
             }
             ensure!(
-                TOOL_RULES.contains(&rule) || is_mcp_server_rule(rule) || is_command_rule(rule),
+                TOOL_RULES.contains(&rule)
+                    || is_mcp_server_rule(rule)
+                    || is_command_rule(rule)
+                    || is_path_rule(rule),
                 "permissions.allow only takes MCP server rules, Bash and its command rules, \
-                 WebFetch, WebSearch, and Workflow, not {rule}"
+                 WebFetch, WebSearch, Workflow, and file rules with an absolute path, not {rule}"
             );
         }
     }
@@ -508,7 +526,7 @@ mod tests {
                 style,
                 preferences: &SessionPreferences::default(),
             },
-            Commands::Any,
+            Rules::default(),
         )
         .unwrap();
         serde_json::from_str(&settings).unwrap()
@@ -530,7 +548,10 @@ mod tests {
                     style: Style::Yours,
                     preferences: &SessionPreferences::default(),
                 },
-                Commands::Only(&lines),
+                Rules {
+                    shell: Commands::Only(&lines),
+                    paths: None,
+                },
             )
             .unwrap();
             let settings: Value = serde_json::from_str(&settings).unwrap();
@@ -572,7 +593,7 @@ mod tests {
                     style: Style::Yours,
                     preferences,
                 },
-                Commands::Any,
+                Rules::default(),
             )
             .unwrap();
             serde_json::from_str(&settings).unwrap()
@@ -605,7 +626,7 @@ mod tests {
                 style: Style::Yours,
                 preferences: &odd,
             },
-            Commands::Any,
+            Rules::default(),
         );
         assert!(refused.is_err(), "a language is a name, not instructions");
         for refused in [

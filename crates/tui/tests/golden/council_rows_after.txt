@@ -12,7 +12,7 @@
 ● propose:p2 · GPT 6 Luna on Codex                                                                                    
   ⎿  Done · 3 tool uses · proposal ready · 52s · 11.0k tokens                                                         
                                                                                                                       
-● propose:p3 · Gemini 3.8 Flash on Antigravity CLI                                                                    
+● propose:p3 · Gemini 3.8 Flash on agy                                                                                
   ⎿  Done · 2 tool uses · proposal ready · 38s · 9.4k tokens                                                          
                                                                                                                       
 ● challenge:p1 · Haiku 5.5 on Claude Code                                                                             
@@ -21,7 +21,7 @@
 ● challenge:p2 · GPT 6 Luna on Codex                                                                                  
   ⎿  Done · argued against p1 and p3 · 2 points · 29s · 7.6k tokens                                                   
                                                                                                                       
-● challenge:p3 · Gemini 3.8 Flash on Antigravity CLI                                                                  
+● challenge:p3 · Gemini 3.8 Flash on agy                                                                              
   ⎿  Done · argued against p1 and p2 · 2 points · 21s · 6.9k tokens                                                   
                                                                                                                       
 ● decide:plan · Haiku 5.5 on Claude Code                                                                              
@@ -52,7 +52,7 @@
  │   ✔ Sign-off     1/1 │                                                                                           │ 
  │   ✔ Merge        1/1 │                                                                                           │ 
  ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save                                   
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save                                  
                                                                                                                       
  The same view on Sign-off, and on Challenge:                                                                         
                                                                                                                       
@@ -76,4 +76,4 @@
  │   ✔ Merge        1/1 │                                                                                           │ 
  ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
                                                                                                                       
-  ✔ Per key rate limiter  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  11/11 · 2m35s · ↓ 302k tokens · merged onto main                      
+  ✔ Per key rate limiter  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  11/11 · 2m35s · ↓  302k tokens · merged onto main                     

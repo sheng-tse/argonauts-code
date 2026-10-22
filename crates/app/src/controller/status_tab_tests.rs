@@ -147,8 +147,7 @@ fn claude_codes_auth_status_names_the_account_and_the_plan() {
 async fn a_login_check_that_fails_means_signed_out() {
     let dir = tempfile::tempdir().unwrap();
     let check = dir.path().join("login-check");
-    std::fs::write(&check, "#!/bin/sh\necho 'Not logged in'\nexit 1\n").unwrap();
-    std::fs::set_permissions(&check, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    argonauts_testkit::write_script(&check, "#!/bin/sh\necho 'Not logged in'\nexit 1\n").unwrap();
     let out = super::sign_in(&check, &[]).await.unwrap();
     assert!(out.signed_out && out.account.is_none(), "{out:?}");
 }
@@ -457,8 +456,6 @@ fn each_thing_agys_screen_says_is_kept_apart() {
 /// with the made-up lists, and its credentials file is never touched.
 #[tokio::test]
 async fn opencode_is_asked_for_its_providers_by_its_own_commands() {
-    use std::os::unix::fs::PermissionsExt;
-
     use argonauts_core::status_tab::ProviderBilling;
 
     let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -467,19 +464,15 @@ async fn opencode_is_asked_for_its_providers_by_its_own_commands() {
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let opencode = dir.path().join("opencode");
-    std::fs::write(
-        &opencode,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> '{asked}'\ncase \"$*\" in\n  'auth list --standalone --format json') \
-             cat '{f}/providers_2_auth_list.stdout.json' ;;\n  'models --standalone') cat \
-             '{f}/providers_models.stdout.txt' ;;\n  'debug config') cat \
-             '{f}/providers_config.stdout.json' ;;\n  *) exit 2 ;;\nesac\n",
-            asked = dir.path().join("asked").display(),
-            f = fixtures.display(),
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&opencode, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = format!(
+        "#!/bin/sh\necho \"$*\" >> '{asked}'\ncase \"$*\" in\n  'auth list --standalone --format json') \
+         cat '{f}/providers_2_auth_list.stdout.json' ;;\n  'models --standalone') cat \
+         '{f}/providers_models.stdout.txt' ;;\n  'debug config') cat \
+         '{f}/providers_config.stdout.json' ;;\n  *) exit 2 ;;\nesac\n",
+        asked = dir.path().join("asked").display(),
+        f = fixtures.display(),
+    );
+    argonauts_testkit::write_script(&opencode, &script).unwrap();
     let adapter: std::sync::Arc<dyn argonauts_core::Adapter> =
         std::sync::Arc::new(argonauts_adapter_opencode::OpenCodeAdapter::new());
     let asked = super::Asked {

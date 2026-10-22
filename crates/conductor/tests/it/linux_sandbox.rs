@@ -12,9 +12,13 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use argonauts_conductor::sandbox::landlock::Landlock;
+use argonauts_conductor::sandbox::profile::{ProfileInput, session_profile};
 use argonauts_conductor::sandbox::{SandboxError, SandboxWrap, self_test};
 use argonauts_core::CommandSpec;
-use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
+use argonauts_core::outside::{self, Never};
+use argonauts_core::session_runner::{Access, SandboxMode, SandboxProfile};
+use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::settings::outside::OutsideSettings;
 
 const LAUNCHER: &str = env!("CARGO_BIN_EXE_argonauts-sandbox");
 
@@ -79,6 +83,9 @@ fn profile(
         proxy_port: None,
         ask_port: None,
         closed: Vec::new(),
+        listable: Vec::new(),
+        loopback: false,
+        outside: Default::default(),
     }
 }
 
@@ -186,6 +193,214 @@ fn writes_stay_in_the_worktree_and_denied_files_stay_unread() {
     assert_eq!(
         std::fs::read_to_string(worktree.join("new.txt")).unwrap(),
         "hi\n"
+    );
+}
+
+/// The never-list's file names hold here as on macOS: a `.env` in the folder, below it or above
+/// it is neither read nor written, by its own name, through `..`, or through a link.
+#[test]
+fn the_never_lists_names_stay_closed_wherever_the_session_looks() {
+    if expect_no_userns() {
+        return;
+    }
+    let s = Scratch::new();
+    let repo = s.dir("repo");
+    s.file(".env", "above");
+    let env = s.file("repo/.env", "secret");
+    s.file("repo/app/.env.local", "local");
+    s.file("repo/notes.md", "notes");
+    s.file("vault/prod.env", "prod");
+    std::os::unix::fs::symlink(&env, repo.join("config")).unwrap();
+    std::os::unix::fs::symlink(s.root.join("vault/prod.env"), repo.join("app/.env")).unwrap();
+    let mut profile = profile(&[&s.root], &[], &[], true);
+    profile.outside = outside::Outside {
+        read: true,
+        write: true,
+        project: Some(repo.clone()),
+        never: Never::resolve(&[".env".to_owned(), ".env.*".to_owned()], &s.root),
+    };
+    let stdout = run(
+        &profile,
+        &repo,
+        &[],
+        r#"
+        for path in .env app/.env.local ../.env app/../.env config app/.env ../vault/prod.env; do
+            if cat "$path" >/dev/null 2>&1; then echo "read $path"; else echo "kept $path"; fi
+        done
+        if echo x > .env 2>/dev/null; then echo "wrote .env"; else echo "kept .env from writes"; fi
+        if mv .env leaked 2>/dev/null || rm -f .env 2>/dev/null; then echo "moved .env"; else echo "kept .env in place"; fi
+        if cat notes.md >/dev/null; then echo "read notes.md"; fi
+        if echo x > made.md; then echo "wrote made.md"; fi
+        "#,
+    );
+    assert_said(
+        &stdout,
+        &[
+            "kept .env",
+            "kept app/.env.local",
+            "kept ../.env",
+            "kept app/../.env",
+            "kept config",
+            "kept app/.env",
+            "kept ../vault/prod.env",
+            "kept .env from writes",
+            "kept .env in place",
+            "read notes.md",
+            "wrote made.md",
+        ],
+    );
+    assert_eq!(std::fs::read_to_string(&env).unwrap(), "secret");
+}
+
+/// The profile the app makes for a session on autopilot, in a made-up home.
+fn autopilot_profile(
+    home: &Path,
+    project: &Path,
+    access: Access,
+    workdir: &Path,
+) -> SandboxProfile {
+    let requested = SandboxProfile {
+        outside: outside::Outside::for_mode(
+            &OutsideSettings::default(),
+            ApprovalMode::Autopilot,
+            Some(project),
+            home,
+        ),
+        ..SandboxProfile::default()
+    };
+    let input = ProfileInput {
+        access,
+        agent_id: "claude-code",
+        workdir,
+        session_dir: &home.join(".argonauts/state/app/conversations/c-1/turn-1"),
+        argonauts_home: &home.join(".argonauts"),
+        user_home: home,
+        base_worktree: None,
+        status_file: None,
+        extra_writable: &[],
+        sees_other_worktrees: false,
+        commits: false,
+    };
+    SandboxProfile {
+        mode: SandboxMode::Os,
+        ..session_profile(&requested, &input)
+    }
+}
+
+/// `r` and `w` try to read or write a path under the made-up home, and say which they could.
+fn tries(home: &Path, lines: &str) -> String {
+    format!(
+        r#"
+        H={home}
+        r() {{ if cat "$H/$1" >/dev/null 2>&1; then echo "read $1"; else echo "kept $1"; fi; }}
+        w() {{ if (printf x > "$H/$1") 2>/dev/null; then echo "wrote $1"; else echo "kept $1 from writes"; fi; }}
+        {lines}
+        "#,
+        home = home.display()
+    )
+}
+
+/// Autopilot with the profile the app makes, as the Seatbelt tests check it on macOS: a direct
+/// turn reads and writes anywhere but the never-list, whichever way a path reaches it, a worker
+/// writes your checkout only through its worktree, and a reviewer writes nothing outside.
+#[test]
+fn autopilot_works_outside_the_project_and_never_in_the_never_list() {
+    if expect_no_userns() {
+        return;
+    }
+    let s = Scratch::new();
+    let home = s.dir("home");
+    let project = s.dir("home/work/app");
+    let tree = s.dir("home/.argonauts/worktrees/app/run-1/task-a/src");
+    let tree = tree.parent().unwrap();
+    s.dir("home/.argonauts/state/app/conversations/c-1/turn-1");
+    s.file("home/work/app/src/lib.rs", "");
+    let env = s.file("home/work/app/.env", "MADE_UP=1");
+    s.file("home/Downloads/x.png", "picture");
+    s.file("home/.ssh/id_rsa", "not a real key");
+    s.file("home/.zshrc", "# shell setup");
+    std::os::unix::fs::symlink(home.join(".ssh"), home.join("Downloads/keys")).unwrap();
+
+    let direct = autopilot_profile(&home, &project, Access::Direct, &project);
+    let never = [
+        ".ssh/id_rsa",
+        "Downloads/../.ssh/id_rsa",
+        "Downloads/keys/id_rsa",
+        "work/app/.env",
+        "work/app/../app/.env",
+    ];
+    let stdout = run(
+        &direct,
+        &project,
+        &[],
+        &tries(
+            &home,
+            &format!(
+                "r Downloads/x.png; w Downloads/y.md; w work/app/src/a.rs
+                for path in {}; do r $path; w $path; done
+                r .zshrc; w .zshrc
+                w .argonauts/state/app/conversations/c-1/turn-1/x",
+                never.join(" ")
+            ),
+        ),
+    );
+    let mut expected = vec![
+        "read Downloads/x.png".to_owned(),
+        "wrote Downloads/y.md".to_owned(),
+        "wrote work/app/src/a.rs".to_owned(),
+        "read .zshrc".to_owned(),
+        "kept .zshrc from writes".to_owned(),
+        "kept .argonauts/state/app/conversations/c-1/turn-1/x from writes".to_owned(),
+    ];
+    for path in never {
+        expected.push(format!("kept {path}"));
+        expected.push(format!("kept {path} from writes"));
+    }
+    assert_said(
+        &stdout,
+        &expected.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(std::fs::read_to_string(&env).unwrap(), "MADE_UP=1");
+
+    let worker = autopilot_profile(&home, &project, Access::Build, tree);
+    let stdout = run(
+        &worker,
+        tree,
+        &[],
+        &tries(
+            &home,
+            "w .argonauts/worktrees/app/run-1/task-a/src/a.rs; w work/app/src/b.rs
+            r work/app/src/lib.rs; w Downloads/z.md; r Downloads/x.png
+            r Downloads/keys/id_rsa; r work/app/.env",
+        ),
+    );
+    assert_said(
+        &stdout,
+        &[
+            "wrote .argonauts/worktrees/app/run-1/task-a/src/a.rs",
+            "kept work/app/src/b.rs from writes",
+            "read work/app/src/lib.rs",
+            "wrote Downloads/z.md",
+            "read Downloads/x.png",
+            "kept Downloads/keys/id_rsa",
+            "kept work/app/.env",
+        ],
+    );
+
+    let reviewer = autopilot_profile(&home, &project, Access::ReadOnly, tree);
+    let stdout = run(
+        &reviewer,
+        tree,
+        &[],
+        &tries(&home, "r Downloads/x.png; w Downloads/r.md; r .ssh/id_rsa"),
+    );
+    assert_said(
+        &stdout,
+        &[
+            "read Downloads/x.png",
+            "kept Downloads/r.md from writes",
+            "kept .ssh/id_rsa",
+        ],
     );
 }
 

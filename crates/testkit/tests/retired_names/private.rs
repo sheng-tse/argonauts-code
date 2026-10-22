@@ -5,7 +5,7 @@
 use serde_json::Value;
 
 use super::report::Place;
-use super::table::{Private, Setup, Table};
+use super::table::{self, Private, Setup, Table};
 use super::tree::File;
 
 pub fn places(table: &Table, files: &[File]) -> Vec<Place> {
@@ -25,10 +25,13 @@ pub fn places(table: &Table, files: &[File]) -> Vec<Place> {
         let Some(text) = file.text.as_deref() else {
             continue;
         };
+        let addresses_are_authors = table::fits_any(&private.authors_addresses_in, &file.path);
         for (number, line) in text.lines().enumerate() {
             let mut found = Vec::new();
             homes(line, private, &mut found);
-            mail(line, private, &mut found);
+            if !addresses_are_authors {
+                mail(line, private, &mut found);
+            }
             scratch_folders(line, private, &mut found);
             banned_texts(line, &banned, private, &mut found);
             for (text, fix) in found {

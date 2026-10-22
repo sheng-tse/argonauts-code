@@ -3,7 +3,7 @@
 ❯ /update                                                                                                             
                                                                                                                       
 ● Update                                                                                                              
-  ⎿  Claude Code       2.1.303   up to date                                                                           
+  ⎿  Claude Code   2.1.303   up to date                                                                               
                                                                                                                       
 ✻ Careening… (2s)                                                                                                     
                                                                                                                       
@@ -18,16 +18,16 @@
 ❯ /update                                                                                                             
                                                                                                                       
 ● Update                                                                                                              
-  ⎿  Claude Code       2.1.303   up to date                                                                           
-     Codex             0.163.0   up to date                                                                           
-     Antigravity CLI   1.4.2     up to date                                                                           
-     OpenCode          2.0.32    up to date · also through ACP                                                        
+  ⎿  Claude Code   2.1.303   up to date                                                                               
+     Codex         0.163.0   up to date                                                                               
+     agy           1.4.2     up to date                                                                               
+     OpenCode      2.0.32    up to date · also through ACP                                                            
                                                                                                                       
 ● Doctor                                                                                                              
   ⎿  Claude Code 2.1.303       newer than checked · works    its flags and start-up message match 2.1.295 · logged in 
      · 4 new commands read from it                                                                                    
      Codex 0.163.0             newer than checked            logged in                                                
-     Antigravity CLI 1.4.2     newer than checked                                                                     
+     agy 1.4.2                 newer than checked                                                                     
      OpenCode 2.0.32           new major version             checked with 1.18.34 · compared at start-up              
      git 2.51.2                                                                                                       
      Ready with 4 of 4 agent CLIs.                                                                                    

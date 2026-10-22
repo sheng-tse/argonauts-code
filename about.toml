@@ -1,0 +1,31 @@
+# cargo-about's settings for THIRD_PARTY_NOTICES.md, the licenses of everything compiled into the argonauts binary.
+# Regenerate it with packaging/notices/generate.sh after any dependency change.
+
+# Where a crate offers a choice, the first license here that it offers is the one named. Every license the binary's
+# dependencies use must be listed; cargo-about stops on any other.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MIT-0",
+    "MPL-2.0",
+]
+
+# The six targets the releases are built for. Dependencies only other targets use are left out.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
+
+# Only what ends up in the binary: what build scripts and tests use isn't distributed.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false

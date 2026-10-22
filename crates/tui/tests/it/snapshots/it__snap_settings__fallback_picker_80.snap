@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_settings.rs
+source: crates/tui/tests/it/snap_settings.rs
+assertion_line: 55
 expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────
@@ -11,4 +12,4 @@ expression: "picker_lines(picker, width)"
     3. What the fallback is told        note+summary · this project
     4. Who summarizes the old session   unset · built-in
 
-  Enter to choose · ↑↓ to move · type to filter · Esc to close
+  Enter to choose · ↑↓  to move · type to filter · Esc to close

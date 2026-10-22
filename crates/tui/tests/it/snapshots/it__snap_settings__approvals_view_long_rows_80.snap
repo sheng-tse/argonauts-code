@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_settings.rs
+source: crates/tui/tests/it/snap_settings.rs
+assertion_line: 1800
 expression: shown
 ---
 Approvals
@@ -33,4 +34,4 @@ Who decides each approval, and how auto matched you
 │                                                                              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · ⏎ edit · esc back
+↑↓  select · ⏎ edit · esc back

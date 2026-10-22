@@ -12,4 +12,4 @@
  │                  │      ⏺ lint:readme     GPT 6 Luna · 3.0k tok                                               8s │ 
  │                  │      ◌ lint:changelog  Haiku 5.5 · queued                                                     │ 
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save                                   
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save                                  

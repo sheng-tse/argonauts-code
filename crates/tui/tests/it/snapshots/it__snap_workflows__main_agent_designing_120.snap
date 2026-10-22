@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_workflows.rs
+source: crates/tui/tests/it/snap_workflows.rs
+assertion_line: 1948
 expression: text
 ---
 ◐ main:design-2 · Haiku on Claude Code                             Output  Input  Raw                              1m22s
@@ -17,4 +18,4 @@ expression: text
 
 
 
-↑↓ scroll · tab input · m message it · x stop it · r raw · ← crew · esc back
+↑↓  scroll · tab input · m message it · x stop it · r raw · ←  crew · esc back

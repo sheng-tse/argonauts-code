@@ -168,7 +168,7 @@ pub fn templates(files: &[File]) -> Vec<Place> {
         "crates/app/src/prompts/catalog.rs",
         "crates/policy/src/templates.rs",
     ];
-    const FOLDER: &str = "templates/prompts/";
+    const FOLDER: &str = "crates/core/templates/prompts/";
     let text = text_in(files, CATALOG);
     let id = Regex::new(r#""([a-z][a-z-]*/[a-z][a-z-]*)""#).unwrap();
     let roles: BTreeSet<&str> = RoleName::ALL.iter().map(RoleName::as_str).collect();

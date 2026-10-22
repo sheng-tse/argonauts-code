@@ -60,7 +60,7 @@ fn settings() -> Vec<SettingRow> {
         ("ui.agents_in_conversation", "\"finished\"", "built-in"),
         ("ui.newer_cli_notice", "true", "built-in"),
         ("awake.while_working", "true", "built-in"),
-        ("telemetry.enabled", "false", "built-in"),
+        ("telemetry.enabled", "true", "built-in"),
     ]
     .into_iter()
     .map(|(key, value, layer)| setting(key, value, layer))
@@ -83,6 +83,7 @@ fn setting(key: &str, value: &str, layer: &str) -> SettingRow {
         safety: key.starts_with("sandbox."),
         allowed: Vec::new(),
         description: String::new(),
+        picked: None,
     }
 }
 
@@ -222,7 +223,7 @@ fn a_link_cut_short_keeps_its_mark() {
     state
         .names
         .clis
-        .insert("antigravity-cli".to_owned(), "Antigravity CLI".to_owned());
+        .insert("antigravity-cli".to_owned(), "agy".to_owned());
     let mut tab = ConfigTab::opened_by("config");
     let mut keys = settings();
     for key in &mut keys {
@@ -232,14 +233,14 @@ fn a_link_cut_short_keeps_its_mark() {
     }
     tab.set_rows(keys);
     let mut view = OverviewView::new(Tab::Config, UsageWatch::default()).with_config(tab);
-    let shown = rows(&mut view, &state, 80);
+    let shown = rows(&mut view, &state, 70);
     let reviewer = shown
         .iter()
         .find(|row| row.trim_start().starts_with("Reviewer"))
         .unwrap_or_else(|| panic!("{shown:#?}"));
     assert!(reviewer.ends_with("… ›"), "{reviewer:?}");
     assert!(reviewer.contains("Claude Code, Codex, "), "{reviewer:?}");
-    assert!(crate::text::str_width(reviewer) <= 80, "{reviewer:?}");
+    assert!(crate::text::str_width(reviewer) <= 70, "{reviewer:?}");
 }
 
 #[test]
@@ -248,9 +249,10 @@ fn it_opens_on_the_search_and_typing_filters_the_rows() {
     let mut view = opened();
     let shown = rows(&mut view, &state, 100);
     assert!(
-        shown.iter().any(
-            |row| row.contains("Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear")
-        ),
+        shown
+            .iter()
+            .any(|row| row
+                .contains("Type to filter · Enter/↓  to select · ↑  to tabs · Esc to clear")),
         "{shown:#?}"
     );
     for ch in "edit".chars() {
@@ -281,6 +283,48 @@ fn it_opens_on_the_search_and_typing_filters_the_rows() {
     assert!(
         shown.iter().any(|row| row.contains("Auto-compact")),
         "{shown:#?}"
+    );
+}
+
+/// The usage reports row says what it turns on, dim after its value, as the telemetry_off
+/// picture shows it among the others, in the columns and words every row of the tab keeps.
+#[test]
+fn usage_reports_say_what_they_send() {
+    let state = state();
+    let mut view = opened();
+    for ch in "usage rep".chars() {
+        key(&mut view, &state, KeyCode::Char(ch));
+    }
+    let theme = theme();
+    let buf = screen(&mut view, &state, &theme, 118);
+    let lines = crate::views::dock::lines(&buf);
+    let line = lines
+        .iter()
+        .find(|line| line.to_string().contains("Usage reports"))
+        .expect("the row shows");
+    let text = line.to_string();
+    let note = "   one anonymous report a day · PRIVACY.md";
+    assert_eq!(
+        text.trim_end(),
+        format!("    {:<43}true{note}", "Usage reports"),
+    );
+    let dim = theme.style(crate::theme::Role::Dim);
+    let drawn = line
+        .spans
+        .iter()
+        .find(|span| span.content.contains("PRIVACY.md"))
+        .unwrap();
+    assert_eq!(drawn.content.trim(), note.trim());
+    assert_eq!(drawn.style.fg, dim.fg);
+
+    let narrow = rows(&mut view, &state, 60);
+    let row = narrow
+        .iter()
+        .find(|row| row.contains("Usage reports"))
+        .unwrap();
+    assert!(
+        row.ends_with("true"),
+        "a row without room drops the note: {row:?}"
     );
 }
 
@@ -670,7 +714,7 @@ fn up_goes_from_the_rows_to_the_search_and_on_to_the_tabs() {
     assert!(
         shown
             .iter()
-            .any(|row| row.contains("←/→/tab to switch · ↓ to return · Esc to close")),
+            .any(|row| row.contains("←/→/tab to switch · ↓  to return · Esc to close")),
         "{shown:#?}"
     );
     assert!(matches!(
@@ -769,4 +813,123 @@ fn autopilot_coming_back_draws_as_the_picture() {
         at: (0, 1),
     };
     assert_matches(&picture, &buf, &region, &theme);
+}
+
+/// The Behaviors rows as `config_rows` shows them among the others, once a deeper map is made:
+/// the value, then dim, what it comes to, three cells after it. The tab keeps its own columns,
+/// the pointer's four cells and the label column at 43, where that picture sets its rows at 3
+/// and 38, and draws values in the text colour as every other row does.
+#[test]
+fn the_behaviors_rows_say_what_their_values_come_to() {
+    let state = state();
+    let picked = |key: &str, picked: &str| SettingRow {
+        picked: Some(picked.to_owned()),
+        ..setting(key, "\"auto\"", "built-in")
+    };
+    let mut view = config_view(vec![
+        setting("behaviors.map", "\"deeper\"", "global"),
+        picked("behaviors.summarizer", "Qwen3 Coder 30B on Ollama"),
+        picked("behaviors.embedder", "nomic-embed-text on Ollama"),
+    ]);
+    let picture = Picture::load("config_rows");
+    let theme = theme();
+    let buf = screen(&mut view, &state, &theme, 118);
+    crate::overview::golden::keep("config_rows", &buf);
+    let drawn = crate::views::dock::lines(&buf);
+    let after_label = |text: &str, column: usize| text.chars().skip(column).collect::<String>();
+    let labels = [
+        "Behaviors map",
+        "Behaviors summarizer",
+        "Behaviors embedder",
+    ];
+    for (row, label) in (2..).zip(labels) {
+        assert_eq!(
+            after_label(&drawn[line_of(&drawn, label)].to_string(), 47).trim_end(),
+            after_label(&picture.text()[row], 38).trim_end(),
+        );
+    }
+    let dim = theme.color(crate::theme::Role::Dim).unwrap();
+    let text = theme
+        .color(crate::theme::Role::Text)
+        .unwrap_or(ratatui::style::Color::Reset);
+    let map = line_of(&drawn, "Behaviors map") as u16;
+    assert_eq!(buf[(47, map)].fg, text, "the value");
+    assert_eq!(buf[(56, map)].fg, dim, "what its values mean");
+    let summarizer = line_of(&drawn, "Behaviors summarizer") as u16;
+    assert_eq!(buf[(56, summarizer)].fg, dim, "what auto came to");
+}
+
+/// Before a deeper map is made, auto has picked nothing, so the rows say what it would pick.
+#[test]
+fn the_behaviors_rows_say_what_auto_means_before_a_deeper_map() {
+    let state = state();
+    let mut view = config_view(vec![
+        setting("behaviors.map", "\"labels\"", "built-in"),
+        setting("behaviors.summarizer", "\"auto\"", "built-in"),
+        setting("behaviors.embedder", "\"auto\"", "built-in"),
+    ]);
+    let buf = screen(&mut view, &state, &theme(), 118);
+    let drawn = crate::views::dock::lines(&buf);
+    let said = |label: &str| drawn[line_of(&drawn, label)].to_string();
+    assert!(
+        said("Behaviors summarizer")
+            .contains("auto ›   a model on this computer, else your main CLI's cheapest"),
+        "{drawn:?}"
+    );
+    assert!(
+        said("Behaviors embedder")
+            .contains("auto ›   nomic-embed-text on Ollama, else word vectors")
+    );
+}
+
+/// Enter on a Behaviors row goes to the Behaviors map beside Overview and Models, where d asks
+/// who summarizes, and asks for the map; ← on it does nothing.
+#[test]
+fn a_behaviors_row_opens_the_behaviors_map() {
+    let state = state();
+    for label in ["summarizer", "embedder"] {
+        let mut view = config_view(vec![
+            setting("behaviors.map", "\"labels\"", "built-in"),
+            setting("behaviors.summarizer", "\"auto\"", "built-in"),
+            setting("behaviors.embedder", "\"auto\"", "built-in"),
+        ]);
+        for ch in format!("behaviors {label}").chars() {
+            key(&mut view, &state, KeyCode::Char(ch));
+        }
+        key(&mut view, &state, KeyCode::Enter);
+        assert!(matches!(
+            key(&mut view, &state, KeyCode::Left),
+            ViewOutcome::Consumed
+        ));
+        assert_eq!(view.tab(), Tab::Config, "← stays");
+        let outcome = key(&mut view, &state, KeyCode::Enter);
+        assert!(
+            matches!(
+                outcome,
+                ViewOutcome::Request(argonauts_core::app::ViewRequest::Behaviors(_))
+            ),
+            "{label}: {outcome:?}"
+        );
+        assert_eq!(view.tab(), Tab::Overview, "{label}");
+        let drawn = rows(&mut view, &state, 118);
+        assert!(
+            drawn
+                .iter()
+                .any(|row| row.trim() == "Overview    Models    Behaviors"),
+            "{drawn:#?}"
+        );
+    }
+}
+
+fn config_view(rows: Vec<SettingRow>) -> OverviewView {
+    let mut tab = ConfigTab::opened_by("config");
+    tab.set_rows(rows);
+    OverviewView::new(Tab::Config, UsageWatch::default()).with_config(tab)
+}
+
+fn line_of(drawn: &[ratatui::text::Line<'_>], label: &str) -> usize {
+    drawn
+        .iter()
+        .position(|line| line.to_string().starts_with(&format!("    {label}  ")))
+        .unwrap_or_else(|| panic!("{label}: {drawn:?}"))
 }

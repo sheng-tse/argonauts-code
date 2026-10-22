@@ -36,14 +36,6 @@ impl<'a> MergedInto<'a> {
         }
     }
 
-    /// The Merge phase's last step, such as `merge onto main`.
-    pub fn step(self) -> String {
-        match self {
-            Self::Branch(branch) => format!("merge onto {branch}"),
-            Self::YourFolder => "write into your folder".to_owned(),
-        }
-    }
-
     /// How the run ended, as the end of its row says it, such as `merged onto main`.
     pub fn ended(self) -> String {
         match self {
@@ -230,7 +222,6 @@ mod tests {
     fn a_run_in_a_folder_without_git_is_written_into_it_and_never_merged_onto_a_branch() {
         let folder = MergedInto::of(BRANCH);
         assert_eq!(folder, MergedInto::YourFolder);
-        assert_eq!(folder.step(), "write into your folder");
         assert_eq!(folder.ended(), "written into your folder");
         assert_eq!(folder.heading(), "Written into your folder");
         assert_eq!(folder.asked(), "Write the run into your folder");
@@ -242,7 +233,6 @@ mod tests {
 
         let branch = MergedInto::of("main");
         assert_eq!(branch, MergedInto::Branch("main"));
-        assert_eq!(branch.step(), "merge onto main");
         assert_eq!(branch.ended(), "merged onto main");
         assert_eq!(branch.heading(), "Merged onto main");
         assert_eq!(branch.asked(), "Merge the run into main");

@@ -191,6 +191,7 @@ impl Fixture {
             outside_agent: None,
             instructions: Vec::new(),
             required_steps: Vec::new(),
+            starts_from: None,
         };
         let kinds = vec![
             RunEventKind::Run(RunLifecycle::Started(Box::new(started))),

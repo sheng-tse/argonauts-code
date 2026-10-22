@@ -240,7 +240,6 @@ async fn read_some(stream: Option<impl tokio::io::AsyncRead + Unpin>, most: u64)
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt as _;
 
     use argonauts_conductor::sandbox::Unsandboxed;
     use argonauts_core::settings::mods::ModLevel;
@@ -284,8 +283,7 @@ mod tests {
         fn script(&self, dir: &Path, name: &str, body: &str) {
             std::fs::create_dir_all(dir).unwrap();
             let path = dir.join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            argonauts_testkit::write_script(&path, &format!("#!/bin/sh\n{body}\n")).unwrap();
         }
 
         async fn run(&self, command: &[&str], timeout: Duration) -> Result<ModReading, String> {

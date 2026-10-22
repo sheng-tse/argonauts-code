@@ -77,8 +77,8 @@ fn the_list_is_its_picture() {
     assert_matches(
         "resume",
         &lines,
-        include_str!("pictures/resume.txt"),
-        include_str!("pictures/resume.html"),
+        include_str!("../../tests/golden/views/resume.txt"),
+        include_str!("../../tests/golden/views/resume.html"),
         &theme,
         &[],
     );

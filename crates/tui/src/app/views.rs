@@ -36,7 +36,10 @@ impl<W: Write> Ui<W> {
             }
             // The hidden prompt never gets a paste meant for the view on top.
             Event::Paste(text) if view_has_keys => self.view_paste(&text, now, state),
-            Event::Mouse(mouse) => self.mouse_event(mouse, now, state),
+            Event::Mouse(mouse) => match self.mouse_on_map(mouse) {
+                Some(actions) => actions,
+                None => self.mouse_event(self.mouse_in_cells(mouse), now, state),
+            },
             event => self.handle_conversation_event(event, now),
         }
     }

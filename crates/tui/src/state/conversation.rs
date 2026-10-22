@@ -7,7 +7,7 @@ use argonauts_core::screen::{Drawn, ScreenChange};
 use argonauts_core::{AgentEvent, ErrorCategory, PluginOutputKind, TodoItem};
 
 use super::context::{ContextCount, ContextGrowth, LastStep};
-use super::session::{Doing, ToolRecord};
+use super::session::{Doing, ToolRecord, ends_a_retry};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConversationState {
@@ -61,6 +61,17 @@ pub struct ConversationState {
     /// Calls the turn's agent is still writing, by id, each with its tool's name: all that is
     /// known of a call until it's whole.
     pub being_written: Vec<(String, String)>,
+    /// The turn's CLI retries its request to the API, until the request goes through.
+    pub retry: Option<TurnRetry>,
+}
+
+/// One retry of the turn's request, as its CLI announced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnRetry {
+    /// Which retry this is, counted from 1 since the request last went through.
+    pub try_number: u32,
+    /// How long the CLI waits before it, when it says.
+    pub delay_ms: Option<u64>,
 }
 
 impl ConversationState {
@@ -131,6 +142,7 @@ impl ConversationState {
                 self.last_step = LastStep::default();
                 self.todos.clear();
                 self.stalled = false;
+                self.retry = None;
             }
             // It joined the turn, so it no longer waits.
             ConversationEvent::Joined { text, .. } => {
@@ -195,7 +207,17 @@ impl ConversationState {
                 ..
             }
         );
+        if ends_a_retry(event) {
+            self.retry = None;
+        }
         match event {
+            AgentEvent::Retry { delay_ms, .. } => {
+                let try_number = self.retry.map_or(1, |retry| retry.try_number + 1);
+                self.retry = Some(TurnRetry {
+                    try_number,
+                    delay_ms: *delay_ms,
+                });
+            }
             AgentEvent::TextDelta { text, parent: None } => {
                 self.new_paragraph_if_closed();
                 self.streamed.push_str(text);
@@ -344,5 +366,66 @@ impl ConversationState {
         self.background = 0;
         self.main_idle = false;
         self.being_written.clear();
+        self.retry = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use argonauts_core::RetryReason;
+
+    use super::*;
+
+    #[test]
+    fn the_turns_retries_count_up_until_its_request_goes_through() {
+        let turn = TurnId::numbered(1);
+        let mut conversation = ConversationState::default();
+        conversation.apply(&ConversationEvent::TurnStarted {
+            turn: turn.clone(),
+            text: "why?".into(),
+            worker: ModelRef::new("claude-code", Some("haiku".to_owned())),
+            read_only: true,
+            commit: "abc".into(),
+            uncommitted: Vec::new(),
+            settings_sha256: None,
+            continues: false,
+        });
+        let agent = |event| ConversationEvent::Agent {
+            turn: turn.clone(),
+            event,
+        };
+        let retry = || {
+            agent(AgentEvent::Retry {
+                reason: RetryReason::Network,
+                delay_ms: Some(4_000),
+            })
+        };
+        for _ in 0..3 {
+            conversation.apply(&retry());
+        }
+        // What a CLI counts while it waits ends no retry.
+        conversation.apply(&agent(AgentEvent::Usage {
+            input_tokens: 10,
+            output_tokens: 0,
+            cached_tokens: 0,
+            cost_usd: None,
+            cumulative: true,
+        }));
+        let third = TurnRetry {
+            try_number: 3,
+            delay_ms: Some(4_000),
+        };
+        assert_eq!(conversation.retry, Some(third));
+
+        conversation.apply(&agent(AgentEvent::TextDelta {
+            text: "Because".into(),
+            parent: None,
+        }));
+        assert_eq!(conversation.retry, None);
+
+        conversation.apply(&retry());
+        assert_eq!(conversation.retry.map(|retry| retry.try_number), Some(1));
+        conversation.apply(&ConversationEvent::TurnCancelled { turn: turn.clone() });
+        assert_eq!(conversation.retry, None);
     }
 }

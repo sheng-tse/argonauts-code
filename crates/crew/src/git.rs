@@ -30,6 +30,11 @@ const MOVES_LOOKED_FOR: usize = 200;
 
 const MB: u64 = 1024 * 1024;
 
+/// Held while a call adds, removes, or prunes a worktree, or deletes a branch. Each of those
+/// reads every worktree's records, and a worktree still being added has an empty one, which
+/// fails the read. So this process makes such calls one at a time.
+static WORKTREE_RECORDS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 const SAFE_CONFIG: [&str; 6] = [
     "-c",
     "core.hooksPath=/dev/null",
@@ -405,19 +410,21 @@ impl Git {
     ) -> Result<(), GitError> {
         let path = path.to_string_lossy();
         let args = ["worktree", "add", "--quiet", "-b", branch, &path, base];
-        self.run(repo, &args).await.map(drop)
+        self.run_on_worktrees(repo, &args).await.map(drop)
     }
 
     /// Discards anything in the worktree that wasn't committed.
     pub async fn remove_worktree(&self, repo: &Path, path: &Path) -> Result<(), GitError> {
         let path = path.to_string_lossy();
-        self.run(repo, &["worktree", "remove", "--force", &path])
+        self.run_on_worktrees(repo, &["worktree", "remove", "--force", &path])
             .await
             .map(drop)
     }
 
     pub async fn delete_branch(&self, repo: &Path, branch: &str) -> Result<(), GitError> {
-        self.run(repo, &["branch", "-D", branch]).await.map(drop)
+        self.run_on_worktrees(repo, &["branch", "-D", branch])
+            .await
+            .map(drop)
     }
 
     /// Stages everything in `worktree` and commits it, except untracked files the leave-out
@@ -1104,6 +1111,11 @@ impl Git {
         }
     }
 
+    async fn run_on_worktrees(&self, repo: &Path, args: &[&str]) -> Result<String, GitError> {
+        let _one_at_a_time = WORKTREE_RECORDS.lock().await;
+        self.run(repo, args).await
+    }
+
     async fn run(&self, dir: &Path, args: &[&str]) -> Result<String, GitError> {
         let out = self.output(dir, args, &[]).await?;
         if out.status.success() {
@@ -1232,7 +1244,7 @@ impl Git {
     ) -> Result<(), GitError> {
         let path = path.to_string_lossy();
         let args = ["worktree", "add", "--quiet", &path, branch];
-        self.run(repo, &args).await.map(drop)
+        self.run_on_worktrees(repo, &args).await.map(drop)
     }
 
     /// Puts the worktree at `dir` back to exactly `rev`, detached: each tracked file as `rev`
@@ -1253,7 +1265,7 @@ impl Git {
     ) -> Result<(), GitError> {
         let path = path.to_string_lossy();
         let args = ["worktree", "add", "--quiet", "--detach", &path, rev];
-        self.run(repo, &args).await.map(drop)
+        self.run_on_worktrees(repo, &args).await.map(drop)
     }
 
     /// The administrative directory of the worktree at `worktree`, read from the main

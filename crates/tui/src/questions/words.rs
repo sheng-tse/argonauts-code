@@ -134,6 +134,7 @@ pub fn party(party: &Party, names: &DisplayNames) -> String {
         Party::Config => "a setting".to_owned(),
         Party::Autopilot => "autopilot".to_owned(),
         Party::ArgonautsCode => "Argonauts Code".to_owned(),
+        Party::Network => "the network".to_owned(),
         Party::Agent { worker, .. } => names.worker(worker),
         Party::OutsideAgent { client } => client.clone(),
     }

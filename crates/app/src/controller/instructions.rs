@@ -10,6 +10,7 @@ use argonauts_core::api::StartRun;
 use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, RunMode};
 use argonauts_core::goal::{CheckMeans, GoalFrom, GoalSpec};
 use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::registry::provider::is_known;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::crew::CrewRole;
@@ -247,7 +248,7 @@ pub(crate) fn might_say_how(message: &str, roster: &Roster) -> bool {
 
 /// Words that may say how to run a request. A role's verb alone, such as "the build runs",
 /// says nothing of who fills it: the agent's name does.
-const HOW_CUES: [&str; 29] = [
+const HOW_CUES: [&str; 31] = [
     // "keep going until its tests pass" sets a goal.
     "until",
     "crew",
@@ -277,6 +278,8 @@ const HOW_CUES: [&str; 29] = [
     "effort",
     "model",
     "models",
+    "cheap",
+    "cheaper",
     "cheapest",
 ];
 
@@ -321,6 +324,7 @@ pub(crate) fn check(
     checker.settle_others(&mut entries);
     let mode = settle_mode(&mut entries, command);
     checker.review_against_workers(&mut entries, mode);
+    checker.within_one_provider(&mut entries);
     needs_a_worktree(&mut entries);
 
     let mut applied = Applied {
@@ -414,6 +418,8 @@ struct Effect {
     /// Who "all the other agents" names. Which roles they fill is settled once every
     /// instruction is read, since a role another one names keeps that one.
     others: Vec<ModelRef>,
+    /// The crew it leaves, for a crew or an agent left out of it.
+    crew: Vec<ModelRef>,
 }
 
 struct Checker<'a> {
@@ -462,6 +468,7 @@ impl Checker<'_> {
             Kind::Exclude => self.exclude(instruction),
             Kind::Model => self.model(instruction),
             Kind::Effort => self.effort(instruction),
+            Kind::Cost => self.cost(instruction),
             Kind::Approvals => self.approvals(instruction),
             Kind::Merge => self.merge(instruction),
             Kind::Limit => self.limit(instruction),
@@ -817,6 +824,7 @@ impl Checker<'_> {
             slot: Some("crew".to_owned()),
             names: workers.iter().map(|worker| worker.agent.clone()).collect(),
             settings: vec![("crew".to_owned(), toml_list(&workers))],
+            crew: workers.clone(),
             ..Effect::default()
         };
         let default = &self.settings.crew.main.agent;
@@ -882,12 +890,13 @@ impl Checker<'_> {
             leaves_out: out,
             settings,
             main_agent,
+            crew,
             ..Effect::default()
         })
     }
 
     /// The agent that runs a model uses it in every role. "Cheapest" puts every agent in the
-    /// crew on its cheapest model.
+    /// crew on its cheapest model, as "keep it cheap" does.
     fn model(&self, instruction: &Instruction) -> Result<Effect, String> {
         let asked = if instruction.model.trim().is_empty() {
             instruction.value.trim()
@@ -896,29 +905,7 @@ impl Checker<'_> {
         };
         let text = words(asked, &instruction.says);
         if text.contains("cheap") {
-            let mut settings = Vec::new();
-            for worker in self.crew_and_main_agent() {
-                let Some((model, effort)) = self
-                    .roster
-                    .agent(&worker.agent)
-                    .and_then(|agent| agent.cheapest.clone())
-                else {
-                    continue;
-                };
-                settings.push((format!("agents.{}.model", worker.agent), toml_text(&model)));
-                if let Some(effort) = effort {
-                    settings.push((
-                        format!("agents.{}.effort", worker.agent),
-                        toml_text(&effort),
-                    ));
-                }
-            }
-            return Ok(Effect {
-                said: "the cheapest models".to_owned(),
-                slot: Some("model:*".to_owned()),
-                settings,
-                ..Effect::default()
-            });
+            return Ok(self.cheapest());
         }
         let named = if instruction.who.trim().is_empty() {
             asked
@@ -932,6 +919,14 @@ impl Checker<'_> {
         let model = match model {
             Some(model) => model,
             None if asked.is_empty() || key(asked) == key(named) => {
+                // "Use only Claude" names a CLI and no model: it says who makes up the crew.
+                if says_only(&instruction.says) {
+                    let crew = Instruction {
+                        who: named.to_owned(),
+                        ..instruction.clone()
+                    };
+                    return self.crew(&crew);
+                }
                 return Err(format!("it names no model for {}", agent.name));
             }
             None => model_named(self.roster, agent, asked)?,
@@ -944,6 +939,49 @@ impl Checker<'_> {
             settings: vec![(format!("agents.{}.model", agent.id), toml_text(&model))],
             ..Effect::default()
         })
+    }
+
+    /// "Keep it cheap": every agent in the crew on its cheapest model, and nothing else, so the
+    /// crew stays as it is. Words that turn it around, as "don't keep it cheap", change nothing.
+    fn cost(&self, instruction: &Instruction) -> Result<Effect, String> {
+        let says = format!("{} {}", instruction.value.trim(), instruction.says.trim());
+        match stance(&says, &CHEAP, &DEAR) {
+            Stance::For => Ok(self.cheapest()),
+            Stance::Against => {
+                Err("it asks to spend no less, so the models stay as they are".into())
+            }
+            Stance::Silent => {
+                Err("it names no way to spend less, so the models stay as they are".into())
+            }
+        }
+    }
+
+    /// Every agent in the crew, the main agent too, on the model and effort its cheapest work
+    /// runs on.
+    fn cheapest(&self) -> Effect {
+        let mut settings = Vec::new();
+        for worker in self.crew_and_main_agent() {
+            let Some((model, effort)) = self
+                .roster
+                .agent(&worker.agent)
+                .and_then(|agent| agent.cheapest.clone())
+            else {
+                continue;
+            };
+            settings.push((format!("agents.{}.model", worker.agent), toml_text(&model)));
+            if let Some(effort) = effort {
+                settings.push((
+                    format!("agents.{}.effort", worker.agent),
+                    toml_text(&effort),
+                ));
+            }
+        }
+        Effect {
+            said: "the cheapest models".to_owned(),
+            slot: Some(CHEAPEST.to_owned()),
+            settings,
+            ..Effect::default()
+        }
     }
 
     /// The named agent's effort, or every agent's in the crew, at the nearest level each
@@ -1342,6 +1380,201 @@ impl Checker<'_> {
     }
 }
 
+impl Checker<'_> {
+    /// "Only Claude": a crew of one provider has nobody from another to review its work, so
+    /// for this request its reviews stay within that provider, as naming such a reviewer
+    /// does, on another model of the builder's CLI, and the crew's words say so once. With
+    /// "keep it cheap" the two cheapest models share the work: the dearer one builds and the
+    /// cheaper one reviews. A crew of two providers keeps the rule.
+    fn within_one_provider(&self, entries: &mut [Entry]) {
+        if !self.settings.review.other_provider {
+            return;
+        }
+        let followed: Vec<&Effect> = entries
+            .iter()
+            .filter_map(|entry| entry.result.as_ref().ok())
+            .collect();
+        // Reviewers you named settle the rule against the workers already.
+        if followed.iter().any(|effect| !effect.reviewers.is_empty()) {
+            return;
+        }
+        let cheap = followed
+            .iter()
+            .any(|effect| effect.slot.as_deref() == Some(CHEAPEST));
+        let builders: Vec<ModelRef> = followed
+            .iter()
+            .flat_map(|effect| effect.workers.clone())
+            .collect();
+        let asked: Vec<(String, String)> = followed
+            .iter()
+            .flat_map(|effect| effect.settings.clone())
+            .collect();
+        let Some(entry) = entries.iter_mut().rev().find(|entry| {
+            entry
+                .result
+                .as_ref()
+                .is_ok_and(|effect| !effect.crew.is_empty())
+        }) else {
+            return;
+        };
+        let (kind, who, says) = (
+            entry.instruction.kind,
+            entry.instruction.who.clone(),
+            entry.instruction.says.clone(),
+        );
+        let Ok(effect) = &mut entry.result else {
+            return;
+        };
+        let provider = |worker: &ModelRef| {
+            self.roster
+                .agent(&worker.agent)
+                .map(|agent| agent.provider.clone())
+                .unwrap_or_default()
+        };
+        let theirs = provider(&effect.crew[0]);
+        if !is_known(&theirs) || effect.crew.iter().any(|worker| provider(worker) != theirs) {
+            return;
+        }
+        let builder = builders.first().cloned().or_else(|| {
+            effect
+                .crew
+                .iter()
+                .find(|worker| {
+                    self.roster
+                        .agent(&worker.agent)
+                        .is_some_and(|a| !a.endpoint)
+                })
+                .cloned()
+        });
+        let Some((agent, builder)) =
+            builder.and_then(|builder| Some((self.roster.agent(&builder.agent)?, builder)))
+        else {
+            return;
+        };
+        let runs = builder
+            .model
+            .clone()
+            .or_else(|| asked_text(&asked, &format!("agents.{}.model", agent.id)))
+            .or_else(|| {
+                self.settings
+                    .agents
+                    .get(&agent.id)
+                    .and_then(|settings| settings.model.clone())
+            })
+            .or_else(|| agent.default_model.clone());
+        let Some((builds, reviews)) = review_pair(agent, runs.as_deref(), cheap) else {
+            effect.note = Some(join_notes(
+                effect.note.take(),
+                &format!(
+                    "{} has no second model here to review on, so its work waits for a \
+                     reviewer from another provider",
+                    agent.name
+                ),
+            ));
+            return;
+        };
+        effect
+            .inferred
+            .push(("review.other_provider".to_owned(), "false".to_owned()));
+        let on = |model: String| ModelRef::new(agent.id.clone(), Some(model));
+        effect.inferred.push((
+            "roles.reviewer.models".to_owned(),
+            toml_list(&[on(reviews)]),
+        ));
+        if let Some(builds) = builds.filter(|_| builders.is_empty()) {
+            effect
+                .inferred
+                .push(("roles.worker.models".to_owned(), toml_list(&[on(builds)])));
+        }
+        let within = match kind {
+            InstructionKind::Crew => as_written(&says, &who).unwrap_or_else(|| agent.name.clone()),
+            _ => agent.name.clone(),
+        };
+        effect.said = format!(
+            "{}, reviews stay within {within}, as you asked",
+            effect.said
+        );
+    }
+}
+
+/// Who builds and who reviews on `agent`'s models when reviews stay within its provider: the
+/// model the builder must move to, if it must, and the reviewer's. The reviewer takes the next
+/// model down from the builder's, or up when the builder's is the cheapest; with `cheap` the
+/// dearer of the two cheapest builds. `None` when the CLI has fewer than two priced models.
+fn review_pair(
+    agent: &Agent,
+    builds: Option<&str>,
+    cheap: bool,
+) -> Option<(Option<String>, String)> {
+    let ladder = &agent.by_price;
+    if ladder.len() < 2 {
+        return None;
+    }
+    if cheap {
+        return Some((Some(ladder[1].clone()), ladder[0].clone()));
+    }
+    let at = builds.and_then(|model| {
+        ladder
+            .iter()
+            .position(|listed| same_model(agent, listed, model))
+    });
+    Some(match at {
+        Some(0) => (None, ladder[1].clone()),
+        Some(at) => (None, ladder[at - 1].clone()),
+        // A builder on a model nothing prices, or the CLI's own default: the cheapest reviews.
+        None => (None, ladder[0].clone()),
+    })
+}
+
+/// Whether two of `agent`'s names for models, an id or an alias, are one model.
+fn same_model(agent: &Agent, a: &str, b: &str) -> bool {
+    if key(a) == key(b) {
+        return true;
+    }
+    agent.models.iter().any(|model| {
+        let names = |name: &str| {
+            key(&model.id) == key(name) || model.aliases.iter().any(|alias| key(alias) == key(name))
+        };
+        names(a) && names(b)
+    })
+}
+
+/// A TOML text value the request layer holds for `key`, without its quotes.
+fn asked_text(settings: &[(String, String)], key: &str) -> Option<String> {
+    let (_, value) = settings.iter().rev().find(|(known, _)| known == key)?;
+    format!("value = {value}")
+        .parse::<toml::Table>()
+        .ok()?
+        .remove("value")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// `who` as your words spell it, such as `Claude` for `claude`.
+fn as_written(says: &str, who: &str) -> Option<String> {
+    let wanted = key(who);
+    says.split(|c: char| !c.is_alphanumeric() && c != '-')
+        .find(|word| !word.is_empty() && key(word) == wanted)
+        .map(str::to_owned)
+}
+
+/// The slot the cheapest models fill, which a model named for one agent leaves that agent's.
+const CHEAPEST: &str = "model:*";
+
+/// Words that ask to spend less on models, and words that turn it around.
+const CHEAP: [&str; 9] = [
+    "cheap",
+    "cheaper",
+    "cheapest",
+    "cheaply",
+    "inexpensive",
+    "low cost",
+    "lower cost",
+    "save money",
+    "spend less",
+];
+const DEAR: [&str; 3] = ["expensive", "best models", "whatever it costs"];
+
 struct Named {
     agents: Vec<NamedAgent>,
     /// What of the instruction couldn't be followed.
@@ -1408,6 +1641,12 @@ const APPROVALS: [&str; 6] = [
 /// Why an instruction whose words ask for the opposite of what it was sorted as isn't followed,
 /// such as "don't do this alone" sorted as Captain.
 const SAYS_OTHERWISE: &str = "its words say otherwise";
+
+/// Whether the words keep the work to what they name, as "use only Claude" and "Claude only" do.
+fn says_only(says: &str) -> bool {
+    says.split(|ch: char| !ch.is_alphanumeric())
+        .any(|word| word.eq_ignore_ascii_case("only"))
+}
 
 const CAPTAIN_CUES: [&str; 8] = [
     "captain",

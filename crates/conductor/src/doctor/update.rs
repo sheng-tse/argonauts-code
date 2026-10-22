@@ -10,6 +10,7 @@ use std::time::Duration;
 use argonauts_core::Adapter;
 use argonauts_core::adapter::Transport;
 use argonauts_core::settings::Settings;
+use tokio_util::sync::CancellationToken;
 
 use super::newest::{install_source, update_program};
 use super::{
@@ -121,6 +122,15 @@ impl UpdateColumns {
         columns
     }
 
+    /// Wide enough for one more row's `name` and `version` too, such as Argonauts Code's own
+    /// above the CLIs'.
+    pub fn with_row(self, name: &str, version: &str) -> Self {
+        Self {
+            name: self.name.max(name.chars().count()),
+            version: self.version.max(version.chars().count()),
+        }
+    }
+
     /// From the rows themselves, once every CLI is done.
     fn from_rows(updates: &[CliUpdate]) -> Self {
         Self {
@@ -159,6 +169,10 @@ pub enum UpdateOutcome {
         version: Option<String>,
         why: String,
     },
+    /// Stopped before it was done, or before it started.
+    Stopped {
+        version: Option<String>,
+    },
 }
 
 /// How long an updater may run in all, and how long it may print nothing.
@@ -179,25 +193,35 @@ impl UpdateLimits {
     }
 }
 
-/// Updates each adapter's CLI once, side by side, as `timeout` allows each.
+/// Updates each adapter's CLI once, side by side, as `timeout` allows each, until `stop`.
 pub async fn update_clis(
     adapters: &[Arc<dyn Adapter>],
     settings: &Settings,
     timeout: Duration,
+    stop: &CancellationToken,
 ) -> Vec<CliUpdate> {
     let limits = UpdateLimits::within(timeout);
-    update_each(&each_once(adapters, settings), settings, limits, |_| {}).await
+    update_each(
+        &each_once(adapters, settings),
+        settings,
+        limits,
+        stop,
+        |_| {},
+    )
+    .await
 }
 
 /// Updates `clis` side by side, as `limits` allow each, and hands `done` the rows so far in
 /// `clis`' order each time more of them, counted from the first, are done: a slow updater
 /// holds back the rows after it on the screen, never the work of the others. The CLIs that
 /// one program updates, as Homebrew or npm does, go one at a time, since it installs one
-/// thing at once.
+/// thing at once. Once `stop` is cancelled, the updaters at work end with everything they
+/// started, and every CLI not done yet reads stopped.
 pub async fn update_each(
     clis: &[OneCli],
     settings: &Settings,
     limits: UpdateLimits,
+    stop: &CancellationToken,
     mut done: impl FnMut(&[CliUpdate]),
 ) -> Vec<CliUpdate> {
     let steps: Vec<Step> = clis
@@ -232,9 +256,15 @@ pub async fn update_each(
             async move {
                 for at in queue {
                     let cli = &clis[at];
+                    let adapter = cli.adapter.as_ref();
+                    let outcome = if stop.is_cancelled() {
+                        stopped(adapter, &steps[at]).await
+                    } else {
+                        take(adapter, &steps[at], limits, stop).await
+                    };
                     let update = CliUpdate {
-                        name: cli.adapter.display_name().to_owned(),
-                        outcome: take(cli.adapter.as_ref(), &steps[at], limits).await,
+                        name: adapter.display_name().to_owned(),
+                        outcome,
                         also_through: cli.also_through.clone(),
                     };
                     let _ = finished.send((at, update));
@@ -267,9 +297,10 @@ pub async fn update_cli(
     timeout: Duration,
 ) -> CliUpdate {
     let step = step(adapter, binary_of(adapter, settings));
+    let never = CancellationToken::new();
     CliUpdate {
         name: adapter.display_name().to_owned(),
-        outcome: take(adapter, &step, UpdateLimits::within(timeout)).await,
+        outcome: take(adapter, &step, UpdateLimits::within(timeout), &never).await,
         also_through: Vec::new(),
     }
 }
@@ -339,7 +370,12 @@ fn step(adapter: &dyn Adapter, binary: Option<&Path>) -> Step {
     }
 }
 
-async fn take(adapter: &dyn Adapter, step: &Step, limits: UpdateLimits) -> UpdateOutcome {
+async fn take(
+    adapter: &dyn Adapter,
+    step: &Step,
+    limits: UpdateLimits,
+    stop: &CancellationToken,
+) -> UpdateOutcome {
     match step {
         Step::Outcome(outcome) => outcome.clone(),
         Step::NoUpdater(path) => UpdateOutcome::NoUpdater {
@@ -353,7 +389,19 @@ async fn take(adapter: &dyn Adapter, step: &Step, limits: UpdateLimits) -> Updat
             path,
             updater,
             args,
-        } => update_with(adapter, path, updater, args, limits).await,
+        } => update_with(adapter, path, updater, args, limits, stop).await,
+    }
+}
+
+/// A CLI left alone once the update was stopped, with its version as it stands.
+async fn stopped(adapter: &dyn Adapter, step: &Step) -> UpdateOutcome {
+    match step {
+        Step::Outcome(outcome) => outcome.clone(),
+        Step::NoUpdater(path) | Step::Missing { path, .. } | Step::Run { path, .. } => {
+            UpdateOutcome::Stopped {
+                version: version_at(adapter, path).await,
+            }
+        }
     }
 }
 
@@ -372,10 +420,12 @@ async fn update_with(
     updater: &Path,
     args: &[String],
     limits: UpdateLimits,
+    stop: &CancellationToken,
 ) -> UpdateOutcome {
     let before = version_at(adapter, path).await;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let answer = command::ask_while_it_talks(updater, &args, limits.timeout, limits.quiet).await;
+    let answer =
+        command::ask_while_it_talks(updater, &args, limits.timeout, limits.quiet, stop).await;
     let answer = match answer {
         Ok(answer) if answer.success => answer,
         Ok(answer) => {
@@ -384,12 +434,13 @@ async fn update_with(
                 why: last_line(&answer.text).to_owned(),
             };
         }
-        Err(why) => {
+        Err(command::Unanswered::Failed(why)) => {
             return UpdateOutcome::Failed {
                 version: before,
                 why,
             };
         }
+        Err(command::Unanswered::Stopped) => return UpdateOutcome::Stopped { version: before },
     };
     match (before, version_at(adapter, path).await) {
         (Some(before), Some(after)) if before == after => {
@@ -451,6 +502,7 @@ pub fn update_lines_in(columns: UpdateColumns, updates: &[CliUpdate]) -> Vec<Str
                 UpdateOutcome::Failed { why, .. } => {
                     format!("{name}   {version}   couldn't update: {why}")
                 }
+                UpdateOutcome::Stopped { .. } => format!("{name}   {version}   stopped"),
             };
             let mut line = line.trim_end().to_owned();
             for way in &update.also_through {
@@ -461,12 +513,31 @@ pub fn update_lines_in(columns: UpdateColumns, updates: &[CliUpdate]) -> Vec<Str
         .collect()
 }
 
+/// [`update_lines_in`] under a row of another kind in the same columns, such as Argonauts
+/// Code's own: its name, its version, then `words` on what became of it.
+pub fn update_lines_under(
+    first: (&str, &str, &str),
+    columns: UpdateColumns,
+    updates: &[CliUpdate],
+) -> Vec<String> {
+    let (name, version, words) = first;
+    let columns = columns.with_row(name, version);
+    let rows = UpdateColumns::from_rows(updates);
+    let name_width = columns.name.max(rows.name);
+    let version_width = columns.version.max(rows.version);
+    let mut lines = vec![format!(
+        "{name:name_width$}   {version:version_width$}   {words}"
+    )];
+    lines.extend(update_lines_in(columns, updates));
+    lines
+}
+
 fn before(outcome: &UpdateOutcome) -> Option<&str> {
     match outcome {
         UpdateOutcome::NotInstalled { .. } => None,
-        UpdateOutcome::NoUpdater { version } | UpdateOutcome::Failed { version, .. } => {
-            version.as_deref()
-        }
+        UpdateOutcome::NoUpdater { version }
+        | UpdateOutcome::Failed { version, .. }
+        | UpdateOutcome::Stopped { version } => version.as_deref(),
         UpdateOutcome::UpToDate { version } => Some(version),
         UpdateOutcome::Updated { from, .. } => from.as_deref(),
     }
@@ -476,6 +547,11 @@ fn before(outcome: &UpdateOutcome) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::doctor::tests::FakeCli;
+
+    /// A stop that never comes.
+    fn never() -> CancellationToken {
+        CancellationToken::new()
+    }
 
     /// A CLI whose version lives in a file its updater rewrites.
     fn updating(id: &'static str, dir: &std::path::Path, update: &str) -> Arc<dyn Adapter> {
@@ -503,7 +579,7 @@ mod tests {
             Arc::new(FakeCli::script("plain", dir.path(), "echo 3.1.4", &[])) as Arc<dyn Adapter>,
             Arc::new(FakeCli::named("absent")) as Arc<dyn Adapter>,
         ];
-        let updates = update_clis(&adapters, &Settings::default(), VERSION_TIMEOUT).await;
+        let updates = update_clis(&adapters, &Settings::default(), VERSION_TIMEOUT, &never()).await;
         let outcomes: Vec<&UpdateOutcome> = updates.iter().map(|update| &update.outcome).collect();
         assert_eq!(
             outcomes,
@@ -544,7 +620,8 @@ mod tests {
         let cli = find_binary(adapter.as_ref(), None).ok().unwrap();
         let args = ["upgrade".to_owned(), "installed".to_owned()];
         let limits = UpdateLimits::within(VERSION_TIMEOUT);
-        let outcome = update_with(adapter.as_ref(), &cli, &installer, &args, limits).await;
+        let outcome =
+            update_with(adapter.as_ref(), &cli, &installer, &args, limits, &never()).await;
         assert_eq!(
             outcome,
             UpdateOutcome::Updated {
@@ -553,7 +630,8 @@ mod tests {
             }
         );
         // The same again changes nothing, and says so.
-        let outcome = update_with(adapter.as_ref(), &cli, &installer, &args, limits).await;
+        let outcome =
+            update_with(adapter.as_ref(), &cli, &installer, &args, limits, &never()).await;
         assert_eq!(
             outcome,
             UpdateOutcome::UpToDate {
@@ -590,7 +668,7 @@ mod tests {
         let columns = UpdateColumns::of(&clis, &settings).await;
         let mut seen = Vec::new();
         let limits = UpdateLimits::within(VERSION_TIMEOUT);
-        let updates = update_each(&clis, &settings, limits, |so_far| {
+        let updates = update_each(&clis, &settings, limits, &never(), |so_far| {
             seen.push(update_lines_in(columns, so_far));
         })
         .await;
@@ -633,6 +711,132 @@ mod tests {
         assert_eq!(clis[0].also_through, ["ACP"]);
     }
 
+    /// The process `pid` is gone, within a few seconds of its group being ended.
+    async fn ends(pid: i32) -> bool {
+        use nix::sys::signal::kill;
+        use nix::unistd::Pid;
+        for _ in 0..150 {
+            if kill(Pid::from_raw(pid), None).is_err() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    /// An updater that starts a child of its own, writes the child's id to `pid`, and waits.
+    fn waits_with_a_child(id: &'static str, dir: &Path, pid: &Path) -> Arc<dyn Adapter> {
+        let body = format!(
+            "sleep 30 & echo $! > '{}'; echo downloading; wait",
+            pid.display()
+        );
+        updating(id, dir, &body)
+    }
+
+    async fn written(path: &Path) -> i32 {
+        loop {
+            if let Some(pid) = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Once the stop comes, the updater at work ends with the child it started, a CLI done
+    /// before it keeps its row, and the rest read stopped with the version they kept.
+    #[tokio::test]
+    async fn a_stopped_update_ends_its_updaters_and_keeps_the_rows_so_far() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid = dir.path().join("child.pid");
+        let adapters = vec![
+            updating("quick", dir.path(), "echo Already up to date"),
+            waits_with_a_child("slow", dir.path(), &pid),
+        ];
+        let settings = Settings::default();
+        let clis = each_once(&adapters, &settings);
+        let limits = UpdateLimits::within(Duration::from_secs(60));
+        let stop = CancellationToken::new();
+        let began = std::time::Instant::now();
+        // The stop comes once the slow updater has its child and the quick one is done, so
+        // the quick one's row is one done before it, however busy the machine.
+        let quick_done = tokio::sync::Notify::new();
+        let stopper = async {
+            let child = written(&pid).await;
+            quick_done.notified().await;
+            stop.cancel();
+            child
+        };
+        let (updates, child) = tokio::join!(
+            update_each(&clis, &settings, limits, &stop, |done| {
+                if !done.is_empty() {
+                    quick_done.notify_one();
+                }
+            }),
+            stopper
+        );
+        assert!(
+            began.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            began.elapsed()
+        );
+        let outcomes: Vec<&UpdateOutcome> = updates.iter().map(|update| &update.outcome).collect();
+        assert_eq!(
+            outcomes,
+            [
+                &UpdateOutcome::UpToDate {
+                    version: "1.0.0".into()
+                },
+                &UpdateOutcome::Stopped {
+                    version: Some("1.0.0".into())
+                },
+            ]
+        );
+        assert!(
+            ends(child).await,
+            "the updater's own child {child} was ended"
+        );
+        assert_eq!(
+            update_lines(&updates)[1],
+            "slow    1.0.0   stopped",
+            "{updates:?}"
+        );
+
+        // A stop before anything starts leaves every CLI as it was.
+        let updates = update_each(&clis, &settings, limits, &stop, |_| {}).await;
+        assert!(
+            updates.iter().all(|update| update.outcome
+                == UpdateOutcome::Stopped {
+                    version: Some("1.0.0".into())
+                }),
+            "{updates:?}"
+        );
+    }
+
+    /// An update left behind, as one is when the app quits midway, ends its updater's whole
+    /// process group, not only the updater.
+    #[tokio::test]
+    async fn a_dropped_update_ends_its_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid = dir.path().join("child.pid");
+        let adapter = waits_with_a_child("dropped", dir.path(), &pid);
+        let cli = find_binary(adapter.as_ref(), None).ok().unwrap();
+        let limits = UpdateLimits::within(Duration::from_secs(60));
+        let args = ["update".to_owned()];
+        let stop = never();
+        let update = update_with(adapter.as_ref(), &cli, &cli, &args, limits, &stop);
+        let child = tokio::select! {
+            outcome = update => panic!("the update ended on its own: {outcome:?}"),
+            child = written(&pid) => child,
+        };
+        assert!(
+            ends(child).await,
+            "the updater's own child {child} was ended"
+        );
+    }
+
     /// An updater that prints nothing for its quiet limit is taken to hang, and stopped long
     /// before its whole time is up, with the version it left.
     #[tokio::test]
@@ -645,8 +849,15 @@ mod tests {
             quiet: Duration::from_millis(300),
         };
         let began = std::time::Instant::now();
-        let outcome =
-            update_with(adapter.as_ref(), &cli, &cli, &["update".to_owned()], limits).await;
+        let outcome = update_with(
+            adapter.as_ref(),
+            &cli,
+            &cli,
+            &["update".to_owned()],
+            limits,
+            &never(),
+        )
+        .await;
         assert!(
             began.elapsed() < Duration::from_secs(5),
             "{:?}",
@@ -669,8 +880,15 @@ mod tests {
             timeout: Duration::from_secs(20),
             quiet: Duration::from_millis(300),
         };
-        let outcome =
-            update_with(talking.as_ref(), &cli, &cli, &["update".to_owned()], limits).await;
+        let outcome = update_with(
+            talking.as_ref(),
+            &cli,
+            &cli,
+            &["update".to_owned()],
+            limits,
+            &never(),
+        )
+        .await;
         assert_eq!(
             outcome,
             UpdateOutcome::Updated {
@@ -699,6 +917,7 @@ mod tests {
             &clis,
             &settings,
             UpdateLimits::within(VERSION_TIMEOUT),
+            &never(),
             |so_far| {
                 seen.push(
                     so_far
@@ -724,6 +943,28 @@ mod tests {
     }
 
     #[test]
+    fn a_row_of_another_kind_goes_first_in_the_same_columns() {
+        let codex = CliUpdate {
+            name: "Codex".to_owned(),
+            outcome: UpdateOutcome::UpToDate {
+                version: "0.163.0".into(),
+            },
+            also_through: Vec::new(),
+        };
+        assert_eq!(
+            update_lines_under(
+                ("Argonauts Code", "0.1.0", "up to date"),
+                UpdateColumns::default(),
+                &[codex]
+            ),
+            [
+                "Argonauts Code   0.1.0     up to date",
+                "Codex            0.163.0   up to date"
+            ]
+        );
+    }
+
+    #[test]
     fn lines_put_names_and_versions_in_columns() {
         let update = |name: &str, outcome| CliUpdate {
             name: name.to_owned(),
@@ -745,7 +986,7 @@ mod tests {
                 },
             ),
             update(
-                "Antigravity CLI",
+                "agy",
                 UpdateOutcome::Updated {
                     from: Some("1.3.0".into()),
                     to: "1.3.2".into(),
@@ -768,11 +1009,11 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "Claude Code       2.1.292 →  2.1.295",
-                "Codex             0.160.0   up to date",
-                "Antigravity CLI   1.3.0   →  1.3.2",
-                "OpenCode          not installed · npm i -g opencode-ai@latest",
-                "Hermes            1.0.0     couldn't update: no network",
+                "Claude Code   2.1.292 →  2.1.295",
+                "Codex         0.160.0   up to date",
+                "agy           1.3.0   →  1.3.2",
+                "OpenCode      not installed · npm i -g opencode-ai@latest",
+                "Hermes        1.0.0     couldn't update: no network",
             ]
         );
     }

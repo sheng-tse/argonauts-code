@@ -1,0 +1,6 @@
+# release.yml is written by `dist generate`, so shellcheck's notes on its scripts are dist's
+# to fix. Every other check still reads it.
+paths:
+  .github/workflows/release.yml:
+    ignore:
+      - 'shellcheck reported issue in this script'

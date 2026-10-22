@@ -350,7 +350,7 @@ fn it_reads_like_claude_codes() {
     assert_eq!(rows[9], format!("  ╰{}╯", "─".repeat(114)));
     assert_eq!(
         rows[10],
-        "  ↑/↓ to navigate · Enter to use · Esc to cancel · ctrl+s to scope · Esc i / for slash commands"
+        "  ↑/↓  to navigate · Enter to use · Esc to cancel · ctrl+s to scope · Esc i / for slash commands"
     );
     assert_eq!(rows.len(), 11);
 }
@@ -502,7 +502,7 @@ fn narrow_or_short_screens_keep_the_filter_and_hints() {
         narrow
             .last()
             .unwrap()
-            .starts_with("  ↑/↓ to navigate · Enter to use · Esc to cancel")
+            .starts_with("  ↑/↓  to navigate · Enter to use · Esc to cancel")
     );
     assert!(
         !narrow.last().unwrap().contains("Esc i /"),

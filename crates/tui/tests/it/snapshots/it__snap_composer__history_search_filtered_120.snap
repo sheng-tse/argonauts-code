@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_composer.rs
+source: crates/tui/tests/it/snap_composer.rs
+assertion_line: 316
 expression: text(&view.lines)
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -15,4 +16,4 @@ expression: text(&view.lines)
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
   │ ⌕ workflow                                                                                                       │
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  ↑/↓ to navigate · Enter to use · Esc to cancel · ctrl+s to scope
+  ↑/↓  to navigate · Enter to use · Esc to cancel · ctrl+s to scope

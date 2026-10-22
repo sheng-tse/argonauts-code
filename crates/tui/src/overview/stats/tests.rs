@@ -134,7 +134,7 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
         "tokens by CLI · 5.0M",
         "Claude Code 2.9M 58%",
         "Codex 1.55M 31%",
-        "Antigravity CLI 0.55M 11%",
+        "agy 0.55M 11%",
         "from cache 3.4M 68%",
         "new input 1.4M 28%",
         "output 0.2M 4%",
@@ -154,7 +154,7 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
     // A card per CLI, side by side, the main one first and filled, each model a bar.
     let cards = at(&rows, "● Claude Code");
     assert!(rows[cards].contains("○ Codex"), "{rows:#?}");
-    assert!(rows[cards].contains("○ Antigravity CLI"), "{rows:#?}");
+    assert!(rows[cards].contains("○ agy"), "{rows:#?}");
     assert!(rows[cards].contains("2.9M tok"), "{rows:#?}");
     for (text, beside) in [
         ("35 tasks", "Max · ~$7.90"),
@@ -203,7 +203,7 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
     let keys = rows.iter().rev().find(|row| !row.is_empty()).unwrap();
     assert_eq!(
         keys.trim(),
-        "r to cycle dates · tab · ← → tabs · ↓ sub-tabs, then cards · u tokens, tasks or spend · enter open · p pin · esc closes"
+        "r to cycle dates · tab · ←  →  tabs · ↓  sub-tabs, then cards · u tokens, tasks or spend · enter open · esc closes"
     );
 }
 
@@ -313,7 +313,7 @@ fn m_shows_every_model_as_a_card_and_enter_opens_one_a_level_deeper() {
     assert!(
         has(
             &rows,
-            "r to cycle dates · ↓ more · ↑↓ model · enter opens or closes it · tab By CLI, By model, By role"
+            "r to cycle dates · ↓  more · ↑↓  model · enter opens or closes it · tab By CLI, By model, By role"
         ),
         "{rows:#?}"
     );
@@ -503,7 +503,7 @@ fn narrow_the_cards_stack_and_nothing_runs_past_the_edge() {
     let mut tab = stats_tab();
     let rows = rows(&mut tab, &state, 80);
     let claude = at(&rows, "● Claude Code");
-    assert!(!rows[claude].contains("● Antigravity CLI"), "{rows:#?}");
+    assert!(!rows[claude].contains("● agy"), "{rows:#?}");
 }
 
 #[test]
@@ -873,7 +873,7 @@ fn comma_opens_the_stats_mods_page_over_the_tab_with_its_card_as_the_preview() {
     // Lines aren't offered: nothing records them per task yet.
     assert!(!columns.contains("lines"), "{columns}");
     let keys = rows.last().unwrap();
-    assert!(keys.contains("shift+← → order"), "{keys}");
+    assert!(keys.contains("shift+←  →  order"), "{keys}");
     assert!(keys.ends_with("s save to yours · esc back"), "{keys}");
 
     // Esc goes back to the tab, and another Esc closes the panel.
@@ -1143,7 +1143,7 @@ fn down_goes_from_the_tabs_to_the_sub_tabs_where_the_arrows_regroup_at_once() {
         ViewOutcome::Consumed
     ));
     let rows = self::rows(&mut tab, &state, 120);
-    assert_eq!(tab.tab(), Tab::Stats, "→ on the sub-tabs stays on Stats");
+    assert_eq!(tab.tab(), Tab::Stats, "→  on the sub-tabs stays on Stats");
     assert!(
         rows[2].ends_with(" By CLI   [By model]   By role"),
         "{rows:#?}"
@@ -1167,7 +1167,7 @@ fn down_goes_from_the_tabs_to_the_sub_tabs_where_the_arrows_regroup_at_once() {
     assert_eq!(tab.level(), Level::SubTabs);
     key(&mut tab, &state, KeyCode::Up);
     key(&mut tab, &state, KeyCode::Left);
-    assert_eq!(tab.tab(), Tab::Limits, "← on the tabs changes the tab");
+    assert_eq!(tab.tab(), Tab::Limits, "←  on the tabs changes the tab");
 }
 
 /// A model that spent in a role and did none of its work isn't on that role's row of who did

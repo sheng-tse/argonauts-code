@@ -1473,7 +1473,10 @@ async fn repeat_gets_a_note_then_stuck() {
             echo(&tool(&id, false))
         ));
     }
-    let script = format!("IFS= read -r first; cat <&0 >> got-input & {calls} exec sleep 30");
+    // With job control off, dash gives a background job /dev/null for input, so the job reads
+    // the session's input through a copy taken first.
+    let script =
+        format!("IFS= read -r first; exec 3<&0; cat <&3 >> got-input & {calls} exec sleep 30");
     let h = TestDriver::new(TestAdapter::new(&script).with_input_lines());
     let mut spec = dirs.spec("hi");
     spec.limits.repeat_limit = Some(3);
@@ -1518,7 +1521,8 @@ async fn a_later_try_that_changes_nothing_is_asked_for_the_checks_then_stopped()
             echo(&tool(&format!("t{n}"), false))
         ));
     }
-    let script = format!("IFS= read -r first; cat <&0 >> got-input & {calls} exec sleep 30");
+    let script =
+        format!("IFS= read -r first; exec 3<&0; cat <&3 >> got-input & {calls} exec sleep 30");
     let h = TestDriver::new(TestAdapter::new(&script).with_input_lines());
     let mut spec = dirs.spec("hi");
     spec.limits.no_progress_calls = Some(4);
@@ -1560,7 +1564,7 @@ async fn limit_wraps_up_then_stops() {
         })
     };
     let script = format!(
-        "IFS= read -r first; cat <&0 >> got-input & {}; sleep 0.3; {}; exec sleep 30",
+        "IFS= read -r first; exec 3<&0; cat <&3 >> got-input & {}; sleep 0.3; {}; exec sleep 30",
         echo(&usage(0.9)),
         echo(&usage(1.2)),
     );

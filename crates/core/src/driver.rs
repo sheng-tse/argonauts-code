@@ -80,6 +80,10 @@ pub enum DriverControl {
 pub struct PermissionScope {
     pub roots: Vec<PathBuf>,
     pub writable: Vec<PathBuf>,
+    /// Inside a writable path but never written, such as a system folder, or your checkout for
+    /// a session in a worktree of it. The most specific of these and `writable` decides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_only: Vec<PathBuf>,
     pub deny: Vec<PathBuf>,
     /// Glob patterns, relative to the worktree.
     pub forbidden: Vec<String>,

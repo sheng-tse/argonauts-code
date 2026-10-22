@@ -147,7 +147,7 @@ impl RawLog {
                 ("esc cancels".into(), 0),
             ],
             None => vec![
-                ("↑↓ move".into(), 0),
+                ("↑↓  move".into(), 0),
                 ("enter unfolds".into(), 0),
                 ("/ searches".into(), 1),
                 ("n next".into(), 2),

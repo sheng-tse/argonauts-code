@@ -23,7 +23,9 @@ use argonauts_core::session::SessionRequest;
 use argonauts_core::settings::agents::{Share, StartRuns};
 use argonauts_core::settings::approvals::Presence;
 use argonauts_core::settings::ui::ConversationTrigger;
-use argonauts_core::settings::{GLOBAL_ONLY_KEYS, SAFETY_KEYS, Settings, Span};
+use argonauts_core::settings::{
+    GLOBAL_ONLY_KEYS, SAFETY_KEYS, Settings, Span, project_may_tighten,
+};
 use argonauts_core::{AgentEvent, CommandSpec, ErrorCategory};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -656,12 +658,16 @@ on = ["needs_you"]
 fn conversation_commands_are_safety_keys_only_your_global_config_may_set() {
     assert_eq!(
         GLOBAL_ONLY_KEYS,
-        ["notifications.conversation.*", "telemetry.*"]
+        ["notifications.conversation.*", "telemetry.*", "updates.*"]
     );
     for key in GLOBAL_ONLY_KEYS {
         assert!(SAFETY_KEYS.contains(key), "{key}");
     }
     assert!(SAFETY_KEYS.contains(&"mcp.*"));
+    // A project may turn usage reports off, never on.
+    assert!(project_may_tighten("telemetry.enabled", "false"));
+    assert!(!project_may_tighten("telemetry.enabled", "true"));
+    assert!(!project_may_tighten("updates.auto", "false"));
 }
 
 #[test]

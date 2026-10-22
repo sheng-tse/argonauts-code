@@ -1,13 +1,13 @@
 ---
-source: crates/tui/tests/snap_questions.rs
+source: crates/tui/tests/it/snap_questions.rs
 expression: text(&lines)
 ---
 ● Merge the run into main
-  task      title                     files  lines     worker                         checks  review
-  task-001  Exporter trait                2  +30 -4    Opus on Claude Code            passed  approved
-  task-002  JSON writer                   2  +60 -8    GPT 5.6 on Codex               passed  approved
-  task-003  Wire --json into the CLI      2  +90 -12   Gemini 3.6 on Antigravity CLI  passed  approved
-  task-004  Middleware                    2  +120 -16  GPT 5.6 on Codex               passed  needs Opus on Claude Code
+  task      title                     files  lines     worker               checks  review
+  task-001  Exporter trait                2  +30 -4    Opus on Claude Code  passed  approved
+  task-002  JSON writer                   2  +60 -8    GPT 5.6 on Codex     passed  approved
+  task-003  Wire --json into the CLI      2  +90 -12   Gemini 3.6 on agy    passed  approved
+  task-004  Middleware                    2  +120 -16  GPT 5.6 on Codex     passed  needs Opus on Claude Code
             Run records                   1  +27 -0    Argonauts Code
   4 tasks · 9 files · +327 -40
   Suite passed on the latest main

@@ -162,6 +162,8 @@ pub async fn resolve_main(
             reviews: false,
             fresh: true,
             independent_of: Vec::new(),
+            in_place_of: None,
+            fork_of: None,
         };
         let end = run(host, plan, &worker).await?;
         if end.reason.is_agent_failure() {
@@ -234,6 +236,8 @@ pub async fn fix_after_main(
             reviews: false,
             fresh: true,
             independent_of: Vec::new(),
+            in_place_of: None,
+            fork_of: None,
         };
         let end = run(host, plan, &worker).await?;
         if !end.reason.is_agent_failure() {

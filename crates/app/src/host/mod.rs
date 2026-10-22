@@ -179,9 +179,30 @@ pub(crate) async fn host_with(
     host.close();
     // The journal inside the host must not outlive the lock.
     drop(host);
-    drop(lock);
-    exit
+    exit.map_err(|why| Unstarted { why, _lock: lock }.into())
 }
+
+/// Why a run couldn't start, holding on to the run until that is said. The program writes it
+/// to the run host's log before it lets this go, so whoever sees the lock go finds the reason
+/// there rather than the log as it was a moment before.
+struct Unstarted {
+    why: anyhow::Error,
+    _lock: RunLock,
+}
+
+impl std::fmt::Display for Unstarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.why)
+    }
+}
+
+impl std::fmt::Debug for Unstarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.why)
+    }
+}
+
+impl std::error::Error for Unstarted {}
 
 /// The control socket's accept loop.
 struct Serving {
@@ -832,6 +853,7 @@ mod tests {
                     instructions: Vec::new(),
                     request_settings: Vec::new(),
                     required_steps: Vec::new(),
+                    starts_from: None,
                 },
                 overrides: Vec::new(),
                 interactive: true,
@@ -1453,6 +1475,34 @@ mod tests {
         );
     }
 
+    /// A run that can't start holds on to the run for as long as its reason is kept, and the
+    /// program writes the reason to the log before it lets go: whoever sees the lock go finds
+    /// why there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_start_that_fails_holds_the_run_until_its_reason_is_said() {
+        let test = TestRun::new();
+        std::fs::remove_dir_all(test.repo.root().join(".git")).unwrap();
+        let mut settings = Settings::default();
+        settings.history.enabled = false;
+        let record = SettingsRecord {
+            sha256: "0".repeat(64),
+            settings,
+            turned_on: Vec::new(),
+        };
+        files::write_settings(&test.run_dir, &record).unwrap();
+        let options = test.options(Duration::ZERO, finish(RunOutcome::Merged));
+        let err = host_with(test.repo.root(), &test.run, options)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("history.enabled is off"),
+            "{err:#}"
+        );
+        assert!(RunLock::is_held(&test.run_dir), "held until it is said");
+        drop(err);
+        assert!(test.lock_released().await);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_finished_run_goes_to_the_usage_ledger_by_agent() {
         use crate::client::test_support::{session_started, usage};
@@ -1574,9 +1624,7 @@ mod tests {
                 })
             })
         };
-        let exit = test
-            .host(test.options(Duration::from_millis(50), script))
-            .await;
+        let exit = test.host_again(Duration::from_millis(50), script).await;
         assert_eq!(exit, HostExit::Finished(RunOutcome::Stopped));
         assert_eq!(*log.lock().unwrap(), ["guidance", "stop"]);
         assert!(files::take_pending(&test.run_dir).unwrap().is_empty());

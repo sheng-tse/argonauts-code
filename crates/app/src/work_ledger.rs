@@ -15,18 +15,22 @@ use argonauts_core::api::day_format;
 use argonauts_core::crew_stats::{
     CrewStats, Fallback, ModelDay, ReviewTally, StatsRole, TaskRecord, WorkRow,
 };
+use argonauts_core::event::ErrorCategory;
 use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent};
+use argonauts_core::events::approval::ApprovalKind;
 use argonauts_core::events::approval::{AnswerAction, ApprovalEvent};
 use argonauts_core::events::goal::GoalEvent;
-use argonauts_core::events::run::{Party, RunLifecycle};
-use argonauts_core::events::session::SessionStarted;
+use argonauts_core::events::run::{Party, RunLifecycle, RunOutcome};
+use argonauts_core::events::session::{EndReason, SessionStarted};
 use argonauts_core::events::task::{CheckKind, ReviewEvent, TaskEvent, TaskKind, TaskState};
 use argonauts_core::events::{MergeEvent, PlanEvent, RunEvent, RunEventKind, SessionEvent};
 use argonauts_core::limits::PlanUsageStatus;
 use argonauts_core::model_catalog::ModelCatalog;
+use argonauts_core::names::ApprovalId;
 use argonauts_core::names::{AgentId, ModelRef, SessionKey};
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::judgment::ReviewVerdict;
+use argonauts_core::steps::plan::Severity;
 use argonauts_core::{AgentEvent, RunId, Spend, TaskId, create_private_dir_all};
 use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime};
@@ -76,6 +80,9 @@ pub(crate) enum Work {
         /// The plan window that had run out on the one it is the fallback for.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window: Option<String>,
+        /// Why the one it is the fallback for stopped, as a fixed word.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cause: Option<FallbackCause>,
     },
     Task {
         task: TaskId,
@@ -89,6 +96,12 @@ pub(crate) enum Work {
         /// A reviewer or the judge looked at it, so it fared in review one way or another.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         reviewed: bool,
+        /// Its checks passed the first time they ran, before any review. `None` when none ran.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checks_first: Option<bool>,
+        /// Its checks passed as they last ran.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checks_last: Option<bool>,
     },
     Review {
         by: ModelRef,
@@ -110,6 +123,11 @@ pub(crate) enum Work {
         /// It ran commands of its own.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         ran_own: bool,
+        /// The findings it gave, and how many of them block the work.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        findings: u32,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        blocking: u32,
     },
     /// An approval the judge decided in your place.
     Signoff {
@@ -153,7 +171,77 @@ pub(crate) enum Work {
         /// Its checks failed after the merge.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         checks_failed: bool,
+        /// How the run ended. Older lines have none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ended: Option<RunOutcome>,
+        /// Who approved its merge, and the times a merge approval sent it back.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        merge_approved_by: Option<ApprovedBy>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        merge_sent_back: u32,
     },
+}
+
+/// Why a session stopped so another took its work, in words that name no account or model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FallbackCause {
+    SignedOut,
+    UsageLimit,
+    Down,
+    ModelUnavailable,
+    Stuck,
+    Other,
+}
+
+impl FallbackCause {
+    fn of(reason: &EndReason) -> Self {
+        let of_category = |category: &ErrorCategory| match category {
+            ErrorCategory::Auth => Self::SignedOut,
+            ErrorCategory::UsageLimit | ErrorCategory::RateLimit | ErrorCategory::Billing => {
+                Self::UsageLimit
+            }
+            ErrorCategory::Overloaded | ErrorCategory::Server | ErrorCategory::Network => {
+                Self::Down
+            }
+            ErrorCategory::ModelUnavailable => Self::ModelUnavailable,
+            _ => Self::Other,
+        };
+        match reason {
+            EndReason::Auth { .. } => Self::SignedOut,
+            EndReason::UsageLimit { .. }
+            | EndReason::RateLimited
+            | EndReason::Billing { .. }
+            | EndReason::LimitHit { .. } => Self::UsageLimit,
+            EndReason::CliError { category, .. } => of_category(category),
+            EndReason::ModelUnavailable { .. } => Self::ModelUnavailable,
+            EndReason::Stuck { .. } => Self::Stuck,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Who approved a run's merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ApprovedBy {
+    You,
+    Autopilot,
+    /// The judge of approvals, in your place.
+    Judge,
+    /// Your approval rules, or a setting.
+    Rules,
+}
+
+impl ApprovedBy {
+    fn of(party: &Party) -> Self {
+        match party {
+            Party::User => Self::You,
+            Party::Autopilot | Party::Declined => Self::Autopilot,
+            Party::Judge { .. } => Self::Judge,
+            _ => Self::Rules,
+        }
+    }
 }
 
 /// How a run's merge went.
@@ -191,7 +279,7 @@ impl MergeFacts {
 
 /// The role a session's line is filed under: its own, or the merger's for the sessions that
 /// settle a conflict or write the commit message, which start as a worker's.
-fn role_of(started: &SessionStarted) -> &'static str {
+pub(crate) fn role_of(started: &SessionStarted) -> &'static str {
     let merges = started.step == Some(StepName::ResolveConflict)
         || started.label.as_deref() == Some(COMMIT_MESSAGE);
     if merges {
@@ -459,7 +547,18 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
     let mut merge = MergeFacts::default();
     let mut plans = 0u32;
     // Who stopped on a task, and why, until its fallback starts.
-    let mut stopped: BTreeMap<TaskId, (String, Option<String>)> = BTreeMap::new();
+    let mut stopped: BTreeMap<TaskId, (String, Option<String>, FallbackCause)> = BTreeMap::new();
+    // How each task's last session to stop early stopped, and each session's task from its
+    // start, for an end that names only the session.
+    let mut ended_early: BTreeMap<TaskId, EndReason> = BTreeMap::new();
+    let mut task_of: BTreeMap<&SessionKey, &TaskId> = BTreeMap::new();
+    // Each task's checks the first time they ran, until its first review, and whether they passed.
+    let mut first_checks: BTreeMap<TaskId, bool> = BTreeMap::new();
+    let mut first_done: BTreeSet<TaskId> = BTreeSet::new();
+    let mut run_end = None;
+    let mut merge_approvals: BTreeSet<ApprovalId> = BTreeSet::new();
+    let mut merge_approved_by = None;
+    let mut merge_sent_back = 0u32;
     // Each CLI's plan window that has run out, by its last reading.
     let mut out_of: BTreeMap<AgentId, String> = BTreeMap::new();
     // Each task's check commands as they last ran, and whether each passed.
@@ -505,7 +604,30 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
                         .entry(task.clone())
                         .or_default()
                         .insert(command.join(" "), check.passed);
+                    if !first_done.contains(task) {
+                        let first = first_checks.entry(task.clone()).or_insert(true);
+                        *first &= check.passed;
+                    }
                 }
+            }
+            RunEventKind::Session(SessionEvent::Started(_)) => {
+                if let (Some(key), Some(task)) = (&event.session, task) {
+                    task_of.insert(key, task);
+                }
+            }
+            RunEventKind::Session(SessionEvent::Ended(end))
+                if end.reason != EndReason::Completed =>
+            {
+                let of_session = event.session.as_ref().and_then(|key| task_of.get(key));
+                if let Some(task) = task.or(of_session.copied()) {
+                    ended_early.insert(task.clone(), end.reason.clone());
+                }
+            }
+            RunEventKind::Run(RunLifecycle::Finished { outcome, .. }) => run_end = Some(*outcome),
+            RunEventKind::Approval(ApprovalEvent::Opened(opened))
+                if opened.kind == ApprovalKind::Merge =>
+            {
+                merge_approvals.insert(opened.id.clone());
             }
             RunEventKind::Review(ReviewEvent::Reviewed {
                 reviewer,
@@ -522,6 +644,15 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
                 if back && let Some(task) = task {
                     sent_back.entry(task.clone()).or_default().insert(*round);
                 }
+                // The checks that ran before a review are the first try's; later ones answer it.
+                if let Some(task) = task {
+                    first_done.insert(task.clone());
+                }
+                let blocking = review
+                    .comments
+                    .iter()
+                    .filter(|comment| comment.severity == Severity::High)
+                    .count();
                 let what = Work::Review {
                     by: reviewer.clone(),
                     task: task.cloned(),
@@ -533,6 +664,8 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
                         .unwrap_or_default(),
                     checks_failed: failed,
                     ran_own: false,
+                    findings: review.comments.len() as u32,
+                    blocking: blocking as u32,
                 };
                 lines.push(line(local_day(event.ts), what));
             }
@@ -554,6 +687,8 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
                         .unwrap_or_default(),
                     checks_failed: failed,
                     ran_own: false,
+                    findings: 0,
+                    blocking: 0,
                 };
                 lines.push(line(local_day(event.ts), what));
             }
@@ -570,9 +705,19 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
             }
             RunEventKind::Fallback(FallbackEvent::Needed(plan)) => {
                 let window = out_of.get(&plan.stopped.agent_id()).cloned();
-                stopped.insert(plan.task.clone(), (plan.reason.clone(), window));
+                let cause = ended_early
+                    .get(&plan.task)
+                    .map_or(FallbackCause::Other, FallbackCause::of);
+                stopped.insert(plan.task.clone(), (plan.reason.clone(), window, cause));
             }
             RunEventKind::Approval(ApprovalEvent::Decided(decided)) => {
+                if merge_approvals.contains(&decided.id) {
+                    if refuses(&decided.action) {
+                        merge_sent_back += 1;
+                    } else {
+                        merge_approved_by = Some(ApprovedBy::of(&decided.by));
+                    }
+                }
                 if let Party::Judge { model } = &decided.by {
                     let what = Work::Signoff {
                         by: model.clone(),
@@ -682,9 +827,12 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
         let took = until.map_or(0, |until| {
             (until - session.started_at).whole_seconds().max(0)
         });
-        let (why, window) = match (&session.fallback_for, &session.task) {
-            (Some(_), Some(task)) => stopped.get(task).cloned().unwrap_or_default(),
-            _ => Default::default(),
+        let (why, window, cause) = match (&session.fallback_for, &session.task) {
+            (Some(_), Some(task)) => match stopped.get(task) {
+                Some((why, window, cause)) => (why.clone(), window.clone(), Some(*cause)),
+                None => (String::new(), None, Some(FallbackCause::Other)),
+            },
+            _ => (String::new(), None, None),
         };
         let what = Work::Session {
             role: role.to_owned(),
@@ -697,16 +845,22 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
             fallback_for: session.fallback_for.clone(),
             why,
             window,
+            cause,
         };
         lines.push(line(local_day(session.started_at), what));
     }
 
     for (task, by) in builders {
+        let checks_last = checks
+            .get(&task)
+            .map(|given| given.values().all(|passed| *passed));
         let what = Work::Task {
             kind: kinds.get(&task).map(|kind| (*kind).to_owned()),
             sent_back: sent_back.get(&task).map_or(0, |rounds| rounds.len() as u32),
             merged: merged.contains(&task),
             reviewed: looked_at.contains(&task),
+            checks_first: first_checks.get(&task).copied(),
+            checks_last,
             task,
             by,
         };
@@ -748,6 +902,9 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
             merge: merge.end(),
             merged_by,
             checks_failed: merge.checks_failed,
+            ended: run_end,
+            merge_approved_by,
+            merge_sent_back,
         },
     ));
     lines
@@ -863,6 +1020,7 @@ pub(crate) fn stats(ledger: &WorkLedger, first: Option<Date>, usage: &[LedgerLin
                 sent_back,
                 merged,
                 reviewed,
+                ..
             } => {
                 day_of(&mut days, line.day, by, Some(StatsRole::Worker)).1 += 1;
                 row_of(&mut rows, by, StatsRole::Worker, kind.clone()).done += 1;
@@ -938,6 +1096,7 @@ pub(crate) fn stats(ledger: &WorkLedger, first: Option<Date>, usage: &[LedgerLin
                 merge,
                 merged_by,
                 checks_failed,
+                ..
             } => {
                 let outcomes = &mut stats.outcomes;
                 outcomes.runs += 1;

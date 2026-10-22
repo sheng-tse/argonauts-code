@@ -73,6 +73,7 @@ pub fn fabricate_waiting_run(scenario: &Scenario, days_waiting: i64) -> anyhow::
         outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     };
     let opened = ApprovalOpened {
         id: approval.clone(),

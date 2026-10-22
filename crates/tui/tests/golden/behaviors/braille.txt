@@ -1,0 +1,29 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
+   Overview    Models    Behaviors                                                                                    
+  What your agents did, from 562 actions in 19 runs · last 30 days · by model                                         
+                                                                                                                      
+                                     ⠈⠉                                                                               
+                                           ⡀ ⣀ ⡀                                                                      
+    ⣀⡄ ⢀                                ⡨⣸⣼⣕⣿⣶⣧⣔⢅                                                                     
+  ⠆          ⠐  ⣠⣦⣶⣦⡆⠄                   ⠁⠊⠓⠙⠉⠝⠈  ⡀                                                                   
+              ⡀ ⠈⠙⠙⠉⠃⠈                                                                                                
+          ⢀       ⠈                       ⡀                   ⡀                                                       
+      ⢀⣦⣤⣤⡀                      ⠒                          ⢲⣵⣶⣵⣧⣗                                                    
+       ⠉⠉⠁                                                   ⠈⠙⠈⠈                                                     
+                                                                                                                      
+                       ⢀⢀        ⠣ ⠐⠂                                                                                 
+                       ⠁⠐⠄⡠⡄⢂    ⣍⢉⡒                                                                                  
+                        ⠴⠠⢒⠄ ⠐⢀ ⡈                ⠐⠉⠚⠓                                                                 
+                            ⠒ ⡀⠠⠥⢂⠈                                                                                   
+                                                                                                                      
+  ⣿ Haiku 5.5  ⣿ GPT 6 Luna  ⣿ GPT 5.6 Luna  ⣿ Haiku 4.5  ⣿ Gemini 3.8 Flash                                          
+  red behind the dots:    GPT 6 Luna does this more · blue: less                                                      
+                                                                                                                      
+  Distinctive to GPT 6 Luna · 66 actions; the others 496                                                              
+  ❯ checked git status or diff and read git history         4 (6.1%)   others   2 (0.4%)                              
+    checked git status or diff and ran a shell command      3 (4.5%)   others   4 (0.8%)                              
+    ran the test suite                                      8 (12.1%)   others  19 (3.8%)                             
+    returned its structured answer                         34 (51.5%)   others 135 (27.2%)                            
+                                                                                                                      
+  ←  →  model · ↑  ↓  behavior · enter its examples · g group by: model, CLI, role, workflow · p period · esc back    

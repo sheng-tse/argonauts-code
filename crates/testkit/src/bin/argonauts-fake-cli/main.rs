@@ -42,6 +42,10 @@ fn main() -> ExitCode {
 }
 
 fn run(argv0: &str, args: &[String]) -> anyhow::Result<i32> {
+    // `gh` answers from its own world file rather than a scenario.
+    if argv0 == "gh" {
+        return Ok(argonauts_testkit::fake_gh::serve(args));
+    }
     let scenario_path = std::env::var_os(SCENARIO_ENV)
         .map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("{SCENARIO_ENV} is not set"))?;

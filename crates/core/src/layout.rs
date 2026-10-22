@@ -80,6 +80,8 @@ pub mod user_files {
     pub const WORKFLOWS: &str = "workflows";
     /// Home templates for manifest CLIs, `<template>/`. Never taken from a repo.
     pub const CLIS: &str = "clis";
+    /// The deeper Behaviors map: every summary, vector and position, kept so none is made twice.
+    pub const BEHAVIORS: &str = "behaviors";
 }
 
 /// Folders in a repo's state directory, `~/.argonauts/state/<repo>/`.

@@ -1,6 +1,6 @@
 //! A Captain run that Claude Code's own workflow runs, beside its pictures: `Fix the money
 //! rounding`, where Claude Code's agents hand the reviews to Codex and the sign-off to
-//! Antigravity CLI. Each test builds the moment its picture catches, draws it at the picture's
+//! agy. Each test builds the moment its picture catches, draws it at the picture's
 //! width, and compares every cell, its colour included.
 
 use std::sync::Arc;
@@ -14,9 +14,9 @@ use argonauts_core::names::WorkflowId;
 use argonauts_core::overview::ModelTokens;
 use argonauts_core::steps::plan::Severity;
 use argonauts_core::views::{
-    ActivityLine, AgentRow, AgentView as AgentData, AskedFor, CommandRow, EarlierFindings, Finding,
-    PhaseCount, PhaseRow, ReviewGiven, RowNote, RowStatus, StatusKind, StatusLine, Tone,
-    WorkflowRow, WorkflowState, WorkflowView as WorkflowData,
+    ActivityLine, AgentRow, AgentView as AgentData, AskedFor, EarlierFindings, Finding, PhaseCount,
+    PhaseRow, ReviewGiven, RowNote, RowStatus, StatusKind, StatusLine, Tone, WorkflowRow,
+    WorkflowState, WorkflowView as WorkflowData,
 };
 use argonauts_core::workflow::StandardPhase;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -36,7 +36,7 @@ const FLASH: &str = "antigravity-cli/gemini-3.8-flash";
 
 /// Your models as the other tabs rank them, the most tokens first, so each keeps the colour it
 /// has there: Haiku 5.5 is Claude Code's third, GPT 6 Luna Codex's second, and Gemini 3.8 Flash
-/// Antigravity CLI's third.
+/// agy's third.
 fn state() -> AppState {
     let ranked = [
         ("claude-code", "claude-opus-5-5", 900_000),
@@ -160,10 +160,7 @@ fn build_done() -> PhaseRow {
 /// 33 s in: Codex answered review:money, and Claude Code's agent is passing the answer back.
 #[test]
 fn an_answer_fills_the_row_that_asked_for_it() {
-    let mut picture = picture!("answer_after");
-    // The picture gives Review's row the whole workflow's label column; the view lays each
-    // phase out by its own labels.
-    picture.label_column(6, "review:money", "review:money  ".len());
+    let picture = picture!("answer_after");
     let review = agent(2, "review:money", LUNA, RowStatus::Running, 51_800, 7);
     let data = captain(
         (1, 2),
@@ -181,7 +178,6 @@ fn an_answer_fills_the_row_that_asked_for_it() {
                 )],
             ),
             waiting("Final"),
-            waiting("Merge"),
         ],
     );
     let mut view = WorkflowView::new(data);
@@ -209,7 +205,7 @@ fn at_one_minute() -> WorkflowData {
     captain(
         (4, 5),
         66,
-        "final: GPT 6 Luna on Codex approved Haiku 5.5's change, 1 note · Gemini 3.8 Flash on Antigravity CLI signs off",
+        "final: GPT 6 Luna on Codex approved Haiku 5.5's change, 1 note · Gemini 3.8 Flash on agy signs off",
         vec![
             build_done(),
             phase(
@@ -222,7 +218,6 @@ fn at_one_minute() -> WorkflowData {
                 ],
             ),
             final_phase,
-            waiting("Merge"),
         ],
     )
 }
@@ -259,7 +254,6 @@ fn a_captain_run_shows_once_its_phases_are_known() {
             ),
             waiting("Review"),
             waiting("Final"),
-            waiting("Merge"),
         ],
     );
     data.status_lines = Vec::new();
@@ -267,31 +261,12 @@ fn a_captain_run_shows_once_its_phases_are_known() {
     picture.assert_drawn(16..26, &drawn(&mut view, 11), 0);
 }
 
-/// A step Argonauts Code runs itself, done: its label, what ran, what came of it.
-fn command(label: &str, ran: &str, result: &str, seconds: u64) -> WorkflowRow {
-    WorkflowRow::Command(CommandRow {
-        label: label.to_owned(),
-        command: ran.to_owned(),
-        result: Some(result.to_owned()),
-        tone: Tone::Plain,
-        status: RowStatus::Done,
-        elapsed_ms: seconds * 1000,
-    })
-}
-
-/// Done and merged, on Merge: the end line names who built it, who reviewed it and who signed
-/// it off, each model in its row's colour.
-///
-/// Each phase is laid out by its own widest label. The picture keeps an earlier run's column in
-/// Merge's rows, set by that run's `sign-off:add-due-dates`: the test moves them to Merge's own
-/// column.
+/// Done and merged, on Final: the end line names who built it, who reviewed it and who signed
+/// it off, each model in its row's colour. The run's own merge is in the header, never a phase
+/// of the CLI's workflow.
 #[test]
 fn a_merged_captain_run_says_who_did_its_work() {
-    let mut picture = picture!("captain_done");
-    let width = "merge onto main  ".len();
-    picture.label_column(16, "final check", width);
-    picture.label_column(17, "commit message", width);
-    picture.label_column(18, "merge onto main", width);
+    let picture = picture!("captain_done");
     let done = |session, label, model, tokens, seconds| {
         WorkflowRow::Agent(agent(
             session,
@@ -303,7 +278,7 @@ fn a_merged_captain_run_says_who_did_its_work() {
         ))
     };
     let mut data = captain(
-        (6, 6),
+        (5, 5),
         91,
         "",
         vec![
@@ -322,26 +297,14 @@ fn a_merged_captain_run_says_who_did_its_work() {
                 RowStatus::Done,
                 Some((2, 2)),
                 vec![
-                    done(4, "review:final", LUNA, 16_800, 4),
-                    done(5, "sign-off:money", FLASH, 12_000, 6),
-                ],
-            ),
-            phase(
-                "Merge",
-                RowStatus::Done,
-                Some((1, 1)),
-                vec![
-                    command(
-                        "final check",
-                        "python3 -m unittest",
-                        "14 of 14 pass, 3 failed at the start",
-                        1,
+                    answered(
+                        agent(4, "review:final", LUNA, RowStatus::Done, 16_800, 4),
+                        RowNote::new("approved", Tone::Good).then("1 note"),
                     ),
-                    noted(
-                        agent(6, "commit message", HAIKU, RowStatus::Done, 4_100, 8),
-                        RowNote::new("given the diff, no tools", Tone::Plain),
+                    answered(
+                        agent(5, "sign-off:money", FLASH, RowStatus::Done, 12_300, 6),
+                        RowNote::new("approved", Tone::Good),
                     ),
-                    command("merge onto main", "git", "1 task · no conflicts", 1),
                 ],
             ),
         ],
@@ -364,7 +327,14 @@ fn a_merged_captain_run_says_who_did_its_work() {
 /// round's finding with its answer, and the verdict with its note.
 #[test]
 fn a_handed_over_review_opens_as_its_picture() {
-    let picture = picture!("captain_review_agent");
+    let mut picture = picture!("captain_review_agent");
+    // A blank line between the view's sections, and no stop or restart once it's done.
+    let spaced = picture.space_sections(0, &["Prompt", "Earlier findings", "Activity", "Outcome"]);
+    picture.reword(
+        17 + spaced,
+        "m message · x stop · r restart · p pause",
+        "m message · p pause",
+    );
     let mut view = WorkflowView::new(at_one_minute());
     press(&mut view, KeyCode::Enter);
     press(&mut view, KeyCode::Enter);
@@ -421,6 +391,7 @@ fn a_handed_over_review_opens_as_its_picture() {
             answers: vec![
                 "\"-$1.50\" was already right; \"$-1.50\" read as -50 cents, now fixed".to_owned(),
             ],
+            verdict: None,
         }),
         review: Some(ReviewGiven {
             verdict: "approved".to_owned(),
@@ -432,9 +403,13 @@ fn a_handed_over_review_opens_as_its_picture() {
             }],
         }),
         moved: None,
+        given: None,
+        prompt_about: None,
+        started_from: None,
     };
     assert!(view.accept(&ViewData::Agent {
         view: Box::new(opened),
     }));
-    picture.assert_drawn(0..18, &drawn(&mut view, 23), 5);
+    let rows = 18 + spaced;
+    picture.assert_drawn(0..rows, &drawn(&mut view, 23 + spaced as u16), 5);
 }

@@ -155,6 +155,7 @@ fn run_started() -> RunEventKind {
         outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     })))
 }
 
@@ -173,6 +174,9 @@ fn session_started() -> RunEventKind {
         workflow_step: None,
         label: Some("build:due-dates".to_owned()),
         asked: None,
+        asked_by: None,
+        asked_why: None,
+        forked: false,
     })))
 }
 

@@ -5,55 +5,48 @@
 
 use std::collections::BTreeMap;
 
-use argonauts_core::names::RoleName;
+use argonauts_core::events::session::{CliAgent, CliWorkflowRun};
+use argonauts_core::names::{RoleName, SessionKey};
 use argonauts_core::views::{PhaseRow, RowNote, RowStatus, Tone, WorkflowRow, WorkflowView};
+use argonauts_tui::views::asks::{self, Ask, label_stem};
 
 use super::sessions::{RunFacts, SessionFacts};
 
-/// Each agent row of a CLI's own workflow whose label a role asked through Argonauts Code carries,
-/// drawn as that role's session. The latest such session wins, as a retried step's would.
-pub(super) fn answered_by_the_crew(view: &mut WorkflowView, facts: &RunFacts) {
-    answered_in(&mut view.phases, facts);
+/// Each agent row of `host`'s CLI workflow that a role answered through Argonauts Code, drawn
+/// as that role's session.
+pub(super) fn answered_by_the_crew(
+    view: &mut WorkflowView,
+    facts: &RunFacts,
+    host: &SessionKey,
+    workflow: &CliWorkflowRun,
+) {
+    answered_in(&mut view.phases, facts, host, workflow);
 }
 
-/// As [`answered_by_the_crew`], for the phases of a workflow inside another, and of each
-/// workflow inside those.
-pub(super) fn answered_in(phases: &mut [PhaseRow], facts: &RunFacts) {
-    let mut rounds = BTreeMap::new();
+/// As [`answered_by_the_crew`], for the phases of a workflow inside another.
+pub(super) fn answered_in(
+    phases: &mut [PhaseRow],
+    facts: &RunFacts,
+    host: &SessionKey,
+    workflow: &CliWorkflowRun,
+) {
+    let joined = joins(facts, host, workflow);
     for phase in phases {
-        answered_rows(&mut phase.rows, facts, &mut rounds);
-    }
-}
-
-/// `rounds` counts the rows of each label so far: the crew labels an ask of a label it was
-/// asked before by its round, `review:money · round 2`, so the second such row is that one's.
-fn answered_rows(rows: &mut [WorkflowRow], facts: &RunFacts, rounds: &mut BTreeMap<String, u32>) {
-    for row in rows {
-        let agent = match row {
-            WorkflowRow::Agent(agent) => agent,
-            WorkflowRow::Workflow(nested) => {
-                for phase in &mut nested.phases {
-                    answered_rows(&mut phase.rows, facts, rounds);
-                }
-                answered_rows(&mut nested.rows, facts, rounds);
+        for row in &mut phase.rows {
+            let WorkflowRow::Agent(agent) = row else {
                 continue;
-            }
-            WorkflowRow::Command(_) => continue,
-        };
-        let round = rounds.entry(agent.label.clone()).or_default();
-        *round += 1;
-        let label = match *round {
-            1 => agent.label.clone(),
-            n => format!("{} · round {n}", agent.label),
-        };
-        let asked = facts
-            .sessions
-            .iter()
-            .rev()
-            .find(|session| asked_for(session, &label));
-        if let Some(asked) = asked {
+            };
+            let Some(index) = agent.inner.as_ref().map(|inner| inner.index) else {
+                continue;
+            };
+            let Some(asked) = joined
+                .get(&index)
+                .and_then(|session| facts.session(session))
+            else {
+                continue;
+            };
             let mut answered = facts.agent_row(asked);
-            answered.label = agent.label.clone();
+            answered.label = label_stem(&agent.label).to_owned();
             answered.answered = true;
             // The agent that asked passes the answer back, and is at work until it has.
             let asking = matches!(agent.status, RowStatus::Running | RowStatus::Queued);
@@ -77,12 +70,51 @@ fn answered_rows(rows: &mut [WorkflowRow], facts: &RunFacts, rounds: &mut BTreeM
     }
 }
 
+/// The agent of a CLI workflow that asked for `session`, when one did, with the workflow and
+/// the session running it.
+pub(super) fn asker_of<'a>(
+    facts: &RunFacts,
+    workflows: &'a [(SessionKey, CliWorkflowRun)],
+    session: &SessionKey,
+) -> Option<(&'a SessionKey, &'a CliAgent)> {
+    workflows.iter().find_map(|(host, workflow)| {
+        let (index, _) = joins(facts, host, workflow)
+            .into_iter()
+            .find(|(_, asked)| asked == session)?;
+        let agent = workflow.agents.iter().find(|agent| agent.index == index)?;
+        Some((host, agent))
+    })
+}
+
+/// Which ask each agent of `workflow` made, by the agent's number, as the bottom list joins
+/// them too.
+fn joins(
+    facts: &RunFacts,
+    host: &SessionKey,
+    workflow: &CliWorkflowRun,
+) -> BTreeMap<u32, SessionKey> {
+    let labels: Vec<(&SessionFacts, String)> = facts
+        .sessions
+        .iter()
+        .filter(|session| is_ask(session))
+        .map(|session| (session, session.label()))
+        .collect();
+    let asks: Vec<Ask<'_>> = labels
+        .iter()
+        .map(|(session, label)| Ask {
+            key: &session.key,
+            label,
+            started_ms: super::workflow::epoch_ms(session.started_at),
+            asked_by: session.started.asked_by.as_ref(),
+        })
+        .collect();
+    asks::joins(&asks, host, workflow)
+}
+
 /// A review or a sign-off asked through the tool: a reviewer's or judge's session tied to no
-/// task of its own, under the label the asking agent gave.
-fn asked_for(session: &SessionFacts, label: &str) -> bool {
-    matches!(session.started.role, RoleName::Reviewer | RoleName::Judge)
-        && session.task.is_none()
-        && session.started.label.as_deref() == Some(label)
+/// task of its own.
+fn is_ask(session: &SessionFacts) -> bool {
+    matches!(session.started.role, RoleName::Reviewer | RoleName::Judge) && session.task.is_none()
 }
 
 #[cfg(test)]
@@ -249,5 +281,39 @@ mod tests {
             .map(|(_, _, session, _)| session)
             .collect();
         assert_eq!(sessions, [astra, again]);
+    }
+
+    /// Haiku's script numbers its agent `review:store#1` and asks under `review:store`: the
+    /// ask still fills that agent's row, under the label without its round.
+    #[test]
+    fn an_ask_fills_its_agents_row_when_the_script_numbered_the_label() {
+        let (_, astra, mut events) = asked_about_store();
+        for event in &mut events {
+            if let RunEventKind::Agent(AgentEvent::Workflow { workflow }) = &mut event.kind {
+                workflow.agents[0] = agent(1, "review:store#1");
+            }
+        }
+        let rows = rows(&events);
+        assert_eq!(rows[0].0, "review:store");
+        assert_eq!(rows[0].2, astra);
+        assert_eq!(rows[1].1, "claude-code");
+    }
+
+    /// The crew stamped the ask with the agent at work, whose label is nothing like it: the
+    /// ask fills that agent's row, and no other.
+    #[test]
+    fn a_stamped_ask_fills_the_row_of_the_agent_it_names() {
+        let (host, astra, mut events) = asked_about_store();
+        if let RunEventKind::Session(SessionEvent::Started(started)) = &mut events[2].kind {
+            started.label = Some("sign-off:due-dates".to_owned());
+            started.asked_by = Some(argonauts_core::events::session::AskedBy {
+                session: host.clone(),
+                workflow: None,
+                agent: Some("review:cli".to_owned()),
+            });
+        }
+        let rows = rows(&events);
+        assert_eq!(rows[0].2, host);
+        assert_eq!((rows[1].0.as_str(), &rows[1].2), ("review:cli", &astra));
     }
 }

@@ -65,20 +65,29 @@ fn limits_hit_falls_back_once_by_rule() -> anyhow::Result<()> {
         "[limits]\nper_task_usd = 0.05\n",
     )?;
     let _pty = limits.start()?;
+    let fell_back = |kind: &RunEventKind| {
+        matches!(kind, RunEventKind::Task(TaskEvent::Try { worker, cause: TryCause::Reassigned, .. })
+            if worker.agent != "claude-code")
+    };
     let events = limits.wait_for("a try by another agent", LONG_WAIT, |events: &[_]| {
-        tries(events)
-            .iter()
-            .any(|(worker, cause)| worker.agent != "claude-code" && *cause == TryCause::Reassigned)
+        events.iter().any(|event| fell_back(&event.kind))
     })?;
-    let reassigned = find(&events, |kind| match kind {
+    // The other agent has no rule for the task, so its try ends at once and the rules may
+    // move the task again before the events are read. Only what led to its try counts.
+    let tried = events
+        .iter()
+        .position(|event| fell_back(&event.kind))
+        .map_or(events.len(), |at| at + 1);
+    let events = &events[..tried];
+    let reassigned = find(events, |kind| match kind {
         RunEventKind::Task(TaskEvent::Reassigned { by, .. }) => Some(by),
         _ => None,
     });
     assert_eq!(reassigned, [&Party::Rules], "{reassigned:?}");
     assert!(
-        !task_states(&events).contains(&TaskState::NeedsYou),
+        !task_states(events).contains(&TaskState::NeedsYou),
         "{:?}",
-        task_states(&events)
+        task_states(events)
     );
     Ok(())
 }

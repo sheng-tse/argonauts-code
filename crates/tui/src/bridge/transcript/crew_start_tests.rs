@@ -19,6 +19,7 @@ use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::intake::InstructionKind;
 use argonauts_core::workflow::StandardPhase;
 use argonauts_core::{RunId, Spend};
+use argonauts_testkit::picture;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use time::macros::datetime;
@@ -153,6 +154,7 @@ fn started() -> RunStarted {
             },
         ],
         required_steps: Vec::new(),
+        starts_from: None,
     }
 }
 
@@ -287,49 +289,16 @@ struct Look {
     band: bool,
 }
 
-/// The picture's colours, one `Look` per cell of each line, read off its spans.
+/// The picture's colours, one `Look` per cell of each line.
 fn picture_looks() -> Vec<Vec<(char, Look)>> {
-    let colours = COLOURS.replace(SLUG, SLUG_WORDS);
-    let body = colours
-        .split_once("<pre")
-        .and_then(|(_, rest)| rest.split_once('>'))
-        .map(|(_, rest)| rest)
-        .and_then(|rest| rest.split_once("</pre>"))
-        .map(|(body, _)| body)
-        .expect("the picture's cells");
-    let plain = Look {
-        colour: None,
-        bold: false,
-        band: false,
-    };
-    let mut lines = vec![Vec::new()];
-    let mut rest = body;
-    while !rest.is_empty() {
-        let (look, text, after) = match rest.strip_prefix("<span style=\"") {
-            Some(span) => {
-                let (style, after) = span.split_once("\">").expect("a span's style");
-                let (text, after) = after.split_once("</span>").expect("a span's end");
-                (look_of(style), text, after)
-            }
-            None => {
-                let end = rest.find("<span").unwrap_or(rest.len());
-                (plain.clone(), &rest[..end], &rest[end..])
-            }
-        };
-        let text = text
-            .replace("&gt;", ">")
-            .replace("&lt;", "<")
-            .replace("&amp;", "&");
-        for c in text.chars() {
-            if c == '\n' {
-                lines.push(Vec::new());
-            } else {
-                lines.last_mut().unwrap().push((c, look.clone()));
-            }
-        }
-        rest = after;
-    }
-    lines
+    looks_of(&COLOURS.replace(SLUG, SLUG_WORDS))
+}
+
+fn looks_of(colours: &str) -> Vec<Vec<(char, Look)>> {
+    picture::grid(colours)
+        .iter()
+        .map(|row| row.iter().map(|cell| (cell.ch, look_of(cell))).collect())
+        .collect()
 }
 
 /// The picture's colour names, each with the theme role that draws it. Its accent is the
@@ -343,15 +312,17 @@ const ROLES: [(&str, Role); 6] = [
     ("amb", Role::Warn),
 ];
 
-fn look_of(style: &str) -> Look {
-    let colour = ROLES
-        .into_iter()
-        .map(|(name, _)| name)
-        .find(|name| style.contains(&format!("color:var(--term-{name})")));
+fn look_of(cell: &picture::Cell) -> Look {
+    let colour = cell.color.as_deref().and_then(|colour| {
+        ROLES
+            .into_iter()
+            .map(|(name, _)| name)
+            .find(|name| colour == format!("var(--term-{name})"))
+    });
     Look {
         colour,
-        bold: style.contains("font-weight:700"),
-        band: style.contains("background:var(--term-band)"),
+        bold: cell.bold,
+        band: cell.background.as_deref() == Some("var(--term-band)"),
     }
 }
 
@@ -371,10 +342,44 @@ fn colour_name(theme: &Theme, colour: Option<Color>) -> Option<&'static str> {
 #[test]
 fn its_colours_are_the_picture_s() {
     let theme = theme();
-    let band = theme.style(Role::UserBand).bg;
     let lines = drawn(screen().printed(&theme));
-    let picture = picture_looks();
-    for (row, (line, want)) in lines.iter().zip(&picture).enumerate() {
+    assert_looks(&theme, &lines, &picture_looks());
+}
+
+/// The comparison fails once one cell of the picture is changed: its character, its colour,
+/// its weight or its band.
+#[test]
+fn a_picture_changed_in_one_cell_is_no_longer_the_screen() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let theme = theme();
+    let lines = drawn(screen().printed(&theme));
+    let colours = COLOURS.replace(SLUG, SLUG_WORDS);
+    let (row, column) = picture::find(&picture::grid(&colours), |cell| {
+        cell.ch.is_alphanumeric() && cell.color.as_deref() == Some("var(--term-dim)")
+    });
+    let fails = |edit: &dyn Fn(&mut picture::Cell)| {
+        let page = picture::edited(&colours, |grid| edit(&mut grid[row][column]));
+        let looks = looks_of(&page);
+        catch_unwind(AssertUnwindSafe(|| assert_looks(&theme, &lines, &looks))).is_err()
+    };
+    assert!(!fails(&|_| {}));
+    assert!(
+        fails(&|cell| cell.color = Some("var(--term-red)".to_owned())),
+        "a colour"
+    );
+    assert!(fails(&|cell| cell.ch = '#'), "a character");
+    assert!(fails(&|cell| cell.bold ^= true), "a weight");
+    assert!(
+        fails(&|cell| cell.background = Some("var(--term-band)".to_owned())),
+        "a band"
+    );
+}
+
+/// Each drawn cell's character, colour, weight and band against the picture's.
+fn assert_looks(theme: &Theme, lines: &[Line<'_>], picture: &[Vec<(char, Look)>]) {
+    let band = theme.style(Role::UserBand).bg;
+    for (row, (line, want)) in lines.iter().zip(picture).enumerate() {
         let mut cells: Vec<(char, Style)> = Vec::new();
         for span in &line.spans {
             let style = line.style.patch(span.style);
@@ -392,7 +397,7 @@ fn its_colours_are_the_picture_s() {
                 colour: if c.is_whitespace() {
                     want.colour
                 } else {
-                    colour_name(&theme, style.fg)
+                    colour_name(theme, style.fg)
                 },
                 bold: if c.is_whitespace() {
                     want.bold

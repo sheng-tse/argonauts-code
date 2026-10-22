@@ -2,7 +2,6 @@
 //! in their groups and order, each with its window, tool use and variants as levels, and
 //! Default saying what it runs. A fake `opencode` answers as OpenCode 2.0.32 does.
 
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -52,8 +51,7 @@ fn fake_opencode(dir: &Path) -> PathBuf {
          *) exit 2 ;;\n\
          esac\n"
     );
-    std::fs::write(&path, script).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    argonauts_testkit::write_script(&path, &script).unwrap();
     path
 }
 
@@ -72,7 +70,7 @@ async fn opencode_only(fixture: &mut Fixture, dir: &Path) {
     registry.discover().await;
     assert_eq!(
         registry.discovery_skipped(),
-        ["Claude Code, Codex, Antigravity CLI: off in your settings"]
+        ["Claude Code, Codex, agy: off in your settings"]
     );
     fixture.ctx.services.registry = registry;
     let directory = Arc::new(FakeDirectory::new());

@@ -1,5 +1,5 @@
 //! A CLI's start-up screen, read once in a hidden terminal: for a CLI that names who is
-//! signed in nowhere else, as Antigravity CLI does. It is started with no arguments, sent
+//! signed in nowhere else, as agy does. It is started with no arguments, sent
 //! nothing at all, read until its screen has said who is signed in and stopped changing its
 //! mind, or the time is up, and closed. Whatever the CLI asks on that screen stays unanswered.
 
@@ -91,7 +91,6 @@ pub(crate) fn read_banner<T: PartialEq>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     use argonauts_adapter_antigravity_cli::AntigravityCli;
     use argonauts_core::Adapter;
@@ -114,8 +113,7 @@ mod tests {
             script.push_str(&format!("sleep {pause}\nprintf '\\033[2J\\033[H{drawn}'\n"));
         }
         script.push_str("sleep 30\n");
-        std::fs::write(&path, script).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        argonauts_testkit::write_script(&path, &script).unwrap();
         path
     }
 
@@ -237,15 +235,11 @@ mod tests {
         let typed = dir.path().join("typed");
         let path = dir.path().join("cli");
         let drawn = TRUST_QUESTION.replace('\n', "\\r\\n");
-        std::fs::write(
-            &path,
-            format!(
-                "#!/bin/sh\nprintf '\\033[2J\\033[H{drawn}'\nread answer\nprintf '%s' \"$answer\" > '{}'\n",
-                typed.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = format!(
+            "#!/bin/sh\nprintf '\\033[2J\\033[H{drawn}'\nread answer\nprintf '%s' \"$answer\" > '{}'\n",
+            typed.display()
+        );
+        argonauts_testkit::write_script(&path, &script).unwrap();
         let agy = AntigravityCli;
         let started = Instant::now();
         let found = read_banner(

@@ -347,14 +347,14 @@ mod tests {
         }
     }
 
-    /// Nothing is locked: every file under `templates/prompts/` is a template at the path its
-    /// id names, so one added there can be written out and replaced. The README is the
-    /// folder's own page, and `.argonauts/approval-rules.md` already replaces the judge's
-    /// default rules.
+    /// Nothing is locked: every file under `crates/core/templates/prompts/` is a template at
+    /// the path its id names, so one added there can be written out and replaced. The README
+    /// is the folder's own page, and `.argonauts/approval-rules.md` already replaces the
+    /// judge's default rules.
     #[test]
     fn every_prompt_file_is_a_template_at_the_path_its_id_names() {
         let folder =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates/prompts");
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/templates/prompts");
         let templates = all();
         let mut files = Vec::new();
         collect(&folder, &mut files);

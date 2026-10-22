@@ -11,7 +11,7 @@ use crate::roles;
 pub const CLAUDE_CODE: &str = "claude-code";
 
 /// Whether the agent's CLI runs workflows of its own: Claude Code does, and Codex and
-/// Antigravity CLI have none.
+/// agy have none.
 pub fn has_own_workflow(worker: &ModelRef) -> bool {
     worker.agent == CLAUDE_CODE
 }

@@ -1,105 +1,30 @@
-//! The pictures the header sends where the terminal draws them: the generator's PNGs for the cell
-//! sizes it draws for, and for any other size the largest of them fitted to it, as the generator
-//! fits a mascot into its cells.
+//! The pictures the header sends where the terminal draws them: the generator's PNGs, drawn for
+//! one cell size, and for any other size fitted to it, as the generator fits a mascot into its
+//! cells. An ultra look has a frame every 50 ms of its cycle.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+use super::frames::{self, Drawn};
 use super::png::{self, Area};
-use super::{FRAMES, Look, Mascot, ROWS, WIDTH};
+use super::{Look, Mascot, ROWS, WIDTH};
 
 const LISTING: &str = include_str!("../../assets/mascots/pictures.json");
 
-/// The cell sizes in pixels the generator draws for, in `pictures.json`'s order.
-pub const DRAWN_FOR: [(u16, u16); 2] = [(9, 21), (18, 42)];
-
-macro_rules! picture {
-    ($($part:literal),+) => {
-        include_bytes!(concat!("../../assets/mascots/pictures/", $($part),+)).as_slice()
-    };
-}
-
-/// A still look at each size the generator draws for.
-macro_rules! still {
-    ($stem:literal) => {
-        [picture!($stem, "-9x21.png"), picture!($stem, "-18x42.png")]
-    };
-}
-
-macro_rules! frames_at {
-    ($stem:literal, $size:literal) => {
-        [
-            picture!($stem, $size, "-00.png"),
-            picture!($stem, $size, "-01.png"),
-            picture!($stem, $size, "-02.png"),
-            picture!($stem, $size, "-03.png"),
-            picture!($stem, $size, "-04.png"),
-            picture!($stem, $size, "-05.png"),
-            picture!($stem, $size, "-06.png"),
-            picture!($stem, $size, "-07.png"),
-            picture!($stem, $size, "-08.png"),
-            picture!($stem, $size, "-09.png"),
-            picture!($stem, $size, "-10.png"),
-            picture!($stem, $size, "-11.png"),
-            picture!($stem, $size, "-12.png"),
-            picture!($stem, $size, "-13.png"),
-            picture!($stem, $size, "-14.png"),
-            picture!($stem, $size, "-15.png"),
-            picture!($stem, $size, "-16.png"),
-            picture!($stem, $size, "-17.png"),
-        ]
-    };
-}
-
-/// An ultra look's frames at each size the generator draws for.
-macro_rules! frames {
-    ($stem:literal) => {
-        [frames_at!($stem, "-9x21"), frames_at!($stem, "-18x42")]
-    };
-}
-
-type Stills = [&'static [u8]; DRAWN_FOR.len()];
-type Frames = [[&'static [u8]; FRAMES]; DRAWN_FOR.len()];
-
-/// One mascot's pictures in every look.
-struct Drawn {
-    normal: Stills,
-    light: Stills,
-    ultracode: Frames,
-    codex: Frames,
-}
-
-static ARGONAUT: Drawn = Drawn {
-    normal: still!("a-captain-argonaut"),
-    light: still!("a-captain-argonaut-light"),
-    ultracode: frames!("a-captain-argonaut-ultracode"),
-    codex: frames!("a-captain-argonaut-codex"),
-};
-
-static MEDUSA: Drawn = Drawn {
-    normal: still!("a-orchestrator-medusa"),
-    light: still!("a-orchestrator-medusa-light"),
-    ultracode: frames!("a-orchestrator-medusa-ultracode"),
-    codex: frames!("a-orchestrator-medusa-codex"),
-};
-
-static HYDRA: Drawn = Drawn {
-    normal: still!("a-council-hydra"),
-    light: still!("a-council-hydra-light"),
-    ultracode: frames!("a-council-hydra-ultracode"),
-    codex: frames!("a-council-hydra-codex"),
-};
+/// The cell size in pixels the generator draws for, as `pictures.json` lists it.
+pub const DRAWN_FOR: (u16, u16) = (18, 42);
 
 #[derive(Debug, Deserialize)]
 struct Listing {
     /// What the generator drew, which the tests check against what is built in.
     #[cfg(test)]
     cells: Vec<(u16, u16)>,
+    /// Seconds between an ultra look's frames.
     #[cfg(test)]
-    frames: usize,
+    step: f64,
     mascots: BTreeMap<String, Listed>,
 }
 
@@ -109,6 +34,8 @@ struct Listed {
     area: [f64; 4],
     /// Seconds an ultra look's animation takes.
     cycle: f64,
+    /// The frames of one cycle.
+    frames: usize,
 }
 
 fn listing() -> &'static Listing {
@@ -123,6 +50,58 @@ pub fn cycle(mascot: Mascot) -> f64 {
     listing().mascots[mascot.name()].cycle
 }
 
+/// The frames of one cycle of `mascot`'s ultra looks.
+pub fn frames(mascot: Mascot) -> usize {
+    listing().mascots[mascot.name()].frames
+}
+
+fn drawn(mascot: Mascot) -> &'static Drawn {
+    match mascot {
+        Mascot::Argonaut => &frames::ARGONAUT,
+        Mascot::Medusa => &frames::MEDUSA,
+        Mascot::Hydra => &frames::HYDRA,
+    }
+}
+
+/// The generator's own PNG of `mascot` in `look`, at `frame` of an ultra look's cycle.
+fn drawn_picture(mascot: Mascot, look: Look, frame: usize) -> &'static [u8] {
+    let drawn = drawn(mascot);
+    let of = |frames: &'static [&'static [u8]]| frames[frame % frames.len()];
+    match look {
+        Look::Normal => drawn.normal,
+        Look::Light => drawn.light,
+        Look::Ultracode => of(drawn.ultracode),
+        Look::Codex => of(drawn.codex),
+    }
+}
+
+/// For each frame of `look`, the first frame that looks the same, so a frame like the one
+/// before it needs nothing sent: one for a still look.
+pub fn first_alike(mascot: Mascot, look: Look) -> &'static [usize] {
+    static ALIKE: OnceLock<HashMap<(Mascot, Look), Vec<usize>>> = OnceLock::new();
+    let all = ALIKE.get_or_init(|| {
+        let mut all = HashMap::new();
+        for mascot in Mascot::ALL {
+            for look in Look::ALL {
+                let count = if look.is_ultra() { frames(mascot) } else { 1 };
+                let pictures: Vec<&[u8]> = (0..count)
+                    .map(|frame| drawn_picture(mascot, look, frame))
+                    .collect();
+                let alike = (0..count)
+                    .map(|frame| {
+                        (0..frame)
+                            .find(|earlier| pictures[*earlier] == pictures[frame])
+                            .unwrap_or(frame)
+                    })
+                    .collect();
+                all.insert((mascot, look), alike);
+            }
+        }
+        all
+    });
+    &all[&(mascot, look)]
+}
+
 /// The PNG of `mascot` in `look` that fills its cells at `cell` pixels a cell, at `frame` of an
 /// ultra look's animation. `None` for a cell too small to draw in.
 pub fn picture(
@@ -131,28 +110,17 @@ pub fn picture(
     cell: (u16, u16),
     frame: usize,
 ) -> Option<Cow<'static, [u8]>> {
-    let drawn = match mascot {
-        Mascot::Argonaut => &ARGONAUT,
-        Mascot::Medusa => &MEDUSA,
-        Mascot::Hydra => &HYDRA,
-    };
-    let at = |size: usize| match look {
-        Look::Normal => drawn.normal[size],
-        Look::Light => drawn.light[size],
-        Look::Ultracode => drawn.ultracode[size][frame % FRAMES],
-        Look::Codex => drawn.codex[size][frame % FRAMES],
-    };
-    if let Some(size) = DRAWN_FOR.iter().position(|drawn| *drawn == cell) {
-        return Some(Cow::Borrowed(at(size)));
+    let drawn = drawn_picture(mascot, look, frame);
+    if cell == DRAWN_FOR {
+        return Some(Cow::Borrowed(drawn));
     }
     if cell.0 == 0 || cell.1 == 0 {
         return None;
     }
-    let largest = DRAWN_FOR.len() - 1;
-    let source = png::decode(at(largest))?;
+    let source = png::decode(drawn)?;
     let box_of =
         |(width, height): (u16, u16)| (usize::from(width) * WIDTH, usize::from(height) * ROWS);
-    let from = art_in(mascot, box_of(DRAWN_FOR[largest]));
+    let from = art_in(mascot, box_of(DRAWN_FOR));
     let (width, height) = box_of(cell);
     let fitted = png::fitted(
         &source,
@@ -193,31 +161,47 @@ mod tests {
     #[test]
     fn the_listing_matches_what_is_built_in() {
         let listing = listing();
-        assert_eq!(listing.cells, DRAWN_FOR);
-        assert_eq!(listing.frames, FRAMES);
+        assert_eq!(listing.cells, [DRAWN_FOR]);
+        assert!(listing.step <= 0.05, "a frame every 50 ms or sooner");
         for mascot in Mascot::ALL {
-            assert!(listing.mascots.contains_key(mascot.name()), "{mascot:?}");
+            let listed = &listing.mascots[mascot.name()];
+            let drawn = drawn(mascot);
+            assert_eq!(drawn.ultracode.len(), listed.frames, "{mascot:?}");
+            assert_eq!(drawn.codex.len(), listed.frames, "{mascot:?}");
+            assert!((listed.cycle / listed.frames as f64 - listing.step).abs() < 1e-9);
         }
     }
 
     #[test]
-    fn every_picture_fills_its_cells_at_each_size_drawn_for() {
+    fn every_picture_fills_its_cells() {
         for mascot in Mascot::ALL {
             for look in Look::ALL {
-                for (size, cell) in DRAWN_FOR.iter().enumerate() {
-                    let frames = if look.is_ultra() { FRAMES } else { 1 };
-                    for frame in 0..frames {
-                        let bytes = picture(mascot, look, *cell, frame).unwrap();
-                        let image = png::decode(&bytes)
-                            .unwrap_or_else(|| panic!("{mascot:?} {look:?} {size} {frame}"));
-                        assert_eq!(
-                            (image.width, image.height),
-                            (usize::from(cell.0) * 9, usize::from(cell.1) * 3)
-                        );
-                    }
+                let frames = if look.is_ultra() { frames(mascot) } else { 1 };
+                for frame in 0..frames {
+                    let bytes = picture(mascot, look, DRAWN_FOR, frame).unwrap();
+                    let image = png::decode(&bytes)
+                        .unwrap_or_else(|| panic!("{mascot:?} {look:?} {frame}"));
+                    assert_eq!((image.width, image.height), (18 * 9, 42 * 3));
                 }
             }
         }
+    }
+
+    /// The medusa stays still for part of each cycle, so frames there are the one before
+    /// them; the hydra moves all the way round.
+    #[test]
+    fn frames_alike_point_to_the_first_of_them() {
+        let medusa = first_alike(Mascot::Medusa, Look::Ultracode);
+        assert_eq!(medusa.len(), 36);
+        let distinct = medusa.iter().enumerate().filter(|(at, first)| at == *first);
+        assert!(distinct.count() < 36);
+        assert!(
+            first_alike(Mascot::Hydra, Look::Codex)
+                .iter()
+                .enumerate()
+                .all(|(at, first)| at == *first)
+        );
+        assert_eq!(first_alike(Mascot::Argonaut, Look::Normal), [0]);
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! workflow the session starts for the same task is a row in the last phase that ran.
 
 use argonauts_core::RunId;
+use argonauts_core::events::session::CliWorkflowRun;
 use argonauts_core::names::{SessionKey, WorkflowId};
 use argonauts_core::views::{
     PhaseCount, PhaseRow, RowStatus, WorkflowRow, WorkflowView, agents_counted,
@@ -72,8 +73,13 @@ pub(super) fn as_the_runs(
             other => rest.push(other),
         }
     }
-    if let Some(last) = phases.last_mut() {
-        last.rows.extend(rest);
+    // An ask that filled no agent's row goes where Claude's agents were at work when it came,
+    // never by default into the last phase.
+    if let Some((_, workflow)) = log.cli_workflow(&id) {
+        for row in rest {
+            let at = placed(&phases, workflow, &row, log);
+            phases[at].rows.push(row);
+        }
     }
     // A later workflow carries on the phase that ran last, which works again until it ends.
     if !inside.is_empty() {
@@ -104,13 +110,9 @@ pub(super) fn as_the_runs(
         let (done, total) = counted(&phase.rows);
         phase.count = PhaseCount::of(done, total);
     }
-    let others: (u32, u32) = view
-        .phases
+    let counts: (u32, u32) = phases
         .iter()
-        .enumerate()
-        .filter(|(index, _)| *index != at)
-        .map(|(_, phase)| counted(&phase.rows))
-        .chain(phases.iter().map(|phase| counted(&phase.rows)))
+        .map(|phase| counted(&phase.rows))
         .fold((0, 0), |(done, total), (d, t)| (done + d, total + t));
     // The session that plans and runs the workflow is none of its steps. Its agents stand for
     // it once they show; until then its row does, uncounted.
@@ -123,10 +125,47 @@ pub(super) fn as_the_runs(
     if let Some(planner) = planner.filter(|_| no_agents) {
         phases[0].rows.insert(0, WorkflowRow::Agent(planner));
     }
-    view.phases.splice(at..=at, phases);
-    (view.agents_done, view.agents_total) = others;
+    // The phases are exactly the script's: the run's own merge shows in the header and the
+    // conversation, never as a phase of Claude's.
+    view.phases = phases;
+    (view.agents_done, view.agents_total) = counts;
     view.worker = worker;
     Some(name)
+}
+
+/// The phase for a row that joined no agent: the one whose agent was at work when its session
+/// started, else the one whose agent started last before it, else the first.
+fn placed(
+    phases: &[PhaseRow],
+    workflow: &CliWorkflowRun,
+    row: &WorkflowRow,
+    log: &WorkflowLog,
+) -> usize {
+    let started = match row {
+        WorkflowRow::Agent(agent) => log
+            .sessions
+            .session(&agent.session)
+            .and_then(|facts| super::epoch_ms(facts.started_at)),
+        _ => None,
+    };
+    let Some(started) = started else {
+        return 0;
+    };
+    let asker = workflow
+        .agents
+        .iter()
+        .filter(|agent| agent.started_at_ms.is_some_and(|at| at <= started))
+        .max_by_key(|agent| agent.started_at_ms);
+    let title = asker.and_then(|agent| {
+        let phase = agent.phase?;
+        workflow.phases.iter().find(|known| known.index == phase)
+    });
+    title
+        .and_then(|title| {
+            let name = argonauts_core::text::shown_name(&title.title);
+            phases.iter().position(|phase| phase.name == name)
+        })
+        .unwrap_or(0)
 }
 
 /// The labels the asks behind the rows a role answered through Argonauts Code went under.

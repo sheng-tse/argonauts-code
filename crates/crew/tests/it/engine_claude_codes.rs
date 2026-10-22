@@ -48,7 +48,7 @@ fn report(summary: &str, file: &str) -> Value {
     })
 }
 
-/// Fable orchestrates and Opus works, both on Claude Code; Antigravity CLI reviews. The
+/// Fable orchestrates and Opus works, both on Claude Code; agy reviews. The
 /// orchestrator's build session writes `due.rs`, slowly enough to be asked something. Its
 /// workflow's agents write in the background, so no edit of theirs reaches the stream.
 fn crew(delay: Duration) -> anyhow::Result<(Crew, Arc<FakeRunner>, Arc<FakeRunner>)> {
@@ -80,6 +80,7 @@ fn crew(delay: Duration) -> anyhow::Result<(Crew, Arc<FakeRunner>, Arc<FakeRunne
         judge: Vec::new(),
         worker_workflows: false,
         merger: Vec::new(),
+        orchestrator_context: Default::default(),
     };
     crew.settings.workflow = "orchestrator".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -95,6 +96,11 @@ fn build_spec(worker: &FakeRunner) -> Option<SessionSpec> {
 
 /// Asks the reviewers once, as a workflow agent's tool call does once it has written its file.
 async fn ask_the_reviewers(orchestrator: Arc<FakeRunner>) -> AskReply {
+    ask_the_reviewers_after(orchestrator, Duration::ZERO).await
+}
+
+/// Asks the reviewers once, `wait` after the file is written.
+async fn ask_the_reviewers_after(orchestrator: Arc<FakeRunner>, wait: Duration) -> AskReply {
     let spec = loop {
         if let Some(spec) = build_spec(&orchestrator)
             && spec.workdir.join("due.rs").exists()
@@ -103,6 +109,7 @@ async fn ask_the_reviewers(orchestrator: Arc<FakeRunner>) -> AskReply {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
+    tokio::time::sleep(wait).await;
     let asking = spec.asking.expect("the build session can ask");
     let mut stream = TcpStream::connect(&asking.endpoint).await.unwrap();
     let line = AskLine {
@@ -166,6 +173,12 @@ async fn claude_codes_workflow_asks_the_reviewers_through_argonauts() -> anyhow:
         spec.env
             .iter()
             .any(|(name, value)| name == "CLAUDE_CODE_SUBAGENT_MODEL" && value == "opus")
+    );
+    // The workflow's agents stay on the workers' model whatever its script names.
+    assert!(
+        spec.env.iter().any(|(name, value)| {
+            name == "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL" && value == "opus"
+        })
     );
     let events = events(&outcomes);
     // The reviewers read the final change through the tool, so they aren't asked again.
@@ -418,6 +431,60 @@ fn reported() -> CliWorkflowRun {
         summary: None,
         started_at_ms: None,
     }
+}
+
+/// A review asked while Claude Code's workflow has one agent at work names who asked: the
+/// build session running that workflow, and that agent.
+#[tokio::test]
+async fn an_ask_names_the_session_and_the_agent_that_asked() -> anyhow::Result<()> {
+    let (crew, orchestrator, _reviewer) = crew(Duration::ZERO)?;
+    let mut workflow = reported();
+    workflow.status = SubagentStatus::Running;
+    workflow.agents.push(CliAgent {
+        index: 2,
+        label: "review:due#1".to_owned(),
+        phase: Some(3),
+        state: CliAgentState::Running,
+        try_number: 1,
+        ..CliAgent::default()
+    });
+    // The report comes a second into the build, and the build ends a second after it.
+    orchestrator.respond(move |spec| {
+        if spec.access == Access::Build {
+            std::fs::write(spec.workdir.join("due.rs"), "pub struct Due;\n").expect("writes");
+        }
+        FakeSession::structured(report("Added due dates", "due.rs"))
+            .with_event(RunnerEvent::Agent(AgentEvent::Workflow {
+                workflow: Box::new(workflow.clone()),
+            }))
+            .with_delay(Duration::from_secs(1))
+    });
+    let _env = crew.repo.env_guard();
+    let (outcomes, reply) = tokio::join!(
+        crew.run_to_end(RunMode::Crew, REQUEST, 4),
+        ask_the_reviewers_after(orchestrator.clone(), Duration::from_millis(1500))
+    );
+    let outcomes = outcomes?;
+    assert!(!reply.is_error, "{}", reply.text);
+
+    let events = events(&outcomes);
+    let started = |worker: &str, access: Access| {
+        events.iter().find_map(|event| match &event.kind {
+            RunEventKind::Session(SessionEvent::Started(started))
+                if started.worker.to_string() == worker && started.access == access =>
+            {
+                Some((event.session.clone(), started.clone()))
+            }
+            _ => None,
+        })
+    };
+    let (build, _) = started(ORCHESTRATOR, Access::Build).expect("the build session");
+    let (_, review) = started(REVIEWER, Access::ReadOnly).expect("the asked review");
+    let asked_by = review.asked_by.expect("who asked for it");
+    assert_eq!(Some(asked_by.session), build);
+    assert!(asked_by.workflow.is_some(), "the workflow that asked");
+    assert_eq!(asked_by.agent.as_deref(), Some("review:due#1"));
+    Ok(())
 }
 
 /// A step `always.toml` requires goes with the request. Argonauts Code can't change Claude Code's

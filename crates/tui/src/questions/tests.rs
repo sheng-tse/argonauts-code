@@ -816,6 +816,47 @@ fn esc_hands_a_run_question_on() {
     assert!(screen.question().focused && !screen.question().dismissed);
 }
 
+/// Esc on the draft a run on an issue ends with only sets it aside: what it posts on GitHub
+/// waits for your own answer, so the engine hears nothing and no line says it was left.
+#[test]
+fn esc_sets_an_issues_draft_aside_for_your_answer() {
+    let mut screen = Screen::new();
+    let mut draft = merge();
+    draft.kind = ApprovalKind::Question;
+    draft.title = "Open a draft pull request on GitHub?".into();
+    draft.packet = ApprovalPacket::Question(QuestionPacket {
+        from: worker("claude/opus"),
+        task: task_id(2),
+        text: "branch issue-42-per-key-limiter · 2 files +30 \u{2212}4".into(),
+        options: Vec::new(),
+    });
+    draft.options = vec![option(
+        'p',
+        "Push and open the draft",
+        AnswerAction::Choose {
+            value: "issue:push".into(),
+        },
+    )];
+    screen.event(opened_event(draft.clone()));
+    assert_eq!(screen.question().esc_hint, "Esc to set aside");
+    let before = screen.history();
+
+    let effects = screen.keys(&[KeyCode::Esc]);
+    let sent: Vec<&UiCommand> = effects.iter().flat_map(|out| &out.commands).collect();
+    assert!(sent.is_empty(), "{sent:?}");
+    assert!(screen.model.bottom.question.is_none());
+    assert_eq!(screen.history(), before);
+
+    // It waits where the list of what needs you opens it again.
+    assert_eq!(screen.questions.open.len(), 1);
+    let (taken, _) = screen.action(UiAction::AnswerQuestion(AnswerTarget::Approval {
+        run: run(),
+        id: draft.id,
+    }));
+    assert!(taken);
+    assert!(screen.question().focused && !screen.question().dismissed);
+}
+
 /// Esc's line says the question was left to the agent, so the decision the engine records for
 /// it prints nothing more: the line shows once.
 #[test]
@@ -1442,7 +1483,7 @@ fn a_plan_shows_the_workflow_it_follows() {
     for shown in [
         "Workflow  Review-panel · Two reviewers from other providers",
         "reviewers 2 · target diff",
-        "    review → settle (if needed)\n    … +2 lines (ctrl+o to expand)",
+        "    review →  settle (if needed)\n    … +2 lines (ctrl+o to expand)",
     ] {
         assert!(item.contains(shown), "{shown} missing from:\n{item}");
     }
@@ -1453,7 +1494,7 @@ fn a_plan_shows_the_workflow_it_follows() {
     assert_eq!(item.matches("A review: two reviewers").count(), 1, "{item}");
     assert_eq!(
         screen.question().detail.first().map(String::as_str),
-        Some("review-panel · review → settle (if needed) · limit $20.00")
+        Some("review-panel · review →  settle (if needed) · limit $20.00")
     );
 
     let expanded = screen.history_as(true).join("\n");
@@ -1494,7 +1535,7 @@ fn a_looping_phase_says_its_rounds() {
     screen.event(opened_event(opened));
     let history = screen.history().join("\n");
     assert!(
-        history.contains("understand (up to 2 rounds) → build → merge"),
+        history.contains("understand (up to 2 rounds) →  build →  merge"),
         "{history}"
     );
     assert!(!history.contains("understood"), "{history}");
@@ -1528,13 +1569,13 @@ fn a_plan_of_a_scripts_steps_shows_each_phase_with_its_line() {
     let history = screen.history().join("\n");
     for shown in [
         "Workflow  Add-due-dates · Add due dates to tasks · started from Council",
-        "plan → build → sign off",
+        "plan →  build →  sign off",
     ] {
         assert!(history.contains(shown), "{shown} missing from:\n{history}");
     }
     assert_eq!(
         screen.question().detail.first().map(String::as_str),
-        Some("add-due-dates · plan → build → sign off · limit $20.00")
+        Some("add-due-dates · plan →  build →  sign off · limit $20.00")
     );
     let expanded = screen.history_as(true).join("\n");
     for shown in [

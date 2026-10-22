@@ -537,14 +537,14 @@ impl View for ApprovalsView {
 
         let hints: &[(&str, u8)] = match pointed.map(|at| &items[at]) {
             Some(Item::Spot(spot)) if self.spots[*spot].marked.is_none() => &[
-                ("↑↓ select", 0),
+                ("↑↓  select", 0),
                 ("y right", 3),
                 ("n wrong", 2),
                 ("d evidence", 1),
                 (panes::ESC_BACK, 0),
             ],
-            Some(Item::Spot(_)) => &[("↑↓ select", 0), ("d evidence", 1), (panes::ESC_BACK, 0)],
-            _ => &[("↑↓ select", 0), ("⏎ edit", 1), (panes::ESC_BACK, 0)],
+            Some(Item::Spot(_)) => &[("↑↓  select", 0), ("d evidence", 1), (panes::ESC_BACK, 0)],
+            _ => &[("↑↓  select", 0), ("⏎ edit", 1), (panes::ESC_BACK, 0)],
         };
         panes::draw_footer(buf, panes.footer, Footer::hints(hints), "", theme);
     }
@@ -915,6 +915,7 @@ mod tests {
             safety: true,
             allowed: Vec::new(),
             description: String::new(),
+            picked: None,
         }
     }
 

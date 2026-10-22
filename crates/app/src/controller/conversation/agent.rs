@@ -559,6 +559,9 @@ mod tests {
                 workflow_step: None,
                 label: Some(format!("build:item-{session}")),
                 asked: None,
+                asked_by: None,
+                asked_why: None,
+                forked: false,
             };
             event(
                 u64::from(session),

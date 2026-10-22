@@ -87,7 +87,7 @@ pub(crate) fn window(selected: usize, total: usize, viewport: usize) -> (usize, 
     (from, from + viewport)
 }
 
-/// `↑ 2–6 of 9 ↓` on the box's bottom edge while a list scrolls, each arrow only where rows
+/// `↑  2–6 of 9 ↓` on the box's bottom edge while a list scrolls, each arrow only where rows
 /// are hidden that way. Nothing when the list fits.
 pub(crate) fn scroll_mark(from: usize, to: usize, total: usize, theme: &Theme) -> String {
     if total <= to.saturating_sub(from) {
@@ -95,9 +95,10 @@ pub(crate) fn scroll_mark(from: usize, to: usize, total: usize, theme: &Theme) -
     }
     let marks = Marks::for_theme(theme);
     let dash = if theme.glyphs.is_ascii() { "-" } else { "–" };
+    let gap = crate::theme::glyphs::gap_after(marks.up);
     let up = if from > 0 { marks.up } else { " " };
     let down = if to < total { marks.down } else { " " };
-    format!("{up} {}{dash}{to} of {total} {down}", from + 1)
+    format!("{up}{gap}{}{dash}{to} of {total} {down}", from + 1)
 }
 
 /// The Phases pane's columns: the cursor, the number or mark, the mark of a step you require
@@ -159,20 +160,13 @@ impl PhaseColumns {
     ) -> Vec<Line<'static>> {
         let marks = Marks::for_theme(theme);
         let accent = theme.style(Role::Question);
-        // The counts line up in one column after the names that have them, eight cells at
-        // least, as Claude Code lays its phases out; a longer name the pane makes room for
-        // runs on past them. A narrow pane cuts the names before the counts, and drops the
+        // The counts stand right-aligned in one column after every phase's name, eight cells at
+        // least, as Claude Code lays its phases out, so a count never moves when another phase
+        // gets its first agent. A narrow pane cuts the names before the counts, and drops the
         // counts last.
         let count = if self.count > 0 { 1 + self.count } else { 0 };
         let fixed = 2 + self.mark + 1 + self.required + count;
-        let counted = data
-            .phases
-            .iter()
-            .filter(|phase| phase.count.is_some())
-            .map(|phase| str_width(sanitize_line(&phase.name).trim()) + 1)
-            .max()
-            .unwrap_or(0)
-            .max(NAME_COLUMN);
+        let counted = (self.name + 1).max(NAME_COLUMN);
         let name_width = width.saturating_sub(fixed);
         let column = if whole_box {
             name_width
@@ -224,7 +218,8 @@ impl PhaseColumns {
                 if show_count && phase.count.is_some() {
                     spans.push(Span::styled(left(&name, column), words));
                     spans.push(Span::raw(" "));
-                    spans.push(Span::styled(phase_count(phase), words));
+                    let count = format!("{:>width$}", phase_count(phase), width = self.count);
+                    spans.push(Span::styled(count, words));
                 } else {
                     spans.push(Span::styled(name, words));
                 }
@@ -377,8 +372,13 @@ impl Cells {
                     stats.push((Span::styled(spend, dim), Holds::Least));
                 }
                 stats.extend(agent_words(agent, around.run, ctx));
+                // The model alone: a row names its CLI only inside another CLI's workflow,
+                // after the model, never because the model is from elsewhere.
+                let named = names
+                    .model(&agent.worker.agent, agent.worker.model.as_deref())
+                    .unwrap_or_else(|| names.cli(&agent.worker.agent));
                 (
-                    sanitize_line(&names.short(&agent.worker)).into_owned(),
+                    sanitize_line(&named).into_owned(),
                     around.models.style(&agent.worker, ctx),
                 )
             }
@@ -424,6 +424,9 @@ impl Cells {
     }
 }
 
+/// The fewest cells a row's last words take to be cut to, ` · ` and `…` among them.
+const CUT_WORDS: usize = 16;
+
 /// What follows an agent's tokens: Claude Code's own state words, then what Argonauts Code
 /// adds, a fallback's reason or the row's note first, each with how long it holds.
 fn agent_words(agent: &AgentRow, run: &RunId, ctx: &ViewCtx<'_>) -> Vec<(Span<'static>, Holds)> {
@@ -446,13 +449,9 @@ fn agent_words(agent: &AgentRow, run: &RunId, ctx: &ViewCtx<'_>) -> Vec<(Span<'s
         .filter(|(text, _)| !text.is_empty());
     match (&agent.fallback_for, note) {
         // While it works the fallback says why the model it takes over from couldn't; once it
-        // answers, its verdict takes the reason's place.
+        // answers, its verdict comes first, and whose place it took after.
         (Some(first), Some((verdict, tone))) if agent.status == RowStatus::Done => {
             let first = sanitize_line(&names.short(first)).into_owned();
-            words.push(Span::styled(
-                format!("for {first}"),
-                theme.style(Role::Warn),
-            ));
             words.push(Span::styled(verdict, theme.style(tone_role(tone))));
             let then = agent.note.iter().flat_map(|note| &note.then);
             for more in then.map(|more| sanitize_line(more.trim()).into_owned()) {
@@ -460,9 +459,13 @@ fn agent_words(agent: &AgentRow, run: &RunId, ctx: &ViewCtx<'_>) -> Vec<(Span<'s
                     words.push(Span::styled(more, dim));
                 }
             }
+            words.push(Span::styled(
+                format!("in place of {first}"),
+                theme.style(Role::Warn),
+            ));
         }
         (Some(first), note) => {
-            let mut text = format!("for {}", sanitize_line(&names.short(first)));
+            let mut text = format!("in place of {}", sanitize_line(&names.short(first)));
             if let Some((why, _)) = note {
                 text.push_str(&format!(" · {why}"));
             }
@@ -634,6 +637,7 @@ impl RowColumns {
         if let Some(at) = forced {
             shown[at] = true;
         }
+        let mut cut_short = false;
         let mut order: Vec<usize> = (0..cells.stats.len()).collect();
         order.sort_by_key(|&at| (std::cmp::Reverse(cells.stats[at].1), at));
         for at in order {
@@ -653,6 +657,17 @@ impl RowColumns {
             if let Some(at) = forced {
                 shown[at] = true;
             }
+        } else if let Some(at) =
+            (0..cells.stats.len()).find(|&at| !shown[at] && cells.stats[at].1 == Holds::Longest)
+        {
+            // What the agent's state is, such as why it failed or whose place it took, is cut
+            // at the pane's edge where it doesn't fit whole, as Claude Code cuts a row, so long
+            // as a few of its words can show. A cut row keeps two blank cells before its time.
+            let used = spans_width(&rest(&cells.model, &shown, None));
+            if room.saturating_sub(used) >= CUT_WORDS {
+                shown[at] = true;
+                cut_short = true;
+            }
         }
         let mut model = cells.model.as_str();
         let mut kept = rest(model, &shown, None);
@@ -669,6 +684,11 @@ impl RowColumns {
             let words = cut_stat(text, room.saturating_sub(others));
             kept = rest(model, &shown, Some((at, &words)));
         }
+        let room = if cut_short && !time.is_empty() {
+            room.saturating_sub(1)
+        } else {
+            room
+        };
         spans.extend(truncate_spans(&kept, room));
         if !time.is_empty() {
             let used = spans_width(&spans);
@@ -981,9 +1001,9 @@ mod tests {
     fn the_scroll_mark_points_only_where_rows_are_hidden() {
         let mut theme = Theme::dark();
         theme.glyphs = Glyphs::UNICODE;
-        assert_eq!(scroll_mark(0, 5, 6, &theme), "  1–5 of 6 ↓");
-        assert_eq!(scroll_mark(1, 5, 6, &theme), "↑ 2–5 of 6 ↓");
-        assert_eq!(scroll_mark(1, 6, 6, &theme), "↑ 2–6 of 6  ");
+        assert_eq!(scroll_mark(0, 5, 6, &theme), "   1–5 of 6 ↓");
+        assert_eq!(scroll_mark(1, 5, 6, &theme), "↑  2–5 of 6 ↓");
+        assert_eq!(scroll_mark(1, 6, 6, &theme), "↑  2–6 of 6  ");
         assert_eq!(scroll_mark(0, 6, 6, &theme), "");
     }
 }

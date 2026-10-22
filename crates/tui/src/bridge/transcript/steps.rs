@@ -44,6 +44,7 @@ pub(super) fn party_words(party: &Party, names: &DisplayNames) -> Option<String>
         Party::Autopilot => Some("autopilot".to_owned()),
         Party::Judge { model } | Party::Agent { worker: model, .. } => Some(names.worker(model)),
         Party::OutsideAgent { client } => Some(client.clone()),
+        Party::Network => Some("the network".to_owned()),
         Party::ArgonautsCode => None,
     }
 }

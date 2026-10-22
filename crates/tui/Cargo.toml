@@ -5,7 +5,22 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# What the crate builds with. Tests and the pictures, snapshots and recordings they read
+# stay in the repository.
+include = [
+    "/assets/mascots/cells.json",
+    "/assets/mascots/pictures.json",
+    "/assets/mascots/pictures/**",
+    "/data/**",
+    "/examples/*.rs",
+    "/src/**/*.rs",
+    "/LICENSE",
+    "/NOTICE",
+]
 
 [[bin]]
 name = "argonauts-tui-driver"

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use argonauts_core::layout::project_files;
 use argonauts_core::paths::{LOCAL_CONFIG_EXCLUDE, Paths, exclude_from_git};
-use argonauts_core::settings::{GLOBAL_ONLY_KEYS, SettingMeta, Settings};
+use argonauts_core::settings::{GLOBAL_ONLY_KEYS, SettingMeta, Settings, project_may_tighten};
 use toml_edit::{Decor, DocumentMut, InlineTable, Item, Key, Table, TableLike, Value};
 
 use crate::SettingsError;
@@ -95,7 +95,9 @@ fn write(
     let leaves = leaves_of(key, &value);
     let global = Paths::from_env().ok().map(|paths| paths.global_config());
     if project_config_repo(file, global.as_deref()).is_some()
-        && let Some(global_only) = leaves.iter().find(|leaf| is_global_only(leaf))
+        && let Some(global_only) = leaves
+            .iter()
+            .find(|leaf| is_global_only(leaf) && !project_may_tighten(leaf, toml_value))
     {
         return Err(global_only_in_project(global_only, file));
     }

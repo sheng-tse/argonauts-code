@@ -879,7 +879,7 @@ mod tests {
             "../../../crew/tests/fixtures/runs/captain-review-loop.jsonl"
         ));
         let council = recorded(include_str!(
-            "../../../tui/golden/resumed_council/events.jsonl"
+            "../../../tui/tests/golden/transcript/resumed_council/events.jsonl"
         ));
         for (name, events, shaped) in [("captain", captain, 232), ("council", council, 87)] {
             let before: Vec<RunEvent> = events

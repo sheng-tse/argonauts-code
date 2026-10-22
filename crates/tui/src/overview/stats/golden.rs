@@ -1,4 +1,4 @@
-//! Each Stats screen drawn from example numbers at the width of its drawing in `screens/`,
+//! Each Stats screen drawn from example numbers at the width of its drawing in `tests/golden/stats/`,
 //! and compared with it cell for cell: each character, and each cell's color and weight.
 //! A drawing is a grid of terminal cells, one character per cell; its `.html` gives each
 //! cell's color by name, or as the color itself where it is one model's or one role's. The
@@ -15,6 +15,7 @@ use argonauts_core::crew_stats::{CrewStats, ModelDay, StatsRole, TaskRecord, Wor
 use argonauts_core::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
 use argonauts_core::names::AgentId;
 use argonauts_core::overview::{OverviewData, OverviewPeriod};
+use argonauts_testkit::picture;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Rect, Size};
@@ -36,55 +37,25 @@ pub(super) struct Cell {
     pub bold: bool,
 }
 
-/// A drawing's rows of cells, from its `.html`.
+/// A drawing's rows of cells, from its `.html`. A color is named as the page names it, without
+/// its `var(--`: `term-dim`, or `#e08a66` where it is written as itself.
 pub(super) fn drawing(html: &str) -> Vec<Vec<Cell>> {
-    let body = html
-        .trim_end()
-        .trim_start_matches(r#"<div class="scroll"><pre class="term grid">"#)
-        .trim_end_matches("</pre></div>");
-    body.split('\n').map(cells_of).collect()
-}
-
-fn cells_of(line: &str) -> Vec<Cell> {
-    let mut cells = Vec::new();
-    let mut rest = line;
-    while !rest.is_empty() {
-        let (text, color, bold, after) = match rest.strip_prefix(r#"<span style=""#) {
-            Some(styled) => {
-                let (style, after) = styled.split_once(r#"">"#).expect("a span's style ends");
-                let (text, after) = after.split_once("</span>").expect("a span ends");
-                let color = style
-                    .split(';')
-                    .find_map(|part| part.strip_prefix("color:"))
-                    .map(|color| match color.strip_prefix("var(--") {
-                        Some(name) => name.trim_end_matches(')').to_owned(),
-                        None => color.to_owned(),
-                    });
-                (text, color, style.contains("font-weight:700"), after)
-            }
-            None => {
-                let end = rest.find("<span").unwrap_or(rest.len());
-                (&rest[..end], None, false, &rest[end..])
-            }
-        };
-        for ch in unescape(text).chars() {
-            cells.push(Cell {
-                ch,
-                color: color.clone(),
-                bold,
-            });
-        }
-        rest = after;
-    }
-    cells
-}
-
-fn unescape(text: &str) -> String {
-    text.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#x27;", "'")
-        .replace("&amp;", "&")
+    let name = |color: &str| match color.strip_prefix("var(--") {
+        Some(name) => name.trim_end_matches(')').to_owned(),
+        None => color.to_owned(),
+    };
+    picture::grid(html)
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| Cell {
+                    ch: cell.ch,
+                    color: cell.color.as_deref().map(name),
+                    bold: cell.bold,
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// The theme the drawings are drawn in: full color, Unicode glyphs.
@@ -488,6 +459,7 @@ pub(super) fn dump(name: &str, screen: &Buffer, at: Offset, html: &str) {
     let at = (at.columns.max(0) as usize, at.rows.max(0) as usize);
     let cut = crate::picture_dump::cut(screen, at, (width, drawing.len()));
     crate::picture_dump::rows(name, &cut);
+    crate::picture_dump::buffer_page(name, screen, at, (width, drawing.len()), &theme());
 }
 
 /// The first screen row holding `words`.
@@ -503,7 +475,7 @@ pub(super) fn names() -> argonauts_core::display_names::DisplayNames {
     for (id, name) in [
         ("claude-code", "Claude Code"),
         ("codex", "Codex"),
-        ("antigravity-cli", "Antigravity CLI"),
+        ("antigravity-cli", "agy"),
     ] {
         names.clis.insert(id.to_owned(), name.to_owned());
     }

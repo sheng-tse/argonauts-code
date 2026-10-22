@@ -442,10 +442,10 @@ fn an_empty_prompt_offers_an_example_while_nothing_runs() {
         Some("Try \"fix the flaky export test\"")
     );
     assert_eq!(composer.placeholder_text(false), None);
-    composer.placeholder = Some("↑ to answer the question, or type to guide the run".into());
+    composer.placeholder = Some("↑  to answer the question, or type to guide the run".into());
     assert_eq!(
         composer.placeholder_text(false).as_deref(),
-        Some("↑ to answer the question, or type to guide the run")
+        Some("↑  to answer the question, or type to guide the run")
     );
 }
 
@@ -468,10 +468,10 @@ fn without_suggestions_no_example_shows() {
     let mut composer = Composer::new();
     composer.examples_off = true;
     assert_eq!(composer.placeholder_text(true), None);
-    composer.placeholder = Some("↑ to answer the question".into());
+    composer.placeholder = Some("↑  to answer the question".into());
     assert_eq!(
         composer.placeholder_text(true).as_deref(),
-        Some("↑ to answer the question")
+        Some("↑  to answer the question")
     );
 }
 

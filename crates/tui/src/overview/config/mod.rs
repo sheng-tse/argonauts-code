@@ -84,6 +84,8 @@ pub struct ConfigTab {
     waiting: Vec<Waiting>,
     /// How many of the state's setting outcomes the tab has read, once it has looked.
     outcomes_read: Option<usize>,
+    /// A Behaviors row was followed to the map, which the panel shows on its own tab.
+    to_map: bool,
 }
 
 /// A change sent from a row that asks where, waiting for the app's word.
@@ -108,6 +110,14 @@ struct Shown<'a> {
 impl Shown<'_> {
     fn value(&self) -> &str {
         self.setting.map_or("", |setting| setting.value.as_str())
+    }
+
+    /// What its value comes to, dim after it: the model auto picked when that's known, else
+    /// what the key's values mean.
+    fn meaning(&self) -> Option<&str> {
+        self.setting
+            .and_then(|setting| setting.picked.as_deref())
+            .or_else(|| rows::described(self.row.key, self.value()))
     }
 
     /// Where a higher layer holds the value of a row that saves at once to your global file,
@@ -145,6 +155,11 @@ impl ConfigTab {
 
     pub fn has_rows(&self) -> bool {
         !self.settings.is_empty()
+    }
+
+    /// Whether the last key followed a Behaviors row to the map, once.
+    pub fn followed_to_map(&mut self) -> bool {
+        std::mem::take(&mut self.to_map)
     }
 
     /// The approval mode the app runs in now, which Default approval mode's Last used names.
@@ -215,7 +230,7 @@ impl ConfigTab {
                     _ => words,
                 }
             }
-            Control::Opens(_) => link_words(key, value, state),
+            Control::Opens(_) | Control::BehaviorsMap => link_words(key, value, state),
             Control::Typed => typed_words(key, value),
             Control::OnTheLine(card) => on_the_line(card, state).to_string(),
             Control::AllSettings => String::new(),
@@ -225,9 +240,9 @@ impl ConfigTab {
     /// The hint line for where the keys are, as Claude Code words each.
     pub fn hints(&self, on_tabs: bool) -> &'static str {
         match (on_tabs, self.focus) {
-            (true, _) => "←/→/tab to switch · ↓ to return · Esc to close",
+            (true, _) => "←/→/tab to switch · ↓  to return · Esc to close",
             (false, Focus::Search) => {
-                "Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear"
+                "Type to filter · Enter/↓  to select · ↑  to tabs · Esc to clear"
             }
             (false, Focus::List) => "Enter/Space to change · / to search · Esc to close",
         }
@@ -356,7 +371,11 @@ impl ConfigTab {
         .is_some();
         let next = match row.control {
             // ← and → only flip and step; the other rows open on Enter and Space alone.
-            Control::Opens(_) | Control::Typed | Control::AllSettings | Control::OnTheLine(_)
+            Control::Opens(_)
+            | Control::BehaviorsMap
+            | Control::Typed
+            | Control::AllSettings
+            | Control::OnTheLine(_)
                 if step == Step::Back =>
             {
                 return ViewOutcome::Consumed;
@@ -384,6 +403,10 @@ impl ConfigTab {
         match (row.control, next, setting) {
             (_, Some(value), Some(setting)) => self.save(row, &setting, value, state),
             (Control::Opens(command), ..) => self.open_command(command),
+            (Control::BehaviorsMap, ..) => {
+                self.to_map = true;
+                ViewOutcome::Consumed
+            }
             // `/mods <card> bottom-line` puts the card on the line or takes it off.
             (Control::OnTheLine(card), ..) => {
                 match parse_input(&format!("/mods {card} bottom-line")) {

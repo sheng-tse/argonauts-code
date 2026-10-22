@@ -342,6 +342,7 @@ pub(crate) async fn follow_up(
         instructions: Vec::new(),
         request_settings: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     }))
 }
 

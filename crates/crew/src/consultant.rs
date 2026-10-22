@@ -93,6 +93,8 @@ pub(crate) async fn session_answer(
             reviews: false,
             fresh: false,
             independent_of: Vec::new(),
+            in_place_of: None,
+            fork_of: None,
         })
         .await?;
     let session = running.key.clone();

@@ -240,11 +240,11 @@ fn a_reported_plan_is_a_table_and_the_right_arrow_opens_its_tasks() {
         "{text}"
     );
     assert!(
-        text.contains("  impl   Store, list, overdue  Codex        Gemini on Antigravity CLI"),
+        text.contains("  impl   Store, list, overdue  Codex        Gemini on agy"),
         "{text}"
     );
     assert!(
-        text.contains("⎿  impl waits on iface · → expands the tasks"),
+        text.contains("⎿  impl waits on iface · →  expands the tasks"),
         "{text}"
     );
     // The JSON it was reported as stays in the raw log.
@@ -253,13 +253,13 @@ fn a_reported_plan_is_a_table_and_the_right_arrow_opens_its_tasks() {
         "{text}"
     );
     assert!(!text.contains("StructuredOutput"), "{text}");
-    assert!(footer(&text).contains("→ expand"), "{text}");
+    assert!(footer(&text).contains("→  expand"), "{text}");
 
     press(&mut view, &state, KeyCode::Right);
     let text = screen(&mut view, &state, 100);
     assert!(text.contains("    Store and list them."), "{text}");
     assert!(text.contains("    owns src/due.rs"), "{text}");
-    assert!(footer(&text).contains("→ fold"), "{text}");
+    assert!(footer(&text).contains("→  fold"), "{text}");
     press(&mut view, &state, KeyCode::Right);
     assert!(!screen(&mut view, &state, 100).contains("Store and list them."));
 }
@@ -493,7 +493,8 @@ fn an_agent_on_a_goal_has_a_goal_tab_with_the_four_parts_at_full_size() {
     );
     assert!(text.contains("2m17s · running"), "{text}");
     assert!(
-        footer(&text).starts_with("↑↓ scroll · m message it · x stop it · tab next tab · esc back"),
+        footer(&text)
+            .starts_with("↑↓  scroll · m message it · x stop it · tab next tab · esc back"),
         "{text}"
     );
 

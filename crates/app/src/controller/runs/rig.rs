@@ -183,6 +183,7 @@ pub(crate) fn start_run(request: &str) -> StartRun {
         instructions: Vec::new(),
         request_settings: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     }
 }
 

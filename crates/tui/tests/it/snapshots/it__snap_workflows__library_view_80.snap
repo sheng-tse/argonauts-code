@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_workflows.rs
+source: crates/tui/tests/it/snap_workflows.rs
+assertion_line: 1827
 expression: "screen(&mut view, width, height, &state)"
 ---
 Workflow library
@@ -25,4 +26,4 @@ A repo file wins over yours in ~/.argonauts/workflows, which wins …  3 workflo
 │                                                                              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · ⏎ show · c copy · C copy to repo · d diff · e edit · esc back
+↑↓  select · ⏎ show · c copy · C copy to repo · d diff · e edit · esc back

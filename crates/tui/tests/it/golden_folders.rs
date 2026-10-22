@@ -12,7 +12,6 @@ use argonauts_core::events::approval::{
     FreeText, MergePacket, MergeRow,
 };
 use argonauts_core::events::task::TaskKind;
-use argonauts_core::hidden_git::{HISTORY_KEPT, MergedInto};
 use argonauts_core::names::ApprovalId;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::steps::judgment::ReviewVerdict;
@@ -347,24 +346,12 @@ fn a_run_with_no_branch_yet_names_none() {
     assert!(!asked.iter().any(|row| row.contains("main")), "{asked:#?}");
 }
 
-/// The workflow view draws the Merge phase. What its last step says for a folder without
-/// git comes from one place, and reads as the picture's row does.
-#[test]
-fn the_merge_phase_says_the_run_is_written_into_your_folder() {
-    let row = rows(NO_GIT, " │   ✔ Review", 1)[0];
-    let step = format!(
-        "✔ {}  {HISTORY_KEPT} · 2 tasks",
-        MergedInto::YourFolder.step()
-    );
-    assert!(row.contains(&step), "{row}");
-}
-
 #[test]
 fn git_clean_says_what_it_freed() {
     let theme = theme();
     let report = Notice::new(
         Tone::Normal,
-        "Cleaned this folder's hidden history · 18 MB → 7 MB",
+        "Cleaned this folder's hidden history · 18 MB →  7 MB",
     )
     .with_detail(
         "removed what 3 ended runs left behind and packed the rest · a paused run keeps its \

@@ -706,7 +706,7 @@ fn choices() -> Vec<AppChoice> {
         app_choice(
             ChoiceKind::ConfirmSafetySetting,
             "Change a safety setting?",
-            &["approvals.merge.mode: supervised → auto"],
+            &["approvals.merge.mode: supervised →  auto"],
             vec![
                 option('y', "Change it", AnswerAction::Approve),
                 option('n', "Keep it as it is", AnswerAction::Cancel),
@@ -1333,7 +1333,7 @@ fn direct_turn_questions() {
         ),
         app_choice(
             ChoiceKind::RefusedCommands,
-            "Let Antigravity CLI run what it was refused?",
+            "Let agy run what it was refused?",
             &["python -m pytest -q"],
             vec![
                 AnswerOption {

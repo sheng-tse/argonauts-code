@@ -26,12 +26,15 @@ fn limits_sandbox_blocks_write_outside_worktree() -> anyhow::Result<()> {
     // passes when: the profile's temp allowance is the session's own folder, not all of
     // `TMPDIR`, since the test's repo and homes live under `TMPDIR`. Every session the run
     // starts tries the writes. With no learned workflow in the run there is no run review, so
-    // the build is the one.
+    // the build is the one. The run is in auto, which writes anywhere outside the project, so
+    // what stays closed is your checkout, Argonauts Code's home, and the never-list.
     let limits = setup("sandbox-write-outside", "")?;
+    let keys = limits.repo.user_home().join(".ssh");
+    std::fs::create_dir_all(&keys)?;
     let targets: Vec<PathBuf> = vec![
         limits.repo.root().join("outside.txt"),
         limits.repo.home().join("outside.txt"),
-        limits.repo.user_home().join("outside.txt"),
+        keys.join("outside.txt"),
     ];
     let checks: Vec<String> = targets.iter().map(|target| try_write(target)).collect();
     let probe = write_probe(

@@ -1,0 +1,51 @@
+ The network is down: sessions hold where they are, nothing moves to another agent, nothing red                       
+                                                                                                                      
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Per key rate limiter                                                                                                 
+ Council · Give each X-Api-Key its own token bucket with one shared bucket for requests without…   4/8 agents · 4m29s 
+ › The network is down · sessions wait for it, nothing moves to another agent                                         
+                                                                                                                      
+ ╭ Phases ──────────────┬ Challenge · 4 agents ─────────────────────────────────────────────────────────────────────╮ 
+ │   ✔ Propose      4/4 │  ⏺ challenge:p0  Haiku 5.5 · 11.7k tok · waiting for the network · 2m 10s           2m15s │ 
+ │ ❯ 2 Challenge    0/4 │  ⏺ challenge:p1  GPT 6 Luna · waiting for the network · 2m 10s                      2m15s │ 
+ │   3 Decide           │  ⏺ challenge:p2  Gemini 3.8 Flash · 6.2k tok · waiting for the network · 2m 10s     2m15s │ 
+ │   4 Build            │  ⏺ challenge:p3  Gemma4 E2b · 43.6k tok                                             2m15s │ 
+ │   5 Cross-review     │                                                                                           │ 
+ │   6 Sign-off         │                                                                                           │ 
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save                                  
+                                                                                                                      
+ 10 s later, the network is back:                                                                                     
+                                                                                                                      
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Per key rate limiter                                                                                                 
+ Council · Give each X-Api-Key its own token bucket with one shared bucket for requests without…   4/8 agents · 4m39s 
+ › The network is back · carrying on                                                                                  
+                                                                                                                      
+ ╭ Phases ──────────────┬ Challenge · 4 agents ─────────────────────────────────────────────────────────────────────╮ 
+ │   ✔ Propose      4/4 │  ⏺ challenge:p0  Haiku 5.5 · 11.7k tok                                              2m25s │ 
+ │ ❯ 2 Challenge    0/4 │  ⏺ challenge:p1  GPT 6 Luna                                                         2m25s │ 
+ │   3 Decide           │  ⏺ challenge:p2  Gemini 3.8 Flash · 6.2k tok                                        2m25s │ 
+ │   4 Build            │  ⏺ challenge:p3  Gemma4 E2b · 53.5k tok                                             2m25s │ 
+ │   5 Cross-review     │                                                                                           │ 
+ │   6 Sign-off         │                                                                                           │ 
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save                                  
+                                                                                                                      
+ In the council's conversation, one dim row as it goes and one as it comes back:                                      
+                                                                                                                      
+● The network is down · sessions wait for it, nothing moves to another agent                                          
+                                                                                                                      
+● The network is back · carrying on                                                                                   
+                                                                                                                      
+                                                                                                                      
+ When the main agent's own turn meets it (here Captain writing its workflow), the working line shows the retry:       
+                                                                                                                      
+❯ Use a workflow for this, with Codex as the reviewer, and choose everything else yourself. Fix the …                 
+                                                                                                                      
+✻ API error · Retrying in 8s · attempt 4/10 (41s · ↓  2.2k tokens · esc to interrupt)                                 
+                                                                                                                      
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                                                                                     
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ autopilot on (shift+tab to cycle) · ? for shortcuts · ↓  to manage                                               

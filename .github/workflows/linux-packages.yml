@@ -1,0 +1,79 @@
+# Builds the .deb and .rpm for x86_64 and ARM from the static musl builds, with packaging/linux/nfpm.yaml. Called
+# by release.yml after the builds and before the release is created, so the packages are among the release's own
+# files: `sudo apt install ./argonauts-code_0.1.0_amd64.deb` or `sudo dnf install <the .rpm's link>`. Betas get
+# none.
+name: Linux packages
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  NFPM_VERSION: 2.48.0
+  NFPM_SHA256: 6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750
+
+jobs:
+  packages:
+    if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      PLAN: ${{ inputs.plan }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Fetch the musl builds
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: artifacts-build-local-*
+          path: ${{ runner.temp }}/builds
+          merge-multiple: true
+      - name: Install nfpm
+        run: |
+          set -eu
+          archive="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSLo "$RUNNER_TEMP/$archive" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${archive}"
+          echo "${NFPM_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/nfpm"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/nfpm" nfpm
+          echo "$RUNNER_TEMP/nfpm" >> "$GITHUB_PATH"
+      - name: Build the packages
+        env:
+          BUILDS: ${{ runner.temp }}/builds
+        run: |
+          set -eu
+          VERSION=$(echo "$PLAN" | jq --raw-output '.releases[] | select(.app_name == "argonauts-code") | .app_version')
+          export VERSION
+          out="$GITHUB_WORKSPACE/target/linux-packages"
+          mkdir -p "$out"
+          for pair in x86_64:amd64 aarch64:arm64; do
+            target="${pair%%:*}-unknown-linux-musl"
+            ARCH="${pair##*:}"
+            export ARCH
+            unpacked="$RUNNER_TEMP/unpacked/$target"
+            mkdir -p "$unpacked"
+            tar -xJf "$BUILDS/argonauts-code-${target}.tar.xz" -C "$unpacked" --strip-components=1
+            for format in deb rpm; do
+              (cd "$unpacked" && nfpm package --config "$GITHUB_WORKSPACE/packaging/linux/nfpm.yaml" \
+                --packager "$format" --target "$out/")
+            done
+          done
+          cd "$out"
+          for package in *.deb *.rpm; do
+            sha256sum "$package" > "$package.sha256"
+          done
+          ls -l
+      - name: Hand the packages to the release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: artifacts-linux-packages
+          path: target/linux-packages/*
+          if-no-files-found: error

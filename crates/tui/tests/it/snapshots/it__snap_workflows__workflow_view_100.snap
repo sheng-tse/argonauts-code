@@ -1,5 +1,6 @@
 ---
 source: crates/tui/tests/it/snap_workflows.rs
+assertion_line: 527
 expression: "screen(&mut view, width, height, &state)"
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -7,16 +8,16 @@ expression: "screen(&mut view, width, height, &state)"
  Build a standalone Rust UI kit prototype that matches Claude Code: inl…  8/12 agents · 2h44m
 
  ╭ Phases ──────────┬ Build · 7 agents ─────────────────────────────────────────────────────╮
- │   ✔ Scaffold 1/1 │  ✔ build:a-terminal-bottom  Opus · 381k tok                     6m02s │
- │ ❯ 2 Build    2/4 │  ✔ build:b-history-cells    GPT 5.6 · 747k tok                  1h21m │
+ │   ✔ Scaffold 1/1 │  ✔ build:a-terminal-bottom  Opus · 381.0k tok                   6m02s │
+ │ ❯ 2 Build    2/4 │  ✔ build:b-history-cells    GPT 5.6 · 747.0k tok                1h21m │
  │   3 Merge    0/1 │  ▾ build:c-demo-tests       workflow · 2/4 agents              12m00s │
  │   4 Look     0/1 │    ✔ Draft   2/2                                                      │
- │                  │      ✔ draft:scenes         Opus · 88k tok                      4m01s │
- │                  │      ✔ draft:snapshots      GPT 5.6 · 120k tok                  5m02s │
+ │                  │      ✔ draft:scenes         Opus · 88.0k tok                    4m01s │
+ │                  │      ✔ draft:snapshots      GPT 5.6 · 120.3k tok                5m02s │
  │                  │    2 Test    0/2                                                      │
- │                  │      ⏺ test:scenes          Opus · 41k tok                      2m50s │
+ │                  │      ⏺ test:scenes          Opus · 41.0k tok                    2m50s │
  │                  │      ⏺ test:snapshots       GPT 5.6 · 38.2k tok                 2m30s │
- │                  │  ✘ build:d-plain-mode       Gemini 3.6 on agy · failed         31m45s │
+ │                  │  ✘ build:d-plain-mode       Gemini 3.6 · 95.2k tok · failed    31m45s │
  │                  │                                                                       │
  │                  │                                                                       │
  │                  │                                                                       │
@@ -33,4 +34,4 @@ expression: "screen(&mut view, width, height, &state)"
  │                  │                                                                       │
  │                  │                                                                       │
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────╯
- ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save

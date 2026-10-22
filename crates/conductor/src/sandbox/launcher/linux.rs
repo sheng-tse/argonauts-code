@@ -11,6 +11,7 @@ use std::ffi::{CString, OsString};
 use std::fs::{DirBuilder, File, OpenOptions};
 use std::net::{SocketAddr, TcpListener};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -76,8 +77,12 @@ pub(super) fn launch(
         proxy_port: None,
         ask_port: None,
         closed: plan.closed,
+        listable: Vec::new(),
+        loopback: false,
+        outside: plan.outside,
     };
-    let view = view::plan(&profile, &RealDisk);
+    let mut view = view::plan(&profile, &RealDisk);
+    view::cover_names(&mut view, &profile, &RealDisk, &cwd);
     create(&view)?;
 
     enter_namespaces(isolate)?;
@@ -425,19 +430,21 @@ fn build(view: &View, sources: &HashMap<PathBuf, File>) -> Result<(), String> {
         Step::HideDir { path, pass } => {
             // Walkable but not listable, even by the user it belongs to.
             let mode = if *pass { "0111" } else { "0000" };
-            mount(
-                Some("tmpfs"),
-                path,
-                Some("tmpfs"),
-                MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
-                Some(format!("mode={mode},size=64k").as_str()),
-            )
-            .map_err(|err| format!("can't cover {}: {err}", path.display()))?;
-            covers.push(path.clone());
+            let hide = || {
+                mount(
+                    Some("tmpfs"),
+                    path,
+                    Some("tmpfs"),
+                    MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+                    Some(format!("mode={mode},size=64k").as_str()),
+                )
+            };
+            if covered(path, hide)? {
+                covers.push(path.clone());
+            }
             Ok(())
         }
-        Step::HideFile { path } => bind(&staging.cover, path, false)
-            .map_err(|err| format!("can't cover {}: {err}", path.display())),
+        Step::HideFile { path } => covered(path, || bind(&staging.cover, path, false)).map(drop),
         Step::Show { path, dir } => {
             let source = sources
                 .get(path)
@@ -467,6 +474,23 @@ fn build(view: &View, sources: &HashMap<PathBuf, File>) -> Result<(), String> {
     sealed
 }
 
+/// Puts a cover on `path` with `cover`, and says whether one went on. An entry gone since the
+/// view was planned has nothing left to cover, such as a file written under a passing name
+/// and renamed to its own while the session starts. One back by now is covered as it is.
+fn covered(path: &Path, cover: impl Fn() -> nix::Result<()>) -> Result<bool, String> {
+    let failed = |err: Errno| format!("can't cover {}: {err}", path.display());
+    match cover() {
+        Ok(()) => Ok(true),
+        Err(Errno::ENOENT) if gone(path) => Ok(false),
+        Err(Errno::ENOENT) => cover().map(|()| true).map_err(failed),
+        Err(err) => Err(failed(err)),
+    }
+}
+
+fn gone(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound)
+}
+
 fn bind(from: &Path, to: &Path, recursive: bool) -> nix::Result<()> {
     let mut flags = MsFlags::MS_BIND;
     if recursive {
@@ -478,6 +502,10 @@ fn bind(from: &Path, to: &Path, recursive: bool) -> nix::Result<()> {
 /// A place to bind `path` inside the cover above it: folders on the way the session can walk
 /// through but not list, and an empty folder or file at the end.
 fn mount_point(path: &Path, dir: bool) -> Result<(), String> {
+    // A path bound again inside a read-only folder is already there, and nothing can be made.
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Ok(());
+    }
     let made = |err: std::io::Error| format!("can't place {}: {err}", path.display());
     if let Some(parent) = path.parent() {
         DirBuilder::new()
@@ -509,7 +537,7 @@ fn read_only(path: &Path) -> nix::Result<()> {
     bind(path, path, true)?;
     // `ST_RELATIME`, which nix leaves out for musl.
     const RELATIME: FsFlags = FsFlags::from_bits_retain(0x1000);
-    let current = statvfs(path)?.flags();
+    let current = mount_flags(path)?;
     let mut flags = MsFlags::MS_BIND | MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY;
     let carried = [
         (FsFlags::ST_NOSUID, MsFlags::MS_NOSUID),
@@ -528,6 +556,21 @@ fn read_only(path: &Path) -> nix::Result<()> {
         flags |= MsFlags::MS_STRICTATIME;
     }
     mount(None::<&str>, path, None::<&str>, flags, None::<&str>)
+}
+
+/// The flags of the mount at `path`, every bit of them. nix's own `statvfs` drops the ones it
+/// doesn't name, and on musl that is `ST_RELATIME`, so a remount would ask for strict atime,
+/// which a user namespace may not change.
+fn mount_flags(path: &Path) -> nix::Result<FsFlags> {
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| Errno::EINVAL)?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is a C string and `stat` has room for what statvfs writes.
+    if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return Err(Errno::last());
+    }
+    // SAFETY: statvfs succeeded, so it filled `stat`.
+    let flags = unsafe { stat.assume_init() }.f_flag;
+    Ok(FsFlags::from_bits_retain(flags))
 }
 
 /// The session's own `/dev/pts` and `/dev/shm`. The system's `/dev/pts` holds your terminals,
@@ -873,12 +916,18 @@ fn restrict(writable: &[PathBuf]) -> Result<(), String> {
         .create()
         .map_err(|err| failed(&err))?
         .set_compatibility(CompatLevel::HardRequirement);
-    let devices = DEVICES.iter().map(PathBuf::from);
-    for path in writable.iter().cloned().chain(devices) {
+    let paths = writable.iter().map(|path| (path.clone(), true));
+    let devices = DEVICES.iter().map(|path| (PathBuf::from(path), false));
+    for (path, needed) in paths.chain(devices) {
         let Ok(meta) = std::fs::metadata(&path) else {
             continue;
         };
-        let fd = PathFd::new(&path).map_err(|err| failed(&err))?;
+        let fd = match PathFd::new(&path) {
+            Ok(fd) => fd,
+            // `/dev/tty` won't open in a session with no terminal, which has none to write.
+            Err(_) if !needed => continue,
+            Err(err) => return Err(failed(&err)),
+        };
         let rights = if meta.is_dir() { write } else { file_write };
         ruleset = ruleset
             .add_rule(PathBeneath::new(fd, rights))
@@ -1174,5 +1223,31 @@ mod tests {
         for nr in [socket, read] {
             assert_eq!(verdict(&program, NATIVE, X32_BIT | nr, unix), DENY);
         }
+    }
+
+    /// A cover whose entry went since the view was planned is left out, one whose entry is back
+    /// by now goes on as it is, and any other failure stops the launch.
+    #[test]
+    fn a_cover_on_an_entry_gone_since_the_plan_is_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let renamed = dir.path().join("process.json.partial");
+        assert_eq!(covered(&renamed, || Err(Errno::ENOENT)), Ok(false));
+
+        let back = dir.path().join("process.json");
+        std::fs::write(&back, "{}").unwrap();
+        let tries = std::cell::Cell::new(0);
+        let cover = || {
+            tries.set(tries.get() + 1);
+            if tries.get() == 1 {
+                Err(Errno::ENOENT)
+            } else {
+                Ok(())
+            }
+        };
+        assert_eq!(covered(&back, cover), Ok(true));
+        assert_eq!(tries.get(), 2);
+
+        let refused = covered(&back, || Err(Errno::EPERM)).unwrap_err();
+        assert!(refused.starts_with("can't cover "), "{refused}");
     }
 }

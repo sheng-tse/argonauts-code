@@ -1,0 +1,74 @@
+# Publishes the Homebrew formula dist built to sheng-tse/homebrew-tap, so `brew install
+# sheng-tse/tap/argonauts-code` works. Called by release.yml in its publish step, with dist's plan.
+#
+# Homebrew keeps one version of a formula, so betas never reach the tap. The formula gains one caveat line with the
+# next step, which dist's formula doesn't have.
+name: Publish to Homebrew
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  formula:
+    if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
+    runs-on: ubuntu-24.04
+    # Waits for the maintainer's approval once the repository is public.
+    environment: release
+    permissions:
+      contents: read
+    env:
+      PLAN: ${{ inputs.plan }}
+    steps:
+      - name: Check out the tap
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: sheng-tse/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          persist-credentials: true
+      - name: Fetch the formula
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: artifacts-build-global
+          path: ${{ runner.temp }}/global
+          merge-multiple: true
+      - name: Add the caveat and commit the formula
+        env:
+          GLOBAL: ${{ runner.temp }}/global
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith(".rb")] | any)'); do
+            filename=$(echo "$release" | jq --raw-output '.artifacts[] | select(endswith(".rb"))')
+            version=$(echo "$release" | jq --raw-output .app_version)
+            formula="Formula/${filename}"
+            mkdir -p Formula
+            cp "${GLOBAL}/${filename}" "$formula"
+
+            # dist's formula ends with the class's own `end`; the caveat goes just inside it.
+            if [ "$(tail -n 1 "$formula")" != "end" ]; then
+              echo "::error::${filename} doesn't end the way dist's formula does; the caveat can't be placed"
+              exit 1
+            fi
+            sed -i '$d' "$formula"
+            cat >> "$formula" <<'RUBY'
+
+            def caveats
+              <<~EOS
+                Next: cd into a project and run argonauts. argonauts doctor checks your agent CLIs.
+              EOS
+            end
+          end
+          RUBY
+
+            git add "$formula"
+            git commit -m "argonauts-code ${version}"
+          done
+          git push

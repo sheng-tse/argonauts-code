@@ -26,6 +26,8 @@ const SHORT_PARENT: usize = 24;
 
 impl TempRepo {
     pub fn new() -> anyhow::Result<Self> {
+        // What the test runs in its own process never checks the internet either.
+        argonauts_conductor::network::turn_off_in_this_process();
         let dir = short_temp_dir()?;
         // Canonical paths, because macOS reaches /tmp through /private and git reports that.
         let base = dir
@@ -100,8 +102,11 @@ impl TempRepo {
                 self.git_config.clone().into_os_string(),
             ),
             ("GIT_CONFIG_NOSYSTEM".to_owned(), OsString::from("1")),
-            // Nothing a test starts ever sends usage counts.
+            // Nothing a test starts ever sends a usage report, looks for a new release, or
+            // checks the internet past this machine.
             ("DO_NOT_TRACK".to_owned(), OsString::from("1")),
+            ("ARGONAUTS_DISABLE_UPDATES".to_owned(), OsString::from("1")),
+            ("ARGONAUTS_NETWORK_CHECK".to_owned(), OsString::from("off")),
         ]
     }
 

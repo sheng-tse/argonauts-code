@@ -150,65 +150,67 @@ fn the_line_gives_things_up_in_the_fixed_order() {
     let expected = [
         // Everything, as a terminal wider than 150 columns shows it.
         format!(
-            "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts · ← 2 agents · ↓ to manage · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm  ~$1.86"
+            "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts · ←  2 agents · ↓  to manage · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm  ~$1.86"
         ),
         // 1. The hints: the footer's, the cycle hint, then the panel's.
         format!(
-            "⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents · ↓ to manage · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm  ~$1.86"
+            "⏵⏵ auto mode on (shift+tab to cycle) · ←  2 agents · ↓  to manage · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm  ~$1.86"
         ),
         format!(
-            "⏵⏵ auto mode on · ← 2 agents · ↓ to manage · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm  ~$1.86"
+            "⏵⏵ auto mode on · ←  2 agents · ↓  to manage · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm  ~$1.86"
         ),
         format!(
-            "⏵⏵ auto mode on · ← 2 agents · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm  ~$1.86"
+            "⏵⏵ auto mode on · ←  2 agents · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm  ~$1.86"
         ),
         // 2. The parts you added, in your own drop order.
         format!(
-            "⏵⏵ auto mode on · ← 2 agents · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm"
+            "⏵⏵ auto mode on · ←  2 agents · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm"
         ),
         format!(
-            "⏵⏵ auto mode on · ← 2 agents | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm"
+            "⏵⏵ auto mode on · ←  2 agents | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm"
         ),
         // 3. Words shorten.
         format!(
-            "⏵⏵ auto mode on · ← 2 agents | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out · Tue 3:45pm"
+            "⏵⏵ auto mode on · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out · Tue 3:45pm"
         ),
         // 4. A CLI that is fine: its bar becomes one cell.
         format!(
-            "⏵⏵ auto mode on · ← 2 agents | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex ▁ 11%  ○ agy {OUT} out · Tue 3:45pm"
+            "⏵⏵ auto mode on · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex ▁ 11%  ○ agy {OUT} out · Tue 3:45pm"
         ),
         // 5. A CLI that is out: its bar goes, its words stay.
         format!(
-            "⏵⏵ auto mode on · ← 2 agents | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex ▁ 11%  ○ agy out · Tue 3:45pm"
+            "⏵⏵ auto mode on · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex ▁ 11%  ○ agy out · Tue 3:45pm"
         ),
         // 6. The mode: "auto mode on" to "auto".
         format!(
-            "⏵⏵ auto · ← 2 agents | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex ▁ 11%  ○ agy out · Tue 3:45pm"
+            "⏵⏵ auto · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex ▁ 11%  ○ agy out · Tue 3:45pm"
         ),
         // 7. The main CLI's second window becomes one cell.
         format!(
-            "⏵⏵ auto · ← 2 agents | ● Claude 5h {B93} 93% 4:40pm 7d ▅ 56%  ○ Codex ▁ 11%  ○ agy out · Tue 3:45pm"
+            "⏵⏵ auto · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d ▅ 56%  ○ Codex ▁ 11%  ○ agy out · Tue 3:45pm"
         ),
         // 8. "out · Tue 3:45pm" becomes "out".
         format!(
-            "⏵⏵ auto · ← 2 agents | ● Claude 5h {B93} 93% 4:40pm 7d ▅ 56%  ○ Codex ▁ 11%  ○ agy out"
+            "⏵⏵ auto · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d ▅ 56%  ○ Codex ▁ 11%  ○ agy out"
         ),
         // 9. A CLI that is fine keeps only its name.
-        format!("⏵⏵ auto · ← 2 agents | ● Claude 5h {B93} 93% 4:40pm 7d ▅ 56%  ○ Codex  ○ agy out"),
+        format!(
+            "⏵⏵ auto · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d ▅ 56%  ○ Codex  ○ agy out"
+        ),
         // 10. The main CLI's second window goes.
-        format!("⏵⏵ auto · ← 2 agents | ● Claude 5h {B93} 93% 4:40pm  ○ Codex  ○ agy out"),
+        format!("⏵⏵ auto · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm  ○ Codex  ○ agy out"),
         // 11. A CLI that is fine becomes a dot in its color.
-        format!("⏵⏵ auto · ← 2 agents | ● Claude 5h {B93} 93% 4:40pm  ○  ○ agy out"),
+        format!("⏵⏵ auto · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm  ○  ○ agy out"),
         // 12. The main CLI's bar goes, its number stays.
-        "⏵⏵ auto · ← 2 agents | ● Claude 93% 4:40pm  ○  ○ agy out".to_owned(),
+        "⏵⏵ auto · ←  2 agents | ● Claude 93% 4:40pm  ○  ○ agy out".to_owned(),
         // 13. The mode becomes its sign alone.
-        "⏵⏵ · ← 2 agents | ● Claude 93% 4:40pm  ○  ○ agy out".to_owned(),
+        "⏵⏵ · ←  2 agents | ● Claude 93% 4:40pm  ○  ○ agy out".to_owned(),
         // Past the thirteen, so that no CLI is cut off on a terminal narrower still: the
         // arrow's count shortens, then the reset time, the names and the gaps go.
-        "⏵⏵ · ← 2 | ● Claude 93% 4:40pm  ○  ○ agy out".to_owned(),
-        "⏵⏵ · ← 2 | ● Claude 93%  ○  ○ agy out".to_owned(),
-        "⏵⏵ · ← 2 | ● 93%  ○  ○ out".to_owned(),
-        "⏵⏵ · ← 2 | ● 93% ○ ○ out".to_owned(),
+        "⏵⏵ · ←  2 | ● Claude 93% 4:40pm  ○  ○ agy out".to_owned(),
+        "⏵⏵ · ←  2 | ● Claude 93%  ○  ○ agy out".to_owned(),
+        "⏵⏵ · ←  2 | ● 93%  ○  ○ out".to_owned(),
+        "⏵⏵ · ←  2 | ● 93% ○ ○ out".to_owned(),
     ];
     assert_eq!(steps.len(), expected.len());
     for (step, (got, want)) in steps.iter().zip(&expected).enumerate() {
@@ -762,12 +764,8 @@ fn the_context_part_matches_its_pictures() {
     use crate::kit::Level;
     use crate::overview::golden::{Picture, Region, assert_matches, theme};
 
-    let pictures = [
-        ("context_tab", 82, 20, Level::Ok),
-        ("context_near_full", 85, 95, Level::Danger),
-    ];
-    for (name, row, percent, level) in pictures {
-        let picture = Picture::load(name);
+    let picture = Picture::load("context_part");
+    for (row, percent, level) in [(0, 20, Level::Ok), (1, 95, Level::Danger)] {
         let theme = theme();
         let mut line = BottomLine::default();
         line.right.push(LinePart::Added(AddedPart {

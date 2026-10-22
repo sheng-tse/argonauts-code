@@ -107,6 +107,9 @@ pub(crate) async fn start(
         workflow_step: None,
         label: None,
         asked: None,
+        asked_by: None,
+        asked_why: None,
+        forked: false,
     };
     let input = SessionInput {
         launch: launch_record(

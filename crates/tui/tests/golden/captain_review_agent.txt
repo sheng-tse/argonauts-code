@@ -15,4 +15,4 @@
  │                    │ Outcome · approved · 1 note                                                                 │ 
  │                    │   note      invoice/money.py  "1.234" becomes 1234 cents, not 123; beyond your request      │ 
  ╰────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓ agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save                      
+ ↑↓  agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save                     

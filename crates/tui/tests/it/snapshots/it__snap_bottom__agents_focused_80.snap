@@ -1,14 +1,15 @@
 ---
-source: crates/tui/tests/snap_bottom.rs
+source: crates/tui/tests/it/snap_bottom.rs
+assertion_line: 111
 expression: text(&view.lines)
 ---
-✻ Building… (4m 12s · ↓ 48.2k tokens · build · 3 agents)
+✻ Building… (4m 12s · ↓  48.2k tokens · build · 3 agents)
 
 ──────────────────────────────────────────────────────────────── codex/gpt-5.6 ─
 ❯ Message @codex/gpt-5.6…
 ────────────────────────────────────────────────────────────────────────────────
-  ↑/↓ to select · enter to view · x to stop it · ctrl+x ctrl+k to stop all agen…
+  ↑/↓  to select · enter to view · x to stop it · ctrl+x ctrl+k to stop all age…
 
-  ○ claude-code/opus  task-002                       2/5 · 4m · ↓ 18.1k tokens
-  ● codex/gpt-5.6     task-003                       1/5 · 3m · ↓ 12.9k tokens
+  ○ claude-code/opus  task-002                       2/5 · 4m · ↓  18.1k tokens
+  ● codex/gpt-5.6     task-003                       1/5 · 3m · ↓  12.9k tokens
   ○ agy/gemini-3.6    review                         0/3 · waiting for task-002

@@ -288,7 +288,6 @@ pub(crate) fn run_host_error(err: impl std::fmt::Display) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt as _;
     use std::sync::Arc;
 
     use super::super::ProcessLauncher;
@@ -300,12 +299,11 @@ mod tests {
         let home = TestHome::new();
         let bin = tempfile::tempdir().unwrap();
         let script = bin.path().join("failing-argonauts");
-        std::fs::write(
+        argonauts_testkit::write_script(
             &script,
             "#!/bin/sh\necho \"argonauts: this run can't be hosted\" >&2\nexit 1\n",
         )
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let client = Client::new(
             home.env(true),
             Arc::new(ProcessLauncher::with_binary(script)),
@@ -333,8 +331,7 @@ mod tests {
         let home = TestHome::new();
         let bin = tempfile::tempdir().unwrap();
         let script = bin.path().join("silent-argonauts");
-        std::fs::write(&script, "#!/bin/sh\nexit 1\n").unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        argonauts_testkit::write_script(&script, "#!/bin/sh\nexit 1\n").unwrap();
         let client = Client::new(
             home.env(true),
             Arc::new(ProcessLauncher::with_binary(script)),

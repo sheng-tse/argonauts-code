@@ -1,12 +1,13 @@
 //! The Context tab's wording: Claude Code's own names for where things come from, its
-//! rounding of small counts, and which of the theme's colours draws each of its colours.
+//! shares of the window, and how each of its colours draws.
 
-use argonauts_core::Spend;
-use argonauts_core::views::RecordedContext;
+use ratatui::style::{Color, Style};
 use time::OffsetDateTime;
 
-use crate::format::{self, ClockTime};
+use crate::format::ClockTime;
+use crate::kit::Kit;
 use crate::theme::Role;
+use crate::theme::{Brightness, downgrade};
 
 /// A share of the window in tenths of a percent, as Claude Code's legend writes it, and
 /// `<0.1%` where the tenths would read `0.0%` for something that does take room.
@@ -22,22 +23,6 @@ pub(super) fn share(tokens: u64, of: u64) -> String {
     }
 }
 
-/// A whole percent, rounded half up as Claude Code's suggestions round theirs.
-pub(super) fn whole_percent(tokens: u64, of: u64) -> u64 {
-    if of == 0 {
-        return 0;
-    }
-    (tokens as f64 / of as f64 * 100.0 + 0.5).floor() as u64
-}
-
-/// A skill's tokens as Claude Code lists them: an estimate to the nearest ten, or `< 20`.
-pub(super) fn skill_tokens(tokens: u64) -> String {
-    if tokens < 20 {
-        return "< 20".to_owned();
-    }
-    format!("~{}", crate::format::tokens((tokens + 5) / 10 * 10))
-}
-
 /// `3 files`, `1 file`.
 pub(super) fn count(n: usize, noun: &str) -> String {
     if n == 1 {
@@ -45,29 +30,6 @@ pub(super) fn count(n: usize, noun: &str) -> String {
     } else {
         format!("{n} {noun}s")
     }
-}
-
-/// `as its last answer left it, yesterday at 1:52 AM · 1 turn · 73.7k in, 916 out · $0.0040`,
-/// for a session read from its conversation's record.
-pub(super) fn as_left(recorded: &RecordedContext, spent: &Spend, now: OffsetDateTime) -> String {
-    let mut parts = vec![
-        format!(
-            "as its last answer left it, {}",
-            day_and_time(recorded.at, now)
-        ),
-        count(recorded.turns as usize, "turn"),
-    ];
-    if spent.total_tokens() > 0 {
-        parts.push(format!(
-            "{} in, {} out",
-            format::tokens(spent.input_tokens),
-            format::tokens(spent.output_tokens)
-        ));
-    }
-    if spent.cost_usd > 0.0 || spent.cost_partial {
-        parts.push(cost(spent));
-    }
-    parts.join(" \u{b7} ")
 }
 
 /// `3:02 AM` for a time today, else with its day as [`day_and_time`] writes it, in the zone
@@ -99,20 +61,6 @@ fn day_and_time(at: OffsetDateTime, now: OffsetDateTime) -> String {
     } else {
         format!("{month} {}, {} at {time}", day.day(), day.year())
     }
-}
-
-/// A cost as Claude Code writes one: to four places under half a dollar, `$0.0040`, and to the
-/// cent from there, marked `~` where it is worked out and `+` where some of it is missing.
-fn cost(spent: &Spend) -> String {
-    let usd = spent.cost_usd;
-    let amount = if usd > 0.5 {
-        format!("${:.2}", (usd * 100.0).round() / 100.0)
-    } else {
-        format!("${usd:.4}")
-    };
-    let estimated = if spent.cost_estimated { "~" } else { "" };
-    let partial = if spent.cost_partial { "+" } else { "" };
-    format!("{estimated}{amount}{partial}")
 }
 
 /// The order Claude Code lists its source groups in. A plugin's own group follows `Plugin`,
@@ -188,50 +136,33 @@ pub(super) fn grouped<T>(
     ordered
 }
 
-/// A tool as the lists name it: an MCP tool without the `mcp__<server>__` its server's name
-/// already says.
-pub(super) fn tool_name(name: &str) -> &str {
-    name.strip_prefix("mcp__")
-        .and_then(|rest| rest.split_once("__"))
-        .map(|(_, tool)| tool)
-        .filter(|tool| !tool.is_empty())
-        .unwrap_or(name)
-}
-
-/// A row out of the window by what it is: `System tools (deferred)` reads `system tools`.
-pub(super) fn deferred_name(name: &str) -> String {
-    let name = name.strip_suffix(" (deferred)").unwrap_or(name).trim();
-    let mut chars = name.chars();
-    match (chars.next(), chars.next()) {
-        // An acronym keeps its capitals.
-        (Some(first), Some(second)) if second.is_lowercase() => {
-            format!("{}{}{}", first.to_lowercase(), second, chars.as_str())
+/// How one of Claude Code's colours draws, by the name its reply gives a category: as its
+/// `/context` draws it in a dark terminal, the system's two greys as one, and the theme's own
+/// colours in a light one. A name this version doesn't know draws dim.
+pub(super) fn cc_style(kit: &Kit<'_>, color: &str) -> Style {
+    let (dark, light, role) = match color {
+        "promptBorder" | "inactive" => (0x8e8e8e, 0x707070, Role::Dim),
+        "green_FOR_SUBAGENTS_ONLY" | "success" => (0x5fd7af, 0x2f9e7a, Role::Success),
+        "warning" => (0xd7af5f, 0x9a6f12, Role::Warn),
+        "purple_FOR_SUBAGENTS_ONLY" | "permission" | "suggestion" => {
+            (0xb1b9f9, 0x5769f7, Role::Question)
         }
-        _ => name.to_owned(),
-    }
+        "cyan_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentCyan),
+        "claude" => return kit.fg(Role::CliClaude),
+        "blue_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentBlue),
+        "red_FOR_SUBAGENTS_ONLY" | "error" => return kit.fg(Role::Danger),
+        "yellow_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentYellow),
+        "orange_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentOrange),
+        "pink_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentPink),
+        _ => return kit.fg(Role::Dim),
+    };
+    let hex: u32 = match kit.theme.brightness {
+        Brightness::Dark => dark,
+        Brightness::Light => light,
+    };
+    let rgb = Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
+    downgrade(role, Style::new().fg(rgb), kit.theme.level)
 }
-
-/// The theme colour that draws one of Claude Code's, by the name its reply gives a row. Its
-/// two greys read as one here, and a name this version doesn't know draws dim.
-pub(super) fn color_role(color: &str) -> Role {
-    match color {
-        "cyan_FOR_SUBAGENTS_ONLY" => Role::AgentCyan,
-        "green_FOR_SUBAGENTS_ONLY" | "success" => Role::Success,
-        "permission" | "suggestion" => Role::Question,
-        "claude" => Role::CliClaude,
-        "warning" => Role::Warn,
-        "purple_FOR_SUBAGENTS_ONLY" => MESSAGES,
-        "blue_FOR_SUBAGENTS_ONLY" => Role::AgentBlue,
-        "red_FOR_SUBAGENTS_ONLY" | "error" => Role::Danger,
-        "yellow_FOR_SUBAGENTS_ONLY" => Role::AgentYellow,
-        "orange_FOR_SUBAGENTS_ONLY" => Role::AgentOrange,
-        "pink_FOR_SUBAGENTS_ONLY" => Role::AgentPink,
-        _ => Role::Dim,
-    }
-}
-
-/// The colour of the messages, on the grid and on the bars that split them up.
-pub(super) const MESSAGES: Role = Role::Label;
 
 #[cfg(test)]
 mod tests {
@@ -244,23 +175,6 @@ mod tests {
         assert_eq!(share(412, 1_000_000), "<0.1%");
         assert_eq!(share(0, 1_000_000), "0.0%");
         assert_eq!(share(5, 0), "");
-    }
-
-    #[test]
-    fn a_whole_percent_rounds_half_up() {
-        assert_eq!(whole_percent(180_200, 1_000_000), 18);
-        assert_eq!(whole_percent(199_000, 1_000_000), 20);
-        assert_eq!(whole_percent(25, 1_000), 3);
-    }
-
-    #[test]
-    fn a_skill_reads_as_an_estimate() {
-        assert_eq!(skill_tokens(181), "~180");
-        assert_eq!(skill_tokens(128), "~130");
-        assert_eq!(skill_tokens(125), "~130");
-        assert_eq!(skill_tokens(19), "< 20");
-        assert_eq!(skill_tokens(20), "~20");
-        assert_eq!(skill_tokens(2_204), "~2.2k");
     }
 
     #[test]
@@ -307,43 +221,14 @@ mod tests {
         );
     }
 
+    /// A time today reads as the clock, and another day says which.
     #[test]
-    fn an_mcp_tool_drops_what_its_server_says() {
-        assert_eq!(tool_name("mcp__linear__create_issue"), "create_issue");
-        assert_eq!(
-            tool_name("mcp__argonauts__argonauts_lookup"),
-            "argonauts_lookup"
-        );
-        assert_eq!(tool_name("Bash"), "Bash");
-        assert_eq!(tool_name("mcp__odd"), "mcp__odd");
-    }
-
-    #[test]
-    fn a_row_out_of_the_window_reads_as_what_it_is() {
-        assert_eq!(deferred_name("System tools (deferred)"), "system tools");
-        assert_eq!(deferred_name("MCP tools (deferred)"), "MCP tools");
-    }
-
-    #[test]
-    fn claude_codes_colours_draw_in_the_themes() {
-        assert_eq!(color_role("promptBorder"), Role::Dim);
-        assert_eq!(color_role("inactive"), Role::Dim);
-        assert_eq!(color_role("permission"), Role::Question);
-        assert_eq!(color_role("purple_FOR_SUBAGENTS_ONLY"), MESSAGES);
-        assert_eq!(color_role("a-colour-from-later"), Role::Dim);
-    }
-
-    /// The day a record's answer ended, said from now, and its cost as Claude Code writes one.
-    #[test]
-    fn a_recorded_session_says_when_and_what_it_cost() {
+    fn a_time_says_its_day_when_it_isnt_today() {
         use time::macros::datetime;
         let now = datetime!(2026-10-15 00:35 UTC);
+        assert_eq!(time_of(datetime!(2026-10-15 00:10 UTC), now), "12:10 AM");
         assert_eq!(
-            day_and_time(datetime!(2026-10-15 00:10 UTC), now),
-            "today at 12:10 AM"
-        );
-        assert_eq!(
-            day_and_time(datetime!(2026-10-14 13:52 UTC), now),
+            time_of(datetime!(2026-10-14 13:52 UTC), now),
             "yesterday at 1:52 PM"
         );
         assert_eq!(
@@ -354,21 +239,33 @@ mod tests {
             day_and_time(datetime!(2025-12-31 23:00 UTC), now),
             "Dec 31, 2025 at 11:00 PM"
         );
-        let spent = |cost_usd: f64, cost_estimated: bool| Spend {
-            cost_usd,
-            cost_estimated,
-            ..Spend::default()
-        };
-        assert_eq!(cost(&spent(0.004_032_7, false)), "$0.0040");
-        assert_eq!(cost(&spent(0.5, false)), "$0.5000");
-        assert_eq!(cost(&spent(1.256, true)), "~$1.26");
-        let recorded = RecordedContext {
-            at: datetime!(2026-10-14 01:52 UTC),
-            turns: 3,
-        };
+    }
+
+    /// Claude Code's category colours draw as its `/context` draws them, and fit a terminal
+    /// with fewer colours.
+    #[test]
+    fn claude_codes_colours_draw_as_its_context_draws_them() {
+        use crate::theme::{ColorLevel, Theme};
+        let theme = Theme::dark().with_level(ColorLevel::TrueColor);
+        let kit = Kit::new(&theme);
+        let fg = |name| cc_style(&kit, name).fg;
+        assert_eq!(fg("inactive"), Some(Color::Rgb(0x8e, 0x8e, 0x8e)));
+        assert_eq!(fg("promptBorder"), fg("inactive"));
         assert_eq!(
-            as_left(&recorded, &Spend::default(), now),
-            "as its last answer left it, yesterday at 1:52 AM \u{b7} 3 turns"
+            fg("green_FOR_SUBAGENTS_ONLY"),
+            Some(Color::Rgb(0x5f, 0xd7, 0xaf))
         );
+        assert_eq!(fg("warning"), Some(Color::Rgb(0xd7, 0xaf, 0x5f)));
+        assert_eq!(
+            fg("purple_FOR_SUBAGENTS_ONLY"),
+            Some(Color::Rgb(0xb1, 0xb9, 0xf9))
+        );
+        assert_eq!(cc_style(&kit, "a-colour-from-later"), kit.fg(Role::Dim));
+        let fewer = Theme::dark().with_level(ColorLevel::Ansi256);
+        let kit = Kit::new(&fewer);
+        assert!(matches!(
+            cc_style(&kit, "warning").fg,
+            Some(Color::Indexed(_))
+        ));
     }
 }

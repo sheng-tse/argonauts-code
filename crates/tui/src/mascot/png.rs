@@ -125,15 +125,24 @@ fn paeth(left: u8, up: u8, corner: u8) -> u8 {
     }
 }
 
-/// `image` as an 8-bit RGBA PNG.
+/// `image` as an 8-bit RGBA PNG, packed as small as it goes.
 pub fn encode(image: &Rgba) -> Vec<u8> {
+    encode_packed(image, Compression::best())
+}
+
+/// [`encode`] for a picture drawn again as you point at it, packed fast rather than small.
+pub fn encode_quickly(image: &Rgba) -> Vec<u8> {
+    encode_packed(image, Compression::fast())
+}
+
+fn encode_packed(image: &Rgba, compression: Compression) -> Vec<u8> {
     let stride = image.width * PIXEL;
     let mut filtered = Vec::with_capacity(image.height * (stride + 1));
     for row in image.pixels.chunks(stride.max(1)).take(image.height) {
         filtered.push(0);
         filtered.extend_from_slice(row);
     }
-    let mut packed = ZlibEncoder::new(Vec::new(), Compression::best());
+    let mut packed = ZlibEncoder::new(Vec::new(), compression);
     // Writing to memory can't fail.
     let _ = packed.write_all(&filtered);
     let packed = packed.finish().unwrap_or_default();
@@ -228,9 +237,9 @@ mod tests {
     #[test]
     fn every_filter_the_generator_may_use_reads_back() {
         // The generator's files use all five filters; each of its pictures reads at its size.
-        let bytes = include_bytes!("../../assets/mascots/pictures/a-council-hydra-9x21.png");
+        let bytes = include_bytes!("../../assets/mascots/pictures/a-council-hydra-18x42.png");
         let image = decode(bytes).expect("an RGBA picture");
-        assert_eq!((image.width, image.height), (81, 63));
+        assert_eq!((image.width, image.height), (162, 126));
         assert!(image.pixels.chunks(PIXEL).any(|pixel| pixel[3] == 255));
         assert!(image.pixels.chunks(PIXEL).any(|pixel| pixel[3] == 0));
     }

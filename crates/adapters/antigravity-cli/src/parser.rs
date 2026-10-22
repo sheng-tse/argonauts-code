@@ -559,19 +559,23 @@ fn retry_reason(error: &AgyError) -> RetryReason {
     }
 }
 
+/// agy 1.4.5 names its writes `write_file` and their file `Path`, where 1.4.4 said
+/// `write_to_file` and `TargetFile`.
 fn file_change(tool: &str, input: &Value, cwd: Option<&str>) -> Option<AgentEvent> {
     let kind = match tool {
-        "write_to_file" => {
+        "write_to_file" | "write_file" => {
             if input.get("Overwrite").and_then(Value::as_bool) == Some(true) {
                 "update"
             } else {
                 "add"
             }
         }
-        "replace_file_content" | "multi_replace_file_content" | "sed_file" => "update",
+        "replace_file_content" | "multi_replace_file_content" | "sed_file" | "edit_file" => {
+            "update"
+        }
         _ => return None,
     };
-    let path = ["TargetFile", "File", "AbsolutePath"]
+    let path = ["TargetFile", "File", "AbsolutePath", "Path"]
         .iter()
         .find_map(|key| input.get(*key).and_then(Value::as_str))?;
     Some(AgentEvent::FileChanged {
@@ -1800,5 +1804,32 @@ mod tests {
         );
         assert_eq!(update("view_file", json!({"TargetFile": "/w/c"})), None);
         assert_eq!(update("write_to_file", json!({})), None);
+        assert_eq!(
+            update("edit_file", json!({"TargetFile": "/w/d"})),
+            Some(("d".into(), "update".into()))
+        );
+    }
+
+    /// agy 1.4.5's own lines for a read and a write outside its folder.
+    #[test]
+    fn a_write_file_names_its_path() {
+        let events = parse_all(&[
+            INIT,
+            r#"{"event":"step_update","step_update":{"conversation_id":"c1","step_index":3,"state":"ACTIVE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"Path":"/out/brief.txt"}}}}"#,
+            r#"{"event":"step_update","step_update":{"conversation_id":"c1","step_index":3,"state":"DONE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"Path":"/out/brief.txt"}}}}"#,
+            r#"{"event":"step_update","step_update":{"conversation_id":"c1","step_index":4,"state":"ACTIVE","step_type":"tool","tool_name":"write_file","tool_info":{"name":"write_file","parameters":{"Path":"/out/notes.md"}}}}"#,
+            r#"{"event":"step_update","step_update":{"conversation_id":"c1","step_index":4,"state":"DONE","step_type":"tool","tool_name":"write_file","tool_info":{"name":"write_file","parameters":{"Path":"/out/notes.md"}}}}"#,
+        ]);
+        let changed: Vec<&AgentEvent> = events
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::FileChanged { .. }))
+            .collect();
+        assert_eq!(
+            changed,
+            [&AgentEvent::FileChanged {
+                path: "/out/notes.md".into(),
+                kind: "add".into(),
+            }]
+        );
     }
 }

@@ -36,6 +36,9 @@ pub struct SpecInput {
     pub json_schema: Option<Value>,
     /// The CLI session to resume.
     pub resume: Option<String>,
+    /// `resume` names a session to copy, not one to carry on: the copy is a new session that
+    /// reads its whole prompt.
+    pub fork: bool,
     pub lifetime: SessionLifetime,
     pub limits: SessionLimits,
     /// Required for `Build` and `Experiment`; the worker refuses them without it.
@@ -52,6 +55,9 @@ pub struct SpecInput {
     pub deny_read: Vec<PathBuf>,
     /// It reads a change to judge it, whatever its role, so by default it may run the checks.
     pub reviews: bool,
+    /// What it reads and writes outside the project without asking, as `[outside]` says for
+    /// the run's mode.
+    pub outside: argonauts_core::outside::Outside,
 }
 
 pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec> {
@@ -69,6 +75,7 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
     }
     sandbox.readable.extend(input.status_file.iter().cloned());
     sandbox.deny_read.extend(input.deny_read.iter().cloned());
+    sandbox.outside = input.outside.clone();
     let role = settings.roles.get(&input.role);
     let own_workflows = may_run_own_workflows(settings, &input);
     let shell = reader_shell(settings, input.role, input.access, input.reviews);
@@ -94,12 +101,12 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
         session_dir: input.session_dir,
         // A session carried on was told when it began.
         prompt: separated(match input.resume {
-            Some(_) => input.prompt,
-            None => with_shell_rules(input.prompt, &shell),
+            Some(_) if !input.fork => input.prompt,
+            _ => with_shell_rules(input.prompt, &shell),
         }),
         json_schema: input.json_schema,
         resume: input.resume,
-        fork: false,
+        fork: input.fork,
         lifetime: input.lifetime,
         // Long sessions stay open for steering and deliveries; a one-shot answer must end.
         keep_input_open: builds,
@@ -305,6 +312,7 @@ pub fn sandbox(
         closed: Vec::new(),
         listable: Vec::new(),
         loopback: false,
+        outside: Default::default(),
     })
 }
 
@@ -438,6 +446,8 @@ mod tests {
             autopilot: false,
             deny_read: Vec::new(),
             reviews: false,
+            fork: false,
+            outside: Default::default(),
         };
         let settings = Settings::default();
         let blind = build(&settings, input(true)).unwrap();
@@ -463,6 +473,28 @@ mod tests {
         );
         assert!(!free.cli_workflow.background_off);
         assert!(still_blind.cli_workflow.background_off);
+
+        // What the run's mode opens outside the project reaches the sandbox as it was given.
+        use argonauts_core::outside::Outside;
+        use argonauts_core::settings::approvals::ApprovalMode;
+        let home = std::path::Path::new("/home/you");
+        let project = std::path::Path::new("/home/you/app");
+        for (mode, open) in [
+            (ApprovalMode::Autopilot, true),
+            (ApprovalMode::Supervised, false),
+        ] {
+            let outside = Outside::for_mode(&settings.outside, mode, Some(project), home);
+            let spec = build(
+                &settings,
+                SpecInput {
+                    outside: outside.clone(),
+                    ..input(false)
+                },
+            )
+            .unwrap();
+            assert_eq!(spec.sandbox.outside, outside);
+            assert_eq!(spec.sandbox.outside.is_open(), open, "{mode:?}");
+        }
     }
 
     #[test]
@@ -586,6 +618,8 @@ mod tests {
             autopilot: false,
             deny_read: Vec::new(),
             reviews: false,
+            fork: false,
+            outside: Default::default(),
         };
         let mut settings = Settings {
             ultracode: true,

@@ -93,6 +93,11 @@ pub fn build(program: &str, req: &SessionRequest) -> anyhow::Result<CommandSpec>
 /// Inside our sandbox Codex's own can't start (macOS won't nest one in another), so it is off and
 /// ours keeps a read-only session from writing. `sandbox.mode = "none"` turns it off too, with
 /// nothing in its place. `codex exec` never asks before a command.
+///
+/// Work outside the project in auto and autopilot needs nothing more inside ours, which holds
+/// the never-list. Codex 0.163's own sandbox reads anywhere, but a writable root it adds with
+/// `--add-dir` is open whole, `~/.ssh` included, so under its own sandbox it writes only its
+/// workspace.
 pub fn sandbox_mode(req: &SessionRequest) -> &'static str {
     match req.role {
         _ if req.tool_sandbox_off => "danger-full-access",

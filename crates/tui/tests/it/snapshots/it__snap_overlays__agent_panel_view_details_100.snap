@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_overlays.rs
+source: crates/tui/tests/it/snap_overlays.rs
+assertion_line: 533
 expression: narrow
 ---
 argonauts › crew                                                    Claude 72% · Codex 41% · agy 90%
@@ -7,13 +8,13 @@ argonauts › crew                                                    Claude 72%
 
 ~/code/export
 ◆ Add a --json flag to export · needs you
-  ❯ ◆ build:json-writer   asks: Keep a CSV fallback?      GPT 5.6 on Codex                    2m ago
-    ● build:json-flag     Update(src/mw/limit.ts)         Opus on Claude Code                 5m ago
-    ○ review:json-flag    waiting on other work           Gemini 3.6 Pro on Antigravity CLI   1m ago
-    ✓ build:csv-writer    Merged task-001.                GPT 5.6 on Codex                    3m ago
+  ❯ ◆ build:json-writer               asks: Keep a CSV fallback?      GPT 5.6 on Codex        2m ago
+    ● build:json-flag                 Update(src/mw/limit.ts)         Opus on Claude Code     5m ago
+    ○ review:json-flag                waiting on other work           Gemini 3.6 Pro on agy   1m ago
+    ✓ build:csv-writer                Merged task-001.                GPT 5.6 on Codex        3m ago
 Sessions
-    ◎ How does the expo…  Claude Code · enter continues                                      40m ago
-    ◎ Explain the input…  Codex · enter continues                                             1d ago
+    ◎ How does the export pick a fo…  Claude Code · enter continues                          40m ago
+    ◎ Explain the input handling      Codex · enter continues                                 1d ago
 
 ~/code/api
 ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -33,4 +34,4 @@ Branch   argonauts/run-01/task-002
 
 Prompt
 Add a JSON writer beside the CSV one. Keep the CSV output byte for byte.
-↑↓ move · → open · Space details · Tab filter · x stop · ? keys · esc back
+↑↓  move · →  open · Space details · Tab filter · x stop · ? keys · esc back

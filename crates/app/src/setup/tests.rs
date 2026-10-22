@@ -135,11 +135,7 @@ fn two_ready() -> Vec<FoundAgent> {
     vec![
         agent("claude-code", "Claude Code", AgentStatus::Tested),
         agent("codex", "Codex", AgentStatus::Tested),
-        agent(
-            "antigravity-cli",
-            "Antigravity CLI",
-            AgentStatus::NotInstalled,
-        ),
+        agent("antigravity-cli", "agy", AgentStatus::NotInstalled),
         agent("opencode", "OpenCode", AgentStatus::NotInstalled),
     ]
 }
@@ -275,7 +271,6 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
             "Who orchestrates",
             "Who does what",
             "Approvals",
-            "Usage counts",
             "This folder",
         ]
     );
@@ -287,7 +282,6 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
         "crew.judge",
         "workflow",
         "roles.orchestrator.models",
-        "telemetry.enabled",
     ];
     expected.extend([
         "approvals.understand.mode",
@@ -424,6 +418,60 @@ async fn guided_setup_rerun_preselects_your_values() {
     assert!(!text.contains("[approvals.plan]"), "{text}");
 }
 
+/// A setup over your settings leaves no row per question: it ends in one `/setup` row, which
+/// says what you have now and where it went. Neither run asks about usage reports.
+#[tokio::test]
+async fn a_second_setup_ends_in_one_row() {
+    let mut fixture = Fixture::new(true);
+    let captain = |choice: &AppChoice| {
+        let workflow = (choice.title == "How the crew works").then(|| {
+            let option = choice.options.iter().find(|option| {
+                questions::value_of(&option.action).as_deref() == Some(steps::CAPTAIN)
+            });
+            option.unwrap().action.clone()
+        });
+        workflow.unwrap_or_else(|| enter(choice))
+    };
+    let (mut first, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
+    let (asked, seen) = answer_all(&mut fixture, &mut first, effects, captain).await;
+    assert!(asked.iter().all(|choice| !choice.title.contains("Usage")));
+    assert!(
+        notices(&seen)
+            .iter()
+            .any(|text| text.starts_with("Saved to"))
+    );
+
+    let (mut again, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
+    let (asked, seen) = answer_all(&mut fixture, &mut again, effects, captain).await;
+    assert!(asked.iter().all(|choice| !choice.title.contains("Usage")));
+    let outcomes: Vec<&str> = seen
+        .iter()
+        .filter_map(|event| match event {
+            AppEvent::ChoiceClosed { outcome, .. } => Some(outcome.as_str()),
+            _ => None,
+        })
+        .collect();
+    let (row, questions) = outcomes.split_last().unwrap();
+    assert_eq!(questions.len(), asked.len());
+    assert!(
+        questions.iter().all(|outcome| outcome.is_empty()),
+        "{outcomes:?}"
+    );
+    assert_eq!(
+        *row,
+        format!(
+            "/setup ⎿  Captain · Claude Code · auto mode · Usage reports on · saved to {}",
+            fixture.ctx.env.display(&fixture.repo.global_config())
+        )
+    );
+    assert!(
+        !notices(&seen)
+            .iter()
+            .any(|text| text.starts_with("Saved to"))
+    );
+    assert!(!fixture.global().contains("telemetry"));
+}
+
 #[tokio::test]
 async fn guided_setup_esc_takes_the_recommendations_for_the_rest() {
     let mut fixture = Fixture::new(true);
@@ -523,6 +571,7 @@ async fn guided_setup_offers_a_local_servers_models_as_reviewers() {
         id: "ollama".to_owned(),
         base_url: "http://127.0.0.1:9/v1".to_owned(),
         models: vec!["llama3.2".to_owned(), "qwen3".to_owned()],
+        ..Default::default()
     };
     let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), vec![server]).await;
     let (asked, _) = answer_all(&mut fixture, &mut setup, effects, |choice| {
@@ -550,6 +599,118 @@ async fn guided_setup_offers_a_local_servers_models_as_reviewers() {
         .map(ToString::to_string)
         .collect();
     assert_eq!(reviewers, vec!["ollama/llama3.2"]);
+}
+
+/// An Ollama whose two tags with a window of their own hold a review.
+fn ollama_that_reviews() -> LocalServer {
+    LocalServer {
+        id: "ollama".to_owned(),
+        base_url: "http://127.0.0.1:9/v1".to_owned(),
+        models: vec![
+            "qwen3-coder:30b-64k".to_owned(),
+            "gemma3:12b-32k".to_owned(),
+        ],
+        windows: [
+            ("qwen3-coder:30b-64k".to_owned(), 65_536),
+            ("gemma3:12b-32k".to_owned(), 32_768),
+        ]
+        .into(),
+        sized_as_loaded: Vec::new(),
+    }
+}
+
+/// The titles setup asks with `workflow` chosen and every other answer the recommended one,
+/// from the question after the main agent's to the one before approvals.
+async fn asked_for(workflow: &str, config: Option<&str>) -> Vec<String> {
+    let config = config.map(str::to_owned);
+    let mut fixture = Fixture::prepared(true, |repo| {
+        if let Some(config) = config {
+            std::fs::create_dir_all(repo.home()).unwrap();
+            std::fs::write(repo.global_config(), config).unwrap();
+        }
+    });
+    let servers = vec![ollama_that_reviews()];
+    let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), servers).await;
+    let pick = |choice: &AppChoice| {
+        if choice.title == "How the crew works" {
+            let option = choice
+                .options
+                .iter()
+                .find(|option| questions::value_of(&option.action).as_deref() == Some(workflow))
+                .unwrap_or_else(|| panic!("{workflow} isn't offered: {choice:?}"));
+            option.action.clone()
+        } else {
+            choice.options[0].action.clone()
+        }
+    };
+    let (asked, _) = answer_all(&mut fixture, &mut setup, effects, pick).await;
+    let titles: Vec<String> = asked.into_iter().map(|choice| choice.title).collect();
+    let from = titles
+        .iter()
+        .position(|title| title == "How the crew works")
+        .unwrap();
+    let to = titles
+        .iter()
+        .position(|title| title == "Approvals")
+        .unwrap();
+    titles[from + 1..to].to_vec()
+}
+
+/// Each workflow asks only for the roles it has, then a local model only when it has a
+/// reviewer: Captain alone asks neither.
+#[tokio::test]
+async fn each_workflow_asks_its_own_roles_and_then_the_local_server() {
+    let server = "A local model server: Ollama";
+    assert_eq!(
+        asked_for(steps::ORCHESTRATOR, None).await,
+        ["Who orchestrates", "Who does what", server]
+    );
+    assert_eq!(
+        asked_for(steps::COUNCIL, None).await,
+        ["Who does what", server]
+    );
+    assert!(asked_for(steps::CAPTAIN, None).await.is_empty());
+    assert_eq!(
+        asked_for(steps::CAPTAIN, Some("[captain]\nreview = true\n")).await,
+        ["Who is the reviewer", server]
+    );
+}
+
+/// A reviewer chosen in "Who does what" is the one written, so no local model is offered for it.
+#[tokio::test]
+async fn a_reviewer_chosen_by_role_skips_the_local_server() {
+    let mut fixture = Fixture::new(true);
+    let servers = vec![ollama_that_reviews()];
+    let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), servers).await;
+    let value = |option: &argonauts_core::events::approval::AnswerOption| {
+        questions::value_of(&option.action)
+    };
+    let chose_reviewer = std::cell::Cell::new(false);
+    let pick = |choice: &AppChoice| {
+        let chosen = |wanted: &str| {
+            let option = choice
+                .options
+                .iter()
+                .find(|option| value(option).as_deref() == Some(wanted));
+            option
+                .unwrap_or_else(|| panic!("{wanted} isn't offered: {choice:?}"))
+                .action
+                .clone()
+        };
+        match choice.title.as_str() {
+            "Who does what" if !chose_reviewer.replace(true) => chosen(roles::REVIEWER_KEY),
+            "Who is the reviewer" => chosen("codex"),
+            _ => choice.options[0].action.clone(),
+        }
+    };
+    let (asked, _) = answer_all(&mut fixture, &mut setup, effects, pick).await;
+    assert!(
+        asked
+            .iter()
+            .all(|choice| !choice.title.starts_with("A local model server")),
+        "{:?}",
+        asked.iter().map(|choice| &choice.title).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -717,20 +878,32 @@ async fn guided_setup_waits_for_the_login_checks_before_listing_agents() {
         .unwrap();
     let agents = open_choice(&fixture.drain()).unwrap();
     assert_eq!(agents.title, "Your agents");
-    // The servers aren't back, so answering waits for them rather than skipping them.
+    // The servers are asked after the workflow's roles, so the questions before them go on.
     setup
         .answer(&mut fixture.ctx, &agents.id, enter(&agents), None)
         .await
         .unwrap();
-    assert!(open_choice(&fixture.drain()).is_none());
+    let mut open = open_choice(&fixture.drain()).unwrap();
+    assert_eq!(open.title, "Who you talk to");
+    let mut asked = Vec::new();
+    // Then the step before approvals waits for them rather than skipping them.
+    loop {
+        asked.push(open.title.clone());
+        setup
+            .answer(&mut fixture.ctx, &open.id, enter(&open), None)
+            .await
+            .unwrap();
+        match open_choice(&fixture.drain()) {
+            Some(next) => open = next,
+            None => break,
+        }
+    }
+    assert_eq!(asked.last().map(String::as_str), Some("Who does what"));
     setup
         .on_update(&mut fixture.ctx, SetupUpdate::Servers(Vec::new()))
         .await
         .unwrap();
-    assert_eq!(
-        open_choice(&fixture.drain()).unwrap().title,
-        "Who you talk to"
-    );
+    assert_eq!(open_choice(&fixture.drain()).unwrap().title, "Approvals");
 }
 
 #[tokio::test]
@@ -874,4 +1047,13 @@ async fn the_guide_pages_go_into_a_repo_only_after_a_yes_asked_once() {
             .any(|choice| choice.title == "Guide pages in this repo"),
         "asked once"
     );
+}
+
+/// Reports kept off by CI, DO_NOT_TRACK or an agent's session read as off, whatever the
+/// setting says.
+#[test]
+fn usage_reports_read_as_off_where_they_are_kept_off() {
+    assert_eq!(super::usage_words(true, false), "Usage reports on");
+    assert_eq!(super::usage_words(true, true), "Usage reports off");
+    assert_eq!(super::usage_words(false, false), "Usage reports off");
 }

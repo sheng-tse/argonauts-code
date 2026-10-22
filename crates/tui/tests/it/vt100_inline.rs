@@ -676,7 +676,7 @@ fn keys_do_what_the_reference_says() {
     assert!(
         h.rows()
             .iter()
-            .any(|row| row == "❯ ↑ to answer the question"),
+            .any(|row| row == "❯ ↑  to answer the question"),
         "{}",
         dump(&h.rows())
     );

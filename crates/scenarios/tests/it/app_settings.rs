@@ -276,7 +276,7 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
         // values to pick from and needs no amount typed.
         if command == "limits" {
             // The keys start on the tabs, and ↓ takes them into the limits.
-            pty.wait_for("↓ into the cards", WAIT)?;
+            pty.wait_for("↓  into the cards", WAIT)?;
             settled(&pty)?;
             pty.press(Key::Down)?;
             pty.wait_for("enter change", WAIT)?;

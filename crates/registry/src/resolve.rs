@@ -13,7 +13,9 @@ use argonauts_core::sanitize::escape_controls;
 use argonauts_core::settings::approvals::{ApprovalMode, ApprovalSettings};
 use argonauts_core::settings::evolution::FIXED_CORE_KEYS;
 use argonauts_core::settings::ui::{BadValue, drop_bad_values};
-use argonauts_core::settings::{FILE_LAYERS, GLOBAL_ONLY_KEYS, LAYERS, SAFETY_KEYS, Settings};
+use argonauts_core::settings::{
+    FILE_LAYERS, GLOBAL_ONLY_KEYS, LAYERS, SAFETY_KEYS, Settings, project_may_tighten,
+};
 use argonauts_core::{canonical_json, sha256_hex};
 use toml::{Table, Value};
 
@@ -401,13 +403,14 @@ fn read_file_layer(
     check_plain_keys(&table, source)?;
     let global_only: Vec<String> = leaves(&table)
         .into_iter()
-        .map(|(key, _)| key)
-        .filter(|key| {
+        .filter(|(key, value)| {
             layer != GLOBAL
                 && GLOBAL_ONLY_KEYS
                     .iter()
                     .any(|pattern| key_matches(pattern, key))
+                && !project_may_tighten(key, &value.to_string())
         })
+        .map(|(key, _)| key)
         .collect();
     for key in global_only {
         let why = format!(

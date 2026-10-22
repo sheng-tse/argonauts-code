@@ -287,6 +287,34 @@ async fn a_stream_that_loses_its_run_host_says_what_resume_does() {
     driver.exit().await;
 }
 
+/// A run host that couldn't start can be gone before the app's stream on its run opens. No
+/// change of liveness follows, so the run is said to be gone at once rather than left working.
+#[tokio::test]
+async fn a_run_host_gone_before_its_stream_opened_is_said_at_once() {
+    let mut rig = Rig::new();
+    rig.conductor.gone_before_its_stream(&run_id("run-001"));
+    let run = rig.start("Add --json to export").await;
+    let notice = rig
+        .until(|event| {
+            matches!(
+                event,
+                AppEvent::Notice {
+                    level: NoteLevel::Warn,
+                    ..
+                }
+            )
+        })
+        .await;
+    let AppEvent::Notice { text, .. } = notice else {
+        unreachable!()
+    };
+    assert!(
+        text.contains(&format!("{run} stopped when its run host exited")),
+        "{text}"
+    );
+    rig.until(is_mode(AppMode::Idle)).await;
+}
+
 #[tokio::test]
 async fn a_waiting_run_whose_run_host_exits_is_not_crashed() {
     let mut driver = cli_on("run-002").await;
@@ -926,7 +954,7 @@ async fn a_run_off_screen_says_when_it_needs_you_and_when_it_ends() {
     assert_eq!(
         notices(&events),
         [
-            "run-009 title needs you · ↓ to manage",
+            "run-009 title needs you · ↓  to manage",
             "run-008 title is merged. /resume shows it."
         ]
     );

@@ -87,7 +87,7 @@ fn the_usage_tab_draws_a_card_per_cli_under_the_tabs_and_takes_only_their_rows()
     );
     assert!(rows[1].ends_with("Today  Week  Month  All"), "{rows:#?}");
     assert!(
-        rows[2].starts_with("  All CLIs    Claude Code    Codex    Antigravity CLI    OpenRouter"),
+        rows[2].starts_with("  All CLIs    Claude Code    Codex    agy    OpenRouter"),
         "{rows:#?}"
     );
     let at = |text: &str| {
@@ -99,7 +99,7 @@ fn the_usage_tab_draws_a_card_per_cli_under_the_tabs_and_takes_only_their_rows()
     let order = [
         at("● Claude Code"),
         at("● Codex"),
-        at("● Antigravity CLI"),
+        at("● agy"),
         at("● OpenRouter"),
     ];
     assert!(order.is_sorted(), "{order:?}: {rows:#?}");
@@ -114,7 +114,7 @@ fn the_usage_tab_draws_a_card_per_cli_under_the_tabs_and_takes_only_their_rows()
     );
     assert!(
         rows.last().unwrap().starts_with(
-            " r to cycle dates · tab · ← → tabs · ↓ CLIs · ctrl+r reads again · esc closes"
+            " r to cycle dates · tab · ←  →  tabs · ↓  CLIs · ctrl+r reads again · esc closes"
         ),
         "{rows:#?}"
     );
@@ -177,7 +177,7 @@ fn the_keys_change_tab_units_and_pin_the_card_in_focus() {
     assert_eq!(
         overview.tab(),
         Tab::Stats,
-        "← on the first tab goes to the last"
+        "←  on the first tab goes to the last"
     );
     key(&mut overview, &state, KeyCode::Tab);
     assert_eq!(
@@ -242,7 +242,7 @@ fn status_shows_its_cards_under_its_tab_once_its_answer_comes() {
     assert!(at(" Recent  ") > at("◆ needs you"), "{shown:#?}");
     let keys = shown.last().unwrap();
     assert!(
-        keys.contains("tab · ← → tabs · ↓ into the cards · esc closes"),
+        keys.contains("tab · ←  →  tabs · ↓  into the cards · esc closes"),
         "{keys}"
     );
     // Your CLIs, their health, the settings and the runs come first, then the run's own cards.
@@ -253,7 +253,7 @@ fn status_shows_its_cards_under_its_tab_once_its_answer_comes() {
     let shown = rows(&mut overview, &state, 110, 60);
     let keys = shown.last().unwrap();
     assert!(
-        keys.contains("↑↓ task · enter agent · tab tabs · p pin above the input"),
+        keys.contains("↑↓  task · enter agent · tab tabs · p pin above the input"),
         "{keys}"
     );
 
@@ -426,6 +426,18 @@ fn on_status_p_pins_the_card_in_focus_and_tab_scrolls_to_it() {
     );
 }
 
+/// With more below, the Context tab's tabs row still gives ↓ one meaning: into the list.
+#[test]
+fn the_context_tabs_row_gives_down_one_meaning() {
+    let mut state = state(sample::usage());
+    state.conversation.context = Some(sample::counted());
+    let mut overview = view(Tab::Context).with_context(sample::context());
+    let shown = rows(&mut overview, &state, 120, 16);
+    let keys = shown.last().unwrap();
+    assert!(keys.contains("\u{2193}  into the list"), "{shown:#?}");
+    assert!(!keys.contains("more"), "{shown:#?}");
+}
+
 #[test]
 fn context_shows_the_main_session_then_the_crew_and_the_arrows_step_through_it() {
     let mut state = state(sample::usage());
@@ -434,178 +446,124 @@ fn context_shows_the_main_session_then_the_crew_and_the_arrows_step_through_it()
     let shown = rows(&mut overview, &state, 120, 80);
     assert!(shown[1].contains("[Context]"), "{shown:#?}");
     assert!(
-        shown[2].ends_with("3 sessions · 291k in context"),
+        shown[2].ends_with("3 sessions \u{b7} 291.2k in context"),
         "{shown:#?}"
     );
-    assert!(
-        shown[4].contains("Context Usage  counted just now"),
-        "{shown:#?}"
-    );
-    assert!(shown[4].contains("Opus 5.5  claude-opus-5-5"), "{shown:#?}");
-    assert!(shown[4].ends_with("212k/1M tokens (21%)"), "{shown:#?}");
-    let at = |part: &str| {
+    assert_eq!(shown[4], "     Context Usage", "{shown:#?}");
+    assert!(shown[5].ends_with(" Opus 5.5"), "{shown:#?}");
+    let at = |shown: &[String], part: &str| {
         shown
             .iter()
             .position(|row| row.contains(part))
             .unwrap_or_else(|| panic!("{part}: {shown:#?}"))
     };
-    // Claude Code's sections in its order, then the crew's agents last.
+    // Claude Code's sections in its order, folded, then the crew's agents last.
     let order = [
         "Estimated usage by category",
         "Auto-compact window:",
-        "MCP tools · /mcp",
-        "Custom agents · .claude/agents/",
-        "Memory files · /memory",
-        "Crew agents · ",
-        "build:report-endp",
-        "build:docs",
+        "MCP tools \u{b7} /mcp",
+        "Custom agents \u{b7} .claude/agents/",
+        "Memory files \u{b7} /memory",
+        "Crew agents \u{b7} the run at work",
+        "\u{2514} 2 agents \u{b7} 79.2k tokens \u{b7} 2 at work",
+        "/context all to expand",
     ]
-    .map(at);
+    .map(|part| at(&shown, part));
     assert!(order.is_sorted(), "{shown:#?}");
     assert!(
-        shown.last().unwrap().contains("↓ into the cards"),
+        shown
+            .last()
+            .unwrap()
+            .contains("\u{2193}  into the list \u{b7} enter opens one"),
         "{shown:#?}"
     );
-    assert!(!shown.last().unwrap().contains(" a "), "{shown:#?}");
 
     // In the cards ↑↓ step through the blocks, and the pointer says which has the keys.
     into_the_cards(&mut overview, &state);
     let shown = rows(&mut overview, &state, 120, 80);
-    assert!(shown[4].contains("❯ Context Usage"), "{shown:#?}");
-    assert!(shown.last().unwrap().contains("↑↓ section"), "{shown:#?}");
-    assert!(matches!(
-        key(&mut overview, &state, KeyCode::Enter),
-        ViewOutcome::Consumed
-    ));
-    // Enter on an agent opens its view.
-    key(&mut overview, &state, KeyCode::End);
-    let shown = rows(&mut overview, &state, 120, 80);
+    assert!(shown[4].contains("\u{276f} Context Usage"), "{shown:#?}");
     assert!(
-        shown.iter().any(|row| row.contains("❯ ◐ build:docs")),
-        "{shown:#?}"
-    );
-    assert!(
-        shown
-            .last()
-            .unwrap()
-            .contains("↑↓ section · enter agent view"),
+        shown.last().unwrap().contains("\u{2191}\u{2193}  move"),
         "{shown:#?}"
     );
     assert!(matches!(
         key(&mut overview, &state, KeyCode::Enter),
-        ViewOutcome::Request(ViewRequest::Agent { .. })
-    ));
-    key(&mut overview, &state, KeyCode::Home);
-    assert!(matches!(
-        key(&mut overview, &state, KeyCode::Up),
         ViewOutcome::Consumed
     ));
-    assert_eq!(overview.level(), Level::Tabs, "↑ on the first block leaves");
-}
-
-/// → on a crew agent asks for its session's whole count and shows it as the main session's
-/// blocks; ← comes back to every session, the keys where they were.
-#[test]
-fn right_on_an_agent_opens_its_session_whole_and_left_comes_back() {
-    use argonauts_core::app::SessionCounted;
-
-    let mut state = state(sample::usage());
-    state.conversation.context = Some(sample::counted());
-    // Claude Code says what fills its sessions, and Codex doesn't.
-    let mut context = sample::context();
-    context.rows[1].counts = true;
-    let mut overview = view(Tab::Context).with_context(context);
-    into_the_cards(&mut overview, &state);
-    rows(&mut overview, &state, 120, 80);
-    key(&mut overview, &state, KeyCode::End);
-    let shown = rows(&mut overview, &state, 120, 80);
-    let keys = shown.last().unwrap();
+    // Enter on the crew's folded line opens it, a line an agent.
+    let mut shown = rows(&mut overview, &state, 120, 80);
+    while !shown.iter().any(|row| row.contains("\u{276f} Crew agents")) {
+        key(&mut overview, &state, KeyCode::Down);
+        shown = rows(&mut overview, &state, 120, 80);
+    }
     assert!(
-        keys.contains("enter agent view") && !keys.contains("its context"),
+        shown.last().unwrap().contains("enter opens it"),
         "{shown:#?}"
     );
-    assert!(matches!(
-        key(&mut overview, &state, KeyCode::Right),
-        ViewOutcome::Consumed
-    ));
-    key(&mut overview, &state, KeyCode::Up);
+    key(&mut overview, &state, KeyCode::Enter);
+    key(&mut overview, &state, KeyCode::Down);
     let shown = rows(&mut overview, &state, 120, 80);
     assert!(
         shown
-            .last()
-            .unwrap()
-            .contains("enter agent view \u{b7} \u{2192}  its context"),
-        "{shown:#?}"
-    );
-    let ViewOutcome::Request(ViewRequest::SessionContext { run, session }) =
-        key(&mut overview, &state, KeyCode::Right)
-    else {
-        panic!("→ asks for the session's count");
-    };
-    assert_eq!(session, argonauts_core::names::SessionKey::numbered(2));
-    let counted = SessionCounted {
-        usage: Box::new(sample::counted().usage),
-        at: sample::now(),
-    };
-    // An answer for another session is not this tab's.
-    assert!(!overview.accept(&ViewData::SessionContext {
-        run: run.clone(),
-        session: argonauts_core::names::SessionKey::numbered(3),
-        counted: None,
-    }));
-    assert!(overview.accept(&ViewData::SessionContext {
-        run,
-        session,
-        counted: Some(counted),
-    }));
-    let opened = rows(&mut overview, &state, 120, 80);
-    assert!(
-        opened
             .iter()
-            .any(|row| row.contains("build:report-endpoint \u{b7} Opus 5.5 on Claude Code")),
+            .any(|row| row.starts_with("   \u{276f} \u{251c} build:report-endpoint")),
+        "{shown:#?}"
+    );
+    assert!(
+        shown.last().unwrap().contains("enter its own block"),
+        "{shown:#?}"
+    );
+    // Enter on an agent shows its own block, and Esc comes back to it.
+    key(&mut overview, &state, KeyCode::Enter);
+    let opened = rows(&mut overview, &state, 120, 80);
+    assert_eq!(
+        opened[4], "     Context Usage \u{b7} build:report-endpoint",
         "{opened:#?}"
     );
     assert!(
         opened
             .iter()
-            .any(|row| row.contains("Estimated usage by category")),
+            .any(|row| row.contains("Opus 5.5 on Claude Code")),
         "{opened:#?}"
     );
     assert!(
         !opened.iter().any(|row| row.contains("Crew agents")),
         "{opened:#?}"
     );
-    assert!(
-        opened.last().unwrap().contains("\u{2190}  every session"),
-        "{opened:#?}"
-    );
-    key(&mut overview, &state, KeyCode::Left);
+    assert_eq!(opened.last().unwrap().trim(), "esc back to the list");
+    assert!(matches!(
+        key(&mut overview, &state, KeyCode::Esc),
+        ViewOutcome::Consumed
+    ));
     let back = rows(&mut overview, &state, 120, 80);
     assert!(
         back.iter()
-            .any(|row| row.contains("\u{276f} \u{25d0} build:report-endp")),
+            .any(|row| row.starts_with("   \u{276f} \u{251c} build:report-endpoint")),
         "{back:#?}"
+    );
+    key(&mut overview, &state, KeyCode::Home);
+    assert!(matches!(
+        key(&mut overview, &state, KeyCode::Up),
+        ViewOutcome::Consumed
+    ));
+    assert_eq!(
+        overview.level(),
+        Level::Tabs,
+        "\u{2191}  on the first block leaves"
     );
 }
 
-/// A long list of MCP tools folds those not loaded into a row a server, and Enter on the list
-/// shows every tool, then folds them again.
+/// Enter on a folded list opens it to a line a server, and folds it again.
 #[test]
-fn enter_on_a_long_list_of_mcp_tools_shows_every_tool_and_folds_them_again() {
-    use argonauts_core::events::context::{ContextCategory, ContextKind, McpTool};
+fn enter_on_a_folded_list_opens_it_and_folds_it_again() {
+    use argonauts_core::events::context::McpTool;
 
     let mut state = state(sample::usage());
     let mut counted = sample::counted();
-    counted.usage.categories.push(ContextCategory {
-        name: "MCP tools (deferred)".to_owned(),
-        tokens: 3_000,
-        color: "inactive".to_owned(),
-        kind: ContextKind::Deferred,
-    });
     counted.usage.mcp_tools = (0..30)
         .map(|n| McpTool {
             name: format!("mcp__crm__tool_{n:02}"),
-            server: "crm".to_owned(),
+            server: if n < 20 { "crm" } else { "github" }.to_owned(),
             tokens: 200,
             loaded: n < 2,
         })
@@ -613,7 +571,7 @@ fn enter_on_a_long_list_of_mcp_tools_shows_every_tool_and_folds_them_again() {
     state.conversation.context = Some(counted);
     let mut overview = view(Tab::Context).with_context(sample::context());
     into_the_cards(&mut overview, &state);
-    let folded = "crm \u{b7} 28 tools \u{b7} 5.6k on demand";
+    let folded = "\u{2514} 30 tools \u{b7} 400 tokens";
     let mut shown = rows(&mut overview, &state, 120, 200);
     while !shown.iter().any(|row| row.contains("\u{276f} MCP tools")) {
         key(&mut overview, &state, KeyCode::Down);
@@ -621,35 +579,41 @@ fn enter_on_a_long_list_of_mcp_tools_shows_every_tool_and_folds_them_again() {
     }
     assert!(shown.iter().any(|row| row.contains(folded)), "{shown:#?}");
     assert!(
-        shown.last().unwrap().contains("enter every tool"),
+        shown.last().unwrap().contains("enter opens it"),
         "{shown:#?}"
     );
     assert!(matches!(
         key(&mut overview, &state, KeyCode::Enter),
         ViewOutcome::Consumed
     ));
-    let whole = rows(&mut overview, &state, 120, 200);
-    assert!(
-        whole.iter().any(|row| row.contains("tool_29")),
-        "{whole:#?}"
-    );
-    assert!(!whole.iter().any(|row| row.contains(folded)), "{whole:#?}");
-    assert!(
-        whole.last().unwrap().contains("enter fold by server"),
-        "{whole:#?}"
-    );
+    let open = rows(&mut overview, &state, 120, 200);
+    for line in [
+        "\u{251c} crm ",
+        "20 tools \u{b7} 400 tokens",
+        "\u{2514} github ",
+        "10 tools \u{b7} 0 tokens",
+    ] {
+        assert!(
+            open.iter().any(|row| row.contains(line)),
+            "{line}: {open:#?}"
+        );
+    }
+    assert!(!open.iter().any(|row| row.contains(folded)), "{open:#?}");
+    assert!(open.last().unwrap().contains("enter folds it"), "{open:#?}");
     key(&mut overview, &state, KeyCode::Enter);
     let again = rows(&mut overview, &state, 120, 200);
     assert!(again.iter().any(|row| row.contains(folded)), "{again:#?}");
 }
 
-/// Every list shows in full, so the tab is often taller than the panel. It scrolls by rows:
-/// a page at a time from the tabs, and block by block in the cards.
+/// The tab can be taller than the panel. It scrolls by rows: a page at a time from the tabs,
+/// and block by block in the cards.
 #[test]
 fn a_context_tab_taller_than_the_panel_scrolls_to_every_row() {
     let mut state = state(sample::usage());
     state.conversation.context = Some(sample::counted());
-    let mut overview = view(Tab::Context).with_context(sample::context());
+    let mut overview = view(Tab::Context)
+        .with_context(sample::context())
+        .with_every_list();
     let top = rows(&mut overview, &state, 120, 30);
     assert!(
         top.iter().any(|row| row.contains("Context Usage")),
@@ -659,7 +623,11 @@ fn a_context_tab_taller_than_the_panel_scrolls_to_every_row() {
         !top.iter().any(|row| row.contains("Crew agents")),
         "{top:#?}"
     );
-    assert!(top.last().unwrap().contains("↓ more"), "{top:#?}");
+    // ↓ goes into the list from the tabs, so the key line doesn't offer it for more too.
+    assert!(
+        top.last().unwrap().contains("\u{2193}  into the list"),
+        "{top:#?}"
+    );
 
     let mut seen = top.clone();
     for _ in 0..8 {
@@ -668,11 +636,11 @@ fn a_context_tab_taller_than_the_panel_scrolls_to_every_row() {
     }
     for part in [
         "Auto-compact window:",
-        "└ search_issues",
-        "└ reviewer",
-        "└ AGENTS.md",
-        "└ release-notes",
-        "build:docs",
+        "MCP tools",
+        "Custom agents",
+        "Memory files",
+        "Skills",
+        "\u{2514} build:docs",
     ] {
         assert!(
             seen.iter().any(|row| row.contains(part)),
@@ -680,7 +648,10 @@ fn a_context_tab_taller_than_the_panel_scrolls_to_every_row() {
         );
     }
     let bottom = rows(&mut overview, &state, 120, 30);
-    assert!(!bottom.last().unwrap().contains("↓ more"), "{bottom:#?}");
+    assert!(
+        !bottom.last().unwrap().contains("\u{2193}  more"),
+        "{bottom:#?}"
+    );
     key(&mut overview, &state, KeyCode::PageUp);
     key(&mut overview, &state, KeyCode::PageUp);
     key(&mut overview, &state, KeyCode::PageUp);
@@ -708,7 +679,7 @@ fn the_limits_tab_lists_the_limits_and_enter_opens_the_picked_one_to_change() {
     into_the_cards(&mut overview, &state);
     let shown = rows(&mut overview, &state, 120, 60);
     assert!(
-        shown.last().unwrap().contains("↑↓ limit · enter change"),
+        shown.last().unwrap().contains("↑↓  limit · enter change"),
         "{shown:#?}"
     );
     // The picker opens under the input, so the panel closes as it sends.
@@ -1010,7 +981,7 @@ fn down_goes_to_the_sub_tabs_then_into_the_cards_and_up_comes_back() {
     assert!(shown[2].contains("[By CLI]"), "{shown:#?}");
     assert!(
         shown.last().unwrap().starts_with(
-            " r to cycle dates · tab By CLI, By model, By role · ↓ into the cards · ↑ tabs"
+            " r to cycle dates · tab By CLI, By model, By role · ↓  into the cards · ↑  tabs"
         ),
         "{shown:#?}"
     );
@@ -1024,7 +995,7 @@ fn down_goes_to_the_sub_tabs_then_into_the_cards_and_up_comes_back() {
     assert_eq!(
         stats.tab(),
         Tab::Stats,
-        "→ on the sub-tabs stays on the tab"
+        "→  on the sub-tabs stays on the tab"
     );
     key(&mut stats, &state, KeyCode::Left);
     key(&mut stats, &state, KeyCode::Left);
@@ -1044,7 +1015,7 @@ fn down_goes_to_the_sub_tabs_then_into_the_cards_and_up_comes_back() {
     assert_eq!(
         stats.level(),
         Level::Cards,
-        "↑ from the second row goes to the first"
+        "↑  from the second row goes to the first"
     );
     key(&mut stats, &state, KeyCode::Up);
     assert_eq!(stats.level(), Level::SubTabs);
@@ -1209,7 +1180,7 @@ fn tab_goes_along_the_row_with_the_keys() {
         key(&mut stats, &state, KeyCode::Right),
         ViewOutcome::Consumed
     ));
-    assert_eq!(stats.tab(), Tab::Stats, "→ in the cards does nothing");
+    assert_eq!(stats.tab(), Tab::Stats, "→  in the cards does nothing");
 
     // A tab without sub-tabs: Tab moves the tabs from any row, and the line says so.
     let state = self::state(sample::usage());
@@ -1288,7 +1259,7 @@ fn usage_shows_the_card_with_the_keys_and_enter_opens_and_closes_its_page() {
         shown
             .last()
             .unwrap()
-            .contains("↑↓ card · enter opens its page · tab CLIs"),
+            .contains("↑↓  card · enter opens its page · tab CLIs"),
         "{shown:#?}"
     );
     key(&mut usage, &state, KeyCode::Enter);
@@ -1337,7 +1308,7 @@ fn tab_moves_the_overview_sub_tabs_as_it_does_every_tabs() {
         .unwrap();
     assert!(
         keys.trim_start()
-            .starts_with("r to cycle dates · tab · ← → tabs · ↓ Overview or Models"),
+            .starts_with("r to cycle dates · tab · ←  →  tabs · ↓  Overview, Models, Behaviors"),
         "on the tabs the line says what r and Tab do: {keys}"
     );
     key(&mut overview, &state, KeyCode::Down);

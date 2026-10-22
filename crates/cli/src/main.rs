@@ -1,12 +1,14 @@
 mod approvals;
 mod approve;
 mod args;
+mod behaviors;
 mod config;
 mod doctor;
 mod help;
 mod learning;
 mod mcp;
 mod runs;
+mod self_update;
 mod text;
 mod update;
 mod usage;
@@ -33,9 +35,14 @@ fn main() -> ExitCode {
     if let Some(code) = argonauts_conductor::sandbox::launcher::launcher_main() {
         return ExitCode::from(u8::try_from(code).unwrap_or(1));
     }
+    // Found before an update can swap the link this program was started by, so every helper
+    // it starts is this version, which no update removes while it runs.
+    let _ = argonauts_core::paths::this_program();
+    argonauts_app::self_update::hold_this_version();
     let cli = Cli::from_arg_matches(&help::command().get_matches())
         .unwrap_or_else(|err| err.format(&mut help::command()).exit());
     init_logging();
+    argonauts_app::count_crashes();
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -82,6 +89,8 @@ async fn dispatch(cli: Cli) -> ExitCode {
         Some(Command::Status { json }) => runs::status(json).await,
         Some(Command::Doctor(ref args)) => doctor::run(args, &cli.set).await,
         Some(Command::Update) => update::run(&cli.set).await,
+        Some(Command::SelfUpdate(ref args)) => Ok(self_update::run(args, &cli.set).await),
+        Some(Command::Welcome) => Ok(argonauts_app::welcome()),
         Some(Command::Config(ref command)) => config::run(command, &cli.set),
         Some(Command::Telemetry(command)) => telemetry(command, &cli.set).await,
         Some(Command::Models { discover }) => config::models(discover, &cli.set).await,
@@ -141,6 +150,7 @@ async fn dispatch(cli: Cli) -> ExitCode {
             let command = argonauts_app::LearningShell::Sync { check, force };
             learning::run(command, json, &cli.set).await
         }
+        Some(Command::Behaviors(ref args)) => behaviors::run(args, &cli.set).await,
         Some(Command::RunReview { ref run, json }) => {
             let command = argonauts_app::LearningShell::RunReview { run: run.clone() };
             learning::run(command, json, &cli.set).await

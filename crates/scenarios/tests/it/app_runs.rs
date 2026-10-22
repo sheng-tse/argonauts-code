@@ -189,7 +189,7 @@ fn app_example_bigger_task_crew() -> anyhow::Result<()> {
         let drafts = text.matches("● draft:").count() + text.matches("⏺ draft:").count();
         Ok((drafts >= 3).then_some(text))
     })?;
-    for agent in ["Claude Code", "Codex", "Antigravity CLI"] {
+    for agent in ["Claude Code", "Codex", "agy"] {
         assert!(
             drafting_agents.contains(agent),
             "no {agent} drafting agent:\n{drafting_agents}"
@@ -698,15 +698,72 @@ fn app_pause_at_safe_point_and_resume() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The workflow view's own `p`: Ctrl+T opens the run's view, `p` pauses it at its next safe
+/// point and the keys say `p resume`, nothing starts while it waits, and `p` again carries it
+/// on, back to `p pause`.
+#[test]
+fn app_workflow_view_p_pauses_and_resumes() -> anyhow::Result<()> {
+    let scenario = scenario_with(&merge_question_config())?;
+    let mut pty = start(&scenario)?;
+    let run_dir = start_captain(&scenario, &mut pty, requests::TIMED_TASK)?;
+    let worker = wait_worker_started(&scenario)?;
+
+    pty.press(Key::Ctrl('t'))?;
+    pty.wait_for(r"p pause · esc back", WAIT)?;
+    pty.press(Key::Char('p'))?;
+    wait_journal(&run_dir, "the pause request", |event| {
+        matches!(
+            event.kind,
+            RunEventKind::Run(RunLifecycle::PauseRequested { now: false, .. })
+        )
+    })?;
+    wait_journal(&run_dir, "the run to pause", |event| {
+        matches!(event.kind, RunEventKind::Run(RunLifecycle::Paused { .. }))
+    })?;
+    wait_journal(&run_dir, "the run to wait", |event| {
+        matches!(
+            &event.kind,
+            RunEventKind::Run(RunLifecycle::Waiting {
+                reason: WaitReason::Paused,
+                ..
+            })
+        )
+    })?;
+    wait_pid_gone(worker)?;
+    pty.wait_for(r"p resume · esc back", WAIT)?;
+    // While it waits, no session starts.
+    let started = |run_dir: &Path| -> anyhow::Result<usize> {
+        Ok(run_events(run_dir)?
+            .iter()
+            .filter(|event| matches!(event.kind, RunEventKind::Session(SessionEvent::Started(_))))
+            .count())
+    };
+    let before = started(&run_dir)?;
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(started(&run_dir)?, before, "a session started while paused");
+
+    pty.press(Key::Char('p'))?;
+    wait_journal(&run_dir, "the run to resume", is_resumed)?;
+    pty.wait_for(r"p pause · esc back", WAIT)?;
+    wait_approval(&scenario, ApprovalKind::Merge)?;
+    assert!(
+        started(&run_dir)? > before,
+        "nothing started once it went on"
+    );
+    scenario.shot(&pty, "app_workflow_view_p_pauses_and_resumes")?;
+    Ok(())
+}
+
 #[test]
 fn app_second_esc_stops_now_and_commits() -> anyhow::Result<()> {
     let scenario = scenario()?;
     let mut pty = start(&scenario)?;
-    let run_dir = start_captain(&scenario, &mut pty, requests::SLOW_TASK)?;
+    // A worker in a tool call keeps the pause pending, so the second Esc finds it pausing.
+    let run_dir = start_captain(&scenario, &mut pty, requests::TASK_IN_A_TOOL_CALL)?;
     let run = run_id(&run_dir)?;
     let worker = wait_worker_started(&scenario)?;
-    // The worker writes its file before it says this.
-    pty.wait_for("Renaming the config loader", WAIT)?;
+    // The worker writes its file before it starts the build.
+    pty.wait_for("cargo build", WAIT)?;
 
     // Esc leaves a working run going. Once it is pausing, Esc stops it now.
     argonauts_scenarios::pause_run(&mut pty)?;
@@ -1401,13 +1458,13 @@ fn app_context_command_lists_sessions() -> anyhow::Result<()> {
     );
     assert!(worker.used >= 1_200, "{worker:?}");
 
-    // The worker goes by its label, not its task's id. The conversation shows the label too, so
-    // wait for the view's own count of its rows. The main agent's window comes first, under
-    // the title Claude Code gives it.
+    // The worker goes by its label, not its task's id. Wait for the view's own count of its
+    // rows: the main agent's window comes first, under the title Claude Code gives it, then the
+    // run's crew folded to one line.
     assert!(worker.label.starts_with("build:"), "{worker:?}");
     let text = pty.wait_for(r"\d+ sessions", WAIT)?.text();
     assert!(
-        text.contains("Context Usage") && text.contains(&worker.label),
+        text.contains("Context Usage") && text.contains("Crew agents") && text.contains("1 agent"),
         "{text}"
     );
     thread::sleep(Duration::from_millis(500));

@@ -137,6 +137,26 @@ impl Policy {
         Verdict::Allow
     }
 
+    /// The most specific of the writable and read-only paths holding `path` decides, as it
+    /// does in the OS sandbox.
+    fn writes(&self, path: &Path) -> bool {
+        let deepest = |folders: &[PathBuf]| {
+            folders
+                .iter()
+                .map(|folder| normalize(folder))
+                .filter(|folder| path.starts_with(folder))
+                .map(|folder| folder.components().count())
+                .max()
+        };
+        match (
+            deepest(&self.scope.writable),
+            deepest(&self.scope.read_only),
+        ) {
+            (Some(writable), Some(read_only)) => writable > read_only,
+            (writable, _) => writable.is_some(),
+        }
+    }
+
     fn judge_write(&self, paths: &[PathBuf]) -> Verdict {
         if !self.access.writes() {
             return Verdict::Reject("an edit, and this session is read-only".into());
@@ -149,7 +169,7 @@ impl Policy {
             Err(reason) => return Verdict::Reject(reason.clone()),
         };
         for path in paths {
-            if !inside_any(path, &self.scope.writable) {
+            if !self.writes(path) {
                 return Verdict::Reject(format!(
                     "an edit of {} outside the writable paths",
                     path.display()
@@ -466,6 +486,7 @@ mod tests {
         start.scope = PermissionScope {
             roots: vec!["/w".into(), "/ref".into()],
             writable: vec!["/w".into(), "/tmp/s".into()],
+            read_only: Vec::new(),
             deny: vec!["/w/secrets".into()],
             forbidden: vec![
                 ".argonauts/**".into(),
@@ -476,6 +497,23 @@ mod tests {
             network,
         };
         start
+    }
+
+    /// Writing anywhere, as auto and autopilot may: a read-only path inside it is refused, and
+    /// the most specific path decides, as in the OS sandbox.
+    #[test]
+    fn an_edit_anywhere_skips_what_stays_read_only() {
+        let mut start = start(Access::Build, false);
+        start.scope.writable = vec!["/".into(), "/w".into(), "/w/.git/index".into()];
+        start.scope.read_only = vec!["/etc".into(), "/home/you/app".into(), "/w/.git".into()];
+        let policy = Policy::new(&start, None);
+        let edit = |path: &str| policy.judge(&json!({"kind": "edit", "rawInput": {"path": path}}));
+        assert_eq!(edit("/home/you/Downloads/notes.md"), Verdict::Allow);
+        assert_eq!(edit("/w/src/lib.rs"), Verdict::Allow);
+        assert_eq!(edit("/w/.git/index"), Verdict::Allow);
+        for refused in ["/etc/hosts", "/home/you/app/src/lib.rs", "/w/.git/config"] {
+            assert!(matches!(edit(refused), Verdict::Reject(_)), "{refused}");
+        }
     }
 
     fn edit(path: &str) -> Value {

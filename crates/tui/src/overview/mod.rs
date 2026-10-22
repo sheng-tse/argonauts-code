@@ -7,6 +7,8 @@ mod bar_gap_tests;
 pub mod cards;
 pub mod config;
 mod context;
+pub mod deep_flow;
+pub mod deep_lines;
 #[cfg(test)]
 pub(crate) mod golden;
 mod health;
@@ -31,6 +33,7 @@ pub use context::{
     ContextPrinted, conversation as conversation_context, session_use as session_context,
 };
 pub use home::spoken as spoken_overview;
+pub use stats::behaviors::spoken as spoken_behaviors;
 pub use status::{StatusCard, StatusCards};
 pub use view::{OverviewView, Tab};
 pub use watch::UsageWatch;

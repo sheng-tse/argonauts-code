@@ -9,11 +9,11 @@ use argonauts_core::{
 };
 
 use crate::settings::{
-    Allowed, CommandSandbox, Commands, LeftOut, Manner, OwnWorkflow, STATUS_SERVER, Style,
+    Allowed, CommandSandbox, Commands, LeftOut, Manner, OwnWorkflow, Rules, STATUS_SERVER, Style,
     session_settings,
 };
 use crate::tweaks::{self, Fanout, SUBAGENT_TOOL, WORKFLOW_TOOL};
-use crate::{control, isolation};
+use crate::{control, isolation, outside};
 
 /// Written into the session's scratch directory, outside the worktree.
 pub const SETTINGS_FILE: &str = "claude-settings.json";
@@ -185,7 +185,14 @@ fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
             style,
             preferences: &req.preferences,
         },
-        reader_commands(req),
+        Rules {
+            shell: reader_commands(req),
+            paths: Some(&outside::rules(
+                &req.outside,
+                effective_role(req),
+                &req.workdir,
+            )),
+        },
     )?;
     let Some(dir) = &req.scratch_dir else {
         return Ok(spec.args(["--settings".to_owned(), settings]));

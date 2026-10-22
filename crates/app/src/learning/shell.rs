@@ -194,11 +194,11 @@ pub async fn learning(
                 anyhow::bail!("{name} has no v{from} or no v{to}");
             };
             let changes = learned_workflows::diff(parent, child)?;
-            let mut text = format!("{name} v{from} → v{to}\n");
+            let mut text = format!("{name} v{from} →  v{to}\n");
             for change in &changes {
                 let _ = writeln!(
                     text,
-                    "{} ({}): {} → {}",
+                    "{} ({}): {} →  {}",
                     change.key,
                     serde_word(&change.class),
                     change
@@ -355,9 +355,11 @@ fn running(
 }
 
 /// `argonauts mcp package <dir> --repo <repo>`: the folder outside agents install to give work
-/// to Argonauts Code, running this binary by its absolute path.
+/// to Argonauts Code, running this binary by an absolute path that outlasts updates.
 fn package(dir: &Path, repo: &Path) -> anyhow::Result<ShellOutput> {
-    let binary = std::env::current_exe()?;
+    let paths = argonauts_core::Paths::from_env()?;
+    let layout = crate::self_update::Layout::for_home(&paths);
+    let binary = crate::self_update::program_to_save(&layout)?;
     let written = argonauts_learning::package::write(dir, repo, &binary)?;
     let names: Vec<String> = written
         .iter()

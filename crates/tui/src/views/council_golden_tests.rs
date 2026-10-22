@@ -63,6 +63,7 @@ fn agent(
         note: note.map(|(text, tone)| RowNote::new(text, tone)),
         inner: None,
         left_out: false,
+        fallback_why: None,
     })
 }
 
@@ -224,7 +225,7 @@ fn council() -> WorkflowData {
 
 /// Your models ranked as the other tabs rank them, so each keeps the colour it has there:
 /// Haiku 5.5 is Claude Code's third, GPT 6 Luna Codex's second, and Gemini 3.8 Flash
-/// Antigravity CLI's third.
+/// agy's third.
 fn ctx_parts() -> (crate::theme::Theme, AppState) {
     (dark(), super::workflow_nested_tests::state())
 }
@@ -282,7 +283,9 @@ fn the_picture() -> Picture {
 
 #[test]
 fn the_done_view_on_decide_reads_as_its_picture() {
-    let picture = the_picture();
+    let mut picture = the_picture();
+    // The run ended, so nothing is left to stop or pause.
+    picture.reword(54, " · x stop workflow · p pause", "");
     let mut view = WorkflowView::new(council());
     select(&mut view, 2);
     picture.assert_drawn(40..55, &drawn(&mut view, 15), 0);

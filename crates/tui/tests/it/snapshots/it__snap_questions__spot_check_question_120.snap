@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_questions.rs
+source: crates/tui/tests/it/snap_questions.rs
+assertion_line: 850
 expression: text(&lines)
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -11,4 +12,4 @@ expression: text(&lines)
     2. Overrule
     3. Show the evidence
 
-  ↑ to answer
+  ↑  to answer

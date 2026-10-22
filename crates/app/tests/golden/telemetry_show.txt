@@ -1,0 +1,17 @@
+Usage reports are on. Today's report goes out at the first start after 14:00 and holds exactly this:                  
+                                                                                                                      
+  install    7f3c09e1… (random, made on this machine)     0.1.0 · macOS · Apple silicon · 64 GB · 16 cores            
+  setup      Ghostty · inline · sandbox os                approvals auto · autopilot off · git repo                   
+  models     Opus 5.5 · Claude Code · plan                main · xhigh · 412.3k in · 38.1k out · 2.9m cached · $3.12  
+             GPT 6 Luna · Codex · plan                    reviewer · low · 61.0k in · 4.2k out · $0.08                
+             Qwen series · OpenCode · local               worker · 88.4k in · 9.6k out · $0                           
+  runs       Orchestrator 2 merged · Council 1 dropped    Captain 3 turns, 1 workflow merged                          
+  tasks      5 approved at the first review               2 after one more round · 0 after two or more                
+  findings   9 (2 blocking, 7 notes) · 7 fixed            by reviewer: GPT 6 Luna 6, Gemma series 3                   
+  checks     4 of 6 passed the first try                  6 of 6 after review                                         
+  merges     you 1 · autopilot 1 · sent back 1                                                                        
+  fallbacks  1 · usage limit →  GPT 6 Luna                                                                            
+  features   ultracode 1 · mods 2 · /resume 1 · /model 4  workflow view 6 · goals 0                                   
+  health     0 crashes · 0 outputs not understood         start-up under 1 s                                          
+                                                                                                                      
+Never sent: prompts, code, diffs, file or repo names, accounts, keys, IP addresses. argonauts telemetry off stops it. 

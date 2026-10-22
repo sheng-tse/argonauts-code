@@ -42,7 +42,8 @@ fn schema() -> Value {
                                 words in `says`, copied exactly: the whole phrase, two words \
                                 at least. \"Use a workflow\" or \"use the crew\" is kind \
                                 `mode` with value `crew`. \"With Codex as the reviewer\" is \
-                                kind `review` with `who` \"codex\".",
+                                kind `review` with `who` \"codex\". \"Use only Claude\" is \
+                                kind `crew` with `who` \"claude\".",
                 "items": {
                     "type": "object",
                     "properties": {

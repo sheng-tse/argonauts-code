@@ -140,6 +140,7 @@ pub(crate) struct Controller {
     git: folder_git::GitState,
     templates: templates::TemplatesState,
     needed_update: needed_update::NeededUpdateState,
+    issue: crate::issue::IssueWork,
     shell: shell::ShellState,
     /// The conversation's CLI's own commands.
     agent_id: cli_commands::CliCommands,
@@ -182,6 +183,7 @@ impl Controller {
             git: folder_git::GitState::default(),
             templates: templates::TemplatesState::default(),
             needed_update: needed_update::NeededUpdateState::default(),
+            issue: crate::issue::IssueWork::default(),
             shell: shell::ShellState::default(),
             agent_id: cli_commands::CliCommands::default(),
             files_folder: None,
@@ -203,6 +205,7 @@ impl Controller {
         }
         self.keep_runs();
         self.follow_conversation();
+        crate::issue::follow_up(&self.ctx, &mut self.issue);
         header_and_bottom_line::read_stale_at_start(&self.ctx);
         // Opening already checked, so the first check comes a while later.
         let mut next_wake = tokio::time::Instant::now() + WAKE_EVERY;
@@ -226,6 +229,7 @@ impl Controller {
                 () = tokio::time::sleep_until(next_wake) => {
                     self.kick_replays();
                     runs::refresh_background(&self.ctx);
+                    crate::issue::follow_up(&self.ctx, &mut self.issue);
                     let result = runs::wake_waiting(&mut self.ctx, &mut self.runs).await;
                     next_wake = tokio::time::Instant::now() + self.next_wake_in();
                     self.settle(result.map(|()| Vec::new()))
@@ -651,6 +655,7 @@ impl Controller {
                 settings::narrator_mode(ctx, &mut self.settings, mode).await
             }
             UiCommand::CancelTurn => conversation::cancel_turn(ctx, &mut self.conversation),
+            UiCommand::StopCommand => doctor::stop_command(ctx),
             UiCommand::Focus { focused } => {
                 runs::focus(runs, focused);
                 Ok(Vec::new())
@@ -718,6 +723,8 @@ impl Controller {
             UiCommand::RememberPick { run, id } => {
                 run_commands::remember_pick(ctx, runs, run, id).await
             }
+            UiCommand::DeepStart { start } => crate::behaviors::deep::tab::start(ctx, start),
+            UiCommand::DeepStop => crate::behaviors::deep::tab::stop(ctx),
         }
     }
 
@@ -781,6 +788,7 @@ impl Controller {
     }
 
     async fn slash(&mut self, command: SlashCommand) -> anyhow::Result<Vec<Effect>> {
+        crate::telemetry::count(&self.ctx, crate::telemetry::Use::command(&command));
         let agent_id = &self.agent_id;
         let ctx = &mut self.ctx;
         let runs = &mut self.runs;
@@ -835,6 +843,9 @@ impl Controller {
                 let asked = run_commands::follow_up(ctx, runs, run, request).await?;
                 let start = asked.map(|request| Effect::StartRun(Box::new(request)));
                 Ok(start.into_iter().collect())
+            }
+            SlashCommand::Issue { issue } => {
+                crate::issue::start(ctx, &mut self.issue, conversation, issue).await
             }
             // Typed, it opens the Status tab, which always draws, so it prints nothing.
             SlashCommand::Status {
@@ -1067,6 +1078,9 @@ impl Controller {
     }
 
     async fn view(&mut self, view: ViewRequest) -> anyhow::Result<Vec<Effect>> {
+        if matches!(view, ViewRequest::Workflow { .. }) {
+            crate::telemetry::count(&self.ctx, crate::telemetry::Use::WorkflowView);
+        }
         let ctx = &mut self.ctx;
         match view {
             ViewRequest::Config
@@ -1096,6 +1110,10 @@ impl Controller {
             ViewRequest::Overview { period, import } => {
                 crate::overview::view(ctx, period, import).await
             }
+            ViewRequest::Behaviors(request) => {
+                ctx.deep.showing(request);
+                crate::views::behaviors::view(ctx, request).await
+            }
             ViewRequest::Crew => agent_panel::show(ctx, &self.conversation).await,
             ViewRequest::Mods { open, refresh } => {
                 let context = conversation::context_row(&self.conversation);
@@ -1117,6 +1135,8 @@ impl Controller {
             ViewRequest::Learning { area } => {
                 settings::command(ctx, &mut self.settings, area_command(area)).await
             }
+            ViewRequest::Issues => crate::issue::list(ctx),
+            ViewRequest::DeepOffer => crate::behaviors::deep::tab::offer(ctx),
             view => run_commands::view(ctx, &mut self.runs, view).await,
         }
     }
@@ -1171,6 +1191,10 @@ impl Controller {
         if needed_update::owns_choice(&self.needed_update, &id) {
             return needed_update::answer_choice(ctx, &mut self.needed_update, id, action);
         }
+        if crate::issue::owns_choice(&self.issue, &id) {
+            let (issue, conversation) = (&mut self.issue, &mut self.conversation);
+            return crate::issue::answer_choice(ctx, issue, conversation, id, &action, text);
+        }
         if runs::owns_choice(&self.runs, &id) {
             return run_commands::answer_choice(ctx, &mut self.runs, id, action, text).await;
         }
@@ -1213,6 +1237,9 @@ impl Controller {
         if templates::owns_choice(&self.templates, &id) {
             return templates::set_aside(ctx, &mut self.templates, id);
         }
+        if crate::issue::set_aside(&self.issue, &id) {
+            return Ok(Vec::new());
+        }
         if let Some(why) = needed_update::set_aside(ctx, &mut self.needed_update, id.clone()) {
             // The main session that asked for the run hears that it didn't start.
             conversation::run_not_started(&mut self.conversation, &anyhow::anyhow!("{why}"));
@@ -1243,8 +1270,12 @@ impl Controller {
                         commands,
                     );
                 }
+                let read_back = crate::issue::heard(&mut self.issue, &update);
                 let effects =
                     conversation::on_update(&mut self.ctx, &mut self.conversation, update).await?;
+                if let Some(read_back) = read_back {
+                    crate::issue::read_back(&mut self.ctx, &mut self.issue, read_back);
+                }
                 if conversation::print_is_due(&mut self.conversation) {
                     let row = conversation::context_row(&self.conversation);
                     run_commands::context_report(&mut self.ctx, &mut self.runs, row).await?;
@@ -1290,6 +1321,13 @@ impl Controller {
             Internal::CliUpdated(done) => {
                 let waiting = &mut self.needed_update;
                 Ok(needed_update::updated(&mut self.ctx, waiting, *done))
+            }
+            Internal::Followed(looked) => {
+                crate::issue::followed(&mut self.ctx, &mut self.issue, *looked);
+                Ok(Vec::new())
+            }
+            Internal::DeepMapMade { deeper } => {
+                crate::behaviors::deep::tab::made(&mut self.ctx, deeper).await
             }
         }
     }

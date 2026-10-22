@@ -11,32 +11,22 @@ use argonauts_core::events::run::{RunLifecycle, RunOutcome};
 use argonauts_core::events::shared::{AnsweredForYou, BlackboardEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{MessageId, ModelRef, RoleName, TurnId};
+use argonauts_testkit::picture;
 use ratatui::text::Line;
 use time::macros::datetime;
 
 use super::live_rows_tests::Screen;
 use super::picture_check::assert_matches;
 
-const PICTURE: &str = include_str!("pictures/question_after.txt");
-const COLOURS: &str = include_str!("pictures/question_after.html");
+const PICTURE: &str = include_str!("../../../tests/golden/transcript/question_after.txt");
+const COLOURS: &str = include_str!("../../../tests/golden/transcript/question_after.html");
 const WIDTH: u16 = 118;
 
-/// The picture's `rows`, as text and as the grid its colours paint. Each of its rows closes
-/// its own spans, so the grid splits at its line ends.
+/// The picture's `rows`, as text and as a page of their cells alone.
 fn picture_rows(rows: Range<usize>) -> (String, String) {
     let text: Vec<&str> = PICTURE.lines().collect();
     let text = text[rows.clone()].join("\n");
-    let grid = COLOURS
-        .split_once("<pre class=\"term grid\">")
-        .and_then(|(_, rest)| rest.rsplit_once("</pre>"))
-        .map(|(grid, _)| grid)
-        .expect("the picture's grid");
-    let grid: Vec<&str> = grid.split('\n').collect();
-    let grid = &grid[rows];
-    for row in grid {
-        assert_eq!(row.matches("<span").count(), row.matches("</span>").count());
-    }
-    let html = format!("<pre class=\"term grid\">{}</pre>", grid.join("\n"));
+    let html = picture::page(&picture::grid(COLOURS)[rows]);
     (text, html)
 }
 

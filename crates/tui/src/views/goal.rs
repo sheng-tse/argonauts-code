@@ -278,7 +278,7 @@ impl GoalView {
         if self.confirm_stop {
             return Footer::hints(&[("x again to stop pursuing the goal", 0), ("esc to keep", 0)]);
         }
-        let mut hints = vec![("↑↓ select", 0), ("⏎ open", 2), ("tab workflow", 3)];
+        let mut hints = vec![("↑↓  select", 0), ("⏎ open", 2), ("tab workflow", 3)];
         if self.pursuing() {
             hints.extend([("p pause", 1), ("x stop goal", 4)]);
         }
@@ -523,7 +523,7 @@ mod tests {
         let text = draw(&mut GoalView::new(data()), 120);
         assert!(text.contains("not yet · returns None"), "{text}");
         assert!(
-            text.contains("↑↓ select · ⏎ open · tab workflow · p pause · x stop goal · esc back"),
+            text.contains("↑↓  select · ⏎ open · tab workflow · p pause · x stop goal · esc back"),
             "{text}"
         );
     }

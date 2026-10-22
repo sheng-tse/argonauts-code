@@ -52,7 +52,7 @@ impl HistoryCell for AgentsStarted {
         let text = theme.style(Role::Text);
         let head = [
             Span::styled(format!("{count} {noun} started"), text),
-            Span::styled(" (↓ to manage)", theme.style(Role::Dim)),
+            Span::styled(" (↓  to manage)", theme.style(Role::Dim)),
         ];
         // The launch is done by the time this prints.
         let bullet = [
@@ -113,15 +113,8 @@ mod tests {
         const COLOURS: &str = include_str!("../../tests/golden/waiting_rows.html");
         let rows = 23..27;
         let text: Vec<&str> = PICTURE.lines().collect();
-        let grid = COLOURS
-            .split_once("<pre class=\"term grid\">")
-            .and_then(|(_, rest)| rest.rsplit_once("</pre>"))
-            .map(|(grid, _)| grid)
-            .expect("the picture's grid");
-        let grid: Vec<&str> = grid.split('\n').collect();
-        let html = format!(
-            "<pre class=\"term grid\">{}</pre>",
-            grid[rows.clone()].join("\n")
+        let html = argonauts_testkit::picture::page(
+            &argonauts_testkit::picture::grid(COLOURS)[rows.clone()],
         );
 
         let mut theme = Theme::dark();
@@ -130,11 +123,7 @@ mod tests {
         let cell = AgentsStarted::new(vec![
             StartedAgent::new("propose:p1", None, "Haiku 5.5 on Claude Code"),
             StartedAgent::new("propose:p2", None, "GPT 6 Luna on Codex"),
-            StartedAgent::new(
-                "propose:p3",
-                None,
-                "Gemini 3.8 Flash (Low) on Antigravity CLI",
-            ),
+            StartedAgent::new("propose:p3", None, "Gemini 3.8 Flash (Low) on agy"),
         ]);
         assert_matches(
             "waiting_rows_started",
@@ -162,18 +151,14 @@ mod tests {
                 Some(AgentColor::Blue),
                 "worker · task-002 Add the JSON writer",
             ),
-            StartedAgent::new(
-                "Gemini 3.6 on Antigravity CLI",
-                None,
-                "reviewer · review\x1b[2J",
-            ),
+            StartedAgent::new("Gemini 3.6 on agy", None, "reviewer · review\x1b[2J"),
         ]);
         let lines = cell.lines(&ctx);
         assert_eq!(
             plain_text(&lines),
-            "● 2 agents started (↓ to manage)\n   \
+            "● 2 agents started (↓  to manage)\n   \
              ├ Opus 5.5 on Claude Code · worker · task-002 Add the JSON writer\n   \
-             └ Gemini 3.6 on Antigravity CLI · reviewer · review"
+             └ Gemini 3.6 on agy · reviewer · review"
         );
         assert_eq!(
             lines[0].spans[0].style,

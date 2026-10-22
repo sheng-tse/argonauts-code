@@ -128,6 +128,11 @@ impl History {
         })
     }
 
+    /// Whether a cell takes the mascot's picture while no header has printed: the greeting.
+    pub fn greets_with_a_picture(&self) -> bool {
+        self.header().is_none() && self.cells.iter().any(Cell::takes_the_mascot_picture)
+    }
+
     /// Prints on the next frame, or after the open stream ends.
     pub fn push(&mut self, cell: impl Into<Cell>) {
         let cell = cell.into();
@@ -439,7 +444,7 @@ impl History {
             match pending {
                 Pending::Cell(index) => {
                     let cell = &self.cells[index];
-                    let header = matches!(cell, Cell::Header(_));
+                    let header = matches!(cell, Cell::Header(_)) || cell.takes_the_mascot_picture();
                     let prompt = match cell {
                         Cell::User(user) if !user.command && !user.runs_a_command => {
                             Some(user.text.clone())

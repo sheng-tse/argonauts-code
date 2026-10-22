@@ -1,8 +1,9 @@
 ---
-source: crates/tui/tests/snap_agents.rs
+source: crates/tui/tests/it/snap_agents.rs
+assertion_line: 379
 expression: text(lines)
 ---
-● Opus on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (try 2)
+● Opus on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓  18.1k · retrying in 12s (try 2)
   ⎿  Bash(cargo test export)
         Error: Exit code 101
         test export::case_1 ... ok

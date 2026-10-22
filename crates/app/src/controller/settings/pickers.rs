@@ -125,7 +125,8 @@ pub(crate) fn picker(ctx: &Ctx, command: &SlashCommand) -> Vec<ViewData> {
         // `/config all` and `/config <key>`: All settings, every key or those under one.
         SlashCommand::Config { key, .. } => {
             let section = key.as_deref().filter(|key| *key != "all");
-            let found = rows::rows(settings, Some("config"), section);
+            let mut found = rows::rows(settings, Some("config"), section);
+            rows::with_picks(&mut found, &ctx.env.paths, &ctx.names.names());
             vec![view(found, "config", section.map(str::to_owned))]
         }
         SlashCommand::Records { agent } => learning(ctx, LearningArea::Records, agent.clone()),
@@ -315,6 +316,7 @@ fn workflow_rows(ctx: &Ctx) -> Vec<SettingRow> {
                 safety: false,
                 allowed: allowed.clone(),
                 description,
+                picked: None,
             }
         })
         .collect()

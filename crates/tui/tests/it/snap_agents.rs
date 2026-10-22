@@ -177,6 +177,9 @@ impl Crew {
             workflow_step: None,
             label: None,
             asked: None,
+            asked_by: None,
+            asked_why: None,
+            forked: false,
         };
         self.send(
             session,
@@ -209,6 +212,9 @@ impl Crew {
             workflow_step: None,
             label: Some("review:due-dates".to_owned()),
             asked: None,
+            asked_by: None,
+            asked_why: None,
+            forked: false,
         };
         self.send(
             session,
@@ -489,7 +495,7 @@ fn live_block_all_parts() {
     let wide = text(&crew.live(140));
     assert!(
         wide.starts_with(
-            "● Opus on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (try 2)"
+            "● Opus on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓  18.1k · retrying in 12s (try 2)"
         ),
         "{wide}"
     );
@@ -988,7 +994,7 @@ fn agents_started_rows() {
     }
     assert_eq!(
         text(&crew.printed(100)),
-        "● 3 agents started (↓ to manage)\n   ├ GPT 5.6 on Codex · worker · task-002 Redis store\n   ├ Opus on Claude Code · worker · task-003 Middleware\n   └ Gemini 3.6 Flash on Antigravity CLI · worker · task-004 Docs"
+        "● 3 agents started (↓  to manage)\n   ├ GPT 5.6 on Codex · worker · task-002 Redis store\n   ├ Opus on Claude Code · worker · task-003 Middleware\n   └ Gemini 3.6 Flash on agy · worker · task-004 Docs"
     );
     assert_eq!(crew.model.history.active_cells().count(), 3);
 
@@ -1022,7 +1028,7 @@ fn agents_started_between_task_events() {
         .tool("s-001", "t1", "command_execution", json!({"command": "ls"}));
     assert_eq!(
         text(&crew.printed(100)),
-        "● 3 agents started (↓ to manage)\n   ├ GPT 5.6 on Codex · worker · task-002 Redis store\n   ├ Opus on Claude Code · worker · task-003 Middleware\n   └ Gemini 3.6 Flash on Antigravity CLI · worker · task-004 Docs"
+        "● 3 agents started (↓  to manage)\n   ├ GPT 5.6 on Codex · worker · task-002 Redis store\n   ├ Opus on Claude Code · worker · task-003 Middleware\n   └ Gemini 3.6 Flash on agy · worker · task-004 Docs"
     );
 }
 
@@ -1043,7 +1049,7 @@ fn a_worker_forecasting_its_task_is_an_estimator() {
     let printed = text(&crew.printed(100));
     assert!(
         printed.starts_with(
-            "● 2 agents started (↓ to manage)\n   ├ GPT 5.6 on Codex · estimator · task-001 Limiter interface\n   └ Opus on Claude Code · estimator · task-002 Redis store"
+            "● 2 agents started (↓  to manage)\n   ├ GPT 5.6 on Codex · estimator · task-001 Limiter interface\n   └ Opus on Claude Code · estimator · task-002 Redis store"
         ),
         "{printed}"
     );

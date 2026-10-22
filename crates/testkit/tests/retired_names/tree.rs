@@ -87,6 +87,9 @@ impl Table {
     pub fn reads_words_of(&self, path: &str) -> bool {
         path != table::TABLE
             && !self.is_recording(path)
-            && !self.unread.iter().any(|unread| unread.path == path)
+            && !self
+                .unread
+                .iter()
+                .any(|unread| table::fits(&unread.path, path))
     }
 }

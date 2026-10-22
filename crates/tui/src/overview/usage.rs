@@ -76,7 +76,7 @@ impl UsageTab<'_> {
             .and_then(|at| self.usage.plans.get(at))
     }
 
-    /// `All CLIs  Claude Code  Codex  Antigravity CLI` and which is picked, for the panel's
+    /// `All CLIs  Claude Code  Codex  agy` and which is picked, for the panel's
     /// row of sub-tabs, which fills the picked one as it fills every row's.
     pub fn sub_tabs(&self) -> (Vec<String>, usize) {
         let picked = if self.picked().is_some() { self.cli } else { 0 };

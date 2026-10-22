@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use argonauts_core::settings::mods::check::{self as mod_check, RENAMED_PLACES};
+use argonauts_core::settings::mods::save as mod_save;
 use toml::{Table, Value};
 use toml_edit::{DocumentMut, Item, TableLike};
 
@@ -173,6 +175,105 @@ pub fn rename_in_file(file: &Path) -> Result<Renamed, SettingsError> {
     let backup = target.with_file_name(format!("{name}.bak"));
     fs::write(&backup, &text).map_err(io)?;
     write_replacing(&target, &edited)?;
+    Ok(Renamed { renames, backup })
+}
+
+/// The key of a mod file that names where the mod shows.
+const PLACES: &str = "places";
+
+/// Every old place word a mod file's text still uses, as one line: its places as the file has
+/// them and as the edit writes them. Nothing when it uses none, or doesn't read as TOML, which
+/// the mod's own problems already say.
+pub fn mod_renames_in(text: &str) -> Vec<Rename> {
+    let Ok(table) = text.parse::<Table>() else {
+        return Vec::new();
+    };
+    let Some(Value::Array(places)) = table.get(PLACES) else {
+        return Vec::new();
+    };
+    let renamed: Vec<Value> = places
+        .iter()
+        .map(|place| match place.as_str().and_then(new_place) {
+            Some(new) => Value::String(new.to_owned()),
+            None => place.clone(),
+        })
+        .collect();
+    if renamed == *places {
+        return Vec::new();
+    }
+    let was = Value::Array(places.clone()).to_string();
+    let now = Value::Array(renamed).to_string();
+    vec![Rename {
+        old: format!("{PLACES} = {was}"),
+        new: format!("{PLACES} = {now}"),
+        note: None,
+        from: PLACES.to_owned(),
+        to: PLACES.to_owned(),
+        value_now: Some(now),
+        safety: false,
+    }]
+}
+
+/// The word an old place word became.
+fn new_place(word: &str) -> Option<&'static str> {
+    RENAMED_PLACES
+        .iter()
+        .find(|(old, _)| *old == word)
+        .map(|(_, new)| *new)
+}
+
+/// Gives a mod file's old place words their new ones, keeping a copy of it beside it as
+/// `<name>.toml.bak`, which the mods folder never loads, and every comment and other line as
+/// it was. The edit must leave the mod with no problem it didn't have, or nothing is written.
+pub fn rename_in_mod_file(file: &Path) -> Result<Renamed, SettingsError> {
+    let target = real_path(file)?;
+    let io = |err: std::io::Error| SettingsError::Io {
+        path: target.clone(),
+        message: err.to_string(),
+    };
+    let invalid = |message: String| SettingsError::Invalid {
+        layer: file.display().to_string(),
+        message,
+    };
+    let text = fs::read_to_string(&target).map_err(io)?;
+    let renames = mod_renames_in(&text);
+    if renames.is_empty() {
+        return Err(invalid("it uses no place word that changed".to_owned()));
+    }
+    let mut doc: DocumentMut = text
+        .parse()
+        .map_err(|err: toml_edit::TomlError| invalid(err.to_string()))?;
+    let Some(places) = doc.get_mut(PLACES).and_then(Item::as_array_mut) else {
+        return Err(invalid(format!("its {PLACES} isn't a list")));
+    };
+    for place in places.iter_mut() {
+        if let Some(new) = place.as_str().and_then(new_place) {
+            // The word changes and the spaces and comments around it stay.
+            let decor = place.decor().clone();
+            *place = toml_edit::Value::from(new);
+            *place.decor_mut() = decor;
+        }
+    }
+    let edited = doc.to_string();
+    let stem = target
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let before = mod_check::problems(&stem, &text);
+    let added: Vec<String> = mod_check::problems(&stem, &edited)
+        .into_iter()
+        .filter(|problem| !before.contains(problem))
+        .collect();
+    if !added.is_empty() {
+        return Err(invalid(added.join("; ")));
+    }
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let backup = target.with_file_name(format!("{name}.bak"));
+    fs::write(&backup, &text).map_err(io)?;
+    mod_save::write_whole(&target, &edited).map_err(io)?;
     Ok(Renamed { renames, backup })
 }
 
@@ -503,6 +604,65 @@ fn value_at<'a>(table: &'a Table, path: &[String]) -> Option<&'a Value> {
 mod tests {
     use super::*;
     use argonauts_core::settings::Settings;
+
+    /// The branch starter as an older build wrote it, before the line under the input was
+    /// called the bottom line.
+    const OLDER_BRANCH: &str = r#"# The branch you're on, as one line of words. A command that prints plain words works as it
+# is: its first line is what the mod shows. /mods branch mode-line puts it on the bottom line.
+name   = "branch"
+title  = "branch"
+body   = "text"                # stack · meters · list · columns · sparkline · marks · text
+places = ["mode-line"]         # above · mode-line · overview · status · usage · context · limits · stats
+form   = "line"                # full · compact · line
+
+[data]
+command = ["git", "branch", "--show-current"]
+every   = "10s"
+timeout = "2s"
+"#;
+
+    #[test]
+    fn an_old_place_word_is_one_line_to_rename() {
+        let renames = mod_renames_in(OLDER_BRANCH);
+        let lines: Vec<(&str, &str)> = renames
+            .iter()
+            .map(|rename| (rename.old.as_str(), rename.new.as_str()))
+            .collect();
+        assert_eq!(
+            lines,
+            [(r#"places = ["mode-line"]"#, r#"places = ["bottom-line"]"#)]
+        );
+        let several = "places = [\"above\", \"mode-line\"]\n";
+        assert_eq!(
+            mod_renames_in(several)[0].new,
+            r#"places = ["above", "bottom-line"]"#
+        );
+        let current = OLDER_BRANCH.replace(r#"["mode-line"]"#, r#"["bottom-line"]"#);
+        assert!(mod_renames_in(&current).is_empty());
+        assert!(mod_renames_in("places = [").is_empty(), "not TOML");
+        assert!(mod_renames_in("name = \"x\"\n").is_empty(), "no places");
+    }
+
+    /// The edit changes the word only: every comment, space and other line stays, the file as
+    /// it was is kept beside it, and the mod then has no problem.
+    #[test]
+    fn renaming_a_mod_file_keeps_its_comments_and_a_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("branch.toml");
+        fs::write(&file, OLDER_BRANCH).unwrap();
+        let renamed = rename_in_mod_file(&file).unwrap();
+
+        assert_eq!(
+            renamed.backup,
+            real_path(&dir.path().join("branch.toml.bak")).unwrap()
+        );
+        assert_eq!(fs::read_to_string(&renamed.backup).unwrap(), OLDER_BRANCH);
+        let now = fs::read_to_string(&file).unwrap();
+        let expected = OLDER_BRANCH.replacen(r#"["mode-line"]"#, r#"["bottom-line"]"#, 1);
+        assert_eq!(now, expected);
+        assert!(mod_check::problems("branch", &now).is_empty(), "{now}");
+        assert!(rename_in_mod_file(&file).is_err(), "nothing left to rename");
+    }
 
     /// A global file as an older build wrote it.
     const OLDER: &str = r#"# mine

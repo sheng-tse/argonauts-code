@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_settings.rs
+source: crates/tui/tests/it/snap_settings.rs
+assertion_line: 55
 expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -13,4 +14,4 @@ expression: "picker_lines(picker, width)"
   ❯ 4. note+summary ✓    The note, with a summary of the old session
     5. Reset             remove it from this project's file
 
-  Enter to choose · ↑↓ to move · type to filter · Esc to close
+  Enter to choose · ↑↓  to move · type to filter · Esc to close

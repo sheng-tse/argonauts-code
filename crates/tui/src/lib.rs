@@ -35,6 +35,7 @@ pub mod runtime;
 pub mod stability;
 pub mod state;
 pub mod views;
+pub mod welcome;
 
 mod options;
 #[cfg(test)]

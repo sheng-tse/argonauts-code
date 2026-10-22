@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent, FallbackPlan};
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::plan::{DivideEvent, JudgingResult, MappedTopic, PlanEvent};
-use argonauts_core::events::run::{ClosingAnswer, RunLifecycle, RunMode, RunPhase};
+use argonauts_core::events::run::{ClosingAnswer, Party, RunLifecycle, RunMode, RunPhase};
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::events::shared::BlackboardEvent;
 use argonauts_core::events::task::{CheckOutcome, MergeEvent, TaskEvent, TaskState, TryCause};
@@ -46,6 +46,8 @@ pub(super) struct RunStory {
     pub crew: bool,
     /// The last pause asked to stop now rather than at a safe point.
     pub pause_now: bool,
+    /// Who asked for the pause under way, so its line is theirs.
+    pub pause_by: Option<Party>,
     pub readings: u32,
     pub drafts: u32,
     pub mapped: Vec<MappedTopic>,
@@ -130,13 +132,17 @@ impl Milestones {
                     let tried_at = woke_unsaid.then_some(event.ts);
                     lifecycle::resumed(&event.run_id, resumed, tried_at, clock, cx);
                 }
-                RunLifecycle::PauseRequested { now, .. } => story.pause_now = *now,
+                RunLifecycle::PauseRequested { now, by } => {
+                    story.pause_now = *now;
+                    story.pause_by = Some(by.clone());
+                }
                 RunLifecycle::Paused {
                     sessions_stopped,
                     committed,
                 } => lifecycle::paused(
                     &event.run_id,
                     story.pause_now,
+                    story.pause_by.take().as_ref(),
                     *sessions_stopped,
                     committed,
                     cx,

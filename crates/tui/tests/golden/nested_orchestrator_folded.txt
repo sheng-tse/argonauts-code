@@ -1,11 +1,11 @@
- Enter on Build, ↓ onto add-due-flag, then ← folds it to one line, and → opens it again                               
+ Enter on Build, ↓  onto add-due-flag, then ←  folds it to one line, and →  opens it again                            
  ╭ Phases ──────────┬ Build · 5 agents ─────────────────────────────────────────────────────────────────────────────╮ 
  │   1 Build    3/5 │  ⏺ build:due-flag     Sonnet 5.5 · 22.4k tok                                            2m40s │ 
  │   2 Review       │ ❯  ▸ add-due-flag     Claude Code's workflow · 2/3 agents                               1m58s │ 
  │   3 Sign-off     │  ✔ build:due-tests    GPT 5.6 · 30.3k tok · passed                                      1m02s │ 
  │   4 Merge        │                                                                                               │ 
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓ select · ⏎ open · → ← open or fold · esc back · to message, stop or pause it, select build:due-flag               
+ ↑↓  select · ⏎ open · →  ←  open or fold · esc back · to message, stop or pause it, select build:due-flag            
                                                                                                                       
                                                                                                                       
  At 3 m 31 s add-due-flag has ended, so it folds by itself. Build still counts its agents, and its row in the bottom  
@@ -21,7 +21,7 @@
  │   3 Sign-off     │  ✔ build:due-tests    GPT 5.6 · 30.3k tok · passed                                      1m02s │ 
  │   4 Merge        │                                                                                               │ 
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save                                   
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save                                  
                                                                                                                       
   its row in the bottom list                                                                                          
-  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  5/5 · 3m31s · ↓ 99.5k tokens                                        
+  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  5/5 · 3m31s · ↓  99.5k tokens                                       

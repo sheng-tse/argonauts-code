@@ -26,7 +26,9 @@ pub use models::{provider_from_model_id, provider_problems, registry};
 pub use resolve::resolve;
 pub use settings::crew::crew_list_problems;
 pub use settings::plain::check_commands;
-pub use settings::renamed::{Rename, Renamed, rename_in_file, renames_in};
+pub use settings::renamed::{
+    Rename, Renamed, mod_renames_in, rename_in_file, rename_in_mod_file, renames_in,
+};
 pub use settings::tighten::tightens;
 pub use terms::TERMS_NOTE;
 pub use workflows::{WorkflowError, WorkflowInfo, find_workflow, workflows_in};

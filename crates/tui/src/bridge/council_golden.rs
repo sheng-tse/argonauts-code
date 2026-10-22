@@ -126,6 +126,9 @@ impl Run {
             workflow_step: None,
             label: Some(agent.label.to_owned()),
             asked: None,
+            asked_by: None,
+            asked_why: None,
+            forked: false,
         };
         let at = Some(agent.session);
         self.send(
@@ -233,7 +236,7 @@ fn names() -> AppEvent {
     for (cli, name) in [
         ("claude-code", "Claude Code"),
         ("codex", "Codex"),
-        ("antigravity-cli", "Antigravity CLI"),
+        ("antigravity-cli", "agy"),
     ] {
         names.clis.insert(cli.to_owned(), name.to_owned());
     }
@@ -266,6 +269,7 @@ fn council_started() -> RunEventKind {
         outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     })))
 }
 
@@ -474,8 +478,7 @@ fn council_run() -> Run {
 }
 
 /// Your models ranked by the tokens each ran here, as the picture's colours have them: Haiku
-/// 5.5 is Claude Code's third, GPT 6 Luna Codex's second, and Gemini 3.8 Flash Antigravity
-/// CLI's third.
+/// 5.5 is Claude Code's third, GPT 6 Luna Codex's second, and Gemini 3.8 Flash agy's third.
 fn ranked() -> UsageSummary {
     let ranked = [
         ("claude-code", "claude-opus-5-5", 900_000),

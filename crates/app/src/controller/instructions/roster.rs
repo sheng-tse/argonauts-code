@@ -1,9 +1,9 @@
 //! The agents a request may name, and their models and efforts, as Argonauts Code knows them now.
 
-use argonauts_core::cheapest::cheapest_listed;
+use argonauts_core::cheapest::{cheapest_listed, price_of};
 use argonauts_core::input::EFFORT_LEVELS;
 use argonauts_core::names::ModelRef;
-use argonauts_core::registry::{RegistryKind, known_efforts};
+use argonauts_core::registry::{ModelRegistry, RegistryKind, known_efforts};
 
 use super::words::{first_word, key};
 use crate::controller::Ctx;
@@ -28,6 +28,11 @@ pub(crate) struct Agent {
     pub models: Vec<Model>,
     /// The model and effort its cheapest work runs on.
     pub cheapest: Option<(String, Option<String>)>,
+    /// The models it lists that the catalog prices, cheapest first, each once, as it names
+    /// them.
+    pub by_price: Vec<String>,
+    /// The model it runs when nothing names one, when that is known.
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -133,6 +138,8 @@ impl Roster {
                     state,
                     models,
                     cheapest,
+                    by_price: by_price(registry.as_ref(), &id),
+                    default_model: ctx.names.names().defaults.get(&id).cloned(),
                     id,
                 }
             })
@@ -180,6 +187,42 @@ impl Roster {
         let agent = best(&with_model)?;
         Some((agent, known_model(agent, who)))
     }
+}
+
+/// The models `cli` lists that the catalog prices, cheapest first. A model listed under an
+/// alias and its own id counts once, by the first name it was listed under.
+fn by_price(registry: &dyn ModelRegistry, cli: &str) -> Vec<String> {
+    let catalog = registry.catalog();
+    let mut listed: Vec<ModelRef> = registry
+        .list()
+        .into_iter()
+        .filter(|entry| entry.id.agent == cli && !entry.retired)
+        .map(|entry| entry.id)
+        .collect();
+    // The catalog keeps the lists a CLI shows only in its own picker, as Claude Code's.
+    listed.extend(
+        catalog
+            .models
+            .iter()
+            .filter(|entry| entry.id.agent == cli)
+            .map(|entry| entry.id.clone()),
+    );
+    let mut priced: Vec<(f64, String, String)> = Vec::new();
+    for id in &listed {
+        let Some(model) = id.model.as_deref() else {
+            continue;
+        };
+        let runs = catalog.runs(id).unwrap_or_else(|| model.to_owned());
+        if priced.iter().any(|(_, known, _)| *known == runs) {
+            continue;
+        }
+        let Some(price) = price_of(&catalog, &runs) else {
+            continue;
+        };
+        priced.push((price.input.0 + price.output.0, runs, model.to_owned()));
+    }
+    priced.sort_by(|a, b| a.0.total_cmp(&b.0));
+    priced.into_iter().map(|(_, _, model)| model).collect()
 }
 
 /// Short names people use that aren't an agent's id or name.

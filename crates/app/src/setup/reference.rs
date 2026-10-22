@@ -106,9 +106,9 @@ mod tests {
         AppEnv::for_repo(Paths::new(repo.home()), repo.root(), true).unwrap()
     }
 
-    /// The folder Argonauts Code is built from, at the top of the repository.
+    /// The folder Argonauts Code is built from, in the core crate.
     fn source() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/templates")
     }
 
     fn files_under(dir: &Path) -> Vec<PathBuf> {

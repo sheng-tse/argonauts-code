@@ -81,6 +81,8 @@ struct OpenTurn {
     plain: Vec<String>,
     /// The session's calls to start a workflow, by id, which draw a line only if refused.
     starts: Vec<String>,
+    /// A start turned down, held until the turn ends: a later start that works drops it.
+    refused: Option<ToolCall>,
 }
 
 impl ConversationTurns {
@@ -254,6 +256,7 @@ impl ConversationTurns {
             retried: false,
             plain: Vec::new(),
             starts: Vec::new(),
+            refused: None,
         });
     }
 
@@ -284,6 +287,7 @@ impl ConversationTurns {
             cx.model.history.push(message);
         }
         keep_own(&mut open, Some(ToolState::Stopped), cx);
+        say_refused(&mut open, cx);
         // Captain in your checkout has no run to say what your words asked, so the reply does.
         if let TurnReply::Change {
             captain_or_crew,
@@ -469,12 +473,8 @@ fn agent_event(
             let key = Some(id.as_str());
             if let Some(call) = open.own.iter_mut().find(|call| call.key.as_deref() == key) {
                 tools::finish_call(call, *ok, output.as_deref());
-                if open.starts.contains(id)
-                    && let Some(line) = own_calls::turned_down(*ok, output.as_deref())
-                {
-                    end_stream(open, cx);
-                    print_done(open, cx);
-                    emit(cx, line);
+                if open.starts.contains(id) {
+                    open.refused = own_calls::turned_down(*ok, output.as_deref());
                 }
                 return;
             }
@@ -944,10 +944,19 @@ fn end_parts(open: &mut OpenTurn, state: ToolState, cx: &mut Cx<'_>) {
                 .history
                 .keep(AssistantMessage::new(open.text.clone()));
         }
+        say_refused(open, cx);
         return;
     }
     end_stream(open, cx);
     keep_own(open, Some(state), cx);
+    say_refused(open, cx);
+}
+
+/// The line of a start turned down that no later start in the turn made good.
+fn say_refused(open: &mut OpenTurn, cx: &mut Cx<'_>) {
+    if let Some(line) = open.refused.take() {
+        emit(cx, line);
+    }
 }
 
 /// Shown above the answer in the transcript overlay, like `10:42 AM claude-code/haiku`. The

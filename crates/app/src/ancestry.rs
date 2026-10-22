@@ -3,12 +3,17 @@
 //! since pids and process groups stay visible. Other processes' environments are never read,
 //! as some systems (macOS 27) hide them, so a marker such as `ARGONAUTS_SESSION` or one of
 //! `approvals.refuse_ancestor_env` counts only in this process's own environment.
+//!
+//! Inside the Linux sandbox's PID namespace no registered group shows, but every parent chain
+//! there ends at the sandbox launcher, which only an agent's session runs. So on Linux a
+//! process running the launcher counts as an agent too.
 
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, anyhow, bail};
+use argonauts_conductor::sandbox::launcher::LAUNCHER_ARG;
 use argonauts_core::Paths;
 use argonauts_core::agents::AgentGroup;
 use argonauts_core::layout::user_files;
@@ -17,7 +22,7 @@ use argonauts_core::settings::approvals::ApprovalSettings;
 use nix::errno::Errno;
 use nix::sys::signal::killpg;
 use nix::unistd::{Pid as NixPid, getpgid};
-use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 
 use crate::env::SESSION_ENV;
 
@@ -165,6 +170,9 @@ pub(crate) fn agent_ancestor_in(
                 group.pgid
             )));
         }
+        if process.sandbox {
+            return Ok(Some(format!("process {pid} runs an agent's sandbox")));
+        }
         current = process.parent;
     }
     Ok(None)
@@ -195,6 +203,8 @@ pub(crate) struct ProcessInfo {
     pub parent: Option<u32>,
     /// Seconds since the epoch.
     pub start_time: u64,
+    /// It runs the Linux sandbox launcher.
+    pub sandbox: bool,
 }
 
 /// A process table the ancestry walk reads. Tests pass a scripted one.
@@ -228,7 +238,7 @@ impl Processes {
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[pid]),
             true,
-            ProcessRefreshKind::nothing(),
+            refresh_kind(),
         );
         self.system
             .process(pid)
@@ -236,11 +246,26 @@ impl Processes {
     }
 }
 
+/// Linux reads each process's arguments too, to know the sandbox launcher. Nowhere else runs
+/// it, and macOS hands the arguments out only together with the environment.
+fn refresh_kind() -> ProcessRefreshKind {
+    if cfg!(target_os = "linux") {
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always)
+    } else {
+        ProcessRefreshKind::nothing()
+    }
+}
+
+fn runs_the_sandbox(process: &sysinfo::Process) -> bool {
+    process.cmd().get(1).is_some_and(|arg| arg == LAUNCHER_ARG)
+}
+
 impl ProcessSource for Processes {
     fn inspect(&mut self, pid: u32) -> Option<ProcessInfo> {
         self.refresh(pid).map(|process| ProcessInfo {
             parent: process.parent().map(|parent| parent.as_u32()),
             start_time: process.start_time(),
+            sandbox: runs_the_sandbox(process),
         })
     }
 
@@ -380,6 +405,7 @@ pub(crate) mod tests {
             let info = ProcessInfo {
                 parent,
                 start_time: 1_000 + u64::from(pid),
+                sandbox: false,
             };
             self.table.insert(pid, (info, group));
         }
@@ -450,6 +476,32 @@ pub(crate) mod tests {
         );
         assert_eq!(found(&mut table, 32), None);
         assert!(agent_ancestor_in(&mut table, 99, &home, &markers).is_err());
+    }
+
+    #[test]
+    fn a_process_below_the_sandbox_launcher_counts_as_an_agent() {
+        let home = tempfile::tempdir().unwrap();
+        let home = Paths::new(home.path());
+        // Inside the sandbox's PID namespace: the launcher is 1, its group and the registered
+        // agents can't be seen, and the CLI's shell runs a command in a group of its own.
+        let mut table = ScriptedProcesses::default();
+        table.add(1, None, 0);
+        table.add(2, Some(1), 0);
+        table.add(3, Some(2), 3);
+        table.table.get_mut(&1).unwrap().0.sandbox = true;
+        let reason = agent_ancestor_in(&mut table, 3, &home, &test_markers())
+            .unwrap()
+            .unwrap();
+        assert!(
+            reason.contains("process 1 runs an agent's sandbox"),
+            "{reason}"
+        );
+
+        table.table.get_mut(&1).unwrap().0.sandbox = false;
+        assert_eq!(
+            agent_ancestor_in(&mut table, 3, &home, &test_markers()).unwrap(),
+            None
+        );
     }
 
     #[test]

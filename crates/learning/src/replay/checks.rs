@@ -295,6 +295,7 @@ pub(super) async fn run_tests(
         closed: Vec::new(),
         listable: Vec::new(),
         loopback: false,
+        outside: Default::default(),
     };
     let request = |name: &str, command: &[String], setup: bool| CheckRequest {
         run: entry.run.clone(),

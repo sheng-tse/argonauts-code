@@ -51,6 +51,24 @@ pub enum GitError {
         status: String,
         stderr: String,
     },
+    /// No git ran: none is on PATH, or what answers to `git` exits 127, as a shell does for a
+    /// program it can't find. Only the version check says it, where git is the subject.
+    #[error("not installed")]
+    NotInstalled,
+}
+
+/// The exit status a shell gives a program it can't find.
+const NOT_FOUND_STATUS: i32 = 127;
+
+impl GitError {
+    /// Whether no git ran at all, rather than git failing at what it was asked.
+    pub fn not_installed(&self) -> bool {
+        match self {
+            Self::NotInstalled => true,
+            Self::Spawn(err) => err.kind() == io::ErrorKind::NotFound,
+            Self::Failed { .. } => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -249,9 +267,10 @@ impl Git {
         Err(failed(&args, &out))
     }
 
+    /// Git's version, or [`GitError::NotInstalled`] when no git ran.
     pub async fn version(&self) -> Result<String, GitError> {
-        let out = self.run(Path::new("."), &["--version"]).await?;
-        Ok(argonauts_core::extract_version(&out).unwrap_or(out))
+        let args = ["--version"];
+        version_of(&args, self.output(Path::new("."), &args, &[]).await)
     }
 
     async fn identity_env(&self, dir: &Path) -> Vec<(&'static str, &'static str)> {
@@ -317,6 +336,22 @@ fn flag_with_path(flag: &str, path: &Path) -> OsString {
     let mut arg = OsString::from(flag);
     arg.push(path);
     arg
+}
+
+fn version_of(args: &[&str], ran: Result<Output, GitError>) -> Result<String, GitError> {
+    let out = match ran {
+        Ok(out) if out.status.code() == Some(NOT_FOUND_STATUS) => {
+            return Err(GitError::NotInstalled);
+        }
+        Ok(out) => out,
+        Err(err) if err.not_installed() => return Err(GitError::NotInstalled),
+        Err(err) => return Err(err),
+    };
+    if !out.status.success() {
+        return Err(failed(args, &out));
+    }
+    let text = stdout_trimmed(&out);
+    Ok(argonauts_core::extract_version(&text).unwrap_or(text))
 }
 
 fn stdout_trimmed(out: &Output) -> String {
@@ -408,6 +443,34 @@ mod tests {
             .unwrap();
         assert!(status.success());
         assert_eq!(git().head_commit(dir.path()).await.unwrap(), None);
+    }
+
+    fn exited(code: i32, stdout: &str) -> Output {
+        use std::os::unix::process::ExitStatusExt;
+        Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    /// A PATH with no git, or a program by its name that exits 127 as a shell does for a
+    /// missing one, is git not installed. A git that runs and fails is a failure that says so.
+    #[test]
+    fn no_git_on_path_or_a_127_is_not_installed() {
+        let args = ["--version"];
+        let missing = io::Error::from(io::ErrorKind::NotFound);
+        let none = version_of(&args, Err(GitError::Spawn(missing))).unwrap_err();
+        assert!(none.not_installed());
+        assert_eq!(none.to_string(), "not installed");
+        let stub = version_of(&args, Ok(exited(127, ""))).unwrap_err();
+        assert!(stub.not_installed());
+        let broken = version_of(&args, Ok(exited(2, ""))).unwrap_err();
+        assert!(!broken.not_installed(), "{broken}");
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+        assert!(!GitError::Spawn(denied).not_installed());
+        let found = version_of(&args, Ok(exited(0, "git version 2.54.0\n"))).unwrap();
+        assert_eq!(found, "2.54.0");
     }
 
     #[tokio::test]

@@ -94,7 +94,7 @@ fn header() -> SessionHeader {
         agents: vec![
             ready("Claude Code", true, "2.1.284"),
             ready("Codex", true, "0.158.0"),
-            ready("Antigravity CLI", false, "not signed in"),
+            ready("agy", false, "not signed in"),
         ],
         runs_going: 0,
         runs_need_you: 0,
@@ -167,7 +167,7 @@ fn session_header() {
         "Claude Code · Opus 5.5 with xhigh effort · Council",
         "~/github/argonauts",
         // Only the agent CLI that isn't ready gets a note.
-        "Antigravity CLI: not signed in",
+        "agy: not signed in",
     ] {
         assert!(all.contains(word), "the header shows {word}:\n{all}");
     }
@@ -178,7 +178,7 @@ fn session_header() {
         Some(ratatui::style::Color::Rgb(0xe8, 0xa3, 0x3d))
     );
     assert_eq!(
-        style_of(&lines, "Antigravity CLI: not signed in").and_then(|s| s.fg),
+        style_of(&lines, "agy: not signed in").and_then(|s| s.fg),
         fg(Role::Dim)
     );
 }

@@ -117,7 +117,7 @@ fn only_a_call_that_starts_a_workflow_changes_the_word() {
 #[test]
 fn the_line_reads_as_its_picture_while_the_script_is_written() {
     let picture = picture!("workflow_too_early");
-    let wanted = "✶ Writing a workflow… (12s · ↓ 3.1k tokens";
+    let wanted = "✶ Writing a workflow… (12s · ↓  3.1k tokens";
     assert!(picture.text(5..6)[0].starts_with(wanted));
 
     let (mut state, turn) = turn_on("claude-code");

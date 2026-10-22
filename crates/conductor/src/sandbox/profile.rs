@@ -19,7 +19,8 @@ use std::path::{Component, Path, PathBuf};
 
 use argonauts_core::CommandSpec;
 use argonauts_core::layout::{repo_state, session_files};
-use argonauts_core::session_runner::{Access, SandboxProfile};
+use argonauts_core::outside::Outside;
+use argonauts_core::session_runner::{Access, SandboxMode, SandboxProfile};
 
 use super::SandboxError;
 use crate::fallback::transcript::WORKTREE_FOLDER;
@@ -87,6 +88,10 @@ struct CliHome {
     /// Claude Code. A direct turn has you there to answer; any other session could plant one
     /// that a later session of yours loads.
     asked_first: &'static [&'static str],
+    /// Where it keeps its sign-in outside its state, such as the login keychain Claude Code
+    /// reads through `security`. The never-list keeps these from every other CLI's session, as
+    /// it keeps their state, but not from the CLI itself, which can't sign in without them.
+    sign_in: &'static [&'static str],
     /// It opens every folder above its working folder to find its real path, and stops with an
     /// error where one can't be opened, as OpenCode 2.0.32 does.
     opens_folders_above: bool,
@@ -126,6 +131,7 @@ const CLAUDE_CODE: CliHome = CliHome {
     ],
     rewritten: &[],
     asked_first: &[".claude/dev-mods"],
+    sign_in: &["Library/Keychains"],
     opens_folders_above: false,
     lists: &[],
 };
@@ -155,6 +161,8 @@ const CODEX: CliHome = CliHome {
     ],
     rewritten: &[],
     asked_first: &[],
+    // Codex keeps its sign-in there with `cli_auth_credentials_store = "keyring"`.
+    sign_in: &["Library/Keychains"],
     opens_folders_above: false,
     lists: &[],
 };
@@ -182,6 +190,7 @@ const ANTIGRAVITY_CLI: CliHome = CliHome {
     private: &[".gemini/antigravity-cli/history.jsonl"],
     rewritten: &[".gemini/antigravity-cli/bin/agentapi"],
     asked_first: &[],
+    sign_in: &[],
     opens_folders_above: false,
     lists: &[],
 };
@@ -197,6 +206,7 @@ const OPENCODE: CliHome = CliHome {
     private: &[],
     rewritten: &[],
     asked_first: &[],
+    sign_in: &[],
     opens_folders_above: true,
     lists: &[".claude"],
 };
@@ -207,6 +217,7 @@ const NO_HOME: CliHome = CliHome {
     private: &[],
     rewritten: &[],
     asked_first: &[],
+    sign_in: &[],
     opens_folders_above: false,
     lists: &[],
 };
@@ -298,6 +309,16 @@ const PRIVATE_SESSION_FILES: &[&str] = &[
     session_files::PROCESS,
 ];
 
+/// What `[outside]` opens for a session in the sandbox it gets. A container shows its CLI
+/// nothing of this machine but the session's own paths, which is what it's for, so in one the
+/// session reaches nothing outside them, as before `[outside]` existed.
+pub fn outside_reach(requested: &SandboxProfile) -> Outside {
+    match requested.mode {
+        SandboxMode::Container => Outside::default(),
+        SandboxMode::Os | SandboxMode::None => requested.outside.clone(),
+    }
+}
+
 /// Every rule no caller may loosen, added to what the engine asked for. The engine's own
 /// writable paths and `extra_writable` count only for build and experiment sessions, and only
 /// outside every denied area.
@@ -328,6 +349,24 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
     ));
     hard_deny.extend(in_home(own.private));
     hard_deny.extend(transcript_dirs(input.agent_id, home));
+    // Where a session may work outside its project, the never-list holds there and in it, but
+    // for its own CLI's sign-in.
+    let outside = &outside_reach(requested);
+    if outside.is_open() {
+        let sign_in: Vec<PathBuf> = in_home(own.state)
+            .into_iter()
+            .chain(in_home(own.sign_in))
+            .collect();
+        let own_sign_in = |path: &PathBuf| sign_in.iter().any(|own| path.starts_with(own));
+        hard_deny.extend(
+            outside
+                .never
+                .paths
+                .iter()
+                .filter(|path| !own_sign_in(path))
+                .cloned(),
+        );
+    }
 
     let other_worktrees = input
         .sees_other_worktrees
@@ -361,6 +400,10 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
         let asked = requested.writable.iter().chain(input.extra_writable);
         writable.extend(outside_all(asked, &fixed));
     }
+    let writes_outside = builds && outside.write;
+    if writes_outside {
+        writable.push(PathBuf::from("/"));
+    }
 
     let mut readable = vec![input.workdir.to_path_buf()];
     readable.extend(input.status_file.map(Path::to_path_buf));
@@ -378,6 +421,9 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
         // A fallback reads the transcripts left for it in the worktree, and can't
         // rewrite the record of what the session before it did.
         readable.push(input.workdir.join(WORKTREE_FOLDER));
+    }
+    if writes_outside {
+        readable.extend(kept_from_writes(outside, input, home, &deny_read));
     }
     // Readable paths that aren't writable become read-only, even inside the writable state.
     readable.extend(config);
@@ -420,10 +466,11 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
         open
     };
     readable.extend(open_to_git(&git_dirs));
-    // Your home and your checkout stay read-only even when they sit in a writable temp folder.
+    // Your home and your checkout stay read-only even when they sit in a writable temp folder,
+    // unless the session writes anywhere, home included.
     let checkout = git.as_ref().and_then(LinkedGit::checkout);
     readable.extend(
-        [Some(home.to_path_buf()), checkout]
+        [(!writes_outside).then(|| home.to_path_buf()), checkout]
             .into_iter()
             .flatten()
             .filter(|path| inside_any(path, &temp)),
@@ -456,7 +503,50 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
         closed,
         listable,
         loopback: false,
+        outside: outside.clone(),
     }
+}
+
+/// Relative to your home. Files your shell, your login, and git run code from: a session that
+/// writes anywhere still can't plant a command there that runs outside any sandbox later.
+const STARTUP_FILES: &[&str] = &[
+    ".profile",
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_logout",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".config/fish",
+    ".gitconfig",
+    ".config/git",
+    "Library/LaunchAgents",
+    ".config/autostart",
+    ".config/systemd/user",
+];
+
+/// What stays read-only for a session that writes anywhere: system folders, the files above,
+/// and your checkout when the session works in a worktree of it, which is where its changes
+/// to the project go. A path in a denied area is closed already, and isn't opened to reads.
+fn kept_from_writes(
+    outside: &argonauts_core::outside::Outside,
+    input: &ProfileInput<'_>,
+    home: &Path,
+    denied: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut kept: Vec<PathBuf> = outside.never.unwritten.clone();
+    kept.extend(STARTUP_FILES.iter().map(|path| home.join(path)));
+    kept.extend(
+        outside
+            .project
+            .iter()
+            .filter(|project| !is_within(input.workdir, project))
+            .cloned(),
+    );
+    outside_all(kept.iter(), denied)
 }
 
 /// A direct turn's protected paths in `workdir`, and git's hooks folder where `core.hooksPath`

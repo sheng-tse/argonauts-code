@@ -1,4 +1,4 @@
-//! Antigravity CLI (`agy`) adapter for Argonauts Code.
+//! agy (`agy`) adapter for Argonauts Code.
 
 mod agents_file;
 mod banner;
@@ -35,7 +35,7 @@ pub const CHEAPEST_EFFORT: &str = "low";
 /// read from the `.meta.json` beside each recording when the crate is built.
 pub const TESTED_VERSIONS: &[&str] = include!(concat!(env!("OUT_DIR"), "/tested_versions.rs"));
 
-/// Words Antigravity CLI treats specially in a prompt: none in 1.2.16. Its rainbow belongs to
+/// Words agy treats specially in a prompt: none in 1.2.16. Its rainbow belongs to
 /// the effort menu's max level, not to anything you type.
 pub const KEYWORDS: &[Keyword] = &[];
 
@@ -79,7 +79,7 @@ impl Adapter for AntigravityCli {
     }
 
     fn display_name(&self) -> &'static str {
-        "Antigravity CLI"
+        "agy"
     }
 
     fn binary(&self) -> &'static str {
@@ -229,7 +229,7 @@ mod tests {
         assert_eq!(adapter.id(), "antigravity-cli");
         assert!(KNOWN_AGENT_IDS.contains(&adapter.id()));
         assert_eq!(adapter.binary(), "agy");
-        assert_eq!(adapter.display_name(), "Antigravity CLI");
+        assert_eq!(adapter.display_name(), "agy");
     }
 
     #[test]

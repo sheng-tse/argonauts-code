@@ -526,15 +526,15 @@ impl ModPage {
         };
         let mut hints = if self.closed {
             vec![
-                ("← → place", 2),
+                ("←  →  place", 2),
                 ("space tick", 1),
                 ("r reset", 1),
                 (save_to, 3),
             ]
         } else {
             vec![
-                ("↑↓ setting", 2),
-                ("← → change", 2),
+                ("↑↓  setting", 2),
+                ("←  →  change", 2),
                 ("space tick", 1),
                 ("r reset", 1),
                 (save_to, 3),
@@ -795,7 +795,7 @@ mod tests {
         page.handle_key(key(KeyCode::Down));
         page.handle_key(key(KeyCode::Right));
         let before = page.file.clone();
-        assert_eq!(page.file, before, "←→ moves along the places");
+        assert_eq!(page.file, before, "←→  moves along the places");
         page.handle_key(key(KeyCode::Char(' ')));
         assert_ne!(page.file.places, before.places, "space ticks the place");
         let area = Rect::new(0, 0, 120, 30);
@@ -811,7 +811,7 @@ mod tests {
             .collect();
         assert!(text.contains("Places"), "{text}");
         assert!(text.contains("ui.mods.plan-usage"), "{text}");
-        for gone in ["Body", "Form", "Source", "Amber from", "↑↓ setting"] {
+        for gone in ["Body", "Form", "Source", "Amber from", "↑↓  setting"] {
             assert!(!text.contains(gone), "{gone} shows:\n{text}");
         }
     }

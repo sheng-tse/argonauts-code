@@ -372,7 +372,7 @@ impl LinePage {
                 word.style = word.style.add_modifier(Modifier::UNDERLINED);
             }
             words.push(word);
-            words.push(kit.strong(" → "));
+            words.push(kit.strong(" →  "));
         }
         let rest = if words.is_empty() {
             "the line's own order"
@@ -440,7 +440,7 @@ impl LinePage {
         };
         if !self.file.toggle(left, &part) {
             return ViewOutcome::Notice(
-                "mode stays on the line: it tells you whether Argonauts Code will ask. Shift+← → \
+                "mode stays on the line: it tells you whether Argonauts Code will ask. Shift+←  → \
                  moves it"
                     .to_owned(),
             );
@@ -564,10 +564,10 @@ impl LinePage {
             _ => "s save to yours",
         };
         let footer = Footer::hints(&[
-            ("↑↓ setting", 2),
-            ("← → change", 2),
+            ("↑↓  setting", 2),
+            ("←  →  change", 2),
             ("space tick", 1),
-            ("shift+← → order", 1),
+            ("shift+←  →  order", 1),
             ("r reset", 1),
             (save_to, 3),
             ("esc back", 0),
@@ -785,12 +785,12 @@ mod tests {
             let theme = Theme::dark().with_level(ColorLevel::None);
             text(&page.gives_up_words(&Kit::new(&theme)))
         };
-        assert_eq!(words(&page), "spend → branch → then the line's own order");
+        assert_eq!(words(&page), "spend →  branch →  then the line's own order");
         press(
             &mut page,
             KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT),
         );
-        assert_eq!(words(&page), "branch → spend → then the line's own order");
+        assert_eq!(words(&page), "branch →  spend →  then the line's own order");
         assert_eq!(page.file.narrow.drop, ["branch", "spend"]);
         assert!(page.changed());
         // The cursor went with spend, so the same key at the end does nothing more.
@@ -803,7 +803,7 @@ mod tests {
         page.selected = RIGHT_ROW;
         press(&mut page, key(KeyCode::Right));
         press(&mut page, key(KeyCode::Char(' ')));
-        assert_eq!(words(&page), "branch → then the line's own order");
+        assert_eq!(words(&page), "branch →  then the line's own order");
         assert_eq!(page.file.narrow.drop, ["branch", "spend"]);
     }
 

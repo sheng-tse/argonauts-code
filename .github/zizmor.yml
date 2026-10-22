@@ -1,0 +1,33 @@
+# release.yml is written by `dist generate` from dist-workspace.toml, so these findings are
+# dist's to fix, and a hand edit would be undone by the next generate. Its actions are still
+# pinned to commits through [dist.github-action-commits], so unpinned-uses holds it too.
+#
+# installer-smoke.yml installs the release it checks, and publish-npm.yml the exact npm that
+# publishing needs, so neither install has a lockfile to come from.
+rules:
+  adhoc-packages:
+    ignore:
+      - installer-smoke.yml
+      - publish-npm.yml
+  unpinned-uses:
+    config:
+      policies:
+        "*": hash-pin
+  artipacked:
+    ignore:
+      - release.yml
+  excessive-permissions:
+    ignore:
+      - release.yml
+  secrets-inherit:
+    ignore:
+      - release.yml
+  self-repository:
+    ignore:
+      - release.yml
+  template-injection:
+    ignore:
+      - release.yml
+  unpinned-images:
+    ignore:
+      - release.yml

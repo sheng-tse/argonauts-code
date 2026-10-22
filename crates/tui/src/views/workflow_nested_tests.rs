@@ -37,7 +37,7 @@ pub(super) const FLASH: &str = "antigravity-cli/gemini-3.8-flash";
 
 /// Your models as the other tabs rank them, so each keeps the colour it has there: Sonnet 5.5
 /// is Claude Code's second and Haiku 5.5 its third, GPT 5.6 Codex's first and GPT 6 Luna its
-/// second, and Gemini 3.8 Flash Antigravity CLI's third.
+/// second, and Gemini 3.8 Flash agy's third.
 pub(super) fn state() -> AppState {
     ranked_with("gpt-6-luna")
 }
@@ -389,12 +389,9 @@ fn the_deepest_workflow_reads_as_its_picture() {
 
 /// Your own workflow file calls `workflow("lint")` from its Check phase: Argonauts Code's own,
 /// so its row says just workflow, and its phases show as headings.
-///
-/// The picture writes 3,000 tokens `3.0k`, where every screen writes `3k`.
 #[test]
 fn a_scripts_own_child_reads_as_its_picture() {
-    let mut picture = picture!("nested_script_child");
-    picture.respell_tokens(11, "3.0k tok", "3k tok");
+    let picture = picture!("nested_script_child");
     let lint = WorkflowId::numbered(2);
     let lint_row = inside(
         &lint,
@@ -548,12 +545,10 @@ fn later(n: u32) -> WorkflowId {
 }
 
 /// Claude Code's second workflow for the task is a row in Final, the last phase that ran,
-/// open while it runs, and Merge waits for it. The picture writes 9,000 tokens `9.0k`, where
-/// every screen writes `9k`.
+/// open while it runs, and Merge waits for it.
 #[test]
 fn a_later_workflow_is_a_row_of_the_last_phase_that_ran() {
-    let mut picture = picture!("nested_captain_second");
-    picture.respell_tokens(31, "9.0k tok", "9k tok");
+    let picture = picture!("nested_captain_second");
     let second = inside(
         &later(2),
         "final-signoff-money",
@@ -720,6 +715,9 @@ fn agent_view(
         asked_for: None,
         earlier: None,
         moved: None,
+        given: None,
+        prompt_about: None,
+        started_from: None,
     }
 }
 
@@ -733,7 +731,9 @@ fn opened(view: &mut WorkflowView, data: AgentData) {
 /// count and tokens, and its phases on one line. Its left pane is the same outline.
 #[test]
 fn the_workers_agent_view_shows_its_workflow() {
-    let picture = picture!("nested_worker_agent");
+    let mut picture = picture!("nested_worker_agent");
+    // Claude Code leaves a blank line between an open agent's sections.
+    let spaced = picture.space_sections(0, &["Activity", "Its workflow", "Outcome"]);
     let mut view = WorkflowView::new(due_dates(Moment::Working));
     press(&mut view, KeyCode::Enter);
     press(&mut view, KeyCode::Enter);
@@ -758,14 +758,16 @@ fn the_workers_agent_view_shows_its_workflow() {
     );
     data.facts = vec!["worker".to_owned(), "worktree".to_owned()];
     opened(&mut view, data);
-    picture.assert_drawn(0..17, &drawn(&mut view, 22), 5);
+    picture.assert_drawn(0..17 + spaced, &drawn(&mut view, 22 + spaced as u16), 5);
 }
 
 /// Enter on an agent inside: its first line says whose workflow it's in, its CLI reports a
 /// shortened prompt and only its last call, and its keys only move, scroll and expand.
 #[test]
 fn an_inner_agents_view_says_whose_workflow_it_is_in() {
-    let picture = picture!("nested_inner_agent");
+    let mut picture = picture!("nested_inner_agent");
+    // Claude Code leaves a blank line between an open agent's sections.
+    let spaced = picture.space_sections(0, &["Activity", "Outcome"]);
     let mut view = WorkflowView::new(due_dates(Moment::Working));
     press(&mut view, KeyCode::Enter);
     for _ in 0..4 {
@@ -786,13 +788,15 @@ fn an_inner_agents_view_says_whose_workflow_it_is_in() {
         3,
     );
     opened(&mut view, data);
-    picture.assert_drawn(0..12, &drawn(&mut view, 17), 5);
+    picture.assert_drawn(0..12 + spaced, &drawn(&mut view, 17 + spaced as u16), 5);
 }
 
 /// The agent view of an agent two levels inside says in words how deep it is.
 #[test]
 fn the_deepest_agents_view_names_its_levels() {
-    let picture = picture!("nested_deepest");
+    let mut picture = picture!("nested_deepest");
+    // Claude Code leaves a blank line between an open agent's sections.
+    let spaced = picture.space_sections(29, &["Activity", "Outcome"]);
     let mut view = WorkflowView::new(due_dates(Moment::Deepest));
     press(&mut view, KeyCode::Enter);
     for _ in 0..7 {
@@ -813,7 +817,7 @@ fn the_deepest_agents_view_names_its_levels() {
         2,
     );
     opened(&mut view, data);
-    picture.assert_drawn(29..43, &drawn(&mut view, 19), 5);
+    picture.assert_drawn(29..43 + spaced, &drawn(&mut view, 19 + spaced as u16), 5);
 }
 
 /// Opened from its row in the bottom list, the run's view opens on Build with add-due-flag
@@ -881,20 +885,33 @@ fn one_row(row: &WorkflowRow, label: usize, width: usize, own_cli: Option<&str>)
     super::workflow_pictures::buffer_of(&[line], u16::try_from(width + 3).unwrap())
 }
 
-/// Each row names the model that did the job: a fallback says `for` the one it takes over from
-/// and why, then the verdict in the reason's place once it answers; a hand-over has no mark;
-/// a job left out is grey, with no numbers.
-///
-/// The picture writes 18,000 tokens `18.0k`, where every screen writes `18k`.
+/// Each row names the model that did the job: a fallback says whose place it takes and why,
+/// then its verdict first once it answers; a hand-over has no mark; a job left out is grey,
+/// with no numbers.
 #[test]
 fn each_moved_row_reads_as_its_picture() {
     let mut picture = picture!("moved_rows");
-    picture.respell_tokens(9, "18.0k tok", "18k tok");
-    // The time stays at the row's end.
-    let dim = dark().style(crate::theme::Role::Dim).fg;
-    picture.blank(9, 91);
-    picture.blank(9, 92);
-    picture.write(9, 93, "41s", dim);
+    // A fallback says whose place it took, after its verdict once it answered.
+    // Out of a box the words grow into the gap before the time, which keeps its column.
+    picture.in_place_of(3, "Opus 5.5", None);
+    picture.reword(
+        3,
+        &format!("overloaded{}", " ".repeat(20)),
+        &format!("overloaded{}", " ".repeat(12)),
+    );
+    picture.in_place_of(6, "GPT 5.6 Luna", None);
+    picture.reword(
+        6,
+        &format!("crashed{}", " ".repeat(13)),
+        &format!("crashed{}", " ".repeat(5)),
+    );
+    picture.in_place_of(9, "GPT 5.6 Luna", Some("approved"));
+    let done = picture.text(9..10).remove(0);
+    let gap = done[done.find("Luna").expect("the fallback") + "Luna".len()..]
+        .chars()
+        .take_while(|ch| *ch == ' ')
+        .count();
+    picture.reword(9, &format!("Luna{}", " ".repeat(gap)), "Luna   ");
     let warn = |words: &str| RowNote::new(words, Tone::Warn);
     let rows = [
         (
@@ -928,7 +945,7 @@ fn each_moved_row_reads_as_its_picture() {
             15,
             left_out(
                 agent(3, "propose:p3", FLASH, RowStatus::Skipped, 0, 0),
-                "Antigravity CLI is signed out",
+                "agy is signed out",
             ),
             None,
         ),
@@ -951,7 +968,7 @@ fn reviewing() -> WorkflowData {
     data.elapsed_ms = 168_000;
     data.status_lines = vec![StatusLine::new(
         StatusKind::Note,
-        "review: Codex crashed twice · Gemini 3.8 Flash on Antigravity CLI reviews build:due-flag in its place",
+        "review: Codex crashed twice · Gemini 3.8 Flash on agy reviews build:due-flag in its place",
     )];
     data.phases[0] = phase(
         "Build",
@@ -999,16 +1016,20 @@ fn reviewing() -> WorkflowData {
 /// The fallback from another CLI in its box, in the orchestrator run.
 #[test]
 fn a_fallback_reads_as_its_picture_in_its_box() {
-    let picture = picture!("moved_rows");
+    let mut picture = picture!("moved_rows");
+    picture.in_place_of(26, "GPT 5.6 Luna", None);
     let mut view = WorkflowView::new(reviewing());
     picture.assert_drawn(19..31, &drawn(&mut view, 12), 0);
 }
 
-/// Enter on the fallback: its own numbers first, then Fallback for, which keeps the reason
+/// Enter on the fallback: its own numbers first, then whose place it takes, which keeps the reason
 /// and says why this model may review the work.
 #[test]
 fn a_fallbacks_view_says_whose_place_it_takes() {
     let mut picture = picture!("moved_agent");
+    // It says whose place it takes, and why, as the row does.
+    picture.reword(4, "Fallback for ", "In place of ");
+    picture.reword(4, " on Codex, which", ", which");
     // Every call shows, so the title says how many there are, as every agent view's does.
     picture.reword(
         10,
@@ -1042,14 +1063,18 @@ fn a_fallbacks_view_says_whose_place_it_takes() {
         which: "crashed twice as it started".to_owned(),
         lines: vec![
             "Codex: \"Failed to synchronize managed preferences\"".to_owned(),
-            "Antigravity CLI isn't build:due-flag's provider, so the review stays independent"
-                .to_owned(),
+            "agy isn't build:due-flag's provider, so the review stays independent".to_owned(),
         ],
     });
     opened(&mut view, data);
     // In this run GPT 5.6 Luna is Codex's second model, which has its second colour.
     let state = ranked_with("gpt-5.6-luna");
-    picture.assert_drawn(0..18, &drawn_in(&mut view, 23, &state), 5);
+    let spaced = picture.space_sections(0, &["Prompt", "Activity", "Outcome"]);
+    picture.assert_drawn(
+        0..18 + spaced,
+        &drawn_in(&mut view, 23 + spaced as u16, &state),
+        5,
+    );
 }
 
 /// A council goes on without the job no model could take: grey, uncounted, and said once in
@@ -1057,15 +1082,15 @@ fn a_fallbacks_view_says_whose_place_it_takes() {
 ///
 /// One label column holds for the whole workflow, every level of it, sized to the labels its
 /// rows have: 10 cells here. The picture is wrong to fit its column to labels of phases that
-/// haven't started, 14 cells, so the test moves the models to the workflow's column. And the
-/// picture writes 11,000 tokens `11.0k`, where every screen writes `11k`.
+/// haven't started, 14 cells, so the test moves the models to the workflow's column.
 #[test]
 fn a_job_left_out_reads_as_its_picture() {
     let mut picture = picture!("council_after");
+    // The counts stand right-aligned after every phase's name, as Claude Code lays them out.
+    picture.reword(6, "Propose  1/2     ", "Propose      1/2 ");
     for (row, label) in [(6, "propose:p1"), (7, "propose:p2"), (8, "propose:p3")] {
         picture.reword(row, &format!("{label}     "), &format!("{label}  "));
     }
-    picture.respell_tokens(7, "11.0k tok", "11k tok");
     let propose = phase(
         "Propose",
         RowStatus::Running,
@@ -1104,7 +1129,7 @@ fn a_job_left_out_reads_as_its_picture() {
         style: None,
         status_lines: vec![StatusLine::new(
             StatusKind::Note,
-            "propose:p3 is left out: Antigravity CLI is signed out and nothing else can take it · the council goes on with 2",
+            "propose:p3 is left out: agy is signed out and nothing else can take it · the council goes on with 2",
         )],
         agents_done: 1,
         agents_total: 2,
@@ -1170,10 +1195,10 @@ fn a_job_left_outs_view_reads_as_its_picture() {
     let mut opened_view = agent_view(job, "", &[], 0);
     opened_view.facts = vec!["proposer".to_owned()];
     opened_view.moved = Some(Moved::LeftOut {
-        because: "Antigravity CLI is signed out".to_owned(),
+        because: "agy is signed out".to_owned(),
         lines: vec![
             "a council can do without one proposal, so it goes on with two".to_owned(),
-            "sign in to Antigravity CLI and the next run asks it again".to_owned(),
+            "sign in to agy and the next run asks it again".to_owned(),
         ],
     });
     opened(&mut view, opened_view);

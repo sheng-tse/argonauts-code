@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use argonauts_core::RunId;
 use argonauts_core::api::UsagePeriod;
-use argonauts_core::app::{AppMode, UiCommand, ViewRequest};
+use argonauts_core::app::{AppMode, CommandWork, UiCommand, ViewRequest};
 use argonauts_core::events::session::SubagentStatus;
 use argonauts_core::input::{ModsAction, SlashCommand, ViewAction};
 use argonauts_core::names::{SessionKey, WorkflowId};
@@ -243,7 +243,7 @@ fn stop_all_agents(cx: &mut Cx<'_>) {
 
 /// Esc while work runs stops the main agent's turn and nothing else, as on Claude Code's
 /// screen: the agents a run started keep going, and stop from the list, one by
-/// one or all at once. A run that's already pausing stops now.
+/// one or all at once. A run that's already pausing stops now, and so does `/update`.
 fn interrupt(cx: &mut Cx<'_>) {
     let command = match cx.state.mode {
         Some(AppMode::Answering { .. }) => UiCommand::CancelTurn,
@@ -256,6 +256,11 @@ fn interrupt(cx: &mut Cx<'_>) {
             return;
         }
         Some(AppMode::Pausing { .. }) => UiCommand::Pause { now: true },
+        Some(AppMode::Idle | AppMode::Waiting { .. }) | None
+            if cx.state.command_work == Some(CommandWork::Updating) =>
+        {
+            UiCommand::StopCommand
+        }
         Some(AppMode::Idle | AppMode::Waiting { .. }) | None => return,
     };
     cx.out.send(command);
@@ -420,9 +425,23 @@ fn open_row(key: &str, cx: &mut Cx<'_>) {
 /// opens nothing, and a line says so. A run from an earlier session comes back on screen first,
 /// as `/resume <run>` brings it, with its question if it waits on you.
 fn open_workflow(run: RunId, entry: RunEntry, cx: &mut Cx<'_>) {
-    let elsewhere = !cx.state.runs.contains_key(&run)
-        && cx.state.background.iter().any(|summary| summary.run == run);
-    if elsewhere {
+    let listed = cx
+        .state
+        .background
+        .iter()
+        .find(|summary| summary.run == run)
+        .filter(|_| !cx.state.runs.contains_key(&run));
+    // A run you paused opens paused, its workflow read from its journal: `p` there resumes it.
+    if listed.is_some_and(super::panel::paused_by_you) {
+        cx.out.send(UiCommand::Request {
+            view: ViewRequest::Workflow {
+                run,
+                workflow: None,
+            },
+        });
+        return;
+    }
+    if listed.is_some() {
         // Focus goes back to the prompt, so the run's question can take the keys once it opens.
         cx.model.bottom.workflows.blur();
         cx.model.bottom.agents.blur();
@@ -953,6 +972,17 @@ mod tests {
             let (out, _) = act(&state, &UiAction::Interrupt);
             assert_eq!(out.commands, sent, "{mode:?}");
         }
+        // `/update` at work stops; the Doctor check after it runs to its end.
+        for (work, sent) in [
+            (CommandWork::Updating, vec![UiCommand::StopCommand]),
+            (CommandWork::Checking, Vec::new()),
+        ] {
+            let mut state = AppState::default();
+            state.mode = Some(AppMode::Idle);
+            state.command_work = Some(work);
+            let (out, _) = act(&state, &UiAction::Interrupt);
+            assert_eq!(out.commands, sent, "{work:?}");
+        }
         // With only a run at work Esc says it keeps going, and how to stop its agents.
         let mut state = AppState::default();
         state.mode = Some(AppMode::Working { run: run.clone() });
@@ -1039,6 +1069,22 @@ mod tests {
             out.commands,
             [UiCommand::Resume {
                 run: Some(run_id())
+            }]
+        );
+        // One you paused opens paused: its workflow, which `p` resumes.
+        let mut paused = earlier.clone();
+        if let Some(listed) = paused.background.first_mut() {
+            listed.waiting.clear();
+            listed.stopped_at = "paused".into();
+        }
+        let (out, _) = act(&paused, &UiAction::OpenWorkflow("run-01".into()));
+        assert_eq!(
+            out.commands,
+            [UiCommand::Request {
+                view: ViewRequest::Workflow {
+                    run: run_id(),
+                    workflow: None
+                }
             }]
         );
 

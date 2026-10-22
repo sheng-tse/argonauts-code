@@ -36,6 +36,7 @@ pub mod host;
 pub(crate) mod job_fallback;
 pub mod journal;
 pub mod live;
+pub mod outside_writes;
 pub mod recover;
 pub mod run_meter;
 pub mod shared;
@@ -96,7 +97,9 @@ impl RunEngine for CrewEngine {
 async fn drive(engine: CrewEngine, mut context: EngineContext) -> EngineResult<EngineExit> {
     let state = RunState::rebuild(&context.history)?;
     let reopened = context.reopen && state.run.finished == Some(RunOutcome::Stopped);
-    if let Some(outcome) = state.run.finished.filter(|_| !reopened) {
+    // A pull request the run opened can have a round of its follow-up to work.
+    let follow_up = crate::follow::round::due(context.repo.state_dir(), &context.run).is_some();
+    if let Some(outcome) = state.run.finished.filter(|_| !reopened && !follow_up) {
         let host = Host::new(Arc::new(Shared::new(&context, state)?));
         while let Ok(command) = context.inbox.try_recv() {
             commands::after_finish(&host, command);
@@ -180,10 +183,14 @@ async fn ensure_base_worktree(host: &Host) -> EngineResult<()> {
 }
 
 /// Runs the run's own workflow from where the log stopped, follows switches to another workflow,
-/// then runs the run review and writes the closing answer unless you stopped the run. A new run's
+/// then runs the run review and writes the closing answer unless you stopped the run. A round
+/// of its pull request's follow-up, once due, runs in its place. A new run's
 /// workflow is the main agent's design when `workflows.orchestrator_designs` is on, else the
 /// chosen workflow as it is. A failed run review leaves the outcome as it is.
 async fn root_workflow(host: Host) -> EngineResult<RunOutcome> {
+    if let Some(followed) = crate::follow::round::due(host.repo().state_dir(), host.run_id()) {
+        return crate::follow::round::run(host, followed).await;
+    }
     let first = match host.read(newest_top_level) {
         Some(id) => Ok(id),
         None => first_workflow(&host).await?,
@@ -446,6 +453,17 @@ impl Loop {
                 // about the CLI offers to move it.
                 if let Some(kept) = &stall.kept {
                     crate::fallback::down::job_waits(&self.host, kept)?;
+                    // An agent you picked while the job was still trying its CLI takes it now,
+                    // and the workflow goes on. Freed to the agent that just stopped, it waits.
+                    let freed_to_another = self.host.read(|state| {
+                        let waits = state.run.waiting_jobs.iter().any(|w| w.job == kept.job);
+                        let to = state.run.freed(&kept.job).flatten();
+                        !waits && to.is_some_and(|to| *to != kept.stopped)
+                    });
+                    if freed_to_another {
+                        self.reenter = true;
+                        return Ok(None);
+                    }
                 }
                 // A review or a ruling that only its builder's provider is left to take waits
                 // for the agent it was asked of instead, and its question asks you.

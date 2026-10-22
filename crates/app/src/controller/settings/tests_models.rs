@@ -1,7 +1,6 @@
 //! The model lists behind `/model` and `/effort`: only installed CLIs, each model's own effort
 //! levels, the background refresh, and the scope question's one note for a session override.
 
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,8 +30,7 @@ fn fake_codex(dir: &Path) -> PathBuf {
     let path = dir.join("codex");
     let script =
         format!("#!/bin/sh\n[ \"$*\" = \"debug models\" ] || exit 2\ncat '{CODEX_MODELS}'\n");
-    std::fs::write(&path, script).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    argonauts_testkit::write_script(&path, &script).unwrap();
     path
 }
 
@@ -47,8 +45,7 @@ fn fake_agy(dir: &Path) -> PathBuf {
     let script = format!(
         "#!/bin/sh\n[ \"$*\" = \"--output-format json models\" ] || exit 2\ncat '{AGY_MODELS}'\n"
     );
-    std::fs::write(&path, script).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    argonauts_testkit::write_script(&path, &script).unwrap();
     path
 }
 
@@ -713,6 +710,7 @@ fn conversation_turn<T>(
         shell: None,
         fast,
         workdir: fixture.ctx.env.repo_root.clone(),
+        outside: Default::default(),
     };
     then(&launch)
 }
@@ -784,7 +782,7 @@ async fn a_main_model_agy_no_longer_lists_runs_its_nearest_and_says_so() {
             _ => None,
         })
         .collect();
-    let line = "This conversation runs on Gemini 3.8 Flash (Low): Antigravity CLI no longer \
+    let line = "This conversation runs on Gemini 3.8 Flash (Low): agy no longer \
                 offers Gemini 3.6 Flash (Low)";
     assert_eq!(
         notices,
@@ -810,7 +808,7 @@ fn agy_after_an_update(dir: &Path) {
         "#!/bin/sh\n[ \"$*\" = \"--output-format json models\" ] || exit 2\ncat '{}'\n",
         listed.display()
     );
-    std::fs::write(dir.join("agy"), script).unwrap();
+    argonauts_testkit::write_script(&dir.join("agy"), &script).unwrap();
 }
 
 /// `/fast` on a model fixed at one level runs its line's lowest instead, as agy lists

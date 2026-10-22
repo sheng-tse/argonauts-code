@@ -58,7 +58,8 @@ pub(crate) fn estimate(input: &IntakeInput, read_instructions: bool) -> String {
 
 /// The paragraph that has the estimate list a request's own instructions on how to run it.
 const HOW_TO_RUN: &str = "If the request itself says how to run it (Captain or the crew, who is the main agent \
-or orchestrates, who builds, reviews, judges, plans or checks, which agents or models, or all the other agents at once (`others`), how much effort, \
+or orchestrates, who builds, reviews, judges, plans or checks, which agents make up the crew (`crew`, as in \"use only Claude\") or \
+which models, or all the other agents at once (`others`), how much effort, \
 whether to work in a checked worktree, whether to keep going until something holds or whose goal \
 keeps each task going, or anything about approvals, merging, the limit, the tests, \
 or the sandbox), list each instruction in `how_to_run`, with the request's own words in `says`, \
@@ -360,6 +361,11 @@ mod tests {
         assert!(prompt.contains("reviews, judges, plans"), "{prompt}");
         assert!(
             prompt.contains("all the other agents at once (`others`)"),
+            "{prompt}"
+        );
+        // Naming the only agents to use is the crew, which keeps reviews within them.
+        assert!(
+            prompt.contains("the crew (`crew`, as in \"use only Claude\")"),
             "{prompt}"
         );
     }

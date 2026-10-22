@@ -5,7 +5,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# What the crate builds with. Tests and the pictures, snapshots and recordings they read
+# stay in the repository.
+include = ["/CHANGELOG.md", "/src/setup/readme/argonauts.md", "/src/**/*.rs", "/LICENSE", "/NOTICE"]
 
 [dependencies]
 anyhow.workspace = true
@@ -29,13 +35,19 @@ futures.workspace = true
 nix = { workspace = true, features = ["fs", "user"] }
 # A CLI that names its account only on its start-up screen is read in a hidden terminal.
 portable-pty.workspace = true
+# What `argonauts self-update` prints, drawn in the screen's colours.
+ratatui.workspace = true
 reqwest.workspace = true
 regex.workspace = true
 schemars.workspace = true
+semver = { version = "1.0.28", features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 similar.workspace = true
 sysinfo.workspace = true
+# A release archive as dist builds it, .tar.xz, unpacked by a new version of Argonauts Code.
+tar = "0.4.46"
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
@@ -46,9 +58,13 @@ unicode-width.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 vt100.workspace = true
+xz2 = "0.1.7"
+# The update manifest's signature, checked against the keys built in.
+minisign-verify = "0.2"
 
 [dev-dependencies]
 argonauts-testkit.workspace = true
-ratatui.workspace = true
+# Signs the test manifests with a key made for each test.
+minisign = "0.7"
 tempfile.workspace = true
 tracing-subscriber.workspace = true

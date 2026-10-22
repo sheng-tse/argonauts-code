@@ -164,12 +164,12 @@ fn working_with_agents() {
     let view = crew().render(&ctx(&theme, 100, NOW));
     let all = text(&view.lines);
     assert!(
-        all.starts_with("✻ Building… (4m 12s · ↓ 48.2k tokens · build · 3 agents)\n\n"),
+        all.starts_with("✻ Building… (4m 12s · ↓  48.2k tokens · build · 3 agents)\n\n"),
         "{all}"
     );
     // Esc leaves a run's agents going, so the line makes no offer of it.
     assert!(
-        all.contains("  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts · ← 3 agents · ↓ to manage"),
+        all.contains("  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts · ←  3 agents · ↓  to manage"),
         "{all}"
     );
     for row in ["claude-code", "codex", "agy"] {
@@ -186,9 +186,9 @@ fn working_with_agents() {
             .unwrap_or_default()
     };
     let claude = row("claude-code/opus");
-    assert!(claude.ends_with("2/5 · 4m · ↓ 18.1k tokens"), "{all}");
+    assert!(claude.ends_with("2/5 · 4m · ↓  18.1k tokens"), "{all}");
     let codex = row("codex/gpt-5.6");
-    assert!(codex.ends_with("1/5 · 3m · ↓ 12.9k tokens"), "{all}");
+    assert!(codex.ends_with("1/5 · 3m · ↓  12.9k tokens"), "{all}");
     let stats_at = |row: &str| row.find("/5").map(|at| row[..at].chars().count());
     assert_eq!(stats_at(&claude), stats_at(&codex), "{all}");
     assert!(
@@ -478,7 +478,7 @@ fn the_focused_agent_panel_marks_its_row() {
     );
     assert!(
         all.contains(
-            "\n  ↑/↓ to select · enter to view · x to stop it · ctrl+x ctrl+k to stop all agents\n"
+            "\n  ↑/↓  to select · enter to view · x to stop it · ctrl+x ctrl+k to stop all agents\n"
         ),
         "{all}"
     );

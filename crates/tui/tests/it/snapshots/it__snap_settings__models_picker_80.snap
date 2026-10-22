@@ -1,6 +1,6 @@
 ---
-source: crates/tui/tests/snap_settings.rs
-assertion_line: 54
+source: crates/tui/tests/it/snap_settings.rs
+assertion_line: 55
 expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────
@@ -11,4 +11,4 @@ expression: "picker_lines(picker, width)"
     2. Codex           1 model · API key
     3. Ollama          1 model · local
 
-  Enter to see its models · ↑↓ to move · type to filter · Esc to close
+  Enter to see its models · ↑↓  to move · type to filter · Esc to close

@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_workflows.rs
+source: crates/tui/tests/it/snap_workflows.rs
+assertion_line: 733
 expression: "&text"
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -8,29 +9,29 @@ expression: "&text"
 
  ╭ Understand · 2 agents ─────────┬ reader ─────────────────────────────────────────────────╮
  │ ❯ ✔ reader  Opus on Claude Co… │ ✔ Done · Opus on Claude Code                            │
- │   ✔ reader  GPT 5.6 on Codex   │ 31k tok · 195 tool calls · 58s                          │
+ │   ✔ reader  GPT 5.6 on Codex   │ 31.0k tok · 195 tool calls · 58s                        │
  │                                │                                                         │
  │                                │ Prompt · 14 lines · ⏎ expand                            │
  │                                │   Build the terminal and the whole bottom region of th… │
  │                                │   … 13 more lines                                       │
+ │                                │                                                         │
  │                                │ Activity · last 3 of 195 tool calls · ⏎ expand          │
  │                                │   ⏺ Bash(cargo test -p argonauts-tui composer) · error  │
  │                                │   ⏺ Bash(cargo clippy -p argonauts-tui --all-targets …) │
  │                                │   ◌ Bash(cargo test -p argonauts-tui) · no result       │
+ │                                │                                                         │
  │                                │ Diff · 4 files · +120 -18 · d open                      │
+ │                                │                                                         │
  │                                │ Subagents · 4 · structure not exposed · ⏎ expand        │
  │                                │   ✔ explorer  done · Found 14 call sites                │
  │                                │   ◐ planner   running                                   │
  │                                │   ✗ tester    failed · 2 tests failed                   │
  │                                │   … 1 more                                              │
+ │                                │                                                         │
  │                                │ Outcome · 14 lines · ⏎ expand                           │
  │                                │   Report: the terminal and the bottom region are done,  │
  │                                │   with no stubs left.                                   │
  │                                │                                                         │
  │                                │   What I built                                          │
- │                                │                                                         │
- │                                │   - Terminal: history above the live region, redrawing  │
- │                                │   … 8 more lines                                        │
- │                                │                                                         │
- ╰────────────────────────────────┴─────────────────────────────────────────────────────────╯
- ↑↓ agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back
+ ╰────────────────────────────────┴───────────────────────────────────────    1–25 of 28 ↓ ─╯
+ ↑↓  agent · j/k scroll · ⏎ expand · m message · p pause · esc back · s save

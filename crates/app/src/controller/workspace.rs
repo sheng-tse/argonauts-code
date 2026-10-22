@@ -185,7 +185,7 @@ pub(crate) fn working_tree_diff(root: &Path) -> anyhow::Result<String> {
     let scratch =
         ScratchIndex(index.with_file_name(format!("argonauts-diff-index-{}", std::process::id())));
     if index.exists() {
-        std::fs::copy(&index, &scratch.0).context("copying the index")?;
+        git::copy_index(&index, &scratch.0).context("copying the index")?;
     }
     let with_scratch = |args: &[&str]| -> anyhow::Result<String> {
         let output = crate::git::command(root)

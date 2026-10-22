@@ -258,7 +258,7 @@ impl BottomRow {
         if state.panel {
             pieces.push(words(
                 Joiner::Dot,
-                "↓ to manage",
+                "↓  to manage",
                 dim,
                 Some(Give::ManageHint),
             ));
@@ -294,17 +294,24 @@ impl BottomRow {
     ) -> Option<Span<'static>> {
         let theme = ctx.theme;
         let arrow = theme.glyphs.agents;
+        let gap = crate::theme::glyphs::gap_after(arrow);
         let waiting = self.needs_you + pinned_questions;
         if waiting > 0 {
             return Some(Span::styled(
-                format!("{arrow} {waiting} needs you"),
+                format!("{arrow}{gap}{waiting} needs you"),
                 theme.style(Role::Warn),
             ));
         }
         let agents = self.background_agents;
         (agents > 0 && !work_waits).then(|| {
             let noun = if agents == 1 { "agent" } else { "agents" };
-            Span::styled(format!("{arrow} {agents} {noun}"), theme.style(Role::Dim))
+            Span::styled(
+                format!(
+                    "{arrow}{}{agents} {noun}",
+                    crate::theme::glyphs::gap_after(arrow)
+                ),
+                theme.style(Role::Dim),
+            )
         })
     }
 
@@ -312,12 +319,17 @@ impl BottomRow {
     fn short_arrow_hint(&self, ctx: &RenderCtx<'_>, pinned_questions: usize) -> Span<'static> {
         let theme = ctx.theme;
         let arrow = theme.glyphs.agents;
+        let gap = crate::theme::glyphs::gap_after(arrow);
         let waiting = self.needs_you + pinned_questions;
         if waiting > 0 {
-            return Span::styled(format!("{arrow} {waiting}!"), theme.style(Role::Warn));
+            return Span::styled(format!("{arrow}{gap}{waiting}!"), theme.style(Role::Warn));
         }
         Span::styled(
-            format!("{arrow} {}", self.background_agents),
+            format!(
+                "{arrow}{}{}",
+                crate::theme::glyphs::gap_after(arrow),
+                self.background_agents
+            ),
             theme.style(Role::Dim),
         )
     }
@@ -471,19 +483,19 @@ mod tests {
         };
         assert_eq!(
             text(mode.line(&ctx, working)),
-            "  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ← 3 agents · ↓ to manage"
+            "  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ←  3 agents · ↓  to manage"
         );
         mode.vim = Some(VimMode::Insert);
         assert_eq!(
             text(mode.line(&ctx, working)),
-            "  -- INSERT -- ǁ supervised mode on (shift+tab to cycle) · ← 3 agents · ↓ to manage"
+            "  -- INSERT -- ǁ supervised mode on (shift+tab to cycle) · ←  3 agents · ↓  to manage"
         );
         mode.vim = Some(VimMode::Normal);
         let wide = RenderCtx::new(120, &theme, Clock::still(Instant::now()));
         assert!(text(mode.line(&wide, working)).contains("esc to interrupt"));
         mode.background_agents = 1;
         mode.vim = None;
-        assert!(text(mode.line(&ctx, idle())).ends_with("← 1 agent"));
+        assert!(text(mode.line(&ctx, idle())).ends_with("←  1 agent"));
     }
 
     /// A turn over with its workflows going: Esc stops nothing and the shortcuts wait, so the
@@ -505,12 +517,12 @@ mod tests {
         };
         assert_eq!(
             text(mode.line(&ctx, waiting)),
-            "  ⏵⏵ auto mode on (shift+tab to cycle) · ↓ to manage"
+            "  ⏵⏵ auto mode on (shift+tab to cycle) · ↓  to manage"
         );
         mode.needs_you = 1;
         assert_eq!(
             text(mode.line(&ctx, waiting)),
-            "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 needs you · ↓ to manage"
+            "  ⏵⏵ auto mode on (shift+tab to cycle) · ←  1 needs you · ↓  to manage"
         );
     }
 
@@ -530,7 +542,7 @@ mod tests {
         let line = mode.line(&ctx, pinned);
         assert_eq!(
             text(line.clone()),
-            "  ǁ supervised mode on (shift+tab to cycle) · ← 1 needs you"
+            "  ǁ supervised mode on (shift+tab to cycle) · ←  1 needs you"
         );
         assert_eq!(line.spans.last().unwrap().style, theme.style(Role::Warn));
         let typing = ModeState {
@@ -713,21 +725,21 @@ mod tests {
         };
         assert_eq!(
             at(100),
-            "  ǁ auto preview mode on (shift+tab to cycle) · esc to interrupt · ← 3 agents · ↓ to manage"
+            "  ǁ auto preview mode on (shift+tab to cycle) · esc to interrupt · ←  3 agents · ↓  to manage"
         );
         // The footer's hint first, then how to change the mode, then the panel's.
         assert_eq!(
             at(80),
-            "  ǁ auto preview mode on (shift+tab to cycle) · ← 3 agents · ↓ to manage"
+            "  ǁ auto preview mode on (shift+tab to cycle) · ←  3 agents · ↓  to manage"
         );
         assert_eq!(
             at(60),
-            "  ǁ auto preview mode on · ← 3 agents · ↓ to manage"
+            "  ǁ auto preview mode on · ←  3 agents · ↓  to manage"
         );
-        assert_eq!(at(40), "  ǁ auto preview mode on · ← 3 agents");
+        assert_eq!(at(40), "  ǁ auto preview mode on · ←  3 agents");
         // The mode loses its words before the hint that says something waits.
-        assert_eq!(at(30), "  ǁ auto preview · ← 3 agents");
-        assert_eq!(at(20), "  ǁ · ← 3 agents");
+        assert_eq!(at(30), "  ǁ auto preview · ←  3 agents");
+        assert_eq!(at(20), "  ǁ · ←  3 agents");
     }
 
     /// The parts the line has sit against the right edge, and the mode's own hints are the

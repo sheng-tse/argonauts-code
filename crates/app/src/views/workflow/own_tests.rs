@@ -12,7 +12,9 @@ use argonauts_core::events::workflow::{StepStarted, WorkflowEvent, WorkflowStart
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{RoleName, SessionKey, WorkflowId};
 use argonauts_core::settings::workflows::RunStyle;
-use argonauts_core::views::{AgentRow, InnerAgent, RowStatus, WorkflowRow, WorkflowView};
+use argonauts_core::views::{
+    AgentRow, InnerAgent, RowStatus, StatusKind, WorkflowRow, WorkflowView,
+};
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
 use argonauts_core::{AgentEvent, Spend};
 use serde_json::json;
@@ -419,7 +421,8 @@ fn the_header_the_phases_and_the_bottom_row_count_alike_through_a_recorded_run()
 /// words.
 #[test]
 fn a_council_goes_by_the_name_its_script_reports() {
-    const RECORDED: &str = include_str!("../../../../tui/golden/resumed_council/events.jsonl");
+    const RECORDED: &str =
+        include_str!("../../../../tui/tests/golden/transcript/resumed_council/events.jsonl");
     let events: Vec<RunEvent> = RECORDED
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -437,7 +440,7 @@ fn a_council_goes_by_the_name_its_script_reports() {
     );
 }
 
-/// The recorded council tried again and again, each try's proposer on Antigravity CLI finding
+/// The recorded council tried again and again, each try's proposer on agy finding
 /// its model gone with nothing to fall back to. What a try noted, such as the first try's fallback
 /// to opencode-acp, says nothing once the run goes on again, and the run that stopped says why
 /// under its header, as its item in the conversation does.
@@ -445,7 +448,8 @@ fn a_council_goes_by_the_name_its_script_reports() {
 fn a_stopped_council_says_why_it_stopped_and_no_earlier_tries_note() {
     use argonauts_core::views::{StatusKind, Tone};
 
-    const RECORDED: &str = include_str!("../../../../tui/golden/resumed_council/events.jsonl");
+    const RECORDED: &str =
+        include_str!("../../../../tui/tests/golden/transcript/resumed_council/events.jsonl");
     let events: Vec<RunEvent> = RECORDED
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -477,4 +481,202 @@ fn a_stopped_council_says_why_it_stopped_and_no_earlier_tries_note() {
             "Stopped · nobody to fall back to as the task's worker".to_owned()
         )]
     );
+}
+
+/// The Captain run where Claude Code's own workflow named its agents by round and asked the
+/// crew under the bare labels, as it recorded itself, personal details taken out.
+const CAPTAIN: &str = include_str!("../../../../crew/tests/fixtures/runs/captain-own-phases.jsonl");
+
+fn captain_events() -> Vec<RunEvent> {
+    CAPTAIN
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("a recorded event"))
+        .collect()
+}
+
+/// The run's events up to `at`, a moment of it, as `12:19:23.5`.
+fn until(events: &[RunEvent], at: &str) -> Vec<RunEvent> {
+    events
+        .iter()
+        .filter(|event| event.ts.time().to_string().as_str() <= at)
+        .cloned()
+        .collect()
+}
+
+/// The views the terminal's golden test of that run draws, kept beside its picture: the
+/// workflow 57 s in while Gemini judges, the judge's view then, and the workflow once merged.
+const CAPTAIN_DRAWN: [(&str, &str); 3] = [
+    (
+        "captain_after.judging.json",
+        include_str!("../../../../tui/tests/golden/captain_after.judging.json"),
+    ),
+    (
+        "captain_after.judge.json",
+        include_str!("../../../../tui/tests/golden/captain_after.judge.json"),
+    ),
+    (
+        "captain_after.done.json",
+        include_str!("../../../../tui/tests/golden/captain_after.done.json"),
+    ),
+];
+
+/// Each of those views from the run's own events, as JSON, in the order of [`CAPTAIN_DRAWN`].
+fn captain_views() -> [String; 3] {
+    let events = captain_events();
+    let run = events[0].run_id.clone();
+    let judging = until(&events, "12:19:23.5");
+    let view = workflow_view(&judging, &run, None).expect("the run's view while it judges");
+    let judge = crate::views::agent_view(&judging, &run, &SessionKey::numbered(3))
+        .expect("the judge's view");
+    let done = workflow_view(&events, &run, None).expect("the run's view once merged");
+    [
+        serde_json::to_string_pretty(&view).unwrap(),
+        serde_json::to_string_pretty(&judge).unwrap(),
+        serde_json::to_string_pretty(&done).unwrap(),
+    ]
+}
+
+/// The recorded Captain run's views are the ones the terminal's picture test draws.
+#[test]
+fn the_captain_runs_views_are_the_ones_its_picture_draws() {
+    let shown = captain_views();
+    if let Some(dir) = std::env::var_os("ARGONAUTS_PICTURE_DUMP") {
+        for ((name, _), json) in CAPTAIN_DRAWN.iter().zip(&shown) {
+            std::fs::write(std::path::Path::new(&dir).join(name), json).unwrap();
+        }
+    }
+    for ((name, drawn), json) in CAPTAIN_DRAWN.iter().zip(&shown) {
+        let drawn: serde_json::Value = serde_json::from_str(drawn).unwrap();
+        let json: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(json, drawn, "{name}");
+    }
+}
+
+/// In that run the phases are exactly Claude Code's: Verify holds only its own agent, and
+/// Review and Judge are the rows of the agents that asked, filled by who answered, Codex and
+/// agy. Nothing of the run's own, no Merge, is a phase.
+#[test]
+fn a_captain_runs_asks_fill_the_rows_of_the_agents_that_asked() {
+    let events = captain_events();
+    let run = events[0].run_id.clone();
+    let view = workflow_view(&events, &run, None).expect("the run's view");
+    let names: Vec<&str> = view
+        .phases
+        .iter()
+        .map(|phase| phase.name.as_str())
+        .collect();
+    assert_eq!(names, ["Build", "Review", "Judge", "Verify"]);
+    let agents = |phase: usize| -> Vec<(String, String)> {
+        view.phases[phase]
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                WorkflowRow::Agent(agent) => {
+                    Some((agent.label.clone(), agent.worker.agent.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        agents(1),
+        [("review:fix-the-money".to_owned(), "codex".to_owned())]
+    );
+    assert_eq!(
+        agents(2),
+        [(
+            "sign-off:fix-the-money".to_owned(),
+            "antigravity-cli".to_owned()
+        )]
+    );
+    assert_eq!(
+        agents(3),
+        [("verify:tests".to_owned(), "claude-code".to_owned())]
+    );
+    assert_eq!((view.agents_done, view.agents_total), (4, 4));
+    // While Gemini judged, Verify hadn't started and held nothing.
+    let judging = workflow_view(&until(&events, "12:19:23.5"), &run, None).expect("the view");
+    assert!(judging.phases[3].rows.is_empty(), "{:?}", judging.phases[3]);
+    assert_eq!((judging.agents_done, judging.agents_total), (2, 3));
+}
+
+/// The line under the header follows the asks: the run's own note while Claude's agents build,
+/// then, while the review is asked, who reviews whose change, and while the judge signs off,
+/// the review's verdict and who signs off.
+#[test]
+fn a_captain_runs_line_follows_its_asks() {
+    let events = captain_events();
+    let run = events[0].run_id.clone();
+    let line = |at: &str| {
+        let view = workflow_view(&until(&events, at), &run, None).expect("the run's view");
+        let notes: Vec<String> = view
+            .status_lines
+            .iter()
+            .filter(|line| line.kind == StatusKind::Note)
+            .map(|line| line.text.clone())
+            .collect();
+        notes.join("\n")
+    };
+    assert_eq!(
+        line("12:18:50"),
+        "fix-the-money-rounding · Claude Code's own workflow · reviews by GPT 6 Luna on Codex"
+    );
+    assert_eq!(
+        line("12:19:00"),
+        "review: GPT 6 Luna on Codex reviews Haiku 5.5's change"
+    );
+    assert_eq!(
+        line("12:19:23.5"),
+        "judge: GPT 6 Luna on Codex approved Haiku 5.5's change · Gemini 3.8 Flash Low on agy \
+         signs off"
+    );
+}
+
+/// The judge weighs the change with the review before it, here one that approved and found
+/// nothing, so its view names that review all the same, with what it said. Its prompt's own
+/// words start past the judge's frame, and the preview names what the rest holds.
+#[test]
+fn a_captain_runs_judge_is_given_the_review_that_approved() {
+    let events = captain_events();
+    let run = events[0].run_id.clone();
+    let judging = until(&events, "12:19:23.5");
+    let judge = crate::views::agent_view(&judging, &run, &SessionKey::numbered(3))
+        .expect("the judge's view");
+    let earlier = judge.earlier.expect("the review it was given");
+    assert_eq!(
+        (earlier.from.as_str(), earlier.round),
+        ("review:fix-the-money", 1)
+    );
+    assert!(earlier.items.is_empty());
+    let verdict = earlier.verdict.expect("what that review said");
+    assert_eq!(
+        (verdict.said.as_str(), verdict.by.to_string()),
+        ("approved", "codex/gpt-6-luna".to_owned())
+    );
+    assert_eq!(
+        verdict.summary.as_deref(),
+        Some("The money parser and formatter changes address all three specified failures.")
+    );
+    let about = judge.prompt_about.expect("where its own words start");
+    assert_eq!(
+        judge
+            .prompt
+            .lines()
+            .nth(about.first)
+            .map(|line| &line[..15]),
+        Some("Decide whether ")
+    );
+    assert_eq!(
+        about.holds,
+        [
+            "your request",
+            "the earlier review",
+            "the test run",
+            "the change"
+        ]
+    );
+    let reviewer = crate::views::agent_view(&judging, &run, &SessionKey::numbered(2))
+        .expect("the reviewer's view");
+    assert_eq!(reviewer.earlier, None, "a first review has none before it");
 }

@@ -138,7 +138,7 @@ mod tests {
     }
 
     /// Claude Code built the task, then Codex tried again and committed nothing: Codex isn't an
-    /// author, so it and Antigravity CLI may review, and Claude Code may not.
+    /// author, so it and agy may review, and Claude Code may not.
     #[test]
     fn a_task_that_names_no_reviewers_takes_the_crews_without_its_authors() {
         use argonauts_core::{CommitInfo, DiffStat};

@@ -13,6 +13,8 @@ pub mod profile;
 pub mod proxy;
 pub mod scope;
 pub mod seatbelt;
+#[cfg(all(test, target_os = "macos"))]
+mod seatbelt_outside_tests;
 pub mod selftest;
 pub mod view;
 

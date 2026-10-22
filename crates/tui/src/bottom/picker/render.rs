@@ -5,7 +5,9 @@ use ratatui::text::{Line, Span};
 use super::{Picker, VISIBLE_ROWS};
 use crate::render::RenderCtx;
 use crate::text::marks::decorative;
-use crate::text::{KEEP, Part, fit_lines, fit_parts, sanitize_line, str_width, wrap_text};
+use crate::text::{
+    KEEP, Part, fit_lines, fit_parts, sanitize_line, str_width, wrap_spans, wrap_text,
+};
 use crate::theme::{Role, Theme};
 use crate::views::layout::cut;
 use crate::views::states;
@@ -86,10 +88,10 @@ impl Picker {
         if !about.trim().is_empty() {
             lines.extend(wrap_text(about.trim(), dim, width, &indent, &indent));
         }
+        // The figures wrap under the label's start, so what holds the memory always shows.
         if let Some((label, figures)) = &self.banner {
             let bold = Modifier::BOLD;
-            lines.push(Line::from(vec![
-                Span::raw("  "),
+            let said = [
                 Span::styled(
                     sanitize_line(label).into_owned(),
                     question.add_modifier(bold),
@@ -98,7 +100,8 @@ impl Picker {
                     format!(" {}", sanitize_line(figures)),
                     theme.style(Role::Text).add_modifier(bold),
                 ),
-            ]));
+            ];
+            lines.extend(wrap_spans(&said, width, &indent, &indent));
         }
         lines.push(Line::default());
 
@@ -191,7 +194,12 @@ impl Picker {
         let start = self.offset.min(shown.len().saturating_sub(1));
         let end = (start + VISIBLE_ROWS).min(shown.len());
         let below = shown.len() - end;
-        let numbers: Vec<String> = (start..end).map(|at| format!("{}. ", at + 1)).collect();
+        let numbers: Vec<String> = (start..end)
+            .map(|at| match self.rows[shown[at]].number.as_deref() {
+                Some(number) => format!("{} ", sanitize_line(number).trim()),
+                None => format!("{}. ", at + 1),
+            })
+            .collect();
         let number_width = numbers.iter().map(|n| str_width(n)).max().unwrap_or(0);
         // Two spaces, the pointer and its space, then the number.
         let prefix = 4 + number_width;
@@ -208,30 +216,59 @@ impl Picker {
         };
         let keyed = self.rows.iter().any(|row| row.key.is_some());
         let key_room = if keyed { GAP + 1 } else { 0 };
-        let longest = window
+        let aside_text = |index: usize| {
+            self.rows[index]
+                .aside
+                .as_deref()
+                .map(|aside| sanitize_line(aside))
+        };
+        let aside_width = window
             .iter()
-            .map(|&index| str_width(&label_text(index)))
-            .max()
-            .unwrap_or(0);
-        let label_width = longest
-            .min(MAX_LABEL)
-            .min(width.saturating_sub(prefix + key_room));
+            .filter_map(|&index| aside_text(index).map(|aside| str_width(aside.trim())))
+            .max();
+        let aside_room = aside_width.map_or(0, |aside| aside + GAP);
         // A row's state glyph comes before its description, so it counts toward the column.
         let state_mark = |index: usize| {
             self.rows[index]
                 .state
                 .map(|state| states::mark(state, theme))
         };
+        let description_of = |index: usize| {
+            let row = &self.rows[index];
+            let description = sanitize_line(&row.description).trim().to_owned();
+            let tail = row
+                .tail
+                .as_deref()
+                .map(|tail| sanitize_line(tail).trim().to_owned())
+                .filter(|tail| !tail.is_empty());
+            (description, tail)
+        };
         let described = window
             .iter()
             .map(|&index| {
                 let mark = state_mark(index).map_or(0, |(glyph, _)| str_width(glyph) + 1);
-                mark + str_width(sanitize_line(&self.rows[index].description).trim())
+                let (description, tail) = description_of(index);
+                let tail = tail.map_or(0, |tail| str_width(SEPARATOR) + str_width(&tail));
+                mark + str_width(&description) + tail
             })
             .max()
             .unwrap_or(0);
+        let longest = window
+            .iter()
+            .map(|&index| str_width(&label_text(index)))
+            .max()
+            .unwrap_or(0);
+        let label_cap = if self.wide_labels {
+            let others = key_room + aside_room + if described > 0 { described + GAP } else { 0 };
+            width.saturating_sub(prefix + others).max(MAX_LABEL)
+        } else {
+            MAX_LABEL
+        };
+        let label_width = longest
+            .min(label_cap)
+            .min(width.saturating_sub(prefix + key_room));
         let description_at = prefix + label_width + GAP;
-        let room = width.saturating_sub(description_at + key_room);
+        let room = width.saturating_sub(description_at + key_room + aside_room);
         let description_width = if described > 0 && room >= MIN_DESCRIPTION {
             described.min(room)
         } else {
@@ -242,6 +279,8 @@ impl Picker {
         } else {
             prefix + label_width + GAP
         };
+        let aside_at = key_at;
+        let key_at = key_at + aside_room;
 
         for (at, &index) in window.iter().enumerate() {
             let row = &self.rows[index];
@@ -286,7 +325,9 @@ impl Picker {
                 used += str_width(&label);
                 spans.push(Span::styled(label, label_style));
             }
-            let description = sanitize_line(&row.description).trim().to_owned();
+            let (description, tail) = description_of(index);
+            // The tail goes under the description where the row can't hold both.
+            let mut under_description = None;
             if description_width > 0 && !description.is_empty() {
                 spans.push(Span::raw(" ".repeat(description_at.saturating_sub(used))));
                 let mut drawn = 0;
@@ -295,16 +336,41 @@ impl Picker {
                     drawn += str_width(&mark);
                     spans.push(Span::styled(mark, theme.style(role)));
                 }
-                let description = cut(&description, description_width - drawn);
+                let room = description_width - drawn;
+                let description = match tail {
+                    Some(tail) => {
+                        let whole = format!("{description}{SEPARATOR}{tail}");
+                        if str_width(&whole) <= room {
+                            whole
+                        } else {
+                            under_description = Some(cut(&tail, description_width));
+                            description
+                        }
+                    }
+                    None => description,
+                };
+                let description = cut(&description, room);
                 drawn += str_width(&description);
                 used = description_at + drawn;
                 spans.extend(with_danger(description, row.danger.as_deref(), dim, theme));
+            }
+            if let Some(aside) = aside_text(index).filter(|aside| !aside.trim().is_empty()) {
+                let room = width.saturating_sub(aside_at);
+                let aside = cut(aside.trim(), room);
+                spans.push(Span::raw(" ".repeat(aside_at.saturating_sub(used).max(1))));
+                used = aside_at.max(used + 1) + str_width(&aside);
+                spans.push(Span::styled(aside, dim));
             }
             if let Some(key) = row.key {
                 spans.push(Span::raw(" ".repeat(key_at.saturating_sub(used).max(1))));
                 spans.push(Span::styled(key.to_string(), dim));
             }
             lines.push(Line::from(spans));
+            if let Some(tail) = under_description {
+                let mut spans = vec![Span::raw(" ".repeat(description_at))];
+                spans.extend(with_danger(tail, row.danger.as_deref(), dim, theme));
+                lines.push(Line::from(spans));
+            }
             if let Some(under) = row.under.as_deref() {
                 let under = cut(sanitize_line(under).trim(), width.saturating_sub(prefix));
                 lines.push(Line::from(vec![
@@ -419,13 +485,13 @@ impl Picker {
             parts.push(Part::joined(dot(), part(esc("Esc to cancel")), 1));
         } else if self.filtering {
             parts.push(Part::new(part(enter), KEEP));
-            parts.push(Part::joined(dot(), part("↑↓ to move"), 0));
+            parts.push(Part::joined(dot(), part("↑↓  to move"), 0));
             parts.push(Part::joined(dot(), part("Esc to clear the filter"), 1));
         } else {
             let (moving, filtering) = if self.vim {
                 ("j/k to move", "/ to filter")
             } else {
-                ("↑↓ to move", "type to filter")
+                ("↑↓  to move", "type to filter")
             };
             parts.push(Part::new(part(enter), KEEP));
             parts.push(Part::joined(dot(), part(moving), 0));
@@ -437,6 +503,9 @@ impl Picker {
         fit_parts(vec![Span::raw("  ")], &parts, usize::from(ctx.width))
     }
 }
+
+/// Between a description and its tail.
+const SEPARATOR: &str = " \u{b7} ";
 
 /// A dim description with `danger`, where it holds those words, in the danger colour.
 fn with_danger(

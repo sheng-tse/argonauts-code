@@ -76,6 +76,11 @@ impl WorkflowState {
         *self == Self::Running
     }
 
+    /// Done, stopped or failed: nothing is left to stop or pause.
+    pub fn has_ended(&self) -> bool {
+        matches!(self, Self::Done | Self::Stopped | Self::Failed)
+    }
+
     /// The word after the header's totals, and none while it runs.
     pub fn word(self) -> Option<&'static str> {
         match self {
@@ -195,6 +200,9 @@ pub enum StatusKind {
     Note,
     /// How the run ended.
     Ended,
+    /// The pull request the run opened, while it's followed: `◐ #57 · test failed · back to
+    /// its builder, round 1 of 3`. The pull request and what came of it are the headline.
+    PullRequest,
 }
 
 /// One declared phase. A phase the workflow never declared is never a row.
@@ -279,6 +287,10 @@ pub struct AgentRow {
     pub context: Option<ContextUse>,
     /// Who it is the fallback for, drawn `↷`.
     pub fallback_for: Option<ModelRef>,
+    /// Why it runs in `fallback_for`'s place, as the agent's view says it, such as `Qwen3 Coder
+    /// 30B can't hold this review`. Kept once the verdict takes the row's note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_why: Option<String>,
     /// A step of a CLI's own workflow that a role answered through Argonauts Code: the row is
     /// that role's session, and its note says what it decided.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -778,6 +790,7 @@ fn inner_row(
             index: agent.index,
         }),
         left_out: false,
+        fallback_why: None,
     }
 }
 
@@ -879,6 +892,38 @@ pub struct AgentView {
     /// Why its job came to its model, when it took another's place or its job was left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved: Option<Moved>,
+    /// How a session that ran with no tools was given its work, such as `Reviewed with the
+    /// change and the checks in its prompt, no tools`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub given: Option<String>,
+    /// Where the prompt's own words start and what its later lines hold, for its preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_about: Option<PromptAbout>,
+    /// What an orchestrator began from, when your words in a conversation started the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_from: Option<StartedFrom>,
+}
+
+/// What an orchestrator's session began from, for the first section of its agent view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartedFrom {
+    /// A copy of your main session, with how many tokens of conversation it carried, when the
+    /// CLI said.
+    Fork {
+        tokens: Option<u64>,
+    },
+    Brief(crate::events::run::BriefFrom),
+}
+
+/// What a prompt holds, as its preview says it: past the frame every agent of its role gets,
+/// the line its own words start on, from 0, and what its other lines hold, such as `your
+/// request` and `the change`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptAbout {
+    pub first: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holds: Vec<String>,
 }
 
 /// Why an agent's job came to the model that does it, or to none, for its agent view.
@@ -894,7 +939,7 @@ pub enum Moved {
         lines: Vec<String>,
     },
     /// No model could take the job, and the workflow goes on without it: `because` such as
-    /// `Antigravity CLI is signed out`, and `lines` what that means for the run.
+    /// `agy is signed out`, and `lines` what that means for the run.
     LeftOut {
         because: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -916,6 +961,22 @@ pub struct EarlierFindings {
     /// Each finding's answer, in the order of `items`; empty where it had none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub answers: Vec<String>,
+    /// What that review said of the work as a whole, for a judge, who is given the latest
+    /// review whatever it found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<EarlierVerdict>,
+}
+
+/// `approved` by GPT 6 Luna on Codex, and the review's one-line summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EarlierVerdict {
+    /// Such as `approved` or `sent it back`.
+    pub said: String,
+    #[serde(default, skip_serializing_if = "Tone::is_plain")]
+    pub tone: Tone,
+    pub by: ModelRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 /// A hand-over by design: an agent of a CLI's own workflow, such as Claude Code's
@@ -994,6 +1055,9 @@ impl AgentView {
             asked_for: None,
             earlier: None,
             moved: None,
+            given: None,
+            prompt_about: None,
+            started_from: None,
         })
     }
 }
@@ -1151,6 +1215,10 @@ pub struct ContextRow {
     /// How a run's session ended. `None` while it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<SessionLeft>,
+    /// The session whose question this one, a tie-breaker, answered: the tab counts it under
+    /// that session's agent, not as an agent of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_for: Option<SessionKey>,
 }
 
 /// How a run's session ended, for its row once it has.
@@ -1438,7 +1506,39 @@ mod tests {
             note: None,
             inner: None,
             left_out: false,
+            fallback_why: None,
         })
+    }
+
+    /// A fallback's row keeps why it runs in another's place, and a row written before rows
+    /// kept a reason reads without one.
+    #[test]
+    fn a_fallbacks_reason_is_kept_and_an_older_row_reads_without_one() {
+        let WorkflowRow::Agent(mut row) = agent("review:due-flag", RowStatus::Running) else {
+            unreachable!()
+        };
+        row.fallback_for = Some(ModelRef::new("ollama", Some("qwen3-coder:30b".to_owned())));
+        row.fallback_why = Some("Qwen3 Coder 30B can't hold this review".to_owned());
+        let written = serde_json::to_value(&row).unwrap();
+        assert_eq!(
+            written["fallback_why"],
+            "Qwen3 Coder 30B can't hold this review"
+        );
+        assert_eq!(
+            serde_json::from_value::<AgentRow>(written.clone()).unwrap(),
+            row
+        );
+        let mut older = written;
+        older.as_object_mut().unwrap().remove("fallback_why");
+        let read: AgentRow = serde_json::from_value(older).unwrap();
+        assert_eq!(read.fallback_why, None);
+        row.fallback_why = None;
+        assert!(
+            serde_json::to_value(&row)
+                .unwrap()
+                .get("fallback_why")
+                .is_none()
+        );
     }
 
     /// One rule for every count: an agent is done once it finished, unless its next round is

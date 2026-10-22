@@ -90,6 +90,8 @@ fn help_lists_the_commands_but_not_the_run_host() {
         "approvals",
         "auto",
         "mcp",
+        "self-update",
+        "welcome",
     ] {
         assert!(
             help.contains(&format!("  {command} ")),
@@ -97,6 +99,16 @@ fn help_lists_the_commands_but_not_the_run_host() {
         );
     }
     assert!(!help.contains("host"), "{help}");
+}
+
+/// `argonauts welcome` greets only on a terminal, so the install script run by another
+/// script prints nothing of it.
+#[test]
+fn welcome_off_a_terminal_prints_nothing() {
+    let repo = TempRepo::new().unwrap();
+    let output = argonauts(&repo, repo.root(), &["welcome"]);
+    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+    assert_eq!(stdout(&output), "", "{}", describe(&output));
 }
 
 #[test]
@@ -194,7 +206,7 @@ fn a_test_build_has_no_key_to_send_with() {
         .expect("the argonauts binary runs");
     let shown = stdout(&output);
     assert!(output.status.success(), "{}", describe(&output));
-    assert!(shown.starts_with("Telemetry is on"), "{shown}");
+    assert!(shown.starts_with("Usage reports are on"), "{shown}");
     assert!(
         shown.contains("This build has no PostHog key, so it sends nothing."),
         "{shown}"
@@ -361,6 +373,46 @@ fn doctor_fails_without_an_agent_cli_and_passes_with_one() {
     assert_eq!(json["waiting"], serde_json::json!([]));
 }
 
+/// With no git on PATH, or something there that exits 127 as a shell does for a program it
+/// can't find, doctor says git isn't installed, and the verdict names git alone.
+#[test]
+fn doctor_without_git_says_not_installed() {
+    let repo = TempRepo::new().unwrap();
+    let bin = repo.scratch().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    script(&bin, "claude", "echo '2.1.284 (Claude Code)'");
+    let doctor = || {
+        Command::new(env!("CARGO_BIN_EXE_argonauts"))
+            .arg("doctor")
+            .current_dir(elsewhere(&repo))
+            .envs(repo.envs())
+            .env("PATH", &bin)
+            .env_remove("ARGONAUTS_SESSION")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let says_not_installed = |output: &Output| {
+        assert_eq!(output.status.code(), Some(1), "{}", describe(output));
+        let text = stdout(output);
+        assert!(
+            text.contains("\ngit · not installed\n"),
+            "{}",
+            describe(output)
+        );
+        assert!(
+            text.contains("\nNot ready: install git.\n"),
+            "{}",
+            describe(output)
+        );
+        assert!(!text.contains("exit status"), "{}", describe(output));
+    };
+
+    says_not_installed(&doctor());
+    script(&bin, "git", "exit 127");
+    says_not_installed(&doctor());
+}
+
 #[test]
 fn doctor_lists_every_cli_with_its_version() {
     let repo = TempRepo::new().unwrap();
@@ -410,10 +462,7 @@ fn doctor_lists_every_cli_with_its_version() {
     assert!(checked(&line("Claude Code")), "{report}");
     assert!(says(&line("Codex"), "0.158.0"), "{report}");
     assert!(checked(&line("Codex")), "{report}");
-    assert!(
-        line("Antigravity CLI").contains("not installed"),
-        "{report}"
-    );
+    assert!(line("agy").contains("not installed"), "{report}");
     assert!(line("OpenCode").contains("not installed"), "{report}");
     assert!(text.contains("Ready with 2 of "), "{report}");
     assert!(!text.contains("wasn't checked with"), "{report}");
@@ -701,4 +750,68 @@ fn mcp_serve_rereads_the_repos_trust_on_every_call() {
     drop(client);
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// `argonauts behaviors --deep` with nothing recorded says so and calls no model; without
+/// `--deep` it ranks the labels instead, and `--deep` doesn't export.
+#[test]
+fn behaviors_deep_with_nothing_recorded_calls_no_model() {
+    let repo = TempRepo::new().unwrap();
+    let mut args = vec!["behaviors", "--deep", "--since", "30d"];
+    args.extend(NO_LOCAL_SERVERS);
+    let output = argonauts(&repo, repo.root(), &args);
+    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+    assert!(
+        stdout(&output).contains("No actions recorded there yet"),
+        "{}",
+        describe(&output)
+    );
+    let bare = argonauts(&repo, repo.root(), &["behaviors"]);
+    assert_eq!(bare.status.code(), Some(0), "{}", describe(&bare));
+    assert!(
+        stdout(&bare).contains("No actions yet"),
+        "{}",
+        describe(&bare)
+    );
+    let both = argonauts(
+        &repo,
+        repo.root(),
+        &["behaviors", "--deep", "--export", "hodoscope", "out"],
+    );
+    assert_eq!(both.status.code(), Some(2), "{}", describe(&both));
+    let wrong = argonauts(
+        &repo,
+        repo.root(),
+        &["behaviors", "--deep", "--since", "soon"],
+    );
+    assert_ne!(wrong.status.code(), Some(0), "{}", describe(&wrong));
+}
+
+/// A hosted summarizer would read the other CLIs' actions too, so it asks first, and without a
+/// terminal nothing is sent.
+#[test]
+fn behaviors_deep_with_a_hosted_summarizer_asks_and_sends_nothing_without_a_terminal() {
+    let repo = TempRepo::new().unwrap();
+    let run = repo.home().join("state/council-3f9a1c2b4d5e/runs/run-01");
+    fs::create_dir_all(&run).unwrap();
+    let started = r#"{"seq":0,"ts":"2026-10-17T07:17:01Z","run_id":"run-01","source":"codex","session":"s-001","kind":{"type":"agent","data":{"type":"tool_started","id":"c1","name":"command_execution","input":{"command":"git log -5"},"parent":null}}}"#;
+    fs::write(run.join("events.jsonl"), format!("{started}\n")).unwrap();
+    let mut args = vec![
+        "behaviors",
+        "--deep",
+        "--set",
+        "behaviors.summarizer=claude-code/haiku",
+    ];
+    args.extend(NO_LOCAL_SERVERS);
+    let output = argonauts(&repo, repo.root(), &args);
+    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
+    assert!(
+        stderr(&output).contains("asks first"),
+        "{}",
+        describe(&output)
+    );
+    assert!(
+        !repo.home().join("behaviors").exists(),
+        "nothing was summarized or kept"
+    );
 }

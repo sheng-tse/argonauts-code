@@ -149,11 +149,11 @@ fn unborn_base(
 /// a file your ignore rules would hide included.
 fn copy_your_index(root: &Path, index: &Path) -> anyhow::Result<()> {
     let yours = root.join(git(root, &["rev-parse", "--git-path", "index"])?);
-    match std::fs::copy(&yours, index) {
+    match crate::git::copy_index(&yours, index) {
         // Nothing staged yet.
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err).with_context(|| format!("reading {}", yours.display())),
-        Ok(_) => Ok(()),
+        Ok(()) => Ok(()),
     }
 }
 
@@ -311,6 +311,7 @@ fn started(
         outside_agent: request.outside_agent.clone(),
         instructions: request.instructions.clone(),
         required_steps: request.required_steps.clone(),
+        starts_from: request.starts_from.clone(),
     })
 }
 

@@ -92,6 +92,10 @@ pub struct Private {
     pub neutral_homes: Vec<String>,
     pub neutral_mail_endings: Vec<String>,
     pub file_endings: Vec<String>,
+    /// Files whose addresses are their authors' own, in the copyright lines of the licenses
+    /// they hold. Home and scratch folders are still looked for there.
+    #[serde(default)]
+    pub authors_addresses_in: Vec<String>,
     pub home_fix: String,
     pub mail_fix: String,
     pub scratch_fix: String,

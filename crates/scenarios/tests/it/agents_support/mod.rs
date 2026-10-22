@@ -229,11 +229,17 @@ pub fn session_end<'a>(events: &'a [RunEvent], key: &SessionKey) -> Option<&'a S
     })
 }
 
-/// Asserts `worker` ran at least one session and every one of them completed.
+/// Asserts `worker` ran at least one session and every one of them completed. The merger's
+/// commit message is left out: it starts as the task ends, while the merge waits, so whether
+/// it shows yet, and how a fake without a rule for it ends, depends on timing alone.
 pub fn assert_sessions_completed(events: &[RunEvent], worker: &str) {
     let sessions = sessions_of(events, worker);
     assert!(!sessions.is_empty(), "no {worker} session was started");
-    for (key, _) in sessions {
+    let commit_message = Some("commit message");
+    for (key, _) in sessions
+        .into_iter()
+        .filter(|(_, started)| started.label.as_deref() != commit_message)
+    {
         let key = key.unwrap_or_else(|| panic!("a {worker} session has no key"));
         let end = session_end(events, key)
             .unwrap_or_else(|| panic!("the {worker} session {key:?} never ended"));

@@ -1,8 +1,9 @@
 //! OpenCode's level when the controller knows this machine's memory: a fixed line under the
-//! title with the most models may use, what loaded models hold and what is free now, and
-//! every row in one field order, context · RAM · tools · cost · whether it fits, so each
-//! field sits in the same place down the list. A hosted model says where it runs in the RAM
-//! field's place. A model that won't fit says which limit it meets, and suggests one that does.
+//! title with the most models can use, what is free now, and what holds the rest, models and
+//! everything else, and every row in one field order, context · RAM · tools · cost · whether
+//! it fits now or when, so each field sits in the same place down the list. A hosted model
+//! says where it runs in the RAM field's place. A model that won't fit says which limit it
+//! meets, and suggests one that does.
 
 use argonauts_core::app::ModelChoice;
 use argonauts_core::limits::CostEstimate;
@@ -12,32 +13,39 @@ use argonauts_core::window_size::window_words;
 use crate::text::str_width;
 
 const GIB: f64 = (1u64 << 30) as f64;
-const TOO_BIG: &str = "too big";
+const TOO_BIG: &str = "too big here";
 
 /// Bytes as the line and the rows say them: whole gigabytes.
 pub(super) fn gb(bytes: u64) -> String {
     format!("{} GB", (bytes as f64 / GIB).round())
 }
 
-/// `RAM for models:` and `up to 52 GB of this Mac's 64 GB · 25 GB in use · 18 GB free now`.
+/// `Models can use` and `up to 52 GB of this Mac's 64 GB · 18 GB free now · models hold 25 GB
+/// · macOS and your apps 21 GB`: the ceiling, what is free, and who holds the rest.
 pub(super) fn banner(memory: &MachineMemory) -> (String, String) {
-    let machine = if memory.mac {
-        "this Mac's"
+    let (machine, system) = if memory.mac {
+        ("this Mac's", "macOS")
     } else {
-        "this machine's"
+        ("this machine's", "the system")
     };
-    let in_use = if memory.in_use == 0 {
-        "none in use".to_owned()
+    let models = if memory.in_use == 0 {
+        "none".to_owned()
     } else {
-        format!("{} in use", gb(memory.in_use))
+        gb(memory.in_use)
     };
+    let others = memory
+        .total
+        .saturating_sub(memory.free)
+        .saturating_sub(memory.in_use);
     (
-        "RAM for models:".to_owned(),
+        "Models can use".to_owned(),
         format!(
-            "up to {} of {machine} {} · {in_use} · {} free now",
+            "up to {} of {machine} {} · {} free now · models hold {models} · {system} and your \
+             apps {}",
             gb(memory.limit),
             gb(memory.total),
-            gb(memory.free)
+            gb(memory.free),
+            gb(others)
         ),
     )
 }
@@ -84,32 +92,34 @@ fn cost(choice: &ModelChoice) -> Option<String> {
     }
 }
 
-/// `too big`, `fits alone`, `tight`, `fits` or `loaded`, with the smaller window it would
-/// fit at, and the download size before it for one not installed.
-fn fit_words(memory: &ModelMemory) -> String {
+/// Whether it fits now or when: `fits now`, `fits once apps free 6 GB`, `fits once loaded
+/// models unload`, `too big here` or `loaded`, with the smaller window it would fit at.
+fn fit_words(memory: &ModelMemory, machine: &MachineMemory) -> String {
     let at = |at: Option<(u64, u64)>| {
         at.map(|(window, ram)| format!("; fits at {} ({} RAM)", window_words(window), gb(ram)))
             .unwrap_or_default()
     };
-    let fit = match memory.fit {
+    match memory.fit {
         Fit::Loaded => "loaded".to_owned(),
-        Fit::Fits => "fits".to_owned(),
-        Fit::Tight { at: smaller } => format!("tight{}", at(smaller)),
-        Fit::FitsAlone => "fits alone".to_owned(),
+        Fit::Fits => "fits now".to_owned(),
+        Fit::Tight { at: smaller } => format!(
+            "fits once apps free {}{}",
+            gb(memory.ram.saturating_sub(machine.free)),
+            at(smaller)
+        ),
+        Fit::FitsAlone => "fits once loaded models unload".to_owned(),
         Fit::TooBig { at: smaller } => format!("{TOO_BIG}{}", at(smaller)),
-    };
-    match memory.download {
-        Some(download) => format!("{} download · {fit}", gb(download)),
-        None => fit,
     }
 }
 
-/// A row's description in the one field order, with the words to draw in the danger colour.
+/// A row's description in the one field order, then whether it fits, which the picker puts on
+/// a line of its own where the row can't hold it, and the words to draw in the danger colour.
 pub(super) fn description(
     choice: &ModelChoice,
     listed: &ListedFacts,
     width: usize,
-) -> (String, Option<String>) {
+    machine: &MachineMemory,
+) -> Described {
     let place = match (&listed.hosted_by, &listed.memory) {
         (Some(host), _) => Some(format!("hosted by {host}")),
         (None, Some(memory)) => Some(format!("{} RAM", gb(memory.ram))),
@@ -121,7 +131,10 @@ pub(super) fn description(
         if let Some(runs) = &choice.runs {
             fields.push(format!("runs {runs}"));
         }
-        return (fields.join(" · "), None);
+        return Described {
+            description: fields.join(" · "),
+            ..Described::default()
+        };
     }
     if choice.new {
         fields.insert(0, "new".to_owned());
@@ -132,14 +145,36 @@ pub(super) fn description(
         .memory
         .as_ref()
         .filter(|_| listed.hosted_by.is_none());
-    fields.extend(memory.map(fit_words));
+    fields.extend(
+        memory
+            .and_then(|memory| memory.download)
+            .map(|download| format!("{} download", gb(download))),
+    );
+    let mut tail: Vec<String> = memory
+        .map(|memory| fit_words(memory, machine))
+        .into_iter()
+        .collect();
     if choice.recommended {
-        fields.push("recommended".to_owned());
+        tail.push("recommended".to_owned());
     }
     let danger = memory
         .filter(|memory| matches!(memory.fit, Fit::TooBig { .. }))
         .map(|_| TOO_BIG.to_owned());
-    (fields.join(" · "), danger)
+    Described {
+        description: fields.join(" · "),
+        tail: (!tail.is_empty()).then(|| tail.join(" · ")),
+        danger,
+    }
+}
+
+/// A model row's words, as the picker draws them.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct Described {
+    pub description: String,
+    /// Whether it fits, last, on a line of its own where the row can't hold it.
+    pub tail: Option<String>,
+    /// The words drawn in the danger colour.
+    pub danger: Option<String>,
 }
 
 /// Where the effort line goes, while the pointer is on a model that won't fit as it is: which
@@ -201,4 +236,76 @@ pub(super) fn download_question(choice: &ModelChoice) -> Option<String> {
         choice.display_name(),
         gb(download)
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GB: u64 = 1 << 30;
+
+    fn mac(limit: u64, total: u64, in_use: u64, free: u64) -> MachineMemory {
+        MachineMemory {
+            limit: limit * GB,
+            total: total * GB,
+            in_use: in_use * GB,
+            free: free * GB,
+            mac: true,
+        }
+    }
+
+    /// The line names the ceiling, what is free now, and both holders of the rest.
+    #[test]
+    fn the_line_says_what_models_can_use_and_who_holds_the_rest() {
+        assert_eq!(
+            banner(&mac(52, 64, 0, 37)),
+            (
+                "Models can use".to_owned(),
+                "up to 52 GB of this Mac's 64 GB · 37 GB free now · models hold none · macOS \
+                 and your apps 27 GB"
+                    .to_owned()
+            )
+        );
+        let pc = MachineMemory {
+            mac: false,
+            ..mac(24, 32, 25, 18)
+        };
+        assert_eq!(
+            banner(&pc).1,
+            "up to 24 GB of this machine's 32 GB · 18 GB free now · models hold 25 GB · the \
+             system and your apps 0 GB"
+        );
+    }
+
+    /// Each row's last words say whether it fits now, or when it would.
+    #[test]
+    fn each_fit_says_now_or_when() {
+        let machine = mac(52, 64, 25, 18);
+        let words = |fit, ram| {
+            fit_words(
+                &ModelMemory {
+                    ram: ram * GB,
+                    fit,
+                    download: None,
+                },
+                &machine,
+            )
+        };
+        assert_eq!(words(Fit::Fits, 17), "fits now");
+        assert_eq!(
+            words(Fit::Tight { at: None }, 24),
+            "fits once apps free 6 GB"
+        );
+        assert_eq!(words(Fit::FitsAlone, 45), "fits once loaded models unload");
+        assert_eq!(
+            words(
+                Fit::TooBig {
+                    at: Some((32_768, 4 * GB))
+                },
+                60
+            ),
+            "too big here; fits at 32k (4 GB RAM)"
+        );
+        assert_eq!(words(Fit::Loaded, 25), "loaded");
+    }
 }

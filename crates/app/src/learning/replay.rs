@@ -110,6 +110,7 @@ impl SupervisedReplays {
             instructions: Vec::new(),
             request_settings: Vec::new(),
             required_steps: Vec::new(),
+            starts_from: None,
         };
         let learned_workflow = ForRun {
             loaded: request.learned_workflow.clone(),
@@ -1022,6 +1023,9 @@ mod tests {
                 workflow_step: Some(step),
                 label: None,
                 asked: None,
+                asked_by: None,
+                asked_why: None,
+                forked: false,
             }))),
             RunEventKind::Session(SessionEvent::Ended(Box::new(SessionEnd {
                 reason: EndReason::Completed,
@@ -1344,6 +1348,7 @@ mod tests {
             outside_agent: None,
             instructions: Vec::new(),
             required_steps: Vec::new(),
+            starts_from: None,
         };
         let kinds = vec![
             RunEventKind::Run(RunLifecycle::Started(Box::new(started))),

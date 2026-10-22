@@ -1,0 +1,18 @@
+ The end of the curl install: dist's installer unchanged, then the greeting
+
+$ curl -fsSL https://argonauts-code.github.io/install.sh | sh
+…
+downloading argonauts-code 0.1.0 aarch64-apple-darwin
+installing to /Users/you/.local/bin
+  argonauts
+everything's installed!
+
+  ▗███▖▐▀▖ ▄▀▀▄ █▀▀▄ ▄▀▀▀ ▄▀▀▄ █▄ █ ▄▀▀▄ █  █ ▀█▀ ▄▀▀▀   ▄▀▀▀ ▄▀▀▄ █▀▀▄ █▀▀▀
+  ▐▝█▘▙▟   █▀▀█ █▀█  █ ▀█ █  █ █ ▀█ █▀▀█ █  █  █   ▀▀▄   █    █  █ █  █ █▀▀
+  ▞▐ ▌▚    ▀  ▀ ▀  ▀  ▀▀▀  ▀▀  ▀  ▀ ▀  ▀  ▀▀   ▀  ▀▀▀     ▀▀▀  ▀▀  ▀▀▀  ▀▀▀▀
+
+  Every coding agent, one orchestrator, you at the helm.   v0.1.0
+  Next: cd into a project and run argonauts. argonauts doctor checks your agent CLIs.
+
+ (dist's four lines are as its installer prints them, shortened)
+ (the greeting is `argonauts welcome`, run once, only on a terminal and never in CI)

@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
+use super::retry::RetryNote;
 use crate::format;
 use crate::render::{Clock, RenderCtx};
 use crate::text::{KEEP, Part, fit_parts, sanitize_line, truncate_line};
@@ -76,6 +77,9 @@ pub struct WorkingLine {
     /// The word this stretch of work was given, kept while `verb` says what the agent writes
     /// instead, such as a workflow's script.
     pub usual_verb: Option<String>,
+    /// The CLI retries its request to the API. Its words take the verb's place, with the
+    /// spinner held still, as Claude Code draws its own retries.
+    pub retry: Option<RetryNote>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -157,6 +161,7 @@ impl WorkingLine {
             timed: true,
             esc_stops: true,
             usual_verb: None,
+            retry: None,
         }
     }
 
@@ -173,7 +178,7 @@ impl WorkingLine {
         let theme = ctx.theme;
         let glyphs = &theme.glyphs;
         let clock = ctx.clock;
-        let still = theme.reduced_motion || glyphs.spinner.is_empty();
+        let still = theme.reduced_motion || glyphs.spinner.is_empty() || self.retry.is_some();
         let glyph = if still {
             glyphs.turn_end
         } else {
@@ -185,8 +190,13 @@ impl WorkingLine {
         let style = verb_style(theme, fade);
         let mut spans = vec![Span::styled(format!("{glyph} "), style)];
 
-        let words = self.task.as_deref().unwrap_or(&self.verb);
-        let verb = format!("{}{}", sanitize_line(words).trim(), glyphs.ellipsis);
+        let verb = match &self.retry {
+            Some(retry) => retry.words(clock.now),
+            None => {
+                let words = self.task.as_deref().unwrap_or(&self.verb);
+                format!("{}{}", sanitize_line(words).trim(), glyphs.ellipsis)
+            }
+        };
         if still || fade.is_some() {
             spans.push(Span::styled(verb, style));
         } else {
@@ -260,8 +270,9 @@ impl WorkingLine {
         self.effort.as_deref()
     }
 
+    /// None while the CLI retries: it's waiting on the API, whatever it was doing before.
     fn activity_words(&self, now: Instant) -> Option<String> {
-        self.says_activity
+        (self.says_activity && self.retry.is_none())
             .then(|| self.activity.wording(now, self.effort()))
             .flatten()
     }
@@ -272,7 +283,10 @@ impl WorkingLine {
         if let Some(since) = self.activity.since() {
             next = next.min(next_second(since, now));
         }
-        if !theme.reduced_motion {
+        if let Some(countdown) = self.retry.and_then(|retry| retry.next_change(now)) {
+            next = next.min(countdown);
+        }
+        if !theme.reduced_motion && self.retry.is_none() {
             // The shimmer steps every period, and the spinner holds at the ends of its sweep.
             let frames = theme.glyphs.spinner.len();
             let (_, left) = spinner_frame(clock.since(clock.start), frames);
@@ -292,8 +306,9 @@ impl WorkingLine {
         }
         if self.tokens_down > 0 {
             parts.push(format!(
-                "{} {} tokens",
+                "{}{}{} tokens",
                 theme.glyphs.tokens,
+                crate::theme::glyphs::gap_after(theme.glyphs.tokens),
                 format::tokens(self.tokens_down)
             ));
         }
@@ -313,6 +328,10 @@ impl WorkingLine {
     /// running tool keeps the line as it is, a long spell of thinking takes it toward amber,
     /// and silence takes it toward red.
     fn fade(&self, now: Instant) -> Option<Fade> {
+        // A CLI that retries said how long it waits, so its silence is no stall.
+        if self.retry.is_some() {
+            return None;
+        }
         if let Some(since) = self.stalled_since {
             let along = now.saturating_duration_since(since).as_secs_f32();
             return Some(Fade::Quiet(along / STALL_FADE.as_secs_f32()));
@@ -449,18 +468,47 @@ mod tests {
         let now = t0 + Duration::from_secs(252);
         assert_eq!(
             text(&line, &theme, t0, now, 100),
-            "✻ Rowing… (4m 12s · ↓ 48.2k tokens · deep in thought · 3 agents · $0.21)"
+            "✻ Rowing… (4m 12s · ↓  48.2k tokens · deep in thought · 3 agents · $0.21)"
         );
         assert_eq!(
             text(&line, &theme, t0, now, 60),
-            "✻ Rowing… (4m 12s · ↓ 48.2k tokens · deep in thought)"
+            "✻ Rowing… (4m 12s · ↓  48.2k tokens · deep in thought)"
         );
         assert_eq!(
             text(&line, &theme, t0, now, 40),
-            "✻ Rowing… (4m 12s · ↓ 48.2k tokens)"
+            "✻ Rowing… (4m 12s · ↓  48.2k tokens)"
         );
         assert_eq!(text(&line, &theme, t0, now, 30), "✻ Rowing… (4m 12s)");
         assert_eq!(text(&line, &theme, t0, now, 12), "✻ Rowing…");
+    }
+
+    #[test]
+    fn a_retry_takes_the_verbs_place_still_and_never_reads_as_a_stall() {
+        let theme = theme();
+        let t0 = Instant::now();
+        let mut line = WorkingLine::new("Rowing", t0);
+        line.activity = Activity::Thinking { since: t0 };
+        line.heard_at = Some(t0);
+        let retry = RetryNote {
+            try_number: 2,
+            of: Some(10),
+            at: Some(t0 + Duration::from_millis(30_500)),
+        };
+        line.retry = Some(retry);
+        let at = |ms| t0 + Duration::from_millis(ms);
+        // What it was doing before gives way, and the spinner holds still.
+        for ms in [2_000, 2_120, 2_240] {
+            assert_eq!(
+                text(&line, &theme, t0, at(ms), 100),
+                format!("✻ {} (2s)", retry.words(at(ms)))
+            );
+        }
+        // Twenty seconds without a token, the line keeps its color.
+        let ctx = RenderCtx::new(100, &theme, Clock::new(t0, at(20_000)));
+        assert_eq!(line.line(&ctx).spans[0].style, theme.style(Role::Accent));
+        // The countdown's next second comes before the clock's.
+        let clock = Clock::new(t0, at(2_000));
+        assert_eq!(line.next_change(&clock, &theme), Some(at(2_500)));
     }
 
     #[test]

@@ -58,11 +58,12 @@ pub(super) async fn follow(
         .subscribe(&old.run, next)
         .await
         .with_context(|| format!("following {} off screen", old.run))?;
+    let live = *stream.live.borrow();
     runs.streaming.runs.push(Alongside {
         run: old.run.clone(),
         events: std::mem::take(&mut old.events),
         finished: false,
-        stream: attach::forward(old.run.clone(), stream, ctx.internal.clone()),
+        stream: attach::forward(old.run.clone(), stream, live, ctx.internal.clone()),
     });
     Ok(())
 }

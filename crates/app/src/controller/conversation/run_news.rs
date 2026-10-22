@@ -1,7 +1,9 @@
 //! What the main session hears of the runs the conversation starts. The start tool's call
 //! waits until its run is under way or has failed, so the session never says a run started
-//! when it didn't, and a failure comes back as a failure. A run that fails after that is told to
-//! the session in a turn of its own, which says so to you in one line.
+//! when it didn't, and a failure comes back as a failure. A run whose orchestrator copies the
+//! session is answered once Argonauts Code took it, since the copy is made after. A run that
+//! fails after the answer is told to the session in a turn of its own, which says so to you in
+//! one line.
 
 use std::collections::BTreeSet;
 
@@ -30,9 +32,20 @@ pub(super) struct Watched {
     untold: Vec<String>,
 }
 
+/// When the start tool's call hears that its run started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Answer {
+    /// Once its first agent started, or the run failed or waits for its CLIs.
+    WhenUnderWay,
+    /// Once Argonauts Code took the request: the run's first agent is a copy of this session,
+    /// which must hold the answer rather than a call that never got one.
+    WhenTaken,
+}
+
 struct Starting {
     /// Set once Argonauts Code took the request.
     run: Option<RunId>,
+    when: Answer,
     /// What started, as "The council workflow".
     what: String,
     /// The sentence for a run under way, as "The council workflow started on this.".
@@ -40,16 +53,19 @@ struct Starting {
     reply: oneshot::Sender<AskReply>,
 }
 
-/// The start tool's call waits on `reply` until its run begins or fails. `what` names the run
-/// as "The council workflow", and `began` is what the session hears once it is under way.
+/// The start tool's call waits on `reply` until its run begins or fails, or until Argonauts Code
+/// took it, as `when` says. `what` names the run as "The council workflow", and `began` is what
+/// the session hears once it is under way.
 pub(super) fn hold(
     conversation: &mut ConversationState,
     reply: oneshot::Sender<AskReply>,
     what: String,
     began: String,
+    when: Answer,
 ) {
     conversation.run_news.starting = Some(Starting {
         run: None,
+        when,
         what,
         began,
         reply,
@@ -70,6 +86,13 @@ pub(crate) fn run_started(
         .filter(|starting| starting.run.is_none())
     {
         starting.run = Some(run.clone());
+    }
+    // A later failure is told in a turn of its own, as for any run that began.
+    let taken = watched
+        .starting
+        .take_if(|starting| starting.when == Answer::WhenTaken);
+    if let Some(starting) = taken {
+        answer(starting, &RunNews::Began);
     }
     if from_conversation {
         watched.going.insert(run.clone());

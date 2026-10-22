@@ -70,13 +70,13 @@ fn working_line_the_task_in_hand_the_next_one_and_going_quiet() {
     assert_matches(
         "working_line",
         &lines,
-        include_str!("pictures/working_line.txt"),
-        include_str!("pictures/working_line.html"),
+        include_str!("../../../tests/golden/transcript/working_line.txt"),
+        include_str!("../../../tests/golden/transcript/working_line.html"),
         &Screen::theme(),
         &[
             Unlike {
                 row: 3,
-                cols: (67, 86),
+                cols: (68, 87),
                 why: "the working line ends with what the turn does; esc to interrupt is on the \
                       bottom line, which the context_tab picture draws it on",
             },

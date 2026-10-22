@@ -602,13 +602,13 @@ fn agent_headers_side_by_side_cut_their_tasks_alike() {
             header("GPT-5.6 on Codex", "Wire --json into the CLI", width),
         ]
     };
-    for row in both(63) {
+    for row in both(64) {
         assert!(!row.contains('('), "{row}");
-        assert!(row.ends_with("· 4m18s · ↓ 18.6k"), "{row}");
+        assert!(row.ends_with("· 4m18s · ↓  18.6k"), "{row}");
     }
     for row in both(79) {
         assert!(row.contains('(') && row.contains('…'), "{row}");
-        assert!(row.ends_with("· 4m18s · ↓ 18.6k"), "{row}");
+        assert!(row.ends_with("· 4m18s · ↓  18.6k"), "{row}");
     }
 }
 
@@ -635,16 +635,16 @@ fn a_retry_counts_down_and_gives_way_before_the_stats() {
     };
     assert_eq!(
         row(120, 252),
-        "● Opus 5.5 on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (try 2)"
+        "● Opus 5.5 on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓  18.1k · retrying in 12s (try 2)"
     );
     assert_eq!(
         row(120, 260),
-        "● Opus 5.5 on Claude Code · worker · task-003 (Middleware) · 4m20s · ↓ 18.1k · retrying in 4s (try 2)"
+        "● Opus 5.5 on Claude Code · worker · task-003 (Middleware) · 4m20s · ↓  18.1k · retrying in 4s (try 2)"
     );
-    assert!(row(120, 300).ends_with("· 5m0s · ↓ 18.1k · retrying (try 2)"));
+    assert!(row(120, 300).ends_with("· 5m0s · ↓  18.1k · retrying (try 2)"));
     assert_eq!(
         row(83, 252),
-        "● Opus 5.5 on Claude Code · worker · task-003 · 4m12s · ↓ 18.1k · retrying in 12s"
+        "● Opus 5.5 on Claude Code · worker · task-003 · 4m12s · ↓  18.1k · retrying in 12s"
     );
     // The warning outlasts the time and tokens.
     assert_eq!(
@@ -658,7 +658,7 @@ fn a_quiet_spell_shows_after_a_while_and_warns_later() {
     let mut theme = theme();
     theme.reduced_motion = true;
     let start = Instant::now();
-    let mut call = ToolCall::agent("Antigravity CLI", None, "worker", "");
+    let mut call = ToolCall::agent("agy", None, "worker", "");
     call.quiet_since(start);
     let at = |seconds| {
         RenderCtx::new(
@@ -667,20 +667,17 @@ fn a_quiet_spell_shows_after_a_while_and_warns_later() {
             Clock::new(start, start + Duration::from_secs(seconds)),
         )
     };
-    assert_eq!(
-        plain_text(&call.header(&at(20))),
-        "● Antigravity CLI · worker"
-    );
+    assert_eq!(plain_text(&call.header(&at(20))), "● agy · worker");
     let lines = call.header(&at(45));
     assert_eq!(
         plain_text(&lines),
-        "● Antigravity CLI · worker · quiet 45s · may be waiting on a limit"
+        "● agy · worker · quiet 45s · may be waiting on a limit"
     );
     assert_eq!(lines[0].spans.last().unwrap().style, theme.style(Role::Dim));
     let lines = call.header(&at(150));
     assert_eq!(
         plain_text(&lines),
-        "● Antigravity CLI · worker · quiet 2m · may be waiting on a limit"
+        "● agy · worker · quiet 2m · may be waiting on a limit"
     );
     assert_eq!(
         lines[0].spans.last().unwrap().style,

@@ -90,8 +90,9 @@ fn workers_final_json_cli_owns_task() -> anyhow::Result<()> {
     let home = session_home(&scenario, key)?;
     assert_eq!(std::fs::read_to_string(home.join("build.json5"))?, TEMPLATE);
     let calls = invocations_of(&scenario, "openclaw")?;
-    assert_eq!(calls.len(), 1, "{calls:?}");
-    let call = &calls[0];
+    // The merger may write the commit message on this CLI too as the task ends, which is
+    // timing, so the worker's call is the first.
+    let call = calls.first().expect("openclaw never ran");
     let config = call
         .args
         .iter()

@@ -52,7 +52,7 @@ fn merged(seq: u64, task: &TaskId) -> RunEvent {
 }
 
 /// An orchestrator on Claude Code, two tasks built on Claude Code and Codex, the first sent
-/// back once by an Antigravity CLI reviewer, a judge's ruling, and Codex taking the second
+/// back once by an agy reviewer, a judge's ruling, and Codex taking the second
 /// over from Claude Code when its window ran out.
 fn a_run() -> Vec<RunEvent> {
     let (plan, build, fix, review, judge, out) = (
@@ -448,6 +448,7 @@ fn the_merger_the_judges_sign_off_and_how_the_run_ended_are_filed() {
             merge,
             merged_by,
             checks_failed,
+            ..
         } => Some((
             *merged,
             *replans,
@@ -803,4 +804,201 @@ fn both_ledgers_file_one_model_under_one_spelling() {
             _ => None,
         });
     assert_eq!(filed.map(|by| (by.agent, by.model)), Some(claude));
+}
+
+fn check(seq: u64, task: &TaskId, passed: bool) -> RunEvent {
+    use argonauts_core::events::task::CheckOutcome;
+    task_event_kind(
+        seq,
+        task,
+        RunEventKind::Check(CheckOutcome {
+            name: "tests".to_owned(),
+            kind: CheckKind::Command,
+            passed,
+            command: Some(vec!["cargo".to_owned(), "test".to_owned()]),
+            exit_code: Some(i32::from(!passed)),
+            duration_ms: 10,
+            summary: String::new(),
+            output_tail: String::new(),
+            violations: Vec::new(),
+            sandboxed: true,
+            skipped: false,
+        }),
+    )
+}
+
+fn task_event_kind(seq: u64, task: &TaskId, kind: RunEventKind) -> RunEvent {
+    RunEvent {
+        task_id: Some(task.clone()),
+        ..event(seq, kind)
+    }
+}
+
+/// [`a_run`], where the first review found two things, one of them blocking; the first task's
+/// checks failed before it and passed after; the second task's builder stopped at its usage
+/// limit; you approved the merge once it had been sent back; and the run was stopped.
+fn a_run_with_outcomes() -> Vec<RunEvent> {
+    let mut events = a_run();
+    let one = task_spec(1).id;
+    for event in &mut events {
+        if let RunEventKind::Review(ReviewEvent::Reviewed {
+            round: 1, review, ..
+        }) = &mut event.kind
+        {
+            let comment = |severity| argonauts_core::steps::judgment::ReviewComment {
+                path: "src/money.rs".to_owned(),
+                line: Some(4),
+                severity,
+                text: "rounding".to_owned(),
+            };
+            review.comments = vec![comment(Severity::High), comment(Severity::Low)];
+        }
+    }
+    let at = |events: &[RunEvent], seq| events.iter().position(|event| event.seq == seq).unwrap();
+    events.insert(at(&events, 8), check(7, &one, false));
+    events.insert(at(&events, 10), check(9, &one, true));
+    let ended = crate::client::test_support::session_ended(
+        11,
+        &SessionKey::numbered(6),
+        EndReason::UsageLimit { resets_at: None },
+        1_000,
+    );
+    events.insert(at(&events, 11), ended);
+    let merge = ApprovalId::numbered(9);
+    let opened = |seq| {
+        crate::client::test_support::opened(
+            seq,
+            &merge,
+            ApprovalKind::Merge,
+            None,
+            argonauts_core::events::approval::ApprovalPacket::WorkflowPromotion(
+                serde_json::Value::Null,
+            ),
+        )
+    };
+    events.push(opened(40));
+    events.push(approval_decided(
+        41,
+        &merge,
+        AnswerAction::SendBack,
+        Party::User,
+        None,
+    ));
+    events.push(opened(42));
+    events.push(approval_decided(
+        43,
+        &merge,
+        AnswerAction::Approve,
+        Party::User,
+        None,
+    ));
+    events.push(event(
+        44,
+        RunEventKind::Run(RunLifecycle::Finished {
+            outcome: RunOutcome::Stopped,
+            detail: None,
+        }),
+    ));
+    events
+}
+
+/// What the day's report counts of a run: each review's findings, the first check of each task,
+/// a fallback's cause as a word, who approved the merge, and how the run ended.
+#[test]
+fn a_run_end_keeps_how_the_work_went() {
+    let home = tempfile::tempdir().unwrap();
+    let ledger = WorkLedger::beside(&Paths::new(home.path()).usage_dir());
+    let at = datetime!(2026-09-30 12:00 UTC);
+    ledger.run_ended(Path::new("/repo"), &run_id(), &a_run_with_outcomes(), at);
+    let lines = ledger.read_since(None);
+    let findings: Vec<(u32, u32)> = lines
+        .iter()
+        .filter_map(|line| match &line.what {
+            Work::Review {
+                judge: false,
+                findings,
+                blocking,
+                ..
+            } => Some((*findings, *blocking)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(findings, [(2, 1), (0, 0)]);
+    let checks: Vec<(String, Option<bool>, Option<bool>)> = lines
+        .iter()
+        .filter_map(|line| match &line.what {
+            Work::Task {
+                task,
+                checks_first,
+                checks_last,
+                ..
+            } => Some((task.to_string(), *checks_first, *checks_last)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        checks,
+        [
+            ("task-001".to_owned(), Some(false), Some(true)),
+            ("task-002".to_owned(), None, None),
+        ]
+    );
+    let cause = lines.iter().find_map(|line| match &line.what {
+        Work::Session {
+            fallback_for: Some(_),
+            cause,
+            ..
+        } => *cause,
+        _ => None,
+    });
+    assert_eq!(cause, Some(FallbackCause::UsageLimit));
+    let outcome = lines.iter().find_map(|line| match &line.what {
+        Work::Outcome {
+            ended,
+            merge_approved_by,
+            merge_sent_back,
+            ..
+        } => Some((*ended, *merge_approved_by, *merge_sent_back)),
+        _ => None,
+    });
+    assert_eq!(
+        outcome,
+        Some((Some(RunOutcome::Stopped), Some(ApprovedBy::You), 1))
+    );
+}
+
+/// An end reason reads as the fixed word the report sends.
+#[test]
+fn a_fallbacks_cause_is_one_of_a_few_words() {
+    use argonauts_core::event::ErrorCategory;
+    let cli = |category| EndReason::CliError {
+        category,
+        message: "secret detail".to_owned(),
+    };
+    let causes = [
+        (
+            EndReason::Auth {
+                message: String::new(),
+            },
+            FallbackCause::SignedOut,
+        ),
+        (EndReason::RateLimited, FallbackCause::UsageLimit),
+        (cli(ErrorCategory::Overloaded), FallbackCause::Down),
+        (cli(ErrorCategory::Network), FallbackCause::Down),
+        (
+            EndReason::ModelUnavailable {
+                model: "m".to_owned(),
+            },
+            FallbackCause::ModelUnavailable,
+        ),
+        (
+            EndReason::Crashed {
+                message: String::new(),
+            },
+            FallbackCause::Other,
+        ),
+    ];
+    for (reason, cause) in causes {
+        assert_eq!(FallbackCause::of(&reason), cause, "{reason:?}");
+    }
 }

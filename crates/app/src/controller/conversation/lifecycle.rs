@@ -10,6 +10,7 @@ use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, SignedOut, TurnR
 use argonauts_core::event::{AgentEvent, ErrorCategory};
 use argonauts_core::events::run::{CaptainOrCrewDecision, RunMode};
 use argonauts_core::events::session::SessionEvent;
+use argonauts_core::limits::lost_to_the_network;
 use argonauts_core::names::{ModelRef, SessionKey, TurnId};
 use argonauts_core::screen::{Drawn, ScreenChange};
 use argonauts_core::session_runner::RunnerEvent;
@@ -363,6 +364,7 @@ fn try_turn(
             shell: shell::context_part(&ran),
             fast: conversation.prefs.fast,
             workdir: conversation.folder(ctx).to_path_buf(),
+            outside: direct::outside::for_turn(ctx, conversation, &step),
         },
     );
     let turn::Launched {
@@ -434,6 +436,7 @@ fn track_context(conversation: &mut ConversationState, key: SessionKey, worker: 
         categories: Vec::new(),
         recorded: None,
         ended: None,
+        answered_for: None,
     });
 }
 
@@ -460,8 +463,12 @@ pub(super) fn on_event(
     };
     match event {
         RunnerEvent::Agent(event) => {
-            if let Some(running) = turn.direct.as_mut() {
-                direct::on_agent(running, &event);
+            if let Some(line) = turn
+                .direct
+                .as_mut()
+                .and_then(|running| direct::on_agent(running, &event))
+            {
+                ctx.notice(NoteLevel::Quiet, line);
             }
             // The CLI's own model list, so `/model` mirrors it.
             if let AgentEvent::ModelsReported { models } = &event {
@@ -869,6 +876,19 @@ fn finish(
         );
         request.forced = command.is_some();
         request.captain_or_crew = Some(captain_or_crew.clone());
+        // A crew run your words start plans in an orchestrator that may copy this session, as
+        // one the start tool starts does. The turn has ended, so the copy holds all of it.
+        if captain_or_crew.mode == RunMode::Crew {
+            let settings = ctx.settings();
+            let begins = super::fork::start(ctx, conversation, settings);
+            let written_by = conversation
+                .session
+                .as_ref()
+                .map_or(&settings.crew.main, |session| &session.worker);
+            let tokens = conversation.context.as_ref().map(|context| context.used);
+            request.starts_from =
+                Some(begins.starts_from(written_by, tokens, |id| ctx.names.cli(id)));
+        }
         requested.applied.apply_to(&mut request);
         if let Some(style) = command.as_ref().and_then(|command| command.style) {
             request = styled(request, style);
@@ -1087,7 +1107,9 @@ fn fail(
     let fallback_left = turn::candidates(ctx)
         .iter()
         .any(|worker| !tried.contains(worker) && ctx.services.workers.get(worker).is_ok());
-    let worth = turn::worth_a_fallback(err) && fallback_left && !turn.step.main_agent_only();
+    let offline = lost_to_the_network(err, ctx.services.health.network());
+    let worth =
+        turn::worth_a_fallback(err) && !offline && fallback_left && !turn.step.main_agent_only();
     let asks = turn::fallback_mode(ctx.settings(), &turn.worker) == FallbackMode::Ask;
     let signed_out = turn::signed_out(err, &turn.worker.agent);
     // A CLI that turned out signed out falls back with one line that says so, as a direct
@@ -1270,7 +1292,12 @@ fn fail_direct(
     let mode = turn::fallback_mode(ctx.settings(), &turn.worker);
     let signed_out = turn::signed_out(err, &turn.worker.agent);
     // Another CLI wouldn't know this one's own command.
-    if turn::worth_a_fallback(err) && mode != FallbackMode::Wait && !turn.step.main_agent_only() {
+    let offline = lost_to_the_network(err, ctx.services.health.network());
+    if turn::worth_a_fallback(err)
+        && !offline
+        && mode != FallbackMode::Wait
+        && !turn.step.main_agent_only()
+    {
         let why = signed_out
             .as_ref()
             .map_or_else(|| why_it_stopped(err), why_signed_out);

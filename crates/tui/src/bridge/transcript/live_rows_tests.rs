@@ -339,8 +339,28 @@ fn argonauts_own_calls_read_as_plain_lines() {
     }
 }
 
+/// The start tool's own words when it starts nothing: one line, with no break after its first
+/// sentence, as the Captain run's first start got them.
+const WHY_NOT: &str = "No workflow started. With Captain, one starts only when you asked for a \
+    workflow in this message or the one before, and you said how it should run (how_to_run).";
+
+impl Screen {
+    /// The main agent's turn ends with `said`.
+    fn answered(&mut self, said: &str) {
+        self.send(ConversationEvent::TurnFinished {
+            turn: self.turn.clone(),
+            reply: argonauts_core::app::TurnReply::Answer {
+                markdown: said.into(),
+            },
+            spend: argonauts_core::Spend::default(),
+            elapsed_ms: 4_000,
+        });
+    }
+}
+
 /// Starting a workflow shows as the session's line and the workflow's row, so its call draws
-/// nothing, unless Argonauts Code turned it down.
+/// nothing, unless Argonauts Code turned it down and no later start in the turn worked: then
+/// one dim line, in the refused look, and none of the words meant for the session.
 #[test]
 fn a_start_draws_a_line_only_when_turned_down() {
     let start = "mcp__argonauts_status__argonauts_start_workflow";
@@ -349,9 +369,10 @@ fn a_start_draws_a_line_only_when_turned_down() {
     screen.agent(pending("s1", start));
     screen.agent(started("s1", start, json!({"request": "fix the money"})));
     screen.agent(finished("s1", "Starting a workflow: Orchestrator."));
+    screen.answered("Started.");
     let rows = screen.text(80);
     assert!(!rows.contains("argonauts_"), "{rows}");
-    assert!(!rows.contains("●"), "{rows}");
+    assert!(!rows.contains("No workflow started"), "{rows}");
 
     let mut screen = Screen::new();
     screen.ask("use a workflow for this");
@@ -360,13 +381,44 @@ fn a_start_draws_a_line_only_when_turned_down() {
         start,
         json!({"request": "fix the money", "who": "reviewer"}),
     ));
-    screen.agent(finished(
-        "s1",
-        "No workflow started.\n\"Codex as the reviewer\" (review): dropped, put the CLI in who",
-    ));
+    screen.agent(finished("s1", WHY_NOT));
+    screen.answered("It needs how it should run.");
     let rows = screen.text(80);
-    assert!(rows.contains("● No workflow started."), "{rows}");
+    assert!(rows.contains("No workflow started"), "{rows}");
+    assert!(!rows.contains("With Captain"), "{rows}");
     assert!(!rows.contains("argonauts_"), "{rows}");
+    let danger = Screen::theme().style(crate::theme::Role::Danger).fg;
+    let refused = screen
+        .lines(80)
+        .into_iter()
+        .find(|line| plain_text(std::slice::from_ref(line)).contains("No workflow started"))
+        .expect("the line");
+    assert!(
+        refused.spans.iter().all(|span| span.style.fg != danger),
+        "{refused:?}"
+    );
+    assert!(!rows.contains("failed"), "{rows}");
+}
+
+/// The first start was turned down and the retry in the same turn started it: the Workflow
+/// row says it started, and the refusal shows only in the full transcript.
+#[test]
+fn a_refused_start_whose_retry_worked_draws_nothing() {
+    let start = "mcp__argonauts_status__argonauts_start_workflow";
+    let mut screen = Screen::new();
+    screen.ask("Use a workflow for this, with Codex as the reviewer");
+    screen.agent(started("s1", start, json!({"request": "fix the money"})));
+    screen.agent(finished("s1", WHY_NOT));
+    screen.agent(started(
+        "s2",
+        start,
+        json!({"request": "fix the money", "how_to_run": "captain"}),
+    ));
+    screen.agent(finished("s2", "Starting a workflow: Captain."));
+    screen.answered("Starting a workflow: Captain.");
+    let rows = screen.text(80);
+    assert!(!rows.contains("No workflow started"), "{rows}");
+    assert!(!rows.contains("With Captain"), "{rows}");
 }
 
 /// A lookup of held-back tools never shows, as in Claude Code.

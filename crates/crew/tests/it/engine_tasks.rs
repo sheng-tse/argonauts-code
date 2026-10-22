@@ -46,7 +46,6 @@ use argonauts_core::{LimitDimension, NoteLevel, RunId, Spend, TaskId};
 use argonauts_crew::EngineError;
 use argonauts_crew::approvals;
 use argonauts_crew::engine::host::Host;
-use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::git::Git;
 use argonauts_crew::state::RunState;
 use argonauts_crew::task;
@@ -2004,11 +2003,11 @@ impl Bench {
         let base = crew.repo.head()?;
         let history = history(crew, mode, &base, tasks)?;
         let (context, sink, _commands) = crew.context(history)?;
-        Git::new()
+        Git::with_env(crew.git_env())
             .add_detached_worktree(crew.repo.root(), &context.repo.base_worktree, &base)
             .await?;
         let state = RunState::fold(&context.history);
-        let shared = Shared::new(&context, state)?;
+        let shared = crew.shared(&context, state)?;
         Ok(Self {
             host: Host::new(Arc::new(shared)),
             sink,
@@ -2019,7 +2018,7 @@ impl Bench {
     fn over(crew: &Crew, history: Vec<RunEvent>) -> anyhow::Result<Self> {
         let (context, sink, _commands) = crew.context(history)?;
         let state = RunState::fold(&context.history);
-        let shared = Shared::new(&context, state)?;
+        let shared = crew.shared(&context, state)?;
         Ok(Self {
             host: Host::new(Arc::new(shared)),
             sink,
@@ -2133,6 +2132,7 @@ fn history(
         outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     };
     let goal = GoalFile {
         run: run.clone(),

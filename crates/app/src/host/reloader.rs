@@ -97,6 +97,7 @@ mod tests {
                 instructions: Vec::new(),
                 request_settings: Vec::new(),
                 required_steps: Vec::new(),
+                starts_from: None,
             },
             overrides: overrides.iter().map(|text| (*text).to_owned()).collect(),
             interactive,

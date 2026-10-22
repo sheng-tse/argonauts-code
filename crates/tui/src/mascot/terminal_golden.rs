@@ -1,16 +1,23 @@
 //! The pictures the header sends, checked against the picture of the header in Ghostty with
-//! Iosevka at 17 px (cells of 9 x 21 pixels, and 18 x 42 on a Retina screen): each still the
-//! very bytes drawn there, and each frame of an ultra look the pixels of its place in the strip
-//! that page steps through. The page's own font is left out of the copy kept here.
+//! Iosevka at 17 px (cells of 9 x 21 pixels, and 18 x 42 on a Retina screen), which drew 18
+//! frames a cycle. The art is the same at a frame every 50 ms: each frame at a moment that page
+//! drew is the pixels of its place in the strip there, and at 9 x 21 pixels, where the header
+//! fits the 18 x 42 pictures to the cells, as close as fitting allows. The page's own font is
+//! left out of the copy kept here.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
 use super::graphics::{Graphics, pictures_in};
 use super::png::{self, Rgba};
-use super::{FRAMES, Look, Mascot, Sent};
+use super::{Look, Mascot, Sent, picture};
 
-const PAGE: &str = include_str!("../../golden/mascot_terminal.html");
+/// The frames a cycle the page's strips step through.
+const PAGE_FRAMES: usize = 18;
+/// How far a fitted picture's channels may be from the page's, on average, out of 255.
+const FITTED_WITHIN: f64 = 1.0;
+
+const PAGE: &str = include_str!("../../tests/golden/mascot/mascot_terminal.html");
 
 /// Each picture on the page: how it is labelled, and its PNG.
 fn pictures_on_page() -> Vec<(String, Vec<u8>)> {
@@ -45,10 +52,37 @@ fn frame_of(strip: &Rgba, at: usize, width: usize) -> Rgba {
     frame
 }
 
+/// The average distance of the two pictures' channels, out of 255.
+fn distance(one: &Rgba, other: &Rgba) -> f64 {
+    assert_eq!((one.width, one.height), (other.width, other.height));
+    let total: u64 = one
+        .pixels
+        .iter()
+        .zip(&other.pixels)
+        .map(|(a, b)| u64::from(a.abs_diff(*b)))
+        .sum();
+    total as f64 / one.pixels.len() as f64
+}
+
+/// Whether `ours` is the page's picture: the very pixels at the size drawn for, and as close
+/// as fitting allows at another.
+fn is_the_pages(ours: &Rgba, page: &Rgba, cell: (u16, u16)) -> Result<(), String> {
+    if cell == super::pictures::DRAWN_FOR {
+        return (ours == page)
+            .then_some(())
+            .ok_or_else(|| "other pixels".to_owned());
+    }
+    let distance = distance(ours, page);
+    (distance <= FITTED_WITHIN)
+        .then_some(())
+        .ok_or_else(|| format!("{distance:.2} apart"))
+}
+
 #[test]
 fn the_header_sends_the_pictures_ghostty_draws() {
     let pictures = pictures_on_page();
     assert_eq!(pictures.len(), 11, "the page's pictures");
+    let mut compared = 0;
     for (label, page_png) in pictures {
         let parts: Vec<&str> = label.split(", ").collect();
         let mascot = match parts[0] {
@@ -69,25 +103,32 @@ fn the_header_sends_the_pictures_ghostty_draws() {
         } else {
             (9, 21)
         };
+        let page = png::decode(&page_png).expect("the page's picture");
         let (_, escapes) = Sent::first(Graphics::Kitty, mascot, look, cell, 1).unwrap();
         let sent = pictures_in(&escapes);
+        let ours =
+            |frame: usize| png::decode(&picture(mascot, look, cell, frame).unwrap()).unwrap();
         if !look.is_ultra() {
-            assert_eq!(sent, [page_png], "{label}: the same bytes");
+            assert_eq!(sent.len(), 1, "{label}");
+            assert_eq!(png::decode(&sent[0]).unwrap(), ours(0), "{label}");
+            is_the_pages(&ours(0), &page, cell).unwrap_or_else(|why| panic!("{label}: {why}"));
+            compared += 1;
             continue;
         }
-        assert_eq!(sent.len(), FRAMES, "{label}");
-        let strip = png::decode(&page_png).expect("the page's strip of frames");
-        let width = strip.width / FRAMES;
+        let width = page.width / PAGE_FRAMES;
         assert_eq!(
-            (width, strip.height),
+            (width, page.height),
             (usize::from(cell.0) * 9, usize::from(cell.1) * 3)
         );
-        for (at, frame) in sent.iter().enumerate() {
-            let frame = png::decode(frame).unwrap();
-            assert!(
-                frame == frame_of(&strip, at, width),
-                "{label}: frame {at} is not the page's"
-            );
+        let frames = mascot.frames();
+        // The moments the page drew that a frame every 50 ms draws too.
+        for at in (0..PAGE_FRAMES).filter(|at| at * frames % PAGE_FRAMES == 0) {
+            let frame = at * frames / PAGE_FRAMES;
+            is_the_pages(&ours(frame), &frame_of(&page, at, width), cell)
+                .unwrap_or_else(|why| panic!("{label}: frame {frame} at the page's {at}: {why}"));
+            compared += 1;
         }
     }
+    // The stills, every frame of the medusa's and the hydra's strips, and the argonaut's two.
+    assert_eq!(compared, 4 + 4 * PAGE_FRAMES + 2 * 2 + PAGE_FRAMES);
 }

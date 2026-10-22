@@ -222,6 +222,11 @@ pub fn draw_status(
                 (Some(mark), Role::StateFailed, Some(Role::StateFailed))
             }
             (StatusKind::Ended, _) => (None, Role::Dim, None),
+            (StatusKind::PullRequest, _) => (
+                Some(if ascii { "o" } else { "◐" }),
+                Role::Warn,
+                Some(Role::Warn),
+            ),
         };
         let mut spans = Vec::new();
         if let Some(mark) = mark {
@@ -231,7 +236,11 @@ pub fn draw_status(
         let room = usize::from(area.width).saturating_sub(spans_width(&spans));
         let text = cut_at_word(sanitize_line(&status.text).trim(), room);
         let text = text.as_str();
-        match (headline, text.split_once(" · ")) {
+        let split = match status.kind {
+            StatusKind::PullRequest => second_separator(text),
+            _ => text.split_once(" · "),
+        };
+        match (headline, split) {
             (Some(role), Some((first, rest))) => {
                 spans.push(Span::styled(first.to_owned(), theme.style(role)));
                 spans.extend(with_names(&format!(" · {rest}"), dim, named));
@@ -247,6 +256,13 @@ pub fn draw_status(
             &Line::from(spans),
         );
     }
+}
+
+/// `text` cut before its second ` · `: a pull request's `#57 · test failed`, then the rest.
+fn second_separator(text: &str) -> Option<(&str, &str)> {
+    let first = text.find(" · ")? + " · ".len();
+    let second = first + text[first..].find(" · ")?;
+    Some((&text[..second], &text[second + " · ".len()..]))
 }
 
 /// `text` in `style`, with each of `named` in it in that name's own style, the longest first

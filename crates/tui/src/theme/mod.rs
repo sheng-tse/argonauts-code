@@ -303,7 +303,7 @@ impl Role {
         match cli.trim() {
             "claude-code" | "Claude" | "Claude Code" => Role::CliClaude,
             "codex" | "Codex" => Role::CliCodex,
-            "antigravity-cli" | "agy" | "Antigravity CLI" => Role::CliAgy,
+            "antigravity-cli" | "agy" => Role::CliAgy,
             "opencode" | "OpenCode" => Role::AgentGreen,
             _ => Role::CatOther,
         }

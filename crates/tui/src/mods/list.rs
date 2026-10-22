@@ -456,7 +456,7 @@ impl View for ModsScreen {
         let detail = self.detail_lines(&kit, usize::from(panes.right.width));
         panes::put_lines(buf, panes.right, &detail);
         let mark = panes::count(self.view.rows.len(), "mod");
-        let hints = Footer::hints(&[("↑↓ mod", 0), ("⏎ its page", 0), (panes::ESC_BACK, 0)]);
+        let hints = Footer::hints(&[("↑↓  mod", 0), ("⏎ its page", 0), (panes::ESC_BACK, 0)]);
         panes::draw_footer(buf, panes.footer, hints, &mark, theme);
     }
 

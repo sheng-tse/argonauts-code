@@ -108,8 +108,8 @@ fn live_moment_the_edit_s_row_is_there_while_it_runs() {
     assert_matches(
         "live_moment",
         &lines,
-        include_str!("pictures/live_moment.txt"),
-        include_str!("pictures/live_moment.html"),
+        include_str!("../../../tests/golden/transcript/live_moment.txt"),
+        include_str!("../../../tests/golden/transcript/live_moment.html"),
         &Screen::theme(),
         &[
             PROMPT_GLYPH,
@@ -181,8 +181,8 @@ fn live_done_the_edit_s_row_is_filled_in_place() {
     assert_matches(
         "live_done",
         &shown,
-        include_str!("pictures/live_done.txt"),
-        include_str!("pictures/live_done.html"),
+        include_str!("../../../tests/golden/transcript/live_done.txt"),
+        include_str!("../../../tests/golden/transcript/live_done.html"),
         &Screen::theme(),
         &[
             Unlike {
@@ -296,8 +296,8 @@ fn sticky_after_the_prompt_being_answered_stays_at_the_top() {
     assert_matches(
         "sticky_after",
         &lines,
-        include_str!("pictures/sticky_after.txt"),
-        include_str!("pictures/sticky_after.html"),
+        include_str!("../../../tests/golden/transcript/sticky_after.txt"),
+        include_str!("../../../tests/golden/transcript/sticky_after.html"),
         &theme,
         &[
             PROMPT_GLYPH,

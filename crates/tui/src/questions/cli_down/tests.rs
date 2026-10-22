@@ -197,7 +197,7 @@ fn a_setting_that_keeps_the_tasks_here_makes_waiting_your_own_answer() {
         explained(&question, now)[0],
         (
             "One agent for every paused task".to_owned(),
-            "Gemini 3.6 Pro | on Antigravity CLI fits both".to_owned()
+            "Gemini 3.6 Pro | on agy fits both".to_owned()
         )
     );
 }
@@ -270,7 +270,6 @@ fn under_the_workflow_view_the_question_reads_as_its_picture() {
     // phase out by its own labels.
     picture.label_column(6, "build:due-flag", "build:due-tests  ".len());
     picture.label_column(7, "build:due-tests", "build:due-tests  ".len());
-    picture.respell_tokens(6, "44.0k", "44k");
     // The picture says paused, which now only a pause you asked for reads: these tasks wait
     // for their CLI.
     picture.reword(3, "2 tasks paused", "2 tasks wait for it");

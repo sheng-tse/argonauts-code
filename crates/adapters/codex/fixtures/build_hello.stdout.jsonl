@@ -1,6 +1,6 @@
-{"type":"thread.started","thread_id":"01a1572d-ad4c-7b33-93de-16bf9ce99e4e"}
+{"type":"thread.started","thread_id":"01a15ff5-ed23-7110-938c-0e39956eb320"}
 {"type":"turn.started"}
 {"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc \"pwd && cat > hello.txt <<'EOF'\nhi\nEOF\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
 {"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc \"pwd && cat > hello.txt <<'EOF'\nhi\nEOF\"","aggregated_output":"<workdir>\n","exit_code":0,"status":"completed"}}
-{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"{\"status\":\"done\",\"summary\":\"Created hello.txt containing hi.\",\"files_changed\":[\"hello.txt\"],\"tests_run\":[],\"concerns\":[]}"}}
-{"type":"turn.completed","usage":{"input_tokens":31604,"cached_input_tokens":15616,"cache_write_input_tokens":0,"output_tokens":90,"reasoning_output_tokens":0}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"{\"status\":\"done\",\"summary\":\"Created hello.txt containing “hi”.\",\"files_changed\":[\"hello.txt\"],\"tests_run\":[],\"concerns\":[]}"}}
+{"type":"turn.completed","usage":{"input_tokens":32675,"cached_input_tokens":16128,"cache_write_input_tokens":0,"output_tokens":91,"reasoning_output_tokens":0}}

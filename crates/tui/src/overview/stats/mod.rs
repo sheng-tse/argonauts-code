@@ -10,6 +10,7 @@
 //! its own shade of it, and each role in a color of its own.
 
 mod argonauts;
+pub mod behaviors;
 mod by_model;
 mod by_role;
 mod cli;
@@ -477,25 +478,25 @@ impl StatsState {
     /// move on, and in the cards what each key does there.
     pub fn keys(&self) -> Vec<&'static str> {
         const ALONG: &str = "tab By CLI, By model, By role";
-        const INTO: &str = "↓ into the cards";
+        const INTO: &str = "↓  into the cards";
         const MEASURE: &str = "u tokens, tasks or spend";
         const OPENS: &str = "enter opens or closes it";
         match (self.level, self.group) {
             (Level::Tabs, _) => vec![
-                "tab · ← → tabs",
-                "↓ sub-tabs, then cards",
+                "tab · ←  →  tabs",
+                "↓  sub-tabs, then cards",
                 MEASURE,
                 "enter open",
                 "p pin",
             ],
-            (Level::SubTabs, StatsGroup::Cli) => vec![ALONG, INTO, "↑ tabs"],
+            (Level::SubTabs, StatsGroup::Cli) => vec![ALONG, INTO, "↑  tabs"],
             (Level::SubTabs, StatsGroup::Model) => vec![ALONG, INTO, "enter opens a model"],
             (Level::SubTabs, StatsGroup::Role) => vec![ALONG, INTO, "enter opens a role"],
             (Level::Cards, StatsGroup::Cli) => {
-                vec!["↑↓ card", OPENS, ALONG, MEASURE, "p pin"]
+                vec!["↑↓  card", OPENS, ALONG, MEASURE, "p pin"]
             }
-            (Level::Cards, StatsGroup::Model) => vec!["↑↓ model", OPENS, ALONG, MEASURE],
-            (Level::Cards, StatsGroup::Role) => vec!["↑↓ role", OPENS, ALONG, MEASURE],
+            (Level::Cards, StatsGroup::Model) => vec!["↑↓  model", OPENS, ALONG, MEASURE],
+            (Level::Cards, StatsGroup::Role) => vec!["↑↓  role", OPENS, ALONG, MEASURE],
         }
     }
 }

@@ -13,7 +13,7 @@ use crate::app::SettingRow;
 use crate::events::RunEvent;
 use crate::events::agent_status::RunSpend;
 use crate::events::approval::AnswerAction;
-use crate::events::run::{CaptainOrCrewDecision, CheckedInstruction, RunMode};
+use crate::events::run::{CaptainOrCrewDecision, CheckedInstruction, RunMode, StartsFrom};
 use crate::events::session::QueuedMessage;
 use crate::events::task::TaskState;
 use crate::future::BoxFuture;
@@ -63,6 +63,9 @@ pub struct StartRun {
     /// them, as it must what `always.toml` and the request's own words require.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_steps: Vec<RequiredStep>,
+    /// What the orchestrator begins from, for a run your words in a conversation start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_from: Option<StartsFrom>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

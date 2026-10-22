@@ -1,0 +1,25 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
+   Overview    Models    Behaviors                                                                                    
+  What your agents did, from 562 actions in 19 runs across 6 projects · by model · Argonauts' labels                  
+                                                                                                                      
+
+[picture]
+
+Every model                                                                                                           
+nothing compared                                                                                                      
+←  →  compares one with                                                                                               
+the rest                                                                                                              
+                                                                                                                      
+● Haiku 5.5         406                                                                                               
+● GPT 6 Luna         66                                                                                               
+● GPT 5.6 Luna       49                                                                                               
+● Haiku 4.5          22                                                                                               
+● Gemini 3.8 Flash   19                                                                                               
+
+[picture]
+
+                                                                                                                      
+  Pick a model with ←  →  to see what it does more or less than the rest.                                             
+                                                                                                                      
+  ←  →  compare a model · ↓  into the list, which lights each behavior · g group · p period · esc back                

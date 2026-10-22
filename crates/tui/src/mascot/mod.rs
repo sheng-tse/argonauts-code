@@ -5,9 +5,10 @@
 //! cells.
 
 mod blocks;
+mod frames;
 pub mod graphics;
 mod pictures;
-mod png;
+pub(crate) mod png;
 mod send;
 #[cfg(test)]
 mod terminal_golden;
@@ -24,8 +25,9 @@ pub use send::Sent;
 /// A mascot fills 9 cells across and 3 down.
 pub const WIDTH: usize = 9;
 pub const ROWS: usize = 3;
-/// The frames of one cycle of an ultra look's animation.
-pub const FRAMES: usize = 18;
+/// The pictures a cycle iTerm2 gets, which takes each one whole: fewer than the frames, so
+/// it isn't sent more than it can show.
+pub const ITERM_FRAMES: usize = 18;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mascot {
@@ -69,9 +71,15 @@ impl Mascot {
         &blocks::file().mascots[self.name()].story
     }
 
-    /// How long each frame of an ultra look shows.
+    /// The frames of one cycle of its ultra looks, one every 50 ms.
+    pub fn frames(self) -> usize {
+        pictures::frames(self)
+    }
+
+    /// How long each frame of an ultra look shows: 50 ms, quicker than the 64 ms Claude Code's
+    /// own shimmer steps at.
     pub fn frame_time(self) -> Duration {
-        Duration::from_secs_f64(pictures::cycle(self) / FRAMES as f64)
+        Duration::from_secs_f64(pictures::cycle(self) / self.frames() as f64)
     }
 }
 
@@ -156,10 +164,19 @@ mod tests {
         assert!(Look::Codex.is_ultra() && !Look::Light.is_ultra());
     }
 
+    /// Each frame lasts at most 50 ms, a step quicker than Claude Code's 64 ms shimmer, so one
+    /// cycle has 68 frames for the argonaut, 36 for the medusa and 72 for the hydra.
     #[test]
-    fn each_frame_shows_an_eighteenth_of_its_mascots_cycle() {
-        let seconds = |mascot: Mascot| mascot.frame_time().as_secs_f64();
-        assert!((seconds(Mascot::Medusa) - 0.1).abs() < 1e-6);
-        assert!((seconds(Mascot::Hydra) - 0.2).abs() < 1e-6);
+    fn each_frame_lasts_at_most_50_ms() {
+        for mascot in Mascot::ALL {
+            assert!(
+                mascot.frame_time() <= Duration::from_millis(50),
+                "{mascot:?}: {:?}",
+                mascot.frame_time()
+            );
+            assert!(mascot.frame_time() < Duration::from_millis(64));
+        }
+        let frames = Mascot::ALL.map(Mascot::frames);
+        assert_eq!(frames, [68, 36, 72]);
     }
 }

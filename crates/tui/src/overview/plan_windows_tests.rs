@@ -103,7 +103,7 @@ mod picture {
                 ),
                 plan(
                     "antigravity-cli",
-                    "Antigravity CLI",
+                    "agy",
                     "Pro",
                     vec![
                         window("five_hour", "Gemini 5h", None, 0.0),
@@ -143,10 +143,10 @@ mod picture {
         assert_eq!(
             found,
             [
-                "row 4 column 85: '5' where the picture has '4'",
-                "row 4 column 88: '2' where the picture has '1'",
-                "row 5 column 85: '5' where the picture has '4'",
-                "row 5 column 88: '2' where the picture has '1'",
+                "row 4 column 81: '5' where the picture has '4'",
+                "row 4 column 84: '2' where the picture has '1'",
+                "row 5 column 81: '5' where the picture has '4'",
+                "row 5 column 84: '2' where the picture has '1'",
             ],
             "{found:#?}"
         );

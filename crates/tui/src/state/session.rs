@@ -108,6 +108,28 @@ pub enum Doing {
     Writing,
 }
 
+/// Whether `event` says the request the CLI retried went through: anything but another retry
+/// or the bookkeeping a CLI sends while it waits.
+pub(super) fn ends_a_retry(event: &AgentEvent) -> bool {
+    !matches!(
+        event,
+        AgentEvent::Retry { .. }
+            | AgentEvent::Usage { .. }
+            | AgentEvent::ContextFill { .. }
+            | AgentEvent::ContextBreakdown { .. }
+            | AgentEvent::Plan { .. }
+            | AgentEvent::PlanUsageSignal { .. }
+            | AgentEvent::PlanUsage { .. }
+            | AgentEvent::PluginOutput { .. }
+            | AgentEvent::ModelsReported { .. }
+            | AgentEvent::IsolationLeak { .. }
+            | AgentEvent::CommandsChanged { .. }
+            | AgentEvent::MessageState { .. }
+            | AgentEvent::ScreenChanged { .. }
+            | AgentEvent::BackgroundTasks { .. }
+    )
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Retrying {
     pub reason: RetryReason,
@@ -302,23 +324,7 @@ impl SessionState {
             | AgentEvent::ToolStarted { parent: None, .. } => self.turn_over = false,
             _ => {}
         }
-        if !matches!(
-            event,
-            AgentEvent::Retry { .. }
-                | AgentEvent::Usage { .. }
-                | AgentEvent::ContextFill { .. }
-                | AgentEvent::ContextBreakdown { .. }
-                | AgentEvent::Plan { .. }
-                | AgentEvent::PlanUsageSignal { .. }
-                | AgentEvent::PlanUsage { .. }
-                | AgentEvent::PluginOutput { .. }
-                | AgentEvent::ModelsReported { .. }
-                | AgentEvent::IsolationLeak { .. }
-                | AgentEvent::CommandsChanged { .. }
-                | AgentEvent::MessageState { .. }
-                | AgentEvent::ScreenChanged { .. }
-                | AgentEvent::BackgroundTasks { .. }
-        ) {
+        if ends_a_retry(event) {
             self.retry = None;
         }
         match event {

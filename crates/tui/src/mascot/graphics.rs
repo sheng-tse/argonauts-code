@@ -50,9 +50,22 @@ impl Graphics {
 /// The escapes that draw `png` in the mascot's cells from the cursor, leaving the cursor where
 /// it was. `id` names it for the kitty protocol, so it can be swapped or taken away later.
 pub fn draw(graphics: Graphics, png: &[u8], id: u32) -> Vec<u8> {
+    draw_over(graphics, png, id, (WIDTH, ROWS))
+}
+
+/// Like [`draw`], over `cells`, columns by rows, such as a map's.
+pub fn draw_over(
+    graphics: Graphics,
+    png: &[u8],
+    id: u32,
+    (columns, rows): (usize, usize),
+) -> Vec<u8> {
     match graphics {
-        Graphics::Kitty => kitty_send(png, &format!("a=T,f=100,q=2,C=1,c={WIDTH},r={ROWS},i={id}")),
-        Graphics::Iterm => iterm(png),
+        Graphics::Kitty => kitty_send(
+            png,
+            &format!("a=T,f=100,q=2,C=1,c={columns},r={rows},i={id}"),
+        ),
+        Graphics::Iterm => iterm(png, (columns, rows)),
     }
 }
 
@@ -106,10 +119,10 @@ fn kitty_send(png: &[u8], keys: &str) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// iTerm2's inline image over the mascot's cells. It moves the cursor, so the cursor is kept.
-fn iterm(png: &[u8]) -> Vec<u8> {
+/// iTerm2's inline image over `cells`. It moves the cursor, so the cursor is kept.
+fn iterm(png: &[u8], (columns, rows): (usize, usize)) -> Vec<u8> {
     format!(
-        "\x1b7\x1b]1337;File=inline=1;size={};width={WIDTH};height={ROWS}:{}\x07\x1b8",
+        "\x1b7\x1b]1337;File=inline=1;size={};width={columns};height={rows}:{}\x07\x1b8",
         png.len(),
         STANDARD.encode(png)
     )

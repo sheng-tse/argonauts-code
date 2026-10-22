@@ -12,6 +12,7 @@ use argonauts_core::events::session::{
 };
 use argonauts_core::input::EFFORT_LEVELS;
 use argonauts_core::limits::{HealthState, ModelState, PlanUsageStatus};
+use argonauts_core::meter::LimitDimension;
 use argonauts_core::names::{ConversationId, ModelRef, RoleName, SessionKey, TurnId};
 use argonauts_core::paths::create_private_dir_all;
 use argonauts_core::pictures::Picture;
@@ -252,7 +253,15 @@ pub(crate) fn describe(err: &StepError) -> String {
             EndReason::Stuck { watchdog, calls } => {
                 format!("it {}", stuck_words(*watchdog, calls.as_ref()))
             }
-            other => format!("it ended early ({other:?})"),
+            EndReason::LimitHit { dimension } => {
+                let limit = match dimension {
+                    LimitDimension::Spend => "spend",
+                    LimitDimension::Minutes => "time",
+                    LimitDimension::ToolCalls => "tool call",
+                };
+                format!("it reached its {limit} limit")
+            }
+            EndReason::Completed => "it ended early".to_owned(),
         },
         StepError::SchemaMismatch { raw: None, .. } => "it ended without an answer".to_owned(),
         StepError::SchemaMismatch { errors, .. } => {
@@ -448,7 +457,7 @@ impl TurnStep {
     }
 
     /// A direct turn's listener, or `None` for a turn that only reads.
-    fn direct_asking(&self) -> Option<&Option<Asking>> {
+    pub(crate) fn direct_asking(&self) -> Option<&Option<Asking>> {
         match self {
             Self::Direct { asking, .. } => Some(asking),
             Self::Cli { direct, .. } => direct.as_ref(),
@@ -630,6 +639,8 @@ pub(crate) struct Launch<'a> {
     pub fast: bool,
     /// Your checkout, or the folder of an agent's session the conversation carries on.
     pub workdir: PathBuf,
+    /// What the turn reads and writes outside its folder without asking.
+    pub outside: argonauts_core::outside::Outside,
 }
 
 /// A turn's session once it started: its key, the token that stops it, and the way in for
@@ -961,6 +972,7 @@ pub(crate) fn session_spec(
             closed: Vec::new(),
             listable: Vec::new(),
             loopback: false,
+            outside: launch.outside.clone(),
         },
         compaction: role
             .and_then(|role| role.compaction)
@@ -1199,6 +1211,10 @@ mod tests {
             describe(&ended(EndReason::RateLimited)),
             "it is rate limited"
         );
+        let spend = EndReason::LimitHit {
+            dimension: LimitDimension::Spend,
+        };
+        assert_eq!(describe(&ended(spend)), "it reached its spend limit");
     }
 
     /// A sign-in error that says the sign-in is gone means signed out, whatever the CLI's own
@@ -1380,6 +1396,7 @@ mod tests {
             shell: None,
             fast: false,
             workdir: ctx.env.repo_root.clone(),
+            outside: Default::default(),
         };
         let key = SessionKey::numbered(1);
         let dir = ctx.env.state_dir.join("conversation-test");

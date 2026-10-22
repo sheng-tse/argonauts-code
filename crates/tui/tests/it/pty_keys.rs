@@ -12,7 +12,7 @@ fn crew_with_panel(agents: usize) -> (RunScript, Vec<Agent>, TestDriver) {
     let driver = TestDriver::launch(Script::idle().all(0, events))
         .ui("[panel]\nagents = true")
         .start();
-    driver.wait_visible("↓ to manage");
+    driver.wait_visible("↓  to manage");
     (run, crew, driver)
 }
 
@@ -181,7 +181,7 @@ fn down_focuses_agent_panel() {
     assert_eq!(listed.visible[rule + 1], "❯ Message @task-003…");
     assert!(
         listed.visible[rule + 3].starts_with(
-            "  ↑/↓ to select · enter to view · x to stop it · ctrl+x ctrl+k to stop all agents"
+            "  ↑/↓  to select · enter to view · x to stop it · ctrl+x ctrl+k to stop all agents"
         ),
         "{listed:?}"
     );
@@ -230,7 +230,7 @@ fn down_without_agents_walks_history() {
             .and_then(|rule| screen.visible.get(rule + 1))
             .is_some_and(|row| !row.contains("prompt"))
     });
-    assert!(row_of(&screen, "↓ to manage").is_none());
+    assert!(row_of(&screen, "↓  to manage").is_none());
 }
 
 #[test]
@@ -252,8 +252,8 @@ fn agent_panel_rows_progress() {
         .ui("[panel]\nagents = true")
         .env("NO_COLOR", "1")
         .start();
-    let screen = driver.wait_visible("↓ 18\\.1k tokens");
-    let mode = expect_row(&screen, "↓ to manage");
+    let screen = driver.wait_visible("↓  18\\.1k tokens");
+    let mode = expect_row(&screen, "↓  to manage");
     let mut last = expect_row(&screen, "Council · Add a --json flag to export ");
     assert!(last > mode, "the run's row under the bottom line");
     for agent in &crew {
@@ -261,7 +261,7 @@ fn agent_panel_rows_progress() {
         // recording from before labels), what it's doing, then its to-do count, how long, and
         // its tokens.
         let pattern = format!(
-            "^    ○ {} +\\S.* +2/5 · {LISTED_FOR} · ↓ [\\d.]+k tokens$",
+            "^    ○ {} +\\S.* +2/5 · {LISTED_FOR} · ↓  [\\d.]+k tokens$",
             regex::escape(&agent.task),
         );
         let row = expect_row(&screen, &pattern);

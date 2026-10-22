@@ -112,6 +112,7 @@ fn host_row(context: &ContextRow, workflow: &CliWorkflowRun) -> AgentRow {
         note: None,
         inner: None,
         left_out: false,
+        fallback_why: None,
     }
 }
 
@@ -180,6 +181,7 @@ mod tests {
             categories: Vec::new(),
             recorded: None,
             ended: None,
+            answered_for: None,
         }
     }
 

@@ -1,9 +1,9 @@
 ---
-source: crates/tui/tests/snap_overlays.rs
-assertion_line: 886
+source: crates/tui/tests/it/snap_overlays.rs
+assertion_line: 864
 expression: text
 ---
-✔ GPT 5.6 on Codex · worker · task-002 (Add the JSON writer)   Output  Input  Raw    2m00s · ↓ 12.4k
+✔ GPT 5.6 on Codex · worker · task-002 (Add the JSON writer)   Output  Input  Raw   2m00s · ↓  12.4k
 
 ● Read(src/export.rs)
   ⎿  Read 2 lines
@@ -34,4 +34,4 @@ expression: text
 
 
 
-↑↓ scroll · tab input · r raw · d diff · ← crew · esc back
+↑↓  scroll · tab input · r raw · d diff · ←  crew · esc back

@@ -13,8 +13,8 @@
  │                  │        ⏺ check:dates  Haiku 5.5 · 4.2k tok                                                12s │ 
  │                  │  ✔ build:due-tests    GPT 5.6 · 30.3k tok · passed                                      1m02s │ 
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save                                   
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save                                  
                                                                                                                       
   its rows in the bottom list                                                                                         
-  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱  3/5 · 2m52s · ↓ 91.4k tokens                                        
-    ⎿ ◯ add-due-flag        ▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱  2/3 · 1m58s · ↓ 25.9k tokens · run by build:due-flag                
+  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱  3/5 · 2m52s · ↓  91.4k tokens                                       
+    ⎿ ◯ add-due-flag        ▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱  2/3 · 1m58s · ↓  25.9k tokens · run by build:due-flag               

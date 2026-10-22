@@ -1,0 +1,30 @@
+# The AUR's argonauts-code-bin, from a stable release's gnu builds. Each @…@ is filled in from the release: the
+# version without its v, and the sha256 in each archive's .sha256 file. For example:
+#   sed -e "s/@VERSION@/0.1.0/" -e "s/@SHA256_X86_64@/$(cut -d' ' -f1 x86_64.sha256)/" \
+#       -e "s/@SHA256_AARCH64@/$(cut -d' ' -f1 aarch64.sha256)/" PKGBUILD.template > PKGBUILD
+# It's pushed to the AUR once the AUR account and its SSH key exist; betas never go there.
+
+# Maintainer: Sheng-Tse Lin
+pkgname=argonauts-code-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Orchestrate any mix of coding agents and models, from Claude Code and Codex to open-weight models on your own machine"
+arch=('x86_64' 'aarch64')
+url="https://github.com/sheng-tse/argonauts-code"
+license=('Apache-2.0')
+# git is how Argonauts keeps each agent's work apart.
+depends=('gcc-libs' 'glibc' 'git')
+provides=('argonauts-code')
+conflicts=('argonauts-code')
+source_x86_64=("${url}/releases/download/v${pkgver}/argonauts-code-x86_64-unknown-linux-gnu.tar.xz")
+source_aarch64=("${url}/releases/download/v${pkgver}/argonauts-code-aarch64-unknown-linux-gnu.tar.xz")
+sha256sums_x86_64=('@SHA256_X86_64@')
+sha256sums_aarch64=('@SHA256_AARCH64@')
+
+package() {
+    cd "argonauts-code-${CARCH}-unknown-linux-gnu"
+    install -Dm755 argonauts "${pkgdir}/usr/bin/argonauts"
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    install -Dm644 NOTICE "${pkgdir}/usr/share/licenses/${pkgname}/NOTICE"
+    install -Dm644 THIRD_PARTY_NOTICES.md "${pkgdir}/usr/share/doc/${pkgname}/THIRD_PARTY_NOTICES.md"
+}

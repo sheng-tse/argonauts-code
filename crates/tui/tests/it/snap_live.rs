@@ -363,7 +363,7 @@ fn working_line_states() {
     }
     let crew_text = text(&[line(&crew, NOW, 120)]);
     assert!(
-        crew_text.ends_with("(4m 12s · ↓ 48.2k tokens · Build · 2/5 tasks · 3 agents · $0.21)"),
+        crew_text.ends_with("(4m 12s · ↓  48.2k tokens · Build · 2/5 tasks · 3 agents · $0.21)"),
         "{crew_text}"
     );
     assert_eq!(
@@ -477,7 +477,7 @@ fn bottom_row_states() {
     // The rule names the model, so the line only marks its CLI.
     assert!(idle_row.ends_with("  ● Claude"), "{idle_row:?}");
     assert!(text(&[row(&insert, 120)]).contains("-- INSERT -- ǁ auto preview mode on"));
-    assert!(text(&[row(&insert, 120)]).contains("← 3 agents"));
+    assert!(text(&[row(&insert, 120)]).contains("←  3 agents"));
     let normal_row = row(&normal, 120);
     // As in Claude Code, NORMAL has no label.
     assert!(text(std::slice::from_ref(&normal_row)).starts_with("  ⏵⏵ auto mode on"));

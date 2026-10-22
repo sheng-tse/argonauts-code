@@ -10,6 +10,7 @@
 
 mod ask;
 mod listen;
+pub(super) mod outside;
 mod rewind;
 mod rm;
 
@@ -24,6 +25,7 @@ use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::events::run::{CaptainOrCrewDecision, RunMode};
 use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::names::{ChoiceId, ModelRef, TurnId};
+use argonauts_core::outside::changed_outside;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::approvals::SandboxChoice;
 use argonauts_core::settings::fallback::FallbackEntry;
@@ -151,7 +153,7 @@ pub(super) struct Running {
     said: String,
     /// Ignored files earlier turns wrote, which every snapshot keeps.
     watched: BTreeSet<String>,
-    /// Files the turn's own tool calls wrote, by path from your folder.
+    /// Files the turn's agent reported changing, by path from your folder.
     written: BTreeSet<String>,
     /// Protected files that weren't there when the turn started. The sandbox holds a protected
     /// folder that isn't there yet, but a file only on macOS, so the turn's end checks these.
@@ -167,6 +169,8 @@ pub(super) struct Running {
     /// The files git didn't track when the turn started, so its end names only the ones it
     /// made.
     untracked: BTreeSet<String>,
+    /// Your home, which the line about such a write names as `~`.
+    home: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -730,6 +734,7 @@ fn start(
             has_tools: turn.step.has_tools(),
             setup_wrote: BTreeSet::new(),
             untracked,
+            home: ctx.env.user_home.clone(),
         });
     }
     Ok(())
@@ -859,20 +864,21 @@ pub(super) fn notes(
 }
 
 /// Follows the turn's events for what comes after it: agy's refused commands, and what the
-/// agent said, for a fallback.
-pub(super) fn on_agent(running: &mut Running, event: &AgentEvent) {
+/// agent said, for a fallback. Gives the line a write outside your folder leaves, once it's
+/// done.
+pub(super) fn on_agent(running: &mut Running, event: &AgentEvent) -> Option<String> {
     match event {
-        AgentEvent::ToolStarted {
-            id, name, input, ..
-        } => {
+        AgentEvent::ToolStarted { id, input, .. } => {
             let command = ["CommandLine", "command", "cmd"]
                 .iter()
                 .find_map(|key| input.get(*key).and_then(Value::as_str));
             if let Some(command) = command {
                 running.commands.insert(id.clone(), command.to_owned());
             }
-            let written = written_path(&running.root, name, input);
-            running.written.extend(written);
+        }
+        AgentEvent::FileChanged { path, .. } => {
+            running.written.extend(in_your_folder(&running.root, path));
+            return changed_outside(&[&running.root], event, running.home.as_deref());
         }
         AgentEvent::ToolFinished {
             id,
@@ -897,29 +903,13 @@ pub(super) fn on_agent(running: &mut Running, event: &AgentEvent) {
         }
         _ => {}
     }
+    None
 }
 
-/// The file a tool call writes, by path from your folder: an edit's or a write's, whatever the
-/// CLI calls the tool. One outside your folder isn't `/rewind`'s.
-fn written_path(root: &std::path::Path, name: &str, input: &Value) -> Option<String> {
-    let name = name.to_lowercase();
-    let writes = ["edit", "write", "patch", "replace", "create", "notebook"]
-        .iter()
-        .any(|verb| name.contains(verb));
-    if !writes {
-        return None;
-    }
-    let path = [
-        "file_path",
-        "filePath",
-        "notebook_path",
-        "path",
-        "TargetFile",
-        "target_file",
-    ]
-    .iter()
-    .find_map(|key| input.get(*key).and_then(Value::as_str))?;
-    let path = std::path::Path::new(path);
+/// A file the agent changed, by path from your folder. One outside your folder isn't
+/// `/rewind`'s.
+fn in_your_folder(root: &Path, changed: &str) -> Option<String> {
+    let path = Path::new(changed);
     // The CLI may name your folder by its real path, such as /private/var for /var.
     let real = root.canonicalize().ok();
     let relative = if path.is_absolute() {

@@ -1,0 +1,150 @@
+{
+  "run": "run-20261020-121825-aa34",
+  "id": "wf-001",
+  "name": "Fix the money rounding",
+  "description": "Codex reviews, as you asked",
+  "style": "workflow",
+  "status_lines": [
+    {
+      "kind": "note",
+      "text": "judge: GPT 6 Luna on Codex approved Haiku 5.5's change · Gemini 3.8 Flash Low on agy signs off"
+    }
+  ],
+  "agents_done": 2,
+  "agents_total": 3,
+  "elapsed_ms": 57389,
+  "spent": {
+    "input_tokens": 99108,
+    "output_tokens": 4266,
+    "cached_tokens": 26937,
+    "cost_usd": 0.022016495000000004,
+    "cost_partial": false,
+    "cost_estimated": true
+  },
+  "phases": [
+    {
+      "name": "Build",
+      "detail": "",
+      "standard": "do",
+      "status": "done",
+      "count": {
+        "done": 1,
+        "total": 1
+      },
+      "rows": [
+        {
+          "row": "agent",
+          "session": "s-001",
+          "label": "build:fix-the-money",
+          "worker": "claude-code/claude-haiku-5-5",
+          "status": "done",
+          "tokens": 14978,
+          "spent": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "cost_partial": false,
+            "cost_estimated": false
+          },
+          "elapsed_ms": 10697,
+          "subagents": 0,
+          "context": null,
+          "fallback_for": null,
+          "inner": {
+            "workflow": "cli-worx86tbc",
+            "index": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "Review",
+      "detail": "",
+      "standard": "do",
+      "status": "done",
+      "count": {
+        "done": 1,
+        "total": 1
+      },
+      "rows": [
+        {
+          "row": "agent",
+          "session": "s-002",
+          "label": "review:fix-the-money",
+          "worker": "codex/gpt-6-luna",
+          "status": "done",
+          "tokens": 16783,
+          "spent": {
+            "input_tokens": 16750,
+            "output_tokens": 33,
+            "cached_tokens": 0,
+            "cost_usd": 0.0016915,
+            "cost_partial": false,
+            "cost_estimated": true
+          },
+          "elapsed_ms": 6984,
+          "subagents": 0,
+          "context": {
+            "used": 16783,
+            "window": 872000,
+            "cap": 784800
+          },
+          "fallback_for": null,
+          "answered": true,
+          "note": {
+            "text": "approved",
+            "tone": "good"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Judge",
+      "detail": "",
+      "standard": "do",
+      "status": "running",
+      "count": {
+        "done": 0,
+        "total": 1
+      },
+      "rows": [
+        {
+          "row": "agent",
+          "session": "s-003",
+          "label": "sign-off:fix-the-money",
+          "worker": "antigravity-cli/gemini-3.8-flash-low",
+          "status": "running",
+          "tokens": 12357,
+          "spent": {
+            "input_tokens": 11999,
+            "output_tokens": 358,
+            "cached_tokens": 0,
+            "cost_usd": 0.01034175,
+            "cost_partial": false,
+            "cost_estimated": true
+          },
+          "elapsed_ms": 15035,
+          "subagents": 0,
+          "context": {
+            "used": 6509
+          },
+          "fallback_for": null,
+          "answered": true
+        }
+      ]
+    },
+    {
+      "name": "Verify",
+      "detail": "",
+      "standard": "do",
+      "status": "waiting",
+      "rows": []
+    }
+  ],
+  "notes": [
+    "Captain",
+    "Claude Code's workflow fix-money-rounding"
+  ],
+  "worker": "claude-code"
+}

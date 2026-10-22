@@ -379,7 +379,7 @@ fn announce_background(ctx: &mut Ctx, runs: &RunsState, list: &[RunSummary]) {
             // One of this conversation's has its row, which opens it; one from elsewhere opens
             // by its number alone.
             let text = if runs.ours.contains(&run.run) {
-                format!("{} needs you · ↓ to manage", run_called(run))
+                format!("{} needs you · ↓  to manage", run_called(run))
             } else {
                 format!("{} needs you · /resume {}", run_called(run), run.run)
             };
@@ -884,6 +884,7 @@ async fn finished(ctx: &mut Ctx, runs: &mut RunsState, run: &RunId, outcome: Run
     runs.queued.remove(run);
     notify_finished(ctx, runs, run, outcome, spent);
     ctx.set_mode(AppMode::Idle);
+    crate::behaviors::deep::tab::after_run(ctx);
 }
 
 /// The run's recap, when recaps are on, from its events and its closing answer.

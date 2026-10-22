@@ -252,7 +252,8 @@ fn tool_use(part: &Value) -> Option<Vec<AgentEvent>> {
     Some(events)
 }
 
-/// OpenCode's tools that write a file, which name it in `filePath`.
+/// OpenCode's tools that write a file, which name it in `filePath`, or in `path` from
+/// OpenCode 2.0.
 const FILE_TOOLS: &[&str] = &["write", "edit", "multiedit"];
 
 /// OpenCode 2.0.32's name for its apply_patch tool, which names its files in `patchText`.
@@ -274,7 +275,8 @@ fn file_changes(tool: &str, state: &Value) -> Vec<AgentEvent> {
     if !FILE_TOOLS.contains(&tool) {
         return Vec::new();
     }
-    let Some(path) = state["input"]["filePath"].as_str() else {
+    let input = &state["input"];
+    let Some(path) = input["filePath"].as_str().or(input["path"].as_str()) else {
         return Vec::new();
     };
     let kind = match state["metadata"]["exists"].as_bool() {
@@ -303,11 +305,34 @@ fn error(error: &Value) -> AgentEvent {
         "APIError" => status.map_or(ErrorCategory::Unknown, category_for_status),
         _ => ErrorCategory::Unknown,
     };
+    let category = match category {
+        ErrorCategory::Unknown if unreachable(&message) => ErrorCategory::Network,
+        known => known,
+    };
     AgentEvent::Error {
         category,
         message,
         retryable: data["isRetryable"].as_bool().unwrap_or(false),
     }
+}
+
+/// What OpenCode 2.0.32 and the Bun runtime under it say when no connection could be made,
+/// such as `Unable to connect. Is the computer able to access the url?`.
+const UNREACHABLE: &[&str] = &[
+    "unable to connect",
+    "fetch failed",
+    "econnrefused",
+    "connectionrefused",
+    "failedtoopensocket",
+    "econnreset",
+    "enotfound",
+    "eai_again",
+    "etimedout",
+];
+
+fn unreachable(message: &str) -> bool {
+    let message = message.to_lowercase();
+    UNREACHABLE.iter().any(|phrase| message.contains(phrase))
 }
 
 fn category_for_status(status: u64) -> ErrorCategory {
@@ -391,6 +416,37 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn a_connection_that_could_not_be_made_is_the_network() {
+        let category = |name: &str, message: &str| match error(&serde_json::json!({
+            "name": name,
+            "data": {"message": message},
+        })) {
+            AgentEvent::Error { category, .. } => category,
+            other => panic!("not an error: {other:?}"),
+        };
+        for (name, message) in [
+            (
+                "UnknownError",
+                "Unable to connect. Is the computer able to access the url?",
+            ),
+            ("UnknownError", "fetch failed"),
+            ("APIError", "connect ECONNREFUSED 104.18.32.47:443"),
+            ("UnknownError", "getaddrinfo ENOTFOUND api.anthropic.com"),
+        ] {
+            assert_eq!(category(name, message), ErrorCategory::Network, "{message}");
+        }
+        assert_eq!(
+            category("UnknownError", "Something odd"),
+            ErrorCategory::Unknown
+        );
+        // A named error keeps its own kind whatever its words say.
+        assert_eq!(
+            category("ProviderAuthError", "unable to connect your account"),
+            ErrorCategory::Auth
+        );
+    }
+
     /// OpenCode 2.0.32 names its apply_patch tool `patch`, and names the files in the patch.
     #[test]
     fn a_patch_names_every_file_it_changed() {
@@ -417,6 +473,38 @@ mod tests {
             changed,
             [("slug.py", "update"), ("tests/test_slug.py", "add")]
         );
+    }
+
+    /// OpenCode 2.0.32's write and edit name their file in `path`, where 1.18 said `filePath`.
+    #[test]
+    fn a_write_names_its_file_by_either_key() {
+        let changed = |tool: &str, input: serde_json::Value| {
+            let line = serde_json::json!({
+                "type": "tool_use",
+                "part": {
+                    "type": "tool",
+                    "tool": tool,
+                    "callID": "call_w1",
+                    "state": {"status": "completed", "input": input, "output": "Done"},
+                },
+            });
+            let (_, events) = read(&line.to_string());
+            events
+                .into_iter()
+                .filter_map(|event| match event {
+                    AgentEvent::FileChanged { path, .. } => Some(path),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let new = serde_json::json!({"path": "resume.md", "content": "# Resume\n"});
+        assert_eq!(changed("write", new), ["resume.md"]);
+        let old = serde_json::json!({"filePath": "/w/hello.txt", "content": "hi\n"});
+        assert_eq!(changed("write", old), ["/w/hello.txt"]);
+        let edit = serde_json::json!({"path": "/w/a.txt", "oldString": "a", "newString": "b"});
+        assert_eq!(changed("edit", edit), ["/w/a.txt"]);
+        let read_only = serde_json::json!({"path": "/w/a.txt"});
+        assert!(changed("read", read_only).is_empty());
     }
 
     /// Three steps begun and two finished: the export gives the third's tokens.

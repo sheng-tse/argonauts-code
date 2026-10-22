@@ -255,8 +255,10 @@ async fn socket_binds_and_connects_with_a_long_run_dir() {
 
     let fixture = Fixture::new(false, test_markers());
     let home = tempfile::tempdir().unwrap();
+    // Past the longest socket address even where the temp folder's path is short, as on Linux.
     let run_dir = home
         .path()
+        .join("home-of-someone-with-a-long-name")
         .join("state")
         .join("a-repository-folder-with-a-long-name-0123-5f0c2a9e4b71")
         .join("runs")

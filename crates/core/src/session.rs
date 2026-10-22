@@ -120,6 +120,10 @@ pub struct SessionRequest {
     /// in `mcp_config`.
     #[serde(default)]
     pub asks: Asks,
+    /// What the session reads and writes outside its project without asking, for the CLI's own
+    /// permissions, with the paths the engine keeps closed among the never-list's.
+    #[serde(default, skip_serializing_if = "crate::outside::Outside::is_closed")]
+    pub outside: crate::outside::Outside,
     /// One of the CLI's own commands, which must reach it as a command (agy's slash commands).
     #[serde(default)]
     pub cli_command: bool,

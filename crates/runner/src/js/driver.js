@@ -152,6 +152,8 @@
           // A step that names a model runs on it, and otherwise each agent on one of the role's.
           model: step.model || nth,
           task: task ? task.id : undefined,
+          // The tasks it builds on, whose accepted work Argonauts merges into the run first.
+          after: task && task.builds_on && task.builds_on.length ? task.builds_on : undefined,
           // Until the tasks are listed, workers think and write plans. A step that judges reads.
           access: step.send_back_to || (file.planner !== null && index <= file.planner) ? 'read' : undefined,
           // Several workers on one piece of work each need a worktree of their own.
@@ -275,10 +277,18 @@
               const first = item.after
                 .map((named) => tasks.find((other) => other.title === named || other.id === slug(named)))
                 .filter((other) => other && !path.has(other.id));
+              item.builds_on = first.map((other) => other.id);
               begun.set(
                 item.id,
                 (async () => {
-                  for (const other of first) await begin(other, path);
+                  for (const other of first) {
+                    const ended = await begin(other, path);
+                    // Work that builds on a task nobody accepted would build on nothing.
+                    if (!(ended && ended.accepted)) {
+                      log(`${item.title}: skipped, since it comes after ${other.title}, which wasn't accepted`);
+                      return { accepted: false };
+                    }
+                  }
                   return walk(at, start, end, item, entered);
                 })(),
               );

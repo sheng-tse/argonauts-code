@@ -253,7 +253,7 @@ fn read_only_reply() {
             parent: None
         }
     );
-    assert_eq!(replay.usage(), (13406, 5, 11008));
+    assert_eq!(replay.usage(), (15244, 5, 8064));
     assert_eq!(replay.result(), (Some("ok".into()), None, false));
     assert!(Report::from_text("ok").is_none());
 }

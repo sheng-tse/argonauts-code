@@ -21,6 +21,7 @@ use crate::runtime::{TakeOverPlan, plan_take_over, write_spec_files};
 use crate::state::AppState;
 use crate::views::waiting::{self, RunEntry};
 
+use super::agent::start_turned_down;
 use super::answer::Armed;
 use super::decisions::Decisions;
 use super::lines::{lines_for, rings_for};
@@ -76,6 +77,9 @@ pub struct Reader {
     take_over: Option<(RunId, TaskId)>,
     /// What the list just read out offers the next line, such as an approval by number.
     offer: Option<Offer>,
+    /// A start of a workflow Argonauts Code turned down, said once its speaker's turn ends, by
+    /// the speaker's stream: a later start in the same turn that works drops it, as on screen.
+    refused_starts: BTreeMap<String, Vec<String>>,
 }
 
 impl Reader {
@@ -96,6 +100,7 @@ impl Reader {
             decisions: Decisions::default(),
             take_over: None,
             offer: None,
+            refused_starts: BTreeMap::new(),
         }
     }
 
@@ -123,7 +128,20 @@ impl Reader {
             self.offer = Offer::for_view(data);
             lines.extend(self.offer.as_ref().map(|offer| offer.hint().to_owned()));
         }
-        said.lines = match self.closes(event) {
+        match self.start_answered(event) {
+            Some((key, true)) => {
+                self.refused_starts.insert(key, std::mem::take(&mut lines));
+            }
+            Some((key, false)) => {
+                self.refused_starts.remove(&key);
+            }
+            None => {}
+        }
+        said.lines = self
+            .turn_ended(event)
+            .and_then(|key| self.refused_starts.remove(&key))
+            .unwrap_or_default();
+        said.lines.extend(match self.closes(event) {
             Some(Close::Whole { key, ends }) => self.whole(&key, lines, ends),
             Some(Close::Tail { key, who, ends }) => {
                 let mut spoken = self.flush(&key, &who, ends);
@@ -131,7 +149,7 @@ impl Reader {
                 spoken
             }
             None => lines,
-        };
+        });
         said.bell = rings_for(event, &self.state);
         self.follow_questions(event, &mut said);
         said
@@ -354,6 +372,59 @@ impl Reader {
                 {
                     Some((session_key(event), self.run_speaker(event), text))
                 }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// For the answer to a start of a workflow: the speaker's stream, and whether Argonauts
+    /// Code turned the start down.
+    fn start_answered(&self, event: &AppEvent) -> Option<(String, bool)> {
+        let (key, answer, tools) = match event {
+            AppEvent::Conversation {
+                event: ConversationEvent::Agent { event, .. },
+            } => (
+                CONVERSATION.to_owned(),
+                event,
+                &self.state.conversation.tools,
+            ),
+            AppEvent::Run { event: run } => match &run.kind {
+                RunEventKind::Agent(event) => {
+                    let session = self.state.session(&run.run_id, run.session.as_ref()?)?;
+                    (session_key(run), event, &session.tools)
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let AgentEvent::ToolFinished {
+            id,
+            ok,
+            output,
+            parent: None,
+        } = answer
+        else {
+            return None;
+        };
+        let call = tools.iter().rev().find(|tool| tool.id == *id)?;
+        let refused = start_turned_down(&call.name, *ok, output.as_deref())?;
+        Some((key, refused))
+    }
+
+    /// The speaker's stream whose turn `event` ends.
+    fn turn_ended(&self, event: &AppEvent) -> Option<String> {
+        match event {
+            AppEvent::Conversation {
+                event:
+                    ConversationEvent::TurnFinished { .. }
+                    | ConversationEvent::TurnFailed { .. }
+                    | ConversationEvent::TurnCancelled { .. }
+                    | ConversationEvent::TurnStopped { .. },
+            } => Some(CONVERSATION.to_owned()),
+            AppEvent::Run { event } => match &event.kind {
+                RunEventKind::Agent(AgentEvent::Result { .. })
+                | RunEventKind::Session(SessionEvent::Ended(_)) => Some(session_key(event)),
                 _ => None,
             },
             _ => None,

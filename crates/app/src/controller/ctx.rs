@@ -90,6 +90,13 @@ pub(crate) enum Internal {
     PlanUsageRead,
     /// The update of a CLI a run waits on has ended.
     CliUpdated(Box<super::needed_update::Updated>),
+    /// What GitHub says of the pull requests Argonauts Code follows.
+    Followed(Box<crate::issue::follow::Looked>),
+    /// The deeper Behaviors map's update ended, so the map on screen is sent again: the
+    /// deeper one when the tab started it.
+    DeepMapMade {
+        deeper: bool,
+    },
 }
 
 /// What one part of the controller asks of another. The loop applies them in order.
@@ -165,6 +172,8 @@ pub(crate) struct Ctx {
     pub awake: crate::keep_awake::KeepAwake,
     /// What the Status tab knows of the CLIs: Doctor's check, and who each is signed in as.
     pub cli_facts: Arc<super::status_tab::CliFacts>,
+    /// The deeper Behaviors map's update, while one runs.
+    pub deep: crate::behaviors::deep::tab::DeepWork,
 }
 
 /// Shared with whoever started the app, which outlives the controller.
@@ -192,6 +201,7 @@ impl Ctx {
             // The app's own start gives it this computer's way to hold sleep off.
             awake: crate::keep_awake::KeepAwake::never(),
             cli_facts: Arc::default(),
+            deep: Default::default(),
         }
     }
 

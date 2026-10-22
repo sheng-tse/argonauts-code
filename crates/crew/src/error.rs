@@ -76,7 +76,7 @@ pub struct Stall {
     /// CLI: the question about a CLI that is down then lists it.
     pub kept: Option<Box<JobWait>>,
     /// The job as the run's stop names it, its asked model, and what its own CLI said, in
-    /// short words for its row (`signed out`) and whole for the stop (`Antigravity CLI is
+    /// short words for its row (`signed out`) and whole for the stop (`agy is
     /// signed out`).
     pub job: StalledJob,
     /// Why nothing else could take it, one clause each: `OpenCode has no model set`.

@@ -394,7 +394,7 @@ fn a_long_list_of_options_scrolls_under_its_title_and_over_its_keys() {
         assert_eq!(
             at(
                 &screen,
-                "^  Enter to choose · Esc to cancel +↑ 6–15 of 17 ↓$"
+                "^  Enter to choose · Esc to cancel +↑  6–15 of 17 ↓$"
             ),
             keys
         );

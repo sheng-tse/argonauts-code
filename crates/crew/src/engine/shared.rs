@@ -20,6 +20,7 @@ use crate::approvals::Desk;
 use crate::engine::job_fallback;
 use crate::engine::journal::DeltaBuffer;
 use crate::engine::live::LiveSessions;
+use crate::engine::outside_writes::OutsideWrites;
 use crate::engine::run_meter::RunMeter;
 use crate::engine::tasks::Tasks;
 use crate::error::EngineResult;
@@ -62,6 +63,12 @@ pub async fn with_git_env<F: Future>(env: Vec<(String, String)>, future: F) -> F
     GIT_ENV.scope(env, future).await
 }
 
+/// [`with_git_env`] around building a [`Shared`] outside a running engine, as tests that drive
+/// a host by hand do. Its git keeps `env` for as long as it lives.
+pub fn building_with_git_env<R>(env: Vec<(String, String)>, build: impl FnOnce() -> R) -> R {
+    GIT_ENV.sync_scope(env, build)
+}
+
 pub struct Shared {
     pub run: RunId,
     pub repo: RepoContext,
@@ -93,6 +100,7 @@ pub struct Shared {
     /// Running sessions whose status tool reads a `status.json`, and who reads it.
     pub status_targets: Mutex<BTreeMap<SessionKey, StatusTarget>>,
     pub deltas: Mutex<DeltaBuffer>,
+    pub outside_writes: Mutex<OutsideWrites>,
     pub admission: watch::Sender<Admission>,
     /// The interrupt of the pause or stop under way. A cancelled pause swaps in a fresh one,
     /// so the waits after it aren't cut short by a pause that no longer holds.
@@ -201,6 +209,7 @@ impl Shared {
             deltas: Mutex::new(DeltaBuffer::new(
                 settings.run_host.journal_deltas_per_second,
             )),
+            outside_writes: Mutex::new(OutsideWrites::default()),
             admission: watch::channel(Admission::Open).0,
             interrupt: Mutex::new(CancellationToken::new()),
             shutdown: context.shutdown.clone(),

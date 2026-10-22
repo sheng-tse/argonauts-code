@@ -1,0 +1,28 @@
+ The first start, in a project: the greeting once, the usage notice once, then setup
+
+
+  ▗███▖▐▀▖ ▄▀▀▄ █▀▀▄ ▄▀▀▀ ▄▀▀▄ █▄ █ ▄▀▀▄ █  █ ▀█▀ ▄▀▀▀   ▄▀▀▀ ▄▀▀▄ █▀▀▄ █▀▀▀
+  ▐▝█▘▙▟   █▀▀█ █▀█  █ ▀█ █  █ █ ▀█ █▀▀█ █  █  █   ▀▀▄   █    █  █ █  █ █▀▀
+  ▞▐ ▌▚    ▀  ▀ ▀  ▀  ▀▀▀  ▀▀  ▀  ▀ ▀  ▀  ▀▀   ▀  ▀▀▀     ▀▀▀  ▀▀  ▀▀▀  ▀▀▀▀
+
+  Every coding agent, one orchestrator, you at the helm.   v0.1.0
+
+  Sends one anonymous usage report a day, never your code or prompts (PRIVACY.md) · argonauts telemetry off stops it
+
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Who you talk to
+ The agent you talk to, and the one that works alone on small changes.
+
+ ❯ 1. Claude Code (recommended)   2.1.304
+   2. Codex                       0.163.0
+   3. agy                         1.4.3
+   4. OpenCode                    2.0.32
+
+ Enter to choose
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ (the greeting and the notice each keep a marker in ~/.argonauts/state, so neither shows again)
+ (setup's later runs show the setting as one row: "Usage reports  on · argonauts telemetry off stops them")
+ (in Ghostty and Kitty the argonaut is the picture in the same 9 by 3 cells)

@@ -4,8 +4,8 @@
 //! inside it. `/update` updates each CLI the way it was installed first, between runs only.
 
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use argonauts_conductor::GitCheck;
 use argonauts_conductor::cli_versions::{
@@ -13,7 +13,8 @@ use argonauts_conductor::cli_versions::{
     version_check,
 };
 use argonauts_conductor::doctor::update::{
-    UPDATE_TIMEOUT, UpdateColumns, UpdateLimits, each_once, update_each, update_lines_in,
+    CliUpdate, UPDATE_TIMEOUT, UpdateColumns, UpdateLimits, each_once, update_each,
+    update_lines_under,
 };
 use argonauts_core::Adapter;
 use argonauts_core::app::{AppEvent, CommandWork};
@@ -21,8 +22,10 @@ use argonauts_core::log::NoteLevel;
 use argonauts_core::settings::Settings;
 use argonauts_core::status_tab::{VERSION_ROW_NAMES, VERSION_ROW_STATES, version_row};
 use argonauts_registry::SettingsWarning;
+use tokio_util::sync::CancellationToken;
 
 use super::{Ctx, Effect};
+use crate::self_update::{Here, OwnRow, Source, how_it_updates, own_row, running_version};
 use crate::setup::probe::{self, FoundAgent, LoginState};
 
 pub(crate) fn doctor(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
@@ -60,36 +63,140 @@ fn settings_lines(warnings: &[SettingsWarning]) -> Vec<String> {
         .collect()
 }
 
-/// `/update`: each installed CLI updated once, side by side, the way it was installed, with its
-/// version before and after, then Doctor. The working line says which of the two goes on, and
-/// the Update report gains its rows in order as the CLIs from the first on are done, in columns
-/// set from the start. Off the loop, since an updater downloads, and never while a run is going.
+/// Esc while a command works: `/update` stops, keeping the rows so far, and every updater it
+/// started ends with what that one started. With nothing at work it does nothing.
+pub(crate) fn stop_command(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
+    if let Some(stop) = UpdateAtWork::stop_of(ctx.env.paths.home()) {
+        stop.cancel();
+    }
+    Ok(Vec::new())
+}
+
+/// What `/update` says while another is at work.
+pub(crate) const UPDATE_GOING: &str = "An update is going. Esc stops it.";
+
+/// The `/update` at work for each Argonauts home, so Esc can stop it and a second one waits
+/// for it to end. The app runs one controller for its home; tests run many side by side, each
+/// with a home of its own.
+static UPDATES_AT_WORK: Mutex<BTreeMap<PathBuf, CancellationToken>> = Mutex::new(BTreeMap::new());
+
+/// An update at work, its stop kept until it's dropped.
+struct UpdateAtWork {
+    home: PathBuf,
+    stop: CancellationToken,
+}
+
+impl UpdateAtWork {
+    /// The update for `home`, or `None` while another is at work there.
+    fn start(home: &Path) -> Option<Self> {
+        let mut at_work = UPDATES_AT_WORK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if at_work.contains_key(home) {
+            return None;
+        }
+        let stop = CancellationToken::new();
+        at_work.insert(home.to_path_buf(), stop.clone());
+        Some(Self {
+            home: home.to_path_buf(),
+            stop,
+        })
+    }
+
+    fn stop_of(home: &Path) -> Option<CancellationToken> {
+        UPDATES_AT_WORK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(home)
+            .cloned()
+    }
+}
+
+impl Drop for UpdateAtWork {
+    fn drop(&mut self) {
+        UPDATES_AT_WORK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.home);
+    }
+}
+
+/// `/update`: Argonauts Code itself first, from its channel's newest release, then each
+/// installed CLI updated once, side by side, the way it was installed, with its version before
+/// and after, then Doctor. The working line says which of the two goes on, and the Update
+/// report gains its rows in order as they are done from the first on, in columns set from the
+/// start, with a line under them on how Argonauts Code updates. Off the loop, since an updater
+/// downloads, and never while a run or another update is going. Esc stops it: the rows done
+/// stay, the rest read stopped, and Doctor doesn't follow.
 pub(crate) fn update(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
     if super::cli_updates::a_run_is_going(ctx) {
         ctx.notice(NoteLevel::Info, super::cli_updates::UPDATE_WAITS);
         return Ok(Vec::new());
     }
+    let Some(at_work) = UpdateAtWork::start(ctx.env.paths.home()) else {
+        ctx.notice(NoteLevel::Info, UPDATE_GOING);
+        return Ok(Vec::new());
+    };
     let adapters = crate::commands::adapters_here(Some(&ctx.env), ctx.settings.resolved())?;
     let settings = ctx.settings.shared();
     let out = ctx.out.clone();
     let versions = ctx.env.paths.cli_versions();
+    let paths = ctx.env.paths.clone();
+    let here = Source::for_home(&paths).map(|source| Here::this_process(&paths, source));
     let working = |work| AppEvent::CommandWorking { work };
     out.send(working(Some(CommandWork::Updating)));
     tokio::spawn(async move {
+        let stop = at_work.stop.clone();
         let clis = each_once(&adapters, &settings);
-        let columns = UpdateColumns::of(&clis, &settings).await;
+        let columns = UpdateColumns::of(&clis, &settings)
+            .await
+            .with_row(OWN_ROW, &running_version().to_string());
+        let install = here.as_ref().ok().map(|here| here.install);
         let limits = UpdateLimits::within(UPDATE_TIMEOUT);
-        let updates = update_each(&clis, &settings, limits, |so_far| {
-            out.send(AppEvent::ReportSoFar {
-                title: UPDATE.to_owned(),
-                lines: update_lines_in(columns, so_far),
-            });
-        })
-        .await;
+        let rows = std::sync::Mutex::new(Rows::default());
+        let so_far = || {
+            let rows = rows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(lines) = rows.lines(columns) {
+                out.send(AppEvent::ReportSoFar {
+                    title: UPDATE.to_owned(),
+                    lines,
+                });
+            }
+        };
+        let own = async {
+            // Heard only where stopping leaves nothing half done: before the check ends, before
+            // the download, and before the switch.
+            let row = own_row(here, &settings.updates, &stop).await;
+            rows.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .own = Some(row);
+            so_far();
+        };
+        let each = update_each(&clis, &settings, limits, &stop, |done| {
+            rows.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clis = done.to_vec();
+            so_far();
+        });
+        let ((), updates) = tokio::join!(own, each);
+        let mut rows = rows
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        rows.clis = updates;
+        let mut lines = rows.lines(columns).unwrap_or_default();
+        lines.extend(install.map(|install| how_it_updates(install, &settings.updates)));
         out.send(AppEvent::Report {
             title: UPDATE.to_owned(),
-            lines: update_lines_in(columns, &updates),
+            lines,
         });
+        if stop.is_cancelled() {
+            out.send(working(None));
+            return;
+        }
+        // A second /update may start while Doctor checks.
+        drop(at_work);
         out.send(working(Some(CommandWork::Checking)));
         out.send(AppEvent::Report {
             title: "Doctor".to_owned(),
@@ -98,6 +205,28 @@ pub(crate) fn update(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
         out.send(working(None));
     });
     Ok(Vec::new())
+}
+
+/// The name Argonauts Code's own row starts with.
+const OWN_ROW: &str = "Argonauts Code";
+
+/// The Update report's rows as they come: Argonauts Code's own, then the CLIs done so far.
+#[derive(Default)]
+struct Rows {
+    own: Option<OwnRow>,
+    clis: Vec<CliUpdate>,
+}
+
+impl Rows {
+    /// The rows from the first on, none until Argonauts Code's own is done.
+    fn lines(&self, columns: UpdateColumns) -> Option<Vec<String>> {
+        let own = self.own.as_ref()?;
+        Some(update_lines_under(
+            (OWN_ROW, &own.version, &own.words),
+            columns,
+            &self.clis,
+        ))
+    }
 }
 
 /// The Update report's title, which its rows so far and the whole report share.
@@ -443,8 +572,6 @@ mod tests {
     /// Claude Code's updater runs as a script here, and every other CLI points nowhere.
     #[tokio::test]
     async fn slash_update_runs_each_updater_then_doctor() {
-        use std::os::unix::fs::PermissionsExt;
-
         use argonauts_core::app::UiCommand;
         use argonauts_core::input::SlashCommand;
 
@@ -454,16 +581,15 @@ mod tests {
         let version = dir.path().join("version");
         std::fs::write(&version, "2.1.292 (Claude Code)\n").unwrap();
         let claude = dir.path().join("claude");
-        std::fs::write(
+        argonauts_testkit::write_script(
             &claude,
-            format!(
+            &format!(
                 "#!/bin/sh\ncase \"$1\" in\n  --version) cat '{v}' ;;\n  update) echo '2.1.295 \
                  (Claude Code)' > '{v}' ;;\nesac\n",
                 v = version.display()
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut flags = vec![format!(
             r#"agents.claude-code.binary="{}""#,
             claude.display()
@@ -483,15 +609,23 @@ mod tests {
             .await;
         let working = |work| move |event: &AppEvent| matches!(event, AppEvent::CommandWorking { work: w } if *w == work);
         driver.until(working(Some(CommandWork::Updating))).await;
-        // The CLIs update side by side, and the rows come from the first on, Claude Code's
-        // first, in columns as wide as the rows after it will be.
-        let so_far = |event: &AppEvent| matches!(event, AppEvent::ReportSoFar { .. });
+        // Argonauts Code's own row comes first, then the CLIs update side by side, and the
+        // rows come from the first on, Claude Code's first, in columns as wide as the rows
+        // after it will be. A test reaches no manifest, so its own row says why.
+        let so_far = |event: &AppEvent| matches!(event, AppEvent::ReportSoFar { lines, .. } if lines.len() > 1);
         let AppEvent::ReportSoFar { title, lines } = driver.until(so_far).await else {
             unreachable!()
         };
         assert_eq!(title, "Update");
+        assert_eq!(
+            lines[0],
+            format!(
+                "Argonauts Code   {:<7}   updates are off in tests",
+                crate::self_update::running_version()
+            )
+        );
         assert!(
-            lines[0].starts_with("Claude Code       2.1.292 →  2.1.295"),
+            lines[1].starts_with("Claude Code      2.1.292 →  2.1.295"),
             "{lines:?}"
         );
         let report = |event: &AppEvent| matches!(event, AppEvent::Report { .. });
@@ -499,11 +633,12 @@ mod tests {
             unreachable!()
         };
         assert_eq!(title, "Update");
+        assert!(lines[0].starts_with("Argonauts Code   "), "{lines:?}");
         assert!(
-            lines[0].starts_with("Claude Code ") && lines[0].ends_with("2.1.292 →  2.1.295"),
+            lines[1].starts_with("Claude Code ") && lines[1].ends_with("2.1.292 →  2.1.295"),
             "{lines:?}"
         );
-        assert!(lines[1].contains("couldn't update"), "{lines:?}");
+        assert!(lines[2].contains("couldn't update"), "{lines:?}");
         driver.until(working(Some(CommandWork::Checking))).await;
         let AppEvent::Report { title, lines } = driver.until(report).await else {
             unreachable!()
@@ -512,6 +647,270 @@ mod tests {
         assert!(lines[0].starts_with("Claude Code 2.1.295 "), "{lines:?}");
         driver.until(working(None)).await;
         driver.exit().await;
+    }
+
+    /// Argonauts Code's own row reads its channel's manifest. A test's build wasn't put in
+    /// place by the installer, so the row names the releases and the line under the CLIs says
+    /// it doesn't replace itself.
+    #[tokio::test]
+    async fn slash_update_reads_argonauts_codes_own_manifest_first() {
+        use argonauts_core::app::UiCommand;
+        use argonauts_core::input::SlashCommand;
+
+        use crate::controller::test_support::{CliOptions, TestDriver};
+        use crate::self_update::test_server::{FakeServer, Signer, manifest};
+
+        let mut flags = Vec::new();
+        for id in [
+            "claude-code",
+            "codex",
+            "antigravity-cli",
+            "opencode",
+            "opencode-acp",
+        ] {
+            flags.push(format!(r#"agents.{id}.binary="/nowhere/{id}""#));
+        }
+        let mut driver = TestDriver::start_with(CliOptions {
+            flags,
+            ..CliOptions::default()
+        })
+        .await;
+        let server = FakeServer::start().await;
+        let signer = Signer::new();
+        let mut next = running_version();
+        next.patch += 1;
+        server.publish("stable", &manifest(&next.to_string(), 1), &signer);
+        crate::self_update::testing::serve(
+            driver.env.paths.home(),
+            server.source(vec![signer.public()]),
+        );
+        driver
+            .send(UiCommand::Slash {
+                command: SlashCommand::Update,
+            })
+            .await;
+        let report =
+            |event: &AppEvent| matches!(event, AppEvent::Report { title, .. } if title == "Update");
+        let AppEvent::Report { lines, .. } = driver.until(report).await else {
+            unreachable!()
+        };
+        assert_eq!(
+            lines[0],
+            format!(
+                "Argonauts Code   {}   {next} is out · {}",
+                running_version(),
+                crate::self_update::RELEASES
+            )
+        );
+        assert_eq!(
+            lines.last().unwrap(),
+            "This copy of Argonauts Code wasn't put here by its installer, so it doesn't replace \
+             itself."
+        );
+        assert!(
+            server
+                .asked()
+                .contains(&"/updates/v1/stable.json".to_owned())
+        );
+        driver.exit().await;
+    }
+
+    /// The report as the screen draws it at the pictures' width, without the blank rows around
+    /// it.
+    fn report_rows(lines: Vec<String>) -> Vec<ratatui::text::Line<'static>> {
+        use argonauts_tui::bridge::Bridge;
+        use argonauts_tui::{UiOptions, ViewModel};
+
+        let mut bridge = Bridge::new(&UiOptions::default());
+        let mut model = ViewModel::default();
+        let report = AppEvent::Report {
+            title: "Update".to_owned(),
+            lines,
+        };
+        bridge.on_event(&mut model, &report, std::time::Instant::now());
+        let theme = crate::golden::theme();
+        let rows = model.history.drain_printable(&crate::golden::still(&theme));
+        let drawn = crate::golden::drawn_rows(&rows);
+        let first = drawn.iter().position(|row| !row.is_empty()).unwrap_or(0);
+        let end = drawn
+            .iter()
+            .rposition(|row| !row.is_empty())
+            .map_or(0, |at| at + 1);
+        rows[first..end].to_vec()
+    }
+
+    /// The Update report from the picture's example numbers, with Argonauts Code's own row
+    /// first, then the first row a Homebrew install reads, which the picture shows under it
+    /// without the hook.
+    ///
+    /// Two words take another colour than the picture's. `/release-notes` in the first row
+    /// takes the code colour, as every command in a report does and as `/config` does two rows
+    /// down, where the picture draws it dim. `brew upgrade argonauts-code` reads dim with the
+    /// words around it, where the picture draws it in the code colour: a report colours only
+    /// slash commands.
+    #[test]
+    fn update_panel_is_its_picture() {
+        use argonauts_conductor::doctor::update::UpdateOutcome;
+        use argonauts_core::settings::updates::UpdateSettings;
+        use ratatui::text::{Line, Span};
+
+        use crate::self_update::Install;
+
+        let cli = |name: &str, version: &str, also: &[&str]| CliUpdate {
+            name: name.to_owned(),
+            outcome: UpdateOutcome::UpToDate {
+                version: version.to_owned(),
+            },
+            also_through: also.iter().map(|way| (*way).to_owned()).collect(),
+        };
+        let clis = [
+            cli("Claude Code", "2.1.304", &[]),
+            cli("Codex", "0.163.0", &[]),
+            cli("agy", "1.4.3", &[]),
+            cli("OpenCode", "2.0.32", &["ACP"]),
+        ];
+        let rows = |words: &str| {
+            update_lines_under((OWN_ROW, "0.1.0", words), UpdateColumns::default(), &clis)
+        };
+        let mut lines = rows("0.1.1 downloaded · takes over at the next start · /release-notes");
+        lines.push(how_it_updates(Install::Shell, &UpdateSettings::default()));
+        let mut drawn = report_rows(lines);
+        let homebrew = report_rows(rows("0.1.1 is out · brew upgrade argonauts-code"));
+        let hook_off =
+            homebrew[1]
+                .spans
+                .iter()
+                .fold((Vec::new(), 5usize), |(mut spans, mut skip), span| {
+                    let chars = span.content.chars().count();
+                    if skip >= chars {
+                        skip -= chars;
+                    } else {
+                        let rest: String = span.content.chars().skip(skip).collect();
+                        spans.push(Span::styled(rest, span.style));
+                        skip = 0;
+                    }
+                    (spans, skip)
+                });
+        let mut first = vec![Span::raw("     ")];
+        first.extend(hook_off.0);
+        drawn.push(Line::from(first));
+        crate::golden::dump("update_panel", &drawn);
+        let rows = crate::golden::drawn_rows(&drawn);
+        assert_eq!(
+            rows,
+            crate::golden::picture_rows(include_str!("../../tests/golden/update_panel.txt"))
+        );
+        let at = |row: usize, words: &str| {
+            let start = rows[row][..rows[row].find(words).unwrap()].chars().count();
+            (row, start..start + words.chars().count())
+        };
+        let otherwise = [
+            at(1, "/release-notes"),
+            at(7, "brew upgrade argonauts-code"),
+        ];
+        crate::golden::assert_looks_except(
+            &crate::golden::theme(),
+            &drawn,
+            include_str!("../../tests/golden/update_panel.html"),
+            |row, column| {
+                otherwise
+                    .iter()
+                    .any(|(at, columns)| *at == row && columns.contains(&column))
+            },
+        );
+    }
+
+    /// Esc while `/update` works stops it soon after: the updater at work ends, its row and
+    /// the rows not done read stopped, Doctor doesn't follow, and the working line goes. A
+    /// second `/update` meanwhile is refused.
+    #[tokio::test]
+    async fn slash_update_stops_on_esc() {
+        use argonauts_core::app::UiCommand;
+        use argonauts_core::input::SlashCommand;
+
+        use crate::controller::test_support::{CliOptions, TestDriver};
+
+        let dir = tempfile::tempdir().unwrap();
+        let started = dir.path().join("started");
+        let claude = dir.path().join("claude");
+        argonauts_testkit::write_script(
+            &claude,
+            &format!(
+                "#!/bin/sh\ncase \"$1\" in\n  --version) echo '2.1.292 (Claude Code)' ;;\n  \
+                 update) echo started > '{}'; sleep 30 ;;\nesac\n",
+                started.display()
+            ),
+        )
+        .unwrap();
+        let mut flags = vec![format!(
+            r#"agents.claude-code.binary="{}""#,
+            claude.display()
+        )];
+        for id in ["codex", "antigravity-cli", "opencode", "opencode-acp"] {
+            flags.push(format!(r#"agents.{id}.binary="/nowhere/{id}""#));
+        }
+        let mut driver = TestDriver::start_with(CliOptions {
+            flags,
+            ..CliOptions::default()
+        })
+        .await;
+        let update = UiCommand::Slash {
+            command: SlashCommand::Update,
+        };
+        driver.send(update.clone()).await;
+        while !started.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        driver.send(update).await;
+        let notice = |event: &AppEvent| matches!(event, AppEvent::Notice { .. });
+        let AppEvent::Notice { text, .. } = driver.until(notice).await else {
+            unreachable!()
+        };
+        assert_eq!(text, UPDATE_GOING);
+
+        let began = std::time::Instant::now();
+        driver.send(UiCommand::StopCommand).await;
+        let report =
+            |event: &AppEvent| matches!(event, AppEvent::Report { title, .. } if title == "Update");
+        let AppEvent::Report { lines, .. } = driver.until(report).await else {
+            unreachable!()
+        };
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(3),
+            "{:?}",
+            began.elapsed()
+        );
+        assert!(
+            lines[1].starts_with("Claude Code ") && lines[1].ends_with("2.1.292   stopped"),
+            "{lines:?}"
+        );
+        driver
+            .until(|event| matches!(event, AppEvent::CommandWorking { work: None }))
+            .await;
+        let events = driver.exit().await;
+        let doctor = events
+            .iter()
+            .any(|event| matches!(event, AppEvent::Report { title, .. } if title == "Doctor"));
+        assert!(!doctor, "Doctor doesn't follow a stopped update");
+    }
+
+    /// Esc with no command at work changes nothing and says nothing.
+    #[tokio::test]
+    async fn stopping_with_no_command_at_work_does_nothing() {
+        use argonauts_core::app::UiCommand;
+
+        use crate::controller::test_support::TestDriver;
+
+        let driver = TestDriver::start().await;
+        driver.send(UiCommand::StopCommand).await;
+        let events = driver.exit().await;
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                AppEvent::Notice { .. } | AppEvent::CommandWorking { .. }
+            )),
+            "{events:#?}"
+        );
     }
 
     /// While a run is going, in this folder or another, `/update` updates nothing and says why.
@@ -604,7 +1003,7 @@ mod tests {
                 },
             ),
         ];
-        let picture = include_str!("../../../tui/src/overview/pictures/versions.txt");
+        let picture = include_str!("../../../tui/tests/golden/overview/versions.txt");
         let drawn: Vec<&str> = picture.lines().skip(2).take(4).collect();
         assert_eq!(rows.to_vec(), drawn);
     }

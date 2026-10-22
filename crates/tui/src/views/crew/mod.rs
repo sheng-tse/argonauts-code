@@ -148,9 +148,9 @@ impl AgentPanelView {
         let open = if self.right_closes {
             "enter open"
         } else {
-            "→ open"
+            "→  open"
         };
-        let mut parts = vec![("↑↓ move", 0), (open, 5)];
+        let mut parts = vec![("↑↓  move", 0), (open, 5)];
         if !self.wide {
             parts.push(("Space details", 2));
         }
@@ -358,7 +358,9 @@ impl AgentPanelView {
 /// agent of another repo's run carries on from an app open there.
 fn carry_on(state: &AppState, panel: &AgentPanelRows, row: &CrewRow) -> ViewOutcome {
     let CrewTarget::Agent { run, session } = &row.target else {
-        return ViewOutcome::Notice("c carries on a finished agent's session. → opens this".into());
+        return ViewOutcome::Notice(
+            "c carries on a finished agent's session. →  opens this".into(),
+        );
     };
     if row.repo != panel.repo {
         return ViewOutcome::Notice(format!(

@@ -14,6 +14,7 @@ use std::ffi::{OsStr, OsString};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use argonauts_core::outside::Outside;
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "linux")]
@@ -48,6 +49,9 @@ pub struct LaunchPlan {
     /// Paths that stay closed even where they don't exist yet, as the profile's `closed`.
     #[serde(default)]
     pub closed: Vec<PathBuf>,
+    /// What the session reaches outside its project, for the never-list's file names.
+    #[serde(default, skip_serializing_if = "Outside::is_closed")]
+    pub outside: Outside,
 }
 
 /// The launcher's arguments for running `program` with `args` under `plan`.
@@ -218,6 +222,7 @@ mod tests {
             network: false,
             proxies: vec!["127.0.0.1:8080".parse().unwrap()],
             closed: vec!["/w/.claude".into()],
+            outside: Outside::default(),
         };
         let args = launcher_args(&plan, OsStr::new("/bin/echo"), &["hi".to_owned()]);
         assert_eq!(args[0], LAUNCHER_ARG);
@@ -240,6 +245,7 @@ mod tests {
             network: true,
             proxies: Vec::new(),
             closed: Vec::new(),
+            outside: Outside::default(),
         })
         .unwrap();
         assert!(err(&["os", &plan]).contains("no program"));

@@ -142,7 +142,7 @@ impl RewindPicker {
 
 fn from_to(row: &CheckpointRow) -> String {
     let to: Vec<String> = row.to.iter().map(ToString::to_string).collect();
-    clean(&format!("{} → {}", row.from, to.join(", ")))
+    clean(&format!("{} →  {}", row.from, to.join(", ")))
 }
 
 fn clean(text: &str) -> String {
@@ -183,7 +183,7 @@ impl View for RewindPicker {
         let mark =
             super::pager::position_mark(self.list.offset, height, self.rows.len(), marks.down);
         let hints = Footer::hints(&[
-            ("↑↓ select", 0),
+            ("↑↓  select", 0),
             ("⏎ go back to it", 1),
             (panes::ESC_BACK, 0),
         ]);
@@ -316,7 +316,7 @@ mod tests {
         assert!(one[1].contains("fallback-1"), "{one:?}");
         assert!(!one[1].contains("task-001"), "{one:?}");
         assert!(one[1].contains("2h ago"), "{one:?}");
-        assert!(one[1].contains("claude-code/opus → codex"), "{one:?}");
+        assert!(one[1].contains("claude-code/opus →  codex"), "{one:?}");
         assert!(one[1].contains("0123456"), "{one:?}");
         assert!(one[1].contains("rewound here"), "{one:?}");
         assert!(!one[2].contains("rewound here"), "{one:?}");

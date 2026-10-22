@@ -62,7 +62,7 @@ const RIGHT_PANE_MIN_CELLS: u16 = 20;
 const GOAL_BOX_MIN: u16 = 5;
 
 /// The agents pane's hint for → and ←, where its phase holds something to open or fold.
-const OPEN_OR_FOLD: &str = "→ ← open or fold";
+const OPEN_OR_FOLD: &str = "→  ←  open or fold";
 const GOAL_BOX_MAX: u16 = 14;
 const AGENTS_BOX_ROWS: u16 = 5;
 
@@ -614,13 +614,11 @@ impl WorkflowView {
                 Side::Left => "enter opens its agents",
                 Side::Right => "⏎ open",
             };
-            return Footer::hints(&[("↑↓ select", 0), (enter, 1), (panes::ESC_BACK, 0)]);
+            return Footer::hints(&[("↑↓  select", 0), (enter, 1), (panes::ESC_BACK, 0)]);
         }
-        let pause = if paused(ctx.state, self.run()) {
-            "p resume"
-        } else {
-            "p pause"
-        };
+        let pause = super::pause_hint(ctx.state, self.run());
+        // A run that ended has nothing left to stop or pause, as in Claude Code's view.
+        let ended = super::run_ended(ctx.state, self.run()) || self.level.data.state.has_ended();
         // A narrow screen gives up saving and pausing before what Enter opens, which no other
         // row says, and stopping last, as Claude Code's view always offers it. With one pane
         // Enter is the only way to a phase's agents, so there it says so in fewer words and
@@ -632,7 +630,7 @@ impl WorkflowView {
         };
         match level.side {
             Side::Left if self.level.data.style == Some(RunStyle::Goal) => Footer::hints(&[
-                ("↑↓ select", 0),
+                ("↑↓  select", 0),
                 enter,
                 ("tab goal", 4),
                 ("x stop goal", 4),
@@ -640,8 +638,14 @@ impl WorkflowView {
                 (panes::ESC_BACK, 0),
                 ("s save", 1),
             ]),
+            Side::Left if ended => Footer::hints(&[
+                ("↑↓  select", 0),
+                enter,
+                (panes::ESC_BACK, 0),
+                ("s save", 1),
+            ]),
             Side::Left => Footer::hints(&[
-                ("↑↓ select", 0),
+                ("↑↓  select", 0),
                 enter,
                 ("x stop workflow", 4),
                 (pause, 2),
@@ -654,14 +658,14 @@ impl WorkflowView {
                 if let Some(host) = level.cli_host() {
                     let elsewhere = format!("to message, stop or pause it, select {host}");
                     return Footer::hints(&[
-                        ("↑↓ select", 0),
+                        ("↑↓  select", 0),
                         ("⏎ open", 3),
                         (OPEN_OR_FOLD, 2),
                         (panes::ESC_BACK, 0),
                         (&elsewhere, 1),
                     ]);
                 }
-                let mut hints = vec![("↑↓ select", 0), ("⏎ open", 6)];
+                let mut hints = vec![("↑↓  select", 0), ("⏎ open", 6)];
                 if level.folds() {
                     hints.push((OPEN_OR_FOLD, 6));
                 }
@@ -680,8 +684,11 @@ impl WorkflowView {
                 }
                 // Claude Code's view always offers stopping, so a narrow screen gives up
                 // messaging and restarting first.
-                hints.extend([("m message", 4), ("x stop", 5), ("r restart", 4)]);
-                if hold.is_none() {
+                hints.push(("m message", 4));
+                if !ended {
+                    hints.extend([("x stop", 5), ("r restart", 4)]);
+                }
+                if hold.is_none() && !ended {
                     hints.push((pause, 3));
                 }
                 hints.extend([("f filter", 2), (panes::ESC_BACK, 0), ("s save", 1)]);
@@ -911,7 +918,9 @@ impl WorkflowView {
             }
             None => AgentView::new(view.clone()),
         };
-        self.agent = Some(agent.lend(self.follow.as_ref().map(Follower::another)));
+        let mut agent = agent.lend(self.follow.as_ref().map(Follower::another));
+        agent.run_state = Some(self.level.data.state);
+        self.agent = Some(agent);
         true
     }
 
@@ -1278,13 +1287,23 @@ impl View for WorkflowView {
                 if let Some(hold) = self.goal_hold() {
                     return ViewOutcome::Send(hold.command);
                 }
-                if paused(ctx.state, self.run()) {
-                    ViewOutcome::Send(UiCommand::Resume {
-                        run: Some(self.run().clone()),
-                    })
-                } else {
-                    super::pause(self.run(), ctx)
+                // Argonauts Code can't pause a workflow a CLI runs itself: that CLI does, from
+                // its own screen.
+                let own = self
+                    .inner_agent()
+                    .map(|agent| agent.worker.agent.clone())
+                    .or_else(|| {
+                        is_agent(&self.top().data.id)
+                            .then(|| self.top().data.worker.clone())
+                            .flatten()
+                    });
+                if let Some(cli) = own {
+                    let cli = sanitize_line(&ctx.state.names.cli(&cli)).trim().to_owned();
+                    return ViewOutcome::Notice(format!(
+                        "{cli} pauses its own workflow from its own screen"
+                    ));
                 }
+                super::pause_key(self.run(), ctx)
             }
             KeyCode::Char('f') if plain && self.top().side == Side::Right => {
                 let level = self.top_mut();
@@ -1606,6 +1625,7 @@ mod tests {
             note: None,
             inner: None,
             left_out: false,
+            fallback_why: None,
         }
     }
 
@@ -1789,7 +1809,7 @@ mod tests {
         assert!(store.contains("astra · 41.2k tok"), "{text}");
         assert!(!store.contains("approved"), "{text}");
         let cli = row_with(&text, "review:cli");
-        assert!(cli.contains("astra · 381k tok · approved"), "{text}");
+        assert!(cli.contains("astra · 381.0k tok · approved"), "{text}");
     }
 
     /// The open view as Claude Code's: a rule six columns short, the name
@@ -1837,7 +1857,7 @@ mod tests {
         let footer = lines.last().unwrap_or(&"").trim_end();
         assert_eq!(
             footer,
-            " ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save"
+            " ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save"
         );
     }
 
@@ -1935,8 +1955,8 @@ mod tests {
         );
     }
 
-    /// Claude Code's keys for each pane, the same whichever row is picked and whether or not
-    /// the run still goes, so the line holds still. `p` says what it does now.
+    /// Claude Code's keys for each pane, the same whichever row is picked while the run goes,
+    /// so the line holds still. `p` says what it does now.
     #[test]
     fn the_keys_hold_still_for_each_pane() {
         let state = going();
@@ -1945,11 +1965,11 @@ mod tests {
             let text = draw_with(view, 124, &theme(), state);
             text.lines().last().unwrap_or_default().trim().to_owned()
         };
-        let phases = "↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · \
+        let phases = "↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · \
                       s save";
         assert_eq!(footer(&mut view, &state), phases);
         press_in(&mut view, KeyCode::Right, &state);
-        let agents = "↑↓ select · ⏎ open · m message · x stop · r restart · p pause · f filter · \
+        let agents = "↑↓  select · ⏎ open · m message · x stop · r restart · p pause · f filter · \
                       esc back · s save";
         // The first row is done and the second is running: the keys are the same.
         assert_eq!(footer(&mut view, &state), agents);
@@ -1965,7 +1985,8 @@ mod tests {
             press_in(&mut view, KeyCode::Char('p'), &paused),
             ViewOutcome::Send(UiCommand::Resume { run: Some(_) })
         ));
-        // Once the workflow ends the keys stay, and one that can't act says why.
+        // Once the workflow ends there is nothing to stop or pause, as in Claude Code's view,
+        // and the key pressed anyway says why.
         let mut done = fixing();
         for phase in &mut done.phases {
             phase.status = RowStatus::Done;
@@ -1975,11 +1996,96 @@ mod tests {
             run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
         }
         let mut view = WorkflowView::new(done);
-        assert_eq!(footer(&mut view, &ended), phases);
+        assert_eq!(
+            footer(&mut view, &ended),
+            "↑↓  select · enter opens its agents · esc back · s save"
+        );
         assert!(matches!(
             press_in(&mut view, KeyCode::Char('x'), &ended),
             ViewOutcome::Notice(_)
         ));
+    }
+
+    /// `p` while the run is still pausing takes the pause back, since nothing waits yet to
+    /// resume from; once it waits, `p` resumes it; and on a workflow a CLI runs itself, `p`
+    /// says that CLI pauses it from its own screen.
+    #[test]
+    fn p_takes_a_pause_back_resumes_a_paused_run_and_leaves_a_clis_own_workflow_alone() {
+        let mut pausing = going();
+        if let Some(run) = pausing.runs.get_mut(&run()) {
+            run.pausing = true;
+        }
+        let mut view = WorkflowView::new(fixing());
+        let footer = |view: &mut WorkflowView, state: &AppState| {
+            let text = draw_with(view, 124, &theme(), state);
+            text.lines().last().unwrap_or_default().trim().to_owned()
+        };
+        assert!(footer(&mut view, &pausing).contains("p resume"));
+        assert!(matches!(
+            press_in(&mut view, KeyCode::Char('p'), &pausing),
+            ViewOutcome::Send(UiCommand::CancelPause)
+        ));
+        let mut paused = going();
+        if let Some(run) = paused.runs.get_mut(&run()) {
+            run.waiting = Some(WaitReason::Paused);
+        }
+        assert!(matches!(
+            press_in(&mut view, KeyCode::Char('p'), &paused),
+            ViewOutcome::Send(UiCommand::Resume { run: Some(_) })
+        ));
+        assert!(matches!(
+            press_in(&mut view, KeyCode::Char('p'), &going()),
+            ViewOutcome::Send(UiCommand::Pause { now: false })
+        ));
+        // A run of an earlier session that you paused opens from its listing, and resumes
+        // alike.
+        let mut listed = AppState::default();
+        listed.background.push(argonauts_core::api::RunSummary {
+            run: run(),
+            title: "Fix the money rounding".into(),
+            mode: argonauts_core::events::run::RunMode::Crew,
+            workflow: "council".into(),
+            state: argonauts_core::api::RunState::Waiting,
+            stopped_at: "paused".into(),
+            updated: time::OffsetDateTime::UNIX_EPOCH,
+            spent: argonauts_core::Spend::default(),
+            sessions_to_resume: 0,
+            waiting: Vec::new(),
+            live: false,
+            remind: false,
+            name: None,
+            shape_known: true,
+        });
+        assert!(footer(&mut view, &listed).contains("p resume"));
+        assert!(matches!(
+            press_in(&mut view, KeyCode::Char('p'), &listed),
+            ViewOutcome::Send(UiCommand::Resume { run: Some(_) })
+        ));
+
+        let mut own = fixing();
+        own.id = argonauts_core::views::cli_workflow_run_id("w1");
+        own.worker = Some("claude-code".to_owned());
+        let mut view = WorkflowView::new(own);
+        let ViewOutcome::Notice(said) = press_in(&mut view, KeyCode::Char('p'), &going()) else {
+            panic!("p says why it can't");
+        };
+        assert_eq!(
+            said,
+            "Claude Code pauses its own workflow from its own screen"
+        );
+    }
+
+    /// A stopped run has nothing left to stop or pause, as a done or failed one hasn't.
+    #[test]
+    fn a_stopped_runs_keys_offer_no_stop_or_pause() {
+        let state = going();
+        let mut stopped = fixing();
+        stopped.state = WorkflowState::Stopped;
+        let mut view = WorkflowView::new(stopped);
+        let text = draw_with(&mut view, 124, &theme(), &state);
+        let keys = text.lines().last().unwrap_or_default().trim().to_owned();
+        assert!(!keys.contains("x stop"), "{keys}");
+        assert!(!keys.contains("p pause"), "{keys}");
     }
 
     /// On a screen too narrow for the whole line, the phases' keys give up saving and pausing
@@ -1991,7 +2097,7 @@ mod tests {
         let text = draw_with(&mut view, 80, &theme(), &state);
         assert_eq!(
             text.lines().last().unwrap_or_default().trim(),
-            "↑↓ select · enter opens its agents · x stop workflow · esc back"
+            "↑↓  select · enter opens its agents · x stop workflow · esc back"
         );
     }
 
@@ -2017,11 +2123,11 @@ mod tests {
         let keys = |text: &str| text.lines().last().unwrap_or_default().trim().to_owned();
         assert_eq!(
             keys(&phases),
-            "↑↓ select · enter opens · x stop workflow · esc back"
+            "↑↓  select · enter opens · x stop workflow · esc back"
         );
         assert_eq!(
             keys(&draw_with(&mut view, 44, &theme(), &state)),
-            "↑↓ select · enter opens · esc back"
+            "↑↓  select · enter opens · esc back"
         );
         // Its rows have the whole box: the cursor, the phase, and its count at the far end.
         let fix = row_with(&phases, "2 Fix");
@@ -2346,7 +2452,10 @@ mod tests {
             asked_for: None,
             earlier: None,
             moved: None,
+            given: None,
+            prompt_about: None,
             review: None,
+            started_from: None,
         };
         let answer = ViewData::Agent {
             view: Box::new(data.clone()),
@@ -2518,10 +2627,10 @@ mod tests {
         };
         assert_eq!(
             keys(&mut view),
-            "↑↓ select · enter opens its agents · esc back"
+            "↑↓  select · enter opens its agents · esc back"
         );
         press_in(&mut view, KeyCode::Right, &state);
-        assert_eq!(keys(&mut view), "↑↓ select · ⏎ open · esc back");
+        assert_eq!(keys(&mut view), "↑↓  select · ⏎ open · esc back");
         press_in(&mut view, KeyCode::Left, &state);
         assert!(matches!(
             press_in(&mut view, KeyCode::Char('x'), &state),

@@ -256,6 +256,7 @@ pub(crate) mod tests {
             outside_agent: None,
             instructions: Vec::new(),
             required_steps: Vec::new(),
+            starts_from: None,
         }
     }
 
@@ -274,6 +275,9 @@ pub(crate) mod tests {
             workflow_step: None,
             label: None,
             asked: None,
+            asked_by: None,
+            asked_why: None,
+            forked: false,
         }
     }
 

@@ -139,7 +139,7 @@ impl PromptsView {
             )));
         }
         Footer::hints(&[
-            ("↑↓ select", 0),
+            ("↑↓  select", 0),
             ("⏎ show", 2),
             ("e copy to edit", 6),
             ("w who writes", 5),
@@ -507,7 +507,7 @@ impl View for WriterPicker {
         let shown: Vec<Line<'static>> = lines.into_iter().skip(self.cursor.offset).collect();
         panes::put_lines(buf, panes.right, &shown);
 
-        let footer = Footer::hints(&[("↑↓ select", 0), ("⏎ pick", 0), (panes::ESC_BACK, 0)]);
+        let footer = Footer::hints(&[("↑↓  select", 0), ("⏎ pick", 0), (panes::ESC_BACK, 0)]);
         let mark = position_mark(self.cursor.offset, height, rows, marks.down);
         panes::draw_footer(buf, panes.footer, footer, &mark, theme);
     }
@@ -607,7 +607,7 @@ impl View for PromptText {
         let marks = Marks::for_theme(theme);
         let mark = position_mark(self.offset, height, lines.len(), marks.down);
         let hints = Footer::hints(&[
-            ("↑↓ scroll", 0),
+            ("↑↓  scroll", 0),
             ("pgup pgdn page", 1),
             (panes::ESC_BACK, 0),
         ]);

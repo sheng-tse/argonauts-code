@@ -1,6 +1,6 @@
 {
   "adapter": "antigravity-cli",
-  "cli_version": "1.4.2",
+  "cli_version": "1.4.4",
   "also_matches": [],
   "name": "build_hello_schema",
   "role": "build",
@@ -64,9 +64,9 @@
     "CLAUDE_PID",
     "CLAUDE_EFFORT"
   ],
-  "date": "2026-10-20T02:40:44.692847Z",
+  "date": "2026-10-21T19:35:46.803453Z",
   "exit_code": 0,
-  "duration_ms": 11365,
+  "duration_ms": 7542,
   "files_after": [
     "README.md",
     "hello.txt",

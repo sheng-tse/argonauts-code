@@ -51,7 +51,6 @@ use argonauts_core::{AgentEvent, CommitInfo, DiffStat, RepoId, RunId, Spend, Tas
 use argonauts_crew::approvals;
 use argonauts_crew::engine::commands;
 use argonauts_crew::engine::host::Host;
-use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::fallback::on_return::Applied;
 use argonauts_crew::fallback::{self, on_return, rewind};
 use argonauts_crew::merge::branch::ensure_run_branch;
@@ -61,6 +60,8 @@ use argonauts_crew::state::blackboard::Addressee;
 use argonauts_testkit::repo::TempRepo;
 use argonauts_testkit::runner::{FakeRunner, FakeSession, session_end};
 use argonauts_testkit::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
+
+use crate::support::shared_in;
 
 const OPUS: &str = "claude-code/opus";
 const CODEX: &str = "codex/gpt-5.6";
@@ -180,7 +181,7 @@ impl Bench {
         if let Some(planner) = setup.planner {
             context.services.fallback = planner;
         }
-        let shared = Shared::new(&context, RunState::fold(&history))?;
+        let shared = shared_in(&repo, &context, RunState::fold(&history))?;
         Ok(Self {
             services,
             repo,
@@ -286,6 +287,9 @@ impl Bench {
             workflow_step: Some(build_at()),
             label: None,
             asked: None,
+            asked_by: None,
+            asked_why: None,
+            forked: false,
         };
         let session = |event| RunEventKind::Session(event);
         self.host.record(
@@ -446,6 +450,7 @@ fn started(repo: &TempRepo, base: &str) -> RunEventKind {
         outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     })))
 }
 
@@ -2031,7 +2036,7 @@ async fn an_answer_with_no_note_tells_the_paused_tasks_nothing() -> anyhow::Resu
 
 /// A build task waits for Claude Code, and so does the review of another task, which stopped
 /// the run. The question counts both, the review as a reviewer's, and knows the one agent
-/// that may take both: Codex could build, but only Antigravity CLI may review. One agent for
+/// that may take both: Codex could build, but only agy may review. One agent for
 /// every paused task hands it the build task and lets the review go to it too.
 #[tokio::test]
 async fn a_review_that_waits_for_its_cli_is_one_of_the_paused_tasks() -> anyhow::Result<()> {
@@ -2092,7 +2097,7 @@ async fn a_review_that_waits_for_its_cli_is_one_of_the_paused_tasks() -> anyhow:
         (Some(Some(worker(AGY))), 0),
         "the review is free as soon as you answered"
     );
-    eventually("the build task moved to Antigravity CLI", || {
+    eventually("the build task moved to agy", || {
         bench.worker(&built) == Some(worker(AGY))
     })
     .await?;
@@ -2270,7 +2275,11 @@ async fn the_engine_that_wakes_acts_on_the_answer_about_a_cli_that_is_down() -> 
         bench.layout.clone(),
         history.clone(),
     );
-    let woke = Host::new(Arc::new(Shared::new(&context, RunState::fold(&history))?));
+    let woke = Host::new(Arc::new(shared_in(
+        &bench.repo,
+        &context,
+        RunState::fold(&history),
+    )?));
     answer_on(&woke, &both, AnswerAction::PerTask)?;
     fallback::down::ask_again(&woke)?;
     eventually("each task has its own question", || {
@@ -2478,5 +2487,324 @@ async fn a_tasks_line_names_same_cli_only_where_it_kept_another_cli_out() -> any
         display_name(&worker(CODEX))
     );
     assert_eq!(said(&bench), Some(elsewhere));
+    Ok(())
+}
+
+/// An internet a test turns off and on, over the fakes' health board.
+pub(crate) struct Internet {
+    board: Arc<argonauts_testkit::services::MemoryHealthBoard>,
+    state: tokio::sync::watch::Sender<argonauts_core::limits::NetState>,
+    /// When it went, as the run's clock reads it.
+    now: time::OffsetDateTime,
+}
+
+impl Internet {
+    pub(crate) fn over(crew: &crate::support::Crew) -> Arc<Self> {
+        use argonauts_core::clock::Clock;
+        Arc::new(Self {
+            board: crew.services.health.clone(),
+            state: tokio::sync::watch::Sender::new(argonauts_core::limits::NetState::Up),
+            now: crew.services.clock.now(),
+        })
+    }
+
+    /// Goes, and comes back `after` that.
+    pub(crate) fn drop_for(self: &Arc<Self>, after: Duration) {
+        self.state
+            .send_replace(argonauts_core::limits::NetState::Down { since: self.now });
+        let internet = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            internet
+                .state
+                .send_replace(argonauts_core::limits::NetState::Up);
+        });
+    }
+
+    /// Went `ago`, and stays gone.
+    pub(crate) fn gone_for(&self, ago: Duration) {
+        let since = self.now - ago;
+        self.state
+            .send_replace(argonauts_core::limits::NetState::Down { since });
+    }
+
+    /// Comes back `after` that.
+    pub(crate) fn back_in(self: &Arc<Self>, after: Duration) {
+        let internet = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            internet
+                .state
+                .send_replace(argonauts_core::limits::NetState::Up);
+        });
+    }
+
+    /// Starts a run of `crew` with this internet in place of its health board, and drives it
+    /// until it waits or finishes.
+    pub(crate) async fn start(
+        self: &Arc<Self>,
+        crew: &crate::support::Crew,
+        mode: RunMode,
+        request: &str,
+    ) -> anyhow::Result<crate::support::Outcome> {
+        let started = crew.run_started(mode, request)?;
+        self.drive(crew, mode, vec![started]).await
+    }
+
+    /// Carries a waiting run of `crew` on from `history`, as you resume it.
+    pub(crate) async fn resume(
+        self: &Arc<Self>,
+        crew: &crate::support::Crew,
+        mode: RunMode,
+        history: Vec<RunEvent>,
+    ) -> anyhow::Result<crate::support::Outcome> {
+        self.drive(crew, mode, history).await
+    }
+
+    async fn drive(
+        self: &Arc<Self>,
+        crew: &crate::support::Crew,
+        mode: RunMode,
+        history: Vec<RunEvent>,
+    ) -> anyhow::Result<crate::support::Outcome> {
+        let (mut context, sink, _commands) = crew.context(history)?;
+        context.services.health = self.clone();
+        let engine = argonauts_crew::engine_for(&crew.settings, mode).run(context);
+        let exit = argonauts_crew::engine::shared::with_git_env(crew.git_env(), engine).await;
+        Ok(crate::support::Outcome {
+            exit,
+            events: sink.events(),
+        })
+    }
+}
+
+impl argonauts_core::limits::HealthBoard for Internet {
+    fn observe(&self, signal: argonauts_core::limits::HealthSignal) {
+        self.board.observe(signal);
+    }
+    fn state(
+        &self,
+        agent_id: &argonauts_core::names::AgentId,
+    ) -> argonauts_core::limits::AgentHealth {
+        self.board.state(agent_id)
+    }
+    fn all(&self) -> Vec<argonauts_core::limits::AgentHealth> {
+        self.board.all()
+    }
+    fn subscribe(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<argonauts_core::events::AgentStatusEvent> {
+        self.board.subscribe()
+    }
+    fn test_result(&self, agent_id: &argonauts_core::names::AgentId, ok: bool) {
+        self.board.test_result(agent_id, ok);
+    }
+    fn model(&self, model: &ModelRef) -> argonauts_core::limits::ModelHealth {
+        self.board.model(model)
+    }
+    fn network(&self) -> argonauts_core::limits::NetState {
+        *self.state.borrow()
+    }
+    fn network_changes(&self) -> tokio::sync::watch::Receiver<argonauts_core::limits::NetState> {
+        self.state.subscribe()
+    }
+}
+
+/// The run's notes, with how loudly each was said.
+pub(crate) fn said(events: &[RunEvent]) -> Vec<(argonauts_core::NoteLevel, &str)> {
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Note(note) => Some((note.level, note.text.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// With the internet gone, the session that lost it waits and goes again on its own agent once
+/// it's back: one dim row as it goes and one as it comes back, and no retry or fallback said.
+#[tokio::test]
+async fn offline_holds_sessions_then_carries_on_with_the_same_agents() -> anyhow::Result<()> {
+    use argonauts_core::NoteLevel;
+    use argonauts_core::limits::{NETWORK_BACK, NETWORK_DOWN};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let mut crew = crate::support::Crew::new()?;
+    let codex = crew.answering_worker(CODEX, "openai");
+    crew.answering_worker(OPUS, "anthropic");
+    let internet = Internet::over(&crew);
+    let first = Arc::new(AtomicBool::new(true));
+    let lost = internet.clone();
+    codex.respond(move |spec| {
+        if first.swap(false, Ordering::SeqCst) {
+            lost.drop_for(Duration::from_millis(300));
+            return FakeSession::ended(EndReason::CliError {
+                category: argonauts_core::ErrorCategory::Network,
+                message: "API Error: Connection error.".to_owned(),
+            });
+        }
+        crate::support::smallest_answer(spec)
+    });
+    let outcome = internet
+        .start(&crew, RunMode::Crew, "add a --verbose flag")
+        .await?;
+    let notes = said(&outcome.events);
+    assert_eq!(
+        outcome.exit,
+        argonauts_core::engine::EngineExit::Waiting(
+            argonauts_core::events::run::WaitReason::Approval
+        ),
+        "{notes:?}"
+    );
+    assert_eq!(
+        notes,
+        [
+            (NoteLevel::Info, NETWORK_DOWN),
+            (NoteLevel::Info, NETWORK_BACK)
+        ]
+    );
+    // The session that lost the internet went again on Codex, and Opus took none of it.
+    let specs = codex.specs();
+    assert!(specs.len() >= 2, "{} sessions", specs.len());
+    let lost = &specs[0].key;
+    assert_eq!(&specs[1].key, lost);
+    let opus = crew.services.workers.fake(OPUS).context("Opus is listed")?;
+    assert!(
+        opus.specs().iter().all(|spec| spec.key != *lost),
+        "Opus took {lost}"
+    );
+    Ok(())
+}
+
+/// A run you resume while the internet is still gone holds its full span again from the
+/// resume, rather than pause at once for the time it was gone before.
+#[tokio::test]
+async fn a_run_resumed_offline_holds_its_span_again() -> anyhow::Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let mut crew = crate::support::Crew::new()?;
+    let codex = crew.answering_worker(CODEX, "openai");
+    crew.answering_worker(OPUS, "anthropic");
+    let internet = Internet::over(&crew);
+    let first = Arc::new(AtomicBool::new(true));
+    let lost = internet.clone();
+    codex.respond(move |spec| {
+        if first.swap(false, Ordering::SeqCst) {
+            lost.gone_for(Duration::from_secs(31 * 60));
+            return FakeSession::ended(EndReason::CliError {
+                category: argonauts_core::ErrorCategory::Network,
+                message: "API Error: Connection error.".to_owned(),
+            });
+        }
+        crate::support::smallest_answer(spec)
+    });
+    let paused = internet
+        .start(&crew, RunMode::Crew, "add a --verbose flag")
+        .await?;
+    assert_eq!(
+        paused.exit,
+        argonauts_core::engine::EngineExit::Waiting(
+            argonauts_core::events::run::WaitReason::Paused
+        )
+    );
+    // Still gone as you resume it, and back a moment later.
+    internet.back_in(Duration::from_millis(300));
+    let resumed = internet.resume(&crew, RunMode::Crew, paused.events).await?;
+    assert_eq!(
+        resumed.exit,
+        argonauts_core::engine::EngineExit::Waiting(
+            argonauts_core::events::run::WaitReason::Approval
+        ),
+        "{:?}",
+        said(&resumed.events)
+    );
+    Ok(())
+}
+
+/// A session the internet took carries on in its own conversation once the internet is back,
+/// with a resumed session's short note, rather than start its work over.
+#[tokio::test]
+async fn a_session_the_network_took_resumes_its_conversation() -> anyhow::Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let mut crew = crate::support::Crew::new()?;
+    let codex = crew.answering_worker(CODEX, "openai");
+    crew.answering_worker(OPUS, "anthropic");
+    let internet = Internet::over(&crew);
+    let first = Arc::new(AtomicBool::new(true));
+    let lost = internet.clone();
+    codex.respond(move |spec| {
+        if first.swap(false, Ordering::SeqCst) {
+            lost.drop_for(Duration::from_millis(300));
+            return FakeSession::ended(EndReason::CliError {
+                category: argonauts_core::ErrorCategory::Network,
+                message: "stream disconnected before completion".to_owned(),
+            })
+            .with_cli_session("codex-thread-1");
+        }
+        crate::support::smallest_answer(spec)
+    });
+    internet
+        .start(&crew, RunMode::Crew, "add a --verbose flag")
+        .await?;
+    let specs = codex.specs();
+    assert!(specs.len() >= 2, "{} sessions", specs.len());
+    assert_eq!(specs[1].key, specs[0].key);
+    assert_eq!(specs[1].resume.as_deref(), Some("codex-thread-1"));
+    let told: Vec<&str> = specs[1]
+        .prompt
+        .iter()
+        .map(|part| part.label.as_str())
+        .collect();
+    assert_eq!(told.first(), Some(&"resumed"), "{told:?}");
+    Ok(())
+}
+
+/// An internet gone for `network.hold_minutes` pauses the run, so it waits for you instead of
+/// holding its sessions open.
+#[tokio::test]
+async fn a_run_offline_too_long_pauses_with_its_work_kept() -> anyhow::Result<()> {
+    use argonauts_core::NoteLevel;
+    use argonauts_core::limits::NETWORK_DOWN;
+
+    let mut crew = crate::support::Crew::new()?;
+    let codex = crew.answering_worker(CODEX, "openai");
+    crew.answering_worker(OPUS, "anthropic");
+    let internet = Internet::over(&crew);
+    let lost = internet.clone();
+    codex.respond(move |_| {
+        lost.gone_for(Duration::from_secs(31 * 60));
+        FakeSession::ended(EndReason::CliError {
+            category: argonauts_core::ErrorCategory::Network,
+            message: "API Error: Connection error.".to_owned(),
+        })
+    });
+    let outcome = internet
+        .start(&crew, RunMode::Crew, "add a --verbose flag")
+        .await?;
+    let notes = said(&outcome.events);
+    assert_eq!(
+        outcome.exit,
+        argonauts_core::engine::EngineExit::Waiting(
+            argonauts_core::events::run::WaitReason::Paused
+        ),
+        "{notes:?}"
+    );
+    assert_eq!(
+        notes,
+        [
+            (NoteLevel::Info, NETWORK_DOWN),
+            (
+                NoteLevel::Warn,
+                "The network has been down for 30 minutes, so the run pauses here with its work \
+                 kept. Resume it once the internet is back."
+            ),
+        ]
+    );
+    let paused_by = outcome.events.iter().find_map(|event| match &event.kind {
+        RunEventKind::Run(RunLifecycle::PauseRequested { by, .. }) => Some(by.clone()),
+        _ => None,
+    });
+    assert_eq!(paused_by, Some(Party::Network));
     Ok(())
 }

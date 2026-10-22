@@ -1,0 +1,13 @@
+ After                                                                                                                
+                                                                                                                      
+$ argonauts doctor                                                                                                    
+Claude Code · not installed                                                                                           
+Codex · not installed                                                                                                 
+agy · not installed                                                                                                   
+OpenCode · not installed                                                                                              
+OpenCode ACP · not installed                                                                                          
+git · not installed                                                                                                   
+                                                                                                                      
+Not ready: install git and at least one of `claude`, `codex`, `agy`, `opencode`.                                      
+                                                                                                                      
+ (with git working, the verdict names only what's missing: "install at least one of …")                               

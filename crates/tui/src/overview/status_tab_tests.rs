@@ -98,13 +98,7 @@ fn picture() -> StatusTabView {
                 "newer than checked · works",
             ),
             cli("codex", "Codex", Some("0.160.0"), "Plus", "checked"),
-            cli(
-                "antigravity-cli",
-                "Antigravity CLI",
-                Some("1.3.0"),
-                "Pro",
-                "checked",
-            ),
+            cli("antigravity-cli", "agy", Some("1.3.0"), "Pro", "checked"),
             cli("opencode", "OpenCode", None, "", "not installed"),
         ],
         settings: SettingsInEffect {
@@ -241,7 +235,7 @@ fn a_run_from_an_older_build_shows_its_day_and_the_key_that_archives_it() {
     )];
     let mut status = tab(view);
     let shown = rows(&mut status, &state, 118);
-    let listed = old_runs_row("Status → runs:");
+    let listed = old_runs_row("Status →  runs:");
     assert!(
         shown.iter().any(|row| row.contains(listed)),
         "{listed}\n{shown:#?}"
@@ -329,7 +323,7 @@ fn status_draws_every_part_of_the_picture() {
     assert!(at("◆ settings in effect") < at("◆ runs"));
     assert_eq!(
         rows.last().unwrap(),
-        " tab · ← → tabs · ↓ into the cards · esc closes"
+        " tab · ←  →  tabs · ↓  into the cards · esc closes"
     );
 }
 
@@ -498,7 +492,7 @@ fn pictured_clis() -> Vec<CliStatus> {
         },
         cli(
             "antigravity-cli",
-            "Antigravity CLI",
+            "agy",
             Some("1.3.3"),
             "Google AI Pro",
             "newer than checked · works",
@@ -819,7 +813,7 @@ fn opencode_with_no_provider_says_how_to_connect_one() {
         opencode.contains("OpenCode        2.0.26    no provider set up · opencode auth login"),
         "{opencode}"
     );
-    let picture = include_str!("pictures/status_clis.txt");
+    let picture = include_str!("../../tests/golden/overview/status_clis.txt");
     assert!(
         picture.contains("no provider set up · opencode auth login"),
         "the picture's words"
@@ -881,7 +875,7 @@ fn an_update_is_said_on_the_row_and_nothing_else_is() {
         "{rows:#?}"
     );
     assert!(
-        row(&rows, "○ Antigravity CLI")
+        row(&rows, "○ agy")
             .trim_end_matches(['│', ' '])
             .ends_with("· Google AI Pro · newer than checked · works"),
         "{rows:#?}"
@@ -898,7 +892,7 @@ fn a_folder_agy_has_not_trusted_says_to_start_it_here_once() {
     clis[2].command = "agy".to_owned();
     let rows = buffer_rows(&clis_card(clis));
     assert!(
-        row(&rows, "○ Antigravity CLI")
+        row(&rows, "○ agy")
             .contains("1.3.3     agy hasn't trusted this folder; start agy here once · newer"),
         "{rows:#?}"
     );

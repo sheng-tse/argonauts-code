@@ -1,5 +1,5 @@
 //! The plan's rules end to end, with the real approval policy over fake workers set up as the
-//! orchestrated sample repo was: Codex orchestrates, Gemini (Antigravity CLI) alone reviews, as the
+//! orchestrated sample repo was: Codex orchestrates, Gemini (agy) alone reviews, as the
 //! request said over the repo's pin to Codex, and Claude Code and Codex own. The orchestrator
 //! writes each agent with its provider where a model goes and rotates them through every role, as
 //! it did in that run, and code moves what breaks the rules instead of refusing the plan.
@@ -93,7 +93,14 @@ fn overlapping_plan() -> Value {
 /// An approval as the judge step, the orchestrator's `plan` for its step, the task's file
 /// when it builds, else the smallest valid answer for the step.
 fn worker(id: &str, provider: &str, plan: Option<Value>) -> FakeRunner {
-    FakeRunner::cli(id, provider).respond_with(move |spec: &SessionSpec| {
+    FakeRunner::cli(id, provider)
+        .respond_with(move |spec: &SessionSpec| answer(spec, plan.as_ref()))
+}
+
+/// What an agent of the sample crew answers: `plan` when it orchestrates, its file when it
+/// builds, and a filled answer or `done` otherwise.
+fn answer(spec: &SessionSpec, plan: Option<&Value>) -> FakeSession {
+    {
         let mut written = None;
         match spec.step {
             Some(StepName::ModelJudge) => {
@@ -104,7 +111,7 @@ fn worker(id: &str, provider: &str, plan: Option<Value>) -> FakeRunner {
                 }));
             }
             Some(StepName::Orchestrate) => {
-                if let Some(plan) = &plan {
+                if let Some(plan) = plan {
                     return FakeSession::structured(plan.clone())
                         .with_cli_session("codex-orchestrator");
                 }
@@ -133,16 +140,19 @@ fn worker(id: &str, provider: &str, plan: Option<Value>) -> FakeRunner {
             Some(wrote) => session.with_event(wrote),
             None => session,
         }
-    })
+    }
 }
 
 /// The sample repo's settings as the request layer left them, with Codex orchestrating `plan`.
 fn trial_crew(plan: Value) -> anyhow::Result<Crew> {
+    trial_crew_with(worker(CODEX, "openai", Some(plan)))
+}
+
+/// The sample crew with `codex` as its Codex agent.
+fn trial_crew_with(codex: FakeRunner) -> anyhow::Result<Crew> {
     let mut crew = Crew::new()?;
     crew.services.workers.add(worker(CLAUDE, "anthropic", None));
-    crew.services
-        .workers
-        .add(worker(CODEX, "openai", Some(plan)));
+    crew.services.workers.add(codex);
     crew.services.workers.add(worker(AGY, "google", None));
     let refs = |ids: &[&str]| -> Vec<ModelRef> {
         ids.iter().map(|id| id.parse().expect("a model")).collect()
@@ -198,11 +208,7 @@ async fn run_in(crew: &Crew, mode: Option<ApprovalMode>) -> anyhow::Result<Outco
                 InstructionKind::Orchestrate,
                 "Codex orchestrates",
             ),
-            followed(
-                "gemini review it",
-                InstructionKind::Review,
-                "Antigravity CLI reviews",
-            ),
+            followed("gemini review it", InstructionKind::Review, "agy reviews"),
         ];
     }
     let mut history = vec![started.clone()];
@@ -332,8 +338,8 @@ fn merged(events: &[RunEvent]) -> bool {
     })
 }
 
-/// Every task goes to an agent the rules allow: Claude Code or Codex owns it, and Antigravity
-/// CLI alone reviews it.
+/// Every task goes to an agent the rules allow: Claude Code or Codex owns it, and agy alone
+/// reviews it.
 fn assert_within_the_rules(graph: &TaskGraph) {
     assert_eq!(graph.tasks.len(), 3, "{graph:#?}");
     for task in &graph.tasks {
@@ -396,7 +402,7 @@ async fn autopilot_runs_the_trial_plan_to_a_merge_with_no_question() -> anyhow::
     assert_eq!(
         lines.next(),
         Some(
-            "`store`: Antigravity CLI reviews it, not Claude Code, since only Antigravity CLI \
+            "`store`: agy reviews it, not Claude Code, since only agy \
              may review tasks."
         )
     );
@@ -458,6 +464,111 @@ async fn the_orchestrator_hears_what_already_fails() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A run your words started from a Codex conversation has its Codex orchestrator start as a
+/// copy of that session: its first ask resumes the session as a fork, in the folder it ran
+/// in, and reads first that it now orchestrates the run.
+#[tokio::test]
+async fn the_orchestrators_first_ask_is_a_fork_of_the_main_session() -> anyhow::Result<()> {
+    use argonauts_core::events::run::{ForkFrom, StartsFrom};
+
+    let mut crew = trial_crew(rotated_plan())?;
+    crew.starts_from = Some(StartsFrom::Fork(ForkFrom {
+        worker: CODEX.parse()?,
+        cli_session: "codex-main".to_owned(),
+        folder: crew.repo.root().to_path_buf(),
+        tokens: None,
+    }));
+    run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
+    let orchestrator = crew.services.workers.fake(CODEX).expect("the orchestrator");
+    let asked: Vec<SessionSpec> = orchestrator
+        .specs()
+        .into_iter()
+        .filter(|spec| spec.step == Some(StepName::Orchestrate))
+        .collect();
+    let first = asked.first().expect("the orchestrator planned");
+    assert!(first.fork);
+    assert_eq!(first.resume.as_deref(), Some("codex-main"));
+    assert_eq!(first.workdir, crew.repo.root());
+    let opening = first.prompt.first().map(|part| part.text.trim_end());
+    assert_eq!(opening, Some(argonauts_crew::orchestrated::FORKED));
+    Ok(())
+}
+
+/// A copy of the main session that ends without a plan gives way to the brief: the same
+/// orchestrator plans from it at once, before any other agent, and the try isn't counted as a
+/// plan that broke the rules.
+#[tokio::test]
+async fn a_fork_that_fails_plans_from_the_brief_on_the_same_orchestrator() -> anyhow::Result<()> {
+    use argonauts_core::ErrorCategory;
+    use argonauts_core::events::run::{ForkFrom, StartsFrom};
+    use argonauts_core::events::session::EndReason;
+
+    let plan = rotated_plan();
+    let mut crew = trial_crew_with(FakeRunner::cli(CODEX, "openai").respond_with(
+        move |spec: &SessionSpec| {
+            if spec.fork {
+                return FakeSession::ended(EndReason::CliError {
+                    category: ErrorCategory::SessionLost,
+                    message: "no rollout found for thread id codex-main".to_owned(),
+                });
+            }
+            answer(spec, Some(&plan))
+        },
+    ))?;
+    crew.starts_from = Some(StartsFrom::Fork(ForkFrom {
+        worker: CODEX.parse()?,
+        cli_session: "codex-main".to_owned(),
+        folder: crew.repo.root().to_path_buf(),
+        tokens: None,
+    }));
+    let outcome = run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
+    let events = &outcome.events;
+    let orchestrator = crew.services.workers.fake(CODEX).expect("the orchestrator");
+    let forks: Vec<bool> = orchestrator
+        .specs()
+        .into_iter()
+        .filter(|spec| spec.step == Some(StepName::Orchestrate))
+        .map(|spec| spec.fork)
+        .collect();
+    assert_eq!(
+        forks,
+        [true, false],
+        "{:?} {:#?}",
+        outcome.exit,
+        notes(events)
+    );
+    let planned_elsewhere = [CLAUDE, AGY].iter().any(|other| {
+        crew.services.workers.fake(other).is_some_and(|fake| {
+            fake.specs()
+                .iter()
+                .any(|spec| spec.step == Some(StepName::Orchestrate))
+        })
+    });
+    assert!(!planned_elsewhere, "only the asked orchestrator plans");
+    assert!(
+        notes(events).contains(
+            &"The copy of your main session ended without a plan, so the orchestrator plans \
+              from the brief"
+        ),
+        "{:#?}",
+        notes(events)
+    );
+    assert!(
+        !notes(events)
+            .iter()
+            .any(|note| note.contains("broke the rules")),
+        "{:#?}",
+        notes(events)
+    );
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(RunOutcome::Merged),
+        "{:#?}",
+        notes(events)
+    );
+    Ok(())
+}
+
 /// Supervised, the same run still asks you: the go-ahead waits for you, as questions do when you
 /// choose to answer them.
 #[tokio::test]
@@ -473,7 +584,7 @@ async fn supervised_still_asks() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Your settings let only Antigravity CLI own, and the request says it alone reviews: nobody
+/// Your settings let only agy own, and the request says it alone reviews: nobody
 /// reviews their own work, so the rules can't all hold. The request's words beat settings, so
 /// the workers' pin gives way, one line says so, and the run goes on to its merge.
 #[tokio::test]
@@ -503,8 +614,8 @@ async fn rules_that_cant_all_hold_relax_the_lowest_with_a_note() -> anyhow::Resu
         relaxed[0].lines().collect::<Vec<_>>(),
         [
             "Your rules for who owns and reviews tasks can't all hold, so the one from your \
-             settings gives way: any of the crew may own a task, not only Antigravity CLI.",
-            "Antigravity CLI is the only reviewer you allowed, so Antigravity CLI can't own a \
+             settings gives way: any of the crew may own a task, not only agy.",
+            "agy is the only reviewer you allowed, so agy can't own a \
              task.",
         ]
     );

@@ -1,0 +1,8 @@
+> Fix the money rounding so the three failing tests in tests/test_money.py pass. Don't change the tests.
+
+  Read 1 file, ran 2 shell commands
+
+● Update(invoice/money.py)
+  ⎿  Updating…
+
+✶ Sailing… (9s · ↓  2.1k tokens · esc to interrupt)

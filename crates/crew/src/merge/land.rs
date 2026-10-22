@@ -694,6 +694,10 @@ pub async fn pull_request_by_rule(host: &Host) -> EngineResult<Landing> {
 /// failed says why and asks again, and without `gh` the pushed branch is left for you to open
 /// one from.
 async fn open_pull_request_for(host: &Host) -> EngineResult<Landing> {
+    // A run on a GitHub issue ends as a draft that names it, shown to you first.
+    if let Some(link) = crate::follow::link_of(host) {
+        return crate::follow::draft::open(host, link).await;
+    }
     let (branch, _) = merge_packet::landing_branch(host).await?;
     let title = host
         .read(|state| {

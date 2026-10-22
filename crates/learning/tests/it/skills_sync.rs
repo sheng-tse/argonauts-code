@@ -129,7 +129,7 @@ fn sync_never_overwrites_hand_edits() {
     );
     assert_eq!(
         report.readers.as_deref(),
-        Some("Codex and Antigravity CLI read AGENTS.md.")
+        Some("Codex and agy read AGENTS.md.")
     );
 }
 
@@ -143,7 +143,7 @@ fn sync_says_who_reads_what() {
     assert_eq!(
         report.readers.as_deref(),
         Some(
-            "Claude Code reads CLAUDE.md, which imports AGENTS.md. Codex and Antigravity CLI \
+            "Claude Code reads CLAUDE.md, which imports AGENTS.md. Codex and agy \
              read AGENTS.md."
         )
     );
@@ -170,12 +170,12 @@ fn sync_warns_near_cli_caps() {
 
     let near_antigravity = warnings(22_000);
     assert_eq!(near_antigravity.len(), 1, "{near_antigravity:?}");
-    assert!(near_antigravity[0].contains("near Antigravity CLI's 24,000 bytes"));
+    assert!(near_antigravity[0].contains("near agy's 24,000 bytes"));
 
     let near_codex = warnings(30_500);
     assert_eq!(near_codex.len(), 2, "{near_codex:?}");
     assert!(near_codex[0].contains("near Codex's 32 KiB"));
-    assert!(near_codex[1].contains("over Antigravity CLI's 24,000 bytes"));
+    assert!(near_codex[1].contains("over agy's 24,000 bytes"));
 
     let over = warnings(40_000);
     assert!(over.iter().all(|w| w.contains("over")), "{over:?}");

@@ -1,18 +1,23 @@
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::session::SessionEnd;
+use argonauts_core::events::run::{BriefFrom, RunLifecycle, StartsFrom};
+use argonauts_core::events::session::{InputPartKind, SessionEnd};
 use argonauts_core::events::task::TaskEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::sanitize::sanitize_for_terminal;
+use argonauts_core::session_runner::Access;
 use argonauts_core::steps::{is_own_tool, last_json_object};
-use argonauts_core::views::{ActivityLine, AgentView, AskedFor, Moved, SubagentsSection};
+use argonauts_core::views::{
+    ActivityLine, AgentView, AskedFor, Moved, PromptAbout, ReviewGiven, StartedFrom,
+    SubagentsSection, Tone,
+};
 use argonauts_core::{DiffStat, RunId};
 use argonauts_tui::bridge::tools::start_call;
 use argonauts_tui::cell::ToolTitle;
 use serde_json::Value;
 use std::path::Path;
 
-use super::sessions::{RunFacts, SessionFacts, ToolCall};
+use super::sessions::{PartAt, RunFacts, SessionFacts, ToolCall};
 
 /// The latest tool calls sent to the view, which shows the last few until expanded.
 const ACTIVITY_LINES: usize = 50;
@@ -34,38 +39,40 @@ const SUMMARY_KEYS: &[&str] = &[
 /// you to read. The files and commands are in the Diff and Activity already.
 const REPORT_LISTS: &[(&str, &str)] = &[("concerns", "Concerns"), ("questions", "Questions")];
 
-/// One session's Prompt, Activity, Diff, Subagents, and Outcome. The report tools are how the
-/// agent hands back its result, which the Outcome shows, so Activity leaves them out.
 /// The agent of a task's CLI workflow that handed `session` its job, when one did: a review or
-/// a sign-off asked through Argonauts Code under the label that agent's script gave it.
-fn asked_for(events: &[RunEvent], facts: &RunFacts, session: &SessionFacts) -> Option<AskedFor> {
-    let asked = matches!(session.started.role, RoleName::Reviewer | RoleName::Judge)
-        && session.task.is_none();
-    let label = session.started.label.as_deref().map(str::trim)?;
-    if !asked || label.is_empty() {
-        return None;
-    }
-    super::workflow::cli_workflow_runs(events)
+/// a sign-off asked through Argonauts Code, joined to the agent that asked as the workflow's
+/// rows join it. With it comes the session that runs that workflow, whose task the asked
+/// session works on.
+fn asked_for<'a>(
+    events: &[RunEvent],
+    facts: &'a RunFacts,
+    session: &SessionFacts,
+) -> Option<(AskedFor, &'a SessionFacts)> {
+    let workflows: Vec<_> = super::workflow::cli_workflow_runs(events)
         .into_iter()
         .filter(|(host, _)| facts.session(host).is_some_and(|host| host.task.is_some()))
-        .find_map(|(host, workflow)| {
-            let host = facts.session(&host)?;
-            let agent = workflow
-                .agents
-                .iter()
-                .rev()
-                .find(|agent| agent.label.trim() == label)?;
-            let model = agent.model.clone().or_else(|| host.worker.model.clone());
-            Some(AskedFor {
-                cli: host.worker.agent.clone(),
-                label: label.to_owned(),
-                worker: ModelRef::new(host.worker.agent.clone(), model),
-                tokens: agent.tokens,
-                elapsed_ms: agent.duration_ms,
-            })
-        })
+        .collect();
+    let (host, agent) = super::asked::asker_of(facts, &workflows, &session.key)?;
+    let host = facts.session(host)?;
+    let model = agent.model.clone().or_else(|| host.worker.model.clone());
+    // An agent at work has no time of its own in the report yet, so it counts from its start.
+    let now = facts.last_ts.and_then(super::workflow::epoch_ms);
+    let elapsed_ms = match (agent.state.ended(), agent.started_at_ms, now) {
+        (false, Some(started), Some(now)) => now.saturating_sub(started).max(agent.duration_ms),
+        _ => agent.duration_ms,
+    };
+    let asked = AskedFor {
+        cli: host.worker.agent.clone(),
+        label: agent.label.trim().to_owned(),
+        worker: ModelRef::new(host.worker.agent.clone(), model),
+        tokens: agent.tokens,
+        elapsed_ms,
+    };
+    Some((asked, host))
 }
 
+/// One session's Prompt, Activity, Diff, Subagents, and Outcome. The report tools are how the
+/// agent hands back its result, which the Outcome shows, so Activity leaves them out.
 pub(crate) fn agent_view(
     events: &[RunEvent],
     run: &RunId,
@@ -98,8 +105,16 @@ pub(crate) fn agent_view(
         })
         .collect();
     let row = facts.agent_row(this);
-    let asked_for = asked_for(events, &facts, this);
-    let earlier = facts.verdicts.earlier(&facts, this);
+    let asked = asked_for(events, &facts, this);
+    let task = this
+        .task
+        .as_ref()
+        .or_else(|| asked.as_ref().and_then(|(_, host)| host.task.as_ref()));
+    let earlier = facts.verdicts.earlier(&facts, this, task);
+    let rounds = earlier.as_ref().map_or(0, |earlier| earlier.round);
+    let asked_for = asked.map(|(asked, _)| asked);
+    // A challenger's points are its outcome, listed under what its row says of them.
+    let (challenged, points) = challenge_of(&facts, this).unzip();
     Some(AgentView {
         asked_for,
         earlier,
@@ -113,13 +128,154 @@ pub(crate) fn agent_view(
             .saturating_sub(u32::try_from(own_calls).unwrap_or(u32::MAX)),
         diff: diff_of(events, this),
         subagents: subagents_of(this),
-        outcome: this.ended.as_ref().and_then(outcome_of),
+        outcome: points.or_else(|| this.ended.as_ref().and_then(outcome_of)),
         plan: this.ended.as_ref().and_then(plan_of),
         facts: facts.verdicts.facts(this),
         to_fix: facts.verdicts.to_fix(&facts, this),
-        review: facts.verdicts.given(this),
+        review: facts.verdicts.given(this).or(challenged),
         moved: moved_of(this),
+        given: given_of(this),
+        prompt_about: prompt_about(this, rounds),
+        started_from: started_from(events, &facts, this),
     })
+}
+
+/// What an orchestrator began from, when your words in a conversation started the run: a
+/// copy of the main session where its CLI made one, else the brief, which the run's first
+/// orchestrator read alone.
+fn started_from(events: &[RunEvent], facts: &RunFacts, this: &SessionFacts) -> Option<StartedFrom> {
+    let starts = events.iter().find_map(|event| match &event.kind {
+        RunEventKind::Run(RunLifecycle::Started(started)) => started.starts_from.clone(),
+        _ => None,
+    })?;
+    if this.started.forked {
+        let tokens = match &starts {
+            StartsFrom::Fork(fork) => fork.tokens,
+            StartsFrom::Brief(_) => None,
+        };
+        return Some(StartedFrom::Fork { tokens });
+    }
+    let first = facts
+        .sessions
+        .iter()
+        .find(|session| session.started.role == RoleName::Orchestrator)?;
+    if first.key != this.key {
+        return None;
+    }
+    Some(StartedFrom::Brief(match starts {
+        StartsFrom::Brief(brief) => brief,
+        // The copy never started, so the brief was all it had.
+        StartsFrom::Fork(fork) => BriefFrom {
+            written_by: fork.worker,
+            why: None,
+        },
+    }))
+}
+
+/// How a reviewer or a judge that ran with no tools had its work, all of it in its prompt:
+/// `Reviewed with the change and the checks in its prompt, no tools`.
+fn given_of(session: &SessionFacts) -> Option<String> {
+    let started = &session.started;
+    if started.access != Access::NoTools {
+        return None;
+    }
+    let verb = match (started.role, session.ended.is_some()) {
+        (RoleName::Reviewer, true) => "Reviewed",
+        (RoleName::Reviewer, false) => "Reviews",
+        (RoleName::Judge, true) => "Judged",
+        (RoleName::Judge, false) => "Judges",
+        _ => return None,
+    };
+    let sent = |kind: InputPartKind| session.parts.iter().any(|part| part.kind == kind);
+    let what: Vec<String> = [
+        (InputPartKind::Evidence, "the change"),
+        (InputPartKind::CheckOutput, "the checks"),
+    ]
+    .into_iter()
+    .filter(|(kind, _)| sent(*kind))
+    .map(|(_, what)| what.to_owned())
+    .collect();
+    Some(if what.is_empty() {
+        format!("{verb} with no tools")
+    } else {
+        format!(
+            "{verb} with {} in its prompt, no tools",
+            argonauts_core::text::listed(&what)
+        )
+    })
+}
+
+/// Where the session's prompt has its own words, past the frame every agent of its role gets,
+/// and what its later parts hold, such as `your request` and `the change`. `rounds` is how
+/// many rounds of review it was given.
+fn prompt_about(session: &SessionFacts, rounds: u32) -> Option<PromptAbout> {
+    let parts = &session.parts;
+    let own = parts
+        .iter()
+        .position(|part| part.kind != InputPartKind::Frame)
+        .unwrap_or(parts.len());
+    let first = parts.get(own).map_or(0, |part| part.line);
+    let mut holds: Vec<String> = Vec::new();
+    for part in parts.iter().skip(own + 1) {
+        if let Some(words) = part_holds(part, rounds).filter(|words| !holds.contains(words)) {
+            holds.push(words);
+        }
+    }
+    (first > 0 || !holds.is_empty()).then_some(PromptAbout { first, holds })
+}
+
+/// What one part of a prompt holds, as its preview names it. Rules, the run's status, the
+/// answer's shape and what the agent before it said of its own work say how to go about it,
+/// so the preview leaves them out.
+fn part_holds(part: &PartAt, rounds: u32) -> Option<String> {
+    let words = match part.kind {
+        InputPartKind::Goal | InputPartKind::Request => "your request",
+        InputPartKind::Task => "the task",
+        InputPartKind::Notes => "notes",
+        InputPartKind::Decisions => "decisions",
+        InputPartKind::EarlierFindings if rounds > 1 => "the earlier reviews",
+        InputPartKind::EarlierFindings => "the earlier review",
+        InputPartKind::CheckOutput => "the test run",
+        InputPartKind::Evidence => "the change",
+        InputPartKind::StepInput => "its input",
+        InputPartKind::File => {
+            let file = sanitize_for_terminal(part.label.trim());
+            return (!file.is_empty()).then_some(file);
+        }
+        _ => return None,
+    };
+    Some(words.to_owned())
+}
+
+/// What a council's challenger gave: the words its row says, `against p0 · 3 points`, and each
+/// point, which its view lists under them.
+fn challenge_of(facts: &RunFacts, session: &SessionFacts) -> Option<(ReviewGiven, String)> {
+    let said = facts.verdicts.gave(session)?;
+    if !said.text.starts_with("against ") {
+        return None;
+    }
+    let answer = session.ended.as_ref()?.structured.as_ref()?;
+    let points: Vec<String> = answer
+        .get("points")?
+        .as_array()?
+        .iter()
+        .filter_map(|point| match point {
+            Value::String(text) => Some(text.clone()),
+            other => other
+                .get("point")
+                .or_else(|| other.get("text"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
+        .map(|point| sanitize_for_terminal(point.trim()))
+        .filter(|point| !point.is_empty())
+        .collect();
+    let given = ReviewGiven {
+        verdict: said.text,
+        tone: Tone::Text,
+        findings: Vec::new(),
+    };
+    Some((given, points.join("\n")))
 }
 
 /// The view of a job no model could take, which its workflow went on without. Nothing ran, so
@@ -154,6 +310,9 @@ fn left_out_view(events: &[RunEvent], run: &RunId, session: &SessionKey) -> Opti
             because,
             lines: left.means,
         }),
+        given: None,
+        prompt_about: None,
+        started_from: None,
     })
 }
 
@@ -389,6 +548,90 @@ mod tests {
             input: serde_json::json!({ "command": command }),
             parent: None,
         }
+    }
+
+    /// A reviewer's prompt as the built-in review sends it to a model with no tools: its
+    /// instructions, then the change and, when `checks`, the checks' output.
+    fn reviewed_in_its_prompt(seq: u64, key: &SessionKey, checks: bool) -> RunEvent {
+        let mut sent = input(seq, key, "Review the change below.\n\n");
+        if let RunEventKind::Session(SessionEvent::Input(input)) = &mut sent.kind {
+            let mut add = |kind, label: &str, text: &str| {
+                input
+                    .parts
+                    .push(argonauts_core::events::session::InputPart {
+                        kind,
+                        label: label.to_owned(),
+                        text: text.to_owned(),
+                        approx_tokens: 1,
+                        source: None,
+                    });
+            };
+            add(
+                InputPartKind::Evidence,
+                "the change",
+                "diff --git a/x b/x\n\n",
+            );
+            if checks {
+                add(
+                    InputPartKind::CheckOutput,
+                    "the checks",
+                    "tests passed: 3 passed\n",
+                );
+            }
+        }
+        sent
+    }
+
+    /// A reviewer that ran with no tools had its work in its prompt, which its view says, in
+    /// the tense of where it is; one with tools reads for itself and says nothing of the kind.
+    #[test]
+    fn a_reviewer_with_no_tools_says_what_its_prompt_held() {
+        let key = SessionKey::numbered(1);
+        let mut started = session_started(0, &key, None, RoleName::Reviewer, "ollama");
+        let read_only = started.clone();
+        if let RunEventKind::Session(SessionEvent::Started(started)) = &mut started.kind {
+            started.access = Access::NoTools;
+        }
+        let view = |events: &[RunEvent]| agent_view(events, &run_id(), &key).unwrap();
+        let mut events = vec![started.clone(), reviewed_in_its_prompt(1, &key, true)];
+        assert_eq!(
+            view(&events).given.as_deref(),
+            Some("Reviews with the change and the checks in its prompt, no tools")
+        );
+        events.push(session_ended(2, &key, EndReason::Completed, 1_000));
+        let ended = view(&events);
+        assert_eq!(
+            ended.given.as_deref(),
+            Some("Reviewed with the change and the checks in its prompt, no tools")
+        );
+        // Its prompt starts with its own words, and the preview names what comes after.
+        assert_eq!(
+            ended.prompt_about,
+            Some(PromptAbout {
+                first: 0,
+                holds: vec!["the change".to_owned(), "the test run".to_owned()],
+            })
+        );
+
+        let without_checks = [started, reviewed_in_its_prompt(1, &key, false)];
+        assert_eq!(
+            view(&without_checks).given.as_deref(),
+            Some("Reviews with the change in its prompt, no tools")
+        );
+        let with_tools = [read_only, reviewed_in_its_prompt(1, &key, true)];
+        assert_eq!(view(&with_tools).given, None);
+    }
+
+    /// A prompt of one part, with no frame before it, has nothing for its preview to say.
+    #[test]
+    fn a_prompt_of_its_own_words_alone_has_no_preview_facts() {
+        let key = SessionKey::numbered(1);
+        let events = [
+            session_started(0, &key, None, RoleName::Worker, "claude-code"),
+            input(1, &key, "Build the export.\n"),
+        ];
+        let view = agent_view(&events, &run_id(), &key).unwrap();
+        assert_eq!((view.given, view.prompt_about), (None, None));
     }
 
     #[test]
@@ -920,5 +1163,62 @@ mod tests {
             ended_with(&key, "{\"plan\": []}", None),
         ];
         assert_eq!(agent_view(&events, &run_id(), &key).unwrap().outcome, None);
+    }
+
+    /// A run your words started records what its orchestrator began from. A session its CLI
+    /// copied from the main session says so with the conversation's size; else the run's
+    /// first orchestrator read the brief, and later sessions say nothing of it.
+    #[test]
+    fn an_orchestrators_view_says_what_it_began_from() {
+        use crate::client::test_support::run_started;
+        use argonauts_core::events::run::{BriefFrom, ForkFrom, RunLifecycle, StartsFrom};
+
+        let opus: ModelRef = "claude-code/claude-opus-5-5".parse().unwrap();
+        let fork = StartsFrom::Fork(ForkFrom {
+            worker: opus.clone(),
+            cli_session: "main-1".to_owned(),
+            folder: "/repo".into(),
+            tokens: Some(48_200),
+        });
+        let start = |starts_from: StartsFrom| {
+            let mut started = run_started(0, "Add due dates", None);
+            if let RunEventKind::Run(RunLifecycle::Started(run)) = &mut started.kind {
+                run.starts_from = Some(starts_from);
+            }
+            started
+        };
+        let orchestrator = |seq, key: &SessionKey, forked: bool| {
+            let mut started =
+                session_started(seq, key, None, RoleName::Orchestrator, "claude-code");
+            if let RunEventKind::Session(SessionEvent::Started(session)) = &mut started.kind {
+                session.forked = forked;
+            }
+            started
+        };
+        let (first, later) = (SessionKey::numbered(1), SessionKey::numbered(2));
+        let events = vec![
+            start(fork.clone()),
+            orchestrator(1, &first, true),
+            orchestrator(2, &later, false),
+        ];
+        let from =
+            |events: &[RunEvent], key| agent_view(events, &run_id(), key).unwrap().started_from;
+        assert_eq!(
+            from(&events, &first),
+            Some(StartedFrom::Fork {
+                tokens: Some(48_200)
+            })
+        );
+        assert_eq!(from(&events, &later), None);
+
+        // A copy that never started leaves the brief, which the main agent wrote.
+        let events = vec![start(fork), orchestrator(1, &first, false)];
+        assert_eq!(
+            from(&events, &first),
+            Some(StartedFrom::Brief(BriefFrom {
+                written_by: opus,
+                why: None
+            }))
+        );
     }
 }

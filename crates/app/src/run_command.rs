@@ -13,7 +13,7 @@ use argonauts_core::api::{ConductorApi, RunState, StartRun};
 use argonauts_core::event::AgentEvent;
 use argonauts_core::events::approval::ApprovalEvent;
 use argonauts_core::events::run::{
-    CaptainOrCrewDecision, RunLifecycle, RunMode, RunOutcome, RunStarted, WaitReason,
+    CaptainOrCrewDecision, Party, RunLifecycle, RunMode, RunOutcome, RunStarted, WaitReason,
 };
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::ApprovalId;
@@ -71,6 +71,13 @@ pub async fn run_command(command: RunCommand) -> anyhow::Result<RunCommandExit> 
     }
     // Resolving here turns a bad `--set` into an error before anything starts.
     let settings = AppSettings::load(&env, command.overrides.clone(), at_terminal)?;
+    // A first run where Argonauts Code never started says once that usage reports are on, on
+    // stderr so a script's own output stays its own.
+    if crate::telemetry::notice::claim(&env.paths, settings.settings()) {
+        use std::io::IsTerminal as _;
+        let colour = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+        usage_line(&mut std::io::stderr(), colour);
+    }
     let (conductor, _) = client::for_app(Arc::clone(&env))?;
     let request = start_request(&command, settings.settings());
     let run = conductor.start(request).await?.run;
@@ -87,9 +94,25 @@ pub async fn run_command(command: RunCommand) -> anyhow::Result<RunCommandExit> 
         startup::run(options, FirstView::Attach(run.clone())).await?;
         return after_the_app(conductor.as_ref(), &run).await;
     }
+    // The app sends the day's report when it starts; a plain run does it here. A detached one
+    // may end before a send would finish, so it leaves it to the next.
+    crate::telemetry::send_after_run(&env, settings.settings()).await;
     let mut interrupts = interrupts()?;
     let mut out = std::io::stdout();
     follow(conductor.as_ref(), &run, &mut out, &mut interrupts).await
+}
+
+/// The usage line, dim with `colour`.
+fn usage_line(out: &mut impl Write, colour: bool) {
+    let line = crate::telemetry::notice::RUN_LINE;
+    let written = if colour {
+        writeln!(out, "\x1b[2m{line}\x1b[0m")
+    } else {
+        writeln!(out, "{line}")
+    };
+    if let Err(err) = written {
+        tracing::debug!("couldn't write the usage line: {err}");
+    }
 }
 
 /// The safety keys `run` has flags for, besides `--set`, with those flags.
@@ -145,6 +168,7 @@ fn start_request(command: &RunCommand, settings: &Settings) -> StartRun {
             Vec::new()
         },
         required_steps: Vec::new(),
+        starts_from: None,
     }
 }
 
@@ -224,6 +248,7 @@ async fn follow(
 ) -> anyhow::Result<RunCommandExit> {
     let mut stream = conductor.subscribe(run, 0).await?;
     let mut titles: HashMap<ApprovalId, String> = HashMap::new();
+    let mut paused_by = None;
     let mut stopping = false;
     loop {
         tokio::select! {
@@ -239,8 +264,12 @@ async fn follow(
                     RunEventKind::Run(RunLifecycle::Finished { outcome, .. }) => {
                         return Ok(RunCommandExit::Finished(outcome));
                     }
+                    RunEventKind::Run(RunLifecycle::PauseRequested { by, .. }) => {
+                        paused_by = Some(by);
+                    }
                     RunEventKind::Run(RunLifecycle::Waiting { reason, waiting_on }) => {
-                        let fallback = wait_words(&reason, &waiting_on, &titles);
+                        let fallback =
+                            wait_words(&reason, &waiting_on, &titles, paused_by.as_ref());
                         let approval = stopped_at(conductor, run).await.unwrap_or(fallback);
                         return Ok(RunCommandExit::Waiting { run: run.clone(), approval });
                     }
@@ -324,6 +353,7 @@ fn wait_words(
     reason: &WaitReason,
     waiting_on: &[ApprovalId],
     titles: &HashMap<ApprovalId, String>,
+    paused_by: Option<&Party>,
 ) -> String {
     match reason {
         WaitReason::Approval => {
@@ -337,7 +367,12 @@ fn wait_words(
                 named.join(", ")
             }
         }
-        WaitReason::Paused => "the pause you asked for".to_owned(),
+        WaitReason::Paused => match paused_by {
+            Some(Party::User) | None => "the pause you asked for".to_owned(),
+            Some(Party::Network) => "the pause while the network was down".to_owned(),
+            Some(Party::Rules) => "the pause at your limit".to_owned(),
+            Some(_) => "the pause".to_owned(),
+        },
         WaitReason::AllAgentsOut { .. } => "an agent to come back".to_owned(),
         WaitReason::WaitingForAgent { agent_id, .. } => format!("{agent_id} to come back"),
         WaitReason::NoFallback { .. } => "a fallback".to_owned(),
@@ -440,6 +475,28 @@ mod tests {
 
     fn run_id() -> RunId {
         RunId::new("run-001").unwrap()
+    }
+
+    /// The first run's line on stderr, as `telemetry_run` draws it: dim on a terminal, the words
+    /// alone elsewhere.
+    #[test]
+    fn the_first_run_says_once_that_usage_reports_are_on() {
+        let picture = include_str!("../tests/golden/telemetry_run.txt");
+        let mut plain = Vec::new();
+        usage_line(&mut plain, false);
+        assert_eq!(
+            String::from_utf8(plain).unwrap(),
+            picture.trim_end().to_owned() + "\n"
+        );
+        let mut dim = Vec::new();
+        usage_line(&mut dim, true);
+        let dim = String::from_utf8(dim).unwrap();
+        argonauts_testkit::picture_dump::dump("telemetry_run", &dim);
+        assert!(
+            dim.starts_with("\x1b[2margonauts: one anonymous"),
+            "{dim:?}"
+        );
+        assert!(include_str!("../tests/golden/telemetry_run.html").contains("--term-dim"));
     }
 
     fn event(kind: RunEventKind) -> RunEvent {
@@ -766,6 +823,19 @@ mod tests {
                 approval: "an approval".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn a_paused_run_waits_on_the_pause_of_whoever_asked_for_it() {
+        let words =
+            |by: Option<Party>| wait_words(&WaitReason::Paused, &[], &HashMap::new(), by.as_ref());
+        assert_eq!(words(Some(Party::User)), "the pause you asked for");
+        assert_eq!(
+            words(Some(Party::Network)),
+            "the pause while the network was down"
+        );
+        assert_eq!(words(Some(Party::Rules)), "the pause at your limit");
+        assert_eq!(words(None), "the pause you asked for");
     }
 
     #[tokio::test]

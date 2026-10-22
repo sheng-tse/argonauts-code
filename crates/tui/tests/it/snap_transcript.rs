@@ -259,6 +259,7 @@ fn started(mode: RunMode, request: &str) -> RunEventKind {
         outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     })))
 }
 

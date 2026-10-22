@@ -75,6 +75,8 @@ pub(super) async fn script_for(
     let asked_size = workflow_size::asked(request);
     let yours = brief::for_writer(&super::required::shared(required));
     let mut wrong: Option<Unusable> = None;
+    // A copy of the main session that ended without its script gives way to the brief alone.
+    let mut fork = crate::orchestrated::fork_for(host, &orchestrator);
     for _ in 0..TRIES {
         let mut parts = vec![
             part(InputPartKind::Prompt, "orchestrator", WRITE_SCRIPT, None),
@@ -139,11 +141,16 @@ pub(super) async fn script_for(
             reviews: false,
             fresh: false,
             independent_of: Vec::new(),
+            in_place_of: None,
+            fork_of: fork.clone(),
         };
         let end = host
             .run_session_in_turn(plan, None, Fallbacks::Allowed, &|_| Ok(()))
             .await?
             .end;
+        if end.reason != EndReason::Completed {
+            fork = None;
+        }
         let source = end
             .structured
             .as_ref()
@@ -407,8 +414,8 @@ fn kept_tasks(required: &Required, planned: &[String]) -> Result<(), Unusable> {
     }
 }
 
-/// A model that wraps its script in a Markdown fence still wrote the script.
-fn strip_fence(source: &str) -> &str {
+/// A model that wraps its script, or a JSON answer, in a Markdown fence still wrote it.
+pub(super) fn strip_fence(source: &str) -> &str {
     let trimmed = source.trim();
     let Some(rest) = trimmed.strip_prefix("```") else {
         return trimmed;

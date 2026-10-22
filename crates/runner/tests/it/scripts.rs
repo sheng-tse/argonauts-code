@@ -146,6 +146,38 @@ return { found, thrown, fixed, dropped }
     assert_eq!(report.status, SubagentStatus::Done);
 }
 
+/// A failed agent's row keeps why it gave no answer, so its view can say it beside the ✗.
+#[tokio::test]
+async fn a_failed_agents_row_says_why() {
+    let host = Fake::new(|call| match call.prompt.as_str() {
+        "challenge p3" => AgentEnd::failed("ended without an answer"),
+        _ => text("two points"),
+    });
+    let source = r#"
+export const meta = { name: 'council', description: 'Challenge', phases: [{ name: 'Challenge' }] }
+await parallel(['p2', 'p3'].map((name) => () => agent('challenge ' + name, { label: 'challenge:' + name, phase: 'Challenge' })))
+return 'done'
+"#;
+    let ended = run(&script(source), input(Value::Null), &host).await;
+    let rows: Vec<(&str, CliAgentState, Option<&str>)> = ended
+        .report
+        .agents
+        .iter()
+        .map(|agent| (agent.label.as_str(), agent.state, agent.error.as_deref()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("challenge:p2", CliAgentState::Done, None),
+            (
+                "challenge:p3",
+                CliAgentState::Failed,
+                Some("ended without an answer")
+            ),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn a_phase_the_script_never_declared_gets_a_group_of_its_own_at_the_end() {
     let host = Fake::new(|_| text("ok"));

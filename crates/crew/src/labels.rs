@@ -154,6 +154,8 @@ fn pattern(
     let beside = match (asking.step_name, asking.role) {
         (Some(StepName::DesignWorkflow), _) => Some("main:design"),
         (Some(StepName::PlanTry), _) => Some("main:try"),
+        // The run's closing answer, which the main agent writes once the work is done.
+        (Some(StepName::CloseRun), _) => Some("main:answer"),
         (Some(StepName::AcceptanceTests), _) => Some("accept:{item}"),
         (Some(StepName::Predict), _) => Some("predict:{item}"),
         // Named for the job, as every session of the merger's is.
@@ -303,6 +305,26 @@ mod tests {
             ..asking
         };
         assert_eq!(session_label(&state, &second), "reader-2");
+    }
+
+    /// The run's closing answer is named for its job, beside the main agent's design and tries.
+    #[test]
+    fn the_closing_answer_is_main_answer() {
+        let state = RunState::default();
+        let key = SessionKey::numbered(1);
+        let claude = worker("claude-code");
+        let asking = Asking {
+            key: &key,
+            step: None,
+            round: 1,
+            role: RoleName::Main,
+            step_name: Some(StepName::CloseRun),
+            task: None,
+            item: None,
+            worker: &claude,
+            provider: "anthropic",
+        };
+        assert_eq!(session_label(&state, &asking), "main:answer");
     }
 
     /// A task a script's call made goes by the call's label, so its worker's row and the merge

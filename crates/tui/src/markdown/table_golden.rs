@@ -1,5 +1,5 @@
 //! The first table of an answer compared with Claude Code's on the same screen, drawn as
-//! `golden/table_after` has it at 118 columns: a rule between every row, headers centred and not
+//! `tests/golden/markdown/table_after` has it at 118 columns: a rule between every row, headers centred and not
 //! bold, the borders in the text colour and code in its own. At 133 columns its columns and the
 //! second table's are the widths Claude Code gave them on that screen.
 
@@ -54,7 +54,7 @@ fn column_widths(lines: &[Line<'_>]) -> Vec<usize> {
 
 #[test]
 fn a_table_draws_as_its_picture_does() {
-    let picture = Picture::screen("table_after");
+    let picture = Picture::screen("markdown", "table_after");
     let theme = theme();
     let lines = answer(RUNTIMES, 118);
     assert_eq!(lines.len(), picture.rows.len());

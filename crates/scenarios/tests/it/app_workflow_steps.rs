@@ -222,7 +222,7 @@ fn app_crew_request_runs_the_steps_its_orchestrator_writes() -> anyhow::Result<(
         "{row}\n{unfinished:?}"
     );
     assert!(
-        row.ends_with(&format!(" · \u{2193} {tokens} · merged onto main")),
+        row.ends_with(&format!(" · \u{2193}  {tokens} · merged onto main")),
         "{row}\n{closing}"
     );
 
@@ -305,22 +305,15 @@ fn app_crew_run_in_a_folder_without_git_says_what_it_wrote() -> anyhow::Result<(
         " \u{2714} Written into your folder · 1 file +1 \u{2212}0 · /rewind puts it back",
         "{view}"
     );
-    // The view opens on the last phase, the merge, whose steps fill the pane beside it.
-    let rows: Vec<&str> = view.lines().collect();
-    let step = rows
-        .iter()
-        .position(|row| row.contains("write into your folder"))
-        .unwrap_or_else(|| panic!("no row for the folder's step:\n{view}"));
+    // Only agents are rows: code wrote the work into your folder and no model wrote a commit
+    // message, so no phase lists the merge, and the header's line says what was written.
+    assert!(!view.contains("write into your folder"), "{view}");
+    let phases: Vec<&str> = view
+        .lines()
+        .filter_map(|row| row.split('\u{2502}').nth(1))
+        .collect();
     assert!(
-        rows[step].contains("\u{2714} write into your folder  history kept by Argonauts · 1 task"),
-        "{view}"
-    );
-    let why = rows[step + 1..]
-        .iter()
-        .find(|row| row.contains("no model writes"))
-        .unwrap_or_else(|| panic!("no row says why no message was written:\n{view}"));
-    assert!(
-        why.contains("no model writes a commit message here: only /rewind reads the history"),
+        phases.iter().all(|phase| !phase.contains("Merge")),
         "{view}"
     );
     scenario.shot(
@@ -364,7 +357,7 @@ fn app_templates_asks_which_one_on_a_small_screen_and_copies_it() -> anyhow::Res
     for _ in 0..10 {
         pty.press(Key::Down)?;
     }
-    let moved = pty.wait_for(r"↑ 6–15 of \d+ ↓", WAIT)?.visible_text();
+    let moved = pty.wait_for(r"↑  6–15 of \d+ ↓", WAIT)?.visible_text();
     assert!(moved.contains("❯ 11. "), "{moved}");
     assert!(moved.contains("◆ Copy which one?"), "{moved}");
     assert!(!moved.contains("  5.  "), "{moved}");

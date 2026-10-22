@@ -379,7 +379,7 @@ fn a_spinner_step_writes_a_few_cells() {
         vec![
             Line::from(vec![
                 Span::styled(glyph.to_owned(), Style::new().fg(Color::Yellow)),
-                Span::raw(" Rowing… (3s · ↓ 1.2k tokens)"),
+                Span::raw(" Rowing… (3s · ↓  1.2k tokens)"),
             ]),
             Line::default(),
             Line::from("─".repeat(80)),

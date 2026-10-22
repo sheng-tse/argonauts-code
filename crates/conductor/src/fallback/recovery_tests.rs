@@ -950,6 +950,9 @@ fn started(seq: u64, stopped: &str) -> RunEvent {
                 workflow_step: None,
                 label: None,
                 asked: None,
+                asked_by: None,
+                asked_why: None,
+                forked: false,
             }))),
         )
     }
@@ -1651,6 +1654,82 @@ async fn a_network_error_or_timeout_moves_the_task_to_another_cli() {
         let action = decide(&limits, "claude-code/opus", cli_error(category), &[]).await;
         assert_eq!(fell_back_to(&action).0, "codex/gpt-5", "{category:?}");
     }
+}
+
+/// The fixture's board, with the internet gone.
+struct Offline(Arc<argonauts_testkit::services::MemoryHealthBoard>);
+
+impl argonauts_core::limits::HealthBoard for Offline {
+    fn observe(&self, signal: argonauts_core::limits::HealthSignal) {
+        self.0.observe(signal);
+    }
+    fn state(&self, agent_id: &AgentId) -> AgentHealth {
+        self.0.state(agent_id)
+    }
+    fn all(&self) -> Vec<AgentHealth> {
+        self.0.all()
+    }
+    fn subscribe(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<argonauts_core::events::AgentStatusEvent> {
+        self.0.subscribe()
+    }
+    fn test_result(&self, agent_id: &AgentId, ok: bool) {
+        self.0.test_result(agent_id, ok);
+    }
+    fn network(&self) -> argonauts_core::limits::NetState {
+        argonauts_core::limits::NetState::Down {
+            since: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+}
+
+/// With the internet gone the agent did nothing wrong: it goes on where it stopped once it's
+/// back, where a model on this machine, which works offline, follows the usual rules.
+#[tokio::test]
+async fn a_network_error_while_offline_resumes_the_same_agent() {
+    let fixture = Fixture::with_models();
+    let limits = Limits::new(
+        Arc::new(fixture.settings.clone()),
+        fixture.plan_usage.clone(),
+        Arc::new(Offline(fixture.health.clone())),
+        Arc::new(fixture.planner()),
+    )
+    .with_registry(fixture.registry.clone());
+    let crashed = EndReason::Crashed {
+        message: "fetch failed".to_owned(),
+    };
+    for reason in [
+        cli_error(ErrorCategory::Network),
+        cli_error(ErrorCategory::Timeout),
+        crashed,
+    ] {
+        let action = decide(&limits, "claude-code/opus", reason.clone(), &[]).await;
+        assert!(
+            matches!(&action, RecoveryAction::ResumeSame { message } if message.contains("network")),
+            "{reason:?}: {action:?}"
+        );
+    }
+    let overload = decide(
+        &limits,
+        "claude-code/opus",
+        cli_error(ErrorCategory::Overloaded),
+        &[],
+    )
+    .await;
+    // An overload is its model's own, offline or not.
+    assert_eq!(fell_back_to(&overload).0, "claude-code/sonnet");
+    let local = decide(
+        &limits,
+        "opencode/ollama/qwen3-coder:30b",
+        cli_error(ErrorCategory::Network),
+        &[],
+    )
+    .await;
+    assert!(
+        !matches!(local, RecoveryAction::ResumeSame { .. }),
+        "{local:?}"
+    );
 }
 
 /// Two models out took the CLI down, so its provider is what fails: a model another CLI

@@ -65,9 +65,9 @@ pub(crate) fn connect(
         anyhow::bail!("can't find your home directory, so /connect can't find the config file");
     };
     let file = config_file(outside_agent, &home);
+    let layout = crate::self_update::Layout::for_home(&ctx.env.paths);
     let server = Server {
-        argonauts: std::env::current_exe()
-            .and_then(|exe| exe.canonicalize())
+        argonauts: crate::self_update::program_to_save(&layout)
             .context("finding the argonauts program")?,
         repo: ctx.env.repo_root.clone(),
     };

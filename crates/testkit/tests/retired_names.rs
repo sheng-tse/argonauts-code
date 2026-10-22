@@ -59,8 +59,10 @@ fn no_retired_name_is_left() {
     );
     for unread in &table.unread {
         assert!(
-            tree::files().iter().any(|file| file.path == unread.path),
-            "{}: [[unread]] names {}, which isn't a tracked file ({})",
+            tree::files()
+                .iter()
+                .any(|file| table::fits(&unread.path, &file.path)),
+            "{}: [[unread]] names {}, which fits no tracked file ({})",
             table::TABLE,
             unread.path,
             unread.why
@@ -177,7 +179,7 @@ fn a_role_outside_the_list_is_found_in_a_workflows_file_and_in_a_file_of_phases(
     };
     let files = [
         file(
-            "templates/workflows/sample.toml",
+            "crates/core/templates/workflows/sample.toml",
             "[[step]]\nname = \"Plan\"\nrole = \"planner\"   # who plans\n\n[[step]]\nrole = \"worker\"\n\n  [[phases.steps]]\n  role  = \"scribe\"\n",
         ),
         file(
@@ -196,8 +198,8 @@ fn a_role_outside_the_list_is_found_in_a_workflows_file_and_in_a_file_of_phases(
     assert_eq!(
         found,
         [
-            place("templates/workflows/sample.toml", 3, "planner"),
-            place("templates/workflows/sample.toml", 9, "scribe"),
+            place("crates/core/templates/workflows/sample.toml", 3, "planner"),
+            place("crates/core/templates/workflows/sample.toml", 9, "scribe"),
             place(".argonauts/workflows/sample.yaml", 4, "scribe"),
         ]
     );

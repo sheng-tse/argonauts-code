@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_settings.rs
+source: crates/tui/tests/it/snap_settings.rs
+assertion_line: 55
 expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -13,4 +14,4 @@ expression: "picker_lines(picker, width)"
     3. This project, shared    .argonauts/config.toml
   ❯ 4. Everywhere              ~/.argonauts/config.toml
 
-  Enter to save · ↑↓ to move · type to filter · Esc to close
+  Enter to save · ↑↓  to move · type to filter · Esc to close

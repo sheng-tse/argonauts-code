@@ -104,6 +104,7 @@ pub fn no_tools_spec(session: NoToolsSession<'_>) -> io::Result<SessionSpec> {
             closed: Vec::new(),
             listable: Vec::new(),
             loopback: false,
+            outside: Default::default(),
         },
     };
 

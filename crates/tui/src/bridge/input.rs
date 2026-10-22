@@ -107,6 +107,7 @@ impl InputRouter {
                     super::keys::open_agent_panel(cx);
                 }
             }
+            AppEvent::Updated { words } => cx.model.bottom.updated = Some(words.clone()),
             AppEvent::SettingChanged { key, value, .. } if key == Settings::ULTRACODE_TRIGGER => {
                 cx.model.bottom.composer.workflow_word_off = value.trim() == "false";
             }
@@ -1093,7 +1094,14 @@ mod tests {
         };
         assert_eq!(text, "what's off here? [Image #1]", "parsed, so trimmed");
         assert_eq!(pictures.len(), 1);
-        assert_eq!(pictures[0].path, path);
+        assert_ne!(
+            pictures[0].path, path,
+            "the copy kept when it was dropped goes"
+        );
+        assert_eq!(
+            std::fs::read(&pictures[0].path).unwrap(),
+            std::fs::read(&path).unwrap()
+        );
         let echoes: Vec<_> = screen.model.history.active_cells().collect();
         let [(_, Cell::User(echo))] = echoes.as_slice() else {
             panic!("one echo");
@@ -1491,6 +1499,18 @@ mod tests {
                 .is_some_and(|n| n.starts_with("prompt history")),
             "{:?}",
             screen.notice()
+        );
+    }
+
+    #[test]
+    fn the_first_start_after_an_update_keeps_its_row_for_the_input() {
+        let mut screen = Screen::idle();
+        screen.event(AppEvent::Updated {
+            words: "Updated to 0.1.1 · /release-notes".into(),
+        });
+        assert_eq!(
+            screen.model.bottom.updated.as_deref(),
+            Some("Updated to 0.1.1 · /release-notes")
         );
     }
 

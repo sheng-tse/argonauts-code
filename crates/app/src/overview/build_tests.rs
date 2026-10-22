@@ -275,6 +275,8 @@ fn what_ran_through_argonauts_comes_from_the_work_ledger() {
             sent_back: 0,
             merged: true,
             reviewed: true,
+            checks_first: None,
+            checks_last: None,
         }),
         work_line(Work::Task {
             task: TaskId::new("t2").unwrap(),
@@ -283,6 +285,8 @@ fn what_ran_through_argonauts_comes_from_the_work_ledger() {
             sent_back: 1,
             merged: true,
             reviewed: true,
+            checks_first: None,
+            checks_last: None,
         }),
         work_line(Work::Session {
             role: "worker".into(),
@@ -295,6 +299,7 @@ fn what_ran_through_argonauts_comes_from_the_work_ledger() {
             fallback_for: Some(ModelRef::new("claude-code", None)),
             why: "out".into(),
             window: Some("five_hour".into()),
+            cause: None,
         }),
     ];
     let data = build(&[], &[], &work, OverviewPeriod::All);

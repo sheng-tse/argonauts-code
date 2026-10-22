@@ -1,6 +1,6 @@
 //! Pictures of screens, one character per terminal cell with its colours, and a comparison of
 //! what the panel drew with them, cell by cell. A picture is a `.txt` of its characters and an
-//! `.html` of the same characters in coloured spans, in `pictures/`.
+//! `.html` of the same characters in coloured spans, in the crate's `tests/golden/`.
 //!
 //! Colours in a picture are names, such as `--term-dim` or `--v-claude`; each stands for the
 //! theme roles that draw it. A colour written as its value, such as `#b4472a`, is that colour
@@ -10,6 +10,7 @@
 use std::ops::Range;
 use std::path::PathBuf;
 
+use argonauts_testkit::picture;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
 
@@ -34,28 +35,19 @@ pub struct Picture {
 }
 
 impl Picture {
-    /// `pictures/<name>.txt` and its `.html`, which must hold the same characters.
+    /// `tests/golden/overview/<name>.txt` and its `.html`, which must hold the same characters.
     pub fn load(name: &str) -> Picture {
-        Self::read(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/overview/pictures"),
-            name,
-        )
+        Self::screen("overview", name)
     }
 
-    /// A whole screen's picture in the crate's `golden/`, of which a test compares the rows a
-    /// panel draws.
-    pub fn screen(name: &str) -> Picture {
-        Self::read(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("golden"),
-            name,
-        )
+    /// The picture `name` of a screen in `area`, a folder of the crate's `tests/golden/`, of
+    /// which a test compares the rows a panel draws.
+    pub fn screen(area: &str, name: &str) -> Picture {
+        Self::read(&golden_folder(area), name)
     }
 
     fn read(dir: &std::path::Path, name: &str) -> Picture {
-        let text = std::fs::read_to_string(dir.join(format!("{name}.txt")))
-            .unwrap_or_else(|err| panic!("{name}.txt: {err}"));
-        let html = std::fs::read_to_string(dir.join(format!("{name}.html")))
-            .unwrap_or_else(|err| panic!("{name}.html: {err}"));
+        let (text, html) = picture::read(dir, name);
         let rows = parse_html(&html);
         let picture = Picture {
             name: name.to_owned(),
@@ -112,6 +104,13 @@ impl Picture {
     }
 }
 
+/// A folder of the crate's pictures, named for the screens it holds.
+pub(crate) fn golden_folder(area: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden")
+        .join(area)
+}
+
 /// `#b4472a` as the colour it is.
 fn exact_color(name: &str) -> Option<Color> {
     let hex = u32::from_str_radix(name.strip_prefix('#')?, 16).ok()?;
@@ -144,6 +143,38 @@ impl Region {
             columns: 0..picture.width(),
             at,
         }
+    }
+}
+
+/// The screen a golden drew, as text, into the folder `ARGONAUTS_PICTURES_OUT` names, for
+/// someone to set beside its picture. Nothing is written without it.
+pub fn keep(name: &str, buf: &Buffer) {
+    let Some(dir) = std::env::var_os("ARGONAUTS_PICTURES_OUT") else {
+        return;
+    };
+    let rows: Vec<String> = (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol().to_owned())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect();
+    // A picture of two screens is drawn twice: the second goes beside the first.
+    let dir = std::path::Path::new(&dir);
+    let file = (1..)
+        .map(|n| match n {
+            1 => dir.join(format!("{name}.txt")),
+            n => dir.join(format!("{name}.{n}.txt")),
+        })
+        .find(|file| !file.exists())
+        .unwrap_or_else(|| dir.join(format!("{name}.txt")));
+    if let Err(err) = std::fs::write(&file, rows.join("\n") + "\n") {
+        panic!("{}: {err}", file.display());
+    }
+    if let Some(stem) = file.file_stem().and_then(|stem| stem.to_str()) {
+        crate::picture_dump::screen_page_in(dir, stem, buf, &theme());
     }
 }
 
@@ -221,6 +252,7 @@ pub fn assert_matches(picture: &Picture, buf: &Buffer, region: &Region, theme: &
     );
     let size = (region.columns.len(), region.rows.len());
     crate::picture_dump::rows(&name, &crate::picture_dump::cut(buf, at, size));
+    crate::picture_dump::buffer_page(&name, buf, at, size, theme);
     let found = differences(picture, buf, region, theme);
     if found.is_empty() {
         return;
@@ -303,86 +335,43 @@ fn matches_bg(picture: &Picture, want: Option<&str>, got: Color, theme: &Theme) 
     }
 }
 
-/// The cells of a picture's `.html`: spans with a style, and text between them.
+/// The cells of a picture's first grid.
 fn parse_html(html: &str) -> Vec<Vec<PictureCell>> {
-    let start = html
-        .find("<pre")
-        .and_then(|at| html[at..].find('>').map(|end| at + end + 1));
-    let body = &html[start.unwrap_or(0)..];
-    let body = &body[..body.find("</pre>").unwrap_or(body.len())];
-    let mut rows = vec![Vec::new()];
-    let mut rest = body;
-    while !rest.is_empty() {
-        let (text, style, after) = if let Some(open) = rest.strip_prefix("<span") {
-            let tag_end = open.find('>').expect("a span's tag ends");
-            let style = attribute(&open[..tag_end], "style");
-            let inner = &open[tag_end + 1..];
-            let close = inner.find("</span>").expect("a span ends");
-            (&inner[..close], style, &inner[close + "</span>".len()..])
-        } else {
-            let next = rest.find("<span").unwrap_or(rest.len());
-            (&rest[..next], String::new(), &rest[next..])
-        };
-        let (fg, bg, bold) = parse_style(&style);
-        for ch in unescape(text).chars() {
-            if ch == '\n' {
-                rows.push(Vec::new());
-                continue;
-            }
-            rows.last_mut().unwrap().push(PictureCell {
-                ch,
-                fg: fg.clone(),
-                bg: bg.clone(),
-                bold,
-            });
-        }
-        rest = after;
-    }
-    rows
+    cells_of(&picture::grid(html))
 }
 
-fn attribute(tag: &str, name: &str) -> String {
-    let key = format!("{name}=\"");
-    tag.find(&key)
-        .map(|at| {
-            let value = &tag[at + key.len()..];
-            value[..value.find('"').unwrap_or(value.len())].to_owned()
+/// The cells of each grid a picture's `.html` draws, in order.
+pub(crate) fn parse_parts(html: &str) -> Vec<Vec<Vec<PictureCell>>> {
+    picture::grids(html)
+        .iter()
+        .map(|grid| cells_of(grid))
+        .collect()
+}
+
+fn cells_of(grid: &[Vec<picture::Cell>]) -> Vec<Vec<PictureCell>> {
+    grid.iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| PictureCell {
+                    ch: cell.ch,
+                    fg: colour_name(cell.color.as_deref()),
+                    bg: colour_name(cell.background.as_deref()),
+                    bold: cell.bold,
+                })
+                .collect()
         })
-        .unwrap_or_default()
+        .collect()
 }
 
-/// `color:var(--term-dim);background:var(--term-band);font-weight:700`.
-fn parse_style(style: &str) -> (Option<String>, Option<String>, bool) {
-    let mut fg = None;
-    let mut bg = None;
-    let mut bold = false;
-    for part in style.split(';') {
-        let Some((key, value)) = part.split_once(':') else {
-            continue;
-        };
-        let value = value.trim();
-        let name = value
-            .strip_prefix("var(")
-            .and_then(|name| name.strip_suffix(')'))
-            .or_else(|| value.starts_with('#').then_some(value))
-            .map(str::to_owned);
-        match key.trim() {
-            "color" => fg = name,
-            "background" => bg = name,
-            "font-weight" => bold = value == "700" || value == "bold",
-            _ => {}
-        }
-    }
-    (fg, bg, bold)
-}
-
-fn unescape(text: &str) -> String {
-    text.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#x27;", "'")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&")
+/// `var(--term-dim)` as `--term-dim`, and `#b4472a` as itself. Any other colour is one no
+/// picture here names.
+fn colour_name(value: Option<&str>) -> Option<String> {
+    let value = value?;
+    value
+        .strip_prefix("var(")
+        .and_then(|name| name.strip_suffix(')'))
+        .or_else(|| value.starts_with('#').then_some(value))
+        .map(str::to_owned)
 }
 
 #[cfg(test)]
@@ -433,5 +422,23 @@ mod tests {
             found[0].starts_with("row 1 column 2 '◆': colour"),
             "{found:#?}"
         );
+        buf[(3, 1)].fg = color(picture.rows[1][2].fg.as_deref());
+
+        // The same one cell changed in the picture's page instead.
+        let (_, html) = picture::read(&golden_folder("overview"), "limits_after");
+        let changed = |edit: &dyn Fn(&mut picture::Cell)| {
+            let page = picture::edited(&html, |grid| edit(&mut grid[1][2]));
+            let picture = Picture::of("limits_after", parse_html(&page));
+            differences(&picture, &buf, &whole, &theme)
+        };
+        assert!(changed(&|_| {}).is_empty());
+        let recoloured = changed(&|cell| cell.color = Some("var(--term-red)".to_owned()));
+        assert_eq!(recoloured.len(), 1, "{recoloured:#?}");
+        let respelled = changed(&|cell| cell.ch = '◇');
+        assert_eq!(respelled.len(), 1, "{respelled:#?}");
+        let bolder = changed(&|cell| cell.bold ^= true);
+        assert_eq!(bolder.len(), 1, "{bolder:#?}");
+        let filled = changed(&|cell| cell.background = Some("var(--term-band)".to_owned()));
+        assert_eq!(filled.len(), 1, "{filled:#?}");
     }
 }

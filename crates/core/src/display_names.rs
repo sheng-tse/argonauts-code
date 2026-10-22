@@ -69,7 +69,7 @@ impl DisplayNames {
     }
 
     /// The model alone where it runs on its own provider's CLI (Claude models on Claude Code,
-    /// GPT on Codex, Gemini on Antigravity CLI), else `<model> on <cli>`. The workflow view's
+    /// GPT on Codex, Gemini on agy), else `<model> on <cli>`. The workflow view's
     /// rows name agents this way, since the pane is narrow and the agent view gives the rest.
     pub fn short(&self, worker: &ModelRef) -> String {
         let cli = self.cli(&worker.agent);
@@ -210,7 +210,7 @@ pub fn builtin_cli_name(id: &str) -> Option<&'static str> {
     Some(match id {
         "claude-code" | "claude" => "Claude Code",
         "codex" => "Codex",
-        "antigravity-cli" => "Antigravity CLI",
+        "antigravity-cli" => "agy",
         "opencode" => "OpenCode",
         "openrouter" => "OpenRouter",
         _ => return crate::runtimes::runtime(id).map(|runtime| runtime.name),
@@ -321,7 +321,7 @@ mod tests {
         assert_eq!(names.short(&id("codex/gpt-6.1-sol")), "GPT 6.1 Sol");
         assert_eq!(
             names.short(&id("antigravity-cli/claude-opus-5-5")),
-            "Opus 5.5 on Antigravity CLI"
+            "Opus 5.5 on agy"
         );
         assert_eq!(
             names.short(&id("my-cli/gpt-6.1-sol")),

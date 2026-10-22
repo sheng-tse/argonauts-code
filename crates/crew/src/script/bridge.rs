@@ -21,19 +21,17 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 mod beside;
+mod no_answer;
+pub(super) mod reading;
 
 use super::{goal, journal, tasks};
-use crate::engine::host::{Fallbacks, Host, Ran, SessionPlan};
+use crate::engine::host::{Fallbacks, Host, InPlaceOf, Ran, SessionPlan};
 use crate::engine::job_fallback;
 use crate::error::{EngineError, EngineResult, Stall};
 use crate::prompts::instructions::{self, CallAuthor};
 use crate::roles;
 use crate::task::support::part;
 use crate::workflow::StepCall;
-
-/// As much of a task's change as a reviewer is handed in its prompt. It reads the rest in the
-/// task's worktree.
-const DIFF_SHOWN: usize = 60_000;
 
 pub(super) struct Bridge<'a> {
     pub host: &'a Host,
@@ -66,6 +64,22 @@ pub(super) struct Bridge<'a> {
     second_tried: Mutex<BTreeSet<String>>,
     /// An agent that writes has started, so the reading before the building is over.
     wrote: AtomicBool,
+    /// Who reads each task in each round, by the call's number, so a reader that takes a
+    /// local model's place doesn't repeat another reader of the same work.
+    readers: Mutex<BTreeMap<Round, BTreeMap<u32, ModelRef>>>,
+}
+
+/// One round of reading one task's work, or the whole run's: the task, the phase, the try and
+/// the role.
+type Round = (Option<String>, Option<String>, u32, CrewRole);
+
+fn round_of(call: &AgentCall) -> Round {
+    (
+        call.task.clone(),
+        call.phase.clone(),
+        call.try_number,
+        call.role,
+    )
 }
 
 /// One phase's agents of one role, by label.
@@ -137,6 +151,7 @@ impl<'a> Bridge<'a> {
             phases: Mutex::default(),
             second_tried: Mutex::default(),
             wrote: AtomicBool::new(false),
+            readers: Mutex::default(),
         }
     }
 
@@ -393,6 +408,7 @@ impl<'a> Bridge<'a> {
         if call.writes {
             return tasks::work(self, call, &worker).await;
         }
+        self.reads(call, &worker);
         let mut whole = None;
         let (workdir, change) = match tasks::change_of(self, call).await? {
             Some((tree, change)) => (tree, Some(change)),
@@ -420,9 +436,6 @@ impl<'a> Bridge<'a> {
             &call.prompt,
             self.author(call),
         )];
-        if let Some(change) = change {
-            parts.push(part(InputPartKind::Evidence, "the change", change, None));
-        }
         // What the checks said after the build, so a reviewer or a judge reads the results
         // rather than guessing at them. One about no task, as a sign-off is, reads them all.
         let checks = match call.task.as_deref() {
@@ -431,16 +444,38 @@ impl<'a> Bridge<'a> {
                 tasks::all_checks(self)
             }
             None => None,
-        };
-        if let Some(checks) = checks {
-            parts.push(part(InputPartKind::CheckOutput, "the checks", checks, None));
         }
+        .map(|checks| part(InputPartKind::CheckOutput, "the checks", checks, None));
+        let brief = parts
+            .iter()
+            .chain(&checks)
+            .map(|part| part.text.len())
+            .sum();
+        let reader = self.reader(call, worker, change.as_ref(), brief).await;
+        if let Some(change) = reader.change {
+            parts.push(part(InputPartKind::Evidence, "the change", change, None));
+        }
+        parts.extend(checks);
+        // The run's first orchestrator starts as a copy of the main session, when your words in
+        // a conversation on its own CLI started the run: a step the file writes out for it too.
+        let first_orchestrator = call.role.fine_role() == RoleName::Orchestrator
+            && call.task.is_none()
+            && !self.host.read(|state| {
+                state
+                    .sessions
+                    .by_key
+                    .values()
+                    .any(|session| session.started.role == RoleName::Orchestrator)
+            });
+        let fork_of = first_orchestrator
+            .then(|| crate::orchestrated::fork_for(self.host, &reader.worker))
+            .flatten();
         let plan = SessionPlan {
             at: Some(self.call.at.clone()),
             role: call.role.fine_role(),
-            worker,
+            worker: reader.worker,
             task: None,
-            access: Access::ReadOnly,
+            access: reader.access,
             step: None,
             workdir,
             parts,
@@ -451,6 +486,8 @@ impl<'a> Bridge<'a> {
             reviews,
             fresh: false,
             independent_of: self.builders(call),
+            in_place_of: reader.in_place_of,
+            fork_of,
         };
         // The session this call started before the run stopped carries on.
         let known = lock(&self.sessions).get(&call.index).cloned();
@@ -465,7 +502,7 @@ impl<'a> Bridge<'a> {
         let ran = ran?;
         // It may have fallen back to another agent, under a session of its own.
         self.ran(call, &ran.key)?;
-        let end = answer(call, &ran);
+        let end = answer(self.host, call, &ran);
         if let Ok(verdict) = &end.result {
             tasks::judged(self, call, &ran, verdict)?;
         }
@@ -485,14 +522,51 @@ impl<'a> Bridge<'a> {
     }
 
     /// Who takes the call: the model it names, else the one of its role's models it numbers.
-    /// A reviewer or a judge of a task comes from another provider than its author where the
-    /// role has one, and a call that mustn't be the author never is.
     fn pick(&self, call: &AgentCall) -> EngineResult<ModelRef> {
         if let Some(model) = &call.model {
             return model
                 .parse()
                 .map_err(|err| EngineError::Refused(format!("{}: {err}", call.label)));
         }
+        let models = self.ranked(call);
+        let nth = call.model_index as usize % models.len().max(1);
+        let picked = models
+            .get(nth)
+            .map(|model| self.unrepeated(call, model, &models));
+        picked.ok_or_else(|| {
+            EngineError::Refused(format!(
+                "no model is set for the {} to take {}",
+                call.role, call.label
+            ))
+        })
+    }
+
+    /// `picked` for a reviewer's or a judge's call, unless another reader of the same work in
+    /// this round has it already, as one that took a local model's place may, and the role has
+    /// a model nobody reads with.
+    fn unrepeated(&self, call: &AgentCall, picked: &ModelRef, models: &[ModelRef]) -> ModelRef {
+        if !matches!(call.role, CrewRole::Reviewer | CrewRole::Judge) {
+            return picked.clone();
+        }
+        let taken = lock(&self.readers)
+            .get(&round_of(call))
+            .is_some_and(|readers| {
+                readers
+                    .iter()
+                    .any(|(index, model)| *index != call.index && model == picked)
+            });
+        if !taken {
+            return picked.clone();
+        }
+        self.first_free(call, models)
+            .unwrap_or_else(|| picked.clone())
+    }
+
+    /// The role's models in the order the call takes them, those at work first. A reviewer
+    /// or a judge of a task comes from another provider than its author where the role has
+    /// one, one about the whole run from another than every builder's, and a call that
+    /// mustn't be the author never is.
+    fn ranked(&self, call: &AgentCall) -> Vec<ModelRef> {
         let host = self.host;
         let mut models = roles::candidates(host.settings(), call.role.fine_role());
         let available = host.services().workers.available();
@@ -508,15 +582,156 @@ impl<'a> Bridge<'a> {
                 // Stable, so the list's own order still decides among the others.
                 models.sort_by_key(|model| roles::provider(host, model) == theirs);
             }
+        } else if call.task.is_none() {
+            // A sign-off about the whole run judges every builder's work, so it comes from a
+            // provider none of them is from, where the role has one.
+            let theirs: BTreeSet<String> = self
+                .builders(call)
+                .iter()
+                .map(|builder| roles::provider(host, builder))
+                .collect();
+            models.sort_by_key(|model| theirs.contains(&roles::provider(host, model)));
         }
-        let nth = call.model_index as usize % models.len().max(1);
-        models.into_iter().nth(nth).ok_or_else(|| {
-            EngineError::Refused(format!(
-                "no model is set for the {} to take {}",
-                call.role, call.label
-            ))
+        models
+    }
+
+    /// Who reads the change, with what access, and what of it they're handed. A model served
+    /// without tools reads all of it in its prompt when its window holds the rest of the
+    /// prompt, `brief` bytes long, beside it. When it can't, a reader with tools takes this one call, saying
+    /// why, and the model isn't kept from later ones. With nobody else to take it, it reads as
+    /// much as it holds.
+    async fn reader(
+        &self,
+        call: &AgentCall,
+        worker: ModelRef,
+        change: Option<&reading::Change>,
+        brief: usize,
+    ) -> Reader {
+        if !crate::review::is_endpoint(self.host, &worker) {
+            return Reader {
+                worker,
+                access: Access::ReadOnly,
+                change: change.map(reading::Change::for_a_reader_with_tools),
+                in_place_of: None,
+            };
+        }
+        let Some(change) = change else {
+            return Reader {
+                worker,
+                access: Access::NoTools,
+                change: None,
+                in_place_of: None,
+            };
+        };
+        let whole = change.for_a_reader_without_tools(None);
+        let (most, why) = match reading::room(self.host, &worker, brief, &whole).await {
+            reading::Room::Holds => {
+                return Reader {
+                    worker,
+                    access: Access::NoTools,
+                    change: Some(whole),
+                    in_place_of: None,
+                };
+            }
+            reading::Room::Short { most, why } => (most, why),
+        };
+        match self.with_tools(call) {
+            Some(taker) => {
+                self.reads(call, &taker);
+                let line = format!(
+                    "{} goes to {}, in place of {}, {why}",
+                    call.label,
+                    roles::display_name(&taker),
+                    roles::display_name(&worker)
+                );
+                if let Err(err) =
+                    job_fallback::say_in_the_view(self.host, &self.call.at.step.workflow, line)
+                {
+                    self.failed(err);
+                }
+                Reader {
+                    worker: taker,
+                    access: Access::ReadOnly,
+                    change: Some(change.for_a_reader_with_tools()),
+                    in_place_of: Some(InPlaceOf { asked: worker, why }),
+                }
+            }
+            None => Reader {
+                worker,
+                access: Access::NoTools,
+                change: Some(change.for_a_reader_without_tools(Some(most))),
+                in_place_of: None,
+            },
+        }
+    }
+
+    /// Who takes a reading call in a local model's place: the first of the role's models that
+    /// run with tools that no other reader of the same work has in this round, from another
+    /// provider than the work's builders where one is free. With none free, another provider
+    /// comes first.
+    fn with_tools(&self, call: &AgentCall) -> Option<ModelRef> {
+        let host = self.host;
+        let models: Vec<ModelRef> = self
+            .ranked(call)
+            .into_iter()
+            .filter(|model| !crate::review::is_endpoint(host, model))
+            .collect();
+        let theirs = self.builders_providers(call);
+        self.first_free(call, &models).or_else(|| {
+            models
+                .iter()
+                .find(|model| !theirs.contains(&roles::provider(host, model)))
+                .or_else(|| models.first())
+                .cloned()
         })
     }
+
+    /// The first of `models` that no other reader of the same work has in this round, one from
+    /// another provider than the work's builders before one from theirs.
+    fn first_free(&self, call: &AgentCall, models: &[ModelRef]) -> Option<ModelRef> {
+        let taken: BTreeSet<ModelRef> = lock(&self.readers)
+            .get(&round_of(call))
+            .map(|readers| {
+                readers
+                    .iter()
+                    .filter(|(index, _)| **index != call.index)
+                    .map(|(_, model)| model.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let theirs = self.builders_providers(call);
+        let free = |model: &&ModelRef| !taken.contains(*model);
+        models
+            .iter()
+            .find(|model| free(model) && !theirs.contains(&roles::provider(self.host, model)))
+            .or_else(|| models.iter().find(free))
+            .cloned()
+    }
+
+    fn builders_providers(&self, call: &AgentCall) -> BTreeSet<String> {
+        self.builders(call)
+            .iter()
+            .map(|builder| roles::provider(self.host, builder))
+            .collect()
+    }
+
+    /// Keeps who reads for a reviewer's or a judge's call, as [`Self::with_tools`] reads it.
+    fn reads(&self, call: &AgentCall, worker: &ModelRef) {
+        if matches!(call.role, CrewRole::Reviewer | CrewRole::Judge) {
+            lock(&self.readers)
+                .entry(round_of(call))
+                .or_default()
+                .insert(call.index, worker.clone());
+        }
+    }
+}
+
+/// Who reads a change and how, as [`Bridge::reader`] chose.
+struct Reader {
+    worker: ModelRef,
+    access: Access,
+    change: Option<String>,
+    in_place_of: Option<InPlaceOf>,
 }
 
 impl argonauts_runner::Host for Bridge<'_> {
@@ -562,9 +777,15 @@ impl argonauts_runner::Host for Bridge<'_> {
             };
             // The script only sees a missing answer, so the reason is said here.
             if let Err(why) = &end.result {
+                let reads_on = [no_answer::ENDED_WITHOUT_AN_ANSWER, tasks::SKIPPED];
+                let text = if reads_on.iter().any(|start| why.starts_with(start)) {
+                    format!("{} {why}", call.label)
+                } else {
+                    format!("{}{GAVE_NO_ANSWER}{why}", call.label)
+                };
                 let note = Note {
                     level: NoteLevel::Warn,
-                    text: format!("{}{GAVE_NO_ANSWER}{why}", call.label),
+                    text,
                 };
                 let _ = self.host.record(None, None, RunEventKind::Note(note));
             }
@@ -711,8 +932,9 @@ impl argonauts_runner::Host for Bridge<'_> {
     }
 }
 
-/// What the session said, as the script's `agent()` returns it.
-pub(super) fn answer(call: &AgentCall, ran: &Ran) -> AgentEnd {
+/// What the session said, as the script's `agent()` returns it. Without an answer, the
+/// reason is said as the call's row shows it, after the call's label.
+pub(super) fn answer(host: &Host, call: &AgentCall, ran: &Ran) -> AgentEnd {
     let end = &ran.end;
     let said = end
         .result_text
@@ -725,24 +947,16 @@ pub(super) fn answer(call: &AgentCall, ran: &Ran) -> AgentEnd {
         // format Argonauts Code asked for".
         let cli = argonauts_core::display_names::DisplayNames::default().cli(&ran.worker.agent);
         Err(match end.reason.plain_line(&cli) {
-            Some(why) => format!("{}: {why}", call.label),
-            None => format!(
-                "{} ended early: {}",
-                call.label,
-                crate::status::folder::words(&end.reason)
-            ),
+            Some(why) => why,
+            None => format!("ended early: {}", crate::status::folder::words(&end.reason)),
         })
     } else if let Some(schema) = &call.schema {
+        // A model may wrap its JSON in a Markdown fence or in prose, which is still its answer.
         end.structured
             .clone()
-            .or_else(|| said.and_then(|text| serde_json::from_str(text).ok()))
-            .ok_or_else(|| {
-                format!(
-                    "{} ended without the answer its schema asks for",
-                    call.label
-                )
-            })
-            .and_then(|value| fits(schema, value, &call.label))
+            .or_else(|| said.and_then(argonauts_core::answer_format::json_in))
+            .ok_or_else(|| no_answer::why(host, &ran.key))
+            .and_then(|value| fits(schema, value))
     } else {
         Ok(Value::String(said.unwrap_or_default().to_owned()))
     };
@@ -757,7 +971,7 @@ pub(super) fn answer(call: &AgentCall, ran: &Ran) -> AgentEnd {
 
 /// An answer that lacks something its schema requires is no answer. The CLIs that enforce a
 /// schema never send one, and the others are held to this much.
-fn fits(schema: &Value, value: Value, label: &str) -> Result<Value, String> {
+fn fits(schema: &Value, value: Value) -> Result<Value, String> {
     let required = schema
         .get("required")
         .and_then(Value::as_array)
@@ -768,23 +982,9 @@ fn fits(schema: &Value, value: Value, label: &str) -> Result<Value, String> {
         .filter_map(Value::as_str)
         .find(|key| value.get(key).is_none());
     match missing {
-        Some(key) => Err(format!("{label}'s answer has no {key}")),
+        Some(key) => Err(format!("its answer has no {key}")),
         None => Ok(value),
     }
-}
-
-pub(super) fn shown_change(diff: String) -> String {
-    if diff.len() <= DIFF_SHOWN {
-        return diff;
-    }
-    let mut cut = DIFF_SHOWN;
-    while !diff.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    format!(
-        "{}\n… the change goes on. Read the rest in this folder, which is the task's worktree.",
-        &diff[..cut]
-    )
 }
 
 /// The name of the CLI a stalled job was asked of.

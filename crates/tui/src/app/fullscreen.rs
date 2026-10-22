@@ -349,8 +349,9 @@ impl Scrollback {
         };
         // The same down arrow token counts use, with its ASCII form.
         let arrow = ctx.theme.glyphs.tokens;
+        let gap = crate::theme::glyphs::gap_after(arrow);
         let line = Line::from(Span::styled(
-            format!("  {arrow} {what} · pgdn to scroll"),
+            format!("  {arrow}{gap}{what} · pgdn to scroll"),
             ctx.theme.style(Role::Dim),
         ));
         truncate_line(&line, usize::from(ctx.width))
@@ -466,8 +467,10 @@ impl<W: Write> Ui<W> {
             (row < screen.height).then_some(Position::new(column, row))
         });
         let placing = self.place_mascot(now, mascot_at);
+        let map = self.place_map();
         self.terminal.draw_buffer_resting(&buffer, cursor)?;
-        self.send_placing(placing)
+        self.send_placing(placing)?;
+        self.send_map_placing(map)
     }
 
     /// PgUp and PgDn scroll the conversation. False on the inline screen, where the terminal
@@ -675,7 +678,7 @@ mod tests {
         let shown = plain_text(&scrollback.window(&[], 5, &ctx));
         assert_eq!(
             shown,
-            "row 14\nrow 15\nrow 16\n\n  ↓ 3 rows below · pgdn to scroll"
+            "row 14\nrow 15\nrow 16\n\n  ↓  3 rows below · pgdn to scroll"
         );
 
         scrollback.push(rows(20, 24), None);

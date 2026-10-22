@@ -48,7 +48,7 @@ fn reply(kind: &str, files: u32, how_to_run: Vec<Value>) -> FakeSession {
     }))
 }
 
-/// The main agent, Codex, and Antigravity CLI installed. OpenCode isn't.
+/// The main agent, Codex, and agy installed. OpenCode isn't.
 async fn crew_driver(options: CliOptions) -> TestDriver {
     let driver = TestDriver::start_with(options).await;
     driver.directory.add(FakeRunner::cli("codex", "openai"));
@@ -111,7 +111,7 @@ fn workers(settings: &argonauts_core::settings::Settings, role: RoleName) -> Vec
 }
 
 /// A small change the rules would run as Captain, with who orchestrates and who
-/// reviews. The run is the crew's, orchestrated by Codex and reviewed by Antigravity CLI only.
+/// reviews. The run is the crew's, orchestrated by Codex and reviewed by agy only.
 #[tokio::test]
 async fn codex_orchestrates_and_gemini_reviews_as_asked() {
     let mut driver = crew_driver(CliOptions::default()).await;
@@ -137,7 +137,7 @@ async fn codex_orchestrates_and_gemini_reviews_as_asked() {
     assert!(captain_or_crew.as_you_asked(), "{captain_or_crew:?}");
     assert_eq!(start.main_agent, Some(ModelRef::new("codex", None)));
     assert_eq!(said(&start, "have codex orchestrate"), "Codex orchestrates");
-    assert_eq!(said(&start, "gemini review"), "Antigravity CLI reviews");
+    assert_eq!(said(&start, "gemini review"), "agy reviews");
     assert_eq!(
         why(&start, "use opencode to build"),
         "OpenCode isn't installed, so the crew's workers build"
@@ -486,6 +486,7 @@ fn every_kind_has_a_schema_name() {
         "isolation",
         "judge",
         "others",
+        "cost",
     ] {
         let parsed: InstructionKind = serde_json::from_value(json!(kind)).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), json!(kind));
@@ -697,7 +698,7 @@ async fn workflow_reads_the_words_and_stays_a_workflow() {
 }
 
 /// The Captain workflow, where every message is the main session's own turn in your checkout,
-/// with Codex and Antigravity CLI installed beside the main agent.
+/// with Codex and agy installed beside the main agent.
 async fn captain_driver() -> TestDriver {
     let options = CliOptions {
         prepare: Some(Box::new(|repo: &TempRepo| {

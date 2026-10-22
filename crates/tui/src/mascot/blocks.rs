@@ -48,8 +48,8 @@ pub(super) fn file() -> &'static CellsFile {
 }
 
 /// The mascot's three rows in `look`, each [`WIDTH`] cells. `frame` counts the ultra looks'
-/// eighteen frames, through which the light sweeps across the body from the left; the first
-/// and the last ones have none.
+/// frames, one every 50 ms, through which the light sweeps across the body from the left; the
+/// first and the last ones have none.
 pub fn rows(mascot: Mascot, look: Look, frame: usize, theme: &Theme) -> [Vec<Span<'static>>; ROWS] {
     let file = file();
     let cells = &file.mascots[mascot.name()];
@@ -61,7 +61,8 @@ pub fn rows(mascot: Mascot, look: Look, frame: usize, theme: &Theme) -> [Vec<Spa
     let palette = &file.palettes[look.name()];
     let shimmer = file.shimmer.get(look.name());
     // The light's right edge, which enters from the left of the first column.
-    let front = i32::try_from(frame * 12 / super::FRAMES).unwrap_or(i32::MAX) - 1;
+    let frames = mascot.frames().max(1);
+    let front = i32::try_from(frame % frames * 12 / frames).unwrap_or(i32::MAX) - 1;
     let lit = |column: usize| {
         let column = i32::try_from(column).unwrap_or(i32::MAX);
         (front - BAND < column) && (column <= front)
@@ -205,11 +206,13 @@ mod tests {
                 .filter(|column| rows.iter().any(|row| row[*column].style.fg == lit))
                 .collect()
         };
+        // The medusa's 36 frames a cycle.
         assert_eq!(lit_columns(0), Vec::<usize>::new());
-        assert_eq!(lit_columns(17), Vec::<usize>::new());
-        assert_eq!(lit_columns(3), [1]);
-        assert_eq!(lit_columns(9), [4, 5]);
-        let swept: std::collections::BTreeSet<usize> = (0..18).flat_map(lit_columns).collect();
+        assert_eq!(lit_columns(35), Vec::<usize>::new());
+        assert_eq!(lit_columns(6), [1]);
+        assert_eq!(lit_columns(18), [4, 5]);
+        assert_eq!(lit_columns(36), lit_columns(0), "the next cycle");
+        let swept: std::collections::BTreeSet<usize> = (0..36).flat_map(lit_columns).collect();
         assert_eq!(
             swept.into_iter().collect::<Vec<_>>(),
             (1..8).collect::<Vec<_>>()

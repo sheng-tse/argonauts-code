@@ -181,7 +181,7 @@ fn without_vim_keys_no_hint_names_h_or_l() {
     screen.press(KeyCode::Enter);
     screen.press(KeyCode::Down);
     let text = shown(&screen, 120);
-    assert!(text.contains("←/→  to adjust") && text.contains("↑↓ to move"));
+    assert!(text.contains("←/→  to adjust") && text.contains("↑↓  to move"));
     assert!(!text.contains("h/l") && !text.contains("j/k"), "{text}");
 }
 
@@ -201,7 +201,7 @@ fn esc_from_a_roles_models_goes_back_to_the_roles() {
     screen.press(KeyCode::Down);
     screen.press(KeyCode::Down);
     let out = screen.press(KeyCode::Right);
-    assert!(out.commands.is_empty(), "→ opens the roles as Enter does");
+    assert!(out.commands.is_empty(), "→  opens the roles as Enter does");
     assert_eq!(screen.title(), "Roles");
     let out = screen.press(KeyCode::Right);
     assert_eq!(
@@ -211,7 +211,7 @@ fn esc_from_a_roles_models_goes_back_to_the_roles() {
                 role: Some(RoleName::Reviewer)
             }
         }],
-        "→ opens the role's models as Enter does"
+        "→  opens the role's models as Enter does"
     );
     screen.answer(models(Some(RoleName::Reviewer), claude_and_codex()));
     assert_eq!(screen.labels(), ["Claude Code", "Codex"]);
@@ -228,19 +228,19 @@ fn esc_from_a_roles_models_goes_back_to_the_roles() {
     screen.press(KeyCode::Enter);
     screen.answer(models(Some(RoleName::Reviewer), claude_and_codex()));
     screen.press(KeyCode::Left);
-    assert_eq!(screen.title(), "Roles", "← goes back as Esc does");
+    assert_eq!(screen.title(), "Roles", "←  goes back as Esc does");
     let out = screen.press(KeyCode::Left);
     assert_eq!(
         out.commands,
         [UiCommand::Request {
             view: ViewRequest::Models { role: None }
         }],
-        "← on the roles goes up to the main agent's CLIs"
+        "←  on the roles goes up to the main agent's CLIs"
     );
     assert_eq!(screen.title(), "Main agent");
     screen.answer(models(None, claude_and_codex()));
     screen.press(KeyCode::Left);
-    assert_eq!(screen.title(), "Main agent", "← on the first level stays");
+    assert_eq!(screen.title(), "Main agent", "←  on the first level stays");
     let out = screen.press(KeyCode::Esc);
     assert!(out.commands.is_empty());
     assert!(
@@ -411,7 +411,7 @@ fn with_no_level_set_the_slider_says_the_cli_picks_and_esc_keeps_that() {
         EffortSlider::new(
             None,
             "antigravity-cli".parse().unwrap(),
-            "Antigravity CLI's default model",
+            "agy's default model",
             stops,
             None,
             None,

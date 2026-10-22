@@ -1,0 +1,8 @@
+Argonauts Code 0.1.0 →  0.1.1 (stable)                                                                                
+  Downloaded  argonauts-aarch64-apple-darwin.tar.xz · 23.4 MB · sha256 and signature match                            
+  Checked     the new binary runs: argonauts-code 0.1.1                                                               
+  Switched    ~/.local/bin/argonauts →  versions/0.1.1 · 0.1.0 is kept for --rollback                                 
+Updated. Open sessions keep 0.1.0 until they end. What's new: /release-notes                                          
+                                                                                                                      
+Homebrew installed Argonauts Code, so Homebrew updates it:                                                            
+  brew upgrade argonauts-code                                                                                         

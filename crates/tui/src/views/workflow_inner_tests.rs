@@ -151,7 +151,8 @@ fn rows(view: &mut WorkflowView) -> Vec<String> {
         state: &state,
         now: Instant::now(),
     };
-    let area = Rect::new(0, 0, SCREEN, 16);
+    // Tall enough for a view's sections with a blank line between each.
+    let area = Rect::new(0, 0, SCREEN, 20);
     let mut buf = Buffer::empty(area);
     view.render(area, &mut buf, &ctx);
     (0..area.height)
@@ -213,11 +214,13 @@ fn each_of_claude_codes_own_agents_opens_as_itself() {
         pane,
         [
             "✔ Done · Haiku 4.5 on Claude Code · try 2",
-            "210k tok · 14 tool calls · 1m 9s",
+            "210.0k tok · 14 tool calls · 1m 9s",
             "",
             "Prompt · shortened by Claude Code · ⏎ expand",
             "Add --due <date> to todo add, and show the date in todo list.",
+            "",
             "Activity · 14 tool calls",
+            "",
             "Outcome",
             "todo add takes --due, and todo list shows it.",
         ],
@@ -236,8 +239,8 @@ fn each_of_claude_codes_own_agents_opens_as_itself() {
         "{drawn:#?}"
     );
     assert_eq!(pane[4], "Cover --due with tests.", "{drawn:#?}");
-    assert_eq!(pane[5], "Activity · 9 tool calls", "{drawn:#?}");
-    assert_eq!(pane[7], "Still running…", "{drawn:#?}");
+    assert_eq!(pane[6], "Activity · 9 tool calls", "{drawn:#?}");
+    assert_eq!(pane[9], "Still running…", "{drawn:#?}");
 
     // Back up asks for the first again: the view holds one agent's answer at a time.
     let outcome = press(&mut view, KeyCode::Up);
@@ -297,7 +300,7 @@ fn colour_of(view: &mut WorkflowView, text: &str) -> ratatui::style::Color {
         state: &state,
         now: Instant::now(),
     };
-    let area = Rect::new(0, 0, SCREEN, 16);
+    let area = Rect::new(0, 0, SCREEN, 20);
     let mut buf = Buffer::empty(area);
     view.render(area, &mut buf, &ctx);
     let found = (0..area.height).find_map(|y| {
@@ -344,7 +347,7 @@ fn claude_codes_own_agents_say_how_each_ended() {
         pane,
         [
             read(
-                "↷ review:store  Sonnet 5.5 · 21.4k tok · for Opus 5.5",
+                "↷ review:store  Sonnet 5.5 · 21.4k tok · in place of Opus 5.5",
                 "1m02s"
             ),
             read("✘ review:cli    Haiku 4.5 · 9.3k tok · failed", "3m00s"),
@@ -370,12 +373,14 @@ fn claude_codes_own_agents_open_with_their_last_tool_and_why_they_ended() {
     assert_eq!(
         right_pane(&drawn),
         [
-            "↷ Running · Sonnet 5.5 on Claude Code · Explore · worktree · for Opus 5.5",
+            "↷ Running · Sonnet 5.5 on Claude Code · Explore · worktree · in place of Opus 5.5",
             "21.4k tok · 14 tool calls · 1m 2s",
             "",
             "Prompt",
+            "",
             "Activity · 14 tool calls · Claude Code names only the last",
             "⏺ Read(src/store.js) · running",
+            "",
             "Outcome",
             "Still running…",
         ],
@@ -390,8 +395,10 @@ fn claude_codes_own_agents_open_with_their_last_tool_and_why_they_ended() {
     assert_eq!(
         pane[4..],
         [
+            "",
             "Activity · 3 tool calls · Claude Code names only the last",
             "⏺ TodoWrite",
+            "",
             "Outcome",
             "stalled — no progress for 180000ms",
         ],
@@ -409,7 +416,7 @@ fn claude_codes_own_agents_open_with_their_last_tool_and_why_they_ended() {
     );
     assert_eq!(
         pane[4..],
-        ["Activity", "No tool calls.", "Outcome", "Skipped."],
+        ["", "Activity", "No tool calls.", "", "Outcome", "Skipped."],
         "{drawn:#?}"
     );
 

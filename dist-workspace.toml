@@ -1,22 +1,98 @@
 [workspace]
 members = ["cargo:."]
 
-# Config for 'dist'
+# Config for 'dist'. After any change here, run `dist generate` and commit release.yml with it:
+# the plan job fails when the workflow has drifted from this file.
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.32.0"
+cargo-dist-version = "0.33.0"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
 installers = ["shell", "npm", "homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax)
-# macOS and Linux only: Argonauts Code doesn't run on Windows. ARM Linux joins once the repo is public, where
-# GitHub's ARM Linux machines are free.
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+# macOS and Linux only: Argonauts Code doesn't run on Windows. The musl builds are static, so the shell and npm
+# installers fall back to them where glibc is older than the gnu builds need (RHEL 8 and 9, Debian 11,
+# Ubuntu 20.04, Amazon Linux 2) and on Alpine.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
 # Path that installers should place binaries in
 # Where people expect a command, not Rust's folder: most users won't have Rust.
 install-path = ["$XDG_BIN_HOME/", "$XDG_DATA_HOME/../bin", "~/.local/bin"]
 # Where to host releases
 hosting = "github"
+# dist 0.33 writes `steps.cargo-cyclonedx.output.paths`, which reads nothing, so the SBOMs never uploaded.
+# release.yml reads `outputs` by hand, and dist leaves it as it is.
+allow-dirty = ["ci"]
 # Whether to install an updater program
+# Off: `argonauts self-update` reads a signed manifest with channels and a staged rollout, which dist's updater
+# has no notion of.
 install-updater = false
+# The shell installer's last line, as the install's end shows it. packaging/install.sh shows the greeting after it,
+# with the next step.
+install-success-msg = "everything's installed!"
+# Only the crates that turn it back on are shipped: the command line crate alone.
+dist = false
+# The Apache license asks for NOTICE to travel with every binary, and the licenses of what's compiled in travel
+# with it. dist adds README, LICENSE and CHANGELOG by itself.
+include = ["NOTICE", "THIRD_PARTY_NOTICES.md"]
+# A .sha256 beside every archive, which the installers and the update manifest check.
+checksum = "sha256"
+# The dependency list goes inside each binary, so `cargo audit bin argonauts` can check a binary on its own.
+cargo-auditable = true
+# A CycloneDX SBOM in every release.
+cargo-cyclonedx = true
+# Attestations that `gh attestation verify` checks. A private repository needs GitHub Enterprise Cloud for them,
+# so they wait until the repository is public.
+# github-attestations = true
+# The formula is published by ./publish-homebrew, which skips betas and adds the next step as a caveat.
+tap = "sheng-tse/homebrew-tap"
+formula = "argonauts-code"
+npm-package = "argonauts-code"
+# Betas are released too, and each publish job decides for itself: npm under `next`, the others skip them.
+publish-prereleases = true
+# Releases start from "Run workflow" with a tag, never from a pushed tag. The default tag, "dry-run", builds
+# everything and publishes nothing.
+dispatch-releases = true
+# Custom jobs, each a reusable workflow in .github/workflows. dist's own Homebrew and npm jobs can't skip betas,
+# run in a protected environment or publish without a stored token.
+publish-jobs = ["./publish-homebrew", "./publish-npm", "./publish-crates"]
+# The .deb and .rpm are built before the release is created, since an immutable release takes no assets later.
+# The rules a release must meet are checked beside them: the release is created only once both pass, which a job
+# in the plan step couldn't promise, since a skipped build lets the release go ahead empty.
+global-artifacts-jobs = ["./linux-packages", "./release-checks"]
+post-announce-jobs = ["./installer-smoke"]
+# Steps run before every build: the usage-report settings, and the C toolchain setting the musl cross build needs.
+github-build-setup = "../build-setup.yml"
+
+# Each job gets only what it needs. npm and crates.io trade the run's OIDC token for a short-lived publish token.
+[dist.github-custom-job-permissions]
+release-checks = { contents = "read", actions = "read" }
+publish-homebrew = { contents = "read" }
+publish-npm = { contents = "read", id-token = "write" }
+publish-crates = { contents = "read", id-token = "write" }
+linux-packages = { contents = "read" }
+installer-smoke = { contents = "read", issues = "write" }
+
+# ARM musl is cross-built from x86_64 inside manylinux, as dist's own release does: a native ARM runner has no musl C
+# compiler for aws-lc and QuickJS. dist itself runs inside the container, so the host is dist's static musl build.
+# Pinned by digest (the 2026.10.16-1 tag).
+[dist.github-custom-runners.aarch64-unknown-linux-musl.container]
+image = "quay.io/pypa/manylinux_2_28_x86_64@sha256:1e7b8460ad8fb3fb0fbe1cd818845159ac896b4fd17452d56e892c291f3b97a8"
+host = "x86_64-unknown-linux-musl"
+
+# Every action dist's workflow uses, pinned to a commit rather than a tag that can move. Dependabot can't update
+# these, so they're bumped by hand here, then `dist generate`.
+[dist.github-action-commits]
+"actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803" # v6.1.0
+"actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9" # v7.0.2
+"actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8.0.2
+"actions/attest" = "1e69f48acb82d1966a394da916b4c1698aa569d6" # v4.2.2
+"actions/setup-node" = "249970729cb0ef3589644e2896645e5dc5ba9c38" # v6.5.0
+"swatinem/rust-cache" = "d1527c8f67ef9af357290475d4af4b0fab8f12e0" # v2.9.3

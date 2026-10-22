@@ -7,13 +7,19 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# What the crate builds with. Tests and the pictures, snapshots and recordings they read
+# stay in the repository.
+include = ["/src/**/*.rs", "/LICENSE", "/NOTICE"]
 
 [[bin]]
 name = "argonauts"
 path = "src/main.rs"
 
-# Released by dist even though the workspace isn't published to crates.io.
+# The one crate dist ships. The workspace turns it off for the rest, whose binaries are a
+# sandbox helper and test tools. What each archive carries besides the binary is set once, in
+# dist-workspace.toml: an `include` in this table would replace that list rather than add to it.
 [package.metadata.dist]
 dist = true
 
@@ -28,6 +34,7 @@ serde.workspace = true
 serde_json.workspace = true
 shell-words.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 toml.workspace = true
 tracing-subscriber.workspace = true
 

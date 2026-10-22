@@ -121,6 +121,7 @@ pub fn choice_question(id: u64, choice: &AppChoice) -> QuestionPrompt {
             }
         }
     }
+    crate::views::issues::shape_question(&mut question, choice);
     question
 }
 
@@ -391,12 +392,12 @@ mod tests {
         assert_eq!(rows[3], "    6.  Draft-and-vote          workflow");
         assert_eq!(rows[8], "  ❯ 11. Ablate-same-provider    workflow");
         assert_eq!(rows[12], "    15. workers                 prompts");
-        assert_eq!(rows[14], format!("{keys:<64}↑ 6–15 of 17 ↓"));
+        assert_eq!(rows[14], format!("{keys:<63}↑  6–15 of 17 ↓"));
         down(&mut question, 6);
         let rows = rows_within(&question, 80, usize::MAX);
         assert_eq!(rows[3], "    8.  Ablate-no-anonymize     workflow");
         assert_eq!(rows[12], "  ❯ 17. judge                   prompts");
-        assert_eq!(rows[14], format!("{keys:<64}↑ 8–17 of 17"));
+        assert_eq!(rows[14], format!("{keys:<63}↑  8–17 of 17"));
     }
 
     /// On a screen with fewer rows than the ten names need, the window shrinks and the rule,
@@ -414,12 +415,12 @@ mod tests {
         assert_eq!(rows[1], "◆ Copy which one?");
         assert_eq!(rows[2], "    4.  Maker-checker           workflow");
         assert_eq!(rows[12], "");
-        assert_eq!(rows[13], format!("{keys:<64}↑ 4–13 of 17 ↓"));
+        assert_eq!(rows[13], format!("{keys:<63}↑  4–13 of 17 ↓"));
         // Then the one over the keys.
         let rows = rows_within(&question, 80, 13);
         assert_eq!(rows.len(), 13, "{rows:#?}");
         assert_eq!(rows[11], "    13. main                    prompts");
-        assert_eq!(rows[12], format!("{keys:<64}↑ 4–13 of 17 ↓"));
+        assert_eq!(rows[12], format!("{keys:<63}↑  4–13 of 17 ↓"));
         // Then the window takes fewer names, the pointer still among them.
         let rows = rows_within(&question, 80, 8);
         assert_eq!(
@@ -432,7 +433,7 @@ mod tests {
                 "  ❯ 9.  Ablate-no-critique      workflow",
                 "    10. Ablate-fixed-roles      workflow",
                 "    11. Ablate-same-provider    workflow",
-                format!("{keys:<64}↑ 7–11 of 17 ↓").as_str(),
+                format!("{keys:<63}↑  7–11 of 17 ↓").as_str(),
             ],
         );
         // However few the rows, one name shows between the title and the keys.
@@ -442,7 +443,7 @@ mod tests {
             [
                 "◆ Copy which one?",
                 "  ❯ 9.  Ablate-no-critique      workflow",
-                format!("{keys:<65}↑ 9–9 of 17 ↓").as_str(),
+                format!("{keys:<64}↑  9–9 of 17 ↓").as_str(),
             ],
         );
     }

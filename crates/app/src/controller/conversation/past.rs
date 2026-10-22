@@ -162,6 +162,7 @@ pub(super) fn recorded_row(
             turns: past.summary.turns,
         }),
         ended: None,
+        answered_for: None,
     })
 }
 
@@ -784,7 +785,7 @@ mod tests {
     /// The council session's own record, its home folder made neutral.
     const COUNCIL: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../tui/golden/resumed_council/conversation-001.jsonl"
+        "/../tui/tests/golden/transcript/resumed_council/conversation-001.jsonl"
     ));
 
     /// Claude Code's count of a session at 75% of 1M, as its adapter keeps it.

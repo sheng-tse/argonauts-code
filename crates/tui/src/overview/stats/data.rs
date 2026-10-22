@@ -164,7 +164,7 @@ pub(super) fn measured(spent: &Spend, work: u32, measure: StatsMeasure) -> u64 {
 #[derive(Debug, Clone, Default)]
 pub(super) struct Cli {
     pub agent: String,
-    /// Such as `Antigravity CLI`.
+    /// Such as `agy`.
     pub name: String,
     /// The main agent runs on it.
     pub main: bool,

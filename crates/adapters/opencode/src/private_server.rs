@@ -502,13 +502,13 @@ where
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
     use argonauts_core::confine::Unconfined;
     use argonauts_core::future::BoxFuture;
 
     use super::*;
+    use crate::test_script::write_script;
 
     fn unconfined() -> Arc<dyn Confine> {
         Arc::new(Unconfined)
@@ -567,8 +567,7 @@ mod tests {
              *) exit 2 ;;\n\
              esac\n"
         );
-        std::fs::write(&program, script).unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&program, &script);
         program
     }
 
@@ -767,8 +766,7 @@ mod tests {
     async fn opencode_1_18_answers_each_call_alone() {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("opencode");
-        std::fs::write(&program, "#!/bin/sh\necho \"$*\" >> calls.txt\necho '[]'\n").unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&program, "#!/bin/sh\necho \"$*\" >> calls.txt\necho '[]'\n");
         let server =
             PrivateServer::new(&program, Some("1.18.34"), dir.path()).confined(unconfined());
         let kept = server.keep(Duration::from_secs(5)).await.unwrap();
@@ -784,8 +782,7 @@ mod tests {
     async fn a_server_that_never_says_where_it_answers_is_given_up() {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("opencode");
-        std::fs::write(&program, "#!/bin/sh\necho 'no address here'\n").unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&program, "#!/bin/sh\necho 'no address here'\n");
         let server =
             PrivateServer::new(&program, Some("2.0.32"), dir.path()).confined(unconfined());
         let why = server.keep(Duration::from_secs(5)).await.unwrap_err();
@@ -843,12 +840,10 @@ mod tests {
     async fn a_failing_opencode_says_why() {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("opencode");
-        std::fs::write(
+        write_script(
             &program,
             "#!/bin/sh\necho 'unknown command api' >&2\nexit 2\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let server =
             PrivateServer::new(&program, Some("1.18.34"), dir.path()).confined(unconfined());
         let why = server

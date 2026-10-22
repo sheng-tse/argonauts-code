@@ -1,0 +1,31 @@
+Settings   Overview    Status    Config    Usage    Context    Limits    Stats 
+
+ Overview    Models    Behaviors 
+
+All time · Last 7 days · Last 30 days
+
+Tokens per Day
+  742M ┤                                              ╭──── 
+  654M ┤                                          ╭───╯     
+  566M ┤      ╭╮       ╭──╮  ╭╮                ╭──╯     ╭╮╭ 
+  479M ┤╭─────╯╰╮╭───╮╭╯╭╯╰╮╭╯╰──╮            ╭╯     ╭──╯╰╭ 
+  391M ┼╭╮  ╭─────────╯╰╯  ╰──╮ ╭───╮     ╭──╮╯╭────╮╯ ╭──╯ 
+  303M ┼╯╰──╯                 ╰─╯ ╰─╰╭────╯╯ ╰─╯╯╰──╰──╯    
+  215M ┤                ╭───────╮╭───╯╰─╯╮ ╭─╯╰╯            
+  127M ┼────────╮╭──────╯       ╰╯       ╰─╯                
+   39M ┤        ╰╯                                          
+       Aug 18          Sep 1            Sep 15           Oct 9
+● Opus 5.5 · ● GPT 5.6 · ● Sonnet 5.5
+
+★ Favorite: Opus 5.5 · ● Total: 118.4b tokens
+
+● Opus 5.5 (46.0%)                            ● GPT 5.6 (22.0%)
+  on Claude Code · ~$5,910 · 584 sessions       on Codex · ~$1,560 · 163 sessions
+  In: 0.6b · Out: 0.2b                          In: 0.3b · Out: 0.1b
+  Cache: 51.1b read · 2.6b write                Cache: 24.3b read · 1.3b write
+● Sonnet 5.5 (13.0%)                          ● Gemini 3.6 Pro (7.0%)
+  on Claude Code · ~$1,180 · 201 sessions       on agy · ~$420 · 31 sessions
+  In: 0.2b · Out: 0.05b                         In: 0.1b · Out: 0.02b
+  Cache: 14.4b read · 0.8b write                Cache: 7.7b read · 0.5b write
+
+  r to cycle dates · ↑  ↓  1-4 of 7 models · ↑  tabs · ctrl+s to copy · esc closes

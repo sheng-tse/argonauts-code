@@ -145,6 +145,7 @@ fn started(title: &str, mode: RunMode) -> RunEventKind {
         outside_agent: Some("slack".into()),
         instructions: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     })))
 }
 
@@ -163,6 +164,9 @@ fn session_started(who: ModelRef, follow: u8) -> SessionEvent {
         workflow_step: None,
         label: None,
         asked: None,
+        asked_by: None,
+        asked_why: None,
+        forked: false,
     }))
 }
 

@@ -1,0 +1,21 @@
+ /issue: this repo's open issues where the input was, yours first, as /model draws its list                           
+                                                                                                                      
+❯ /issue                                                                                                              
+                                                                                                                      
+                                                                                                                      
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Issues · test-user/rate-limiter-app-council                                                                         
+  Open issues, yours first. A run reads the issue and works on branch issue-<n>-…                                     
+                                                                                                                      
+        Yours                                                                                                         
+  ❯ #42 Rate limiter shares one bucket across API keys   bug                        5h ago                            
+    #45 Retry-After is sent in milliseconds              bug                        1d ago                            
+        Others                                                                                                        
+    #51 Document the X-Api-Key header                    docs                       3h ago                            
+    #48 429 responses have no JSON body                  enhancement                2d ago                            
+    #39 Refills can overshoot the bucket's capacity      bug, good first issue      6d ago                            
+    #31 Let the limiter keep its buckets in Redis        enhancement, help wanted   3w ago                            
+                                                                                                                      
+  Enter to start · j/k to move · / to filter · Esc to close                                                           
+                                                                                                                      
+ (cropped to the /issue echo and the list; gh issue list gives up to 30, eight show at a time, and / filters them)    

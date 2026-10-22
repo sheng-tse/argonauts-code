@@ -295,6 +295,17 @@ pub fn key_names(text: &str, theme: &Theme) -> String {
     if !is_ascii(theme) {
         return text.to_owned();
     }
+    // The words take one blank after them where the arrows took two.
+    let mut text = text.to_owned();
+    for (arrow, word) in [
+        ("↑↓", "up/down"),
+        ("↑", "up"),
+        ("↓", "down"),
+        ("←", "left"),
+        ("→", "right"),
+    ] {
+        text = text.replace(&format!("{arrow}  "), &format!("{word} "));
+    }
     text.replace("↑↓", "up/down")
         .replace('↑', "up")
         .replace('↓', "down")
@@ -519,9 +530,9 @@ pub fn elapsed(ms: u64) -> String {
 /// The slot every duration takes: `12h34m` and `59m59s` both fit.
 pub const ELAPSED_SLOT: usize = 6;
 
-/// Tokens for a row: `747k tok`.
+/// Tokens for a row as Claude Code writes them: `747.2k tok`.
 pub fn tokens(count: u64) -> String {
-    format!("{} tok", format::tokens(count))
+    format!("{} tok", format::tokens_as_claude_code(count))
 }
 
 /// Spend in dollars, `~` when estimated and `+` when some usage had no price. `None` before
@@ -602,7 +613,7 @@ mod tests {
             draw_footer(
                 &mut buf,
                 panes.footer,
-                Footer::hints(&[("↑↓ select", 0), (ESC_BACK, 0)]),
+                Footer::hints(&[("↑↓  select", 0), (ESC_BACK, 0)]),
                 "1-4 of 9 ↓",
                 &theme,
             );
@@ -619,12 +630,17 @@ mod tests {
 
     #[test]
     fn hints_go_whole_by_keep_and_the_way_out_stays() {
-        let parts = [("↑↓ move", 0), ("g group", 1), ("x stop", 2), (ESC_BACK, 0)];
-        assert_eq!(fit(&parts, 80), "↑↓ move · g group · x stop · esc back");
-        assert_eq!(fit(&parts, 28), "↑↓ move · x stop · esc back");
-        assert_eq!(fit(&parts, 18), "↑↓ move · esc back");
+        let parts = [
+            ("↑↓  move", 0),
+            ("g group", 1),
+            ("x stop", 2),
+            (ESC_BACK, 0),
+        ];
+        assert_eq!(fit(&parts, 80), "↑↓  move · g group · x stop · esc back");
+        assert_eq!(fit(&parts, 28), "↑↓  move · x stop · esc back");
+        assert_eq!(fit(&parts, 19), "↑↓  move · esc back");
         // Past the hints that go, the rest is cut and `esc back` stays whole.
-        assert_eq!(fit(&parts, 17), "↑↓ mo… · esc back");
+        assert_eq!(fit(&parts, 18), "↑↓  mo… · esc back");
         assert_eq!(fit(&parts, 10), "esc back");
         assert_eq!(fit(&parts, 5), "esc …");
         assert_eq!(fit(&[], 5), "");

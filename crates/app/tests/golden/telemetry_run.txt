@@ -1,0 +1,1 @@
+argonauts: one anonymous usage report a day, never your code or prompts (PRIVACY.md). argonauts telemetry off stops it

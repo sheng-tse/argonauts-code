@@ -8,7 +8,7 @@ use argonauts_core::session_runner::RunnerDirectory;
 
 /// Why `candidate` can't approve, or `Ok` when it's independent. An author whose provider is
 /// unknown counts as the same provider. The reason reaches the transcript, so it names agents as
-/// people read them, `Antigravity CLI` rather than `antigravity-cli`.
+/// people read them, `agy` rather than `antigravity-cli`.
 pub fn check(
     candidate: &ModelRef,
     authors: &[ModelRef],
@@ -98,7 +98,7 @@ mod tests {
         );
         assert_eq!(
             author.unwrap_err(),
-            "Antigravity CLI worked on this, so it can't approve it"
+            "agy worked on this, so it can't approve it"
         );
         let same = check(&r("openrouter/gpt-oss"), &[r("codex")], true, &workers);
         let same = same.unwrap_err();

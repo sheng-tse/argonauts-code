@@ -199,7 +199,7 @@ impl Models<'_> {
 pub fn page_word(count: usize, first: usize) -> Option<String> {
     (count > PAGE).then(|| {
         format!(
-            "↑ ↓ {}-{} of {count} models",
+            "↑  ↓  {}-{} of {count} models",
             first + 1,
             (first + PAGE).min(count)
         )
@@ -275,12 +275,12 @@ mod tests {
 
     #[test]
     fn the_page_moves_a_row_at_a_time_and_stops_on_the_last() {
-        assert_eq!(page_word(7, 0).as_deref(), Some("↑ ↓ 1-4 of 7 models"));
+        assert_eq!(page_word(7, 0).as_deref(), Some("↑  ↓  1-4 of 7 models"));
         assert_eq!(page_word(4, 0), None);
         assert_eq!(last_page(7), 3);
         assert_eq!(
             page_word(7, last_page(7)).as_deref(),
-            Some("↑ ↓ 4-7 of 7 models")
+            Some("↑  ↓  4-7 of 7 models")
         );
         assert_eq!(last_page(8), 4);
         assert_eq!(last_page(3), 0);

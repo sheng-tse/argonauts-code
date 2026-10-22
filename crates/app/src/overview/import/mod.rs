@@ -5,7 +5,7 @@
 //! afterwards it reads only what was added since. Days whose transcripts Claude Code has
 //! deleted come from its own totals.
 //!
-//! Antigravity CLI keeps its conversations as binary protocol buffers whose layout is not
+//! agy keeps its conversations as binary protocol buffers whose layout is not
 //! published, with no plain record of each answer's tokens, so it isn't imported: its share is
 //! what ran through Argonauts Code.
 

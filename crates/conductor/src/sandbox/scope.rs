@@ -45,6 +45,12 @@ pub fn permission_scope(
     } else {
         Vec::new()
     };
+    let read_only = profile
+        .readable
+        .iter()
+        .filter(|path| uses_tools && !profile.writable.contains(path))
+        .cloned()
+        .collect();
 
     let granted: Vec<PathBuf> = std::iter::once(workdir)
         .chain(profile.writable.iter().map(PathBuf::as_path))
@@ -73,6 +79,7 @@ pub fn permission_scope(
     PermissionScope {
         roots,
         writable,
+        read_only,
         deny,
         forbidden,
         network: profile.network,

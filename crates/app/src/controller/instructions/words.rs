@@ -414,7 +414,7 @@ pub(super) fn key(text: &str) -> String {
         .collect()
 }
 
-/// `claude` of `claude-code`, `Antigravity` of `Antigravity CLI`.
+/// `claude` of `claude-code`, `Claude` of `Claude Code`.
 pub(super) fn first_word(text: &str) -> &str {
     text.split(['-', ' ', '_']).next().unwrap_or(text)
 }

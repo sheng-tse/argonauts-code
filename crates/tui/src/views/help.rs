@@ -130,7 +130,7 @@ impl View for HelpView {
 
         let marks = Marks::for_theme(theme);
         let mark = position_mark(self.offset, height, lines.len(), marks.down);
-        let hints = Footer::hints(&[("↑↓ scroll", 0), (panes::ESC_BACK, 0)]);
+        let hints = Footer::hints(&[("↑↓  scroll", 0), (panes::ESC_BACK, 0)]);
         panes::draw_footer(buf, panes.footer, hints, &mark, theme);
     }
 

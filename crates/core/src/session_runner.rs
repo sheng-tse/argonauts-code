@@ -270,6 +270,9 @@ pub struct SandboxProfile {
     /// With `network` off, every loopback port stays open, not only the proxy's: the CLI talks
     /// to a server of its own on a port it picks as it starts.
     pub loopback: bool,
+    /// What the session reads and writes outside its project, and the never-list that holds
+    /// there, for the OS sandbox and the CLI's own permissions alike.
+    pub outside: crate::outside::Outside,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]

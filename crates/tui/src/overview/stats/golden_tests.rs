@@ -137,7 +137,7 @@ fn by_cli_matches_its_drawing() {
         "by_cli_after",
         &screen,
         AT,
-        include_str!("screens/by_cli_after.html"),
+        include_str!("../../../tests/golden/stats/by_cli_after.html"),
     );
     assert_by_cli(&screen);
 }
@@ -206,7 +206,7 @@ fn a_model_spelled_three_ways_draws_as_one() {
 fn assert_by_cli(screen: &ratatui::buffer::Buffer) {
     let theme = theme();
     let screen = screen.clone();
-    let html = include_str!("screens/by_cli_after.html");
+    let html = include_str!("../../../tests/golden/stats/by_cli_after.html");
     assert_matches("by CLI", html, &theme, &screen, AT, words(html, 1));
     assert_matches("by CLI", html, &theme, &screen, AT, periods(html));
     // The card's first row has its own drawing since: over every day so far it says whose
@@ -295,7 +295,7 @@ fn the_week_matches_its_drawing() {
     let theme = theme();
     let usage = week_example().usage(UsagePeriod::Week);
     let screen = screen(&theme, usage, friday(), &[], SCREEN);
-    let html = include_str!("screens/week_card.html");
+    let html = include_str!("../../../tests/golden/stats/week_card.html");
     let at = Offset {
         rows: 4,
         columns: 1,
@@ -326,7 +326,7 @@ fn the_all_together_card_up_close_matches_its_drawing() {
     let usage = example.usage(UsagePeriod::Week);
     // Two cells wider, so the bars beside the chart are 84 cells.
     let screen = screen(&theme, usage, friday(), &[], SCREEN + 2);
-    let html = include_str!("screens/together_zoom_after.html");
+    let html = include_str!("../../../tests/golden/stats/together_zoom_after.html");
     let at = Offset {
         rows: 7,
         columns: 35,
@@ -369,7 +369,7 @@ fn a_clis_card_matches_its_drawing() {
     let usage = one_card_example(now).usage(UsagePeriod::Week);
     // The one card takes the row: 56 cells, a column in from each side of the screen.
     let screen = screen(&theme, usage, now, &[], 58);
-    let html = include_str!("screens/cli_card.html");
+    let html = include_str!("../../../tests/golden/stats/cli_card.html");
     let at = Offset {
         rows: row_of(&screen, "● Claude Code") as isize - 1,
         columns: 1,
@@ -382,6 +382,47 @@ fn a_clis_card_matches_its_drawing() {
         named: Some(one_claude_model),
     };
     compared.assert_matches("a CLI's card", html, rows(0..15));
+}
+
+/// The card's comparison fails once one cell of its drawing is changed: its character, its
+/// color or its weight.
+#[test]
+fn a_drawing_changed_in_one_cell_no_longer_matches_the_card() {
+    use argonauts_testkit::picture;
+
+    let theme = theme();
+    let now = saturday();
+    let usage = one_card_example(now).usage(UsagePeriod::Week);
+    let screen = screen(&theme, usage, now, &[], 58);
+    let html = include_str!("../../../tests/golden/stats/cli_card.html");
+    let at = Offset {
+        rows: row_of(&screen, "● Claude Code") as isize - 1,
+        columns: 1,
+    };
+    let found = |page: &str| {
+        let drawing = drawing(page);
+        differences_as(
+            &theme,
+            &drawing,
+            &screen,
+            at,
+            rows(0..15),
+            Some(one_claude_model),
+        )
+    };
+    assert!(found(html).is_empty());
+    let (row, column) = picture::find(&picture::grid(html), |cell| {
+        cell.ch.is_alphanumeric() && cell.color.as_deref() == Some("var(--term-dim)")
+    });
+    let changed = |edit: &dyn Fn(&mut picture::Cell)| {
+        found(&picture::edited(html, |grid| edit(&mut grid[row][column])))
+    };
+    assert_eq!(
+        changed(&|cell| cell.color = Some("var(--term-red)".to_owned())).len(),
+        1
+    );
+    assert_eq!(changed(&|cell| cell.ch = '#').len(), 1);
+    assert_eq!(changed(&|cell| cell.bold ^= true).len(), 1);
 }
 
 #[test]
@@ -399,7 +440,7 @@ fn the_all_together_title_matches_its_drawing() {
     );
     let usage = example.usage(UsagePeriod::All);
     let screen = screen_beside(&theme, usage, now, &[], (SCREEN, Some(69_100_000_000)));
-    let html = include_str!("screens/stats_header.html");
+    let html = include_str!("../../../tests/golden/stats/stats_header.html");
     let row = row_of(&screen, "◆ all together") as isize;
     let text: String = drawing(html)[0].iter().map(|cell| cell.ch).collect();
     let words = text.find("   ").expect("the gap between its two sides");
@@ -424,7 +465,7 @@ fn the_rows_of_how_work_fared_match_their_drawing() {
         super::cli::outcome_row(&kit, "reviews", fared(2, 1, 0), "accepted"),
     ];
     let screen = lines_screen(lines, 40);
-    let html = include_str!("screens/zoom_first_after.html");
+    let html = include_str!("../../../tests/golden/stats/zoom_first_after.html");
     let at = Offset {
         rows: 0,
         columns: 0,
@@ -525,7 +566,9 @@ fn one_model_spelled_two_ways_is_one_row_as_its_picture_says() {
     let usage = one_model_two_ways(now).usage(UsagePeriod::All);
     let screen = screen_named(&theme(), usage, now, &[], (SCREEN, None), names);
     let shown: Vec<String> = text(&screen).lines().map(str::to_owned).collect();
-    let picture: Vec<&str> = include_str!("screens/stats_dupes.txt").lines().collect();
+    let picture: Vec<&str> = include_str!("../../../tests/golden/stats/stats_dupes.txt")
+        .lines()
+        .collect();
     let after = picture
         .iter()
         .position(|row| row.starts_with(" After:"))

@@ -17,7 +17,10 @@ pub(crate) const ABOUT: &str = "`argonauts_setup` proposes a change to the user'
     and nothing changes until they pick where it applies. When the user only talks about \
     their setup, such as wondering whether another model would review better, answer from \
     `argonauts_lookup`, say that nothing changed, and say in one line what they could ask \
-    you to set. You never edit the files in .argonauts/ yourself.";
+    you to set. When their words only ask to keep a request cheap, its agents already run \
+    their cheapest models; you may also propose a crew of one provider, such as all Claude, \
+    or a cheaper mix, for just this request, and the crew stays as it is unless they pick it. \
+    You never edit the files in .argonauts/ yourself.";
 
 /// Only the main session has it. A conversation carried on from a run's agent is that agent
 /// at work, and no agent of a crew changes your setup.

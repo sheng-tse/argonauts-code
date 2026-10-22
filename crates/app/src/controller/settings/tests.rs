@@ -2709,3 +2709,58 @@ async fn config_all_lists_every_key() {
     assert!(rows.len() > 400, "{}", rows.len());
     assert!(rows.iter().any(|row| row.key == "approvals.start_mode"));
 }
+
+/// Once a deeper Behaviors map is made, the Config tab names the summarizer and the embedder
+/// auto came to, read from the map itself; before, it names neither.
+#[tokio::test]
+async fn the_config_tab_names_what_the_behaviors_maps_auto_came_to() {
+    use crate::behaviors::deep::prompt::PROMPT_VERSION;
+    use crate::behaviors::deep::store::{Layout, MapMaker, Store};
+
+    let mut driver = TestDriver::start().await;
+    let behaviors = ViewRequest::Settings {
+        section: Some("behaviors".to_owned()),
+    };
+    let picked = |rows: &[SettingRow], key: &str| row(rows, key).picked.clone();
+    driver
+        .send(UiCommand::Request {
+            view: behaviors.clone(),
+        })
+        .await;
+    let ViewData::Settings { rows, .. } = next_view(&mut driver).await else {
+        panic!("a request answers with rows");
+    };
+    assert_eq!(picked(&rows, "behaviors.summarizer"), None);
+    assert_eq!(picked(&rows, "behaviors.embedder"), None);
+
+    let store = Store::new(&Paths::new(driver.repo.home()));
+    store
+        .save_layout(&Layout {
+            maker: MapMaker {
+                summarizer: "ollama/qwen3-coder:30b-64k".to_owned(),
+                prompt: PROMPT_VERSION.to_owned(),
+                embedder: "ollama/nomic-embed-text".to_owned(),
+            },
+            frame: None,
+            points: Vec::new(),
+        })
+        .unwrap();
+    driver.send(UiCommand::Request { view: behaviors }).await;
+    let ViewData::Settings { rows, .. } = next_view(&mut driver).await else {
+        panic!("a request answers with rows");
+    };
+    assert_eq!(
+        picked(&rows, "behaviors.summarizer").as_deref(),
+        Some("Qwen3 Coder 30B on Ollama")
+    );
+    assert_eq!(
+        picked(&rows, "behaviors.embedder").as_deref(),
+        Some("nomic-embed-text on Ollama")
+    );
+    assert_eq!(
+        picked(&rows, "behaviors.map"),
+        None,
+        "a value that says itself"
+    );
+    driver.exit().await;
+}

@@ -134,10 +134,10 @@ fn effective_compaction(
         },
         Compaction::Off => match &effect {
             TweakEffect::Approximated { note } => {
-                (format!("off → approximated: {note}"), effect, false)
+                (format!("off →  approximated: {note}"), effect, false)
             }
             TweakEffect::NotPossible { note } => {
-                (format!("off → not possible: {note}"), effect, false)
+                (format!("off →  not possible: {note}"), effect, false)
             }
             _ => ("off".to_owned(), effect, true),
         },
@@ -148,19 +148,19 @@ fn effective_compaction(
 fn inherited(adapter_id: &str, env: &dyn Fn(&str) -> Option<String>) -> (String, bool) {
     match adapter_id {
         "claude-code" if env(CLAUDE_DISABLE_COMPACT).is_some_and(|v| truthy(&v)) => (
-            format!("inherit → off, {CLAUDE_DISABLE_COMPACT}=1 in your environment"),
+            format!("inherit →  off, {CLAUDE_DISABLE_COMPACT}=1 in your environment"),
             true,
         ),
         "claude-code" => (
-            "inherit → auto, from your Claude Code settings".to_owned(),
+            "inherit →  auto, from your Claude Code settings".to_owned(),
             false,
         ),
         "codex" => (
-            "inherit → auto, the model's default threshold".to_owned(),
+            "inherit →  auto, the model's default threshold".to_owned(),
             false,
         ),
         "antigravity-cli" => (
-            "inherit → auto, agy has no setting for it".to_owned(),
+            "inherit →  auto, agy has no setting for it".to_owned(),
             false,
         ),
         _ => ("inherit, the CLI's own setting".to_owned(), false),
@@ -263,7 +263,7 @@ mod tests {
         let narrator = check(&claude_checks, RoleName::Narrator);
         assert_eq!(
             narrator.compaction,
-            "inherit → auto, from your Claude Code settings"
+            "inherit →  auto, from your Claude Code settings"
         );
         assert_eq!(narrator.warning, None);
         // claude-code is the main agent and in the default crew.
@@ -276,7 +276,7 @@ mod tests {
         let narrator = check(&claude_checks, RoleName::Narrator);
         assert_eq!(
             narrator.compaction,
-            "inherit → off, DISABLE_AUTO_COMPACT=1 in your environment"
+            "inherit →  off, DISABLE_AUTO_COMPACT=1 in your environment"
         );
         assert_eq!(
             narrator.warning.as_deref(),
@@ -290,7 +290,7 @@ mod tests {
         let consultant = check(&codex_checks, RoleName::Consultant);
         assert_eq!(
             consultant.compaction,
-            "off → approximated: compacts by 90% of the window at the latest"
+            "off →  approximated: compacts by 90% of the window at the latest"
         );
         assert!(!consultant.compaction_off);
         assert_eq!(consultant.warning, None);
@@ -320,7 +320,7 @@ mod tests {
         assert_eq!(checks[0].role, RoleName::Draft);
         assert_eq!(
             checks[0].compaction,
-            "inherit → auto, agy has no setting for it"
+            "inherit →  auto, agy has no setting for it"
         );
         assert_eq!(checks[0].fanout, "max 3");
     }

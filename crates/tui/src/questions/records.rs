@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span};
 use time::{OffsetDateTime, UtcOffset};
 
 use super::words;
-use crate::cell::{Cell, HistoryCell, Notice, Tone};
+use crate::cell::{Cell, HistoryCell, Notice, ResultLine, Tone, UserMessage};
 use crate::render::RenderCtx;
 use crate::text::{fit_lines, sanitize_line, str_width, wrap_spans};
 use crate::theme::Role;
@@ -221,10 +221,29 @@ pub fn withdrawn_cell(title: &str, reason: &str) -> Cell {
     Cell::Custom(Box::new(DimRecord { text }))
 }
 
+/// Between the command and its one line, in the outcome of a dialog that closes as Claude Code
+/// closes one: `/setup ⎿  Captain · Claude Code · …` draws as `/setup` typed, with the line
+/// under it. A screen reader reads it as it stands.
+const COMMAND_SAID: &str = " ⎿  ";
+
 /// A closed app choice: its title, then the controller's outcome line. The `◆` takes the
-/// success color for an answer, and stays dim when nothing changed.
+/// success color for an answer, and stays dim when nothing changed. An empty outcome leaves no
+/// row, as each question of a flow that ends in one row of its own does, and an outcome that
+/// names a command draws as that command with its line under it.
 pub fn choice_closed_cell(title: Option<&str>, outcome: &str) -> Cell {
     let outcome = outcome.trim();
+    if outcome.is_empty() {
+        return Cell::Custom(Box::new(NoRow));
+    }
+    if let Some((command, line)) = outcome.split_once(COMMAND_SAID)
+        && command.starts_with('/')
+        && !command.contains(char::is_whitespace)
+    {
+        return Cell::Custom(Box::new(CommandSaid {
+            command: command.to_owned(),
+            line: line.trim().to_owned(),
+        }));
+    }
     let tone = if outcome == NOT_CHANGED {
         Tone::Dim
     } else {
@@ -241,6 +260,31 @@ pub fn choice_closed_cell(title: Option<&str>, outcome: &str) -> Cell {
         },
     };
     Cell::Notice(notice)
+}
+
+/// What a question folded into its flow's one row leaves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NoRow;
+
+impl HistoryCell for NoRow {
+    fn lines(&self, _ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+        Vec::new()
+    }
+}
+
+/// The command as you typed it, then its one dim line under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandSaid {
+    command: String,
+    line: String,
+}
+
+impl HistoryCell for CommandSaid {
+    fn lines(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+        let mut lines = UserMessage::command(self.command.clone()).lines(ctx);
+        lines.extend(ResultLine::new(Tone::Dim, self.line.clone()).lines(ctx));
+        lines
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,5 +346,65 @@ fn agent_id(opened: &ApprovalOpened, names: &DisplayNames) -> String {
     match &opened.packet {
         ApprovalPacket::AgentDown(down) => names.cli(&down.agent_id.0),
         _ => "the agent".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::bridge::transcript::picture_check::assert_rows_match;
+    use crate::render::Clock;
+    use crate::theme::{Glyphs, Theme};
+
+    const PICTURE: (&str, &str) = (
+        include_str!("../../tests/golden/questions/setup_after.txt"),
+        include_str!("../../tests/golden/questions/setup_after.html"),
+    );
+
+    fn theme() -> Theme {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        theme
+    }
+
+    fn drawn(cell: &Cell, theme: &Theme) -> Vec<Line<'static>> {
+        cell.lines(&RenderCtx::new(118, theme, Clock::still(Instant::now())))
+    }
+
+    /// A second `/setup` closes as `setup_after` draws it: the command, with its one line under it.
+    #[test]
+    fn a_later_setup_closes_in_one_row() {
+        let theme = theme();
+        let outcome = "/setup ⎿  Captain · Claude Code · auto mode · Usage reports on · saved to \
+                       ~/.argonauts/config.toml";
+        let lines = drawn(&choice_closed_cell(None, outcome), &theme);
+        assert_rows_match("setup_after", &lines, PICTURE, 8..10, &theme, &[]);
+    }
+
+    /// Each of its questions leaves nothing, so the row stands alone.
+    #[test]
+    fn a_question_folded_into_its_flow_leaves_no_row() {
+        let theme = theme();
+        let title = Some("Who you talk to");
+        assert!(drawn(&choice_closed_cell(title, ""), &theme).is_empty());
+        assert!(drawn(&choice_closed_cell(title, "  "), &theme).is_empty());
+    }
+
+    /// Only a command names a row of its own; words that happen to hold the mark stay a record.
+    #[test]
+    fn only_a_command_draws_as_a_command() {
+        let theme = theme();
+        let lines = drawn(
+            &choice_closed_cell(Some("Approvals"), "auto ⎿  later"),
+            &theme,
+        );
+        let text: String = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.contains("Approvals"), "{text}");
     }
 }

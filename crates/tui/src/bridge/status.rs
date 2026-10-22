@@ -410,6 +410,7 @@ fn sync_working(
             line.details.clear();
             line.hide_while_text_streams = true;
             line.esc_stops = true;
+            line.retry = crate::bottom::RetryNote::follow(line.retry, conversation, now);
         }
         Work::Run(run) => {
             line.tokens_down = run.tokens_out();
@@ -430,12 +431,13 @@ fn sync_working(
             line.timed = false;
             line.esc_stops = true;
         }
-        // Nothing an agent sends: the time alone, and Esc leaves the command to finish.
-        Work::Command(_) => {
+        // Nothing an agent sends: the time alone. Esc stops `/update` and leaves Doctor's
+        // check after it to finish.
+        Work::Command(work) => {
             line.tokens_down = 0;
             line.activity = Activity::None;
             line.details.clear();
-            line.esc_stops = false;
+            line.esc_stops = *work == CommandWork::Updating;
         }
     }
     // A stall Argonauts Code reported turns the line red whatever the agent seemed to be doing.
@@ -647,7 +649,7 @@ fn own_words(text: &str) -> &str {
     }
 }
 
-/// `to Opus 5.5 on Claude Code, after its current tool call` or `to Antigravity CLI, at its
+/// `to Opus 5.5 on Claude Code, after its current tool call` or `to agy, at its
 /// next turn`.
 fn destination(run: &RunState, message: &QueuedMessage, names: &DisplayNames) -> Option<String> {
     let to = match &message.to {
@@ -853,6 +855,30 @@ fn exit_note(state: &AppState) -> Option<String> {
         1 => Some("the run keeps going".to_owned()),
         runs => Some(format!("{runs} runs keep going")),
     }
+}
+
+/// The row the first start after an update shows above the input until your first key, as
+/// `● Updated to 0.1.1 · /release-notes`: the bullet in the success colour, the words in the
+/// text's, and the command they end with in the code colour. The words are the app's, which
+/// it sends once, the first start a newer version took over.
+pub fn updated_row(words: &str, theme: &crate::theme::Theme) -> ratatui::text::Line<'static> {
+    use ratatui::text::{Line, Span};
+
+    use crate::theme::Role;
+
+    let words = crate::text::sanitize_line(words);
+    let (said, command) = match words.rfind(" /") {
+        Some(at) => words.split_at(at + 1),
+        None => (words.as_ref(), ""),
+    };
+    Line::from(vec![
+        Span::styled(
+            format!("{} ", theme.glyphs.bullet),
+            theme.style(Role::Success),
+        ),
+        Span::styled(said.to_owned(), theme.style(Role::Text)),
+        Span::styled(command.to_owned(), theme.style(Role::Code)),
+    ])
 }
 
 #[cfg(test)]
@@ -1295,6 +1321,36 @@ mod tests {
         assert!(words.contains("running tool for 1m"), "{words}");
     }
 
+    /// The row from the picture's example numbers, at the picture's width.
+    #[test]
+    fn updated_row_is_its_picture() {
+        use crate::bridge::transcript::picture_check::assert_rows_match;
+        use crate::theme::{Glyphs, Theme};
+
+        let read = |ext: &str| {
+            std::fs::read_to_string(format!(
+                "{}/tests/golden/updated_row.{ext}",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap()
+        };
+        let txt: Vec<String> = read("txt")
+            .lines()
+            .map(|row| row.trim_end().to_owned())
+            .collect();
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let row = updated_row("Updated to 0.1.1 · /release-notes", &theme);
+        assert_rows_match(
+            "updated_row",
+            &[row],
+            (&txt.join("\n"), &read("html")),
+            7..8,
+            &theme,
+            &[],
+        );
+    }
+
     /// The working line offers Esc only for what Esc stops: a conversation turn, a turn
     /// answered while a run works, and a run that's pausing. A run's own agents keep going.
     /// While the main agent rests and only its CLI's subagents work, there is no line at all.
@@ -1317,6 +1373,17 @@ mod tests {
         state.conversation.turn = None;
         state.mode = Some(AppMode::Pausing { run });
         assert_eq!(synced(&state), Some(true), "a pausing run stops now");
+
+        let mut state = AppState::default();
+        state.mode = Some(AppMode::Idle);
+        state.command_work = Some(CommandWork::Updating);
+        assert_eq!(synced(&state), Some(true), "/update stops");
+        state.command_work = Some(CommandWork::Checking);
+        assert_eq!(
+            synced(&state),
+            Some(false),
+            "Doctor's check after it finishes"
+        );
 
         let mut state = AppState::default();
         state.mode = Some(AppMode::Answering { turn: turn.clone() });
@@ -1352,6 +1419,34 @@ mod tests {
             is_error: true,
         }));
         assert_eq!(synced(&state), None, "only its subagents work");
+    }
+
+    /// While a turn's CLI retries its request, the working line says which retry it is,
+    /// and the same retry keeps the moment it goes as later events come.
+    #[test]
+    fn the_working_line_follows_a_conversation_turns_retries() {
+        use std::time::Duration;
+
+        use crate::state::TurnRetry;
+
+        let turn = TurnId::numbered(1);
+        let t0 = Instant::now();
+        let mut state = AppState::default();
+        state.mode = Some(AppMode::Answering { turn: turn.clone() });
+        state.conversation.turn = Some(turn);
+        state.conversation.retry = Some(TurnRetry {
+            try_number: 2,
+            delay_ms: Some(4_000),
+        });
+        let mut bottom = crate::bottom::BottomState::new();
+        let retry_at = |at: Duration, bottom: &mut crate::bottom::BottomState| {
+            sync_working(&state, bottom, |_| "Rowing", t0 + at);
+            bottom.working.as_ref().and_then(|line| line.retry)
+        };
+        let first = retry_at(Duration::ZERO, &mut bottom).expect("the retry");
+        assert_eq!(first.try_number, 2);
+        assert_eq!(first.at, Some(t0 + Duration::from_secs(4)));
+        assert_eq!(retry_at(Duration::from_secs(1), &mut bottom), Some(first));
     }
 
     #[test]

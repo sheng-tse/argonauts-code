@@ -1,0 +1,36 @@
+# Keeps one release pull request open against main: the next version and its changelog section, from the commits
+# since the last release (release-plz.toml). Merging it publishes nothing; the release starts from release.yml.
+#
+# The pull request is opened with RELEASE_PLZ_TOKEN, a fine-grained token or a GitHub App's, because a pull request
+# opened with the workflow's own token never starts CI.
+name: Release pull request
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: release-plz
+  cancel-in-progress: false
+
+jobs:
+  release-pr:
+    if: ${{ github.repository == 'sheng-tse/argonauts-code' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup update stable --no-self-update && rustup default stable
+      - name: Open or update the release pull request
+        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}

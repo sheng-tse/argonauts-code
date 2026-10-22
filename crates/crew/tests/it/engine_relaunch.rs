@@ -35,7 +35,7 @@ const RECORD: &str = include_str!("../fixtures/runs/captain-review-loop.jsonl");
 const EVIDENCE: &str = include_str!("../fixtures/runs/captain-review-loop.evidence.json");
 const TASK: &str = "task-fix-the-money-rounding";
 
-/// Claude Code works and is the main agent, Codex reviews and Antigravity CLI judges, as in the
+/// Claude Code works and is the main agent, Codex reviews and agy judges, as in the
 /// recorded run. The main agent answers a question in a sentence; reviews accept.
 fn crew() -> anyhow::Result<Crew> {
     let mut crew = Crew::new()?;
@@ -68,6 +68,7 @@ fn crew() -> anyhow::Result<Crew> {
         judge: vec!["codex".parse()?, "antigravity-cli".parse()?],
         worker_workflows: false,
         merger: Vec::new(),
+        orchestrator_context: Default::default(),
     };
     crew.settings.workflow = "orchestrator".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;

@@ -132,12 +132,19 @@ pub(crate) struct FakeConductor {
     messages: AtomicU32,
     /// Runs that already merged, which refuse what acts on them as the real ones do.
     merged: Mutex<Vec<RunId>>,
+    /// Runs whose run host is gone by the time a stream opens on them.
+    gone: Mutex<Vec<RunId>>,
 }
 
 impl FakeConductor {
     /// `run` already merged, so acting on it is refused.
     pub(crate) fn merged(&self, run: &RunId) {
         lock(&self.merged).push(run.clone());
+    }
+
+    /// `run`'s run host is gone before a stream opens on it, as one that couldn't start is.
+    pub(crate) fn gone_before_its_stream(&self, run: &RunId) {
+        lock(&self.gone).push(run.clone());
     }
 
     fn refuses(&self, run: &RunId) -> Option<ApiError> {
@@ -196,7 +203,7 @@ impl FakeConductor {
 
     fn open_stream(&self, run: &RunId) -> EventStream {
         let (events, receiver) = mpsc::channel(256);
-        let (live, live_receiver) = watch::channel(true);
+        let (live, live_receiver) = watch::channel(!lock(&self.gone).contains(run));
         lock(&self.streams).insert(run.clone(), Stream { events, live });
         EventStream {
             events: receiver,

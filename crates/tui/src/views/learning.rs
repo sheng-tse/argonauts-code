@@ -300,7 +300,7 @@ impl LearningPicker {
     }
 
     fn hints(&self) -> Vec<(String, u8)> {
-        let mut hints = vec![("↑↓ select".to_owned(), 0), ("tab next tab".to_owned(), 2)];
+        let mut hints = vec![("↑↓  select".to_owned(), 0), ("tab next tab".to_owned(), 2)];
         if self.on_settings() {
             hints.push(("⏎ change".to_owned(), 1));
         }

@@ -4,6 +4,7 @@ use argonauts_core::app::UltraColour;
 use ratatui::layout::{Position, Size};
 
 use super::*;
+use crate::cell::Cell;
 use crate::mascot::graphics::pictures_in;
 use crate::mascot::picture;
 use crate::model::ViewModel;
@@ -93,7 +94,8 @@ fn a_new_look_replaces_the_picture_and_frees_the_old_one() {
     ui.frame(t1).unwrap();
     let sent = written(&mut ui);
     assert!(sent.contains("a=d,d=I,q=2,i="), "the old picture is freed");
-    assert_eq!(pictures_in(sent.as_bytes()).len(), crate::mascot::FRAMES);
+    // Its first frame and the one after it; the rest go as they come due.
+    assert_eq!(pictures_in(sent.as_bytes()).len(), 2);
     // Its frames now swap on the Hydra's beat while the header shows.
     let next = ui.next_mascot_frame(t1).expect("the next frame");
     assert_eq!(next, t1 + Mascot::Hydra.frame_time());
@@ -118,7 +120,7 @@ fn block_cells_sweep_their_light_until_the_header_scrolls_away() {
     let next = ui.next_mascot_frame(t0).expect("an ultra look moves");
     assert_eq!(next, t0 + step);
     // Halfway through the cycle the light is on the body: the header's rows print again.
-    let half = t0 + step * 9;
+    let half = t0 + step * (Mascot::Argonaut.frames() / 2) as u32;
     ui.frame(half).unwrap();
     let redrawn = written(&mut ui);
     assert!(redrawn.contains("Argonauts Code"), "{redrawn:?}");
@@ -228,8 +230,8 @@ fn on_the_full_screen_the_picture_follows_the_header_out_of_view_and_back() {
     assert_eq!(placed_at(&sent), Some("\x1b[2;2H"), "{sent:?}");
 }
 
-/// An ultra look's frames are all kept once and swapped by id while the header shows, and
-/// block cells sweep their light on the full screen as they do inline.
+/// An ultra look's frames are kept as they come due and swapped by id while the header shows,
+/// and block cells sweep their light on the full screen as they do inline.
 #[test]
 fn on_the_full_screen_an_ultra_look_moves_picture_or_blocks() {
     let (mut ui, t0) = full_screen();
@@ -239,10 +241,8 @@ fn on_the_full_screen_an_ultra_look_moves_picture_or_blocks() {
         .push(header("captain", Some(UltraColour::Purple)));
     ui.frame(t0).unwrap();
     let sent = written(&mut ui);
-    assert_eq!(
-        sent.matches("a=t,f=100,q=2,i=").count(),
-        crate::mascot::FRAMES
-    );
+    // The first frame and the one after it are kept; the rest go as they come due.
+    assert_eq!(sent.matches("a=t,f=100,q=2,i=").count(), 2);
     let next = ui.next_mascot_frame(t0).expect("an ultra look moves");
     ui.frame(next).unwrap();
     let swapped = written(&mut ui);
@@ -260,12 +260,61 @@ fn on_the_full_screen_an_ultra_look_moves_picture_or_blocks() {
     written(&mut ui);
     let step = Mascot::Argonaut.frame_time();
     assert_eq!(ui.next_mascot_frame(t0), Some(t0 + step));
-    ui.frame(t0 + step * 9).unwrap();
+    ui.frame(t0 + step * (Mascot::Argonaut.frames() / 2) as u32)
+        .unwrap();
     let redrawn = written(&mut ui);
     assert!(
         redrawn.contains("215;194;255"),
         "the ultracode shimmer: {redrawn:?}"
     );
+}
+
+/// On the full screen a frame that looks like the one shown places nothing again: iTerm2 gets
+/// at most its 18 pictures a cycle, and the kitty protocol never puts the picture already
+/// showing back in its place.
+#[test]
+fn the_full_screen_sends_a_picture_only_when_another_is_due() {
+    for (workflow, mascot) in [
+        ("orchestrator", Mascot::Medusa),
+        ("captain", Mascot::Argonaut),
+    ] {
+        for graphics in [Graphics::Iterm, Graphics::Kitty] {
+            let (mut ui, t0) = full_screen();
+            ui.use_pictures(Some(graphics), Some((9, 21)));
+            ui.model_mut()
+                .history
+                .push(header(workflow, Some(UltraColour::Purple)));
+            ui.frame(t0).unwrap();
+            written(&mut ui);
+            let (mut pngs, mut again) = (0, 0);
+            let mut shown: Option<String> = None;
+            let mut now = t0;
+            for _ in 0..mascot.frames() {
+                let Some(next) = ui.next_mascot_frame(now) else {
+                    break;
+                };
+                now = next;
+                ui.frame(now).unwrap();
+                let sent = written(&mut ui);
+                pngs += pictures_in(sent.as_bytes()).len();
+                for (at, _) in sent.match_indices("\x1b_Ga=p,") {
+                    let id = sent[at..]
+                        .split("i=")
+                        .nth(1)
+                        .and_then(|rest| rest.split('\x1b').next())
+                        .map(str::to_owned);
+                    if id.is_some() && id == shown {
+                        again += 1;
+                    }
+                    shown = id;
+                }
+            }
+            match graphics {
+                Graphics::Iterm => assert!(pngs <= 18, "{workflow}: {pngs} pictures a cycle"),
+                Graphics::Kitty => assert_eq!(again, 0, "{workflow}: placed what showed"),
+            }
+        }
+    }
 }
 
 /// Narrower than the header needs for its mascot, the header's words start where the mascot
@@ -317,4 +366,74 @@ fn a_header_too_narrow_for_its_mascot_gets_no_picture() {
     let sent = written(&mut full);
     assert!(sent.contains("a=d,d=I,q=2,i="), "{sent:?}");
     assert!(!sent.contains("a=p"), "{sent:?}");
+}
+
+fn greeting() -> Cell {
+    Cell::Custom(Box::new(crate::welcome::Greeting {
+        version: "0.1.0".into(),
+        usage: None,
+        picture: true,
+    }))
+}
+
+/// Before any header prints, the greeting's argonaut goes out as a picture in the cells the
+/// header's mascot takes. The header that prints after setup takes the mark, and inline the
+/// greeting's picture stays up in scrollback with its rows.
+#[test]
+fn the_greeting_gets_the_argonaut_as_a_picture_until_the_header_prints() {
+    let (mut ui, t0) = ui();
+    ui.use_pictures(Some(Graphics::Kitty), Some((9, 21)));
+    ui.model_mut().history.push(greeting());
+    ui.frame(t0).unwrap();
+    let sent = written(&mut ui);
+    let at = sent.find("\x1b_Ga=T").expect("the picture");
+    assert!(
+        sent[..at].ends_with("\x1b[2;2H"),
+        "{:?}",
+        &sent[at.saturating_sub(20)..at]
+    );
+    assert_eq!(
+        pictures_in(sent.as_bytes()),
+        [
+            picture(Mascot::Argonaut, Look::new(None, false), (9, 21), 0)
+                .unwrap()
+                .into_owned()
+        ]
+    );
+
+    ui.model_mut().history.push(header("orchestrator", None));
+    ui.frame(t0 + Duration::from_millis(50)).unwrap();
+    let sent = written(&mut ui);
+    assert!(
+        !sent.contains("a=d,d=I"),
+        "the greeting's picture stays: {sent:?}"
+    );
+    assert_eq!(
+        pictures_in(sent.as_bytes()),
+        [picture(Mascot::Medusa, Look::Normal, (9, 21), 0)
+            .unwrap()
+            .into_owned()]
+    );
+}
+
+/// The full screen places the greeting's picture in its cells as it draws them, and a
+/// greeting too narrow for the picture keeps the argonaut's own cells.
+#[test]
+fn the_greeting_gets_its_picture_on_the_full_screen_and_none_when_narrow() {
+    let (mut full, t0) = full_screen();
+    full.use_pictures(Some(Graphics::Kitty), Some((9, 21)));
+    full.model_mut().history.push(greeting());
+    full.frame(t0).unwrap();
+    let sent = written(&mut full);
+    assert!(sent.contains("\x1b_Ga=t,f=100,q=2,i="), "{sent:?}");
+    assert_eq!(placed_at(&sent), Some("\x1b[2;2H"));
+
+    let narrow = u16::try_from(crate::cell::MARK_MIN_WIDTH - 2).unwrap();
+    let (mut inline, t0) = ui_at(narrow);
+    inline.use_pictures(Some(Graphics::Kitty), Some((9, 21)));
+    inline.model_mut().history.push(greeting());
+    inline.frame(t0).unwrap();
+    let sent = written(&mut inline);
+    assert!(!sent.contains("\x1b_G"), "{sent:?}");
+    assert!(sent.contains('▗'), "the argonaut's own cells: {sent:?}");
 }

@@ -33,8 +33,7 @@ impl ToolStats {
         if self.tokens_down > 0 {
             text.push_str(" · ");
             text.push_str(ctx.theme.glyphs.tokens);
-            // Claude Code has this space too, and fonts that draw the arrow two cells wide need it.
-            text.push(' ');
+            text.push_str(crate::theme::glyphs::gap_after(ctx.theme.glyphs.tokens));
             text.push_str(&format::tokens(self.tokens_down));
         }
         (!text.is_empty()).then(|| Span::styled(text, ctx.theme.style(Role::Dim)))
@@ -74,13 +73,13 @@ mod tests {
         let lines = call.lines(&ctx);
         assert_eq!(
             plain_text(&lines[..1]),
-            "● claude-code/opus · worker · task-002 (Add the JSON writer) · 4m12s · ↓ 18.1k"
+            "● claude-code/opus · worker · task-002 (Add the JSON writer) · 4m12s · ↓  18.1k"
         );
         let stats = lines[0].spans.last().expect("the stats");
         assert_eq!(stats.style, theme.style(Role::Dim));
 
         call.stats.ended_at = Some(start + Duration::from_secs(61));
-        assert!(plain_text(&call.lines(&ctx)[..1]).ends_with("· 1m1s · ↓ 18.1k"));
+        assert!(plain_text(&call.lines(&ctx)[..1]).ends_with("· 1m1s · ↓  18.1k"));
         call.stats = ToolStats::started(start);
         assert!(plain_text(&call.lines(&ctx)[..1]).ends_with("(Add the JSON writer) · 4m12s"));
         call.stats = ToolStats::default();
@@ -95,7 +94,7 @@ mod tests {
         let at = Clock::new(start, start + Duration::from_secs(103));
         let call = ToolCall::described(
             ToolKind::Agent,
-            "Antigravity CLI · reviewer · task-002 (Review the JSON writer)",
+            "agy · reviewer · task-002 (Review the JSON writer)",
         )
         .with_stats(ToolStats {
             started_at: Some(start),
@@ -105,18 +104,15 @@ mod tests {
         .with_state(ToolState::Done);
         let row = |width| plain_text(&call.lines(&RenderCtx::new(width, &theme, at)));
         assert_eq!(
-            row(81),
-            "● Antigravity CLI · reviewer · task-002 (Review the JSON writer) · 1m43s · ↓ 6.1k"
+            row(70),
+            "● agy · reviewer · task-002 (Review the JSON writer) · 1m43s · ↓  6.1k"
         );
         assert_eq!(
-            row(80),
-            "● Antigravity CLI · reviewer · task-002 (Review the JSON writ…) · 1m43s · ↓ 6.1k"
+            row(69),
+            "● agy · reviewer · task-002 (Review the JSON writ…) · 1m43s · ↓  6.1k"
         );
-        assert_eq!(
-            row(60),
-            "● Antigravity CLI · reviewer · task-002 · 1m43s · ↓ 6.1k"
-        );
-        assert_eq!(row(45), "● Antigravity CLI · reviewer · task-002");
+        assert_eq!(row(48), "● agy · reviewer · task-002 · 1m43s · ↓  6.1k");
+        assert_eq!(row(33), "● agy · reviewer · task-002");
     }
 
     #[test]

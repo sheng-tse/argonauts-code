@@ -5,6 +5,7 @@ pub mod agents;
 pub mod approvals;
 pub mod asking;
 pub mod awake;
+pub mod behaviors;
 pub mod bottom_line;
 pub mod context;
 pub mod crew;
@@ -13,14 +14,18 @@ pub mod endpoints;
 pub mod evolution;
 pub mod fallback;
 pub mod goal;
+pub mod issue;
 pub mod layer;
 pub mod learning;
 pub mod limit;
 pub mod limits_template;
 pub mod main_session;
 pub mod mods;
+pub mod network;
+pub mod outside;
 pub mod overview;
 pub mod periods;
+pub mod pr;
 pub mod prompts;
 pub mod protocol;
 pub mod roles;
@@ -30,6 +35,7 @@ pub mod stats;
 pub mod switch;
 pub mod telemetry;
 pub mod ui;
+pub mod updates;
 pub mod workflows;
 
 use std::collections::BTreeMap;
@@ -143,6 +149,19 @@ pub struct Settings {
     pub telemetry: telemetry::TelemetrySettings,
     pub overview: overview::OverviewSettings,
     pub periods: periods::PeriodSettings,
+    /// Updating Argonauts Code itself.
+    pub updates: updates::UpdateSettings,
+    /// What `/issue` writes on the issue it works on.
+    pub issue: issue::IssueSettings,
+    /// Following the pull requests Argonauts Code opened.
+    pub pr: pr::PrSettings,
+    /// How long a run holds for the internet to come back.
+    pub network: network::NetworkSettings,
+    /// Where agents read and write outside the project without asking, and what they never
+    /// reach.
+    pub outside: outside::OutsideSettings,
+    /// The Behaviors map in Overview › Behaviors, and who writes its deeper map's summaries.
+    pub behaviors: behaviors::BehaviorSettings,
 }
 
 impl Default for Settings {
@@ -208,6 +227,12 @@ impl Default for Settings {
             telemetry: telemetry::TelemetrySettings::default(),
             overview: overview::OverviewSettings::default(),
             periods: periods::PeriodSettings::default(),
+            updates: updates::UpdateSettings::default(),
+            issue: issue::IssueSettings::default(),
+            pr: pr::PrSettings::default(),
+            network: network::NetworkSettings::default(),
+            outside: outside::OutsideSettings::default(),
+            behaviors: behaviors::BehaviorSettings::default(),
         }
     }
 }
@@ -253,7 +278,9 @@ pub const SAFETY_KEYS: &[&str] = &[
     "limits.irreversible_allowlist",
     "limits.evolution_usd_per_month",
     "telemetry.*",
+    "updates.*",
     "sandbox.*",
+    "outside.*",
     "approvals.*",
     "evolution.*",
     "memory.*",
@@ -285,8 +312,20 @@ pub const SAFETY_KEYS: &[&str] = &[
 ];
 
 /// Keys only your global config may set. A project file that sets one is refused, trusted or
-/// not, since it would name a program for Argonauts Code to run.
-pub const GLOBAL_ONLY_KEYS: &[&str] = &["notifications.conversation.*", "telemetry.*"];
+/// not, since it would name a program for Argonauts Code to run, or decide which build of it
+/// runs.
+pub const GLOBAL_ONLY_KEYS: &[&str] = &["notifications.conversation.*", "telemetry.*", "updates.*"];
+
+/// Global-only keys a project file may still set to one value, as TOML text, since that value
+/// only takes something away: a project may turn usage reports off, never on.
+pub const PROJECT_MAY_TIGHTEN: &[(&str, &str)] = &[("telemetry.enabled", "false")];
+
+/// Whether a project file may set global-only `key` to `toml_value`.
+pub fn project_may_tighten(key: &str, toml_value: &str) -> bool {
+    PROJECT_MAY_TIGHTEN
+        .iter()
+        .any(|(tightened, value)| *tightened == key && toml_value.trim() == *value)
+}
 
 /// Lowest first; a later layer wins key by key. `session` is the app's own overrides, which
 /// come after the `--set` flags. `request` holds what a request said about how to run it, for

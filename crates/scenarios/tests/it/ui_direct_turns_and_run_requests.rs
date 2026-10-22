@@ -128,13 +128,13 @@ fn ui_a_request_that_says_who_orchestrates_and_who_reviews() -> anyhow::Result<(
         // The crew note names the reviewers you asked for, so the line leaves them out.
         assert!(
             text.contains("As you asked: Codex orchestrates")
-                && !text.contains("As you asked: Codex orchestrates · Antigravity CLI reviews"),
+                && !text.contains("As you asked: Codex orchestrates · agy reviews"),
             "{}",
             screen.text()
         );
         assert!(
             screen.text().lines().any(|line| line.contains("reviewers")
-                && line.contains("Antigravity CLI")
+                && line.contains("agy")
                 && line.contains("as you asked")),
             "{}",
             screen.text()

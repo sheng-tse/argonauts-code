@@ -1,0 +1,67 @@
+# cargo-deny's checks of the dependency graph: known vulnerabilities, licenses, banned or duplicated crates, and
+# where crates come from. CI runs `cargo deny check` on every pull request.
+
+[graph]
+# The six targets the releases are built for. Dependencies only other targets use are left out.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
+
+[advisories]
+# Any vulnerability or yanked version fails. An unmaintained crate fails only when the workspace depends on it
+# directly: a transitive one is for its parent to replace.
+yanked = "deny"
+unmaintained = "workspace"
+# rustls 0.23.46 and rustls-webpki 0.103.16 fix these. The lock file takes a version only once it is two weeks old,
+# so each entry comes out on the date it gives, with `cargo update -p rustls -p rustls-webpki`.
+ignore = [
+    { id = "RUSTSEC-2026-0346", reason = "fixed in rustls 0.23.46, taken on 2026-10-28" },
+    { id = "RUSTSEC-2026-0347", reason = "fixed in rustls 0.23.46, taken on 2026-10-28" },
+    { id = "RUSTSEC-2026-0348", reason = "fixed in rustls 0.23.46, taken on 2026-10-28" },
+    { id = "RUSTSEC-2026-0349", reason = "fixed in rustls 0.23.46, taken on 2026-10-28" },
+    { id = "RUSTSEC-2026-0382", reason = "fixed in rustls-webpki 0.103.16, taken on 2026-11-03" },
+]
+
+[licenses]
+# The same list as about.toml, whose THIRD_PARTY_NOTICES.md reproduces them.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MIT-0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+# ratatui's termwiz backend is in the lock file but never built, and these are the crates only it brings.
+exceptions = [
+    { allow = ["WTFPL"], crate = "terminfo" },
+    { allow = ["Unicode-DFS-2016"], crate = "finl_unicode" },
+    { allow = ["Unicode-DFS-2016"], crate = "wezterm-bidi" },
+]
+
+[licenses.private]
+# The test kit and scenarios are never published, so their licenses aren't checked.
+ignore = true
+
+[bans]
+# Several crates come in two versions through different parents; that costs build time, not correctness.
+multiple-versions = "warn"
+# A `*` version fails. The workspace's own path dependencies are fine: the published ones carry a version, and the
+# test kit is a dev-dependency, which cargo leaves out of a published package.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# Only crates.io: no git dependencies and no other registry.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

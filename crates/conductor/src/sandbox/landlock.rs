@@ -35,7 +35,7 @@ impl Landlock {
     /// Launches through the running `argonauts` binary.
     pub fn new() -> Self {
         Self {
-            launcher: std::env::current_exe().ok(),
+            launcher: argonauts_core::paths::this_program().ok(),
         }
     }
 
@@ -82,6 +82,7 @@ impl SandboxWrap for Landlock {
             network: profile.network,
             proxies: reachable_proxies(profile, &command),
             closed: profile.closed.clone(),
+            outside: profile.outside.clone(),
         };
         let args = launcher_args(&plan, program.as_os_str(), &command.args);
         Ok(CommandSpec {

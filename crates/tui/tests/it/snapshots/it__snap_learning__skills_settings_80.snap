@@ -1,5 +1,6 @@
 ---
-source: crates/tui/tests/snap_learning.rs
+source: crates/tui/tests/it/snap_learning.rs
+assertion_line: 491
 expression: "screen(&mut picker, 80, HEIGHT)"
 ---
 Skills                                    Skills  Waiting branches  [ Settings ]
@@ -25,4 +26,4 @@ Exported and imported skills, and any drift     1 skill · 1 branch waits for yo
 │   Link each skill for Claude Code                                            │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · tab next tab · ⏎ change · esc back
+↑↓  select · tab next tab · ⏎ change · esc back

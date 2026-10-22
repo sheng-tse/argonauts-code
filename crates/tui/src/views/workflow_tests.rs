@@ -50,6 +50,7 @@ pub(super) fn agent(session: &str, label: &str, status: RowStatus) -> AgentRow {
         note: None,
         inner: None,
         left_out: false,
+        fallback_why: None,
     }
 }
 
@@ -607,7 +608,7 @@ fn the_goal_panel_under_the_agents_shows_the_selected_agents_goal() {
     assert!(text.contains("Codex says"), "{text}");
     let footer = lines.last().unwrap().trim_end();
     assert!(
-        footer.starts_with(" ↑↓ select · ⏎ open · g its goal · "),
+        footer.starts_with(" ↑↓  select · ⏎ open · g its goal · "),
         "{footer}"
     );
 
@@ -745,7 +746,7 @@ fn p_holds_the_selected_agents_goal_and_e_opens_its_lines() {
     let hints = footer(&mut view);
     assert!(
         hints.starts_with(
-            "↑↓ select · ⏎ open · g its goal · p pause the goal · e edit its lines · \
+            "↑↓  select · ⏎ open · g its goal · p pause the goal · e edit its lines · \
              m message · x stop"
         ),
         "{hints}"
@@ -757,7 +758,7 @@ fn p_holds_the_selected_agents_goal_and_e_opens_its_lines() {
     let hints = buffer_text(&buf).lines().last().unwrap().trim().to_owned();
     assert_eq!(
         hints,
-        "↑↓ select · ⏎ open · g its goal · p pause the goal · e edit its lines · m message · \
+        "↑↓  select · ⏎ open · g its goal · p pause the goal · e edit its lines · m message · \
          x stop · esc back"
     );
     let held = view.handle_key(key(KeyCode::Char('p')), &ctx);
@@ -1015,7 +1016,7 @@ fn a_step_tried_again_is_one_row_that_says_so_and_unfolds_its_tries() {
     assert!(text.contains("┬ Work · 3 agents ─"), "{text}");
     // The step's own row says what came before, where Claude Code's rows have their state.
     assert!(
-        text.contains("12k tok · fallback after GPT 5.6 Luna failed twice"),
+        text.contains("12.0k tok · fallback after GPT 5.6 Luna failed twice"),
         "{text}"
     );
     assert!(!text.contains('⎿'), "{text}");
@@ -1039,7 +1040,7 @@ fn a_step_tried_again_is_one_row_that_says_so_and_unfolds_its_tries() {
     assert!(!text.contains("refused the answer format"), "{text}");
     assert!(
         text.contains("❯"),
-        "← folded the tries, and stayed on the agents: {text}"
+        "←  folded the tries, and stayed on the agents: {text}"
     );
 }
 

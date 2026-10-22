@@ -1,0 +1,31 @@
+Settings   Overview    Status    Config    Usage    Context    Limits    Stats 
+
+ Overview    Models    Behaviors 
+
+    Oct      Dec     Feb      Apr      Jun     Aug  Sep
+    ·█··█·█·████·█·███·████·████████████████·███████·██·
+Mon ███████·████████████████·██████████████·█·████·█████
+    ·██·██·█·██████████████████████████████·██████████··
+Wed ··██··█·████████████·█████████████·█·███████████████
+    ██·█·██··█·████████████████████··███████·█████·█████
+Fri ·█·█·██████████████·████████████████████████████··██
+    █·█████·█·█·█··██████···██████████·█·█·██·█·█·█████ 
+
+    Less ░ ▒ ▓ █ More    ● Claude Code  ● Codex  ● agy    each day in the colour of the CLI that ran most
+
+All time · Last 7 days · Last 30 days
+
+Tokens                                       Days                                   Sessions
+
+Claude Code     60.6b     as /stats counts   active       122       of 147          sessions     384       
+Argonauts Code  69.1b     + workflow agents  streak       20 days   longest 41      longest      57d 23h   
+API value       ~$32,540                     busiest      Aug 28    peak 9pm        favourite    Opus 5.5  61%
+
+by kind  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   by CLI  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+         ■ cache read 97%  ■ write 2%  ■ output <1%  ■ input <1%                ■ Claude 88%  ■ Codex 12%  ■ agy <1%
+
+Your input and output are ~920x the tokens in A Game of Thrones
+97% of your input came from cache; 64% of your tokens ran in subagents
+Stats from the last 365 days · imported: Claude Code since Oct 2025, Codex since Feb, agy since Jun
+
+  r to cycle dates · ↑  tabs · tab Overview, Models, Behaviors · ctrl+s to copy · esc closes

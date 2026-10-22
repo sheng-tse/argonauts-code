@@ -349,7 +349,7 @@ impl StatusCards<'_> {
         }
         if tasks.len() > shown.len() {
             let rest = match (picked, shape.picks) {
-                (Some(at), _) => format!("{} of {} · ↑↓ shows the rest", at + 1, tasks.len()),
+                (Some(at), _) => format!("{} of {} · ↑↓  shows the rest", at + 1, tasks.len()),
                 (None, Some(_)) => format!("and {} more", tasks.len() - shown.len()),
                 (None, None) => format!(
                     "and {} more · enter opens the workflow",

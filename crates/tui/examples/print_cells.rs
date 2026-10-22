@@ -77,7 +77,7 @@ fn samples(now: Instant) -> Vec<argonauts_tui::Cell> {
                 note: None,
             },
             AgentReady {
-                name: "Antigravity CLI".into(),
+                name: "agy".into(),
                 ready: false,
                 note: Some("not installed".into()),
             },

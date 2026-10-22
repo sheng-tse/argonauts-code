@@ -185,12 +185,12 @@ fn shift_r_cycles_back_and_the_key_line_starts_with_the_periods_key() {
     let keys = |view: &mut OverviewView| rows(view, &state, 118).last().cloned().unwrap();
     assert_eq!(
         keys(&mut view).trim(),
-        "r to cycle dates · tab · ← → tabs · ↓ Overview or Models · ctrl+s to copy · esc closes"
+        "r to cycle dates · tab · ←  →  tabs · ↓  Overview, Models, Behaviors · ctrl+s to copy · esc closes"
     );
     key(&mut view, &state, KeyCode::Down);
     assert_eq!(
         keys(&mut view).trim(),
-        "r to cycle dates · ↑ tabs · tab Overview or Models · ctrl+s to copy · esc closes"
+        "r to cycle dates · ↑  tabs · tab Overview, Models, Behaviors · ctrl+s to copy · esc closes"
     );
 }
 
@@ -208,9 +208,52 @@ fn the_sub_tabs_switch_between_overview_and_models() {
     assert!(has(&shown, "Tokens per Day"), "{shown:#?}");
     assert!(has(&shown, "★ Favorite: Opus 5.5 · ● Total: 118.4b tokens"));
     assert!(
-        has(&shown, "r to cycle dates · ↑ ↓ 1-4 of 7 models"),
+        has(&shown, "r to cycle dates · ↑  ↓  1-4 of 7 models"),
         "{shown:#?}"
     );
+}
+
+#[test]
+fn g_on_the_behaviors_sub_tab_groups_the_map_instead_of_going_to_the_top() {
+    use argonauts_core::behavior_map::Grouping;
+
+    let state = state();
+    let mut view = tab(sample::overview());
+    key(&mut view, &state, KeyCode::Down);
+    key(&mut view, &state, KeyCode::Right);
+    key(&mut view, &state, KeyCode::Right);
+    for grouping in [Grouping::Model.step(1), Grouping::Model.step(2)] {
+        match key(&mut view, &state, KeyCode::Char('g')) {
+            ViewOutcome::Request(ViewRequest::Behaviors(request)) => {
+                assert_eq!(request.grouping, grouping);
+            }
+            other => panic!("g asks for the map grouped the next way, not {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn going_into_the_behaviors_list_grows_the_panel_to_show_its_rows() {
+    let state = state();
+    let mut view = tab(sample::overview());
+    key(&mut view, &state, KeyCode::Down);
+    key(&mut view, &state, KeyCode::Right);
+    key(&mut view, &state, KeyCode::Right);
+    let map = crate::overview::stats::behaviors::sample::three_models().map;
+    assert!(view.accept(&ViewData::Behaviors { map: Box::new(map) }));
+    let opened = rows_on(&mut view, &state, 118, 50);
+    for code in [KeyCode::Down, KeyCode::Right, KeyCode::Down] {
+        key(&mut view, &state, code);
+    }
+    let listed = rows_on(&mut view, &state, 118, 50);
+    assert!(has(&listed, "lit: edited a source file"), "{listed:#?}");
+    assert!(
+        listed
+            .iter()
+            .any(|row| row.trim_start().starts_with("❯ edited a source file")),
+        "the selected row shows: {listed:#?}"
+    );
+    assert!(listed.len() > opened.len(), "the panel grew for the list");
 }
 
 #[test]
@@ -222,18 +265,18 @@ fn the_models_page_moves_a_row_at_a_time_and_enter_opens_one_in_stats() {
     key(&mut view, &state, KeyCode::Down);
     key(&mut view, &state, KeyCode::Down);
     let shown = rows(&mut view, &state, 118);
-    assert!(has(&shown, "↑ ↓ 3-6 of 7 models"), "{shown:#?}");
+    assert!(has(&shown, "↑  ↓  3-6 of 7 models"), "{shown:#?}");
     assert!(has(&shown, "Sonnet 5.5 (13.0%)"), "{shown:#?}");
     assert!(!has(&shown, "Opus 5.5 (46.0%)"), "{shown:#?}");
     // The last page ends on the last model, as Claude Code's does, and ↓ stops there.
     key(&mut view, &state, KeyCode::Down);
     key(&mut view, &state, KeyCode::Down);
     let shown = rows(&mut view, &state, 118);
-    assert!(has(&shown, "↑ ↓ 4-7 of 7 models"), "{shown:#?}");
+    assert!(has(&shown, "↑  ↓  4-7 of 7 models"), "{shown:#?}");
     assert!(has(&shown, "Gemini 3.6 Flash"), "{shown:#?}");
     key(&mut view, &state, KeyCode::Up);
     key(&mut view, &state, KeyCode::Up);
-    assert!(has(&rows(&mut view, &state, 118), "↑ ↓ 1-4 of 7 models"));
+    assert!(has(&rows(&mut view, &state, 118), "↑  ↓  1-4 of 7 models"));
     let outcome = key(&mut view, &state, KeyCode::Enter);
     assert_eq!(view.tab(), Tab::Stats);
     assert!(matches!(
@@ -363,7 +406,7 @@ fn a_narrow_panel_stacks_the_groups_and_the_bars_and_no_row_runs_past_it() {
                     assert!(str_width(row) <= usize::from(width), "{width}: {row:?}");
                 }
                 if sub == 1 {
-                    key(&mut view, &state, KeyCode::Right);
+                    key(&mut view, &state, KeyCode::Left);
                     key(&mut view, &state, KeyCode::Up);
                 }
             }
@@ -531,13 +574,13 @@ fn the_overview_moves_as_every_tab_of_the_panel_does() {
     key(&mut view, &state, KeyCode::Down);
     assert_eq!(view.level(), Level::Cards);
     key(&mut view, &state, KeyCode::Up);
-    assert_eq!(view.level(), Level::SubTabs, "↑ on the first row");
+    assert_eq!(view.level(), Level::SubTabs, "↑  on the first row");
     key(&mut view, &state, KeyCode::Up);
     assert_eq!(view.level(), Level::Tabs);
     key(&mut view, &state, KeyCode::Left);
     assert_eq!(
         view.tab(),
         Tab::Stats,
-        "← on the first tab goes to the last"
+        "←  on the first tab goes to the last"
     );
 }

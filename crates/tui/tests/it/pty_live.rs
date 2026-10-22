@@ -80,7 +80,7 @@ fn live_region_working_line_rules_bottom_row() {
     let mode = &screen.visible[rule + 3];
     assert!(
         mode.starts_with("  ǁ supervised mode on")
-            && mode.contains("← 2 agents")
+            && mode.contains("←  2 agents")
             && !mode.contains("esc to interrupt"),
         "{}",
         screen.visible_text()
@@ -158,7 +158,7 @@ fn working_line_elapsed_tokens_esc_hint() {
     let mut driver = TestDriver::start(script);
     driver.wait_for(TOP_RULE);
     driver.submit("check the build");
-    let screen = driver.wait_visible(r"^[∙✢✲✶✻✼*] [\w'-]+… \(\d+s · ↓ 3\.6k tokens");
+    let screen = driver.wait_visible(r"^[∙✢✲✶✻✼*] [\w'-]+… \(\d+s · ↓  3\.6k tokens");
     let working = expect_row(&screen, WORKING_LINE);
     assert!(
         !screen.visible[working].contains('$'),

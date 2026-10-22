@@ -3,9 +3,12 @@
 
 use std::collections::BTreeSet;
 
+use argonauts_core::Paths;
 use argonauts_core::app::SettingRow;
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::input::{PERMISSION_KEYS, ROLE_SANDBOX_KEYS};
 use argonauts_core::names::RoleName;
+use argonauts_core::settings::behaviors::AUTO;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::limit::SpendLimits;
 use argonauts_core::settings::{SettingMeta, SettingScope, Settings};
@@ -13,6 +16,7 @@ use argonauts_registry::clis::agents_turned_on;
 use argonauts_registry::{builtin_clis, setting_meta, settings_catalog};
 
 use crate::app_settings::AppSettings;
+use crate::behaviors::deep::places::kept_maker;
 
 /// Every role, in the order pickers list them.
 pub(crate) const ROLES: &[RoleName] = &[
@@ -106,8 +110,35 @@ pub(crate) fn row(settings: &AppSettings, key: String, default_scope: SettingSco
         allowed: meta.allowed,
         description: meta.description,
         key,
+        picked: None,
     }
 }
+
+/// Names what the Behaviors map's `auto` summarizer and embedder came to: those of the deeper
+/// map that's kept, which its updates go on using. Before one is made, auto has picked nothing
+/// yet, and finding what it would pick means asking this machine's model servers, so the rows
+/// say what auto means instead.
+pub(crate) fn with_picks(rows: &mut [SettingRow], paths: &Paths, names: &DisplayNames) {
+    let auto = |row: &SettingRow| {
+        matches!(row.key.as_str(), SUMMARIZER | EMBEDDER)
+            && matches!(row.value.trim().trim_matches('"'), "" | AUTO)
+    };
+    if !rows.iter().any(auto) {
+        return;
+    }
+    let Some(maker) = kept_maker(paths, names) else {
+        return;
+    };
+    for row in rows.iter_mut().filter(|row| auto(row)) {
+        row.picked = Some(match row.key.as_str() {
+            SUMMARIZER => maker.summarizer.clone(),
+            _ => maker.embedder.clone(),
+        });
+    }
+}
+
+const SUMMARIZER: &str = "behaviors.summarizer";
+const EMBEDDER: &str = "behaviors.embedder";
 
 /// Where `command` saves `key` unless you pick otherwise.
 pub(crate) fn default_scope(command: &str, key: &str) -> SettingScope {

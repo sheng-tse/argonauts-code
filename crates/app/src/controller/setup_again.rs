@@ -1,5 +1,6 @@
 //! `/setup` when you already have settings asks first whether to go through every question
-//! again, so a slip in the `/` menu never starts the guided setup over your settings.
+//! again, so a slip in the `/` menu never starts the guided setup over your settings. Either way
+//! it ends in one `/setup` row: the setup's own, or that your settings stayed.
 
 use argonauts_core::app::{AppEvent, ChoiceKind};
 use argonauts_core::events::approval::AnswerAction;
@@ -67,10 +68,11 @@ pub(crate) fn answer_choice(
 ) -> Vec<Effect> {
     state.pending = None;
     if *action == choose(YES) {
-        close(ctx, id, "Going through the setup again.");
+        // The setup's questions follow, and its one row says what they left.
+        close(ctx, id, "");
         vec![Effect::OpenSetup]
     } else {
-        close(ctx, id, KEPT);
+        close(ctx, id, &crate::setup::setup_row(KEPT));
         Vec::new()
     }
 }
@@ -78,10 +80,10 @@ pub(crate) fn answer_choice(
 /// Esc keeps your settings.
 pub(crate) fn set_aside(ctx: &Ctx, state: &mut SetupAgainState, id: ChoiceId) {
     state.pending = None;
-    close(ctx, id, KEPT);
+    close(ctx, id, &crate::setup::setup_row(KEPT));
 }
 
-const KEPT: &str = "Kept your settings.";
+const KEPT: &str = "Kept your settings";
 
 fn close(ctx: &Ctx, id: ChoiceId, outcome: &str) {
     ctx.send(AppEvent::ChoiceClosed {
@@ -113,11 +115,25 @@ mod tests {
         assert_eq!(choice.title, "Go through every setup question again?");
         let effects = answer_choice(&parts.ctx, &mut state, choice.id.clone(), &choose(YES));
         assert!(matches!(effects[..], [Effect::OpenSetup]));
+        assert_eq!(closed(&mut parts).as_deref(), Some(""));
 
         assert!(ask(&mut parts.ctx, &mut state).is_empty());
         let choice = asked(&mut parts).expect("the question");
         set_aside(&parts.ctx, &mut state, choice.id.clone());
         assert!(!owns_choice(&state, &choice.id));
+        assert_eq!(
+            closed(&mut parts).as_deref(),
+            Some("/setup ⎿  Kept your settings")
+        );
+    }
+
+    fn closed(parts: &mut TestCtx) -> Option<String> {
+        while let Ok(event) = parts.events.try_recv() {
+            if let AppEvent::ChoiceClosed { outcome, .. } = event {
+                return Some(outcome);
+            }
+        }
+        None
     }
 
     #[tokio::test]

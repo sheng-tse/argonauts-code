@@ -139,6 +139,11 @@ pub(crate) struct Memory {
     said_listed: BTreeSet<String>,
     /// Each CLI's last crash as it started, with no session of its own yet, by its message.
     started_crashing: BTreeMap<AgentId, String>,
+    /// The ends, by their place in the log, of sessions that lost the internet, which count
+    /// against nobody.
+    lost_the_network: BTreeSet<u64>,
+    /// The run follows the internet already.
+    following_the_network: bool,
 }
 
 /// A question someone in this engine waits on the answer of: the one about a CLI that is
@@ -329,7 +334,7 @@ fn pinned(host: &Host, worker: &ModelRef) -> ModelRef {
 }
 
 /// Says once, as job `label` first starts on `worker`, that `worker` runs in place of a model
-/// its CLI no longer lists: `propose:p3 runs on Gemini 3.8 Flash (Low): Antigravity CLI no
+/// its CLI no longer lists: `propose:p3 runs on Gemini 3.8 Flash (Low): agy no
 /// longer offers Gemini 3.6 Flash (Low)`.
 pub(crate) fn say_listed(
     host: &Host,
@@ -812,12 +817,34 @@ fn model_out(host: &Host, worker: &ModelRef) -> Option<&'static str> {
 /// Its agent failures since the run last resumed, by the worker each time.
 fn failures<'r>(host: &Host, record: &'r SessionRecord) -> Vec<&'r ModelRef> {
     let since = host.read(|state| state.run.last_resumed).unwrap_or(0);
+    let offline = lock(&host.shared().job_fallbacks).lost_the_network.clone();
     record
         .agent_failures
         .iter()
-        .filter(|(_, seq)| *seq > since)
+        .filter(|(_, seq)| *seq > since && !offline.contains(seq))
         .map(|(worker, _)| worker)
         .collect()
+}
+
+/// The session of `record` last ended because the internet was gone, which is no failure of
+/// its agent: its later retries and fallbacks count it nowhere.
+pub(crate) fn hold_against_nobody(host: &Host, record: &SessionRecord) {
+    if let Some((_, seq)) = record.agent_failures.last() {
+        lock(&host.shared().job_fallbacks)
+            .lost_the_network
+            .insert(*seq);
+    }
+}
+
+/// True for the first caller of a run, who follows the internet for it.
+pub(crate) fn begin_following_the_network(host: &Host) -> bool {
+    let mut memory = lock(&host.shared().job_fallbacks);
+    !std::mem::replace(&mut memory.following_the_network, true)
+}
+
+/// The run stopped following the internet, so the next session that needs it starts again.
+pub(crate) fn end_following_the_network(host: &Host) {
+    lock(&host.shared().job_fallbacks).following_the_network = false;
 }
 
 /// A task's build session that worked, then missed its answer format, and can be resumed.
@@ -1596,7 +1623,7 @@ fn stalled(
 }
 
 /// What `from`'s own CLI said, in short words for its row, `signed out`, and whole for the
-/// run's stop, `Antigravity CLI is signed out`.
+/// run's stop, `agy is signed out`.
 fn failure_words(why: &Why, from: &ModelRef) -> (String, String) {
     let cli = DisplayNames::default().cli(from.agent.as_str());
     let model = |id: &str| argonauts_core::model_catalog::display_name_from_id(id);

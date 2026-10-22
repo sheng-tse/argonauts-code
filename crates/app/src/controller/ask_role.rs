@@ -212,6 +212,8 @@ fn spec(
             own_workflow: false,
             autopilot: false,
             reviews: false,
+            fork: false,
+            outside: Default::default(),
         },
     )?;
     // It belongs to the conversation, not to a run.
@@ -346,6 +348,7 @@ mod tests {
                 judge: Vec::new(),
                 worker_workflows: false,
                 merger: Vec::new(),
+                orchestrator_context: Default::default(),
             },
             ..Settings::default()
         };

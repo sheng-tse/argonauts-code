@@ -28,7 +28,7 @@ use crate::bottom::{ModeNotice, VimMode};
 use crate::bridge::keys::{exit_lines, watch_line};
 use crate::bridge::settings::theme_for;
 use crate::bridge::{Bridge, Effects, TakeOverJob, TerminalJob};
-use crate::cell::{Notice, Tone};
+use crate::cell::{Cell, Notice, Tone};
 use crate::keymap::Keymap;
 use crate::mascot::Graphics;
 use crate::model::{VerbPicker, ViewModel};
@@ -47,6 +47,11 @@ const IDLE_WAIT: Duration = Duration::from_secs(3600);
 /// App events, or keys, handled before a frame, so a burst costs one frame and the other side
 /// still gets a turn.
 const EVENT_BURST: usize = 256;
+
+/// How long after a child program gives the terminal back a Ctrl+C still counts as the
+/// child's. Linux tells of the child's exit apart from signals, so the Ctrl+C that ended it
+/// can arrive here after its exit was seen.
+const CHILDS_LATE_INTERRUPT: Duration = Duration::from_secs(1);
 
 /// Work that takes the terminal away, done between events.
 enum Handover {
@@ -78,6 +83,8 @@ pub(super) struct Screen<W: Write> {
     stops: Option<Stops>,
     /// Only on the process's own terminal: when to check it's still there.
     gone_check: Option<Interval>,
+    /// The streams the check watches, as they were when the screen took the terminal.
+    terminals: gone::Terminals,
     /// The terminal went away, so nothing is written to it again.
     gone: bool,
 }
@@ -106,6 +113,11 @@ impl<W: Write> Screen<W> {
         let mut bridge = Bridge::new(options);
         bridge.state.terminal = info;
         let (returns_tx, returns) = mpsc::unbounded_channel();
+        if let Some(mut greeting) = options.greeting.clone() {
+            // The screen places the argonaut's picture over its cells where it draws pictures.
+            greeting.picture = true;
+            model.history.push(Cell::Custom(Box::new(greeting)));
+        }
         let mut ui = Ui::new(terminal, theme, model, Instant::now());
         ui.time_keys(true);
         if options.settings.screen == ScreenMode::Fullscreen {
@@ -123,6 +135,7 @@ impl<W: Write> Screen<W> {
             keymap_source: None,
             stops: None,
             gone_check: None,
+            terminals: gone::Terminals::default(),
             gone: false,
         };
         screen.refresh_keymap();
@@ -132,6 +145,11 @@ impl<W: Write> Screen<W> {
     /// The terminal draws pictures through `graphics`, at `cell` pixels a cell.
     pub(super) fn use_pictures(&mut self, graphics: Option<Graphics>, cell: Option<(u16, u16)>) {
         self.ui.use_pictures(graphics, cell);
+    }
+
+    /// The terminal said it reports the mouse in pixels when asked.
+    pub(super) fn use_pixel_mouse(&mut self, yes: bool) {
+        self.ui.use_pixel_mouse(yes);
     }
 
     /// The process's own terminal: its modes go back on after a child program, stop signals
@@ -146,6 +164,7 @@ impl<W: Write> Screen<W> {
         let mut check = tokio::time::interval(gone::CHECK_EVERY);
         check.set_missed_tick_behavior(MissedTickBehavior::Delay);
         self.gone_check = Some(check);
+        self.terminals = gone::Terminals::now();
         if TermEnv::from_process().in_tmux {
             let start = tokio::time::Instant::now() + SIZE_POLL;
             let mut poll = tokio::time::interval_at(start, SIZE_POLL);
@@ -263,7 +282,7 @@ impl<W: Write> Screen<W> {
                 () = tokio::time::sleep_until(sleep_until), if wake.is_some() => {}
                 () = tick(&mut self.size_poll), if self.size_poll.is_some() => self.check_size(),
                 () = tick(&mut self.gone_check), if self.gone_check.is_some() => {
-                    if gone::terminal_gone() {
+                    if self.terminals.gone() {
                         self.gone = true;
                         return Ok(());
                     }
@@ -588,7 +607,12 @@ impl<W: Write> Screen<W> {
             tokio::select! {
                 biased;
                 () = interrupted(&mut self.stops), if self.stops.is_some() => {}
-                output = &mut child => return output,
+                output = &mut child => {
+                    if let Some(stops) = self.stops.as_mut() {
+                        stops.mark_returned();
+                    }
+                    return output;
+                }
                 event = self.io.events.recv(), if events_open => match event {
                     Some(event) => self.on_app_event(event).await,
                     None => events_open = false,
@@ -699,12 +723,14 @@ async fn run_here(argv: Vec<String>, cwd: PathBuf) -> io::Result<ExitStatus> {
 
 /// SIGTERM, SIGHUP, and SIGINT close the app the way `/exit` does, so the terminal gets its
 /// modes back and, in fullscreen, its main screen. In raw mode Ctrl+C is a key, so these come
-/// from elsewhere.
+/// from elsewhere, or from a child program's Ctrl+C, which closes nothing.
 pub(super) struct Stops {
     #[cfg(unix)]
     ends: Vec<tokio::signal::unix::Signal>,
     #[cfg(unix)]
     interrupt: tokio::signal::unix::Signal,
+    /// When a child program last gave the terminal back.
+    returned: Option<Instant>,
 }
 
 impl Stops {
@@ -717,24 +743,44 @@ impl Stops {
             .collect::<io::Result<_>>()
             .ok()?;
         let interrupt = signal(SignalKind::interrupt()).ok()?;
-        Some(Self { ends, interrupt })
+        Some(Self {
+            ends,
+            interrupt,
+            returned: None,
+        })
     }
 
     #[cfg(not(unix))]
     pub(super) fn listen() -> Option<Self> {
         None
     }
+
+    fn mark_returned(&mut self) {
+        self.returned = Some(Instant::now());
+    }
 }
 
 pub(super) async fn stopped(stops: &mut Option<Stops>) {
     #[cfg(unix)]
-    if let Some(Stops { ends, interrupt }) = stops {
-        let waits = ends
-            .iter_mut()
-            .chain(std::iter::once(interrupt))
-            .map(|signal| Box::pin(signal.recv()));
-        futures::future::select_all(waits).await;
-        return;
+    if let Some(Stops {
+        ends,
+        interrupt,
+        returned,
+    }) = stops
+    {
+        let ends = ends.iter_mut().map(|signal| Box::pin(signal.recv()));
+        let mut ended = futures::future::select_all(ends);
+        loop {
+            tokio::select! {
+                _ = &mut ended => return,
+                got = interrupt.recv() => {
+                    let childs = returned.is_some_and(|at| at.elapsed() < CHILDS_LATE_INTERRUPT);
+                    if got.is_none() || !childs {
+                        return;
+                    }
+                }
+            }
+        }
     }
     let _ = stops;
     std::future::pending::<()>().await;

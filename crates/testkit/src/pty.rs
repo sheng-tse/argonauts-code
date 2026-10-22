@@ -24,6 +24,9 @@ const SCROLLBACK: usize = 5000;
 
 const POLL: Duration = Duration::from_millis(20);
 
+/// How long, at most, the reader gets after the program exits to take the last it wrote.
+const DRAIN: Duration = Duration::from_secs(2);
+
 /// Enter this soon after typed text could be a line break in a paste that a terminal without
 /// bracketed paste types out key by key, which the app reads as part of the text. The app's
 /// window is 120 ms.
@@ -376,6 +379,7 @@ impl Pty {
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(status) = self.child.try_wait().context("checking the program")? {
+                self.drain();
                 return Ok(status.exit_code());
             }
             if Instant::now() >= deadline {
@@ -384,6 +388,16 @@ impl Pty {
                     self.screen().text()
                 );
             }
+            thread::sleep(POLL);
+        }
+    }
+
+    /// Waits for the reader to take the last of the output, which a program that has exited
+    /// can still have in the terminal. A program it started may keep the terminal open, so
+    /// the wait is short.
+    fn drain(&self) {
+        let deadline = Instant::now() + DRAIN;
+        while !lock(&self.terminal).closed && Instant::now() < deadline {
             thread::sleep(POLL);
         }
     }

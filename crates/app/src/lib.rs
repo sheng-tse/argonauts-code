@@ -4,6 +4,7 @@
 mod adapters;
 mod ancestry;
 mod app_settings;
+mod behaviors;
 mod choices;
 mod client;
 mod commands;
@@ -17,6 +18,7 @@ mod git;
 mod golden;
 mod hidden_git;
 mod host;
+mod issue;
 mod keep_awake;
 mod learning;
 mod live_registry;
@@ -27,6 +29,7 @@ mod prompts;
 mod repo_files;
 mod run_command;
 mod run_files;
+pub mod self_update;
 mod setup;
 mod startup;
 mod telemetry;
@@ -49,6 +52,9 @@ use argonauts_core::{Paths, RunId};
 
 pub use adapters::builtin_adapters;
 pub use ancestry::refuse_inside_agent;
+pub use behaviors::deep::command::{DeepTerminal, behaviors_deep};
+pub use behaviors::deep::service::DeepMaps;
+pub use behaviors::{BehaviorPeriod, behaviors_report, export_hodoscope};
 pub use commands::{
     ApprovalsReport, DoctorExtras, ModelList, StatusReport, WaitingReminder, approvals_report,
     auto_off, cheapest_model, config_schema, config_set, config_show, current_settings,
@@ -59,7 +65,8 @@ pub use learning::shell::{LearningShell, ShellOutput, learning, learning_proposa
 pub use live_registry::{LiveRunHost, live_run_hosts};
 pub use mods::doctor_problems as mod_problems;
 pub use run_command::{RunCommand, RunCommandExit, run_command};
-pub use telemetry::{TelemetryAction, telemetry};
+pub use startup::welcome;
+pub use telemetry::{TelemetryAction, count_crashes, telemetry};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InteractiveOptions {

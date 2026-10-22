@@ -19,8 +19,8 @@ fn awake_says_what_it_holds_and_what_a_closed_lid_still_does() {
     assert_matches(
         "awake",
         &lines,
-        include_str!("pictures/awake.txt"),
-        include_str!("pictures/awake.html"),
+        include_str!("../../../tests/golden/transcript/awake.txt"),
+        include_str!("../../../tests/golden/transcript/awake.html"),
         &Screen::theme(),
         &[],
     );

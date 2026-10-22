@@ -32,6 +32,7 @@ const EVERYWHERE: &[&str] = &[
     "notifications.*",
     "switch.*",
     "telemetry.*",
+    "updates.*",
     "limits.spend_per_day",
     "limits.auto_merges_per_day",
 ];
@@ -524,7 +525,7 @@ const OWN_WORDS: &[(&str, &str)] = &[
     (
         "ultracode",
         "Ultracode: a workflow for every real request, small ones included. In Captain, Claude \
-         Code runs its own, and on Codex or Antigravity CLI one runs on that same model. \
+         Code runs its own, and on Codex or agy one runs on that same model. \
          Questions are still just answered",
     ),
     (

@@ -10,10 +10,10 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯                                                                                                                     
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ auto mode on (shift+tab to cycle) · ↓ to manage                                                                  
+  ⏵⏵ auto mode on (shift+tab to cycle) · ↓  to manage                                                                 
                                                                                                                       
-  ◯ Fix the money rounding  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱  6/7 · 1m40s · ↓ 201k tokens                                         
-    ⎿ ◯ final-signoff-money ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 15s · ↓ 48.3k tokens                                          
+  ◯ Fix the money rounding  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱  6/7 · 1m40s · ↓  201k tokens                                        
+    ⎿ ◯ final-signoff-money ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 15s · ↓  48.3k tokens                                         
                                                                                                                       
                                                                                                                       
  /workflows, or Enter on either row, opens the run's view on Final, where the second workflow is a row                
@@ -24,16 +24,16 @@
                                                                                                                       
  ╭ Phases ──────────┬ Final · 4 agents ─────────────────────────────────────────────────────────────────────────────╮ 
  │   ✔ Build    1/1 │  ✔ review:final          GPT 6 Luna on Codex · 16.8k tok · approved · 1 note               4s │ 
- │   ✔ Review   2/2 │  ✔ sign-off:money        Gemini 3.8 Flash on Antigravity CLI · 17.7k tok · sent it back    6s │ 
+ │   ✔ Review   2/2 │  ✔ sign-off:money        Gemini 3.8 Flash on agy · 17.7k tok · sent it back                6s │ 
  │ ❯ 3 Final    3/4 │  ▾ final-signoff-money   Claude Code's workflow · 1/2 agents                              15s │ 
  │   4 Merge        │    ✔ Review  1/1                                                                              │ 
  │                  │      ✔ review:final-2    GPT 6 Luna on Codex · 17.1k tok · approved                        4s │ 
  │                  │    2 Judge   0/1                                                                              │ 
- │                  │      ⏺ sign-off:money-2  Gemini 3.8 Flash on Antigravity CLI · 9.0k tok                    5s │ 
+ │                  │      ⏺ sign-off:money-2  Gemini 3.8 Flash on agy · 9.0k tok                                5s │ 
  │                  │                                                                                               │ 
  │                  │   Merge waits for final-signoff-money, then merges the change                                 │ 
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save                                   
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save                                  
                                                                                                                       
  Final's row in Phases as it went, done once and then at work again while the second workflow runs                    
    1m09s, the first workflow ends        ✔ Final    2/2   5/5 agents · 1m09s                                          

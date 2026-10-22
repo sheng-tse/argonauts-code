@@ -144,10 +144,53 @@ pub(crate) fn tracks(repo: &Path, path: &Path) -> anyhow::Result<bool> {
     git_ok(repo, &["ls-files", "--error-unmatch", "--", &path])
 }
 
+/// Copies the index at `from` to `to`, dated as `from` is. git reads a file again where its
+/// entry is as new as the index, since it may have changed within the same tick at the same
+/// size. A copy dated now would have git trust those stats and miss the change.
+pub(crate) fn copy_index(from: &Path, to: &Path) -> std::io::Result<()> {
+    // Read first: should yours be rewritten meanwhile, the copy only reads more files again.
+    let modified = std::fs::metadata(from)?.modified()?;
+    std::fs::copy(from, to)?;
+    std::fs::File::options()
+        .write(true)
+        .open(to)?
+        .set_modified(modified)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use argonauts_testkit::TempRepo;
+
+    /// A file rewritten at its size in the tick its entry and the index were written, as an
+    /// agent's edit right after a commit can be, still shows as changed in a copy made seconds
+    /// later.
+    #[test]
+    fn a_copied_index_still_sees_a_change_made_in_its_own_tick() {
+        let repo = TempRepo::new().unwrap();
+        let file = repo.root().join("app.py");
+        let yours = repo.root().join(".git/index");
+        let tick = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let date = |path: &Path| {
+            let opened = std::fs::File::options().write(true).open(path).unwrap();
+            opened.set_modified(tick).unwrap();
+        };
+        repo.write("app.py", "print(1)\n").unwrap();
+        date(&file);
+        repo.commit_all("app").unwrap();
+        date(&yours);
+        repo.write("app.py", "print(2)\n").unwrap();
+        date(&file);
+
+        let copy = repo.scratch().join("index-copy");
+        copy_index(&yours, &copy).unwrap();
+        let changed = command(repo.root())
+            .args(["-c", "core.trustctime=false", "diff-files", "--name-only"])
+            .env("GIT_INDEX_FILE", &copy)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&changed.stdout), "app.py\n");
+    }
 
     #[test]
     fn lists_uncommitted_paths_and_tracked_files() {

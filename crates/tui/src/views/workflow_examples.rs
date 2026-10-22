@@ -4,9 +4,9 @@
 use argonauts_core::names::{ModelRef, SessionKey, WorkflowId};
 use argonauts_core::steps::plan::Severity;
 use argonauts_core::views::{
-    ActivityLine, AgentRow, AgentView as AgentData, CommandRow, ContextUse, Finding, Findings,
-    PhaseCount, PhaseRow, ReviewGiven, RowNote, RowStatus, StatusKind, StatusLine, Tone,
-    WorkflowRow, WorkflowState, WorkflowView as WorkflowData,
+    ActivityLine, AgentRow, AgentView as AgentData, ContextUse, Finding, Findings, PhaseCount,
+    PhaseRow, ReviewGiven, RowNote, RowStatus, StatusKind, StatusLine, Tone, WorkflowRow,
+    WorkflowState, WorkflowView as WorkflowData,
 };
 use argonauts_core::workflow::StandardPhase;
 use argonauts_core::{RunId, Spend};
@@ -49,28 +49,13 @@ pub(crate) fn agent(
         note: None,
         inner: None,
         left_out: false,
+        fallback_why: None,
     }
 }
 
 fn noted(mut agent: AgentRow, text: &str, tone: Tone) -> WorkflowRow {
     agent.note = Some(RowNote::new(text, tone));
     WorkflowRow::Agent(agent)
-}
-
-/// A step Argonauts Code runs itself: its label, what runs, what came of it, and its seconds.
-fn step(label: &str, command: &str, result: &str, tone: Tone, seconds: u64) -> WorkflowRow {
-    WorkflowRow::Command(CommandRow {
-        label: label.to_owned(),
-        command: command.to_owned(),
-        result: Some(result.to_owned()),
-        tone,
-        status: if tone == Tone::Bad {
-            RowStatus::Failed
-        } else {
-            RowStatus::Done
-        },
-        elapsed_ms: seconds * 1000,
-    })
 }
 
 fn phase(
@@ -310,11 +295,9 @@ pub(crate) enum Merge {
     NoGit,
 }
 
+/// The Merge phase's rows: only its agents, as in Claude Code's view. What code did there, the
+/// checks and the merge itself, is the Workflow row's and the answer's to say.
 fn merge_rows(merge: Merge) -> Vec<WorkflowRow> {
-    let passing = |pass: &str, seconds: u64| {
-        let result = format!("{pass} pass, as at the start");
-        step("final check", "npm test", &result, Tone::Plain, seconds)
-    };
     let model = |session: u32, label: &str, tokens: u64, seconds: u64| {
         agent(session, label, OPUS, RowStatus::Done, tokens, seconds)
     };
@@ -322,70 +305,27 @@ fn merge_rows(merge: Merge) -> Vec<WorkflowRow> {
         Some(words) => noted(model(7, "commit message", 11_800, 19), words, Tone::Plain),
         None => WorkflowRow::Agent(model(7, "commit message", 11_800, 19)),
     };
-    let onto_main = |result: &str| step("merge onto main", "git", result, Tone::Plain, 2);
     match merge {
-        Merge::Clean => vec![
-            passing("15 of 16", 7),
-            message(Some("given the diff, no tools")),
-            onto_main("2 tasks · no conflicts"),
-        ],
+        Merge::Clean => vec![message(Some("given the diff, no tools"))],
         Merge::Conflict => vec![
-            step(
-                "merge the tasks",
-                "git",
-                "conflict in src/cli.js",
-                Tone::Warn,
-                1,
-            ),
             noted(
                 model(6, "settle conflict", 9_600, 41),
                 "kept both changes to the --due parsing",
                 Tone::Plain,
             ),
-            passing("15 of 16", 7),
             message(None),
-            onto_main("2 tasks · 1 conflict settled"),
         ],
         Merge::BranchMoved => vec![
-            step(
-                "catch up with main",
-                "git",
-                "main moved 2 commits · no conflicts",
-                Tone::Plain,
-                1,
-            ),
-            step(
-                "final check",
-                "npm test",
-                "1 test broke after main came in",
-                Tone::Bad,
-                7,
-            ),
             noted(
                 model(6, "fix after main moved", 14_200, 52),
                 "1 file",
                 Tone::Plain,
             ),
-            passing("16 of 17", 8),
             message(None),
-            onto_main("2 tasks · after your OK"),
         ],
-        Merge::NoGit => vec![
-            passing("15 of 16", 7),
-            step(
-                "write into your folder",
-                "history kept by Argonauts",
-                "2 tasks",
-                Tone::Plain,
-                2,
-            ),
-        ],
+        Merge::NoGit => Vec::new(),
     }
 }
-
-/// What the Merge phase says under its steps in a folder without git.
-pub(crate) const NO_COMMIT_MESSAGE: &str =
-    "no model writes a commit message here: only /rewind reads the history";
 
 /// The run over: built, reviewed, signed off, and merged as `merge` says.
 pub(crate) fn done(merge: Merge) -> WorkflowData {
@@ -412,32 +352,28 @@ pub(crate) fn done(merge: Merge) -> WorkflowData {
         "approved",
         Tone::Good,
     );
-    let mut data = workflow(
-        (5 + models, 5 + models),
-        380,
-        vec![
-            phase(
-                "Build",
-                RowStatus::Done,
-                Some((2, 2)),
-                build(RowStatus::Done),
-            ),
-            phase("Review", RowStatus::Done, Some((2, 2)), approved),
-            phase("Sign-off", RowStatus::Done, Some((1, 1)), vec![sign_off]),
-            phase(
-                "Merge",
-                RowStatus::Done,
-                Some((models, models)),
-                merge_rows(merge),
-            ),
-        ],
-    );
-    data.state = WorkflowState::Done;
-    if merge == Merge::NoGit
-        && let Some(merge) = data.phases.last_mut()
-    {
-        merge.note = Some(NO_COMMIT_MESSAGE.to_owned());
+    let mut phases = vec![
+        phase(
+            "Build",
+            RowStatus::Done,
+            Some((2, 2)),
+            build(RowStatus::Done),
+        ),
+        phase("Review", RowStatus::Done, Some((2, 2)), approved),
+        phase("Sign-off", RowStatus::Done, Some((1, 1)), vec![sign_off]),
+    ];
+    // A phase no agent worked in isn't listed once the run is over.
+    let merged = merge_rows(merge);
+    if !merged.is_empty() {
+        phases.push(phase(
+            "Merge",
+            RowStatus::Done,
+            Some((models, models)),
+            merged,
+        ));
     }
+    let mut data = workflow((5 + models, 5 + models), 380, phases);
+    data.state = WorkflowState::Done;
     let ended = match merge {
         Merge::NoGit => "Written into your folder · 4 files +52 −6 · /rewind puts it back",
         _ => "Merged onto main · 3f9c2a1 · 4 files +52 −6",
@@ -545,7 +481,10 @@ fn opened(row: AgentRow, prompt: String, activity: Vec<ActivityLine>, calls: u32
         asked_for: None,
         earlier: None,
         moved: None,
+        given: None,
+        prompt_about: None,
         review: None,
+        started_from: None,
     }
 }
 

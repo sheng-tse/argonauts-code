@@ -33,10 +33,12 @@ fn agent(id: &str, name: &str, provider: &str, state: AgentState, models: Vec<Mo
         state,
         models,
         cheapest: None,
+        by_price: Vec::new(),
+        default_model: None,
     }
 }
 
-/// Claude Code, Codex, and Antigravity CLI ready, OpenCode ready on a gpt model, Grok Build
+/// Claude Code, Codex, and agy ready, OpenCode ready on a gpt model, Grok Build
 /// declared but not installed, and a local endpoint.
 pub(super) fn roster() -> Roster {
     let mut claude = agent(
@@ -81,7 +83,7 @@ pub(super) fn roster() -> Roster {
             codex,
             agent(
                 "antigravity-cli",
-                "Antigravity CLI",
+                "agy",
                 "google",
                 AgentState::Ready,
                 Vec::new(),
@@ -422,10 +424,7 @@ fn a_command_beats_the_words() {
         "you typed /captain"
     );
     // A review fits Captain: it makes it checked.
-    assert_eq!(
-        followed(&applied, "gemini reviews"),
-        "Antigravity CLI reviews"
-    );
+    assert_eq!(followed(&applied, "gemini reviews"), "agy reviews");
     assert_eq!(applied.asked.mode, None, "the command applies itself");
     assert_eq!(applied.asked.captain, Some(CaptainKind::Checked));
 }
@@ -490,10 +489,7 @@ fn codex_orchestrates_and_gemini_reviews() {
         followed(&applied, "Codex orchestrates"),
         "Codex orchestrates"
     );
-    assert_eq!(
-        followed(&applied, "Gemini reviews"),
-        "Antigravity CLI reviews"
-    );
+    assert_eq!(followed(&applied, "Gemini reviews"), "agy reviews");
     assert_eq!(applied.asked.mode, Some(RunMode::Crew));
     assert_eq!(applied.main_agent, Some(ModelRef::new("codex", None)));
     let resolved = resolve_with(&applied).settings;
@@ -568,10 +564,7 @@ fn the_crew_its_members_models_and_efforts() {
         followed(&applied, "Only claude and codex"),
         "Crew: Claude Code and Codex"
     );
-    assert_eq!(
-        followed(&applied, "don't use gemini"),
-        "Not Antigravity CLI"
-    );
+    assert_eq!(followed(&applied, "don't use gemini"), "Not agy");
     assert_eq!(
         followed(&applied, "use haiku"),
         "Claude Code runs on Haiku 4.5"
@@ -737,6 +730,7 @@ fn applied_to_a_run_sets_its_main_agent_layer_and_approvals() {
         instructions: Vec::new(),
         request_settings: Vec::new(),
         required_steps: Vec::new(),
+        starts_from: None,
     };
     applied.apply_to(&mut request);
     assert_eq!(request.main_agent, Some(ModelRef::new("codex", None)));
@@ -1076,11 +1070,8 @@ fn a_model_word_for_an_agent_whose_models_are_unknown() {
     else {
         panic!("followed")
     };
-    assert_eq!(said, "Antigravity CLI reviews");
-    assert_eq!(
-        note.as_deref(),
-        Some("Antigravity CLI has no model named opus")
-    );
+    assert_eq!(said, "agy reviews");
+    assert_eq!(note.as_deref(), Some("agy has no model named opus"));
     assert_eq!(
         setting(&applied, "roles.reviewer.models").as_deref(),
         Some("[\"antigravity-cli\"]")
@@ -1302,4 +1293,186 @@ fn words_for_a_role_need_a_role_and_cant_loosen_safety() {
         refused(&applied, unsafe_words)
     );
     assert!(applied.settings.is_empty(), "{:?}", applied.settings);
+}
+
+/// The roster with Claude Code's three models priced, Haiku cheapest and Opus its default.
+fn priced_roster() -> Roster {
+    let mut roster = roster();
+    let claude = roster
+        .agents
+        .iter_mut()
+        .find(|agent| agent.id == "claude-code")
+        .unwrap();
+    claude
+        .models
+        .push(model("claude-sonnet-5", "Sonnet 5", &["sonnet"], None));
+    claude.by_price = ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-5-5"]
+        .map(str::to_owned)
+        .to_vec();
+    claude.default_model = Some("opus".to_owned());
+    roster
+}
+
+fn priced(message: &str, list: &[Instruction]) -> Applied {
+    check(list, message, &Settings::default(), &priced_roster(), None)
+}
+
+/// "Use only Claude" leaves no reviewer of another provider, so for this request reviews stay
+/// within Claude, on another model than the one that builds: Opus builds, Sonnet reviews. The
+/// line says so once, and "from now on" keeps the crew, never the relaxed rule.
+#[test]
+fn only_claude_reviews_on_another_claude_model() {
+    let message = "Use only Claude for this.";
+    let only = says(InstructionKind::Crew, "Use only Claude", "claude");
+    let applied = priced(message, std::slice::from_ref(&only));
+    assert_eq!(
+        followed(&applied, "Use only Claude"),
+        "Crew: Claude Code, reviews stay within Claude, as you asked"
+    );
+    assert_eq!(
+        setting(&applied, "crew").as_deref(),
+        Some("[\"claude-code\"]")
+    );
+    assert_eq!(
+        setting(&applied, "review.other_provider").as_deref(),
+        Some("false")
+    );
+    assert_eq!(
+        setting(&applied, "roles.reviewer.models").as_deref(),
+        Some("[\"claude-code/claude-sonnet-5\"]")
+    );
+    assert_eq!(setting(&applied, "roles.worker.models"), None);
+    let resolved = resolve_with(&applied).settings;
+    assert!(!resolved.review.other_provider);
+
+    let kept = check(
+        &[Instruction {
+            scope: InstructionScope::FromNowOn,
+            ..only
+        }],
+        "Use only Claude for this from now on.",
+        &Settings::default(),
+        &priced_roster(),
+        None,
+    );
+    assert!(kept.keep.iter().any(|(key, _)| key == "crew"));
+    assert!(
+        !kept
+            .keep
+            .iter()
+            .any(|(key, _)| key == "review.other_provider")
+    );
+}
+
+/// Two providers in the crew keep the rule as it is.
+#[test]
+fn only_claude_and_codex_leaves_the_rule_on() {
+    let message = "Use only Claude and Codex for this.";
+    let applied = priced(
+        message,
+        &[says(
+            InstructionKind::Crew,
+            "Use only Claude and Codex",
+            "claude, codex",
+        )],
+    );
+    assert_eq!(
+        followed(&applied, "Use only Claude and Codex"),
+        "Crew: Claude Code and Codex"
+    );
+    assert_eq!(setting(&applied, "review.other_provider"), None);
+    assert_eq!(setting(&applied, "roles.reviewer.models"), None);
+}
+
+/// "Keep it cheap" is its own kind: every agent on its cheapest model, and nothing else, so
+/// the crew and the review rule stay. Words that turn it around change nothing.
+#[test]
+fn keep_it_cheap_gives_the_cheapest_models_and_nothing_else() {
+    let applied = priced(
+        "Add due dates, and keep it cheap.",
+        &[says(InstructionKind::Cost, "keep it cheap", "")],
+    );
+    assert_eq!(followed(&applied, "keep it cheap"), "the cheapest models");
+    let keys: Vec<&str> = applied
+        .settings
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .collect();
+    assert!(
+        keys.iter().all(|key| key.starts_with("agents.")
+            && (key.ends_with(".model") || key.ends_with(".effort"))),
+        "{keys:?}"
+    );
+    assert_eq!(
+        setting(&applied, "agents.claude-code.model").as_deref(),
+        Some("\"claude-haiku-4-5\"")
+    );
+    assert_eq!(
+        setting(&applied, "agents.codex.effort").as_deref(),
+        Some("\"low\"")
+    );
+    let turned = priced(
+        "Add due dates, but don't keep it cheap.",
+        &[says(InstructionKind::Cost, "don't keep it cheap", "")],
+    );
+    assert!(turned.settings.is_empty(), "{:?}", turned.settings);
+    assert!(refused(&turned, "don't keep it cheap").contains("models stay as they are"));
+}
+
+/// "Use only Claude" read as a model with none named keeps the crew to Claude Code, as the
+/// same words read as the crew do.
+#[test]
+fn only_claude_read_as_a_model_keeps_the_crew_to_claude_code() {
+    let message = "Keep it cheap, use only Claude.";
+    let as_crew = priced(
+        message,
+        &[
+            says(InstructionKind::Cost, "Keep it cheap", ""),
+            says(InstructionKind::Crew, "use only Claude", "claude"),
+        ],
+    );
+    let as_model = priced(
+        message,
+        &[
+            says(InstructionKind::Cost, "Keep it cheap", ""),
+            says(InstructionKind::Model, "use only Claude", "claude"),
+        ],
+    );
+    for key in ["crew", "roles.worker.models", "roles.reviewer.models"] {
+        assert_eq!(setting(&as_model, key), setting(&as_crew, key), "{key}");
+    }
+    assert!(setting(&as_model, "crew").is_some());
+}
+
+/// Cheap and only Claude: the two cheapest models share the work, Sonnet building and Haiku
+/// reviewing, and on autopilot the merge still waits for you, since no review came from
+/// another provider than the builder's.
+#[test]
+fn cheap_and_only_claude_has_sonnet_build_and_haiku_review_and_the_merge_waits() {
+    use argonauts_core::policy::{EvidenceFacts, Verdict};
+    let message = "Keep it cheap, use only Claude.";
+    let applied = priced(
+        message,
+        &[
+            says(InstructionKind::Cost, "Keep it cheap", ""),
+            says(InstructionKind::Crew, "use only Claude", "claude"),
+        ],
+    );
+    assert_eq!(
+        setting(&applied, "roles.worker.models").as_deref(),
+        Some("[\"claude-code/claude-sonnet-5\"]")
+    );
+    assert_eq!(
+        setting(&applied, "roles.reviewer.models").as_deref(),
+        Some("[\"claude-code/claude-haiku-4-5\"]")
+    );
+    let resolved = resolve_with(&applied).settings;
+    let facts = EvidenceFacts {
+        checks_passed: Some(true),
+        reviews_approved: Some(true),
+        reviewed_by_other_provider: Some(false),
+        ..EvidenceFacts::default()
+    };
+    let verdict = argonauts_policy::rules::merge::check(&facts, &resolved.approvals.rules.merge);
+    assert_ne!(verdict.verdict, Verdict::Approve, "{:?}", verdict.reasons);
 }

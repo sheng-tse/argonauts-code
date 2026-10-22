@@ -23,6 +23,7 @@ use crate::state::TerminalInfo;
 use crate::terminal::InlineTerminal;
 use crate::terminal::setup::{
     TerminalModes, install_panic_hook, probe_background, probe_cell_size, probe_cursor,
+    probe_pixel_mouse,
 };
 use crate::text::set_ambiguous_width;
 use crate::theme::ColorEnv;
@@ -61,6 +62,12 @@ pub async fn run_app(io: AppIo, options: UiOptions) -> anyhow::Result<()> {
     // Only a terminal that draws pictures is asked how big its cells are, for the mascot's.
     let graphics = Graphics::from_process();
     let cell = graphics.and_then(|_| probe_cell_size(BACKGROUND_WAIT));
+    // Only a terminal that takes the kitty protocol's pictures may report the mouse in pixels,
+    // and it's asked, since its variables may have come from another terminal. One that left
+    // the background's question unanswered isn't asked again.
+    let pixel_mouse = matches!(graphics, Some(Graphics::Kitty))
+        && background.is_some()
+        && probe_pixel_mouse(BACKGROUND_WAIT);
     let (screen, cursor) = match probe_cursor() {
         Ok(found) => found,
         Err(error) => {
@@ -75,6 +82,7 @@ pub async fn run_app(io: AppIo, options: UiOptions) -> anyhow::Result<()> {
     let mut screen = Screen::new(io, &options, terminal, terminal_info(background));
     screen.use_real_terminal(modes, stops);
     screen.use_pictures(graphics, cell);
+    screen.use_pixel_mouse(pixel_mouse);
     screen.run(TerminalKeys::new()).await
 }
 

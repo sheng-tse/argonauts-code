@@ -84,7 +84,7 @@ fn report(summary: &str, file: &str) -> Value {
     })
 }
 
-/// The main agent plans, Codex builds each task as a file of its own, and Antigravity CLI
+/// The main agent plans, Codex builds each task as a file of its own, and agy
 /// reviews and signs off. Its first review of the first task asks for a change.
 fn crew(workflow: &str) -> anyhow::Result<(Crew, Arc<FakeRunner>)> {
     let mut crew = Crew::new()?;
@@ -138,6 +138,7 @@ fn crew(workflow: &str) -> anyhow::Result<(Crew, Arc<FakeRunner>)> {
         judge: vec![REVIEWER.parse()?],
         worker_workflows: false,
         merger: Vec::new(),
+        orchestrator_context: Default::default(),
     };
     crew.settings.workflow = workflow.to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -549,6 +550,116 @@ async fn an_agent_a_script_called_starts_over_and_the_script_takes_its_new_answe
     Ok(())
 }
 
+/// The script a forked orchestrator writes for the maker-checker workflow.
+const FORKED_SCRIPT: &str = r#"export const meta = {
+  name: 'due-dates',
+  description: 'Add due dates',
+  phases: [{ name: 'Build' }],
+}
+await agent('Add a due date to tasks: ' + args.request, {
+  role: 'worker', label: 'build:due-dates', phase: 'Build', task: 'due-dates',
+})
+"#;
+
+/// A crew whose orchestrator, `orchestrator`, answers with [`FORKED_SCRIPT`] unless `answers`
+/// says otherwise, in a run your words started from a Claude Code conversation.
+fn forking(
+    orchestrator: &str,
+    answers: impl Fn(&SessionSpec) -> FakeSession + Send + Sync + 'static,
+) -> anyhow::Result<(Crew, Arc<FakeRunner>)> {
+    use argonauts_core::events::run::{ForkFrom, StartsFrom};
+
+    let (mut crew, _worker) = crew("maker-checker")?;
+    let fake = crew
+        .services
+        .workers
+        .add(FakeRunner::cli(orchestrator, "anthropic").respond_with(answers));
+    crew.settings.crew.orchestrator = Orchestrator::Models(vec![orchestrator.parse()?]);
+    crew.starts_from = Some(StartsFrom::Fork(ForkFrom {
+        worker: "claude-code/opus".parse()?,
+        cli_session: "main-session-1".to_owned(),
+        folder: crew.repo.root().to_path_buf(),
+        tokens: Some(48_200),
+    }));
+    Ok((crew, fake))
+}
+
+fn the_script(_: &SessionSpec) -> FakeSession {
+    FakeSession::structured(json!({ "script": FORKED_SCRIPT }))
+}
+
+/// An orchestrator on the main session's CLI starts as a copy of that session, in the folder
+/// it ran in, and reads first that it now orchestrates the run.
+#[tokio::test]
+async fn an_orchestrator_on_the_main_sessions_cli_starts_as_its_fork() -> anyhow::Result<()> {
+    let (crew, orchestrator) = forking("claude-code/fable", the_script)?;
+    let _env = crew.repo.env_guard();
+    crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+
+    let specs = orchestrator.specs();
+    let plan = specs.first().context("the orchestrator's session")?;
+    assert!(plan.fork, "a fork of the main session");
+    assert_eq!(plan.resume.as_deref(), Some("main-session-1"));
+    assert_eq!(plan.workdir, crew.repo.root());
+    assert_eq!(
+        plan.access,
+        argonauts_core::session_runner::Access::ReadOnly
+    );
+    let first = plan.prompt.first().context("a prompt")?;
+    assert_eq!(first.text.trim_end(), argonauts_crew::orchestrated::FORKED);
+    Ok(())
+}
+
+/// An orchestrator on another CLI can't read the main session, so it starts from the brief.
+#[tokio::test]
+async fn an_orchestrator_on_another_cli_starts_from_the_brief() -> anyhow::Result<()> {
+    let (crew, orchestrator) = forking("codex/gpt-6-luna", the_script)?;
+    let _env = crew.repo.env_guard();
+    crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+
+    let specs = orchestrator.specs();
+    let plan = specs.first().context("the orchestrator's session")?;
+    assert!(!plan.fork);
+    assert_eq!(plan.resume, None);
+    assert!(
+        plan.prompt
+            .iter()
+            .all(|part| part.text.trim_end() != argonauts_crew::orchestrated::FORKED)
+    );
+    Ok(())
+}
+
+/// A fork that ends without its script gives way to the brief: the next try is a session of
+/// its own.
+#[tokio::test]
+async fn a_fork_that_fails_gives_way_to_the_brief() -> anyhow::Result<()> {
+    use argonauts_core::ErrorCategory;
+    use argonauts_core::events::session::EndReason;
+
+    let (crew, orchestrator) = forking("claude-code/fable", |spec| {
+        if spec.fork {
+            FakeSession::ended(EndReason::CliError {
+                category: ErrorCategory::SessionLost,
+                message: "No conversation found with session ID: main-session-1".to_owned(),
+            })
+        } else {
+            the_script(spec)
+        }
+    })?;
+    let _env = crew.repo.env_guard();
+    crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+
+    let forks: Vec<bool> = orchestrator
+        .specs()
+        .iter()
+        .filter(|spec| spec.role == RoleName::Orchestrator)
+        .map(|spec| spec.fork)
+        .collect();
+    assert_eq!(forks.first(), Some(&true), "{forks:?}");
+    assert_eq!(forks.last(), Some(&false), "{forks:?}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_built_in_workflow_runs_the_script_its_orchestrator_writes() -> anyhow::Result<()> {
     let (mut crew, _worker) = crew("maker-checker")?;
@@ -893,6 +1004,7 @@ send_back_to   = "Build"
         judge: vec![REVIEWER.parse()?],
         worker_workflows: false,
         merger: Vec::new(),
+        orchestrator_context: Default::default(),
     };
     crew.settings.workflow = "cross".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -1696,6 +1808,7 @@ async fn an_agent_cut_short_by_a_wait_for_others_goes_again_when_the_run_wakes()
         judge: vec![MAIN.parse()?],
         worker_workflows: false,
         merger: Vec::new(),
+        orchestrator_context: Default::default(),
     };
     crew.settings.workflow = "council".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -1798,6 +1911,67 @@ fn approves() -> FakeSession {
     }))
 }
 
+/// A file of steps runs as written, and its orchestrator's step is still the run's
+/// orchestrator: on the main session's CLI it starts as that session's copy.
+#[tokio::test]
+async fn a_files_orchestrator_step_on_the_main_sessions_cli_starts_as_its_fork()
+-> anyhow::Result<()> {
+    use argonauts_core::events::run::{ForkFrom, StartsFrom};
+
+    let mut crew = Crew::new()?;
+    crew.settings.evolution.propose_every = 0;
+    let main = crew
+        .services
+        .workers
+        .add(
+            FakeRunner::cli(MAIN, "anthropic").respond_with(|spec| match spec.role {
+                RoleName::Orchestrator => FakeSession::structured(json!({
+                    "summary": "One task",
+                    "tasks": [{"title": "Due field", "done_when": ["a task has a due date"]}],
+                })),
+                _ => support::smallest_answer(spec),
+            }),
+        );
+    for (model, provider) in [(WORKER, "openai"), (REVIEWER, "google")] {
+        crew.services
+            .workers
+            .add(FakeRunner::cli(model, provider).respond_with(support::smallest_answer));
+    }
+    crew.settings.crew = CrewSettings {
+        main: MAIN.parse()?,
+        orchestrator: Orchestrator::Main,
+        worker: vec![WORKER.parse()?],
+        reviewer: vec![REVIEWER.parse()?],
+        judge: vec![REVIEWER.parse()?],
+        worker_workflows: false,
+        merger: Vec::new(),
+        orchestrator_context: Default::default(),
+    };
+    crew.settings.workflow = "spec-first".to_owned();
+    crew.settings.workflows.adapt_with = AdaptWith::Script;
+    let written = argonauts_runner::template("spec-first", ".argonauts/workflows");
+    write_workflow(&crew, "spec-first.toml", &written)?;
+    crew.starts_from = Some(StartsFrom::Fork(ForkFrom {
+        worker: MAIN.parse()?,
+        cli_session: "main-session-1".to_owned(),
+        folder: crew.repo.root().to_path_buf(),
+        tokens: Some(48_200),
+    }));
+    let _env = crew.repo.env_guard();
+    crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+
+    let plan = main
+        .specs()
+        .into_iter()
+        .find(|spec| spec.role == RoleName::Orchestrator)
+        .context("the plan's session")?;
+    assert!(plan.fork, "a copy of the main session");
+    assert_eq!(plan.resume.as_deref(), Some("main-session-1"));
+    let first = plan.prompt.first().context("a prompt")?;
+    assert_eq!(first.text.trim_end(), argonauts_crew::orchestrated::FORKED);
+    Ok(())
+}
+
 /// A workflow of your own, exactly as `/workflow new` writes it, on autopilot with a crew of
 /// three CLIs: the main agent splits the request, another CLI builds the task, and a third
 /// reviews it. The run goes from the request to the merge with nothing left to you: every
@@ -1842,6 +2016,7 @@ async fn on_autopilot_a_new_workflow_file_goes_from_request_to_merge() -> anyhow
         judge: vec![REVIEWER.parse()?],
         worker_workflows: false,
         merger: Vec::new(),
+        orchestrator_context: Default::default(),
     };
     crew.settings.workflow = "spec-first".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -1872,9 +2047,11 @@ async fn on_autopilot_a_new_workflow_file_goes_from_request_to_merge() -> anyhow
     );
     assert!(crew.repo.root().join("due.rs").exists(), "the work is in");
 
-    // The file's three steps ran as written, each on the CLI its role names.
+    // The file's three steps ran as written, each on the CLI its role names. The merger's
+    // commit message starts while the merge waits for autopilot, so whether it shows is timing.
     let shown: Vec<String> = started(events)
         .iter()
+        .filter(|(label, ..)| label != "commit message")
         .map(|(label, role, worker)| format!("{label} {} {worker}", role.as_str()))
         .collect();
     assert_eq!(
@@ -1902,5 +2079,682 @@ async fn on_autopilot_a_new_workflow_file_goes_from_request_to_merge() -> anyhow
         }
     }
     assert!(open.is_empty(), "left open: {open:?}");
+    Ok(())
+}
+
+/// A judge of the worker's own provider, on another model than the worker's.
+const SAME_PROVIDER_JUDGE: &str = "codex/judge";
+
+/// The verdict a script's readers answer with.
+const VERDICT: &str = "{ type: 'object', properties: { accept: { type: 'boolean' }, findings: \
+     { type: 'array', items: { type: 'string' } } }, required: ['accept', 'findings'] }";
+
+/// A crew whose orchestrator writes `script`, with the worker building every task and a
+/// reviewer of another provider, both answering whatever they're asked to judge.
+fn scripted(script: String) -> anyhow::Result<Crew> {
+    let mut crew = Crew::new()?;
+    crew.settings.evolution.propose_every = 0;
+    let orchestrator =
+        FakeRunner::cli("claude-code/fable", "anthropic").respond_with(move |spec| {
+            match spec.step {
+                Some(StepName::ModelJudge) => approves(),
+                _ => FakeSession::structured(json!({"script": script})),
+            }
+        });
+    crew.services.workers.add(orchestrator);
+    let main = FakeRunner::cli(MAIN, "anthropic").respond_with(|spec| match spec.step {
+        Some(StepName::ModelJudge) => approves(),
+        _ => support::smallest_answer(spec),
+    });
+    crew.services.workers.add(main);
+    let judges = |spec: &SessionSpec| match spec.step {
+        Some(StepName::ModelJudge) => approves(),
+        _ if spec.json_schema.is_some() => {
+            FakeSession::structured(json!({"accept": true, "findings": []}))
+        }
+        _ => FakeSession::completed("Done as asked."),
+    };
+    let worker = FakeRunner::cli(WORKER, "openai").respond_with(move |spec| {
+        if spec.access.writes() {
+            let file = if prompt(spec).contains("Due docs") {
+                "docs.md"
+            } else {
+                "due.rs"
+            };
+            std::fs::write(spec.workdir.join(file), "due\n").expect("writes its file");
+            return FakeSession::structured(report(&format!("Wrote {file}"), file));
+        }
+        judges(spec)
+    });
+    crew.services.workers.add(worker);
+    crew.services
+        .workers
+        .add(FakeRunner::cli(REVIEWER, "google").respond_with(judges));
+    crew.settings.crew = CrewSettings {
+        main: MAIN.parse()?,
+        orchestrator: Orchestrator::Models(vec!["claude-code/fable".parse()?]),
+        worker: vec![WORKER.parse()?],
+        reviewer: vec![REVIEWER.parse()?],
+        judge: vec![REVIEWER.parse()?],
+        worker_workflows: false,
+        merger: Vec::new(),
+        orchestrator_context: Default::default(),
+    };
+    crew.settings.workflow = "orchestrator".to_owned();
+    crew.settings.workflows.adapt_with = AdaptWith::Script;
+    // The repository has tests, which autopilot wants to see pass before it merges.
+    let passing = |name: &str| argonauts_core::settings::protocol::CheckCommand {
+        name: name.to_owned(),
+        command: vec!["true".to_owned()],
+    };
+    crew.settings.checks.run = vec![passing("tests")];
+    crew.settings.checks.full_suite = vec![passing("suite")];
+    Ok(crew)
+}
+
+/// The worker each labelled session ran on, in the order they started.
+fn ran_on(events: &[RunEvent], label: &str) -> Vec<String> {
+    started(events)
+        .into_iter()
+        .filter(|(named, ..)| named == label)
+        .map(|(_, _, worker)| worker)
+        .collect()
+}
+
+/// The script's last report of the agent under `label`.
+fn reported(events: &[RunEvent], label: &str) -> Option<argonauts_core::events::session::CliAgent> {
+    reports(events)
+        .last()?
+        .workflow
+        .agents
+        .iter()
+        .find(|agent| agent.label == label)
+        .cloned()
+}
+
+/// A model that wraps its JSON answer in a Markdown fence still answered, so the call counts
+/// with its answer and its row is done.
+#[tokio::test]
+async fn a_fenced_json_answer_fits_its_schema() -> anyhow::Result<()> {
+    fenced_answer_counts("```json\n{\"plan\": \"Add a due field\"}\n```").await
+}
+
+/// Words before and after the fence are still around the same answer.
+#[tokio::test]
+async fn a_fenced_json_answer_inside_words_fits_its_schema() -> anyhow::Result<()> {
+    fenced_answer_counts(
+        "Here is my plan:\n\n```json\n{\"plan\": \"Add a due field\"}\n```\n\n\
+         It keeps every test as it is.",
+    )
+    .await
+}
+
+async fn fenced_answer_counts(fenced: &'static str) -> anyhow::Result<()> {
+    let script = "export const meta = { name: 'fenced', description: 'Add due dates', \
+         phases: [{ name: 'Propose' }] }\n\
+         const plan = await agent('Propose a plan', { role: 'worker', access: 'read', \
+         label: 'propose:p0', phase: 'Propose', schema: { type: 'object', properties: { plan: { type: 'string' } }, \
+         required: ['plan'] } })\n\
+         return plan ? plan.plan : 'no plan'\n";
+    let mut crew = scripted(script.to_owned())?;
+    crew.services.workers.add(
+        FakeRunner::cli("opencode/gemma", "unknown")
+            .respond_with(move |_| FakeSession::completed(fenced)),
+    );
+    crew.settings.crew.worker = vec!["opencode/gemma".parse()?];
+    let _env = crew.repo.env_guard();
+    let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+    let events = all_events(&outcomes);
+
+    let row = reported(events, "propose:p0").context("propose:p0 is reported")?;
+    assert_eq!(row.state, CliAgentState::Done, "{row:?}");
+    assert_eq!(row.error, None);
+    let missing = events.iter().any(|event| {
+        matches!(&event.kind, RunEventKind::Note(note) if note.text.starts_with("propose:p0 "))
+    });
+    assert!(!missing, "no note says propose:p0 went without an answer");
+    Ok(())
+}
+
+/// A reader that ends without its answer fails, and its row keeps why, as the note says it.
+#[tokio::test]
+async fn a_failed_agents_row_says_why() -> anyhow::Result<()> {
+    let script = format!(
+        "export const meta = {{ name: 'apology', description: 'Add due dates', \
+         phases: [{{ name: 'Challenge' }}] }}\n\
+         await agent('Challenge the plan', {{ role: 'reviewer', label: 'challenge:p3', \
+         phase: 'Challenge', schema: {VERDICT} }})\n\
+         return 'done'\n"
+    );
+    let mut crew = scripted(script)?;
+    crew.services.workers.add(
+        FakeRunner::cli("opencode/gemma", "unknown").respond_with(|_| {
+            FakeSession::completed("I apologize for the previous execution errors.")
+        }),
+    );
+    crew.settings.crew.reviewer = vec!["opencode/gemma".parse()?];
+    let _env = crew.repo.env_guard();
+    let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+    let events = all_events(&outcomes);
+
+    let row = reported(events, "challenge:p3").context("challenge:p3 is reported")?;
+    assert_eq!(row.state, CliAgentState::Failed, "{row:?}");
+    assert_eq!(row.error.as_deref(), Some("ended without an answer"));
+    assert!(
+        notes(events).contains(&"challenge:p3 ended without an answer"),
+        "{:#?}",
+        notes(events)
+    );
+    Ok(())
+}
+
+/// A sign-off about no one task judges every builder's work, so on autopilot it comes from
+/// another provider than theirs even when the judges' list puts a builder's first, and the run
+/// merges.
+#[tokio::test]
+async fn on_autopilot_a_sign_off_about_no_one_task_comes_from_another_provider()
+-> anyhow::Result<()> {
+    let script = format!(
+        "export const meta = {{ name: 'signed', description: 'Add due dates', \
+         phases: [{{ name: 'Build' }}, {{ name: 'Review' }}, {{ name: 'Sign-off' }}] }}\n\
+         await agent('Due field: ' + args.request, {{ role: 'worker', label: 'build:field', \
+         phase: 'Build', task: 'field' }})\n\
+         await agent('Review the due field', {{ role: 'reviewer', label: 'review:field', \
+         phase: 'Review', task: 'field', schema: {VERDICT} }})\n\
+         return await agent('Is the whole change done?', {{ role: 'judge', label: 'sign-off', \
+         phase: 'Sign-off', schema: {VERDICT} }})\n"
+    );
+    let mut crew = scripted(script)?;
+    crew.settings.crew.judge = vec![WORKER.parse()?, REVIEWER.parse()?];
+    let _env = crew.repo.env_guard();
+    let outcome = on_autopilot(&crew).await?;
+    let events = &outcome.events;
+
+    assert_eq!(ran_on(events, "sign-off"), [REVIEWER]);
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(RunOutcome::Merged),
+        "{:#?}",
+        notes(events)
+    );
+    Ok(())
+}
+
+/// On autopilot, a review from another provider of the build as it stands counts beside a
+/// sign-off from the worker's own provider, so the run merges.
+#[tokio::test]
+async fn a_cross_review_from_another_provider_counts_beside_a_same_provider_sign_off()
+-> anyhow::Result<()> {
+    let script = format!(
+        "export const meta = {{ name: 'cross', description: 'Add due dates', \
+         phases: [{{ name: 'Build' }}, {{ name: 'Review' }}, {{ name: 'Sign-off' }}] }}\n\
+         await agent('Due field: ' + args.request, {{ role: 'worker', label: 'build:field', \
+         phase: 'Build', task: 'field' }})\n\
+         await agent('Review the due field', {{ role: 'reviewer', label: 'review:field', \
+         phase: 'Review', task: 'field', schema: {VERDICT} }})\n\
+         return await agent('Sign off the due field', {{ role: 'judge', label: 'sign-off', \
+         phase: 'Sign-off', task: 'field', schema: {VERDICT} }})\n"
+    );
+    let mut crew = scripted(script)?;
+    crew.services
+        .workers
+        .add(
+            FakeRunner::cli(SAME_PROVIDER_JUDGE, "openai").respond_with(|spec| match spec.step {
+                Some(StepName::ModelJudge) => approves(),
+                _ => FakeSession::structured(json!({"accept": true, "findings": []})),
+            }),
+        );
+    crew.settings.crew.judge = vec![SAME_PROVIDER_JUDGE.parse()?];
+    let _env = crew.repo.env_guard();
+    let outcome = on_autopilot(&crew).await?;
+    let events = &outcome.events;
+
+    assert_eq!(ran_on(events, "review:field"), [REVIEWER]);
+    assert_eq!(ran_on(events, "sign-off"), [SAME_PROVIDER_JUDGE]);
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(RunOutcome::Merged),
+        "{:#?}",
+        notes(events)
+    );
+    Ok(())
+}
+
+/// A cross-provider approval counts only for the build it read: once the task is built again
+/// and only its worker's provider approves the new build, the run keeps its branch.
+#[tokio::test]
+async fn a_cross_review_of_an_earlier_build_doesnt_count() -> anyhow::Result<()> {
+    let script = format!(
+        "export const meta = {{ name: 'stale', description: 'Add due dates', \
+         phases: [{{ name: 'Build' }}, {{ name: 'Review' }}, {{ name: 'Sign-off' }}] }}\n\
+         await agent('Due field: ' + args.request, {{ role: 'worker', label: 'build:field', \
+         phase: 'Build', task: 'field' }})\n\
+         await agent('Review the due field', {{ role: 'reviewer', label: 'review:field', \
+         phase: 'Review', task: 'field', schema: {VERDICT} }})\n\
+         await agent('Due field again: ' + args.request, {{ role: 'worker', label: 'build:field', \
+         phase: 'Build', task: 'field', tryNumber: 2 }})\n\
+         return await agent('Sign off the due field', {{ role: 'judge', label: 'sign-off', \
+         phase: 'Sign-off', task: 'field', schema: {VERDICT} }})\n"
+    );
+    let mut crew = scripted(script)?;
+    crew.services
+        .workers
+        .add(
+            FakeRunner::cli(SAME_PROVIDER_JUDGE, "openai").respond_with(|spec| match spec.step {
+                Some(StepName::ModelJudge) => approves(),
+                _ => FakeSession::structured(json!({"accept": true, "findings": []})),
+            }),
+        );
+    crew.settings.crew.judge = vec![SAME_PROVIDER_JUDGE.parse()?];
+    let _env = crew.repo.env_guard();
+    let outcome = on_autopilot(&crew).await?;
+    let events = &outcome.events;
+
+    assert_eq!(ran_on(events, "sign-off"), [SAME_PROVIDER_JUDGE]);
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(RunOutcome::BranchLeft),
+        "{:#?}",
+        notes(events)
+    );
+    assert!(
+        notes(events)
+            .iter()
+            .any(|note| note.contains("a reviewer of its worker's own provider")),
+        "{:#?}",
+        notes(events)
+    );
+    Ok(())
+}
+
+fn notes(events: &[RunEvent]) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Note(note) => Some(note.text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Qwen on Ollama, as setup offers it for reviews: served without tools, with the window its
+/// tag holds it to.
+const LOCAL_REVIEWER: &str = "ollama/qwen3-coder:30b-64k";
+
+/// The crew of [`scripted`] with a local model first among the reviewers, held to `window`
+/// tokens or sized as it loads, and a CLI reviewer of another provider after it.
+fn with_a_local_reviewer(
+    script: String,
+    window: Option<u64>,
+) -> anyhow::Result<(Crew, Arc<FakeRunner>)> {
+    let mut crew = scripted(script)?;
+    crew.services.registry.add(serde_json::from_value(json!({
+        "id": LOCAL_REVIEWER,
+        "provider": "alibaba",
+        "kind": "endpoint",
+        "access": "local",
+        "cost": {"unit": "none"},
+        "window": window,
+        "context_window": 262_144,
+        "discovered": true,
+    }))?);
+    let local = crew.services.workers.add(
+        FakeRunner::endpoint(LOCAL_REVIEWER, "alibaba")
+            .respond_with(|_| FakeSession::structured(json!({"accept": true, "findings": []}))),
+    );
+    crew.settings.crew.reviewer = vec![LOCAL_REVIEWER.parse()?, REVIEWER.parse()?];
+    // Each task's worker writes its file, the big one far past a small window.
+    let worker = FakeRunner::cli("codex/writer", "openai").respond_with(|spec| {
+        let asked = prompt(spec);
+        let (file, text) = if asked.contains("Big:") {
+            ("big.rs", "// a long line of the big change\n".repeat(2_000))
+        } else {
+            ("small.rs", "small\n".to_owned())
+        };
+        std::fs::write(spec.workdir.join(file), text).expect("writes its file");
+        FakeSession::structured(report(&format!("Wrote {file}"), file))
+    });
+    crew.services.workers.add(worker);
+    crew.settings.crew.worker = vec!["codex/writer".parse()?];
+    Ok((crew, local))
+}
+
+/// Builds `tasks` one after another, each reviewed once it's built.
+fn build_and_review(tasks: &[(&str, &str)]) -> String {
+    let mut script = "export const meta = { name: 'reviewed', description: 'Add due dates', \
+         phases: [{ name: 'Build' }, { name: 'Review' }] }\n"
+        .to_owned();
+    for (task, asked) in tasks {
+        script.push_str(&format!(
+            "await agent('{asked}: ' + args.request, {{ role: 'worker', label: 'build:{task}', \
+             phase: 'Build', task: '{task}' }})\n\
+             await agent('Review {task}', {{ role: 'reviewer', label: 'review:{task}', \
+             phase: 'Review', task: '{task}', schema: {VERDICT} }})\n"
+        ));
+    }
+    script.push_str("return 'done'\n");
+    script
+}
+
+/// A local model served without tools reviews with the change and the checks in its prompt,
+/// and nobody stands in for it.
+#[tokio::test]
+async fn a_local_reviewer_starts_with_no_tools_and_the_change_in_its_prompt() -> anyhow::Result<()>
+{
+    use argonauts_core::events::session::InputPartKind;
+    use argonauts_core::session_runner::Access;
+
+    let (crew, local) =
+        with_a_local_reviewer(build_and_review(&[("small", "Small")]), Some(65_536))?;
+    let _env = crew.repo.env_guard();
+    let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+    let events = all_events(&outcomes);
+
+    assert_eq!(ran_on(events, "review:small"), [LOCAL_REVIEWER]);
+    let asked = local.specs();
+    let review = asked.last().context("the local model reviewed")?;
+    assert_eq!(review.access, Access::NoTools);
+    let change = review
+        .prompt
+        .iter()
+        .find(|part| part.kind == InputPartKind::Evidence && part.label == "the change")
+        .with_context(|| format!("no change in its prompt: {}", prompt(review)))?;
+    assert!(change.text.contains("+small"), "{}", change.text);
+    assert!(!change.text.contains("folder"), "{}", change.text);
+    assert!(
+        review
+            .prompt
+            .iter()
+            .any(|part| part.kind == InputPartKind::CheckOutput),
+        "the checks are in its prompt: {}",
+        prompt(review)
+    );
+    Ok(())
+}
+
+/// A change too big for the local model's window goes to a reviewer with tools, saying why,
+/// and a later small review still runs on the local model.
+#[tokio::test]
+async fn a_change_too_big_for_a_local_window_goes_to_a_reviewer_with_tools() -> anyhow::Result<()> {
+    use argonauts_core::session_runner::Access;
+
+    let script = build_and_review(&[("big", "Big"), ("small", "Small")]);
+    let (crew, local) = with_a_local_reviewer(script, Some(8_192))?;
+    let _env = crew.repo.env_guard();
+    let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+    let events = all_events(&outcomes);
+
+    assert_eq!(ran_on(events, "review:big"), [REVIEWER]);
+    assert_eq!(ran_on(events, "review:small"), [LOCAL_REVIEWER]);
+    assert!(
+        local
+            .specs()
+            .iter()
+            .all(|spec| spec.access == Access::NoTools)
+    );
+    let said = events.iter().any(|event| {
+        matches!(&event.kind, RunEventKind::Workflow(WorkflowEvent::Note(note))
+            if note.text.starts_with("review:big goes to ")
+                && note.text.ends_with(", whose 8k window can't hold this change"))
+    });
+    assert!(said, "{:#?}", notes(events));
+    // It runs in the local model's place, and says why for its agent view.
+    let stood_in = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            RunEventKind::Session(SessionEvent::Started(started))
+                if started.label.as_deref() == Some("review:big") =>
+            {
+                Some(started)
+            }
+            _ => None,
+        })
+        .context("review:big started")?;
+    let asked = stood_in.asked.as_ref().map(ToString::to_string);
+    assert_eq!(asked.as_deref(), Some(LOCAL_REVIEWER));
+    assert_eq!(
+        stood_in.asked_why.as_deref(),
+        Some("whose 8k window can't hold this change")
+    );
+    Ok(())
+}
+
+/// Two reviews of one task, the first on the local model, each by its number.
+fn reviewed_twice() -> String {
+    format!(
+        "export const meta = {{ name: 'reviewed twice', description: 'Add due dates', \
+         phases: [{{ name: 'Build' }}, {{ name: 'Review' }}] }}\n\
+         await agent('Big: ' + args.request, {{ role: 'worker', label: 'build:big', \
+         phase: 'Build', task: 'big' }})\n\
+         await agent('Review big', {{ role: 'reviewer', label: 'review:a', phase: 'Review', \
+         task: 'big', model: 0, schema: {VERDICT} }})\n\
+         await agent('Review big again', {{ role: 'reviewer', label: 'review:b', \
+         phase: 'Review', task: 'big', model: 1, schema: {VERDICT} }})\n\
+         return 'done'\n"
+    )
+}
+
+/// A reviewer from the builder's provider, beside the local model and the other reviewer.
+const BUILDERS_OWN: &str = "codex/luna";
+
+/// The reviewer that takes a local model's place is one no other review of the same task has
+/// in the round, so no model's review counts twice: the next review keeps clear of it.
+#[tokio::test]
+async fn a_local_reviewers_fallback_repeats_no_other_review() -> anyhow::Result<()> {
+    let (mut crew, _local) = with_a_local_reviewer(reviewed_twice(), Some(8_192))?;
+    crew.services.workers.add(
+        FakeRunner::cli(BUILDERS_OWN, "openai")
+            .respond_with(|_| FakeSession::structured(json!({"accept": true, "findings": []}))),
+    );
+    crew.settings.crew.reviewer.push(BUILDERS_OWN.parse()?);
+    let _env = crew.repo.env_guard();
+    let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+    let events = all_events(&outcomes);
+
+    assert_eq!(ran_on(events, "review:a"), [REVIEWER]);
+    assert_eq!(ran_on(events, "review:b"), [BUILDERS_OWN]);
+    Ok(())
+}
+
+/// The reviewer that takes a local model's place comes from another provider than the
+/// builder's while one is free, whatever number the call had.
+#[tokio::test]
+async fn a_local_reviewers_fallback_comes_from_another_provider() -> anyhow::Result<()> {
+    let script = format!(
+        "export const meta = {{ name: 'reviewed', description: 'Add due dates', \
+         phases: [{{ name: 'Build' }}, {{ name: 'Review' }}] }}\n\
+         await agent('Big: ' + args.request, {{ role: 'worker', label: 'build:big', \
+         phase: 'Build', task: 'big' }})\n\
+         await agent('Review big', {{ role: 'reviewer', label: 'review:big', phase: 'Review', \
+         task: 'big', model: 1, schema: {VERDICT} }})\n\
+         return 'done'\n"
+    );
+    let (mut crew, _local) = with_a_local_reviewer(script, Some(8_192))?;
+    crew.services.workers.add(
+        FakeRunner::cli(BUILDERS_OWN, "openai")
+            .respond_with(|_| FakeSession::structured(json!({"accept": true, "findings": []}))),
+    );
+    crew.settings.crew.reviewer = vec![
+        REVIEWER.parse()?,
+        LOCAL_REVIEWER.parse()?,
+        BUILDERS_OWN.parse()?,
+    ];
+    let _env = crew.repo.env_guard();
+    let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+    let events = all_events(&outcomes);
+
+    assert_eq!(ran_on(events, "review:big"), [REVIEWER]);
+    Ok(())
+}
+
+/// A local model its server sizes as it loads, and that isn't loaded, is held to the least a
+/// local server gives, so a big change goes to a reviewer with tools and says why.
+#[tokio::test]
+async fn a_local_model_not_yet_loaded_is_held_to_the_least_window() -> anyhow::Result<()> {
+    let script = build_and_review(&[("big", "Big"), ("small", "Small")]);
+    let (crew, _local) = with_a_local_reviewer(script, None)?;
+    let _env = crew.repo.env_guard();
+    let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+    let events = all_events(&outcomes);
+
+    assert_eq!(ran_on(events, "review:big"), [REVIEWER]);
+    assert_eq!(ran_on(events, "review:small"), [LOCAL_REVIEWER]);
+    let said = events.iter().any(|event| {
+        matches!(&event.kind, RunEventKind::Workflow(WorkflowEvent::Note(note))
+            if note.text.ends_with(", whose window isn't known until it loads"))
+    });
+    assert!(said, "{:#?}", notes(events));
+    Ok(())
+}
+
+/// The script of a task that builds on another: cap first, reviewed, then per-key after it.
+fn per_key_after_cap() -> String {
+    format!(
+        "export const meta = {{ name: 'after', description: 'Add due dates', \
+         phases: [{{ name: 'Build' }}, {{ name: 'Review' }}] }}\n\
+         await agent('Cap: ' + args.request, {{ role: 'worker', label: 'build:cap', \
+         phase: 'Build', task: 'cap' }})\n\
+         await agent('Review cap', {{ role: 'reviewer', label: 'review:cap', phase: 'Review', \
+         task: 'cap', schema: {VERDICT} }})\n\
+         await agent('Per key: ' + args.request, {{ role: 'worker', label: 'build:per-key', \
+         phase: 'Build', task: 'per-key', after: ['cap'] }})\n\
+         await agent('Review per-key', {{ role: 'reviewer', label: 'review:per-key', \
+         phase: 'Review', task: 'per-key', after: ['cap'], schema: {VERDICT} }})\n\
+         return 'done'\n"
+    )
+}
+
+/// Writes cap.rs for the cap task, and for per-key, per_key.rs beside whatever cap.rs its
+/// worktree started with, which it says in its report.
+fn builds_on_cap() -> FakeRunner {
+    FakeRunner::cli("codex/writer", "openai").respond_with(|spec| {
+        if !spec.access.writes() {
+            return FakeSession::structured(json!({"accept": true, "findings": []}));
+        }
+        if prompt(spec).contains("Cap:") {
+            std::fs::write(spec.workdir.join("cap.rs"), "capped\n").expect("writes its file");
+            return FakeSession::structured(report("Wrote cap.rs", "cap.rs"));
+        }
+        let found = if spec.workdir.join("cap.rs").exists() {
+            "cap.rs was there"
+        } else {
+            "cap.rs was missing"
+        };
+        std::fs::write(spec.workdir.join("per_key.rs"), "per key\n").expect("writes its file");
+        FakeSession::structured(report(found, "per_key.rs"))
+    })
+}
+
+/// A task that comes after another starts from that one's accepted work: the first merges
+/// into the run before the second's worktree is made, and the second's change leaves it out.
+#[tokio::test]
+async fn a_task_after_another_starts_from_its_merge_and_holds_its_change() -> anyhow::Result<()> {
+    use argonauts_core::events::session::InputPartKind;
+
+    let mut crew = scripted(per_key_after_cap())?;
+    crew.services.workers.add(builds_on_cap());
+    crew.settings.crew.worker = vec!["codex/writer".parse()?];
+    let _env = crew.repo.env_guard();
+    let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+    let events = all_events(&outcomes);
+
+    let merged: Vec<String> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Merge(argonauts_core::events::task::MergeEvent::Merged {
+                task, ..
+            }) => Some(task.to_string()),
+            _ => None,
+        })
+        .collect();
+    let built = started(events)
+        .iter()
+        .position(|(label, ..)| label == "build:per-key");
+    let first_merge = events.iter().position(|event| {
+        matches!(&event.kind, RunEventKind::Merge(argonauts_core::events::task::MergeEvent::Merged { task, .. }) if task.as_str().contains("cap"))
+    });
+    assert!(built.is_some() && first_merge.is_some(), "{merged:?}");
+    let per_key_started = events.iter().position(|event| {
+        matches!(&event.kind, RunEventKind::Session(SessionEvent::Started(started))
+            if started.label.as_deref() == Some("build:per-key"))
+    });
+    assert!(
+        first_merge < per_key_started,
+        "cap merges before per-key starts"
+    );
+    let said = notes(events);
+    assert!(
+        !said.iter().any(|note| note.contains("skipped")),
+        "{said:#?}"
+    );
+    let reported = task_states(events);
+    assert!(
+        reported
+            .iter()
+            .filter(|(_, state)| *state == TaskState::Merged)
+            .count()
+            >= 2,
+        "{reported:#?}"
+    );
+    // Per-key's worktree held cap's work, and its review reads only its own change.
+    let review = crew
+        .services
+        .workers
+        .fake(REVIEWER)
+        .context("the reviewer")?
+        .specs()
+        .into_iter()
+        .rev()
+        .find(|spec| prompt(spec).contains("Review per-key"))
+        .context("per-key was reviewed")?;
+    let change = review
+        .prompt
+        .iter()
+        .find(|part| part.kind == InputPartKind::Evidence)
+        .context("the change")?;
+    assert!(change.text.contains("per_key.rs"), "{}", change.text);
+    assert!(!change.text.contains("cap.rs"), "{}", change.text);
+    let summaries: Vec<String> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Task(TaskEvent::Reported(report)) => Some(report.summary.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        summaries
+            .iter()
+            .any(|summary| summary == "cap.rs was there"),
+        "{summaries:#?}"
+    );
+    Ok(())
+}
+
+/// A task that comes after one its review never accepted is skipped, saying why, and no
+/// worker builds it.
+#[tokio::test]
+async fn a_task_after_one_never_accepted_is_skipped_and_says_why() -> anyhow::Result<()> {
+    let mut crew = scripted(per_key_after_cap())?;
+    crew.services.workers.add(builds_on_cap());
+    crew.settings.crew.worker = vec!["codex/writer".parse()?];
+    crew.services.workers.add(
+        FakeRunner::cli("antigravity-cli/refuses", "google").respond_with(|_| {
+            FakeSession::structured(json!({"accept": false, "findings": ["it overshoots"]}))
+        }),
+    );
+    crew.settings.crew.reviewer = vec!["antigravity-cli/refuses".parse()?];
+    let _env = crew.repo.env_guard();
+    let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+    let events = all_events(&outcomes);
+
+    assert!(ran_on(events, "build:per-key").is_empty());
+    let why = "skipped, since it comes after cap, which wasn't accepted";
+    let row = reported(events, "build:per-key").context("build:per-key is reported")?;
+    assert_eq!(row.error.as_deref(), Some(why));
+    assert!(
+        notes(events).contains(&format!("build:per-key {why}").as_str()),
+        "{:#?}",
+        notes(events)
+    );
     Ok(())
 }

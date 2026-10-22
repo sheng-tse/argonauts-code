@@ -3,7 +3,9 @@
 use std::time::Duration;
 
 use argonauts_core::events::RunEvent;
-use argonauts_core::events::run::{ClosingAnswer, ResumeCause, RunOutcome, RunResumed, WaitReason};
+use argonauts_core::events::run::{
+    ClosingAnswer, Party, ResumeCause, RunOutcome, RunResumed, WaitReason,
+};
 use argonauts_core::hidden_git::{HISTORY_KEPT, MergedInto};
 use argonauts_core::settings::ui::VerbTheme;
 use argonauts_core::{RunId, Spend, TaskId, Verbosity};
@@ -101,11 +103,12 @@ pub(super) fn resumed(
     emit(cx, step("Resume", &name, ToolState::Done, &details));
 }
 
-/// `⏸ You paused the run · /resume carries it on`, then which agents stopped and that their
-/// work is kept. Nothing wakes it but you.
+/// `⏸ You paused the run · /resume carries it on`, worded by who asked for the pause, then which
+/// agents stopped and that their work is kept. Nothing wakes it but you.
 pub(super) fn paused(
     run: &RunId,
     now: bool,
+    by: Option<&Party>,
     sessions_stopped: u32,
     committed: &[TaskId],
     cx: &mut Cx<'_>,
@@ -123,13 +126,28 @@ pub(super) fn paused(
         [] => Some(plural(stopped, "agent", "agents")),
         labels => Some(argonauts_core::text::and_list(labels)),
     };
-    let mut notice = Notice::new(Tone::Normal, "You paused the run · /resume")
+    let mut notice = Notice::new(Tone::Normal, paused_line(by))
         .with_glyph(PAUSED)
         .with_after(CARRIES_ON);
     if let Some(who) = who {
         notice = notice.with_detail(format!("{who} stopped{at}{kept}"));
     }
     emit(cx, notice);
+}
+
+/// Who paused the run, as its line says it.
+fn paused_line(by: Option<&Party>) -> String {
+    match by {
+        Some(Party::User) | None => "You paused the run · /resume".to_owned(),
+        Some(Party::Network) => "The run paused while the network was down · /resume".to_owned(),
+        Some(Party::Rules) => "The run paused at your limit · /resume".to_owned(),
+        // The name is the client's own, so it's drawn as text, never as escapes.
+        Some(Party::OutsideAgent { client }) => format!(
+            "{} paused the run · /resume",
+            argonauts_core::sanitize::sanitize_for_terminal(client)
+        ),
+        Some(_) => "The run paused · /resume".to_owned(),
+    }
 }
 
 /// The labels of the `count` agents of `run` that stopped last, in order.

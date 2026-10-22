@@ -91,7 +91,7 @@ pub(crate) fn picture_rows() -> HealthRows {
             ),
             cli(
                 "antigravity-cli",
-                "Antigravity CLI",
+                "agy",
                 false,
                 vec![
                     model("Gemini 3.6 Pro", Standing::Healthy),
@@ -138,7 +138,7 @@ fn rows(drawn: &Drawn) -> Vec<String> {
 /// code uses now, without its closing line about how health was counted before.
 #[test]
 fn the_card_matches_its_picture() {
-    let golden = include_str!("pictures/health_card.txt");
+    let golden = include_str!("../../tests/golden/overview/health_card.txt");
     let drawn = rows(&draw(&picture_rows(), SCREEN));
     let wanted: Vec<String> = golden.lines().map(|line| format!(" {line}")).collect();
     for (at, (got, want)) in drawn.iter().zip(&wanted).enumerate() {

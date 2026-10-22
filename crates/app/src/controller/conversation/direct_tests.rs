@@ -25,6 +25,8 @@ use tokio::net::TcpStream;
 
 use crate::controller::test_support::{CliOptions, TestDriver, WAIT};
 
+use super::direct_outside_tests::written_by;
+
 const TASK: &str = "The tests in tests/test_money.py fail. Fix invoice/money.py so every test \
                     passes, without changing the tests.";
 const ANSWER: &str = "Fixed both functions in invoice/money.py. All 6 tests pass.";
@@ -70,6 +72,14 @@ fn tool(id: &str, name: &str, input: Value) -> RunnerEvent {
         name: name.into(),
         input,
         parent: None,
+    })
+}
+
+/// What a CLI's adapter reports once a tool call's write to `path` is done.
+fn changed(path: &str) -> RunnerEvent {
+    RunnerEvent::Agent(AgentEvent::FileChanged {
+        path: path.into(),
+        kind: "update".into(),
     })
 }
 
@@ -781,7 +791,7 @@ async fn agys_refused_commands_are_offered_after_its_answer() {
     let AppEvent::Choice { choice } = question else {
         unreachable!()
     };
-    assert_eq!(choice.title, "Let Antigravity CLI run what it was refused?");
+    assert_eq!(choice.title, "Let agy run what it was refused?");
     assert_eq!(choice.body, ["python -m pytest -q"]);
     assert_eq!(
         agy.specs()[0].asking.as_ref().map(|a| a.asks),
@@ -945,7 +955,7 @@ async fn in_captain_the_main_session_starts_a_run_only_when_you_asked_for_one() 
     };
     assert!(matches!(
         outcome("gemini review it"),
-        InstructionOutcome::Followed { ref said, .. } if said == "Antigravity CLI reviews"
+        InstructionOutcome::Followed { ref said, .. } if said == "agy reviews"
     ));
     assert!(matches!(
         outcome("have grok build it"),
@@ -1553,7 +1563,9 @@ async fn an_edit_to_argonauts_own_files_goes_back_when_our_sandbox_is_off() {
                 "Write",
                 json!({"file_path": ".argonauts/notes.md"}),
             ))
+            .with_event(changed(".argonauts/notes.md"))
             .with_event(tool("t2", "Edit", json!({"file_path": "app.py"})))
+            .with_event(changed("app.py"))
     });
     driver.submit("Print 2, and note it.").await;
     driver.until(turn_ended).await;
@@ -1597,12 +1609,15 @@ async fn rewind_lists_the_ignored_files_a_turn_wrote_and_leaves_them() {
         let env = root.join(".env").to_string_lossy().into_owned();
         FakeSession::completed(ANSWER)
             .with_event(tool("t1", "Write", json!({"file_path": env})))
+            .with_event(changed(&env))
             .with_event(tool(
                 "t2",
                 "Write",
                 json!({"file_path": "config/local.toml"}),
             ))
+            .with_event(changed("config/local.toml"))
             .with_event(tool("t3", "Edit", json!({"file_path": "app.py"})))
+            .with_event(changed("app.py"))
     });
     driver.submit("Turn on debug and print 2.").await;
     driver.until(turn_ended).await;
@@ -1637,6 +1652,83 @@ async fn rewind_lists_the_ignored_files_a_turn_wrote_and_leaves_them() {
     assert_eq!(read(&root, "app.py"), "print(1)\n");
     assert_eq!(read(&root, ".env"), "TOKEN=changed-by-agent\n");
     assert_eq!(read(&root, "config/local.toml"), "debug = true\n");
+    driver.exit().await;
+}
+
+/// Whatever a CLI calls its write, the turn's record has the file, so `/rewind` names an
+/// ignored one it can't put back: Codex's file_change and agy's sed_file included.
+#[tokio::test]
+async fn rewind_names_the_ignored_files_each_cli_wrote() {
+    let writers = [
+        "claude-code",
+        "codex",
+        "agy write_to_file",
+        "agy sed_file",
+        "opencode",
+    ];
+    let options = CliOptions {
+        prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
+            repo.write(".gitignore", "notes/\n").unwrap();
+            repo.write("app.py", "print(1)\n").unwrap();
+            repo.commit_all("start").unwrap();
+            std::fs::write(
+                repo.global_config(),
+                "[captain_or_crew]\nforce = \"captain\"\n",
+            )
+            .unwrap();
+        })),
+        ..CliOptions::default()
+    };
+    let mut driver = TestDriver::start_with(options).await;
+    let root = driver.repo.root().to_owned();
+    driver.agent.respond(move |spec: &SessionSpec| {
+        let root = &spec.workdir;
+        std::fs::write(root.join("app.py"), "print(2)\n").unwrap();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        let session = FakeSession::completed(ANSWER)
+            .with_event(tool("t1", "Edit", json!({"file_path": "app.py"})))
+            .with_event(changed("app.py"));
+        writers.iter().fold(session, |session, writer| {
+            let path = root.join(format!("notes/{}.md", writer.replace(' ', "-")));
+            std::fs::write(&path, "hi\n").unwrap();
+            written_by(writer, &path)
+                .into_iter()
+                .fold(session, |session, event| {
+                    session.with_event(RunnerEvent::Agent(event))
+                })
+        })
+    });
+    driver.submit("Print 2, and take notes.").await;
+    driver.until(turn_ended).await;
+
+    driver
+        .send(UiCommand::Slash {
+            command: SlashCommand::Rewind { task: None },
+        })
+        .await;
+    let AppEvent::Choice { choice } = driver
+        .until(|event| matches!(event, AppEvent::Choice { choice } if choice.kind == ChoiceKind::RewindTurn))
+        .await
+    else {
+        unreachable!()
+    };
+    let AnswerAction::Choose { value } = &choice.options[0].action else {
+        panic!("{:?}", choice.options[0])
+    };
+    driver.send(choose(choice.id, value)).await;
+    let AppEvent::ChoiceClosed { outcome, .. } = driver
+        .until(|event| matches!(event, AppEvent::ChoiceClosed { .. }))
+        .await
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        outcome,
+        "Put back app.py · can't put back, as nothing kept how they were: \
+         notes/agy-sed_file.md, notes/agy-write_to_file.md, notes/claude-code.md, \
+         notes/codex.md, notes/opencode.md"
+    );
+    assert_eq!(read(&root, "app.py"), "print(1)\n");
     driver.exit().await;
 }
 

@@ -128,7 +128,7 @@ fn the_notice_with_the_keys() {
     let theme = theme();
     let view = bottom.render(&ctx(&theme, 100, NOW));
     let all = text(&view.lines);
-    assert!(all.contains("←/→ to choose · enter to press · esc for the input"));
+    assert!(all.contains("←/→  to choose · enter to press · esc for the input"));
     let pressed = style_of(&view.lines, "1 Learn more").unwrap();
     assert!(pressed.add_modifier.contains(Modifier::REVERSED));
 }

@@ -95,6 +95,10 @@ fn done_on_the_second_turn(
 /// On Claude Code, which has no goal of its own, Argonauts Code keeps it: after each turn it runs
 /// the check in your checkout and sends back what still fails, to the same session.
 #[tokio::test]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "the goal's check runs in the OS sandbox, which on Linux the argonauts binary launches, not a test binary"
+)]
 async fn alone_on_claude_code_argonauts_keeps_the_goal() {
     let mut driver = TestDriver::start_with(alone("")).await;
     driver.agent.respond(done_on_the_second_turn(
@@ -145,6 +149,10 @@ async fn alone_on_claude_code_argonauts_keeps_the_goal() {
 /// that ends with the goal still active is carried on without a check in between, and
 /// Argonauts Code runs the check once Codex says it's done.
 #[tokio::test]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "the goal's check runs in the OS sandbox, which on Linux the argonauts binary launches, not a test binary"
+)]
 async fn alone_on_codex_the_goal_is_codexs_own_and_argonauts_still_checks() {
     let mut driver = TestDriver::start_with(alone("crew.main = \"codex\"\n")).await;
     let codex = driver
@@ -317,6 +325,10 @@ fn goal_tool(arguments: serde_json::Value) -> Ask {
 /// this request alone. The answer states it back, the turn's work is checked, and the next
 /// request has no goal.
 #[tokio::test]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "the goal's check runs in the OS sandbox, which on Linux the argonauts binary launches, not a test binary"
+)]
 async fn the_main_session_sets_a_goal_for_one_request_with_its_tool() {
     let mut driver = TestDriver::start_with(alone("")).await;
     // The tool goes to a CLI that takes Argonauts Code's tools when driven.

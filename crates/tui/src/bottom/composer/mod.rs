@@ -108,6 +108,7 @@ pub struct Composer {
     /// The last chip's number. Chips count on across the conversation, as in Claude Code.
     next_picture: u32,
     clipboard: picture::Clipboard,
+    copier: picture::Copier,
     arriving: picture::Arriving,
 }
 

@@ -30,7 +30,7 @@ pub(super) fn rows(
                 .filter(|name| !name.is_empty())
                 .unwrap_or("workflow");
             let mut phases = cli_phases(parent, worker, workflow, now_ms);
-            crate::views::asked::answered_in(&mut phases, &log.sessions);
+            crate::views::asked::answered_in(&mut phases, &log.sessions, parent, workflow);
             WorkflowRow::Workflow(NestedWorkflowRow {
                 id: cli_workflow_run_id(&workflow.id),
                 name: name.to_owned(),
@@ -123,6 +123,7 @@ mod tests {
             note: None,
             inner: None,
             left_out: false,
+            fallback_why: None,
         })
     }
 

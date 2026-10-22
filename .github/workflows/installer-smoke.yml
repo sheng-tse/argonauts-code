@@ -1,0 +1,169 @@
+# After every release, installs it the ways people do and checks `argonauts --version` prints the release's
+# version: the shell installer, Homebrew and npm on fresh macOS and Ubuntu machines (ARM and Intel), and the shell
+# installer in old and small Linux containers, where it has to fall back to the static musl build. Called by
+# release.yml once the release is announced, betas included.
+#
+# A failure opens an issue. The update manifest is drafted only after every check passes
+# (packaging/updates/draft_manifest.py), so a broken release never starts rolling out to `self-update`.
+name: Installer smoke test
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  REPO: sheng-tse/argonauts-code
+
+jobs:
+  machines:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+      PRERELEASE: ${{ fromJson(inputs.plan).announcement_is_prerelease }}
+    steps:
+      - name: Shell installer
+        run: |
+          set -eu
+          version="${TAG#v}"
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            "https://github.com/${REPO}/releases/download/${TAG}/argonauts-code-installer.sh" | sh
+          "$HOME/.local/bin/argonauts" --version | tee "$RUNNER_TEMP/shell.txt"
+          grep -F "$version" "$RUNNER_TEMP/shell.txt"
+          rm -f "$HOME/.local/bin/argonauts"
+      # The tap gets stable releases only, and Homebrew on Linux only runs on x86_64.
+      - name: Homebrew
+        if: ${{ env.PRERELEASE != 'true' && (runner.os == 'macOS' || runner.arch == 'X64') }}
+        run: |
+          set -eu
+          export PATH="/home/linuxbrew/.linuxbrew/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          brew install sheng-tse/tap/argonauts-code
+          "$(brew --prefix)/bin/argonauts" --version | tee "$RUNNER_TEMP/brew.txt"
+          grep -F "${TAG#v}" "$RUNNER_TEMP/brew.txt"
+          brew uninstall argonauts-code
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.x"
+      # The registry can take a few minutes to serve a version it has just accepted.
+      - name: npm and npx
+        run: |
+          set -eu
+          version="${TAG#v}"
+          for try in 1 2 3 4 5 6; do
+            if npm install --global "argonauts-code@${version}"; then break; fi
+            if [ "$try" = 6 ]; then exit 1; fi
+            sleep 30
+          done
+          argonauts --version | tee "$RUNNER_TEMP/npm.txt"
+          grep -F "$version" "$RUNNER_TEMP/npm.txt"
+          npm uninstall --global argonauts-code
+          npx --yes "argonauts-code@${version}" --version | tee "$RUNNER_TEMP/npx.txt"
+          grep -F "$version" "$RUNNER_TEMP/npx.txt"
+
+  containers:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu 20.04
+            image: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
+            prepare: apt-get update && apt-get install -y curl ca-certificates xz-utils
+          - name: Debian 11
+            image: debian:11@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f618bf87fabe9
+            prepare: apt-get update && apt-get install -y curl ca-certificates xz-utils
+          - name: Rocky Linux 8
+            image: rockylinux:8@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c
+            prepare: dnf install -y tar xz
+          - name: Amazon Linux 2
+            image: amazonlinux:2@sha256:f86b99704b49b2fde6bf42b4c5257fcb0b1e0946509da5d6cea08c4227618433
+            prepare: yum install -y tar xz gzip
+          - name: Alpine 3.24
+            image: alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+            prepare: apk add --no-cache curl tar xz
+    name: containers (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+      PREPARE: ${{ matrix.prepare }}
+    steps:
+      - name: Shell installer
+        shell: sh
+        run: |
+          set -eu
+          sh -c "$PREPARE"
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            "https://github.com/${REPO}/releases/download/${TAG}/argonauts-code-installer.sh" | sh
+          "$HOME/.local/bin/argonauts" --version | tee /tmp/shell.txt
+          grep -F "${TAG#v}" /tmp/shell.txt
+
+  draft-manifest:
+    needs: [machines, containers]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+      PRERELEASE: ${{ fromJson(inputs.plan).announcement_is_prerelease }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Fetch the release's files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: artifacts-*
+          path: ${{ runner.temp }}/release
+          merge-multiple: true
+      - name: Draft the unsigned manifest
+        env:
+          RELEASE: ${{ runner.temp }}/release
+        run: |
+          set -eu
+          channel=stable
+          if [ "$PRERELEASE" = "true" ]; then channel=beta; fi
+          mkdir -p target/update-manifest
+          python3 packaging/updates/draft_manifest.py --release "$RELEASE" --tag "$TAG" --channel "$channel" \
+            --previous-url "https://argonauts-code.github.io/updates/v1/${channel}.json" \
+            --out "target/update-manifest/${channel}.json"
+          # Installs that follow beta take a stable release too, once it's newer than their beta.
+          if [ "$channel" = "stable" ]; then
+            python3 packaging/updates/draft_manifest.py --release "$RELEASE" --tag "$TAG" --channel beta \
+              --previous-url "https://argonauts-code.github.io/updates/v1/beta.json" \
+              --out "target/update-manifest/beta.json" --if-newer
+          fi
+      - name: Hand over the draft for signing
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: update-manifest
+          path: target/update-manifest/
+          if-no-files-found: error
+
+  report:
+    needs: [machines, containers]
+    if: ${{ failure() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open an issue
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Installer smoke test failed for ${TAG}" \
+            --body "Installing ${TAG} failed on at least one machine or container: ${RUN_URL}. The update manifest wasn't drafted, so self-update won't offer ${TAG} until this is fixed."
