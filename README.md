@@ -1,6 +1,6 @@
-<div align="center">
-
 # Argonauts Code 🐙 — Every coding agent, one orchestrator, you at the helm
+
+<div align="center">
 
 <img src="assets/banner.png" alt="Argonauts Code: one orchestrator, every agent" width="100%">
 
