@@ -528,6 +528,9 @@ impl Host {
             };
             state.door.open();
             let (inbox, engine_inbox) = mpsc::channel(INBOX);
+            // An engine tells an answer's wake from your other commands by what its inbox holds
+            // as it starts, which can come before the relay below first runs.
+            let primed = relay::prime(queue, &inbox);
             let context = EngineContext {
                 run: self.run.clone(),
                 repo: repo.clone(),
@@ -543,7 +546,7 @@ impl Host {
             };
             let engine = (self.options.engine)(&self.settings, mode);
             let running = tokio::spawn(engine.run(context));
-            let (joined, forwarded) = tokio::join!(running, relay::forward(queue, inbox));
+            let (joined, forwarded) = tokio::join!(running, relay::forward(queue, inbox, primed));
             let taken = forwarded.settle(queue, joined.as_ref().ok());
             let reason = match joined {
                 Ok(EngineExit::Finished(outcome)) => return HostExit::Finished(outcome),
@@ -1413,6 +1416,32 @@ mod tests {
                 && note.text.contains("the evidence changed")),
             "{notes:?}"
         );
+    }
+
+    /// The crew engine reads its inbox as it starts, and an answer found there makes the wake
+    /// your answer's. Were the answer left for the relay, a busy machine could give the relay
+    /// its first turn too late, and the run would record that you had resumed it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_answer_a_run_host_starts_for_is_in_the_inbox_as_the_engine_starts() {
+        let test = TestRun::new();
+        files::append_pending(&test.run_dir, &answer(TOKEN)).unwrap();
+        let log = Log::default();
+        let script: Script = {
+            let log = log.clone();
+            Arc::new(move |_, mut context: EngineContext| {
+                // Before the engine's future first runs, and so before the relay's does.
+                while let Ok(command) = context.inbox.try_recv() {
+                    answer_command(command, &log);
+                }
+                Box::pin(async { EngineExit::Finished(RunOutcome::Merged) })
+            })
+        };
+        let exit = test
+            .host(test.options(Duration::from_millis(50), script))
+            .await;
+        assert_eq!(exit, HostExit::Finished(RunOutcome::Merged));
+        assert_eq!(*log.lock().unwrap(), ["answer"]);
+        assert!(files::take_pending(&test.run_dir).unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

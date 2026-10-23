@@ -1,3 +1,8 @@
 /target
-.claude/
 .codex/
+.claude/
+# Finder and Explorer write these into folders, with the names of what is in them.
+.DS_Store
+._*
+Thumbs.db
+desktop.ini

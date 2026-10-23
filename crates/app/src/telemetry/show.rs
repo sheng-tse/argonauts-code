@@ -121,6 +121,7 @@ fn held_line(why: Held) -> &'static str {
 /// Each row: its key, what it holds, and the rest of it set at the note column.
 fn rows(usage: &DailyUsage) -> Vec<(&'static str, String, Option<String>)> {
     let mut rows = vec![install_row(usage), setup_row(usage)];
+    rows.extend(clis_row(usage));
     let mut models = usage.models.iter();
     match models.next() {
         Some(first) => {
@@ -225,6 +226,19 @@ fn setup_row(usage: &DailyUsage) -> (&'static str, String, Option<String>) {
             setup.approvals.replace('_', " ")
         )),
     )
+}
+
+/// The installed CLIs and their versions, once the report holds any.
+fn clis_row(usage: &DailyUsage) -> Option<(&'static str, String, Option<String>)> {
+    if usage.clis.is_empty() {
+        return None;
+    }
+    let clis: Vec<String> = usage
+        .clis
+        .iter()
+        .map(|(cli, version)| format!("{} {version}", cli_name(cli)))
+        .collect();
+    Some(("clis", clis.join(" · "), None))
 }
 
 fn model_row(model: &ModelUse) -> (String, String) {
@@ -716,5 +730,25 @@ mod tests {
         );
         let plain = drawn_rows(&lines(&the_pictures_day(), &Due::NextStart, &[], &theme));
         assert!(!plain.iter().any(|row| row.starts_with("  behaviors")));
+    }
+
+    /// The CLIs the report sends, each with its version, get a row under the setup; the
+    /// picture's day holds none, so it has no such row.
+    #[test]
+    fn the_clis_show_with_their_versions() {
+        let theme = theme();
+        let mut day = the_pictures_day();
+        day.clis = BTreeMap::from([
+            ("claude-code".to_owned(), "2.1.295".to_owned()),
+            ("codex".to_owned(), "0.130.0".to_owned()),
+        ]);
+        let shown = drawn_rows(&lines(&day, &Due::NextStart, &[], &theme));
+        let setup = shown.iter().position(|row| row.starts_with("  setup"));
+        assert_eq!(
+            shown[setup.unwrap() + 1].trim_end(),
+            "  clis       Claude Code 2.1.295 · Codex 0.130.0"
+        );
+        let plain = drawn_rows(&lines(&the_pictures_day(), &Due::NextStart, &[], &theme));
+        assert!(!plain.iter().any(|row| row.starts_with("  clis")));
     }
 }

@@ -3,6 +3,9 @@
 #
 # The pull request is opened with RELEASE_PLZ_TOKEN, a fine-grained token or a GitHub App's, because a pull request
 # opened with the workflow's own token never starts CI.
+#
+# It runs only once releases are set up. To turn it on, add the RELEASE_PLZ_TOKEN secret, then set the repository
+# variable RELEASE_PLZ to on (Settings, Secrets and variables, Actions, Variables).
 name: Release pull request
 
 on:
@@ -17,7 +20,7 @@ concurrency:
 
 jobs:
   release-pr:
-    if: ${{ github.repository == 'sheng-tse/argonauts-code' }}
+    if: ${{ github.repository == 'sheng-tse/argonauts-code' && vars.RELEASE_PLZ == 'on' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read

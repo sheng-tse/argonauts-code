@@ -1,28 +1,17 @@
 # Mods
 
-A mod is one drawn card: colour, bars, meters, marks, small charts. It is never a block of
-text or a page of options. A mod is a file, and this folder holds them:
+A mod is one drawn card: colour, bars, meters, marks, small charts. It is never a block of text or a page of options. A mod is a file, and this folder holds them:
 
 | Folder | Whose |
 |---|---|
 | `~/.argonauts/mods/` | yours, in every repository |
 | `.argonauts/mods/` | this project's, shared with whoever clones it |
 
-The built-in cards (context, plan-usage, spend, tokens, runs and waiting) are mods too, drawn
-from Argonauts Code's own numbers. Where each shows is yours: `/mods <name> <place>` moves it. How
-it draws is in your settings, under `ui.mods.<name>` in `/config`. A file here with one of
-their names changes neither. When both folders hold a mod of the same name, the project's
-wins.
+The built-in cards (context, plan-usage, spend, tokens, runs and waiting) are mods too, drawn from Argonauts Code's own numbers. Where each shows is yours: `/mods <name> <place>` moves it. How it draws is in your settings, under `ui.mods.<name>` in `/config`. A file here with one of their names changes neither. When both folders hold a mod of the same name, the project's wins.
 
-`/mods` lists every mod with a live preview. `/mods <name>` opens one mod's page, where each
-change shows in the preview as you make it and `s` saves it into the file. Editing the file
-by hand does the same: a saved file loads within a second, with no restart. A built-in card's
-page offers only where it shows, and `s` saves that into your place lists.
+`/mods` lists every mod with a live preview. `/mods <name>` opens one mod's page, where each change shows in the preview as you make it and `s` saves it into the file. Editing the file by hand does the same: a saved file loads within a second, with no restart. A built-in card's page offers only where it shows, and `s` saves that into your place lists.
 
-A mod is data: a file that says what to draw and where the numbers come from. A Claude Code
-plugin is code that runs inside Claude Code. Yours still load in every Claude Code session
-Argonauts Code starts, and their toasts, status lines, log lines and commands show here. Their
-bands and panes don't.
+A mod is data: a file that says what to draw and where the numbers come from. A Claude Code plugin is code that runs inside Claude Code. Yours still load in every Claude Code session Argonauts Code starts, and their toasts, status lines, log lines and commands show here. Their bands and panes don't.
 
 ## A mod file
 
@@ -69,19 +58,11 @@ The places:
 | `bottom-line` | on the bottom line, as a few words |
 | `overview`, `status`, `usage`, `context`, `limits`, `stats` | on that tab of the usage panel, as a card |
 
-The bottom line is the one place a mod's own file doesn't decide. That line shows what its own
-file lists, `bottom-line.toml` in this folder, so a mod gets there by being ticked on: on its
-own page, with `/mods <name> bottom-line`, or on `/mods bottom-line`, which also gives it a side
-and an order. `bottom-line` written into `places` by hand only asks, and `/mods` says so beside
-the mod until one of those ticks it on.
+The bottom line is the one place a mod's own file doesn't decide. That line shows what its own file lists, `bottom-line.toml` in this folder, so a mod gets there by being ticked on: on its own page, with `/mods <name> bottom-line`, or on `/mods bottom-line`, which also gives it a side and an order. `bottom-line` written into `places` by hand only asks, and `/mods` says so beside the mod until one of those ticks it on.
 
-The built-in cards keep their places in your settings, in order: `ui.above_input.mods` for
-above the input, and `ui.views.<tab>.mods` for the Status, Usage, Context and Limits tabs.
-Their pages, `/pin` and `/mods <name> <place>` write those lists, and `/mods` shows what they
-hold.
+The built-in cards keep their places in your settings, in order: `ui.above_input.mods` for above the input, and `ui.views.<tab>.mods` for the Status, Usage, Context and Limits tabs. Their pages, `/pin` and `/mods <name> <place>` write those lists, and `/mods` shows what they hold.
 
-The colours: `green`, `amber`, `red`, `blue`, `purple`, `cyan`, `orange`, `pink`, `gold` and
-`grey`. Each is a colour of your theme, so a mod looks right in the dark and in the light.
+The colours: `green`, `amber`, `red`, `blue`, `purple`, `cyan`, `orange`, `pink`, `gold` and `grey`. Each is a colour of your theme, so a mod looks right in the dark and in the light.
 
 ## Each body, with a picture
 
@@ -98,8 +79,7 @@ The pictures are drawn without colour. On screen each part takes its own.
 ╰────────────────────────────────────────────────────────────╯
 ```
 
-`meters`: one meter a row. Each part is measured against its own `max`, or against the
-largest part when it gives none. A part's `note` goes at the right.
+`meters`: one meter a row. Each part is measured against its own `max`, or against the largest part when it gives none. A part's `note` goes at the right.
 
 ```
 ╭────────────────────────────────────────────────────────────╮
@@ -109,8 +89,7 @@ largest part when it gives none. A part's `note` goes at the right.
 ╰────────────────────────────────────────────────────────────╯
 ```
 
-`list`: a mark, a name and a number a row. The mark follows the part's colour: green is done,
-amber waits for you, red failed.
+`list`: a mark, a name and a number a row. The mark follows the part's colour: green is done, amber waits for you, red failed.
 
 ```
 ╭────────────────────────────────────────────────────────────╮
@@ -152,8 +131,7 @@ amber waits for you, red failed.
 ╰────────────────────────────────────────────────────────────╯
 ```
 
-`text`: the header's words alone. With `form = "line"` on the bottom line it is just the
-words, as `main` is for the branch.
+`text`: the header's words alone. With `form = "line"` on the bottom line it is just the words, as `main` is for the branch.
 
 ```
 ╭────────────────────────────────────────────────────────────╮
@@ -189,8 +167,7 @@ A command prints one JSON object and exits with code 0.
            {"label": "failed", "value": 1, "color": "red"}]}
 ```
 
-That is the `stack` picture above: `7` in bold, `of 9 passed` beside it, and the badge
-`1 failed`, which is the part in the level's colour.
+That is the `stack` picture above: `7` in bold, `of 9 passed` beside it, and the badge `1 failed`, which is the part in the level's colour.
 
 | Key | What it is |
 |---|---|
@@ -205,8 +182,7 @@ That is the `stack` picture above: `7` in bold, `of 9 passed` beside it, and the
 | `parts[].text` | How the value reads when the plain number won't do: `$1.86`, `840k`. |
 | `parts[].note` | Dim words after the number: `resets 4:40pm`. |
 
-A command that prints plain words works as it is: its first line is the summary. So this is a
-whole mod:
+A command that prints plain words works as it is: its first line is the summary. So this is a whole mod:
 
 ```toml
 # ~/.argonauts/mods/branch.toml
@@ -221,9 +197,7 @@ every   = "10s"
 
 `/mods branch bottom-line` then puts it on the bottom line.
 
-`/setup` writes a `checks.sh` beside `checks.toml` for you to start from. It prints nothing
-until you put your numbers in, so the mod stays off the screen until then, and `/mods` shows
-sample numbers. A program of your own needs `chmod +x`.
+`/setup` writes a `checks.sh` beside `checks.toml` for you to start from. It prints nothing until you put your numbers in, so the mod stays off the screen until then, and `/mods` shows sample numbers. A program of your own needs `chmod +x`.
 
 ```sh
 #!/bin/sh
@@ -261,28 +235,19 @@ With `passed=7 running=1 failed=1` it prints the JSON above.
 
 ## Check a mod
 
-`/doctor` names every file that didn't load and says what is wrong with it, each problem in
-one line. `/mods` lists the same files under the mods. A file with a problem is skipped whole,
-and every other mod keeps working. Fix the file and it loads at once.
+`/doctor` names every file that didn't load and says what is wrong with it, each problem in one line. `/mods` lists the same files under the mods. A file with a problem is skipped whole, and every other mod keeps working. Fix the file and it loads at once.
 
-A mod with no numbers yet draws nothing where it shows. `/mods` says why: its command hasn't
-run, it ended with an exit code, it took too long, or what it printed didn't read.
+A mod with no numbers yet draws nothing where it shows. `/mods` says why: its command hasn't run, it ended with an exit code, it took too long, or what it printed didn't read.
 
 ## What a command may do
 
 A command is a program that runs as you, so Argonauts Code keeps it small:
 
-- It runs inside the sandbox, as a read-only agent does. It can read the repository and its
-  own folder, write temporary folders only, and reach the network only when `sandbox.network`
-  is on.
-- It sees `PATH`, `HOME`, your language settings and a temporary folder. It sees no key and
-  no token.
-- It is stopped after its `timeout`, and what it printed last stays on screen until it prints
-  again.
+- It runs inside the sandbox, as a read-only agent does. It can read the repository and its own folder, write temporary folders only, and reach the network only when `sandbox.network` is on.
+- It sees `PATH`, `HOME`, your language settings and a temporary folder. It sees no key and no token.
+- It is stopped after its `timeout`, and what it printed last stays on screen until it prints again.
 - It starts in the repository's folder, so `git` works as you'd expect.
-- A mod from a project's `.argonauts/mods/` runs its command only after you trust it once, on
-  its page with `t`. A change to that file, or to the program beside it, asks again.
-- `mods.commands = false` in your settings turns every mod's command off. Mods with a built-in
-  source are untouched.
+- A mod from a project's `.argonauts/mods/` runs its command only after you trust it once, on its page with `t`. A change to that file, or to the program beside it, asks again.
+- `mods.commands = false` in your settings turns every mod's command off. Mods with a built-in source are untouched.
 
 The fields here are those of Argonauts Code {version}.

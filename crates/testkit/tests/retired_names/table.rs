@@ -26,7 +26,6 @@ pub struct Table {
     pub serde_keys: SerdeKeys,
     pub slash_commands: SlashCommands,
     pub fixture_folders: FixtureFolders,
-    pub living_docs: LivingDocs,
     pub report_example: ReportExample,
 }
 
@@ -84,6 +83,24 @@ pub struct Unread {
 pub struct Recordings {
     pub endings_under_fixtures: Vec<String>,
     pub also: Vec<String>,
+    /// The files under a fixtures or test data folder that were written here, not recorded.
+    pub made_here: Vec<String>,
+    pub bundled_text: BundledText,
+}
+
+/// What a recording keeps of a file a CLI ships with itself: a placeholder, never the text.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundledText {
+    /// The folder a CLI unpacks the skills it bundles into.
+    pub folder: String,
+    /// The tools whose result is the text of the file they read.
+    pub read_tools: Vec<String>,
+    /// How the text a Skill call launches starts, followed by the skill's folder.
+    pub skill_preamble: String,
+    /// The line that stands in for all but the file's first heading.
+    pub note: String,
+    pub fix: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +108,10 @@ pub struct Recordings {
 pub struct Private {
     pub neutral_homes: Vec<String>,
     pub neutral_mail_endings: Vec<String>,
+    /// An address with one of these as its whole name takes no mail, so it names no one.
+    pub no_reply: Vec<String>,
+    /// GitHub's domain for the address of a login that hides its own.
+    pub github_no_reply: String,
     pub file_endings: Vec<String>,
     /// Files whose addresses are their authors' own, in the copyright lines of the licenses
     /// they hold. Home and scratch folders are still looked for there.
@@ -99,8 +120,35 @@ pub struct Private {
     pub home_fix: String,
     pub mail_fix: String,
     pub scratch_fix: String,
+    pub temp_fix: String,
+    /// The one plan a recording or a sample of a CLI's account names.
+    pub neutral_plan: String,
+    pub plan_fix: String,
+    /// Keys that hold Codex's plan, read in every file.
+    pub plan_keys: Vec<String>,
+    /// Keys that hold any CLI's plan, read in recordings.
+    pub recorded_plan_keys: Vec<String>,
+    /// What a CLI prints before the plan in its own words.
+    pub plan_labels: Vec<String>,
+    pub time_fix: String,
+    /// File names an OS writes into a folder.
+    pub machine_files: Vec<String>,
+    pub machine_file_fix: String,
+    /// The chunks of a PNG that hold text or Exif.
+    pub picture_text_chunks: Vec<String>,
+    pub picture_text_fix: String,
+    pub ids: Ids,
     pub banned: Vec<BannedText>,
+    pub contact: Contact,
     pub setup: Setup,
+}
+
+/// The keys of the ids that tie a recording to an account or an install.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ids {
+    pub keys: Vec<String>,
+    pub fix: String,
 }
 
 /// The placeholders a recording has in place of the recording machine's own setup.
@@ -109,13 +157,23 @@ pub struct Private {
 pub struct Setup {
     /// What a synced skill's name starts with, `anthropic-skills:` included.
     pub synced_skill: String,
+    /// What a synced skill says of itself, in the commands an initialize reply lists.
+    pub synced_skill_description: String,
     pub plugin: String,
     /// A claude.ai connector's name, `claude.ai ` included.
     pub connector: String,
     /// What a connector's tools start with.
     pub connector_tool: String,
-    pub plan: String,
+    /// What each of a connector's tools is named after its connector's placeholder and `__`.
+    pub connector_tool_name: String,
     pub organization: String,
+    /// The keys an account's organization is under.
+    pub organization_keys: Vec<String>,
+    /// The key beside which a machine name is the recording machine's.
+    pub machine_name_beside: String,
+    pub machine_name_key: String,
+    pub machine_names: Vec<String>,
+    pub machine_name_fix: String,
     pub fix: String,
     /// Every skill, command and agent an init message may list without its machine's setup.
     pub known: Vec<String>,
@@ -131,6 +189,18 @@ pub struct BannedText {
     pub fix: String,
     pub length: usize,
     pub hash: String,
+}
+
+/// The maintainer's address, kept as its length and hash like a banned text. It is a real
+/// address on purpose, where the community files say to send a report, and passes nowhere
+/// else.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Contact {
+    pub length: usize,
+    pub hash: String,
+    /// The files that give it, as path patterns.
+    pub given_in: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,6 +223,8 @@ pub struct FixtureFolders {
     pub numbered: Vec<String>,
 }
 
+/// The docs that describe the product as it is, from the table kept beside them in the
+/// folder `ARGONAUTS_DOCS` names.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LivingDocs {
@@ -195,6 +267,16 @@ pub fn load() -> Table {
     let path = workspace().join(TABLE);
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     toml::from_str(&text).unwrap_or_else(|e| panic!("{TABLE}: {e}"))
+}
+
+/// The living docs' own table, in the docs folder, since the names it lists are the docs'.
+pub const LIVING_DOCS: &str = "living-docs.toml";
+
+/// The living docs' table in `docs`, the folder `ARGONAUTS_DOCS` names.
+pub fn living_docs(docs: &Path) -> LivingDocs {
+    let path = docs.join(LIVING_DOCS);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    toml::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
 impl Table {

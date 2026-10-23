@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context as _, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-/// Runs your coding-agent CLIs as one crew, in git worktrees, and asks you before anything merges.
+/// Runs your coding-agent CLIs as one crew, and merges nothing without you or the rules you set.
 #[derive(Debug, Parser)]
 // The version line names the package people install and update, as `rg` names `ripgrep`.
 #[command(name = "argonauts", display_name = "argonauts-code", version)]

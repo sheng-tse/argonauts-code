@@ -97,7 +97,7 @@ fn respond(mut inbox: mpsc::Receiver<EngineCommand>, log: Log) {
 pub(crate) fn engine_for(mut queue: Queue, log: Log) {
     let (inbox, commands) = mpsc::channel(1);
     respond(commands, log);
-    tokio::spawn(async move { forward(&mut queue, inbox).await });
+    tokio::spawn(async move { forward(&mut queue, inbox, None).await });
 }
 
 struct Fixture {

@@ -1,5 +1,6 @@
 //! The tracked files of the workspace, read once for every check.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -27,6 +28,11 @@ pub fn files() -> &'static [File] {
             })
             .collect()
     })
+}
+
+fn paths() -> &'static HashSet<&'static str> {
+    static PATHS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    PATHS.get_or_init(|| files().iter().map(|file| file.path.as_str()).collect())
 }
 
 /// What git tracks. Outside a git checkout, every file but build output and hidden folders.
@@ -80,7 +86,9 @@ impl Table {
                 .endings_under_fixtures
                 .iter()
                 .any(|ending| path.ends_with(ending.as_str()));
-        under_fixtures || table::fits_any(&self.recordings.also, path)
+        under_fixtures
+            || table::fits_any(&self.recordings.also, path)
+            || has_a_meta_beside(path, |meta| paths().contains(meta))
     }
 
     /// Whether a file's words are read: not a recording, not the table, not a listed file.
@@ -92,4 +100,20 @@ impl Table {
                 .iter()
                 .any(|unread| table::fits(&unread.path, path))
     }
+}
+
+/// Whether a file under fixtures/ has a meta file beside it: its folder's `meta.json`, or a
+/// scenario's, named by the file's name up to a dot or an underscore, as
+/// `providers.meta.json` beside `providers_models.stdout.txt`.
+pub fn has_a_meta_beside(path: &str, tracked: impl Fn(&str) -> bool) -> bool {
+    let Some((folder, name)) = path.rsplit_once('/') else {
+        return false;
+    };
+    if !path.contains("/fixtures/") || name.ends_with("meta.json") {
+        return false;
+    }
+    tracked(&format!("{folder}/meta.json"))
+        || name
+            .match_indices(['.', '_'])
+            .any(|(at, _)| tracked(&format!("{folder}/{}.meta.json", &name[..at])))
 }

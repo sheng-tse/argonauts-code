@@ -1,8 +1,6 @@
 # Roles
 
-The crew has five roles: `main`, `orchestrator`, `worker`, `reviewer` and `judge`. Which
-model fills a role is `[crew]` in `config.toml`. What you want a role to do is a file here,
-named after it.
+The crew has five roles: `main`, `orchestrator`, `worker`, `reviewer` and `judge`. Which model fills a role is `[crew]` in `config.toml`. What you want a role to do is a file here, named after it.
 
 | Folder | Whose |
 |---|---|
@@ -39,25 +37,18 @@ There are four ways, from the most lasting to the most passing.
 | For one request | Say it. The screen shows what was passed on, and to whom. | "add due dates, and tell the reviewers to focus on date parsing" |
 | While it runs | `@` the role and your message. | `@reviewer the parser moved to dates.rs` |
 
-The text travels inside the prompt, so it works the same on every CLI. Open an agent and its
-Input tab shows exactly what it was sent, part by part: the frame, the orchestrator's
-instructions for that agent, your file for the role, and your words in the request.
+The text travels inside the prompt, so it works the same on every CLI. Open an agent and its Input tab shows exactly what it was sent, part by part: the frame, the orchestrator's instructions for that agent, your file for the role, and your words in the request.
 
 ## What a reviewer is never told
 
-A reviewer isn't told who wrote the work it reviews: no model's name and no CLI's. That is
-what keeps a review independent, since a model judges its own provider's work more kindly.
+A reviewer isn't told who wrote the work it reviews: no model's name and no CLI's. That is what keeps a review independent, since a model judges its own provider's work more kindly.
 
-So reviewers and the judge take added text, never a replacement: their built-in part stays.
-Every other role may be replaced. And a `reviewer.md` that names a model or a CLI gets a
-warning, since it would tell the reviewer what Argonauts Code leaves out.
+So reviewers and the judge take added text, never a replacement: their built-in part stays. Every other role may be replaced. And a `reviewer.md` that names a model or a CLI gets a warning, since it would tell the reviewer what Argonauts Code leaves out.
 
-That rule is one line of the reviewer's own prompt. If you do want to change it, `/prompts`
-writes the prompt out as a file in `.argonauts/prompts/`, and deleting that file goes back.
+That rule is one line of the reviewer's own prompt. If you do want to change it, `/prompts` writes the prompt out as a file in `.argonauts/prompts/`, and deleting that file goes back.
 
 ## A file that came with a clone
 
-A roles file changes what an agent is told. One that arrived with a cloned repository asks
-for your trust once before it is used, and again when it changes.
+A roles file changes what an agent is told. One that arrived with a cloned repository asks for your trust once before it is used, and again when it changes.
 
 The fields here are those of Argonauts Code {version}.

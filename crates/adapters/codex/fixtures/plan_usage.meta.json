@@ -10,6 +10,6 @@
     "stdio://"
   ],
   "note": "The rate-limit reply is 0.158.0's recording (rate_limits_probe), live on 2026-09-30. The account/read reply follows the shape codex 0.160.0's program text declares (Account tagged by type, chatgpt with email and planType), since the live check on 2026-10-09 got only errors from both reads: the app server could not read its managed preferences in the agent's sandbox.",
-  "sanitized": "the email is made up; ids redacted as in the 0.158.0 recording",
+  "sanitized": "the email is made up; ids redacted, the home folder as ~, and the plan, machine name, OS version and terminal neutral, as in the 0.158.0 recording",
   "stdin": "{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"argonauts\",\"title\":\"Argonauts Code\",\"version\":\"0.0.1\"}}}\n{\"method\":\"initialized\"}\n{\"id\":3,\"method\":\"account/read\",\"params\":{\"refreshToken\":false}}\n{\"id\":2,\"method\":\"account/rateLimits/read\",\"params\":{\"excludeResetCreditDetails\":true}}\n"
 }

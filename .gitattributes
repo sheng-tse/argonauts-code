@@ -1,0 +1,8 @@
+# Text is stored with LF line endings.
+* text=auto eol=lf
+
+# Recordings and snapshots must stay byte for byte as captured, and GitHub folds them in diffs.
+crates/*/fixtures/** -text linguist-generated
+crates/*/tests/fixtures/** -text linguist-generated
+crates/adapters/*/fixtures/** -text linguist-generated
+**/snapshots/*.snap linguist-generated

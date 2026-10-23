@@ -136,7 +136,7 @@ async fn drive(engine: CrewEngine, mut context: EngineContext) -> EngineResult<E
     // A reset that passed before this process started was acted on then, or by recovery.
     let returned = host.read(|state| state.run.plan_usage_reset_passed(host.now()));
     let mut driver = Loop {
-        workflow: Some(tokio::spawn(root_workflow(host.clone()))),
+        workflow: None,
         host,
         commands: JoinSet::new(),
         wait_at: None,
@@ -292,7 +292,8 @@ fn newest_top_level(state: &RunState) -> Option<WorkflowId> {
 
 struct Loop {
     host: Host,
-    /// `None` after a pause cut the workflow short, until the run waits.
+    /// `None` until the loop starts it, and after a pause cut the workflow short, until the run
+    /// waits.
     workflow: Option<JoinHandle<EngineResult<RunOutcome>>>,
     /// Long commands, run beside the loop.
     commands: JoinSet<()>,
@@ -313,6 +314,15 @@ impl Loop {
         mut agent_events: broadcast::Receiver<AgentStatusEvent>,
         mut policy: mpsc::UnboundedReceiver<PolicyResult>,
     ) -> EngineResult<EngineExit> {
+        // What you sent the waiting run goes on the board before the workflow resumes its
+        // sessions, so a resumed session's first prompt carries it. The rest is acted on beside
+        // the workflow, as later commands are.
+        let (messages, queued): (Vec<_>, Vec<_>) =
+            queued.into_iter().partition(commands::is_message);
+        for message in messages {
+            self.handle(message).await?;
+        }
+        self.workflow = Some(tokio::spawn(root_workflow(self.host.clone())));
         for command in queued {
             self.command(command).await?;
         }
@@ -619,6 +629,11 @@ impl Loop {
             });
             return Ok(());
         }
+        self.handle(command).await
+    }
+
+    /// Acts on `command` while the loop waits for it.
+    async fn handle(&self, command: EngineCommand) -> EngineResult<()> {
         match commands::handle(&self.host, command).await {
             Err(err @ EngineError::Journal(_)) => Err(err),
             Err(err) => {

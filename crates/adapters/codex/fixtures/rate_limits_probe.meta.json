@@ -9,6 +9,7 @@
   "also_matches": [],
   "program": "codex",
   "recorded_at": "2026-09-30T04:27:06Z",
+  "sanitized": "ids redacted, the home folder as ~, and the plan, machine name, OS version and terminal neutral",
   "spends": "nothing",
   "stdin": "{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"argonauts\",\"title\":\"Argonauts Code\",\"version\":\"0.0.1\"}}}\n{\"method\":\"initialized\"}\n{\"id\":2,\"method\":\"account/rateLimits/read\",\"params\":{\"excludeResetCreditDetails\":true}}\n"
 }

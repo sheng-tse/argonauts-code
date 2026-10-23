@@ -2,5 +2,6 @@
   "what": "Anthropic's public model pages, saved as Markdown",
   "pages": ["models-overview.md", "model-deprecations.md"],
   "fetched": "2026-10-01",
-  "synthetic": false
+  "synthetic": false,
+  "trimmed": "each page keeps only what parse_model_pages reads, with a note at the top saying so: the overview its model names and its Claude API ID, Context window and Claude API alias rows, the deprecations page its Model status table; the prose, notes and every other row and section are left out, and the kept cells are as fetched"
 }

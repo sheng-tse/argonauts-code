@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/sheng-tse/argonauts-code/discussions
+    about: Ask how something works, or talk an idea through before it becomes an issue.
+  - name: Security vulnerability
+    url: https://github.com/sheng-tse/argonauts-code/security/advisories/new
+    about: Report it privately, never in a public issue.

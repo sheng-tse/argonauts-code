@@ -45,13 +45,11 @@ pub use shell::{Asked, behind_line, self_update};
 /// `stable.json.minisig`, and `releases/<version>.json` for a version asked for by name.
 pub const MANIFESTS: &str = "https://argonauts-code.github.io/updates/v1";
 
-/// The public keys a manifest's signature must come from: the one that signs now, and the
-/// next, so a key can be replaced without a release that can't be checked. These two are
-/// placeholders that check nothing: replace them with your own minisign public keys (the
-/// second line of each `.pub` file) before the first release.
+/// The minisign public keys a manifest's signature must come from: the one that signs now, and
+/// the next, so a key can be replaced without a release that can't be checked.
 pub const PUBLIC_KEYS: [&str; 2] = [
-    "REPLACE-WITH-THE-SIGNING-PUBLIC-KEY",
-    "REPLACE-WITH-THE-NEXT-PUBLIC-KEY",
+    "RWSAvBYXxtifHE0og0nVcgMAgKO6IAMpNtFcJ+dfF2bp9u5k8EsI8I0w",
+    "RWRHcTUGuD6pZ1P0c5aQceGUr+rVPt8JL+9h1HUuA37KIPbsEqYXETbx",
 ];
 
 /// Turns every update off, the check at start and `argonauts self-update` alike.

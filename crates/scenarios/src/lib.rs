@@ -145,13 +145,19 @@ pub fn no_servers_of_yours<'a>(args: &[&'a str]) -> Vec<&'a str> {
 
 /// Pauses the run on screen at its next safe point, from its row in the list under the input:
 /// `x` asks, and `p` pauses in place of stopping. Esc leaves a run's agents going, so it no
-/// longer starts a pause. Back in the input, the working line says the run is pausing.
+/// longer starts a pause. Back in the input, the working line says the run is pausing, or the
+/// transcript says it paused.
 pub fn pause_run(pty: &mut Pty) -> anyhow::Result<()> {
     pty.press(Key::Down)?;
     pty.press(Key::Char('x'))?;
     pty.wait_for("p to pause it", WAIT)?;
     pty.press(Key::Char('p'))?;
-    pty.wait_for(r"Pausing… \(esc again to stop now\)", WAIT)?;
+    // An agent with no tool call open stops at once, so on a busy machine the pausing line
+    // can come and go between two looks at the screen. The paused run's line stays.
+    pty.wait_for(
+        r"Pausing… \(esc again to stop now\)|You paused the run",
+        WAIT,
+    )?;
     // The list still has the keys, and Esc hands them back to the input.
     pty.press(Key::Esc)?;
     pty.wait_for(r"shift\+tab to cycle", WAIT)?;

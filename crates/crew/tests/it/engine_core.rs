@@ -4,8 +4,9 @@
 use crate::support;
 use serde_json::json;
 use std::time::Duration;
+use tokio::sync::oneshot;
 
-use argonauts_core::engine::EngineExit;
+use argonauts_core::engine::{EngineCommand, EngineExit};
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::approval::ApprovalEvent;
 use argonauts_core::events::run::{RunMode, WaitReason};
@@ -199,6 +200,68 @@ async fn shutdown_pauses_then_waits() -> anyhow::Result<()> {
     assert_eq!(tail, ["run/paused", "run/waiting"], "{kinds:?}");
     assert!(kinds.contains(&"run/pause_requested".to_owned()));
     Ok(())
+}
+
+/// Guidance that wakes a paused run is on the board before the run's sessions resume, so a
+/// resumed session's first prompt carries it, however soon the session starts.
+#[tokio::test]
+async fn guidance_that_wakes_a_paused_run_is_in_the_resumed_prompt() -> anyhow::Result<()> {
+    const GUIDANCE: &str = "Keep the short form of the flag.";
+    let mut crew = Crew::new()?;
+    let mut workers = Vec::new();
+    for (name, provider) in [("claude-code/opus", "anthropic"), ("codex/gpt-x", "openai")] {
+        let worker = crew.worker(name, provider);
+        worker.push(FakeSession::until_stopped(Vec::new()));
+        worker.push(FakeSession::until_stopped(Vec::new()));
+        workers.push(worker);
+    }
+    let _env = crew.repo.env_guard();
+    let run = crew.spawn(RunMode::Crew, "add a --verbose flag")?;
+    eventually("a session to start", || {
+        names(&run.sink.events()).contains(&"session/started".to_owned())
+    })
+    .await?;
+    run.shutdown.cancel();
+    assert_eq!(run.exit.await?, EngineExit::Waiting(WaitReason::Paused));
+
+    // The run host puts what woke the run in the new engine's inbox before it starts.
+    let (context, _sink, inbox) = crew.context(run.sink.events())?;
+    let shutdown = context.shutdown.clone();
+    let (reply, _posted) = oneshot::channel();
+    inbox
+        .send(EngineCommand::Guidance {
+            text: GUIDANCE.to_owned(),
+            reply,
+        })
+        .await?;
+    let engine = argonauts_crew::engine_for(&crew.settings, RunMode::Crew);
+    let exit = tokio::spawn(engine.run(context));
+    let resumed = || {
+        workers
+            .iter()
+            .flat_map(|worker| worker.specs())
+            .find(|spec| spec.resume.is_some())
+    };
+    eventually("a session to resume", || resumed().is_some()).await?;
+    shutdown.cancel();
+    exit.await?;
+    let prompt = resumed().map(|spec| spec.prompt).unwrap_or_default();
+    assert!(
+        prompt.iter().any(|part| part.text.contains(GUIDANCE)),
+        "{prompt:#?}"
+    );
+    Ok(())
+}
+
+/// Waits up to 2.5 seconds for `done`.
+async fn eventually(what: &str, done: impl Fn() -> bool) -> anyhow::Result<()> {
+    for _ in 0..500 {
+        if done() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    anyhow::bail!("timed out waiting for {what}")
 }
 
 /// A repository that ignores `.argonauts/` never stops a run: the run's own files live under

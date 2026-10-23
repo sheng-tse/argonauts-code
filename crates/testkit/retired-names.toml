@@ -392,11 +392,17 @@ only_in = ["crates/core/src/settings/stats.rs", "crates/core/src/input.rs", "cra
 
 # ── What a CLI itself wrote ──────────────────────────────────────────────────────────────
 # A recording's words are the CLI's, so it is checked by name only. Real folders and
-# addresses are still looked for inside it.
+# addresses are still looked for inside it, and so are the account's plan, its ids and the
+# recording machine's setup. A file under fixtures/ with a meta file beside it is a
+# recording too: its scenario's (`providers.meta.json` for `providers_models.stdout.txt`) or
+# its folder's (`meta.json`).
 
 [recordings]
 endings_under_fixtures = [
     ".stdout.jsonl",
+    ".stdout.json",
+    ".stdout.txt",
+    ".export.json",
     ".stderr.txt",
     ".stdin.jsonl",
     ".approve.jsonl",
@@ -420,16 +426,53 @@ also = [
     "crates/app/tests/fixtures/older-run/**",
     # a session's events from a run's log, with the model's own words
     "crates/conductor/fixtures/opencode/*.events.jsonl",
+    # Claude Code's answers to /context
+    "crates/adapters/claude-code/tests/data/*.json",
+]
+# The files under fixtures/ and tests/data/ that were written here, not by a CLI. Every other
+# file there is a recording, so a new capture can't skip the recordings' checks unseen.
+made_here = [
+    # plugins the manifest adapter runs
+    "crates/adapters/manifest/fixtures/*.sh",
+    # runs, logs and settings in Argonauts' own words
+    "crates/app/tests/fixtures/rebuild/**",
+    "crates/app/tests/fixtures/runs/**",
+    "crates/crew/tests/fixtures/runs/**",
+    "crates/core/tests/fixtures/settings-defaults.toml",
+    "crates/runner/tests/fixtures/spec-first.toml",
+    "crates/registry/tests/fixtures/models.toml",
+    "crates/learning/tests/fixtures/learned/**",
+    # cards as the terminal shows them
+    "crates/tui/tests/fixtures/mods/**",
 ]
 
+# A file a CLI ships with itself, such as a skill it bundles, holds its maker's text, which
+# isn't ours to publish. A recorded session that read one, with a Read or a Skill call, keeps
+# a placeholder: the file's first heading, then the note. Every file that names the folder is
+# read, so a session store kept outside fixtures/ is too.
+[recordings.bundled_text]
+folder = "bundled-skills/"
+read_tools = ["Read"]
+skill_preamble = "Base directory for this skill:"
+note = "(the rest of the file is left out of this recording)"
+fix = "the file's first heading, then the note in place of the rest"
+
 # ── Real names ───────────────────────────────────────────────────────────────────────────
-# No real home folder and no real address belongs in a tracked file. Sample text uses one of
-# the neutral folders and a reserved mail domain.
+# No real home folder and no real address belongs in a tracked file, nor an account's plan or
+# ids. Sample text uses one of the neutral folders, a reserved mail domain and the neutral
+# plan. Each line is read as written and again with its escapes undone (JSON's, however deep,
+# and a URL's percent signs), so an escaped path or address is found too.
 
 [private]
 # linuxbrew is the folder Homebrew installs into on Linux, no person's.
 neutral_homes = ["you", "me", "someone", "user", "alice", "a", "linuxbrew"]
-neutral_mail_endings = ["example.com", "example.org", "example.net", "example", "invalid", "test", "localhost", "127.0.0.1"]
+# The domains kept for examples, and the top-level names kept for tests and examples.
+neutral_mail_endings = ["example.com", "example.org", "example.net", "example", "invalid", "test", "localhost"]
+# An address with one of these as its whole name takes no mail.
+no_reply = ["noreply", "no-reply"]
+# GitHub's address for a login that hides its own, `{id}+{login}@` this domain. It names the
+# account, so only a neutral login passes.
+github_no_reply = "users.noreply.github.com"
 # `@notes.txt` names a file, not an address.
 file_endings = ["md", "txt", "rs", "toml", "json", "jsonl", "yaml", "yml", "sh", "py", "js", "ts", "lock", "log", "html", "css", "snap", "star"]
 # Other projects' licenses, with their authors' own addresses in the copyright lines.
@@ -440,17 +483,66 @@ mail_fix = "a reserved address, such as you@example.com"
 # and holds a folder named after the project's path, so a path inside it names the recording
 # machine's account and its folders. A placeholder in place of the id is fine.
 scratch_fix = "a neutral folder, such as /Users/you/scratch"
+# macOS's temp folder for a user, /var/folders/ and two folders named from the user's id.
+temp_fix = "x's in place of both folder names, as /var/folders/xx/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/T"
+# A plan stands as this one. The plan is read and shown, so it is a plan's name, not a
+# placeholder; a recording may also hold `<plan>`.
+neutral_plan = "team"
+plan_fix = "the neutral plan, team"
+# Codex's plan, read in every file, in JSON, TOML or YAML.
+plan_keys = ["planType", "plan_type", "chatgpt_plan_type", "chatgptPlanType"]
+# Every CLI's plan, read in recordings only: the code's own samples of Claude Code's and
+# agy's plans tell one plan from another, so they keep theirs. A value with a space in it is
+# text, such as the plan an agent wrote in plan mode, not an account's.
+recorded_plan_keys = ["subscriptionType", "subscription_type", "plan", "tier", "currentTier", "userTier"]
+# The words a CLI prints before the account's plan, read in recordings. The plan passes when
+# it holds the neutral plan's name, as "Claude Team Account".
+plan_labels = ["Your Plan:", "Login method:"]
+# A recording's times are UTC's, so they don't tell the recording machine's time zone.
+time_fix = "the time in UTC, as 2026-10-09T05:40:00Z"
+# Files an OS writes into a folder, holding the names of what's in it. `._` starts the name
+# of macOS's AppleDouble files too.
+machine_files = [".DS_Store", "Thumbs.db", "desktop.ini"]
+machine_file_fix = "no such file; git rm --cached it, since .gitignore keeps it out"
+# A PNG's text chunks and its Exif, where an editor writes its user's name, the file's path
+# or the camera's.
+picture_text_chunks = ["tEXt", "iTXt", "zTXt", "eXIf"]
+picture_text_fix = "the picture saved without its text, as oxipng --strip safe writes it"
+
+# The ids that tie a recording to an account, an organization or an install. A recording
+# keeps none: each is null, a placeholder in angle brackets (<redacted>), or zeros, as the
+# all-zero UUID.
+[private.ids]
+keys = [
+    "accountId", "account_id", "accountUuid", "account_uuid",
+    "organizationId", "organization_id", "organizationUuid", "organization_uuid", "orgId", "org_id",
+    "userId", "user_id", "userID",
+    "installationId", "installation_id", "environmentId", "deviceId", "device_id",
+]
+fix = "<redacted>, or the all-zero UUID where the CLI reads it as an id"
 
 # A recording keeps the CLI's words but none of the recording machine's own setup: the
-# skills its account synced, the plugins it installed, its claude.ai connectors, and the
-# account's plan and organization. Each stands as its placeholder, numbered by letter.
+# skills its account synced, the plugins it installed, its claude.ai connectors, the
+# account's organization and the machine's name. Each stands as its placeholder, numbered by
+# letter, and so does each of a connector's tools: tool_a, tool_b and so on. A synced
+# skill's command in an initialize reply, and its entry in a context usage's skills, take
+# the placeholder's name without `anthropic-skills:`, and the command the one description
+# below.
 [private.setup]
 synced_skill = "anthropic-skills:example-"
+synced_skill_description = "An example skill (claude.ai sync)"
 plugin = "example-plugin-"
 connector = "claude.ai Example "
 connector_tool = "mcp__claude_ai_Example_"
-plan = "<plan>"
+connector_tool_name = "tool_"
 organization = "<organization>"
+# Claude Code's organization, under these keys in its account and in `claude auth status`.
+organization_keys = ["organization", "orgName"]
+# Codex names the machine it serves from beside its install's id, as serverName.
+machine_name_beside = "installationId"
+machine_name_key = "serverName"
+machine_names = ["Mac"]
+machine_name_fix = "a neutral name, Mac, as the Codex recorder writes it"
 fix = "its placeholder, as every Claude Code recording has it"
 # The skills, commands and agents an init message may list: Claude Code's own in the recorded
 # versions, as they and its program name them, and the ones a recording makes in its
@@ -483,6 +575,14 @@ fix = "a reserved address, such as you@example.com"
 length = 22
 hash = "0x9d392f0bfbe1f65"
 
+# The maintainer's address, which the community files give for conduct and security
+# reports. It passes only in those files, and is kept as its length and hash like the names
+# above.
+[private.contact]
+length = 21
+hash = "0xdfd6452e4188126c"
+given_in = ["CODE_OF_CONDUCT.md", "SECURITY.md"]
+
 # ── Keys and their fields ────────────────────────────────────────────────────────────────
 # A key of ours is spelled like its field. These files read someone else's JSON or TOML,
 # whose keys aren't ours to choose.
@@ -514,13 +614,6 @@ unpin = "Mods"
 [fixture_folders]
 models = ["haiku", "sonnet", "opus", "fable", "gpt", "luna", "gemini", "llama", "glm", "qwen", "mistral", "deepseek"]
 numbered = ["change", "mock", "mockup", "design", "round", "fix", "draft"]
-
-# ── The living docs ──────────────────────────────────────────────────────────────────────
-# Docs in the folder ARGONAUTS_DOCS names, read with the same table when it is set. The ones
-# to read go in files, and what they may still spell in [[living_docs.allow]] entries.
-
-[living_docs]
-files = []
 
 # ── What a failing run prints ────────────────────────────────────────────────────────────
 # Kept here because it shows three retired words.
@@ -611,7 +704,7 @@ text = "Heads up"
 why = "the label Claude Code itself puts on a notice it sends"
 
 [[allow]]
-path = "crates/**"
+path = "**"
 text = "ChatGPT"
 why = "OpenAI's product name"
 
@@ -724,6 +817,11 @@ why = "agy's own banner names it in full, and the reader matches that title"
 path = "crates/app/src/controller/banner.rs"
 text = "Antigravity CLI"
 why = "agy's own sign-in screen, as the tests feed it to the banner reader"
+
+[[allow]]
+path = "README.md"
+text = "Coming soon: Gemini CLI,"
+why = "Google's Gemini CLI by its own name, a CLI still to come beside agy, as the picture of the CLIs shows it"
 
 # ── Files whose words aren't read ────────────────────────────────────────────────────────
 

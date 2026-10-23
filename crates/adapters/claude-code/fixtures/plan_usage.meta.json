@@ -24,5 +24,5 @@
   "date": "2026-10-09T02:55:15Z",
   "exit_code": 0,
   "note": "initialize, then get_usage with skip_behaviors, before any message: no turn ran and nothing was spent (session.total_cost_usd 0). Run in a throwaway git repo.",
-  "sanitized": "the account's email and organization replaced; the initialize reply trimmed to the account, since the probe reads nothing else of it; the get_usage request id renamed usage-windows, the id the probe sends"
+  "sanitized": "the account's email, organization and plan replaced; the initialize reply trimmed to the account, since the probe reads nothing else of it; the get_usage request id renamed usage-windows, the id the probe sends; the extra-usage cap, the credit, the usage shares and the weekly window's hour made neutral"
 }

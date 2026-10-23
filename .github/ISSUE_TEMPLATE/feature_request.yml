@@ -1,0 +1,23 @@
+name: Feature request
+description: An idea for Argonauts Code.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you're trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How you'd like it to work. A sketch of the screen or the setting helps.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you've tried instead
+      description: Workarounds, or how other tools handle it.

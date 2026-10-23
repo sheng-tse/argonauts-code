@@ -179,6 +179,14 @@ pub fn after_finish(host: &Host, command: EngineCommand) {
 /// How many raw lines `Raw` returns, the newest ones.
 const RAW_LINES: usize = 5_000;
 
+/// A message for the run's agents, which a session that starts later finds in its first prompt.
+pub fn is_message(command: &EngineCommand) -> bool {
+    matches!(
+        command,
+        EngineCommand::Guidance { .. } | EngineCommand::Mention { .. }
+    )
+}
+
 /// Whether the loop should run this command as its own task, so it never waits on it.
 pub fn is_long(command: &EngineCommand) -> bool {
     !matches!(

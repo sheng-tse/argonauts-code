@@ -1,0 +1,75 @@
+name: Bug report
+description: Something in Argonauts Code doesn't work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. For a security problem, please don't open an issue: see [SECURITY.md](https://github.com/sheng-tse/argonauts-code/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did and what Argonauts Code did. Paste error messages as text.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest steps that show it, with the request you typed if it matters.
+      placeholder: |
+        1. cd a repo with failing tests
+        2. argonauts
+        3. Ask "Fix the failing tests"
+        4. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `argonauts --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: dropdown
+    id: workflow
+    attributes:
+      label: Workflow
+      description: The workflow the run used, if any.
+      options:
+        - No workflow (just talking to the agent)
+        - Captain
+        - Orchestrator
+        - Council
+        - maker-checker
+        - best-of-n
+        - draft-and-vote
+        - My own workflow
+        - Not sure
+  - type: textarea
+    id: doctor
+    attributes:
+      label: argonauts doctor
+      description: The output of `argonauts doctor`, which lists your agent CLIs and their versions. Remove anything you'd rather not share, such as a folder path.
+      render: text
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Screenshots, logs, or your settings. Leave out keys, tokens and private code.

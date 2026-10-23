@@ -102,9 +102,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A macOS minute costs about ten Linux minutes while the repository is private, so
-        # macOS runs on main only. Once it's public, pull requests get both.
-        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-24.04", "macos-15"]') || fromJSON('["ubuntu-24.04"]') }}
+        # A macOS minute costs about ten Linux minutes while the repository is private, so a
+        # private repository's pull requests run on Linux only. Main, and every pull request once
+        # the repository is public, get both.
+        os: ${{ (github.event_name == 'push' || github.event.repository.private == false) && fromJSON('["ubuntu-24.04", "macos-15"]') || fromJSON('["ubuntu-24.04"]') }}
         shard: [scenarios, crew, app, rest]
         include:
           # The slowest test programs get a shard each. The last takes every other package, so

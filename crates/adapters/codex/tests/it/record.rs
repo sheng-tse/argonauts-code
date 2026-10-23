@@ -213,6 +213,8 @@ fn record_7_rate_limits_probe() {
         .lines()
         .map(|line| format!("{}\n", redactor.apply(&redact_ids(line))))
         .collect();
+    let sanitized = "the email is made up; ids redacted, the home folder as ~, and the plan, \
+                     machine name, OS version and terminal neutral";
     let meta = json!({
         "adapter": adapter.id(),
         "cli_version": version,
@@ -221,6 +223,7 @@ fn record_7_rate_limits_probe() {
         "program": spec.program,
         "args": spec.args,
         "stdin": requests,
+        "sanitized": sanitized,
         "spends": "nothing",
     });
     let fixtures = fixtures_dir();
@@ -233,26 +236,76 @@ fn record_7_rate_limits_probe() {
     eprintln!("{:?}", adapter.parse_plan_usage_probe(&answer));
 }
 
-/// Account and installation ids identify you, so they never reach a fixture.
+/// Account and installation ids identify you, and the email, plan, machine name, OS version
+/// and terminal are yours, so none of them reaches a fixture. The plan stands as `<plan>`, as
+/// in every committed recording.
 fn redact_ids(line: &str) -> String {
     let Ok(mut value) = serde_json::from_str::<Value>(line) else {
         return line.to_owned();
     };
+    neutral_machine(&mut value);
     redact_keys(
         &mut value,
-        &["accountId", "installationId", "environmentId"],
+        &[
+            ("accountId", "<redacted>"),
+            ("installationId", "<redacted>"),
+            ("environmentId", "<redacted>"),
+            ("email", "user@example.com"),
+            ("planType", "<plan>"),
+        ],
     );
     value.to_string()
 }
 
-fn redact_keys(value: &mut Value, keys: &[&str]) {
+/// Codex names the machine it serves from beside the install's id, from the machine's own
+/// name, and its user agent names the OS version and the terminal. An MCP server's serverName
+/// elsewhere is left as it is.
+fn neutral_machine(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            if fields.contains_key("installationId")
+                && let Some(name) = fields.get_mut("serverName")
+                && name.is_string()
+            {
+                *name = json!("Mac");
+            }
+            if let Some(agent) = fields.get_mut("userAgent")
+                && let Some(neutral) = agent.as_str().and_then(neutral_user_agent)
+            {
+                *agent = json!(neutral);
+            }
+            fields.values_mut().for_each(neutral_machine);
+        }
+        Value::Array(items) => items.iter_mut().for_each(neutral_machine),
+        _ => {}
+    }
+}
+
+/// A user agent such as `argonauts/0.160.0 (Mac OS 26.1.0; arm64) WezTerm/20240203 (argonauts;
+/// 0.0.1)` with the OS version and the terminal the committed recordings have: 15.0.0 and
+/// xterm-256color. `None` when it isn't in that shape.
+fn neutral_user_agent(agent: &str) -> Option<String> {
+    let (originator, rest) = agent.split_once(" (")?;
+    let (platform, rest) = rest.split_once(") ")?;
+    let (os, arch) = platform.split_once("; ")?;
+    let (_terminal, client) = rest.split_once(" (")?;
+    let os_name = match os.rsplit_once(' ') {
+        Some((name, version)) if version.starts_with(|c: char| c.is_ascii_digit()) => name,
+        _ => os,
+    };
+    Some(format!(
+        "{originator} ({os_name} 15.0.0; {arch}) xterm-256color ({client}"
+    ))
+}
+
+/// Each key's value, wherever it is, replaced with the text beside the key. A null stays null.
+fn redact_keys(value: &mut Value, keys: &[(&str, &str)]) {
     match value {
         Value::Object(fields) => {
             for (key, field) in fields.iter_mut() {
-                if keys.contains(&key.as_str()) && !field.is_null() {
-                    *field = json!("<redacted>");
-                } else {
-                    redact_keys(field, keys);
+                match keys.iter().find(|(name, _)| name == key) {
+                    Some((_, text)) if !field.is_null() => *field = json!(text),
+                    _ => redact_keys(field, keys),
                 }
             }
         }
@@ -616,4 +669,33 @@ fn redactor_removes_paths_and_keys() {
         redact_key_like_tokens("key sk-abcdefghijklmnopqrstuvwxyz0123 and sk-short, task-sk-"),
         "key sk-<redacted> and sk-short, task-sk-"
     );
+}
+
+/// The sample's values are put together here, so this file holds none of them.
+#[test]
+fn a_recorded_line_keeps_no_id_plan_address_or_machine_detail() {
+    let (plan, key, address) = ("pro", "planType", format!("{}@{}", "mallory", "sails.dev"));
+    let agent = format!(
+        "argonauts/0.160.0 (Mac OS {}; arm64) {}/1.2.0 (argonauts; 0.0.1)",
+        "26.1.0", "sails-term"
+    );
+    let line = json!({
+        "params": {"installationId": "9f2c", "serverName": "sails-laptop", "environmentId": null},
+        "result": {"accountId": "acct-1", key: plan, "email": address, "userAgent": agent,
+                   "tools": [{"serverName": "docs"}]},
+    })
+    .to_string();
+    let value: Value = serde_json::from_str(&redact_ids(&line)).unwrap();
+    let (params, result) = (&value["params"], &value["result"]);
+    assert_eq!(params["installationId"], "<redacted>");
+    assert_eq!(params["serverName"], "Mac");
+    assert!(params["environmentId"].is_null());
+    assert_eq!(result["accountId"], "<redacted>");
+    assert_eq!(result[key], "<plan>");
+    assert_eq!(result["email"], "user@example.com");
+    assert_eq!(
+        result["userAgent"],
+        "argonauts/0.160.0 (Mac OS 15.0.0; arm64) xterm-256color (argonauts; 0.0.1)"
+    );
+    assert_eq!(result["tools"][0]["serverName"], "docs");
 }

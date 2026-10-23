@@ -79,6 +79,13 @@ impl Queue {
         }
     }
 
+    /// The next request if one is waiting now.
+    fn try_next(&mut self) -> Option<Entry> {
+        self.backlog
+            .pop_front()
+            .or_else(|| self.incoming.try_recv().ok())
+    }
+
     fn put_back(&mut self, entry: Entry) {
         self.backlog.push_front(entry);
     }
@@ -110,11 +117,15 @@ impl Queue {
     }
 }
 
+/// A request sent on to an engine, and the reply its command brings, until the relay sees the
+/// engine take it.
+pub(crate) type InFlight = (Entry, EngineReply);
+
 /// What one engine's relay did: how many commands it took, and the last one sent when the
 /// engine closed its inbox before the relay saw it taken.
 pub(crate) struct Forwarded {
     taken: usize,
-    unsettled: Option<(Entry, EngineReply)>,
+    unsettled: Option<InFlight>,
 }
 
 impl Forwarded {
@@ -153,12 +164,39 @@ fn done_by(request: &ControlRequest, exit: &EngineExit) -> bool {
     )
 }
 
-/// Feeds `queue` to one engine through `inbox`, which holds one command. The next `reserve`
-/// succeeding, or a reply, is how the relay knows the engine took the last one. Returns when the
-/// engine drops its inbox; [`Forwarded::settle`] then decides the last command.
-pub(crate) async fn forward(queue: &mut Queue, inbox: mpsc::Sender<EngineCommand>) -> Forwarded {
+/// Puts the first waiting request in a new engine's `inbox` before the engine runs. An engine
+/// reads its inbox as it starts to learn what woke the run, such as your answer, and the relay
+/// may not get its first turn until later. [`forward`] follows the command from here.
+pub(crate) fn prime(queue: &mut Queue, inbox: &mpsc::Sender<EngineCommand>) -> Option<InFlight> {
+    while let Some(entry) = queue.try_next() {
+        let (command, reply) = match command(entry.request.clone()) {
+            Ok(made) => made,
+            Err(refused) => {
+                entry.answer(error(refused));
+                continue;
+            }
+        };
+        // A new inbox has room for it. Were it refused, the relay would send it later.
+        if inbox.try_send(command).is_err() {
+            queue.put_back(entry);
+            return None;
+        }
+        return Some((entry, reply));
+    }
+    None
+}
+
+/// Feeds `queue` to one engine through `inbox`, which holds one command, after `primed`, the
+/// one [`prime`] put there. The next `reserve` succeeding, or a reply, is how the relay knows
+/// the engine took the last one. Returns when the engine drops its inbox;
+/// [`Forwarded::settle`] then decides the last command.
+pub(crate) async fn forward(
+    queue: &mut Queue,
+    inbox: mpsc::Sender<EngineCommand>,
+    primed: Option<InFlight>,
+) -> Forwarded {
     let mut taken = 0;
-    let mut in_flight: Option<(Entry, EngineReply)> = None;
+    let mut in_flight = primed;
     loop {
         let Ok(permit) = inbox.reserve().await else {
             break;
@@ -241,7 +279,7 @@ mod tests {
         let mut replied = tokio::spawn(receipt.reply());
 
         let (inbox, unread) = mpsc::channel(1);
-        let (forwarded, ()) = tokio::join!(forward(&mut queue, inbox), async {
+        let (forwarded, ()) = tokio::join!(forward(&mut queue, inbox, None), async {
             tokio::task::yield_now().await;
             drop(unread);
         });
@@ -261,7 +299,7 @@ mod tests {
             let _ = released.await;
             command
         });
-        let (forwarded, ()) = tokio::join!(forward(&mut queue, inbox), async {
+        let (forwarded, ()) = tokio::join!(forward(&mut queue, inbox, None), async {
             let reply = (&mut replied).await.unwrap();
             assert_eq!(reply, ControlReply::Ok, "acknowledged once taken");
             release.send(()).unwrap();
@@ -274,6 +312,53 @@ mod tests {
         ));
     }
 
+    /// What `prime` puts in the inbox is followed like any other command: one engine never
+    /// takes it, so the next gets it, and that one's taking it is what acknowledges it.
+    #[tokio::test]
+    async fn a_primed_command_is_followed_like_any_other() {
+        let (sender, incoming) = mpsc::unbounded_channel();
+        let mut queue = Queue::new(incoming);
+        let subscribe = ControlRequest::Subscribe {
+            from_seq: 0,
+            from_snapshot: false,
+        };
+        sender.send(Entry::new(subscribe).0).unwrap();
+        let (entry, receipt) = Entry::new(approval_mode());
+        sender.send(entry).unwrap();
+        let mut replied = tokio::spawn(receipt.reply());
+
+        let (inbox, unread) = mpsc::channel(1);
+        let primed = prime(&mut queue, &inbox);
+        assert!(
+            queue.is_empty(),
+            "past the one no engine takes, it waits in the inbox"
+        );
+        drop(unread);
+        let forwarded = forward(&mut queue, inbox, primed).await;
+        assert_eq!(forwarded.settle(&mut queue, None), 0);
+        assert!(!queue.is_empty(), "the next engine gets it");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut replied)
+                .await
+                .is_err(),
+            "nothing is acknowledged before an engine takes it"
+        );
+
+        let (inbox, mut read) = mpsc::channel(1);
+        let primed = prime(&mut queue, &inbox);
+        assert!(
+            matches!(read.try_recv(), Ok(EngineCommand::ApprovalMode { .. })),
+            "it's there before the engine first looks"
+        );
+        let (forwarded, ()) = tokio::join!(forward(&mut queue, inbox, primed), async {
+            let reply = (&mut replied).await.unwrap();
+            assert_eq!(reply, ControlReply::Ok, "acknowledged once taken");
+            drop(read);
+        });
+        assert_eq!(forwarded.settle(&mut queue, None), 1);
+        assert!(queue.is_empty());
+    }
+
     /// The engine reads the command and returns before the relay polls again, which a
     /// single-threaded join makes certain.
     async fn taken_then_returned(request: ControlRequest, exit: EngineExit) -> (usize, Queue) {
@@ -281,7 +366,7 @@ mod tests {
         let mut queue = Queue::new(incoming);
         sender.send(Entry::new(request).0).unwrap();
         let (inbox, mut read) = mpsc::channel(1);
-        let (forwarded, read_one) = tokio::join!(forward(&mut queue, inbox), async move {
+        let (forwarded, read_one) = tokio::join!(forward(&mut queue, inbox, None), async move {
             let command = read.recv().await;
             drop(read);
             command.is_some()
