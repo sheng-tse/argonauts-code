@@ -17,14 +17,15 @@ targets = [
 # directly: a transitive one is for its parent to replace.
 yanked = "deny"
 unmaintained = "workspace"
-# rustls 0.23.46 and rustls-webpki 0.103.16 fix these. The lock file takes a version only once it is two weeks old,
-# so each entry comes out on the date it gives, with `cargo update -p rustls -p rustls-webpki`.
+# rustls 0.23.46, rustls-webpki 0.103.16 and tokio 1.53.3 fix these. The lock file takes a version only once it is two
+# weeks old, so each entry comes out on the date it gives, with `cargo update -p rustls -p rustls-webpki -p tokio`.
 ignore = [
     { id = "RUSTSEC-2026-0346", reason = "fixed in rustls 0.23.46, taken on 2026-10-28" },
     { id = "RUSTSEC-2026-0347", reason = "fixed in rustls 0.23.46, taken on 2026-10-28" },
     { id = "RUSTSEC-2026-0348", reason = "fixed in rustls 0.23.46, taken on 2026-10-28" },
     { id = "RUSTSEC-2026-0349", reason = "fixed in rustls 0.23.46, taken on 2026-10-28" },
     { id = "RUSTSEC-2026-0382", reason = "fixed in rustls-webpki 0.103.16, taken on 2026-11-03" },
+    { id = "RUSTSEC-2026-0386", reason = "AsyncFd constructors, unused here; fixed in tokio 1.53.3, taken on 2026-10-27" },
 ]
 
 [licenses]
