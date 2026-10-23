@@ -570,13 +570,34 @@ mod tests {
         let guard = watch_for_exit(run_host.id().unwrap(), &record, agent.launch_id()).unwrap();
         agent.close_input();
         wait_until_gone(agent.id() as i32).await;
-        let orphan_session = nix::unistd::getsid(Some(Pid::from_raw(orphan))).unwrap();
-        assert_ne!(orphan_session.as_raw() as u32, agent.id());
+        let orphan_session = session_once_left(orphan, agent.id()).await;
+        assert_eq!(
+            orphan_session, orphan,
+            "the orphan heads a session of its own"
+        );
 
         run_host.kill().await.unwrap();
         wait_until_gone(member).await;
         wait_until_gone(orphan).await;
         drop(guard);
+    }
+
+    /// `pid`'s session once it has left `session`. The shell prints a background job's pid as
+    /// soon as it forks, so the job's `setsid` may not have run yet, even once the shell exits.
+    #[cfg(target_os = "linux")]
+    async fn session_once_left(pid: i32, session: u32) -> i32 {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let sid = nix::unistd::getsid(Some(Pid::from_raw(pid))).unwrap();
+            if sid.as_raw() as u32 != session {
+                return sid.as_raw();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{pid} is still in session {session} after 5 s, so its setsid never ran"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     #[cfg(target_os = "linux")]
