@@ -1,4 +1,3 @@
-# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 # CodeRabbit's review settings. It comments on pull requests; it never writes their descriptions.
 language: en-US
 reviews:
@@ -34,5 +33,3 @@ reviews:
       instructions: >-
         Actions stay pinned to a commit SHA, permissions stay minimal, and secrets never reach pull requests from
         forks.
-chat:
-  auto_reply: true
