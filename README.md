@@ -12,10 +12,6 @@
 
 **[Install](#install) · [How it works](#how-it-works) · [Workflows](#workflows) · [Agents](#supported-agents-and-models) · [Open models](#open-weight-models) · [FAQ](#faq)**
 
-<br>
-
-<code>curl -LsSf https://github.com/sheng-tse/argonauts-code/releases/latest/download/argonauts-code-installer.sh | sh</code>
-
 </div>
 
 <p align="center">
@@ -58,21 +54,29 @@ One agent checking its own work brings the same blind spots it had when it wrote
 
 macOS (Apple silicon and Intel) and Linux (x86_64 and ARM64, with static builds for Alpine and older glibc). Windows isn't supported yet.
 
-On Linux, the sandbox needs Landlock ABI 3 (kernel 6.2 or newer) and unprivileged user namespaces, and without them every agent session is refused with the reason. Ubuntu 24.04 restricts those namespaces with AppArmor: give `argonauts` an AppArmor profile, or allow them with `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`. On an older kernel, `sandbox.mode = "tool"` uses each CLI's own sandbox instead.
+```sh
+# macOS / Linux: the installer, no Rust needed
+curl -LsSf https://github.com/sheng-tse/argonauts-code/releases/latest/download/argonauts-code-installer.sh | sh
+```
 
 ```sh
-# Recommended: the installer, no Rust needed
-curl -LsSf https://github.com/sheng-tse/argonauts-code/releases/latest/download/argonauts-code-installer.sh | sh
-
 # Homebrew
 brew install sheng-tse/tap/argonauts-code
+```
 
-# npm (or try it without installing: npx argonauts-code)
+```sh
+# npm, or try it without installing: npx argonauts-code
 npm install -g argonauts-code
+```
 
-# From crates.io, with Rust 1.95 or newer
+```sh
+# crates.io, with Rust 1.95 or newer
 cargo install argonauts-code --locked
 ```
+
+Debian and Ubuntu (`.deb`) and Fedora (`.rpm`) packages are on each [release](https://github.com/sheng-tse/argonauts-code/releases). On Linux, the npm package unpacks the program with `xz`, so install it first if your system lacks it.
+
+On Linux, the sandbox needs Landlock ABI 3 (kernel 6.2 or newer) and unprivileged user namespaces, and without them every agent session is refused with the reason. Ubuntu 24.04 restricts those namespaces with AppArmor: give `argonauts` an AppArmor profile, or allow them with `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`. On an older kernel, `sandbox.mode = "tool"` uses each CLI's own sandbox instead.
 
 The command is `argonauts`. You also need git and at least one agent CLI installed and signed in: [Claude Code](https://code.claude.com/docs/en/overview), [Codex](https://github.com/openai/codex), [agy](https://antigravity.google) (Google Antigravity's CLI) or [OpenCode](https://opencode.ai). Then see what it finds:
 
