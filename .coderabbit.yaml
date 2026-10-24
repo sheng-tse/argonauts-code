@@ -5,6 +5,8 @@ reviews:
   request_changes_workflow: false
   # The pull request description is the author's own: no summary, walkthrough poem or diagrams added to it.
   high_level_summary: false
+  # A summary an author asks for with @coderabbitai summary goes into the review comment, not the description.
+  high_level_summary_in_walkthrough: true
   poem: false
   sequence_diagrams: false
   collapse_walkthrough: true
@@ -12,6 +14,8 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # Every push gets a review, however many came before it.
+    auto_pause_after_reviewed_commits: 0
   # Recordings, snapshots and pictures are compared by tests; reviewing them line by line adds noise.
   path_filters:
     - "!**/fixtures/**"
