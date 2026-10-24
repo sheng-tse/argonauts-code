@@ -30,6 +30,8 @@ jobs:
       contents: read
     outputs:
       rust: ${{ steps.pick.outputs.rust }}
+      licenses: ${{ steps.pick.outputs.licenses }}
+      packaging: ${{ steps.pick.outputs.packaging }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,20 +43,33 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           # A pull request is checked out as its merge commit, whose first parent is the base,
-          # so HEAD^1..HEAD is exactly what the pull request changes. Main always runs it all.
-          rust=true
-          if [[ "$EVENT" == pull_request ]]; then
-            rust=false
+          # so HEAD^1..HEAD is exactly what the pull request changes. Main always runs it all,
+          # and so does a pull request whose changed files can't be listed. With renames off, a
+          # file moved out of crates/ counts where it left as well as where it went.
+          rust=true licenses=true packaging=true
+          changed="$RUNNER_TEMP/changed-files"
+          if [[ "$EVENT" == pull_request ]] && git diff --name-only --no-renames HEAD^1 HEAD > "$changed"; then
+            rust=false licenses=false packaging=false
             while IFS= read -r path; do
               case "$path" in
-                crates/*) rust=true ;;
-                *.md | assets/* | .github/ISSUE_TEMPLATE/*) ;;
-                *) rust=true ;;
+                # The crates build in Markdown of their own. The install-script tests read crates/ too.
+                crates/*) rust=true licenses=true packaging=true ;;
+                # The app builds in the changelog through crates/app/CHANGELOG.md.
+                CHANGELOG.md) rust=true ;;
+                deny.toml) licenses=true ;;
+                packaging/*) packaging=true ;;
+                *.md | assets/* | .github/ISSUE_TEMPLATE/* | .coderabbit.yaml) ;;
+                # Cargo.toml, Cargo.lock, the workflows, and anything this list doesn't name.
+                *) rust=true licenses=true packaging=true ;;
               esac
-            done < <(git diff --name-only HEAD^1 HEAD)
+            done < "$changed"
           fi
-          echo "rust=$rust" >> "$GITHUB_OUTPUT"
-          echo "Rust jobs: $rust"
+          {
+            echo "rust=$rust"
+            echo "licenses=$licenses"
+            echo "packaging=$packaging"
+          } >> "$GITHUB_OUTPUT"
+          echo "Rust jobs: $rust. Licenses: $licenses. Install script: $packaging."
 
   fmt:
     name: Format
@@ -142,6 +157,30 @@ jobs:
           read -ra packages <<< "$PACKAGES"
           cargo test --locked --no-fail-fast "${packages[@]}"
 
+  # One check for every shard, so the branch rules can require the tests: a matrix that was
+  # skipped reports under its unexpanded name, which a required check would wait on forever.
+  # Skipped counts only when Changes worked and picked no Rust jobs; a failed Changes job also
+  # skips the shards, and that must not pass.
+  tests:
+    name: Tests
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every shard passed, or none was needed
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST: ${{ needs.changes.outputs.rust }}
+          RESULT: ${{ needs.test.result }}
+        run: |
+          case "$RESULT/$CHANGES/$RUST" in
+            success/*) echo "The test shards passed." ;;
+            skipped/success/false) echo "No test shard was needed." ;;
+            *) echo "::error::The test shards ended: $RESULT (Changes: $CHANGES, rust: $RUST)."; exit 1 ;;
+          esac
+
   names:
     name: Names
     runs-on: ubuntu-24.04
@@ -183,7 +222,7 @@ jobs:
   licenses:
     name: Licenses
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.licenses == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -199,6 +238,8 @@ jobs:
 
   packaging:
     name: Install script
+    needs: changes
+    if: needs.changes.outputs.packaging == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
