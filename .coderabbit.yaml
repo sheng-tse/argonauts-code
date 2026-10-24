@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit's review settings. It comments on pull requests; it never writes their descriptions.
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  # The pull request description is the author's own: no summary, walkthrough poem or diagrams added to it.
+  high_level_summary: false
+  poem: false
+  sequence_diagrams: false
+  collapse_walkthrough: true
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+  # Recordings, snapshots and pictures are compared by tests; reviewing them line by line adds noise.
+  path_filters:
+    - "!**/fixtures/**"
+    - "!**/tests/data/**"
+    - "!**/*.snap"
+    - "!**/golden/**"
+    - "!assets/**"
+    - "!Cargo.lock"
+  path_instructions:
+    - path: "crates/**/*.rs"
+      instructions: >-
+        Look for correctness, safety (the sandbox, approvals, the never-list and writes outside the project) and
+        tests that would fail without the change. Comments should say why, not what. No test may call a model or
+        touch the real ~/.argonauts.
+    - path: "**/*.md"
+      instructions: >-
+        Public Markdown keeps each paragraph and list item on one line. Claims about the app must match the code.
+    - path: ".github/workflows/**"
+      instructions: >-
+        Actions stay pinned to a commit SHA, permissions stay minimal, and secrets never reach pull requests from
+        forks.
+chat:
+  auto_reply: true
