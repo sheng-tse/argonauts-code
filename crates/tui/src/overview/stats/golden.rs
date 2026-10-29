@@ -24,7 +24,7 @@ use time::{Date, Duration, OffsetDateTime};
 
 use super::draw::shade;
 use crate::kit::Kit;
-use crate::overview::{OverviewView, Tab, UsageWatch, cli_role};
+use crate::overview::{OverviewView, Tab, UsageWatch};
 use crate::state::AppState;
 use crate::theme::{ColorLevel, Glyphs, Role, Theme};
 use crate::views::{View, ViewCtx};
@@ -72,7 +72,7 @@ pub(super) type Named = fn(&Kit<'_>, &str) -> Vec<Option<Color>>;
 /// The names of the By model and By role drawings: each model's color as the drawing has
 /// it, and a color for each role.
 pub(super) fn models_and_roles(kit: &Kit<'_>, name: &str) -> Vec<Option<Color>> {
-    let model = |agent: &str, nth: usize| shade(kit, cli_role(agent), nth).fg;
+    let model = |agent: &str, nth: usize| shade(kit, Role::for_cli(agent), nth).fg;
     let role = |role: StatsRole| super::draw::role_style(kit, role).fg;
     let color = match name {
         "#e08a66" => model(CLAUDE, 0),
@@ -92,12 +92,29 @@ pub(super) fn models_and_roles(kit: &Kit<'_>, name: &str) -> Vec<Option<Color>> 
     color.into_iter().map(Some).collect()
 }
 
+/// The colours the app's own pictures write by value, `#rrggbb`, where the theme's names for
+/// colours have none, such as agy's hue, the kinds of tokens and the roles' own.
+pub(super) fn app_drawn(_: &Kit<'_>, name: &str) -> Vec<Option<Color>> {
+    let value = name
+        .strip_prefix('#')
+        .filter(|hex| hex.len() == 6)
+        .and_then(|hex| u32::from_str_radix(hex, 16).ok());
+    match value {
+        Some(rgb) => vec![Some(Color::Rgb(
+            (rgb >> 16) as u8,
+            (rgb >> 8) as u8,
+            rgb as u8,
+        ))],
+        None => Vec::new(),
+    }
+}
+
 /// The names of a drawing of one model of Claude Code's by itself: orange is the model's,
 /// and the tokens it wrote.
 pub(super) fn one_claude_model(kit: &Kit<'_>, name: &str) -> Vec<Option<Color>> {
     match name {
         "term-org" => vec![
-            shade(kit, cli_role(CLAUDE), 0).fg,
+            shade(kit, Role::for_cli(CLAUDE), 0).fg,
             kit.fg(Role::TokensOutput).fg,
         ],
         _ => Vec::new(),
@@ -120,7 +137,7 @@ fn colors_for(
         return own;
     }
     let fg = |role: Role| kit.fg(role).fg;
-    let model = |agent: &str, nth: usize| shade(kit, cli_role(agent), nth).fg;
+    let model = |agent: &str, nth: usize| shade(kit, Role::for_cli(agent), nth).fg;
     match name {
         None | Some("term-fg") if bold => vec![None, Some(Color::Reset), fg(Role::Bright)],
         None | Some("term-fg") => vec![None, Some(Color::Reset), fg(Role::Text)],
@@ -134,9 +151,9 @@ fn colors_for(
         Some("term-red") => vec![fg(Role::Danger)],
         Some("term-org") => vec![fg(Role::Accent), fg(Role::TokensOutput)],
         Some("term-blu") => vec![fg(Role::TokensInput)],
-        Some("v-claude") => vec![fg(cli_role("claude-code"))],
-        Some("v-codex") => vec![fg(cli_role("codex"))],
-        Some("v-agy") => vec![fg(cli_role("antigravity-cli"))],
+        Some("v-claude") => vec![fg(Role::for_cli("claude-code"))],
+        Some("v-codex") => vec![fg(Role::for_cli("codex"))],
+        Some("v-agy") => vec![fg(Role::for_cli("antigravity-cli"))],
         Some("m-opus") => vec![model("claude-code", 0)],
         Some("m-sonnet") => vec![model("claude-code", 1)],
         Some("m-gpt") => vec![model("codex", 0)],

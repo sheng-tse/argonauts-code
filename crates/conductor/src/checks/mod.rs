@@ -1,7 +1,10 @@
 //! Runs check commands in the task's worktree, each in its own session with a time limit.
-//! `run_check` runs one with no sandbox of ours; [`SandboxedChecks`] is the
-//! `CheckRunner` every crew run uses. Either way a check gets only an allowlisted environment
-//! (never keys, tokens, or agent sockets) and no terminal.
+//! [`SandboxedChecks`] is the `CheckRunner` every run uses, so every check it takes, yours or
+//! the ones its main agent picked, runs inside the run's sandbox as its agents' own commands
+//! do, and can do nothing they couldn't. Only `checks.setup` runs outside it, since it installs
+//! dependencies, and only your own settings name it. `run_check` runs one with no sandbox of
+//! ours. Either way a check gets only an allowlisted environment (never keys, tokens, or agent
+//! sockets) and no terminal.
 
 pub mod env;
 pub mod runner;

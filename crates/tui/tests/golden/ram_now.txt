@@ -2,10 +2,10 @@
                                                                                                                       
   RAM for models: up to 52 GB of this Mac's 64 GB · none in use · 37 GB free now                                      
                                                                                                                       
-  Models can use up to 52 GB of this Mac's 64 GB · 37 GB free now · models hold none · macOS and your apps 27 GB      
+  Models can use up to 52 GB of this computer's 64 GB · 37 GB free now · models hold none · other apps 27 GB          
                                                                                                                       
  With a 25 GB model loaded                                                                                            
                                                                                                                       
-  Models can use up to 52 GB of this Mac's 64 GB · 18 GB free now · models hold 25 GB · macOS and your apps 21 GB     
+  Models can use up to 52 GB of this computer's 64 GB · 18 GB free now · models hold 25 GB · other apps 21 GB         
                                                                                                                       
  (free counts what macOS can take back at once: free, inactive, speculative and purgeable pages)                      

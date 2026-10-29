@@ -1,108 +1,109 @@
-//! The color a model draws in, the same on every tab. A CLI's models share its color and are
-//! told apart by shade: the CLI's own color for the model that has run the most tokens here,
-//! then three more shades for the next three, and round again from the fifth. Shades of one
-//! color stand at least 15 apart in CIELAB, far enough to tell at a glance.
+//! The colour and shape a model draws in, the same on every tab and all day. A CLI's models
+//! share its hue and are told apart by shape, each lit in the hue at full strength: █ for the
+//! model that ran the most tokens through Argonauts Code, ▚ for the next, ⣿ for the third.
+//! Every model after those draws in the solid grey of the rest: one run of it in a bar, and a
+//! grey swatch on each of their rows in a table, which keeps every model. Where only a colour
+//! shows, a dot or a name, a CLI's first three models share its hue.
+//!
+//! The shapes are block, quadrant and braille glyphs because Ghostty and kitty draw those
+//! themselves, exactly and at full strength, while they paint ▓ ▒ ░ as flat mixes of the
+//! colour into the background, which made a CLI's second and third models darker copies of
+//! its first.
 
 use std::cmp::Reverse;
 
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::overview::ModelTokens;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 
-use super::cards::cli_role;
 use crate::kit::Kit;
-use crate::theme::{Brightness, ColorLevel, Role, Theme, nearest_ansi256};
+use crate::theme::Role;
 
-/// The shades a color comes in, its own first.
-pub const SHADES: usize = 4;
+/// How many of a CLI's models take a shape of their own before the rest share the grey.
+pub const OWN_TEXTURES: usize = 3;
 
-type Rgb = (u8, u8, u8);
+/// The shapes a CLI's models take in the order they rank, then the rest's solid cell.
+const SHAPES: [&str; OWN_TEXTURES + 1] = ["█", "▚", "⣿", "█"];
 
-/// The three CLIs' shades on a dark screen: the CLI's own color, a deep one, a light one, and
-/// a fourth far from all three.
-const ON_DARK: [[u32; SHADES]; 3] = [
-    [0xe08a66, 0xb4472a, 0xf3b27a, 0xf8dccb],
-    [0x6aa6ff, 0x2e5fc0, 0xa8cdff, 0x3fc4f0],
-    [0x36cfe6, 0x1b8a9c, 0x93e8f3, 0x4fe0c0],
-];
+/// The same in ASCII, apart from the `.` a bar's free cells take.
+const ASCII_SHAPES: [&str; OWN_TEXTURES + 1] = ["#", "=", "+", ":"];
 
-/// How any other color's further shades are mixed: toward white, or toward black where the
-/// share is negative. On either screen one shade goes toward the paper and two away from it.
-const MIXED_ON_DARK: [f64; SHADES - 1] = [-0.30, 0.50, 0.85];
-const MIXED_ON_LIGHT: [f64; SHADES - 1] = [0.35, -0.30, -0.60];
+/// The rest's cell without colour, where a solid one would pass for a CLI's first model.
+const REST_WITHOUT_COLOUR: &str = "░";
 
-/// The `nth` shade of the color `base` draws in: its own first. Sixteen colors and none have
-/// no shades, so every model draws in its CLI's color and its name tells them apart.
-pub(crate) fn shade(kit: &Kit<'_>, base: Role, nth: usize) -> Style {
-    let own = kit.fg(base);
-    let theme = kit.theme;
-    let nth = nth % SHADES;
-    if nth == 0 || matches!(theme.level, ColorLevel::Ansi16 | ColorLevel::None) {
-        return own;
+/// The colour of the model at `place` among its CLI's, whose hue is `base`: the hue for the
+/// first three, and the grey of the rest after them.
+pub(crate) fn shade(kit: &Kit<'_>, base: Role, place: usize) -> Style {
+    if place < OWN_TEXTURES {
+        kit.fg(base)
+    } else {
+        kit.fg(Role::CatOther)
     }
-    let Some(rgb) = full_color(theme, base) else {
-        return own;
-    };
-    let mixed = shades_of(rgb, theme.brightness)[nth];
-    Style::new().fg(match theme.level {
-        ColorLevel::TrueColor => Color::Rgb(mixed.0, mixed.1, mixed.2),
-        _ => Color::Indexed(nearest_ansi256(mixed)),
-    })
 }
 
-/// The role's color in full. A screen of 256 colors holds only the nearest of them, so there
-/// the shades are mixed from the theme's own.
-fn full_color(theme: &Theme, role: Role) -> Option<Rgb> {
-    let rgb = |color| match color {
-        Some(Color::Rgb(r, g, b)) => Some((r, g, b)),
+/// The shape of the model at `place` among its CLI's models, one cell of it.
+pub(crate) fn texture(kit: &Kit<'_>, place: usize) -> &'static str {
+    if kit.theme.glyphs.is_ascii() {
+        return ASCII_SHAPES[place.min(OWN_TEXTURES)];
+    }
+    if place >= OWN_TEXTURES && !kit.has_color() {
+        return REST_WITHOUT_COLOUR;
+    }
+    SHAPES[place.min(OWN_TEXTURES)]
+}
+
+/// The left half of the shape at `place`, for a bar that ends in half a cell: ▌ of █, ▘ of ▚
+/// (its top-left quarter) and ⡇ of ⣿ (its left column of dots), each drawn as exactly as its
+/// whole. `None` where the shape has no half, as in ASCII, so the bar rounds to whole cells.
+pub(crate) fn half_texture(kit: &Kit<'_>, place: usize) -> Option<&'static str> {
+    match texture(kit, place) {
+        "█" => Some("▌"),
+        "▚" => Some("▘"),
+        "⣿" => Some("⡇"),
         _ => None,
-    };
-    rgb(theme.color(role)).or_else(|| rgb(Theme::for_brightness(theme.brightness).color(role)))
-}
-
-fn shades_of(own: Rgb, brightness: Brightness) -> [Rgb; SHADES] {
-    let fixed = ON_DARK.iter().find(|shades| rgb(shades[0]) == own);
-    if let (Brightness::Dark, Some(fixed)) = (brightness, fixed) {
-        return fixed.map(rgb);
     }
-    let mixes = match brightness {
-        Brightness::Dark => MIXED_ON_DARK,
-        Brightness::Light => MIXED_ON_LIGHT,
-    };
-    let mut shades = [own; SHADES];
-    for (shade, mix) in shades[1..].iter_mut().zip(mixes) {
-        let toward = if mix < 0.0 { 0.0 } else { 255.0 };
-        let part = |c: u8| (f64::from(c) + (toward - f64::from(c)) * mix.abs()).round() as u8;
-        *shade = (part(own.0), part(own.1), part(own.2));
-    }
-    shades
 }
 
-fn rgb(hex: u32) -> Rgb {
-    ((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
-}
-
-/// Which shade each model takes: its place among its CLI's models by their tokens in all.
-/// Every tab builds this from the same list, so a model has one color wherever it shows.
+/// Which colour and shape each of a screen's models takes: its place among its CLI's models
+/// in the list every tab is given, then the models the screen shows that the list lacks.
+///
+/// The app ranks that list once a day, by the tokens that ran through Argonauts Code before
+/// today, with the whole computer's count breaking ties and placing the models that never ran
+/// here after the ones that did, and the models new today last. So a colour never changes
+/// while you look, nor between tabs.
 #[derive(Debug, Clone)]
 pub struct ModelColors<'a> {
     names: &'a DisplayNames,
-    /// Each model as a CLI and the name it shows under, the most tokens first.
+    /// Each model as a CLI and the name it shows under, in the order of their places.
     ranked: Vec<(String, String)>,
 }
 
 impl<'a> ModelColors<'a> {
-    /// From every model's tokens in all, as a tab's numbers carry them. A model recorded
-    /// under two names counts once, with the tokens of both.
-    pub fn new(models: &[ModelTokens], names: &'a DisplayNames) -> Self {
+    /// The colours of a screen that shows `shown`, from the app's list `ranked`. A model the
+    /// list hasn't met goes after its CLI's others in the order given, so no two of the
+    /// screen's models share a place.
+    pub fn for_screen<'m>(
+        ranked: &[ModelTokens],
+        names: &'a DisplayNames,
+        shown: impl IntoIterator<Item = (&'m str, Option<&'m str>)>,
+    ) -> Self {
+        Self::new(ranked, names).with(shown)
+    }
+
+    /// From the app's list alone, for a screen that shows none of its own models. A model
+    /// recorded under two names is one, with the tokens of both, at the first one's place
+    /// among those with as many.
+    pub fn new(ranked: &[ModelTokens], names: &'a DisplayNames) -> Self {
         let mut tokens: Vec<((String, String), u64)> = Vec::new();
-        for model in models {
+        for model in ranked {
             let shown = shown_as(names, &model.agent, model.model.as_deref());
             match tokens.iter_mut().find(|(known, _)| *known == shown) {
                 Some((_, sum)) => *sum += model.tokens,
                 None => tokens.push((shown, model.tokens)),
             }
         }
+        // Stable, so models with as many tokens keep the list's order, which already breaks
+        // their ties.
         tokens.sort_by_key(|(_, sum)| Reverse(*sum));
         Self {
             names,
@@ -110,8 +111,8 @@ impl<'a> ModelColors<'a> {
         }
     }
 
-    /// With the models a tab shows that the list hasn't met, each after its CLI's others in
-    /// the order given, so no two of a tab's models share a place.
+    /// With the models a screen shows that the list hasn't met, each after its CLI's others in
+    /// the order given.
     pub fn with<'m>(mut self, shown: impl IntoIterator<Item = (&'m str, Option<&'m str>)>) -> Self {
         for (agent, model) in shown {
             self.meet(shown_as(self.names, agent, model));
@@ -119,8 +120,8 @@ impl<'a> ModelColors<'a> {
         self
     }
 
-    /// Like [`ModelColors::with`], for a tab that holds each model by the name it shows under,
-    /// as the health card does.
+    /// Like [`ModelColors::with`], for a screen that holds each model by the name it shows
+    /// under, as the health card does.
     pub fn with_named<'m>(mut self, shown: impl IntoIterator<Item = (&'m str, &'m str)>) -> Self {
         for (agent, name) in shown {
             self.meet((agent.to_owned(), name.to_owned()));
@@ -134,28 +135,43 @@ impl<'a> ModelColors<'a> {
         }
     }
 
-    /// The model's place among its CLI's models, the one with the most tokens 0.
+    /// The model's place among its CLI's models, the first 0.
     pub fn place(&self, agent: &str, model: Option<&str>) -> usize {
         let (agent, name) = shown_as(self.names, agent, model);
         self.place_named(&agent, &name)
     }
 
-    /// The place of the model that shows under `name`.
+    /// The place of the model that shows under `name`. One the ranking hasn't met takes the
+    /// next after its CLI's others, as a model new today does.
     pub fn place_named(&self, agent: &str, name: &str) -> usize {
-        self.ranked
-            .iter()
-            .filter(|(cli, _)| cli == agent)
+        let of_its_cli = || self.ranked.iter().filter(|(cli, _)| cli == agent);
+        of_its_cli()
             .position(|(_, known)| known == name)
-            .unwrap_or(0)
+            .unwrap_or_else(|| of_its_cli().count())
     }
 
     pub fn style(&self, kit: &Kit<'_>, agent: &str, model: Option<&str>) -> Style {
-        shade(kit, cli_role(agent), self.place(agent, model))
+        shade(kit, Role::for_cli(agent), self.place(agent, model))
     }
 
-    /// The color of the model that shows under `name`.
+    /// The colour of the model that shows under `name`.
     pub fn style_named(&self, kit: &Kit<'_>, agent: &str, name: &str) -> Style {
-        shade(kit, cli_role(agent), self.place_named(agent, name))
+        shade(kit, Role::for_cli(agent), self.place_named(agent, name))
+    }
+
+    /// The shape the model draws in, one cell of it.
+    pub fn texture(&self, kit: &Kit<'_>, agent: &str, model: Option<&str>) -> &'static str {
+        texture(kit, self.place(agent, model))
+    }
+
+    /// The left half of the model's shape, for a bar that ends in half a cell.
+    pub fn half_texture(
+        &self,
+        kit: &Kit<'_>,
+        agent: &str,
+        model: Option<&str>,
+    ) -> Option<&'static str> {
+        half_texture(kit, self.place(agent, model))
     }
 }
 

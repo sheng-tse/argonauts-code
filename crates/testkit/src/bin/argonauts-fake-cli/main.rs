@@ -118,7 +118,7 @@ fn matches(rule: &FakeRule, argv0: &str, args: &[String], stdin: &mut Stdin) -> 
     let Some(want) = &rule.prompt_contains else {
         return true;
     };
-    if args.iter().any(|arg| arg.contains(want.as_str())) {
+    if prompt_args(args).any(|arg| arg.contains(want.as_str())) {
         return true;
     }
     stdin.read_prompt(rule.stdin_prompt);
@@ -126,6 +126,16 @@ fn matches(rule: &FakeRule, argv0: &str, args: &[String], stdin: &mut Stdin) -> 
         .prompt
         .as_deref()
         .is_some_and(|text| text.contains(want.as_str()))
+}
+
+/// The arguments a prompt can be in. The name a session is listed by is left out: it carries
+/// the conversation's title, so an earlier request would match a later turn.
+fn prompt_args(args: &[String]) -> impl Iterator<Item = &String> {
+    let is_name = std::iter::once(false).chain(args.iter().map(|arg| arg == "--name"));
+    args.iter()
+        .zip(is_name)
+        .filter(|(_, is_name)| !is_name)
+        .map(|(arg, _)| arg)
 }
 
 fn play(
@@ -138,7 +148,7 @@ fn play(
     for step in steps {
         match step {
             FakeStep::Emit(line) => {
-                writeln!(out, "{line}")?;
+                writeln!(out, "{}", reset_times(line))?;
                 out.flush()?;
             }
             FakeStep::EmitWithUuid(line) => {
@@ -180,7 +190,7 @@ fn play(
                     break;
                 }
             },
-            FakeStep::Stderr(line) => eprintln!("{line}"),
+            FakeStep::Stderr(line) => eprintln!("{}", reset_times(line)),
             FakeStep::CallTool { name, arguments } => {
                 let reply = call_config_tool(args, name, arguments)
                     .unwrap_or_else(|err| serde_json::json!({ "error": format!("{err:#}") }));
@@ -201,6 +211,35 @@ fn play(
 }
 
 /// Calls `name` on the server Claude Code's `--mcp-config` names, as Claude Code would.
+/// `line` with each `@RESET_IN:<n>s@` as the Unix time `n` seconds from now, as Claude Code's
+/// `resetsAt` is, so a reset counts from when the limit is hit rather than from when the
+/// scenario was written.
+fn reset_times(line: &str) -> String {
+    const OPEN: &str = "@RESET_IN:";
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find(OPEN) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + OPEN.len()..];
+        let secs = after
+            .split_once("s@")
+            .and_then(|(secs, tail)| Some((secs.parse::<i64>().ok()?, tail)));
+        match secs {
+            Some((secs, tail)) => {
+                let at = time::OffsetDateTime::now_utc().unix_timestamp() + secs;
+                out.push_str(&at.to_string());
+                rest = tail;
+            }
+            None => {
+                out.push_str(OPEN);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn call_config_tool(
     args: &[String],
     name: &str,
@@ -357,5 +396,39 @@ impl Stdin {
                 Some(line)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{prompt_args, reset_times};
+
+    #[test]
+    fn a_reset_counts_from_when_the_line_is_sent() {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let line = reset_times(r#"{"resetsAt":@RESET_IN:6s@,"note":"@RESET_IN:x"}"#);
+        let at: i64 = line
+            .trim_start_matches(r#"{"resetsAt":"#)
+            .split(',')
+            .next()
+            .and_then(|at| at.parse().ok())
+            .expect("a time");
+        assert!((now + 6..=now + 8).contains(&at), "{line}");
+        assert!(line.ends_with(r#""note":"@RESET_IN:x"}"#), "{line}");
+    }
+
+    #[test]
+    fn a_session_name_is_not_where_its_prompt_is() {
+        let args: Vec<String> = [
+            "-p",
+            "hi",
+            "--name",
+            "argonauts fix the readme",
+            "--verbose",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let seen: Vec<&str> = prompt_args(&args).map(String::as_str).collect();
+        assert_eq!(seen, ["-p", "hi", "--name", "--verbose"]);
     }
 }

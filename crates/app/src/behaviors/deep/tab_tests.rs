@@ -155,12 +155,12 @@ async fn the_map(driver: &mut TestDriver, request: MapRequest) -> BehaviorMap {
 }
 
 #[tokio::test]
-async fn the_tab_offers_the_deeper_map_until_one_is_made_then_shows_it() {
+async fn the_tab_offers_summaries_until_they_are_made_then_shows_them() {
     let mut driver = TestDriver::start().await;
     record_run(driver.repo.home(), &["cargo test", "git status", "ls"]);
     let first = the_map(&mut driver, MapRequest::default()).await;
     assert_eq!(first.placing, Placing::Labels);
-    assert!(first.offer_deeper);
+    assert!(first.offer_summaries);
     assert_eq!(first.actions.len(), 3);
     driver.agent.push(FakeSession::completed(
         "1. Run the test suite\n2. Check what changed\n3. List the files",
@@ -178,25 +178,25 @@ async fn the_tab_offers_the_deeper_map_until_one_is_made_then_shows_it() {
             .map(|spec| spec.key.to_string())
             .collect::<Vec<_>>()
     );
-    // Made from the tab, the deeper map comes to it unasked.
-    let deeper = the_map_sent(&mut driver).await;
-    assert_eq!(deeper.request.map, Some(SettingsMap::Deeper));
+    // Made from the tab, Summaries comes to it unasked.
+    let made = the_map_sent(&mut driver).await;
+    assert_eq!(made.request.map, Some(SettingsMap::Summaries));
     assert!(
-        matches!(&deeper.placing, Placing::Summaries { by } if by.contains("Claude Code")),
+        matches!(&made.placing, Placing::Summaries { by } if by == "Opus 5.5"),
         "{:?}",
-        deeper.placing
+        made.placing
     );
-    assert!(!deeper.offer_deeper);
-    assert_eq!(deeper.unsummarized, 0);
-    assert!(deeper.by_words, "no embedding model answers in a test");
-    let summaries: Vec<&str> = deeper
+    assert!(!made.offer_summaries);
+    assert_eq!(made.unsummarized, 0);
+    assert!(made.by_words, "no embedding model answers in a test");
+    let summaries: Vec<&str> = made
         .actions
         .iter()
         .filter_map(|action| action.summary.as_deref())
         .collect();
     assert_eq!(summaries.len(), 3);
     assert!(summaries.contains(&"Run the test suite"), "{summaries:?}");
-    // d goes back to the labels, which no longer offer a deeper map.
+    // d goes back to the labels, which no longer offer Summaries.
     let labels = the_map(
         &mut driver,
         MapRequest {
@@ -206,13 +206,13 @@ async fn the_tab_offers_the_deeper_map_until_one_is_made_then_shows_it() {
     )
     .await;
     assert_eq!(labels.placing, Placing::Labels);
-    assert!(!labels.offer_deeper);
+    assert!(!labels.offer_summaries);
 }
 
 #[tokio::test]
-async fn behaviors_map_deeper_opens_on_the_deeper_map_and_counts_what_it_lacks() {
+async fn behaviors_map_summaries_opens_on_summaries_and_counts_what_they_lack() {
     let mut driver = TestDriver::start_with(CliOptions {
-        flags: vec!["behaviors.map=deeper".to_owned()],
+        flags: vec!["behaviors.map=summaries".to_owned()],
         ..CliOptions::default()
     })
     .await;
@@ -256,11 +256,11 @@ async fn opening_the_tab_calls_no_model() {
     for request in [
         MapRequest::default(),
         MapRequest {
-            map: Some(SettingsMap::Deeper),
+            map: Some(SettingsMap::Summaries),
             ..MapRequest::default()
         },
         MapRequest {
-            map: Some(SettingsMap::Deeper),
+            map: Some(SettingsMap::Summaries),
             grouping: Grouping::Cli,
             ..MapRequest::default()
         },

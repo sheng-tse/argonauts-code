@@ -241,10 +241,16 @@ fn part(
     InputPart {
         kind,
         label: label.to_owned(),
-        approx_tokens: u32::try_from(text.chars().count().div_ceil(4)).unwrap_or(u32::MAX),
+        approx_tokens: u32::try_from(approx_tokens(&text)).unwrap_or(u32::MAX),
         text,
         source,
     }
+}
+
+/// What `text` takes of a context window, at a token per 4 characters: how Argonauts Code
+/// counts what it sends.
+pub fn approx_tokens(text: &str) -> u64 {
+    u64::try_from(text.chars().count().div_ceil(4)).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

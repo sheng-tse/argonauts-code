@@ -17,11 +17,12 @@ use argonauts_core::plan_usage::LiveWindow;
 use ratatui::text::Span;
 use time::OffsetDateTime;
 
-use super::cards::{UsageCards, cli_role};
+use super::cards::UsageCards;
 use super::usage::{left_words, reset_words};
-use crate::kit::bars;
+use crate::kit::logo::{LOGO_BEFORE, ModelLabel, NoPicture};
 use crate::kit::{Drawn, Kit, Level, ljust, rjust};
-use crate::text::{str_width, truncate_spans};
+use crate::kit::{bars, legend};
+use crate::text::{spans_width, str_width, truncate_spans};
 use crate::theme::Role;
 
 /// The widest bar a window gets.
@@ -33,9 +34,9 @@ const SHARE: usize = 5;
 /// The widest window name before its length shortens, `5-hour` to `5h`, and then is cut.
 const NAME_MOST: usize = 16;
 /// Blank cells after the CLI's name, after its plan, and after a window's name.
-const NAME_GAP: usize = 2;
-const PLAN_GAP: usize = 3;
-const WORDS_GAP: usize = 3;
+const NAME_GAP: usize = legend::BETWEEN_WORDS;
+const PLAN_GAP: usize = legend::BETWEEN_WORDS;
+const WORDS_GAP: usize = legend::BEFORE_NUMBERS;
 /// Blank cells between the share and the reset words.
 const RESET_GAP: usize = 3;
 /// Said of a window that has no reset time yet: it starts with the next request.
@@ -183,8 +184,6 @@ enum Resets {
 #[derive(Debug, Clone, Copy)]
 struct Columns {
     name: usize,
-    /// The CLI's name as the bottom line shortens it.
-    short_names: bool,
     plan: usize,
     words: usize,
     bar: usize,
@@ -202,7 +201,13 @@ impl UsageCards<'_> {
             return body;
         }
         let rows: Vec<Vec<WindowRow>> = plans.iter().map(window_rows).collect();
-        let columns = self.columns(plans, &rows, width);
+        // Where logos draw as pictures, each CLI's name has its logo before it.
+        let logo = if kit.theme.logo_pictures {
+            usize::from(LOGO_BEFORE)
+        } else {
+            0
+        };
+        let columns = self.columns(plans, &rows, width, logo);
         if spaced {
             body.push(Vec::new());
         }
@@ -243,11 +248,17 @@ impl UsageCards<'_> {
     }
 
     /// The columns that fit `width`, giving way in turn: the reset words shorten, then go,
-    /// then the plan goes, then the CLI's names shorten.
-    fn columns(&self, plans: &[PlanUsage], rows: &[Vec<WindowRow>], width: usize) -> Columns {
+    /// then the plan goes, then the CLI's names shorten. The names' column holds `logo` cells
+    /// more for the logo before each.
+    fn columns(
+        &self,
+        plans: &[PlanUsage],
+        rows: &[Vec<WindowRow>],
+        width: usize,
+        logo: usize,
+    ) -> Columns {
         let widest = |names: &mut dyn Iterator<Item = usize>| names.max().unwrap_or(0);
-        let name = widest(&mut plans.iter().map(|plan| str_width(&plan.name))) + NAME_GAP;
-        let short = widest(&mut plans.iter().map(|plan| str_width(&short_name(plan)))) + NAME_GAP;
+        let name = logo + widest(&mut plans.iter().map(|plan| str_width(&plan.name))) + NAME_GAP;
         let plan_width = widest(
             &mut plans
                 .iter()
@@ -271,19 +282,18 @@ impl UsageCards<'_> {
                 .unwrap_or(0);
             if longest == 0 { 0 } else { RESET_GAP + longest }
         };
+        // A CLI keeps its whole name: the plan, then the resets give way first.
         let tries = [
-            (name, false, plan, Resets::Whole),
-            (name, false, plan, Resets::Short),
-            (name, false, plan, Resets::None),
-            (name, false, 0, Resets::None),
-            (short, true, 0, Resets::None),
+            (plan, Resets::Whole),
+            (plan, Resets::Short),
+            (plan, Resets::None),
+            (0, Resets::None),
         ];
-        let fits = |(name, short_names, plan, resets): (usize, bool, usize, Resets)| {
+        let fits = |(plan, resets): (usize, Resets)| {
             let fixed = name + plan + words + SHARE + reset(resets);
             let bar = width.saturating_sub(fixed).min(BAR);
             (bar >= LEAST_BAR).then_some(Columns {
                 name,
-                short_names,
                 plan,
                 words,
                 bar,
@@ -291,10 +301,9 @@ impl UsageCards<'_> {
             })
         };
         tries.into_iter().find_map(fits).unwrap_or_else(|| {
-            let fixed = short + words + SHARE;
+            let fixed = name + words + SHARE;
             Columns {
-                name: short,
-                short_names: true,
+                name,
                 plan: 0,
                 words,
                 bar: width.saturating_sub(fixed).clamp(4, BAR),
@@ -303,19 +312,16 @@ impl UsageCards<'_> {
         })
     }
 
-    /// The CLI's name in bold and its plan dim, each in its column.
+    /// The CLI's logo where one draws, its name in bold and its plan dim, each in its column.
     fn cli_cell(&self, kit: &Kit<'_>, plan: &PlanUsage, columns: &Columns) -> Vec<Span<'static>> {
-        let name = if columns.short_names {
-            short_name(plan)
-        } else {
-            plan.name.clone()
-        };
-        let room = columns.name.saturating_sub(NAME_GAP);
-        let name = fitted(&name, room);
-        let mut cell = vec![
+        let label = ModelLabel::cli_named(&plan.agent, &plan.name, kit.theme, NoPicture::Nothing);
+        let mut cell = label.logo;
+        let column = columns.name.saturating_sub(spans_width(&cell));
+        let name = fitted(&label.name, column.saturating_sub(NAME_GAP));
+        cell.extend([
             kit.strong(name.clone()),
-            Span::raw(" ".repeat(columns.name - str_width(&name))),
-        ];
+            Span::raw(" ".repeat(column.saturating_sub(str_width(&name)))),
+        ]);
         if columns.plan > 0 {
             let tier = fitted(plan.plan.as_deref().unwrap_or(""), columns.plan - PLAN_GAP);
             cell.push(kit.dim(ljust(&tier, columns.plan)));
@@ -333,7 +339,7 @@ impl UsageCards<'_> {
     ) -> Vec<Span<'static>> {
         let level = self.window_level(window);
         let fill = match level {
-            Level::Ok => cli_role(&plan.agent),
+            Level::Ok => Role::for_cli(&plan.agent),
             other => other.fill_role(),
         };
         let used = window.used.unwrap_or(if window.out { 1.0 } else { 0.0 });
@@ -431,16 +437,6 @@ impl UsageCards<'_> {
     /// The level of the fullest window, for the header's badge.
     pub(super) fn row_level(&self, row: &WindowRow) -> Level {
         self.window_level(row)
-    }
-}
-
-/// The CLI's name as the bottom line has it, where a card has little room.
-pub(super) fn short_name(plan: &PlanUsage) -> String {
-    match plan.agent.as_str() {
-        "claude-code" => "Claude".to_owned(),
-        "codex" => "Codex".to_owned(),
-        "antigravity-cli" => "agy".to_owned(),
-        _ => plan.name.clone(),
     }
 }
 

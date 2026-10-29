@@ -37,8 +37,8 @@ const INDENT: usize = 2;
 
 const AUTOPILOT: &str = "approvals.autopilot";
 const ANSWERED_BY: &str = "approvals.answers";
-/// What decides when you don't, right under the switch: who answers, what Esc on a question
-/// does, and how often an agent that asks is told to decide.
+/// What decides when you don't, right under the switch: who answers, what carrying on without
+/// you does, and how often an agent that asks is told to decide.
 const WITHOUT_YOU: [&str; 4] = [
     AUTOPILOT,
     ANSWERED_BY,
@@ -739,7 +739,7 @@ fn setting_name(leaf: &str) -> String {
         "pause_auto_when_spot_checks_waiting" => "Spot checks that pause auto",
         "goal_changes" => "Changes to an approved goal",
         "answers" => "Who answers questions",
-        "when_declined" => "When you press Esc on a question",
+        "when_declined" => "Carry on without me",
         "ask_limit" => "Times an agent that asks is told to decide",
         "autopilot" => "For every approval",
         "at_hard_limit" => "Hard limit on autopilot",
@@ -1111,8 +1111,8 @@ mod tests {
         assert!(!shown.contains(UNNAMED_JUDGE), "{shown}");
     }
 
-    /// What Esc on a question does, and how often an agent that asks is told to decide, sit
-    /// with who answers: together they are what decides when you don't.
+    /// What carrying on without you does, and how often an agent that asks is told to decide,
+    /// sit with who answers: together they are what decides when you don't.
     #[test]
     fn what_decides_without_you_sits_under_the_switch() {
         let mut view = ApprovalsView::with_rows(vec![
@@ -1138,7 +1138,7 @@ mod tests {
                 "# Autopilot",
                 "For every approval",
                 "Who answers questions",
-                "When you press Esc on a question",
+                "Carry on without me",
                 "Times an agent that asks is told to decide",
             ]
         );
@@ -1150,7 +1150,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{label} isn't shown:\n{shown}"))
                 .to_owned()
         };
-        assert!(line("When you press Esc").contains("that part ends"));
+        assert!(line("Carry on without me").contains("that part ends"));
         assert!(line("Times an agent that asks").contains('2'));
     }
 
@@ -1181,14 +1181,12 @@ mod tests {
         let mut view = ApprovalsView::with_rows(rows);
         press(&mut view, &[KeyCode::Enter]);
         assert_eq!(editor_rows(&view), ["true", "false"]);
-        let outcome = press(&mut view, &[KeyCode::Up, KeyCode::Enter, KeyCode::Enter]);
+        let outcome = press(&mut view, &[KeyCode::Up, KeyCode::Enter]);
         assert!(
             matches!(
                 &outcome,
-                ViewOutcome::Send(UiCommand::SetSetting { key, value, scope })
-                    if key == "approvals.autopilot"
-                        && value == "true"
-                        && *scope == SettingScope::Project
+                ViewOutcome::Send(UiCommand::SetSetting { key, value, scope: None })
+                    if key == "approvals.autopilot" && value == "true"
             ),
             "{outcome:?}"
         );
@@ -1260,7 +1258,7 @@ mod tests {
         press(&mut view, &[KeyCode::Enter]);
         assert!(view.accept(&listed));
 
-        let saved = press(&mut view, &[KeyCode::Enter, KeyCode::Enter, KeyCode::Enter]);
+        let saved = press(&mut view, &[KeyCode::Enter, KeyCode::Enter]);
         assert!(
             matches!(
                 &saved,
@@ -1311,10 +1309,7 @@ mod tests {
             .collect();
         assert_eq!(marked, ["codex/gpt-x"]);
         // The pointer starts on the CLI holding it.
-        let saved = press(
-            &mut view,
-            &[KeyCode::Up, KeyCode::Enter, KeyCode::Enter, KeyCode::Enter],
-        );
+        let saved = press(&mut view, &[KeyCode::Up, KeyCode::Enter, KeyCode::Enter]);
         assert!(
             matches!(
                 &saved,

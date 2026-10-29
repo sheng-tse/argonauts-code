@@ -13,6 +13,7 @@
 mod clipboard;
 mod flush;
 mod insert;
+mod kept;
 mod progress;
 pub mod setup;
 mod sgr;
@@ -38,7 +39,8 @@ use ratatui::text::Line;
 pub use flush::flush_diff;
 pub use insert::{Inserted, insert_lines, write_line};
 
-use insert::physical_rows;
+use insert::{columns, physical_rows};
+use kept::Kept;
 
 #[derive(Debug)]
 pub struct InlineTerminal<W: Write> {
@@ -65,12 +67,18 @@ pub struct InlineTerminal<W: Write> {
     /// Escapes to send at a cell of the marked rows on the next frame, such as a picture, by
     /// the row among them and the column.
     pending_on_marked: Option<(u16, u16, Vec<u8>)>,
+    /// Escapes to send at a cell of a row of `pending_history` once it prints, such as a
+    /// picture to draw under its words: the row, the column, the escapes.
+    pending_on_rows: Vec<(usize, u16, Vec<u8>)>,
     /// The frame being drawn and the one on screen, both covering the viewport.
     buffers: [Buffer; 2],
     current: usize,
     /// Where the cursor rested after the last frame, if it still does.
     resting: Option<Position>,
     cursor_hidden: bool,
+    /// The buffer of the frame on screen still holds what the viewport shows, as nothing has
+    /// written over it since.
+    viewport_known: bool,
     /// A row to clear from before the next frame, after a resize.
     clear_from: Option<u16>,
     /// The rows the live region drew last frame: its trailing rows and its pinned ones.
@@ -90,15 +98,55 @@ pub struct InlineTerminal<W: Write> {
     batch: Vec<u8>,
     batching: bool,
     frame_bytes: u64,
+    /// Pictures each screen gets before the first cells drawn on it, such as the logos.
+    kept: Kept,
 }
 
 /// Marked history rows, counted up from the end of history: history stays one unbroken run of
 /// rows above `history_end` as it scrolls, so this finds them wherever they moved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Marked {
     rows: u16,
     /// History rows printed under them since.
     below: u16,
+    /// How many columns each marked line and each line printed under them takes, so a
+    /// terminal that rewraps them at another width can be followed. `None` once so many
+    /// printed under them that they are far up in scrollback.
+    widths: Option<Widths>,
+    /// Found again after the terminal rewrapped them, which pictures may follow but text no
+    /// longer prints over.
+    rewrapped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Widths {
+    marked: Vec<usize>,
+    below: Vec<usize>,
+}
+
+/// The most lines under the marked ones whose widths are kept.
+const WIDTHS_KEPT: usize = 4096;
+
+/// The rows a line `columns` wide takes at `width`.
+fn rows_at(columns: usize, width: u16) -> u16 {
+    u16::try_from(columns.max(1).div_ceil(usize::from(width.max(1)))).unwrap_or(u16::MAX)
+}
+
+fn rows_of(widths: &[usize], width: u16) -> u16 {
+    widths
+        .iter()
+        .map(|columns| rows_at(*columns, width))
+        .fold(0, u16::saturating_add)
+}
+
+/// The columns `row` of `buffer` takes up to its last cell that isn't blank, as a terminal
+/// rewrapping it would count them.
+fn drawn_columns(buffer: &Buffer, row: u16) -> usize {
+    let area = buffer.area;
+    (area.left()..area.right())
+        .rev()
+        .find(|&x| buffer[(x, row)].symbol() != " ")
+        .map_or(0, |x| usize::from(x - area.left()) + 1)
 }
 
 #[derive(Debug)]
@@ -152,10 +200,12 @@ impl<W: Write> InlineTerminal<W> {
             marked: None,
             pending_redraw: None,
             pending_on_marked: None,
+            pending_on_rows: Vec::new(),
             buffers: [Buffer::empty(viewport), Buffer::empty(viewport)],
             current: 0,
             resting: None,
             cursor_hidden: false,
+            viewport_known: false,
             clear_from: None,
             live_rows: [0..0, 0..0],
             title: None,
@@ -166,6 +216,7 @@ impl<W: Write> InlineTerminal<W> {
             batch: Vec::new(),
             batching: false,
             frame_bytes: 0,
+            kept: Kept::default(),
         }
     }
 
@@ -176,6 +227,12 @@ impl<W: Write> InlineTerminal<W> {
     /// Bytes frames have written so far, which tells whether a frame changed anything on screen.
     pub fn frame_bytes(&self) -> u64 {
         self.frame_bytes
+    }
+
+    /// Where the cursor rested after the last frame, for tests that act as the terminal.
+    #[cfg(test)]
+    pub(crate) fn resting(&self) -> Option<Position> {
+        self.resting
     }
 
     pub fn viewport(&self) -> Rect {
@@ -230,6 +287,13 @@ impl<W: Write> InlineTerminal<W> {
         }
     }
 
+    /// Sends `escapes` with the cursor at `column` of row `row` of the history waiting to
+    /// print, counting rows inserted after this call too, on the frame that prints it, while
+    /// that row shows. The escapes leave the cursor where they found it.
+    pub fn send_on_history_row(&mut self, row: usize, column: u16, escapes: Vec<u8>) {
+        self.pending_on_rows.push((row, column, escapes));
+    }
+
     /// Whether every marked row is still on screen, where a later frame can reach them.
     pub fn marked_on_screen(&self) -> bool {
         self.marked_top().is_some()
@@ -237,7 +301,7 @@ impl<W: Write> InlineTerminal<W> {
 
     /// The screen row of the first marked row, while every one of them shows.
     fn marked_top(&self) -> Option<u16> {
-        let marked = self.marked?;
+        let marked = self.marked.as_ref()?;
         let top = i32::from(self.history_end) - i32::from(marked.below) - i32::from(marked.rows);
         u16::try_from(top).ok()
     }
@@ -281,20 +345,72 @@ impl<W: Write> InlineTerminal<W> {
         result
     }
 
+    /// Writes cells, or escapes placed among them, after the kept pictures the screen shown
+    /// lacks, so a placeholder never names a picture its screen doesn't hold.
     fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
-        self.frame_bytes += frame.len() as u64;
+        let kept = self.kept.due();
+        if kept.is_empty() && frame.is_empty() {
+            return Ok(());
+        }
+        self.frame_bytes += (kept.len() + frame.len()) as u64;
         if self.batching {
+            self.batch.extend_from_slice(kept);
             self.batch.extend_from_slice(frame);
             return Ok(());
         }
-        self.write_synchronized(frame)
+        if kept.is_empty() {
+            return self.write_synchronized(frame);
+        }
+        let mut bytes = kept.to_vec();
+        bytes.extend_from_slice(frame);
+        self.write_synchronized(&bytes)
     }
 
     fn write_synchronized(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let written = self.write_whole(bytes);
+        if written.is_err() {
+            // The pictures in it may not have arrived.
+            self.kept.let_go();
+        }
+        written
+    }
+
+    fn write_whole(&mut self, bytes: &[u8]) -> io::Result<()> {
         queue!(self.writer, BeginSynchronizedUpdate)?;
         self.writer.write_all(bytes)?;
         queue!(self.writer, EndSynchronizedUpdate)?;
         self.writer.flush()
+    }
+
+    /// Keeps the pictures `escapes` send, such as the numbered logos', for every screen: each
+    /// gets them right before the first cells drawn on it from now on, and the alternate screen
+    /// again after every entry, since entering it empties its store.
+    pub fn keep_pictures(&mut self, escapes: &[u8]) {
+        self.kept.add(escapes);
+    }
+
+    /// Keeps the logos' pictures `escapes` send, as [`Self::keep_pictures`] does, in place of
+    /// any kept before, such as the ones drawn for the cell size before a font size change.
+    pub fn keep_logos(&mut self, escapes: &[u8]) {
+        self.kept.renew_logos(escapes);
+    }
+
+    /// Whether rows draw the kept pictures now. While none does, as with `ui.logos` off, no
+    /// screen is sent them; once rows draw them again, each screen gets what it lacks.
+    pub fn rows_draw_kept_pictures(&mut self, drawn: bool) {
+        self.kept.used(drawn);
+    }
+
+    /// Sends now the kept pictures the screen shown lacks, as after a frame that drew a
+    /// picture's placeholders for the first time.
+    pub fn send_kept_pictures(&mut self) -> io::Result<()> {
+        self.write_frame(&[])
+    }
+
+    /// The screens may have let go of the kept pictures, as after a program you ran drew on
+    /// the terminal, so each gets them again before its next cells.
+    pub fn forget_kept_pictures(&mut self) {
+        self.kept.let_go();
     }
 
     /// Writes `bytes` on their own, or as part of the frame being built.
@@ -359,6 +475,7 @@ impl<W: Write> InlineTerminal<W> {
         let live = trailing + height;
         let mut pending = std::mem::take(&mut self.pending_history);
         let mut mark = self.pending_mark.take();
+        let mut on_rows = std::mem::take(&mut self.pending_on_rows);
         let mut cleared = false;
         if let Some(at) = self.page_break.take() {
             let fresh = pending.split_off(at.min(pending.len()));
@@ -366,26 +483,31 @@ impl<W: Write> InlineTerminal<W> {
             mark = mark
                 .filter(|mark| mark.start >= at)
                 .map(|mark| mark.start - at..mark.end - at);
+            on_rows.retain(|(row, _, _)| *row >= at);
+            for (row, _, _) in &mut on_rows {
+                *row -= at;
+            }
             self.insert_pending(out, &pending, live, None)?;
             self.scroll_history_away(out)?;
             cleared = true;
             pending = fresh;
         }
         cleared |= self.insert_pending(out, &pending, live, mark)?;
-        pending.clear();
-        self.pending_history = pending;
         if self.history_end > screen.height - live {
             // A taller live region pushes the history rows it would cover up into scrollback.
             scroll_screen_up(out, self.history_end - (screen.height - live), screen)?;
             self.history_end = screen.height - live;
             cleared = true;
         }
+        self.send_on_printed_rows(out, &pending, on_rows)?;
+        pending.clear();
+        self.pending_history = pending;
         if let Some(lines) = self.pending_redraw.take() {
             self.print_over_marked(out, &lines)?;
         }
         if let Some((row, column, escapes)) = self.pending_on_marked.take()
             && let Some(top) = self.marked_top()
-            && self.marked.is_some_and(|marked| row < marked.rows)
+            && self.marked.as_ref().is_some_and(|marked| row < marked.rows)
         {
             queue!(out, MoveTo(column, top + row))?;
             out.extend_from_slice(&escapes);
@@ -455,6 +577,7 @@ impl<W: Write> InlineTerminal<W> {
             self.resting = Some(position);
         }
         self.swap_buffers();
+        self.viewport_known = true;
         Ok(())
     }
 
@@ -471,8 +594,9 @@ impl<W: Write> InlineTerminal<W> {
             end += i32::from(reported.y) - i32::from(resting.y);
         }
         if screen.width != self.screen.width {
-            // The terminal may rewrap history, so the marked rows can't be found again.
-            self.marked = None;
+            // The terminal may rewrap history: the marked rows are found again from where it
+            // says the cursor went, or not at all.
+            self.marked = cursor.and_then(|cursor| self.rewrapped_marked(screen, cursor, end));
         }
         self.screen = screen;
         let end = u16::try_from(end.clamp(0, i32::from(screen.height))).unwrap_or(0);
@@ -489,11 +613,49 @@ impl<W: Write> InlineTerminal<W> {
         Ok(())
     }
 
+    /// The marked rows after a terminal rewrapped every row at `screen`'s width and reported
+    /// its cursor at `cursor`, with history to end at `end` from now on. Between them and the
+    /// cursor sit the lines printed under them and the live rows the last frame drew above the
+    /// cursor, each taking the rows it needs at the new width. `None` when that can't be told,
+    /// or they went up into scrollback.
+    fn rewrapped_marked(&self, screen: Size, cursor: Position, end: i32) -> Option<Marked> {
+        let marked = self.marked.as_ref()?;
+        let widths = marked.widths.as_ref()?;
+        let resting = self.resting.filter(|_| self.viewport_known)?;
+        let shown = &self.buffers[1 - self.current];
+        let live = shown.area;
+        if !(live.top()..live.bottom()).contains(&resting.y) {
+            return None;
+        }
+        let width = screen.width;
+        let live_above = (live.top()..resting.y)
+            .map(|row| rows_at(drawn_columns(shown, row), width))
+            .fold(0, u16::saturating_add);
+        let before_cursor = i32::from(resting.x) / i32::from(width.max(1));
+        let rows = rows_of(&widths.marked, width);
+        let below = rows_of(&widths.below, width);
+        let top = i32::from(cursor.y)
+            - before_cursor
+            - i32::from(live_above)
+            - i32::from(below)
+            - i32::from(rows);
+        let end = end.clamp(0, i32::from(screen.height));
+        // Counted from history's end from now on, so they move with what prints after.
+        let below = u16::try_from(end - top - i32::from(rows)).ok()?;
+        (top >= 0).then(|| Marked {
+            rows,
+            below,
+            widths: Some(widths.clone()),
+            rewrapped: true,
+        })
+    }
+
     /// Call after something else wrote to the screen.
     pub fn invalidate(&mut self) {
         // A reset cell would still equal a blank one, so mark every cell as changed.
         let (_, previous) = self.buffers_mut();
         mark_all_changed(previous);
+        self.viewport_known = false;
         self.resting = None;
         self.cursor_hidden = false;
         self.screen_rows.clear();
@@ -575,6 +737,7 @@ impl<W: Write> InlineTerminal<W> {
         queue!(out, EnterAlternateScreen, Print("\x1b[?1007h"), Hide)?;
         self.emit(&out)?;
         setup::note_alternate_screen(true);
+        self.kept.entered_alternate();
         // Some terminals keep what the alternate screen showed last time, so every row repaints.
         self.screen_rows.clear();
         self.screen_buffer = None;
@@ -587,6 +750,7 @@ impl<W: Write> InlineTerminal<W> {
         queue!(out, Print("\x1b[?1007l"), LeaveAlternateScreen)?;
         self.emit(&out)?;
         setup::note_alternate_screen(false);
+        self.kept.left_alternate();
         self.invalidate();
         Ok(())
     }
@@ -598,6 +762,7 @@ impl<W: Write> InlineTerminal<W> {
         queue!(out, EnterAlternateScreen, Print(setup::MOUSE_ON), Hide)?;
         self.emit(&out)?;
         setup::note_alternate_screen(true);
+        self.kept.entered_alternate();
         // The main screen is never drawn on, so there is no shell output to move out of the way.
         self.shell_on_screen = false;
         self.cursor_hidden = true;
@@ -613,6 +778,7 @@ impl<W: Write> InlineTerminal<W> {
         queue!(out, Print(setup::MOUSE_OFF), LeaveAlternateScreen, Show)?;
         self.emit(&out)?;
         setup::note_alternate_screen(false);
+        self.kept.left_alternate();
         self.cursor_hidden = false;
         self.resting = None;
         self.screen_rows.clear();
@@ -774,16 +940,29 @@ impl<W: Write> InlineTerminal<W> {
                 .map(|line| physical_rows(line, width))
                 .fold(0u16, u16::saturating_add)
         };
+        let widths_of =
+            |lines: &[Line<'static>]| -> Vec<usize> { lines.iter().map(columns).collect() };
         match mark.filter(|mark| mark.start < mark.end && mark.end <= lines.len()) {
             Some(mark) => {
                 self.marked = Some(Marked {
                     rows: rows(&lines[mark.clone()]),
                     below: rows(&lines[mark.end..]),
+                    widths: Some(Widths {
+                        marked: widths_of(&lines[mark.clone()]),
+                        below: widths_of(&lines[mark.end..]),
+                    }),
+                    rewrapped: false,
                 });
             }
             None => {
                 if let Some(marked) = &mut self.marked {
                     marked.below = marked.below.saturating_add(rows(lines));
+                    if let Some(widths) = &mut marked.widths {
+                        widths.below.extend(widths_of(lines));
+                        if widths.below.len() > WIDTHS_KEPT {
+                            marked.widths = None;
+                        }
+                    }
                 }
             }
         }
@@ -793,13 +972,44 @@ impl<W: Write> InlineTerminal<W> {
         Ok(inserted.cleared)
     }
 
+    /// Sends each of `on_rows` at its row of `printed`, the history rows that just printed and
+    /// end right above `history_end`, where that row still shows.
+    fn send_on_printed_rows(
+        &mut self,
+        out: &mut Vec<u8>,
+        printed: &[Line<'static>],
+        on_rows: Vec<(usize, u16, Vec<u8>)>,
+    ) -> io::Result<()> {
+        let width = self.screen.width;
+        for (row, column, escapes) in on_rows {
+            let below = printed
+                .get(row..)
+                .unwrap_or_default()
+                .iter()
+                .map(|line| physical_rows(line, width))
+                .fold(0u16, u16::saturating_add);
+            if let Some(at) = self.history_end.checked_sub(below)
+                && row < printed.len()
+            {
+                queue!(out, MoveTo(column, at))?;
+                out.extend_from_slice(&escapes);
+                self.resting = None;
+            }
+        }
+        Ok(())
+    }
+
     /// Writes `lines` over the marked rows, one row each, padded with blank rows or cut to
     /// their number, so nothing under them moves. Nothing prints once any of them has gone
     /// up into scrollback, or when a line would wrap.
     fn print_over_marked(&mut self, out: &mut Vec<u8>, lines: &[Line<'static>]) -> io::Result<()> {
-        let (Some(marked), Some(top)) = (self.marked, self.marked_top()) else {
+        let (Some(marked), Some(top)) = (self.marked.as_ref(), self.marked_top()) else {
             return Ok(());
         };
+        if marked.rewrapped {
+            return Ok(());
+        }
+        let marked_rows = marked.rows;
         let width = self.screen.width;
         if lines.iter().any(|line| physical_rows(line, width) > 1) {
             return Ok(());
@@ -807,7 +1017,7 @@ impl<W: Write> InlineTerminal<W> {
         let blank = Line::default();
         let rows = lines.iter().chain(std::iter::repeat(&blank));
         queue!(out, SavePosition)?;
-        for (row, line) in (top..top + marked.rows).zip(rows) {
+        for (row, line) in (top..top + marked_rows).zip(rows) {
             queue!(out, MoveTo(0, row))?;
             write_line(out, line, width)?;
         }

@@ -193,58 +193,6 @@ mod tests {
         assert_eq!(board.running(&run), 1);
     }
 
-    /// The row at the bottom says how many goals a run nobody opened still has going, and
-    /// stops saying so when the run has ended.
-    #[test]
-    fn the_bottom_row_counts_a_runs_goals_from_its_events() {
-        use argonauts_core::app::AppEvent;
-        use argonauts_core::events::run::{RunLifecycle, RunOutcome};
-        use argonauts_core::events::{RunEvent, RunEventKind};
-        use time::OffsetDateTime;
-
-        use crate::bridge::panel::run_rows;
-        use crate::state::AppState;
-
-        let run = RunId::new("run-01").unwrap();
-        let event = |seq: u64, kind: RunEventKind| AppEvent::Run {
-            event: Box::new(RunEvent {
-                seq,
-                ts: OffsetDateTime::UNIX_EPOCH,
-                run_id: run.clone(),
-                task_id: None,
-                session: None,
-                source: "argonauts-code".into(),
-                kind,
-            }),
-        };
-        let mut state = AppState::default();
-        // Its workflow has started, so the run has its row.
-        let started = serde_json::json!({"type": "workflow", "data": {"event": "started",
-            "id": "wf-001", "from": "council", "version": "1", "parent": null,
-            "workflow": {"name": "council", "description": "", "phases": []}}});
-        state.apply(&event(0, serde_json::from_value(started).unwrap()));
-        state.apply(&event(1, RunEventKind::Goal(set(Some("task-001")))));
-        state.apply(&event(2, RunEventKind::Goal(set(Some("task-002")))));
-        let running = |state: &AppState| {
-            let rows = run_rows(state, OffsetDateTime::UNIX_EPOCH, std::time::Instant::now());
-            rows.iter().map(|row| row.goals_running).collect::<Vec<_>>()
-        };
-        assert_eq!(running(&state), [2]);
-        state.apply(&event(
-            3,
-            RunEventKind::Goal(changed(Some("task-001"), GoalStatus::Met)),
-        ));
-        assert_eq!(running(&state), [1]);
-        state.apply(&event(
-            4,
-            RunEventKind::Run(RunLifecycle::Finished {
-                outcome: RunOutcome::Stopped,
-                detail: None,
-            }),
-        ));
-        assert!(running(&state).iter().all(|goals| *goals == 0));
-    }
-
     #[test]
     fn an_agent_said_to_have_no_goal_now_loses_the_one_it_had() {
         let run = RunId::new("run-01").unwrap();

@@ -6,7 +6,7 @@
 //! custom agents, memory files and skills, each folded to one line. One more folded line
 //! follows for each run's crew. `/context all`, or Enter on a folded line, opens a list to a
 //! line a server, group, file or agent, and Enter on an agent shows its own block in the
-//! main session's form.
+//! main session's form. The context card ends the tab, as it draws above the input.
 
 mod block;
 mod crew;
@@ -16,6 +16,7 @@ mod lists;
 mod pane;
 mod pinned;
 mod print;
+mod starting;
 mod words;
 
 use argonauts_core::RunId;
@@ -27,9 +28,11 @@ use time::OffsetDateTime;
 
 use self::block::{Block, INDENT};
 use self::crew::{Agent, Crew, Filled};
+use self::starting::Started;
 use crate::bridge::tools::Places;
 use crate::format;
-use crate::kit::{Drawn, Kit};
+use crate::kit::logo::{ModelLabel, NoPicture};
+use crate::kit::{ContextCard, Drawn, Form, Frame, Kit};
 use crate::state::ContextCount;
 use crate::text::truncate_spans;
 use crate::theme::Role;
@@ -69,8 +72,23 @@ impl ContextTab<'_> {
     }
 
     /// The tab's blocks, top to bottom, which stand one blank row apart unless a block joins
-    /// the one above. With an agent open, its own block alone.
+    /// the one above, the context card last. With an agent open, its own block alone.
     pub fn sections(&self, kit: &Kit<'_>, width: usize) -> Vec<Section> {
+        let mut sections = self.printed_sections(kit, width);
+        if self.pane.opened().is_none()
+            && let Some(card) = self.card()
+        {
+            sections.extend(fitted(
+                vec![Section::of(card.card(kit, Form::Full, Frame::view(width)))],
+                width,
+            ));
+        }
+        sections
+    }
+
+    /// The blocks as `/context` prints them into the conversation, as Claude Code's own
+    /// does: the tab's without the card.
+    pub(super) fn printed_sections(&self, kit: &Kit<'_>, width: usize) -> Vec<Section> {
         let crews = self.crews();
         if let Some((run, label)) = self.pane.opened() {
             let opened = crews
@@ -85,6 +103,14 @@ impl ContextTab<'_> {
         }
         let mut sections = vec![Section::of(self.main_block(kit, width, !crews.is_empty()))];
         let mut folded = false;
+        if let Some(started) = self.started() {
+            for drawn in [started.files(kit), started.tools(kit)] {
+                if drawn.height() > 0 {
+                    folded = true;
+                    sections.push(Section::of(drawn));
+                }
+            }
+        }
         if let Some(count) = self.count {
             let usage = &count.usage;
             if let Some(window) = compact_window(usage) {
@@ -92,7 +118,7 @@ impl ContextTab<'_> {
                 drawn.push(vec![
                     Span::raw(" ".repeat(INDENT)),
                     Span::styled("Auto-compact window: ", kit.bold(Role::Text)),
-                    Span::raw(window),
+                    kit.dim(window),
                 ]);
                 sections.push(Section::of(drawn));
             }
@@ -142,12 +168,34 @@ impl ContextTab<'_> {
             let mut drawn = Drawn::new();
             drawn.push(vec![
                 Span::raw(" ".repeat(INDENT)),
-                kit.span("/context all", Role::Code),
-                kit.dim(" to expand"),
+                kit.dim("/context all to expand"),
             ]);
             sections.push(Section::of(drawn));
         }
         fitted(sections, width)
+    }
+
+    /// The context card of the conversation's session, as the band above the input draws it.
+    fn card(&self) -> Option<ContextCard> {
+        self.count
+            .map(pinned::conversation)
+            .or_else(|| self.started().map(|started| started.card()))
+    }
+
+    /// The main session's start, while its CLI hasn't counted it by category: before the
+    /// session, while it loads, and for a CLI that says only how full it is.
+    fn started(&self) -> Option<Started<'_>> {
+        if self.count.is_some() {
+            return None;
+        }
+        let start = self.view.main_start.as_ref()?;
+        let row = self.main_row();
+        if row.is_some_and(|row| row.worker.agent != start.agent) {
+            return None;
+        }
+        let cli_window =
+            (self.view.main_window.as_ref()).is_some_and(|window| window.cli.is_some());
+        Started::of(start, row, self.names, cli_window, self.now)
     }
 
     /// `Context Usage` and the main session's block: as its CLI counted it, as its row says
@@ -163,9 +211,15 @@ impl ContextTab<'_> {
                 .or(self.main.map(|main| main.agent.as_str()))
                 .unwrap_or("claude-code");
             let (parts, free, buffer) = block::of_usage(kit, usage);
+            let worker = ModelRef::new(agent, usage.model.clone());
+            let label = ModelLabel::of(self.names, &worker, kit.theme, NoPicture::Nothing);
+            let logo = label.whose.clone();
             let block = Block {
-                model: self.names.model(agent, usage.model.as_deref()),
+                model: label
+                    .beside_picture()
+                    .or_else(|| self.names.model(agent, usage.model.as_deref())),
                 model_id: usage.model.as_deref(),
+                logo: Some(logo),
                 used: usage.total_tokens,
                 window: usage.window,
                 percent: Some(u64::from(usage.percentage)),
@@ -176,15 +230,22 @@ impl ContextTab<'_> {
                 grid: Some(&usage.grid),
                 usage: Some(usage),
                 notes: Vec::new(),
+                parts_ours: false,
+                used_ours: false,
+                used_tail: String::new(),
             };
             drawn.append(block::rows(kit, &block, width));
             return drawn;
         }
+        if let Some(started) = self.started() {
+            drawn.append(block::rows(kit, &started.block(kit, self.names), width));
+            return drawn;
+        }
         match self.main_row() {
             Some(row) => {
-                let model = self
-                    .names
-                    .model(&row.worker.agent, row.worker.model.as_deref())
+                let model = ModelLabel::of(self.names, &row.worker, kit.theme, NoPicture::Nothing)
+                    .beside_picture()
+                    .or_else(|| (self.names).model(&row.worker.agent, row.worker.model.as_deref()))
                     .unwrap_or_else(|| self.names.cli(&row.worker.agent));
                 let filled = Filled {
                     row,
@@ -266,11 +327,22 @@ pub fn summary(rows: &[ContextRow]) -> String {
     let live: Vec<&ContextRow> = rows.iter().filter(|row| row.ended.is_none()).collect();
     let used: u64 = live.iter().map(|row| row.used).sum();
     let (_, ended) = crew::tally(rows);
-    let in_context = format::context_tokens(used);
-    let mut summary = match live.len() {
-        0 => "none open".to_owned(),
-        1 => format!("1 session \u{b7} {in_context} in context"),
-        n => format!("{n} sessions \u{b7} {in_context} in context"),
+    let mut summary = match live.as_slice() {
+        [] => "none open".to_owned(),
+        // The conversation's session, started and not yet said how full.
+        [one] if one.run.is_none() && one.used == 0 => "1 session \u{b7} loading".to_owned(),
+        // One session reads as its block's line does: marked when the count is ours, and in
+        // 1,024s beside a window counted in them.
+        [one] => format!(
+            "1 session \u{b7} {}{} in context",
+            block::mark(one.estimated),
+            block::beside(one.used, one.window.unwrap_or_default())
+        ),
+        several => format!(
+            "{} sessions \u{b7} {} in context",
+            several.len(),
+            format::context_tokens(used)
+        ),
     };
     if ended > 0 {
         summary.push_str(&format!(" \u{b7} {ended} ended"));
@@ -278,6 +350,8 @@ pub fn summary(rows: &[ContextRow]) -> String {
     summary
 }
 
+#[cfg(test)]
+mod drawing_tests;
 #[cfg(test)]
 mod golden_tests;
 #[cfg(test)]

@@ -1,0 +1,51 @@
+The conversation: an Orchestrator run's Workflow row and its agents' rows, done, from the Workflow row down; the rows end inside 72 cells, so they are the same at every width
+screen 177x40
+at ?,0
+size 72x17
+terminal fg=#c8d3f5 bg=#222436
+text
+● Workflow(Add due dates · Orchestrator)
+  ⎿  Running in background · /workflows to monitor and save
+
+● plan:orchestrator(plan the work) · ￼￼ Opus 5.5 on Claude Code
+  ⎿  Done (2 tool uses · 54.6k tokens · 21s) · report ✓
+
+● build:due-tests(test --due) · ￼￼ Haiku 5.5 on Claude Code
+  ⎿  Done (6 tool uses · 30.3k tokens · 1m 2s) · report ✓ · checks ✓
+
+● build:due-flag(add the --due flag) · ￼￼ Haiku 5.5 on Claude Code
+  ⎿  Done (9 tool uses · 22.4k tokens · 2m 40s) · report ✓ · checks ✓
+
+● review:due-tests(review the tests) · ￼￼ 6 Luna on Codex
+  ⎿  Accepted · used the checks' result: 14 passed
+
+● review:due-flag(review the flag) · ￼￼ 6 Luna on Codex
+  ⎿  Accepted · used the checks' result: 14 passed
+paint
+a.bbbbbbbbcccc.ccc.ccccc.c.ccccccccccccc
+..d..ddddddd.dd.dddddddddd.d.cccccccccc.dd.ddddddd.ddd.dddd
+
+a.bbbbbbbbbbbbbbbbbccccc.ccc.ccccc.d.ee.ffff.fff.dd.dddddd.dddd
+..d..dddd.dd.dddd.dddd.d.ddddd.dddddd.d.dddd.d.dddddd.d
+
+a.bbbbbbbbbbbbbbbccccc.cccccc.d.ee.fffff.fff.dd.dddddd.dddd
+..d..dddd.dd.dddd.dddd.d.ddddd.dddddd.d.dd.ddd.d.dddddd.d.d.dddddd.d
+
+a.bbbbbbbbbbbbbbcccc.ccc.ccccc.ccccc.d.ee.fffff.fff.dd.dddddd.dddd
+..d..dddd.dd.dddd.dddd.d.ddddd.dddddd.d.dd.dddd.d.dddddd.d.d.dddddd.d
+
+a.bbbbbbbbbbbbbbbbccccccc.ccc.cccccc.d.gg.h.hhhh.dd.ddddd
+..d..dddddddd.d.dddd.ddd.ddddddd.ddddddd.dd.dddddd
+
+a.bbbbbbbbbbbbbbbccccccc.ccc.ccccc.d.gg.h.hhhh.dd.ddddd
+..d..dddddddd.d.dddd.ddd.ddddddd.ddddddd.dd.dddddd
+key
+. blank
+a fg=#4eba65  ; Success, CatAgents
+b fg=#c8d3f5 bold  ; the terminal's own
+c fg=#c8d3f5  ; the terminal's own
+d fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+e logo=claudecode
+f fg=#f7a07f  ; CliClaude
+g logo=codex
+h fg=#6a9ee6  ; CliCodex

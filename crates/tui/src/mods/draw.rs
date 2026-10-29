@@ -12,16 +12,21 @@
 //! | marks | a square per item, and in the full form its legend |
 //! | text | the header's words alone |
 
+use argonauts_core::logos::logo_for;
 use argonauts_core::settings::mods::{
-    ModBody, ModColor, ModFile, ModForm, ModLevel, ModPart, ModReading,
+    BuiltinSource, ModBody, ModColor, ModFile, ModForm, ModLevel, ModPart, ModReading, ModSource,
 };
 use ratatui::text::Span;
 
 use super::rows::PageGlyphs;
 use crate::kit::bars::{self, Stack};
 use crate::kit::bodies::{self, Chart, ListRow, ListSlots, MeterRow, MeterSlots};
+use crate::kit::context::CLAUDE_CODE_PARTS;
 use crate::kit::legend::{self, Entry};
-use crate::kit::{Badge, Drawn, Frame, Header, Kit, Level, State, States, Toggle, spread};
+use crate::kit::{
+    Badge, ContextCard, ContextPart, Drawn, Form, Frame, Header, Kit, Level, Limit, LimitKind,
+    State, States, Toggle, spread,
+};
 use crate::text::{sanitize_line, spans_width, truncate_spans};
 use crate::theme::Role;
 
@@ -66,14 +71,16 @@ pub fn level_of(level: ModLevel) -> Level {
     }
 }
 
-/// A part's color: the file's for its label, then the data's own, then its turn in the
-/// palette.
+/// A part's color: the file's for its label, then its CLI's hue, then the data's own, then
+/// its turn in the palette.
 fn part_role(file: &ModFile, part: &ModPart, index: usize) -> Role {
-    file.colors
-        .get(&part.label)
-        .copied()
-        .or(part.color)
-        .map_or(PALETTE[index % PALETTE.len()], role_of)
+    if let Some(color) = file.colors.get(&part.label) {
+        return role_of(*color);
+    }
+    if let Some(cli) = &part.cli {
+        return Role::for_cli(cli);
+    }
+    part.color.map_or(PALETTE[index % PALETTE.len()], role_of)
 }
 
 fn clean(text: &str) -> String {
@@ -92,14 +99,20 @@ fn amount_and_tail(summary: &str) -> (Option<String>, Option<String>) {
     }
 }
 
-fn header(kit: &Kit<'_>, file: &ModFile, reading: &ModReading) -> Header {
+/// The card's first row. A badge the reading only takes from one of its parts stays off a
+/// full card whose legend already names that part beside its share of the bar.
+fn header(kit: &Kit<'_>, file: &ModFile, reading: &ModReading, form: ModForm) -> Header {
     let (amount, tail) = amount_and_tail(&reading.summary);
+    let legend = form == ModForm::Full && matches!(file.body, ModBody::Stack | ModBody::Marks);
+    let badge = if legend && reading.badge.is_none() {
+        None
+    } else {
+        reading.badge_words()
+    };
     Header {
         amount,
         tail: tail.into_iter().map(|tail| kit.dim(tail)).collect(),
-        badge: reading
-            .badge_words()
-            .map(|words| Badge::words(clean(&words), level_of(reading.level))),
+        badge: badge.map(|words| Badge::words(clean(&words), level_of(reading.level))),
         ..Header::new(clean(&file.title), Role::Accent)
     }
 }
@@ -134,15 +147,21 @@ fn legend_entries(file: &ModFile, reading: &ModReading) -> Vec<Entry> {
         .parts
         .iter()
         .enumerate()
-        .map(|(index, part)| Entry {
-            role: part_role(file, part, index),
-            name: clean(&part.label),
-            amount: clean(&part.amount()),
-            share: if total > 0.0 {
-                format!("{:.0}%", part.value / total * 100.0)
+        .map(|(index, part)| {
+            let entry = Entry::new(
+                part_role(file, part, index),
+                clean(&part.label),
+                clean(&part.amount()),
+            );
+            let entry = match &part.cli {
+                Some(cli) => entry.with_logo(logo_for(cli, None)),
+                None => entry,
+            };
+            if total > 0.0 {
+                entry.shared(format!("{:.0}%", part.value / total * 100.0))
             } else {
-                String::new()
-            },
+                entry
+            }
         })
         .collect()
 }
@@ -268,12 +287,13 @@ fn body_rows(
     inner: usize,
 ) -> Drawn {
     let full = form == ModForm::Full;
-    // The legend sits under the start of the bar, packed to the left, and not spread across
-    // the card.
+    // The legend sits a blank row under the start of the bar, packed to the left, and not
+    // spread across the card.
     let legend_rows = |body: &mut Drawn| {
         if full {
+            body.push(Vec::new());
             let entries = legend_entries(file, reading);
-            let width = legend::packed_width(&entries, inner, LEGEND_COLUMNS);
+            let width = legend::packed_width(kit, &entries, inner, LEGEND_COLUMNS);
             for row in legend::legend(kit, &entries, width, LEGEND_COLUMNS) {
                 body.push(row);
             }
@@ -327,12 +347,13 @@ pub fn body(
     inner: usize,
 ) -> Drawn {
     let mut out = Drawn::new();
-    out.push(header(kit, file, reading).draw(kit, inner));
+    out.push(header(kit, file, reading, form).draw(kit, inner));
     out.append(body_rows(kit, file, reading, form, inner));
     out
 }
 
-/// The full or compact card inside `frame`.
+/// The full or compact card inside `frame`. The built-in context mod is the context card,
+/// wherever it shows.
 pub fn card(
     kit: &Kit<'_>,
     file: &ModFile,
@@ -340,7 +361,62 @@ pub fn card(
     form: ModForm,
     frame: Frame,
 ) -> Drawn {
+    if let Some(card) = context_card(file, reading) {
+        let form = match form {
+            ModForm::Compact => Form::Compact,
+            ModForm::Full | ModForm::Line => Form::Full,
+        };
+        return card.card(kit, form, frame);
+    }
     frame.draw(kit, body(kit, file, reading, form, frame.inner()))
+}
+
+/// The context card of the built-in context mod, from its reading: a part for each category
+/// in the CLI's order, each measured against the window, and the free space in grey, which
+/// leaves out the room held back for compacting. `None` for any other mod.
+pub fn context_card(file: &ModFile, reading: &ModReading) -> Option<ContextCard> {
+    let ModSource::Builtin {
+        source: BuiltinSource::Context,
+    } = &file.data
+    else {
+        return None;
+    };
+    let tokens = |part: &ModPart| part.value.max(0.0).round() as u64;
+    let is_free = |part: &&ModPart| part.color == Some(ModColor::Grey);
+    let parts: Vec<ContextPart> = reading
+        .parts
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| !is_free(part))
+        .map(|(index, part)| {
+            let name = clean(&part.label);
+            match CLAUDE_CODE_PARTS.iter().find(|(known, _)| *known == name) {
+                Some((_, color)) => ContextPart::named(name, *color, Some(tokens(part))),
+                None => ContextPart::new(name, part_role(file, part, index), Some(tokens(part))),
+            }
+        })
+        .collect();
+    let window = reading
+        .parts
+        .iter()
+        .filter_map(|part| part.max)
+        .map(|max| max.max(0.0).round() as u64)
+        .max()
+        .filter(|window| *window > 0);
+    let used: u64 = parts.iter().filter_map(|part| part.tokens).sum();
+    let free = reading.parts.iter().find(is_free).map(tokens);
+    let limit = free
+        .map(|free| Limit {
+            at: used + free,
+            kind: LimitKind::Compacts,
+        })
+        .filter(|limit| window.is_some_and(|window| limit.at < window));
+    Some(ContextCard {
+        used: window.map(|_| used),
+        window,
+        limit,
+        ..ContextCard::with_parts(parts, false)
+    })
 }
 
 /// A small picture of the numbers, for the one-row form and for `/mods`' list.
@@ -369,6 +445,9 @@ pub fn line(
     width: usize,
     toggle: Option<Toggle>,
 ) -> Vec<Span<'static>> {
+    if let Some(card) = context_card(file, reading) {
+        return card.line(kit, width, toggle);
+    }
     let mut left = vec![
         Span::raw(" "),
         kit.dim(format!("{} ", kit.glyphs.folded)),
@@ -421,6 +500,9 @@ pub fn line(
 /// A few words for the bottom line: `checks 7 of 9 passed`, in the level's color once it
 /// isn't ok. A text mod is its words alone, as `main` is for the branch.
 pub fn chip(kit: &Kit<'_>, file: &ModFile, reading: &ModReading) -> Vec<Span<'static>> {
+    if let Some(card) = context_card(file, reading) {
+        return card.chip(kit);
+    }
     let words = clean(&reading.summary);
     let role = level_of(reading.level).number_role();
     if file.body == ModBody::Text {
@@ -543,10 +625,11 @@ mod tests {
         let drawn = above(&kit, &checks(), &reading, 66);
         insta::assert_snapshot!(text(&drawn), @r"
          ╭──────────────────────────────────────────────────────────╮ [-]
-         │ ◆ checks                        7 of 9 passed [1 failed] │
+         │ ◆ checks                                   7 of 9 passed │
          │ ████████████████████████████████████████████████████████ │
-         │ ▌ passed      7  78%   ▌ running     1  11%              │
-         │ ▌ failed      1  11%                                     │
+         │                                                          │
+         │ ▌ passed   7   78%      ▌ running   1   11%              │
+         │ ▌ failed   1   11%                                       │
          ╰──────────────────────────────────────────────────────────╯
         ");
     }

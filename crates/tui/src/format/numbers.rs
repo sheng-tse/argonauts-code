@@ -35,12 +35,13 @@ pub struct Formats {
     pub clock: ClockStyle,
 }
 
-/// Token counts: `950`, `3.4k`, `48.2k`, `212k`, `1.2M`, `1M`.
+/// Token counts: `950`, `3.4k`, `48.2k`, `212k`, `1.2M`, `1M`, `1.2b`.
 pub fn tokens(count: u64) -> String {
     tokens_as(count, TokenUnit::Upper)
 }
 
-/// Token counts with one decimal under 100k and under 10M, and `.0` dropped.
+/// Token counts with one decimal under 100k, under 10M and under 10b, and `.0` dropped. The
+/// `b` of billions is lower case whatever the unit, as everywhere billions are written.
 pub fn tokens_as(count: u64, unit: TokenUnit) -> String {
     if count < 1_000 {
         return count.to_string();
@@ -49,11 +50,12 @@ pub fn tokens_as(count: u64, unit: TokenUnit) -> String {
         TokenUnit::Upper => "M",
         TokenUnit::Lower => "m",
     };
-    // From 999.5k on, the thousands would round to "1000k", so it reads as a million.
-    let (value, unit, decimal_below) = if count < 999_500 {
-        (count as f64 / 1_000.0, "k", 100.0)
-    } else {
-        (count as f64 / 1_000_000.0, million, 10.0)
+    // From 999.5k on, the thousands would round to "1000k", so it reads as a million, and
+    // likewise a billion from 999.5M on.
+    let (value, unit, decimal_below) = match count {
+        999_500_000.. => (count as f64 / 1_000_000_000.0, "b", 10.0),
+        999_500.. => (count as f64 / 1_000_000.0, million, 10.0),
+        _ => (count as f64 / 1_000.0, "k", 100.0),
     };
     let digits = if value < decimal_below {
         format!("{value:.1}")
@@ -62,6 +64,17 @@ pub fn tokens_as(count: u64, unit: TokenUnit) -> String {
     };
     let trimmed = digits.strip_suffix(".0").unwrap_or(&digits);
     format!("{trimmed}{unit}")
+}
+
+/// Token counts in tenths of a thousand all the way to a million, as the rows of runs under the
+/// input write them, where a run's count grows a little at a time: `240.6k`, `12k`. Under a
+/// thousand and from a million on, as [`tokens`] writes them.
+pub fn tokens_in_tenths(count: u64) -> String {
+    if !(1_000..999_500).contains(&count) {
+        return tokens(count);
+    }
+    let thousands = format!("{:.1}", count as f64 / 1_000.0);
+    format!("{}k", thousands.strip_suffix(".0").unwrap_or(&thousands))
 }
 
 /// Token counts as Claude Code writes them under an agent's row, by Intl's compact rule: one
@@ -175,6 +188,25 @@ mod tests {
     }
 
     #[test]
+    fn a_runs_row_counts_tokens_in_tenths_up_to_a_million() {
+        for (count, words) in [
+            (950, "950"),
+            (12_000, "12k"),
+            (240_640, "240.6k"),
+            (999_449, "999.4k"),
+            (999_500, "1M"),
+            (2_340_000, "2.3M"),
+        ] {
+            assert_eq!(tokens_in_tenths(count), words, "{count}");
+        }
+        assert_eq!(
+            tokens(240_640),
+            "241k",
+            "elsewhere a count that size has no tenths"
+        );
+    }
+
+    #[test]
     fn token_counts_read_one_way_everywhere() {
         assert_eq!(tokens(0), "0");
         assert_eq!(tokens(950), "950");
@@ -189,6 +221,11 @@ mod tests {
         assert_eq!(tokens(1_200_000), "1.2M");
         assert_eq!(tokens(9_960_000), "10M");
         assert_eq!(tokens(12_400_000), "12M");
+        assert_eq!(tokens(999_499_999), "999M");
+        assert_eq!(tokens(999_500_000), "1b");
+        assert_eq!(tokens(1_240_000_000), "1.2b");
+        assert_eq!(tokens(12_400_000_000), "12b");
+        assert_eq!(tokens_as(1_240_000_000, TokenUnit::Lower), "1.2b");
         assert_eq!(tokens_as(1_200_000, TokenUnit::Lower), "1.2m");
         assert_eq!(tokens_as(48_200, TokenUnit::Lower), "48.2k");
     }

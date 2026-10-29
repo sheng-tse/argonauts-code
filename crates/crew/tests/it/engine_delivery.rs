@@ -77,6 +77,7 @@ impl SessionRunner for SlowToStart {
 
 fn plan(host: &Host) -> anyhow::Result<SessionPlan> {
     Ok(SessionPlan {
+        without_status: false,
         at: None,
         role: RoleName::Worker,
         worker: WORKER.parse()?,

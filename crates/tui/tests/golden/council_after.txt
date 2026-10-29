@@ -1,16 +1,16 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Per key rate limit                                                                                                   
- Council · per-API-key token buckets, refill capped at capacity, a whole-second Retry-After        1/2 agents · 1m02s 
- › propose:p3 is left out: agy is signed out and nothing else can take it · the council goes on with 2                
-                                                                                                                      
- ╭ Phases ──────────────┬ Propose · 2 agents · 1 left out ──────────────────────────────────────────────────────────╮ 
- │ ❯ 1 Propose  1/2     │  ✔ propose:p1     Haiku 5.5 · 14.2k tok · proposal ready                              48s │ 
- │   2 Challenge        │  ⏺ propose:p2     GPT 6 Luna · 11.0k tok                                              52s │ 
- │   3 Decide           │  ✘ propose:p3     Gemini 3.8 Flash · left out · signed out                                │ 
- │   4 Build            │                                                                                           │ 
- │   5 Cross-review     │                                                                                           │ 
- │   6 Sign-off         │                                                                                           │ 
- │   7 Merge            │                                                                                           │ 
- ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
-                                                                                                                      
-  ◯ Per key rate limit      ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 1m02s · ↓  25.2k tokens                                       
+ Per key rate limit
+ Council · per-API-key token buckets, refill capped at capacity, a whole-second Retry-After        1/2 agents · 1m02s
+ › propose:p3 is left out: agy is signed out and nothing else can take it · the council goes on with 2
+
+ ╭ Phases ──────────────┬ Propose · 2 agents · 1 left out ──────────────────────────────────────────────────────────╮
+ │ ❯ ⣾ Propose      1/2 │  ✔ propose:p1  ◧◨ Haiku 5.5                                             14.2k tok     48s │
+ │   2 Challenge        │  ⣾ propose:p2  ◧◨ 6 Luna                                                11.0k tok     52s │
+ │   3 Decide           │  – propose:p3  ◧◨ 3.8 Flash                                                               │
+ │   4 Build            │                                                                                           │
+ │   5 Cross-review     │                                                                                           │
+ │   6 Sign-off         │                                                                                           │
+ │   7 Merge            │                                                                                           │
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯
+
+  ◯ Per key rate limit      ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 1m02s · ↓  25.2k tokens

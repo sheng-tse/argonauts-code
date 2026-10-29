@@ -1,6 +1,5 @@
 ---
 source: crates/tui/tests/it/snap_questions.rs
-assertion_line: 850
 expression: text(&lines)
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -12,16 +11,6 @@ expression: text(&lines)
     3. No, just asking
 
   Enter to choose · Esc to carry on without me
-
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◆ Save effort = high where?
-
-    1. Just this session
-  ❯ 2. This project, just me (recommended)
-    3. This project, shared
-    4. Everywhere
-
-  Enter to choose · Esc to cancel
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◆ Change a safety setting?

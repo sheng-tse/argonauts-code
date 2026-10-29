@@ -56,9 +56,6 @@ pub(crate) enum Step {
     RoleModel(String),
     Approvals,
     Trust,
-    ProjectFolder,
-    /// Whether the guide pages go into this repo's `.argonauts/` too, asked once per repo.
-    Guides,
 }
 
 /// What the questions are built from.
@@ -73,8 +70,7 @@ pub(crate) struct SetupView {
     pub current: toml::Table,
     /// This repo's settings files that exist and aren't trusted yet.
     pub untrusted: Vec<PathBuf>,
-    pub project_dir_exists: bool,
-    /// Your answer about the guide pages in this repo, once you gave one.
+    /// Your answer about the guide pages in this repo, from when the setup asked it.
     pub guides_answer: Option<bool>,
     /// The keys `/model` lists, one row of "Who does what" each.
     pub role_keys: Vec<String>,
@@ -257,8 +253,6 @@ pub(crate) fn question(step: &Step, view: &SetupView, answers: &Answers) -> Opti
         Step::RoleModel(key) => roles::model_question(view, answers, key),
         Step::Approvals => Some(approvals_question(view)),
         Step::Trust => trust_question(view),
-        Step::ProjectFolder => folder_question(view),
-        Step::Guides => guides_question(view, answers),
     }
 }
 
@@ -447,19 +441,20 @@ pub(super) fn kept_or_new(current: Option<ModelRef>, picked: &str) -> ModelRef {
         .unwrap_or_else(|| ModelRef::new(picked, None))
 }
 
-/// Orchestrator first and recommended, whatever is ready: with one CLI its main agent
-/// orchestrates. A workflow of your own that the file names comes after the built-in three.
+/// Council first and recommended, whatever is ready, as it is the workflow that runs when none
+/// is named: with one CLI, its model takes more than one seat. A workflow of your own that the
+/// file names comes after the built-in three.
 fn workflow_question(view: &SetupView) -> Question {
     let mut answers = vec![
+        described(
+            COUNCIL,
+            "Council",
+            "Each seat answers alone, then they talk until every seat agrees and split the work.",
+        ),
         described(
             ORCHESTRATOR,
             "Orchestrator",
             "One orchestrator you pick plans and delegates.",
-        ),
-        described(
-            COUNCIL,
-            "Council",
-            "No single planner: the agents propose, challenge, and review each other.",
         ),
         described(
             CAPTAIN,
@@ -587,51 +582,6 @@ fn trust_question(view: &SetupView) -> Option<Question> {
     })
 }
 
-fn folder_question(view: &SetupView) -> Option<Question> {
-    if view.project_dir_exists {
-        return None;
-    }
-    Some(Question {
-        kind: ChoiceKind::Init,
-        title: "This folder".to_owned(),
-        body: vec!["Settings just for this repo live in .argonauts/.".to_owned()],
-        options: init_options(&[
-            described(
-                "later",
-                "When I first save a project setting",
-                "Nothing is made now.",
-            ),
-            described("now", "Now", "Makes .argonauts/ in this repo."),
-        ]),
-    })
-}
-
-/// Asked once in each repo that has an `.argonauts/` folder, or gets one now: the pages that say
-/// what goes there are written into it only after a yes.
-fn guides_question(view: &SetupView, answers: &Answers) -> Option<Question> {
-    let has_the_folder = view.project_dir_exists || answers.create_project_dir;
-    if view.guides_answer.is_some() || !has_the_folder {
-        return None;
-    }
-    Some(Question {
-        kind: ChoiceKind::Init,
-        title: "Guide pages in this repo".to_owned(),
-        body: vec![
-            "README pages that say what each file in .argonauts/ does. ~/.argonauts/ has them \
-             either way."
-                .to_owned(),
-        ],
-        options: init_options(&[
-            described("no", "Not here", "Nothing is written into this repo."),
-            described(
-                "yes",
-                "Write them",
-                ".argonauts/README.md, and one each in workflows/, roles/ and mods/.",
-            ),
-        ]),
-    })
-}
-
 /// Records the answer and returns the line the transcript keeps. The caller checked that the
 /// question offered `value`.
 /// How to log each agent of yours back in that's logged out: `Codex is logged out: codex login.`
@@ -716,22 +666,6 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
                 "Trusted this repo's settings files.".to_owned()
             } else {
                 "This repo's settings files stay untrusted for now.".to_owned()
-            }
-        }
-        Step::ProjectFolder => {
-            answers.create_project_dir = value == "now";
-            if answers.create_project_dir {
-                "Made .argonauts/ here.".to_owned()
-            } else {
-                ".argonauts/ is made when you first save a project setting.".to_owned()
-            }
-        }
-        Step::Guides => {
-            answers.guides = Some(value == "yes");
-            if value == "yes" {
-                "Guide pages: written into .argonauts/ here too.".to_owned()
-            } else {
-                "Guide pages: only in ~/.argonauts/.".to_owned()
             }
         }
     }
@@ -829,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn orchestrator_comes_first_and_is_recommended_whatever_is_ready() {
+    fn council_comes_first_and_is_recommended_whatever_is_ready() {
         let none = view(Vec::new());
         let one = view(vec![agent("codex", "Codex", AgentStatus::Tested)]);
         let two = view(vec![
@@ -838,7 +772,7 @@ mod tests {
         ]);
         for view in [none, one, two] {
             let question = workflow_question(&view);
-            assert_eq!(values(&question), [ORCHESTRATOR, COUNCIL, CAPTAIN]);
+            assert_eq!(values(&question), [COUNCIL, ORCHESTRATOR, CAPTAIN]);
             assert!(question.options[0].recommended);
         }
     }
@@ -865,7 +799,7 @@ mod tests {
         let mut one = view(vec![agent("codex", "Codex", AgentStatus::Tested)]);
         one.current = toml::from_str("workflow = \"retired-mode\"\n").unwrap();
         let question = workflow_question(&one);
-        assert_eq!(values(&question), [ORCHESTRATOR, COUNCIL, CAPTAIN]);
+        assert_eq!(values(&question), [COUNCIL, ORCHESTRATOR, CAPTAIN]);
         assert!(question.options[0].recommended);
         assert!(
             question.options[1..]
@@ -880,7 +814,7 @@ mod tests {
         two.current = one.current.clone();
         assert_eq!(
             values(&workflow_question(&two)),
-            [ORCHESTRATOR, COUNCIL, CAPTAIN]
+            [COUNCIL, ORCHESTRATOR, CAPTAIN]
         );
     }
 
@@ -931,9 +865,9 @@ mod tests {
         }
         view.current = toml::from_str(&file).unwrap();
         assert_eq!(values(&main_agent_question(&view).unwrap())[0], "codex");
-        // The workflow step recommends Orchestrator every time, and keeps yours on offer.
+        // The workflow step recommends Council every time, and keeps yours on offer.
         let workflows = values(&workflow_question(&view));
-        assert_eq!(workflows, [ORCHESTRATOR, COUNCIL, CAPTAIN, "best-of-n"]);
+        assert_eq!(workflows, [COUNCIL, ORCHESTRATOR, CAPTAIN, "best-of-n"]);
         assert_eq!(
             values(&approvals_question(&view)),
             vec!["auto_preview", "auto", "autopilot", "supervised"]
@@ -1251,16 +1185,12 @@ mod tests {
     }
 
     #[test]
-    fn trust_and_folder_are_asked_only_when_they_matter() {
+    fn trust_is_asked_only_when_it_matters() {
         let mut view = view(Vec::new());
-        view.project_dir_exists = true;
         assert!(trust_question(&view).is_none());
-        assert!(folder_question(&view).is_none());
         view.untrusted
             .push(PathBuf::from("/repo/.argonauts/config.toml"));
-        view.project_dir_exists = false;
         assert_eq!(values(&trust_question(&view).unwrap())[0], "no");
-        assert_eq!(values(&folder_question(&view).unwrap())[0], "later");
     }
 
     /// Each record says what was decided, never just "Noted." or "Not now."
@@ -1295,10 +1225,6 @@ mod tests {
         assert_eq!(
             line(&Step::Trust, "yes"),
             "Trusted this repo's settings files."
-        );
-        assert_eq!(
-            line(&Step::ProjectFolder, "later"),
-            ".argonauts/ is made when you first save a project setting."
         );
     }
 }

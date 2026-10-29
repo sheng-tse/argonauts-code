@@ -245,7 +245,7 @@ fn idle_screen_keeps_its_layout() {
         usize::from(COLS),
         "the top rule spans the width"
     );
-    assert!(rows[0].ends_with(" Council · Haiku ─"), "{rows:?}");
+    assert!(rows[0].ends_with(" council ─"), "{rows:?}");
     assert!(rows[1].starts_with("❯"), "{rows:?}");
     assert!(
         is_rule(&rows[2]) && width(&rows[2]) == usize::from(COLS),
@@ -273,7 +273,7 @@ fn busy_screen_keeps_its_layout() {
     let (_, _, events) = crew_run(3);
     let script = Script::idle().all(0, events);
     let driver = TestDriver::launch(script)
-        .ui("[panel]\nagents = true")
+        .ui("[panel]\nagents = true\nmax_rows = 10")
         .start();
     driver.wait_visible("^    ○ task-003 ");
     let screen = driver.wait_visible("←  3 agents · ↓  to manage");
@@ -287,13 +287,17 @@ fn busy_screen_keeps_its_layout() {
             // A run's agents keep going past Esc, so with only a run at work
             // the bottom line makes no offer to interrupt. At 100 columns the chips take the room
             // of the mode's first two hints.
-            "^  ǁ supervised mode on( \\(shift\\+tab to cycle\\))?( · \\? for shortcuts)? · ←  3 agents · ↓  to manage( {2,}\\S.*)?$",
+            "^  ǁ supervised mode on( \\(shift\\+tab to cycle\\))?( · \\? for shortcuts)? · ←  3 agents · ↓  to manage( +\\S.*)?$",
             // The list is Claude Code's: your conversation as `main`, then a row per run,
-            // named by its workflow and title, with its agents
-            // under it, each by its name, what it's doing, and how long and how many tokens.
-            // This recording is from before agents had labels, so each goes by its task.
+            // named by its workflow and title cut to its column, its mark turning, its tasks
+            // under it with their logos, and then its agents, each by its name, what it's doing,
+            // and how long and how many tokens. This recording is from before agents had labels,
+            // so each goes by its task.
             &format!("^  {BULLET} main$"),
-            "^  ◯ Council · Add a --json flag to export +▱+ +0/3 · ",
+            "^  .  Council · Add a --js… +▱+ +0/3 · ",
+            "^    ⎿ .  .  Add the JSON… +Own session ",
+            "^      .  .  Wire the --js… +Own session ",
+            "^      .  .  Export tests +Own session ",
             &format!(
                 "^    ○ task-002 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓  [\\d.]+k tokens$"
             ),

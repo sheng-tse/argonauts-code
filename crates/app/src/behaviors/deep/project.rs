@@ -1,4 +1,4 @@
-//! The deeper map's positions: t-SNE (van der Maaten and Hinton, 2008) from the summaries'
+//! Summaries' positions: t-SNE (van der Maaten and Hinton, 2008) from the summaries'
 //! vectors to two dimensions. Smaller groups are repeated, up to four times, before the fit,
 //! as Hodoscope does, so the largest group doesn't decide the layout alone. A map that already
 //! has positions keeps them: its old dots stay exactly where they were, and only the new ones

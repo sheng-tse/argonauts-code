@@ -3,9 +3,12 @@
 //! with the work ledger for what Argonauts Code itself did. A CLI the import read is counted from
 //! its own files only, since those already hold the sessions Argonauts Code ran on it.
 
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 use argonauts_core::display_names::{DisplayNames, Spellings};
+use argonauts_core::events::session::Billing;
+use argonauts_core::meter::WhoPaid;
 use argonauts_core::overview::{
     CliSource, ImportStatus, ModelDay, ModelTokens, OverviewData, OverviewDay, OverviewModel,
     OverviewMonth, OverviewPeriod, OverviewWeek, ThroughArgonauts, Tokens,
@@ -41,6 +44,17 @@ struct Entry<'a> {
     tokens: Tokens,
     session: String,
     subagent: bool,
+    /// Who paid and what it cost, where a ledger line's session kept who paid.
+    paid: Option<Paid>,
+}
+
+/// What a ledger line says its tokens cost and who paid for them.
+#[derive(Debug, Clone, Copy)]
+struct Paid {
+    billing: Billing,
+    cost: f64,
+    estimated: bool,
+    partial: bool,
 }
 
 /// What the numbers are summed from.
@@ -132,7 +146,7 @@ pub(crate) fn overview(
         })
         .collect();
     data.models
-        .sort_by_key(|model| std::cmp::Reverse(model.tokens.total()));
+        .sort_by_key(|model| Reverse(model.tokens.total()));
     data.api_value = data.models.iter().filter_map(|model| model.api_value).sum();
     data.api_partial = data.models.iter().any(|model| model.api_value.is_none());
     (data.peak_day, data.model_days) = days_by_model(&counted, &data.models);
@@ -189,38 +203,70 @@ pub(crate) fn overview(
         .collect();
     data.longest_session_secs = longest_session(&counted);
     data.argonauts = through_argonauts(sources.work);
-    data.all_time_models = all_time_models(sources.records, sources.lines);
+    data.all_time_models = ranked_models(sources.records, sources.lines, &sources.clock, today);
     data
 }
 
-/// Every model's tokens in all, the most first: the import's records for each CLI it read
-/// and the ledger's lines for every other, as the Overview counts them.
-pub(crate) fn all_time_models(records: &[Record], lines: &[LedgerLine]) -> Vec<ModelTokens> {
+/// Every model in the order its colours rank, the one list every tab is given. It is settled
+/// once a day from what was recorded before `today`, so a colour never changes while you look:
+/// first the models that ran through Argonauts Code, the most tokens first; then the ones only
+/// the import has seen, by their count on this computer, which also breaks the first ones'
+/// ties; then the models new today, until tomorrow. Each carries the tokens that ran through
+/// Argonauts Code before today, which a screen adds up for a model recorded under two names.
+pub(crate) fn ranked_models(
+    records: &[Record],
+    lines: &[LedgerLine],
+    clock: &WallClock,
+    today: Date,
+) -> Vec<ModelTokens> {
     let imported: BTreeSet<&str> = records.iter().map(|r| r.cli.as_str()).collect();
-    let mut tokens: BTreeMap<ModelKey<'_>, u64> = BTreeMap::new();
+    let mut counts: BTreeMap<ModelKey<'_>, Ranking> = BTreeMap::new();
     for record in records {
         let model = Some(record.model.as_str()).filter(|model| !model.is_empty());
-        *tokens.entry((&record.cli, model)).or_default() +=
-            record.input + record.output + record.cache_read + record.cache_write;
+        let count = counts.entry((&record.cli, model)).or_default();
+        if clock.to_local(record.at).date() < today {
+            count.met_before_today = true;
+            count.on_this_computer +=
+                record.input + record.output + record.cache_read + record.cache_write;
+        }
     }
     for line in lines {
-        // A line of a CLI the import read is in its records already. It still adds the name
-        // the ledger gave the model, which the records may spell another way.
-        let counted = !imported.contains(line.agent.as_str());
-        *tokens
+        let count = counts
             .entry((&line.agent, line.model.as_deref()))
-            .or_default() += if counted { line.input + line.output } else { 0 };
+            .or_default();
+        if line.day < today {
+            count.met_before_today = true;
+            count.through_argonauts += line.input + line.output;
+            // A line of a CLI the import read is in its records already.
+            if !imported.contains(line.agent.as_str()) {
+                count.on_this_computer += line.input + line.output;
+            }
+        }
     }
-    let mut models: Vec<ModelTokens> = tokens
+    let mut ranked: Vec<(ModelKey<'_>, Ranking)> = counts.into_iter().collect();
+    ranked.sort_by_key(|(_, count)| {
+        (
+            Reverse(count.through_argonauts),
+            !count.met_before_today,
+            Reverse(count.on_this_computer),
+        )
+    });
+    ranked
         .into_iter()
-        .map(|((agent, model), tokens)| ModelTokens {
+        .map(|((agent, model), count)| ModelTokens {
             agent: agent.to_owned(),
             model: model.map(str::to_owned),
-            tokens,
+            tokens: count.through_argonauts,
         })
-        .collect();
-    models.sort_by_key(|model| std::cmp::Reverse(model.tokens));
-    models
+        .collect()
+}
+
+/// What places a model among its CLI's models, as recorded before today.
+#[derive(Debug, Default, Clone, Copy)]
+struct Ranking {
+    through_argonauts: u64,
+    on_this_computer: u64,
+    met_before_today: bool,
 }
 
 /// Each model as the records and the ledger spell it, to the spelling it's summed under, so
@@ -276,6 +322,7 @@ fn entries<'a>(
                 },
                 session: format!("{}:{}", record.cli, record.session),
                 subagent: record.subagent,
+                paid: None,
             }
         })
         .collect();
@@ -303,9 +350,54 @@ fn entries<'a>(
             },
             session,
             subagent: false,
+            paid: line.billing.map(|billing| Paid {
+                billing,
+                cost: line.cost,
+                estimated: line.estimated,
+                partial: line.partial,
+            }),
         });
     }
     entries
+}
+
+/// The period's tokens by who paid for them. A line whose session kept who paid counts under
+/// that, with what the line says it cost. Tokens nothing kept a payer for count under `pays`,
+/// who your settings say pays for the model now, and what the paid ones cost is their worth
+/// at list prices.
+pub(crate) fn who_paid(
+    sources: &Sources<'_>,
+    period: OverviewPeriod,
+    today: Date,
+    pays: &dyn Fn(&str, Option<&str>) -> Billing,
+) -> WhoPaid {
+    let spelled = spellings(sources);
+    let entries = entries(sources, &spelled);
+    let first = period.first_day(today);
+    let mut paid = WhoPaid::default();
+    let mut unrecorded: BTreeMap<ModelKey<'_>, Tokens> = BTreeMap::new();
+    for entry in entries
+        .iter()
+        .filter(|entry| first.is_none_or(|first| entry.day >= first))
+    {
+        match entry.paid {
+            // By output tokens, which every CLI counts the same way.
+            Some(kept) => {
+                let tokens = entry.tokens.output;
+                paid.count(kept.billing, tokens, Some(kept.cost), kept.estimated);
+                paid.cost_partial |= kept.partial && kept.billing == Billing::Paid && tokens > 0;
+            }
+            None => unrecorded
+                .entry((entry.agent, entry.model))
+                .or_default()
+                .add(&entry.tokens),
+        }
+    }
+    for ((agent, model), tokens) in unrecorded {
+        let worth = sources.prices.price(agent, model).value(&tokens);
+        paid.count(pays(agent, model), tokens.output, Some(worth), true);
+    }
+    paid
 }
 
 /// Each CLI with work: since when, whether its history came from the import, and its

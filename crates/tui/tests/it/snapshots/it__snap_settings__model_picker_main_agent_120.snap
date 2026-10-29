@@ -1,15 +1,14 @@
 ---
 source: crates/tui/tests/it/snap_settings.rs
-assertion_line: 55
 expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   Main agent
   Who answers in conversation, works as Captain, and steps in last when others stop
 
-  ❯ 1. Claude Code ✓   opus · subscription · 42% used
-    2. Codex           1 model · API key
-    3. Ollama          1 model · local
-    4. Roles…          each role's own model
+  ❯ 1. Claude Code ✓  opus                   subscription  5h ▄▄▖▁▁▁  42%
+    2. Codex          1 model                API key
+    3. Ollama         1 model                local
+    4. Roles…         each role's own model
 
   Enter to see its models · ↑↓  to move · type to filter · Esc to close

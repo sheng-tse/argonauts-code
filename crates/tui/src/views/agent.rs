@@ -291,7 +291,7 @@ impl AgentView {
         }
         dock::draw_rule(buf, &frame, theme);
         dock::draw_heading(buf, &frame, heading, theme);
-        dock::draw_status(buf, &frame, status, &[], theme);
+        dock::draw_status(buf, &frame, status, theme);
         let panes = frame.panes;
         let label = sanitize_line(&self.siblings[self.selected].label)
             .trim()
@@ -785,7 +785,8 @@ impl AgentView {
                 title
             };
             let running = self.data.row.status == RowStatus::Running;
-            let (mark, _) = workflow_rows::glyph(RowStatus::Running, false, theme);
+            // A call keeps Claude Code's own bullet, which the rows' marks no longer share.
+            let mark = if theme.glyphs.is_ascii() { ">" } else { "⏺" };
             let body = activity[activity.len() - shown..]
                 .iter()
                 .map(|call| {
@@ -2464,7 +2465,7 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         let head = lines
             .iter()
-            .position(|line| line.contains("⏺ Running · Opus on Claude Code · worker · worktree"))
+            .position(|line| line.contains("⣾ Running · Opus on Claude Code · worker · worktree"))
             .unwrap_or_else(|| panic!("{text}"));
         assert!(
             lines[head + 1].contains("381.0k tok · 23 tool calls · 6m 2s · context 31% of 200k"),

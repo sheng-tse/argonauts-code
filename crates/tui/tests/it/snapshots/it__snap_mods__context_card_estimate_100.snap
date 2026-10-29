@@ -1,12 +1,14 @@
 ---
-source: crates/tui/tests/snap_mods.rs
+source: crates/tui/tests/it/snap_mods.rs
 expression: "forms_page(&card, &plain(), 100)"
 ---
 full:
  ╭────────────────────────────────────────────────────────────────────────────────────────────╮ [-]
  │ ◆ context · task-002 · GPT 5.6 on Codex              115k of 272k · rotates at 240k  [42%] │
  │ ██████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│░░░░░░░░░░ │
- │ ▌ brief        ~18.4k   7%     ▌ conversation ~96.3k  35%     ▌ free           157k        │
+ │                                                                                            │
+ │ ▌ brief        ~18.4k   6.8%      ▌ conversation   ~96.3k  35.4%                           │
+ │ ▌ Free space     157k  57.8%                                                               │
  ╰────────────────────────────────────────────────────────────────────────────────────────────╯
 
 compact:
@@ -23,4 +25,4 @@ ctx 42%
 
 words:
 context: 115k of 272k, 42%, rotates at 240k
-context: brief ~18.4k 7%, conversation ~96.3k 35%, free 157k
+context: brief ~18.4k 6.8%, conversation ~96.3k 35.4%, Free space 157k 57.8%

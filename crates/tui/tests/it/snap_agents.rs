@@ -105,6 +105,9 @@ impl Crew {
                 reviews: 0,
                 waiting_on_agent: None,
                 item: None,
+                way: None,
+                todos: None,
+                reviewers: 0,
             },
         );
     }
@@ -180,6 +183,8 @@ impl Crew {
             asked_by: None,
             asked_why: None,
             forked: false,
+            seat: None,
+            billing: None,
         };
         self.send(
             session,
@@ -215,6 +220,8 @@ impl Crew {
             asked_by: None,
             asked_why: None,
             forked: false,
+            seat: None,
+            billing: None,
         };
         self.send(
             session,
@@ -348,6 +355,7 @@ fn session_state(
         tokens_in: 0,
         tokens_out: 0,
         cost_usd: None,
+        billing: None,
         context: None,
         context_window: None,
         rotations: 0,
@@ -369,6 +377,7 @@ fn session_state(
         stalled: false,
         cli_session: None,
         sent_back: false,
+        seat: None,
         workflows: Vec::new(),
     }
 }
@@ -924,7 +933,7 @@ fn verbosity_full_normal_quiet() {
     let full = text(&one_session(Verbosity::Full).printed(100));
     assert!(full.contains("⎿  Read(src/app.rs)"), "{full}");
     assert!(
-        full.ends_with("⎿  Done · 4 tool uses · report ✓ · checks ✓ · 9m 40s · 61.0k tokens"),
+        full.ends_with("⎿  Done (4 tool uses · 61.0k tokens · 9m 40s) · report ✓ · checks ✓"),
         "{full}"
     );
     let normal = text(&one_session(Verbosity::Normal).printed(100));
@@ -934,7 +943,7 @@ fn verbosity_full_normal_quiet() {
     );
     assert!(!normal.contains("Read(src/app.rs)"), "{normal}");
     assert!(
-        normal.ends_with("⎿  Done · 4 tool uses · report ✓ · checks ✓ · 9m 40s · 61.0k tokens"),
+        normal.ends_with("⎿  Done (4 tool uses · 61.0k tokens · 9m 40s) · report ✓ · checks ✓"),
         "{normal}"
     );
     assert!(one_session(Verbosity::Quiet).printed(100).is_empty());
@@ -1074,7 +1083,7 @@ fn stopped_agent_prints_one_line() {
     let printed = text(&crew.printed(80));
     assert_eq!(
         printed,
-        "● Opus on Claude Code · worker · task-003 (Middleware)\n  ⎿  Stopped · 2 tool uses · 2m 3s · 12.0k tokens"
+        "● Opus on Claude Code · worker · task-003 (Middleware)\n  ⎿  Stopped (2 tool uses · 12.0k tokens · 2m 3s)"
     );
     assert_eq!(crew.model.history.cells().len(), 1);
     assert_eq!(crew.model.history.active_cells().count(), 0);
@@ -1349,7 +1358,7 @@ fn replay_keeps_finished_sessions_for_the_overlay() {
     assert!(!crew.model.history.has_unprinted());
     assert_eq!(
         text(&crew.printed(100)),
-        "● GPT 5.6 on Codex · worker · task-002 (Redis store)\n  ⎿  Done · 1 tool use · report ✓ · 1m 0s · 2.0k tokens"
+        "● GPT 5.6 on Codex · worker · task-002 (Redis store)\n  ⎿  Done (1 tool use · 2.0k tokens · 1m 0s) · report ✓"
     );
     // The session still going keeps its block, timed from its start to the newest event rather
     // than from the replay.
@@ -1652,10 +1661,7 @@ fn an_agent_at_work_lands_in_the_conversation_once_when_it_finishes() {
             .end("s-001", EndReason::Completed, 580, 61_000);
         let printed = text(&crew.printed(100));
         assert!(printed.contains("Halfway there."), "{printed}");
-        assert!(
-            printed.contains("\n     Done · 9 tool uses · "),
-            "{printed}"
-        );
+        assert!(printed.contains("\n     Done (9 tool uses · "), "{printed}");
         assert_eq!(
             printed
                 .matches("● Opus on Claude Code · worker · task-003")
@@ -1678,7 +1684,7 @@ fn landing_once_reads_as_printing_along_did() {
         let when_done = one_session_with(when_done);
         let along = one_session(level);
         let along = text(&along.printed(100))
-            .replace(&format!("\n\n{header}\n  ⎿  Done · "), "\n     Done · ");
+            .replace(&format!("\n\n{header}\n  ⎿  Done ("), "\n     Done (");
         assert_eq!(text(&when_done.printed(100)), along, "{level:?}");
     }
 }

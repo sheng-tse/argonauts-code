@@ -1,0 +1,5 @@
+● GPT 6 Luna on Codex is out (overloaded), and nobody outside the builder's provider is left, so Sonnet 5 on Claude Code
+  takes a reviewer on autopilot · its work stays on its branch for you
+
+● Autopilot answered "Merge this run into main?" with "Keep the branch" instead of asking you, since Sonnet 5 on Claude
+  Code, a fallback from its builder's own provider, reviewed task-001.

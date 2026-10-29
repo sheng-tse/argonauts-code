@@ -276,8 +276,8 @@ fn a_screen_reader_hears_the_card_as_lines() {
         card().words(),
         [
             "context: 212k of 1M, 21%, compacts at 950k",
-            "context: system prompt 3.4k 0.3%, tools 12k 1%, mcp tools 2.6k 0.3%, agents 1.1k 0.1%",
-            "context: memory files 4.9k 0.5%, skills 2.2k 0.2%, messages 186k 19%, free 788k",
+            "context: System prompt 3.4k 0.3%, System tools 12k 1.2%, MCP tools 2.6k 0.3%, MCP server instructions 1.1k 0.1%",
+            "context: Memory files 4.9k 0.5%, Skills 2.2k 0.2%, Messages 186k 18.6%, Free space 738k 73.8%",
         ]
     );
     let mut near = card();
@@ -304,7 +304,8 @@ fn card_at(used: u64) -> ContextCard {
     card
 }
 
-/// Where the frame's borders, the legend's swatches, and the badge's bracket sit on each row.
+/// Where the frame's borders, the legend's first swatch, and the badge's bracket sit on each
+/// row. The legend's other columns are each as wide as their own numbers.
 fn layout(drawn: &Drawn) -> Vec<Vec<usize>> {
     drawn
         .lines
@@ -313,8 +314,12 @@ fn layout(drawn: &Drawn) -> Vec<Vec<usize>> {
             let row: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             let mut col = 0;
             let mut marks = Vec::new();
+            let mut swatches = 0;
             for grapheme in row.graphemes(true) {
-                if ["│", "╭", "╮", "╰", "╯", "▌", "]"].contains(&grapheme) {
+                swatches += usize::from(grapheme == "▌");
+                if ["│", "╭", "╮", "╰", "╯", "]"].contains(&grapheme)
+                    || (grapheme == "▌" && swatches == 1)
+                {
                     marks.push(col);
                 }
                 col += str_width(grapheme);
@@ -485,7 +490,7 @@ fn stacked_plan_usage_rows_are_line_meters() {
         tick: None,
     };
     let rows_in = [
-        meter("Claude 5h", 0.71, "Resets 4:40pm"),
+        meter("Claude Code 5h", 0.71, "Resets 4:40pm"),
         meter("Codex 5h", 0.92, "Resets 2:15pm"),
         MeterRow::Text {
             label: String::from("agy day"),
@@ -503,9 +508,9 @@ fn stacked_plan_usage_rows_are_line_meters() {
     assert_eq!(
         rows(&drawn),
         [
-            "Claude 5h  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━─────────────── 71% used   Resets 4:40pm",
-            "Codex 5h   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━──── 92% used   Resets 2:15pm",
-            "agy day    ✗ out until Tue 3:45pm · its tasks moved to Codex",
+            "Claude Code 5h   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸───────────── 71% used   Resets 4:40pm",
+            "Codex 5h         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸─── 92% used   Resets 2:15pm",
+            "agy day          ✗ out until Tue 3:45pm · its tasks moved to Codex",
         ]
     );
     assert!(drawn.meters.is_empty(), "line meters may stack");

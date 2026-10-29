@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats
+  All CLIs   ◧◨ Claude Code   ◧◨ Codex   ◧◨ agy              read live 8:12 PM · ctrl+r reads again
+
+ ◧◨ Claude Code · Max · in use
+
+ Current session
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  14% used
+ Resets in 2h 28m · today 10:40pm
+
+ Current week (all models)
+ ▄▄▄▄▄▄▄▄▄▄▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  21% used
+ Resets in 5d 2h · Tue Oct 13, 10:00pm
+
+ Current week (Fable)
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  0% used
+ Resets in 5d 2h · Tue Oct 13, 10:00pm
+
+ Usage credits
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  $0 / $100 spent
+ Resets in 23d · Sun Nov 1
+
+ What's contributing to your limits usage?
+ Approximate, based on local sessions on this machine — does not include other devices or
+ claude.ai. Behaviors are independent characteristics, not a breakdown.
+
+ Last 24h · 312 requests · 4 sessions
+   95% of your usage was at >150k context
+   90% of your usage came from subagent-heavy sessions
+   Top skills: /review 40%
+   Top MCP servers: github 20%
+
+ r to cycle dates · tab · ←  →  CLIs · ↓  into the cards · ↑  tabs · esc closes

@@ -379,11 +379,9 @@ async fn numbers(ctx: &Ctx, context: Option<ContextRow>) -> Numbers {
     let now = ctx.services.clock.now();
     let mut today: Vec<(String, Spend)> = Vec::new();
     for line in UsageLedger::new(&ctx.env.paths).read_since(Some(local_day(now))) {
-        let label =
-            crate::controller::agent_label(&argonauts_core::names::AgentId(line.agent_id.clone()));
-        match today.iter_mut().find(|(cli, _)| *cli == label) {
+        match today.iter_mut().find(|(cli, _)| *cli == line.agent_id) {
             Some((_, spent)) => crate::views::sessions::add_spend(spent, &line.spent()),
-            None => today.push((label, line.spent())),
+            None => today.push((line.agent_id.clone(), line.spent())),
         }
     }
     let mut runs = ctx.services.conductor.list().await.unwrap_or_default();
@@ -392,6 +390,7 @@ async fn numbers(ctx: &Ctx, context: Option<ContextRow>) -> Numbers {
         context,
         plan_chips,
         today,
+        names: ctx.names.names(),
         runs,
         now: Some(now),
     }
@@ -416,7 +415,7 @@ fn line_numbers(ctx: &Ctx, numbers: &Numbers) -> LineNumbers {
             .as_deref()
             .is_some_and(|name| name.contains("week") || name.contains("seven"));
         clis.push(LineCli {
-            label: crate::controller::agent_label(&agent_id),
+            label: ctx.names.cli(&agent_id.0),
             id: agent_id.0.clone(),
             main: agent_id == main,
             five_hours: used.filter(|_| !week),

@@ -270,14 +270,14 @@ pub(crate) async fn run_try(host: &Host, call: TryCall<'_>) -> EngineResult<TryE
             return Ok(TryEnd::Stopped);
         }
         let record = record_of(host, task)?;
-        if !needs_review(host, &record) {
+        if !review::needed(host, &record) {
             return Ok(TryEnd::Passed);
         }
         let reviewers = review::reviewers::eligible(
             &record.spec.reviewers,
             Some(worker),
             &providers(host),
-            host.settings().review.other_provider,
+            crate::roles::tasks::settled(host).review.other_provider,
         );
         let round = rounds.fetch_add(1, Ordering::SeqCst);
         match review::review_try(host, task, round, &reviewers, &tree.path).await? {
@@ -829,13 +829,24 @@ async fn checking(
 
 async fn reviewing(host: &Host, task: &TaskId, carry: &mut Option<Carry>) -> EngineResult<Step> {
     let record = record_of(host, task)?;
-    if !needs_review(host, &record) {
+    if !review::needed(host, &record) {
         transition(
             host,
             task,
             Trigger::Approved,
             "no review is set for this task",
         )?;
+        return Ok(Step::Moved);
+    }
+    // Never reviewed by whoever made it. Asking you now, or another try by the same builder,
+    // would end the same way, so the work goes on and the run's merge, which holds out for an
+    // approval, keeps it on its branch unless you merge it.
+    if let Some(nobody) = review::nobody_to_review(host, task) {
+        let reason = format!(
+            "{}, so it goes to the merge unreviewed",
+            argonauts_core::text::clause_case(&nobody)
+        );
+        transition(host, task, Trigger::NobodyToReview, &reason)?;
         return Ok(Step::Moved);
     }
     let change_rounds = progress_of(host, task).change_rounds;
@@ -862,13 +873,6 @@ async fn reviewing(host: &Host, task: &TaskId, carry: &mut Option<Carry>) -> Eng
         transition(host, task, Trigger::ChangesRequestedAgain, &reason)?;
     }
     Ok(Step::Moved)
-}
-
-/// Plain Captain runs have no reviewer; every other task is reviewed by another provider.
-fn needs_review(host: &Host, record: &TaskEntry) -> bool {
-    !(record.spec.kind == TaskKind::Captain
-        && record.spec.reviewers.is_empty()
-        && !host.settings().captain.review)
 }
 
 async fn merging(host: &Host, task: &TaskId, carry: &mut Option<Carry>) -> EngineResult<Step> {

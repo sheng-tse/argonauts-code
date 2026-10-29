@@ -1,0 +1,9 @@
+● 2 turns made in Claude Code since you left
+
+❯ Make the due date optional
+
+● The --due flag is optional now, and list puts undated tasks last.
+
+❯ Run the tests
+
+● All 48 tests pass.

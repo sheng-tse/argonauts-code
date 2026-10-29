@@ -126,11 +126,11 @@ mod tests {
             ended_at: Some(start),
             tokens_down: 900,
         });
-        let summary = call.summarized(Some("900 tokens · 0s"));
+        let summary = call.summarized_with("900 tokens · 0s", None);
         assert_eq!(summary.stats, ToolStats::default());
         assert_eq!(
             plain_text(&summary.lines(&ctx)),
-            "● agent\n  ⎿  Running · 0 tool uses · 900 tokens · 0s"
+            "● agent\n  ⎿  Running (0 tool uses · 900 tokens · 0s)"
         );
     }
 }

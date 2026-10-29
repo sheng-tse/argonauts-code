@@ -9,6 +9,7 @@ Argonauts Code is a Rust terminal app that runs coding-agent CLIs (Claude Code, 
 - `crates/core`: the shared types. Every other crate is one part: `tui` (the screen), `app` (the controller), `cli` (the `argonauts` command), `crew` and `conductor` (workflows and runs), `runner` (workflow files and scripts), `learning` (track records and learned workflows), `adapters/*` (one per CLI, plus `acp` and `manifest` for other agents), `policy`, `mcp`, `registry` (settings and models), `endpoints` (model servers), `scenarios` (the real binary in a terminal) and `testkit` (fakes for tests).
 - `crates/adapters/<id>/fixtures/` and `crates/conductor/fixtures/opencode/`: recorded CLI output, a few files per scenario, with the CLI version in the `<scenario>.meta.json` beside them. Tests replay these.
 - `crates/core/templates/`: the prompts, roles, workflows and mods Argonauts Code ships.
+- `approved/`: the approved drawings, one text grid per panel, state and window size (`approved/<panel>/<state>@<cols>x<rows>.txt`), each listed with its hash in `approved/MANIFEST.toml`. They say how each screen must look.
 
 ## Skills
 
@@ -27,7 +28,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 CI=true cargo test --workspace
 ```
 
-When a screen changes on purpose, review the snapshots with `cargo insta review` and keep the updated `.snap` files, and update any picture in `crates/*/tests/golden/` it is compared with (`ARGONAUTS_PICTURE_DUMP=<folder>` writes what the code draws).
+A change that touches a screen is done when its screens match their drawings in `approved/` at 120 × 38 and 177 × 40. Snapshots (`.snap`) and the pictures in `crates/*/tests/golden/` only record what the code drew, so when one stops matching, that's a finding: fix the code. A new look starts as an issue, and once a maintainer approves it, its drawing in `approved/` changes first, with its row in `approved/MANIFEST.toml`. A snapshot or golden picture changes only to match a drawing (`ARGONAUTS_PICTURE_DUMP=<folder>` writes what the code draws, to compare). The acceptance runner in `crates/scenarios/tests/it/app_drawings.rs` reaches the screen of each drawing whose manifest row lists its steps and compares it cell for cell; with `ARGONAUTS_SHOTS_DIR=<folder>` it saves each screen that doesn't match its drawing, in the drawings' format, under `<folder>/approved/`.
 
 ## Always
 
@@ -44,4 +45,5 @@ When a screen changes on purpose, review the snapshots with `cargo insta review`
 - Re-record fixtures other than as `.agents/skills/recording-a-cli` says, or start a real CLI other than as `.agents/skills/live-runs` says.
 - Commit a recording, picture or snapshot that says whose machine or account made it: a home folder path, a user or machine name, an account plan, an email, or an account or project id. A test in `testkit` fails on them.
 - Paste a conversation with an assistant into code or comments. Comments say why the code is the way it is.
+- Change a drawing in `approved/` without a maintainer's approval in its manifest row, or update a snapshot or golden picture only to make a test pass.
 - Change `LICENSE`.

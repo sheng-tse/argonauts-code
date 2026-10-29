@@ -8,6 +8,7 @@ pub mod awake;
 pub mod behaviors;
 pub mod bottom_line;
 pub mod context;
+pub mod council;
 pub mod crew;
 pub mod delivery;
 pub mod endpoints;
@@ -29,6 +30,7 @@ pub mod pr;
 pub mod prompts;
 pub mod protocol;
 pub mod roles;
+pub mod saving;
 pub mod sessions;
 pub mod shell;
 pub mod stats;
@@ -36,6 +38,7 @@ pub mod switch;
 pub mod telemetry;
 pub mod ui;
 pub mod updates;
+pub mod ways;
 pub mod workflows;
 
 use std::collections::BTreeMap;
@@ -49,6 +52,7 @@ use crate::names::{ModelRef, RoleName};
 use agents::{AgentSettings, EndpointSettings, McpSettings, RegistrySettings};
 use approvals::{ApprovalSettings, HardLimitSettings, SandboxSettings};
 use awake::AwakeSettings;
+use council::CouncilSettings;
 use crew::CrewSettings;
 use evolution::EvolutionSettings;
 use fallback::FallbackSettings;
@@ -62,6 +66,7 @@ use protocol::{
     MergeSettings, ReviewSettings, RoutingSettings, UnderstandSettings, VisibilitySettings,
 };
 use roles::RoleSettings;
+use saving::SaveChangesTo;
 use sessions::{
     Compaction, ConcurrencySettings, HealthSettings, NativeFanout, RunHostSettings, RunsSettings,
     SessionSettings,
@@ -85,6 +90,10 @@ pub struct Settings {
     /// How big a workflow the orchestrator plans when the request doesn't say. A guideline, as
     /// in Claude Code.
     pub workflow_size: WorkflowSize,
+    /// Where a change you make in the app is saved: `everywhere`, your global file; `just_you`,
+    /// this project's file for you alone; `this_project`, the file your team shares; or
+    /// `this_session`. Only your global file may set it
+    pub save_changes_to: SaveChangesTo,
     /// Who fills the five roles. A fine role without `roles.<role>.models` follows one of them.
     pub crew: CrewSettings,
     pub agents: BTreeMap<String, AgentSettings>,
@@ -109,6 +118,8 @@ pub struct Settings {
     pub judging: JudgingSettings,
     pub divide: DivideSettings,
     pub review: ReviewSettings,
+    /// How Council's models talk until they agree, and how each of its tasks may be done.
+    pub council: CouncilSettings,
     pub checks: CheckSettings,
     pub routing: RoutingSettings,
     pub approvals: ApprovalSettings,
@@ -160,7 +171,7 @@ pub struct Settings {
     /// Where agents read and write outside the project, without asking or once asked, and what
     /// they never reach.
     pub outside: outside::OutsideSettings,
-    /// The Behaviors map in Overview › Behaviors, and who writes its deeper map's summaries.
+    /// The Behaviors map in Overview › Behaviors, and who writes its summaries.
     pub behaviors: behaviors::BehaviorSettings,
 }
 
@@ -174,6 +185,7 @@ impl Default for Settings {
             workflow: "council".to_owned(),
             ultracode: false,
             workflow_size: WorkflowSize::default(),
+            save_changes_to: SaveChangesTo::default(),
             crew: CrewSettings::default(),
             agents,
             endpoints: BTreeMap::new(),
@@ -191,6 +203,7 @@ impl Default for Settings {
             judging: JudgingSettings::default(),
             divide: DivideSettings::default(),
             review: ReviewSettings::default(),
+            council: CouncilSettings::default(),
             checks: CheckSettings::default(),
             routing: RoutingSettings::default(),
             approvals: ApprovalSettings::default(),
@@ -271,6 +284,7 @@ impl Settings {
 /// a project's `.argonauts/config.toml` applies only once you trust that file. A trailing `.*`
 /// covers every key below it, and `*` in the middle matches one map key.
 pub const SAFETY_KEYS: &[&str] = &[
+    "save_changes_to",
     "limits.protected_paths",
     "limits.dependency_allowlist",
     "limits.spend_per_day",
@@ -312,9 +326,28 @@ pub const SAFETY_KEYS: &[&str] = &[
 ];
 
 /// Keys only your global config may set. A project file that sets one is refused, trusted or
-/// not, since it would name a program for Argonauts Code to run, or decide which build of it
-/// runs.
-pub const GLOBAL_ONLY_KEYS: &[&str] = &["notifications.conversation.*", "telemetry.*", "updates.*"];
+/// not, since it would name a program for Argonauts Code to run, decide which build of it runs,
+/// or send your changes into a repository's shared file.
+pub const GLOBAL_ONLY_KEYS: &[&str] = &[
+    "notifications.conversation.*",
+    "telemetry.*",
+    "updates.*",
+    "save_changes_to",
+];
+
+/// Why global-only `key` can't be set in a project file, read on from "can only be set in
+/// your global config, since".
+pub fn global_only_because(key: &str) -> &'static str {
+    match key.split('.').next() {
+        Some("save_changes_to") => {
+            "it says where your changes save, and a repository you clone must not send them \
+             into its shared file"
+        }
+        Some("updates") => "it decides which build of Argonauts Code runs",
+        Some("telemetry") => "it decides what Argonauts Code reports about your use",
+        _ => "it names a program for Argonauts Code to run",
+    }
+}
 
 /// Global-only keys a project file may still set to one value, as TOML text, since that value
 /// only takes something away: a project may turn usage reports off, never on.
@@ -345,47 +378,6 @@ pub const LAYERS: &[&str] = &[
 /// what that file and later layers set wins over the workflow.
 pub const FILE_LAYERS: [&str; 3] = ["global", "project", "project-local"];
 
-/// Whether a change to `key` asks where to save it, as one that changes safety or what the
-/// team shares does: a safety key, the approvals, the sandbox, the limits, the crew and its
-/// prompts. Any other key is yours alone and saves at once to your global file, as Claude
-/// Code's Config saves its rows. The approval mode the app starts in is yours, though under
-/// `approvals`.
-pub fn asks_where(key: &str, safety: bool) -> bool {
-    let section = key.split('.').next().unwrap_or(key);
-    let shared = matches!(
-        section,
-        "approvals" | "sandbox" | "limits" | "crew" | "roles" | "prompts"
-    );
-    safety || (shared && key != "approvals.start_mode")
-}
-
-#[cfg(test)]
-mod asks_where_tests {
-    use super::asks_where;
-
-    #[test]
-    fn your_own_keys_save_at_once_and_shared_ones_ask() {
-        for key in [
-            "ui.tips",
-            "ui.keys",
-            "compaction",
-            "fallback.mode",
-            "approvals.start_mode",
-        ] {
-            assert!(!asks_where(key, false), "{key}");
-        }
-        for key in [
-            "approvals.merge.mode",
-            "crew.reviewer",
-            "limits.spend_per_run",
-            "prompts.writer",
-        ] {
-            assert!(asks_where(key, false), "{key}");
-        }
-        assert!(asks_where("ui.anything", true), "a safety key always asks");
-    }
-}
-
 /// Where a setting you change inside the app is saved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -393,7 +385,7 @@ pub enum SettingScope {
     /// Only this app session. Gone when you quit; passed to runs as overrides.
     Session,
     /// This project, just you: `.argonauts/config.local.toml`, kept out of git through
-    /// `.git/info/exclude`. The default for `/model` and `/effort`.
+    /// `.git/info/exclude`.
     ProjectLocal,
     /// This project, shared: `.argonauts/config.toml`, which a team commits.
     Project,
@@ -434,16 +426,6 @@ impl SettingScope {
                 .unwrap_or(Self::Session),
             "flag" | "request" => Self::Session,
             other => Self::from_layer(other).unwrap_or(Self::Global),
-        }
-    }
-
-    /// `--global`, `--project`, or `--local`, as the settings commands take them.
-    pub fn from_flag(flag: &str) -> Option<Self> {
-        match flag {
-            "--global" => Some(Self::Global),
-            "--project" => Some(Self::Project),
-            "--local" => Some(Self::ProjectLocal),
-            _ => None,
         }
     }
 
@@ -563,10 +545,6 @@ mod tests {
             let scope = SettingScope::for_change(layer, None);
             assert!(!scope.hidden_by(layer), "{layer}");
         }
-        assert_eq!(SettingScope::from_flag("--local"), Some(ProjectLocal));
-        assert_eq!(SettingScope::from_flag("--project"), Some(Project));
-        assert_eq!(SettingScope::from_flag("--global"), Some(Global));
-        assert_eq!(SettingScope::from_flag("--session"), None);
     }
 
     #[test]

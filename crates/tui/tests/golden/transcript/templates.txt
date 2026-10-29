@@ -1,11 +1,11 @@
-~/.argonauts/templates/        reference copies, refreshed when Argonauts updates; edit a copy, not these
+~/.argonauts/templates/        reference copies, refreshed when Argonauts Code updates; edit a copy, not these
 ├─ README.md          what is here, and where a copy goes to take effect
 ├─ workflows/         Council, Orchestrator, Maker-checker, Best-of-n, … + README.md
 ├─ prompts/           each role's frame and the other prompts + README.md
 ├─ roles/             an example instructions file per role + README.md
 └─ mods/              the starter mods + README.md
 
-> /templates
+❯ /templates
   workflows   Council (in use) · Orchestrator · Maker-checker · Best-of-n · Spec-first (yours)
   prompts     main · orchestrator · workers · reviewers (changed here) · judge
   enter copies the picked one into .argonauts/ (this folder) or ~/.argonauts/ (every folder)

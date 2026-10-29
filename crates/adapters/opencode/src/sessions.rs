@@ -136,8 +136,11 @@ fn parse_turns(printed: &str, count: usize) -> anyhow::Result<Vec<CliTurn>> {
         match message["type"].as_str() {
             Some("user") => {
                 let text = message["text"].as_str().unwrap_or_default().trim();
+                let sent = message["time"]["created"].as_i64().and_then(|ms| {
+                    OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000).ok()
+                });
                 if !text.is_empty() {
-                    turns.push(CliTurn::prompt(text));
+                    turns.push(CliTurn::prompt(text).sent_at(sent));
                 }
             }
             Some("assistant") => {
@@ -354,6 +357,8 @@ mod tests {
             ]
         );
         assert_eq!(parse_turns(EXPORTED, 2).unwrap()[0].text, "Read the file.");
+        let sent = turns[2].sent.map(OffsetDateTime::unix_timestamp_nanos);
+        assert_eq!(sent, Some(4_000_000), "a prompt keeps when it was sent");
         assert!(parse_turns("not json", 2).is_err());
         let cmd = export_command(Path::new(OPENCODE), Path::new("/work/repo"), "ses_1");
         assert_eq!(cmd.args, ["session", "export", "--standalone", "ses_1"]);

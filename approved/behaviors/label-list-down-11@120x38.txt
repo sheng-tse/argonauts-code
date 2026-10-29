@@ -1,0 +1,88 @@
+Behaviors, the label map with Opus 5.5 compared, ↓ pressed 11 times from the map: the panel
+screen 120x38
+at ?,0
+size 120x32
+terminal fg=#c8d3f5 bg=#222436
+text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
+
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  Comparing ￼￼ Opus 5.5
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  With the rest, on the land:
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  Red where it does more, blue where less
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Much more 2x as often or more
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     More      1.25x to 2x
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Less      0.5x to 0.8x
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Much less 0.5x or less
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Untinted  About the same, or too few
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ↑  3 more above
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ●  ￼￼ Opus 5.5                 63
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ↓  7 more below
+
+  Lit: ran the test suite · 41 actions, 3 of them Opus 5.5's
+
+  Label map · 823 actions in 21 runs and 18 conversations across 12 projects
+  Distinctive to Opus 5.5 · 63 actions; the others 760
+  ↑  5 more above
+    Searched code by pattern                                9  (14.3%)   others  33   (4.3%)
+    Checked git status or diff                              5   (7.9%)   others  25   (3.3%)
+    Read a source file                                     14  (22.2%)   others  94  (12.4%)
+    Listed files                                            3   (4.8%)   others  35   (4.6%)
+  ❯ Ran the test suite                                      3   (4.8%)   others  38   (5.0%)
+
+   r to cycle dates · s this project · d summaries · ↑  ↓  behavior · enter actions · h  l  model · esc back
+paint
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+.bbbbbbbb..cddddddddc...eeeeee....eeeeee....eeeee....eeeeeee....eeeeee....eeeee.....fff.ffff..gggg.g.gggg..gggg.gg.gggg
+
+..gggggggg....gggggg...cdddddddddc...........cddcdddddc...gg.ggg....gg.gggg....gg.gggggggg....gg.ggggggg....gg.ggggggg
+
+..f.fff.g.g.gggggg.g.g.gggggggg.....................................................................ffffff.g.ggggggggg
+
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..ggggggggg.ii.eeee.eee
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..gggg.ggg.ggggg.gg.ggg.ggggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..ggg.ggggg.gg.gggg.ggggg.gggg.ggggg.gggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..jj.eeee.eeee.gg.gg.ggggg.gg.gggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..kk.eeee......ggggg.gg.gg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..ll.eeee......gggg.gg.gggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..mm.eeee.eeee.gggg.gg.gggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..nn.eeeeeeee..ggggg.ggg.ggggg.gg.ggg.ggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..g..g.gggg.ggggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..o..ii.eeee.eee.................gg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..g..g.gggg.ggggg
+
+..gggg.bbb.bbb.bbbb.bbbbb.g.gg.gggggggg.g.gg.gggg.gggg.ggggg
+
+..ggggg.ggg.g.ggg.ggggggg.gg.gg.gggg.ggg.gg.ggggggggggggg.gggggg.gg.gggggggg
+..bbbbbbbbbbb.bb.bbbb.bbb.g.gg.gggggggg.ggg.gggggg.ggg
+..g..g.gggg.ggggg
+....eeeeeeee.eeee.ee.eeeeeee................................b..ggggggg...gggggg..gg...gggggg
+....eeeeeee.eee.eeeeee.ee.eeee..............................b...gggggg...gggggg..gg...gggggg
+....eeee.e.eeeeee.eeee.....................................bb..ggggggg...gggggg..gg..ggggggg
+....eeeeee.eeeee............................................b...gggggg...gggggg..gg...gggggg
+..a.aaa.aaa.aaaa.aaaaa......................................b...gggggg...gggggg..gg...gggggg
+
+...g.gg.ggggg.ggggg.g.g.gggg.ggggggg.g.g.ggggggggg.g.g..g..gggggggg.g.ggggg.ggggggg.g.g..g..ggggg.g.ggg.gggg
+key
+. blank
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+b fg=#c8d3f5 bold  ; the terminal's own
+c bg=#373737  ; UserBand
+d fg=#c8d3f5 bg=#373737 bold  ; the terminal's own, on UserBand
+e fg=#c8d3f5  ; the terminal's own
+f fg=#b1b9f9 bold  ; Code, Question, BarFill, CatMcp
+g fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+h picture=label-map
+i logo=claudecode
+j bg=#b44a4e
+k bg=#8c5a4c
+l bg=#4a627c
+m bg=#3e5a9a
+n bg=#4e5e48
+o fg=#f7a07f  ; CliClaude

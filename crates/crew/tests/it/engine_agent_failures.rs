@@ -1617,7 +1617,7 @@ async fn on_autopilot_the_builders_provider_reviews_and_the_merge_waits_for_you(
     assert_eq!(stood_in.len(), 1, "{said:?}");
     assert!(
         stood_in[0].ends_with(&format!(
-            "so {} takes a reviewer on autopilot · the merge is left to you",
+            "so {} takes a reviewer on autopilot · its work stays on its branch for you",
             display_name(&SONNET.parse()?)
         )),
         "{stood_in:?}"
@@ -1638,9 +1638,14 @@ async fn on_autopilot_the_builders_provider_reviews_and_the_merge_waits_for_you(
         )),
         "{merges:?}"
     );
+    // Autopilot's line names the fallback and the task it reviewed.
+    let named = format!(
+        "{}, a fallback from its builder's own provider, reviewed ",
+        display_name(&SONNET.parse()?)
+    );
     assert!(
         said.iter()
-            .any(|note| note.contains("from its builder's own provider")),
+            .any(|note| note.starts_with("Autopilot answered ") && note.contains(&named)),
         "{said:?}"
     );
     assert_ne!(
@@ -2572,7 +2577,7 @@ fn council_with_opencode_unset(spare: Option<&str>) -> anyhow::Result<Crew> {
             .add(FakeRunner::cli(spare, "moonshot").respond_with(answers()));
         crew.services.workers.isolating("kimi");
     }
-    crew.settings.workflow = "council".to_owned();
+    crew.settings.workflow = "base".to_owned();
     crew.settings.workflows.orchestrator_designs = false.into();
     crew.settings.workflows.adapt_at_phase_ends = false;
     Ok(crew)

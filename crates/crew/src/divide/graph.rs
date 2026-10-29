@@ -93,6 +93,7 @@ pub fn convert(proposal: &TaskGraphProposal) -> (Vec<TaskSpec>, Vec<String>) {
                 limit: TaskLimit::default(),
                 predictions: None,
                 item: Some(labels::slug(&task.key, 3)).filter(|item| !item.is_empty()),
+                way: None,
             }
         })
         .collect();

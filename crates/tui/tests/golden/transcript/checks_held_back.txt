@@ -1,0 +1,2 @@
+● Checks(fix-rounding · built-in checks)
+  ⎿  checks.run is set in .argonauts/config.toml, a file you haven't trusted · /setup

@@ -8,6 +8,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::ways::Ways;
 use crate::names::{ModelRef, RoleName};
 
 /// Each list is in order of preference: the first agent that's available is the one asked, and
@@ -44,6 +45,27 @@ pub struct CrewSettings {
     /// On any other CLI it starts from the brief
     #[serde(default)]
     pub orchestrator_context: OrchestratorContext,
+    /// Build and Review picked by the orchestrator for each task, instead of taken from `worker`
+    /// and `reviewer`. Off for both unless you turn it on
+    #[serde(default)]
+    pub orchestrator_picks: OrchestratorPicks,
+    /// How each task may be done. The orchestrator picks one way per task from these and gives
+    /// its reason
+    #[serde(default)]
+    pub ways: Ways,
+}
+
+/// `[crew.orchestrator_picks]`: the roles whose model the orchestrator picks for each task, a
+/// ready one by past results on that kind of task, plan left, then cost. When a pick runs out of
+/// its limit mid-task, the next by rank takes over. The orchestrator's planning reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct OrchestratorPicks {
+    /// Who builds each task: a ready model the orchestrator picks, instead of the `worker` list
+    pub worker: bool,
+    /// Who reviews each task: ready models the orchestrator picks, never the task's worker and
+    /// never from its provider, instead of the `reviewer` list
+    pub reviewer: bool,
 }
 
 /// `crew.orchestrator_context`.
@@ -80,6 +102,12 @@ struct WrittenCrew {
     /// What the orchestrator starts from on the main agent's CLI: `fork`, a fork of your
     /// conversation, or `brief`, the brief alone
     orchestrator_context: OrchestratorContext,
+    /// Build and Review picked by the orchestrator for each task, instead of taken from `worker`
+    /// and `reviewer`. Off for both unless you turn it on
+    orchestrator_picks: OrchestratorPicks,
+    /// How each task may be done. The orchestrator picks one way per task from these and gives
+    /// its reason
+    ways: Ways,
 }
 
 impl From<WrittenCrew> for CrewSettings {
@@ -99,6 +127,8 @@ impl From<WrittenCrew> for CrewSettings {
             worker_workflows: written.worker_workflows,
             merger: written.merger.unwrap_or_default(),
             orchestrator_context: written.orchestrator_context,
+            orchestrator_picks: written.orchestrator_picks,
+            ways: written.ways,
         }
     }
 }
@@ -127,6 +157,8 @@ impl CrewSettings {
             worker_workflows: false,
             merger: Vec::new(),
             orchestrator_context: OrchestratorContext::Fork,
+            orchestrator_picks: OrchestratorPicks::default(),
+            ways: Ways::default(),
         }
     }
 
@@ -470,6 +502,29 @@ mod tests {
     }
 
     #[test]
+    fn the_lists_decide_and_every_way_is_allowed_until_you_say_otherwise() {
+        let empty: File = toml::from_str("[crew]\n").unwrap();
+        assert_eq!(empty.crew.orchestrator_picks, OrchestratorPicks::default());
+        assert!(!empty.crew.orchestrator_picks.worker && !empty.crew.orchestrator_picks.reviewer);
+        assert_eq!(empty.crew.ways, Ways::default());
+
+        let picked: File = toml::from_str(
+            "[crew]\nworker = \"codex\"\n\n[crew.orchestrator_picks]\nworker = true\n\n\
+             [crew.ways]\nworkflows = []\nagents = 2\n",
+        )
+        .unwrap();
+        assert!(picked.crew.orchestrator_picks.worker);
+        assert!(!picked.crew.orchestrator_picks.reviewer);
+        assert_eq!(picked.crew.worker, [worker("codex")]);
+        assert!(picked.crew.ways.own_session);
+        assert!(picked.crew.ways.workflows.is_off());
+        assert_eq!(picked.crew.ways.agents.get(), 2);
+        let again: File = toml::from_str(&toml::to_string(&picked).unwrap()).unwrap();
+        assert_eq!(again.crew, picked.crew);
+        assert!(toml::from_str::<File>("[crew.ways]\nagents = 6\n").is_err());
+    }
+
+    #[test]
     fn a_role_reads_one_model_or_a_list_and_what_is_unset_keeps_its_default() {
         let file: File = toml::from_str(
             "[crew]\norchestrator = \"main\"\nworker = [\"codex/gpt-5.6\", \"claude-code\"]\n\
@@ -524,6 +579,8 @@ mod tests {
             worker_workflows: false,
             merger: Vec::new(),
             orchestrator_context: Default::default(),
+            orchestrator_picks: Default::default(),
+            ways: Default::default(),
         };
         assert_eq!(
             crew.members(),

@@ -1,4 +1,4 @@
-//! What the deeper map keeps in `~/.argonauts/behaviors/`, so no summary is ever made twice:
+//! What Summaries keeps in `~/.argonauts/behaviors/`, so no summary is ever made twice:
 //!
 //! - `summaries.jsonl`: one line per summary, keyed by the action (run, session, tool call),
 //!   the summarizer and the prompt's version, with the key of the text it summarized;

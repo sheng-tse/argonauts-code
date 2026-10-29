@@ -1,0 +1,38 @@
+                                                                                                                        
+              ▐▌ Qwen3 Coder 30B moved to Redis after reading src/session/store.ts · 5 of 6 points agreed               
+                                                                                                                        
+     5.6 Luna                                                                                                           
+                                       ▐▌✘  ▐▌✘  ▐▌✔                                                                    
+▐▌   The status page is ours, so it can send a key.                                                                     
+                                                                                                                        
+     Opus 5.5                                                                                                           
+                                                              ▐▌✘  ▐▌✔  ▐▌✘                                             
+▐▌   Still one shared bucket: a 401 breaks every curl example in our docs.                                              
+                                                                                                                        
+     5.6 Luna                                                                                                           
+                         ▐▌✘  ▐▌✘  ▐▌✔                                                                                  
+▐▌   Then the docs change. Still 401.                                                                                   
+                                                                                                                        
+                       The talk stopped: its last 6 messages moved nobody · 5 of 6 points agreed                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Calls with no key: which way?                                                                                         
+                                                                                                                        
+  The seats agree on everything else. Pick a side, let them talk on, or write your own.                                 
+  ❯ 1. One shared bucket, 10 a second   ▐▌ Opus 5.5  ▐▌ 3.8 Flash                                                       
+       The balancer's probe can't send a key, and a 401 breaks the curl examples in our docs                            
+    2. 401                              ▐▌ 5.6 Luna  ▐▌ Qwen3 Coder 30B                                                 
+       One shared bucket is still a bucket that one script can use up                                                   
+    3. Talk on, up to 100k more tokens                                                                                  
+    4. Type my own answer                                                                                               
+    5. Carry on without me                                                                                              
+       The point goes the side most of the seats back                                                                   
+                                                                                                                        
+  Enter to choose · Tab to add a note · Esc back to the list · shift+tab to cycle modes                                 
+                                                                                                                        
+  ǁ supervised mode on                                                                                                  
+                                                                                                                        
+  ◆  Rate limit the API                    ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  2/4 · 6m02s · ↓   118k tokens                          
+    ⎿ ✔  ▐▌ Opus 5.5                       Backs all 6 points          2m40s · ↓    35k tokens                          
+      ○  ▐▌ 5.6 Luna                       Backs 5 of 6 points         1m52s · ↓  24.4k tokens                          
+      ✔  ▐▌ 3.8 Flash                      Backs all 6 points          2m51s · ↓  33.1k tokens                          
+      ○  ▐▌ Qwen3 Coder 30B                Backs 5 of 6 points         2m47s · ↓  25.5k tokens                          

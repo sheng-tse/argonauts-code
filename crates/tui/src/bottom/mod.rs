@@ -49,15 +49,15 @@ pub use line::{
 pub use menu::{MenuEvent, MenuItem, MenuKind, Menus};
 pub use narrator::{NARRATOR_MAX_ROWS, narrator_lines};
 pub use notice::{NOTICE_KEYS, Notice, NoticeEvent};
-pub use picker::{Picker, PickerEvent, PickerRow};
+pub use picker::{Gauge, Picker, PickerCell, PickerColumn, PickerEvent, PickerRow, RowPart};
 pub use question::{
-    Checklist, Countdown, ESC_HINT, NOTE_PLACEHOLDER, OptionKind, OptionModel, QUESTION_GUARD,
-    QuestionAgent, QuestionChip, QuestionEvent, QuestionNote, QuestionOption, QuestionPrompt,
-    QuestionView,
+    BACK_HINT, CARRY_ON, Checklist, Countdown, ESC_HINT, NOTE_PLACEHOLDER, OptionKind, OptionModel,
+    QUESTION_GUARD, QuestionAgent, QuestionChip, QuestionEvent, QuestionNote, QuestionOption,
+    QuestionPrompt, QuestionView,
 };
 pub use retry::RetryNote;
 pub use workflows::{
-    PanelRowId, StopAsk, WorkflowPanel, WorkflowRow, WorkflowRowState, ask_before_stop,
+    PanelRowId, RunRowKind, StopAsk, WorkflowPanel, WorkflowRow, WorkflowRowState, ask_before_stop,
     handle_panel_key, panel_has_rows, panel_lines,
 };
 pub use working::{Activity, SPINNER_PERIOD, WorkingLine};
@@ -65,6 +65,9 @@ pub use working::{Activity, SPINNER_PERIOD, WorkingLine};
 #[derive(Debug, Clone, Default)]
 pub struct BottomState {
     pub working: Option<WorkingLine>,
+    /// The first key `save_for_session` binds, for the hint under a settings picker: `None`
+    /// until the app says, which names the default key, and empty when nothing binds it.
+    pub save_for_session_key: Option<String>,
     /// What the work waits for while nothing else of it goes on, such as `Waiting for 1
     /// workflow to finish`, drawn dim and still in the working line's place, as Claude Code
     /// ends a turn whose workflows go on.
@@ -135,6 +138,10 @@ pub struct BottomState {
     pub draft_aside: Option<DraftAside>,
     /// The mods pinned above the input.
     pub band: Band,
+    /// The council message a reply you are writing answers, named right above the input.
+    pub replying: Option<crate::council::reply::ReplyBar>,
+    /// A council talking on this screen, and the message or task picked in it.
+    pub council: crate::council::pick::CouncilInput,
 }
 
 /// What the status sync last applied, so running it again changes nothing, and a change made
@@ -308,7 +315,8 @@ impl BottomState {
             return PanelEvent::PauseRun(run);
         }
         let event = handle_panel_key(&mut self.workflows, &mut self.agents, key);
-        ask_before_stop(&mut self.stop_asked, event)
+        let selected = self.panel_selection();
+        ask_before_stop(&mut self.stop_asked, event, selected)
     }
 
     /// `p` on the run's row a stop was just asked on: the run to pause.
@@ -350,6 +358,14 @@ impl BottomState {
             .iter()
             .find(|row| row.agent_ref() == selected)
             .filter(|row| row.kind != RowKind::Main)
+    }
+
+    /// The run's row picked in the list, a request's or a row under one.
+    fn picked_run_row(&self) -> Option<&WorkflowRow> {
+        let Some(PanelRowId::Run(key)) = self.panel_selection() else {
+            return None;
+        };
+        self.workflows.rows.iter().find(|row| row.key == key)
     }
 
     /// The panel row under the pointer while the panel has focus.
@@ -397,6 +413,13 @@ impl BottomState {
             parts
                 .band
                 .extend(self.file_mods_above(ctx, left, question_up));
+            if let Some(reply) = &self.replying
+                && !question_up
+            {
+                parts
+                    .band
+                    .push(reply.line(usize::from(ctx.width), ctx.theme).0);
+            }
         }
         parts.fit(max_rows);
         parts.assemble(max_rows)
@@ -469,15 +492,11 @@ impl BottomState {
         BottomView { lines, cursor }
     }
 
-    /// The question that holds the keys as it draws under a docked view that stays up: in the
-    /// view's own columns, as wide as its rule.
+    /// The question that holds the keys as it draws under a docked view that stays up: across
+    /// the screen, as it draws alone.
     pub fn question_under_view(&self, ctx: &RenderCtx<'_>) -> Option<QuestionView> {
         let question = self.focused_question()?;
-        let ctx = RenderCtx {
-            width: crate::views::dock::rule_width(ctx.width),
-            ..ctx.with_vim(self.mode.vim.is_some())
-        };
-        Some(question.layout_under_view(&ctx))
+        Some(question.layout_under_view(&ctx.with_vim(self.mode.vim.is_some())))
     }
 
     /// When the region next changes on its own. `None` when nothing animates, so an idle
@@ -513,6 +532,9 @@ impl BottomState {
             self.question
                 .as_ref()
                 .and_then(|question| question.next_change(clock.now)),
+            self.picker
+                .as_ref()
+                .and_then(|picker| picker.next_change(clock, ctx.theme)),
         ]
         .into_iter()
         .flatten()
@@ -640,14 +662,14 @@ impl BottomState {
         // With an agent selected in the list, the input is a message to it, as in Claude Code.
         let messaging = self.messaging();
         let message_to = messaging.and_then(AgentRow::placeholder);
-        let placeholder =
-            message_to
-                .as_deref()
-                .or(waiting.then_some(if busy || self.run_takes_text {
-                    QUESTION_PLACEHOLDER_RUN
-                } else {
-                    QUESTION_PLACEHOLDER
-                }));
+        let placeholder = message_to
+            .as_deref()
+            .or(waiting.then_some(if busy || self.run_takes_text {
+                QUESTION_PLACEHOLDER_RUN
+            } else {
+                QUESTION_PLACEHOLDER
+            }))
+            .or(self.council.sits.then_some(crate::council::PLACEHOLDER));
         // An example prompt is a way to start, so it waits while work runs or a question is up.
         let offer_example = !busy && self.expanded_question().is_none();
         // A question that holds the keys stands in for the input, as Claude Code's permission
@@ -673,8 +695,6 @@ impl BottomState {
                     ctx,
                     ComposerState {
                         focused: focused || messaging.is_some(),
-                        // The mark dims only under a working line: while the work only waits,
-                        // a message goes in as a turn of its own, and the mark reads as ready.
                         busy: self.working.is_some(),
                         offer_example,
                         placeholder,
@@ -727,8 +747,15 @@ impl BottomState {
             .filter(|_| focused && search.is_none() && !question_holds_keys && picker.is_none())
             .filter(|_| !noticed);
         let panel_focused = self.agents.has_focus() || self.workflows.selected.is_some();
-        // The focused list's keys take the line, as they do under Claude Code's list.
-        let list_keys = panel_focused.then_some(LIST_KEYS);
+        // A run's row says what Enter does on it after the mode. An agent's row takes Claude
+        // Code's own list keys.
+        let row_enter = self
+            .picked_run_row()
+            .filter(|_| panel_focused)
+            .map(WorkflowRow::enter_does);
+        let list_keys = panel_focused
+            .then_some(LIST_KEYS)
+            .filter(|_| row_enter.is_none());
         let mode = self.mode.line(
             ctx,
             ModeState {
@@ -744,6 +771,8 @@ impl BottomState {
                 pinned_questions: 0,
                 panel: panel_has_rows(&self.workflows, &self.agents),
                 panel_focused,
+                picked_keys: self.council.picking.as_deref(),
+                row_enter,
                 question_focused: self.focused_question().is_some(),
                 shell: self.composer.is_shell(),
                 // A command runs when Enter is pressed, whatever works above it.
@@ -937,3 +966,5 @@ mod picker_place_tests;
 mod tests;
 #[cfg(test)]
 mod vim_picture_tests;
+#[cfg(test)]
+mod workflow_status_tests;

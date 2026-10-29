@@ -237,6 +237,95 @@ short_id!(
     WorkflowId,
     "wf"
 );
+short_id!(
+    /// A seat in a council: `seat-001` to `seat-006`, in seat order. A seat is not a model: the
+    /// same model can sit twice, and each seat keeps its own session from its first answer to
+    /// its last task.
+    SeatId,
+    "seat"
+);
 
 /// The anonymous label judges see, "Plan 1" to "Plan N".
 pub type PlanLabel = u8;
+
+/// The letter one seat reads another by, as in "Seat T". Each seat has a map of its own, drawn
+/// anew for every council, so a letter means nothing outside the session that reads it. Your
+/// screen shows a seat's map only in the key at the head of that seat's own session, and
+/// nothing records it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "char", into = "char")]
+pub struct SeatLetter(char);
+
+impl SeatLetter {
+    /// I, L, O, Q, U and V are left out because they read as digits or as each other. Maps are
+    /// drawn from the pool in a shuffled order, so A never reads as the first seat.
+    pub const POOL: [char; 20] = [
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'M', 'N', 'P', 'R', 'S', 'T', 'W', 'X',
+        'Y', 'Z',
+    ];
+
+    /// `None` for a letter outside [`Self::POOL`], lowercase included.
+    pub fn new(letter: char) -> Option<Self> {
+        Self::POOL.contains(&letter).then_some(Self(letter))
+    }
+
+    pub fn as_char(self) -> char {
+        self.0
+    }
+}
+
+impl fmt::Display for SeatLetter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{0:?} is not a seat letter: seats are lettered A to Z without I, L, O, Q, U and V")]
+pub struct SeatLetterError(pub char);
+
+impl TryFrom<char> for SeatLetter {
+    type Error = SeatLetterError;
+    fn try_from(letter: char) -> Result<Self, Self::Error> {
+        Self::new(letter).ok_or(SeatLetterError(letter))
+    }
+}
+
+impl From<SeatLetter> for char {
+    fn from(letter: SeatLetter) -> char {
+        letter.0
+    }
+}
+
+#[cfg(test)]
+mod seat_tests {
+    use super::*;
+
+    #[test]
+    fn seats_are_numbered_like_the_other_short_ids() {
+        assert_eq!(SeatId::numbered(2).as_str(), "seat-002");
+        assert_eq!(SeatId::parse("seat-002"), Some(SeatId::numbered(2)));
+        let json = serde_json::to_string(&SeatId::numbered(1)).unwrap();
+        assert_eq!(json, "\"seat-001\"");
+    }
+
+    #[test]
+    fn the_letter_pool_leaves_out_letters_that_read_as_others() {
+        assert_eq!(SeatLetter::POOL.len(), 20);
+        for left_out in ['I', 'L', 'O', 'Q', 'U', 'V', 't', '1', ' '] {
+            assert_eq!(SeatLetter::new(left_out), None, "{left_out:?}");
+        }
+        let t = SeatLetter::new('T').unwrap();
+        assert_eq!(t.to_string(), "T");
+        assert_eq!(char::from(t), 'T');
+    }
+
+    #[test]
+    fn a_letter_reads_back_and_one_outside_the_pool_is_refused() {
+        let k = SeatLetter::new('K').unwrap();
+        let json = serde_json::to_string(&k).unwrap();
+        assert_eq!(json, "\"K\"");
+        assert_eq!(serde_json::from_str::<SeatLetter>(&json).unwrap(), k);
+        assert!(serde_json::from_str::<SeatLetter>("\"O\"").is_err());
+    }
+}

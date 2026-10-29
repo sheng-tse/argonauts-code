@@ -1,0 +1,7 @@
+---
+source: crates/tui/tests/it/snap_workflows.rs
+expression: text
+---
+  ≈  fix the export race                   ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/2 · 4m12s · ↓  54.3k tokens
+    ⎿ ⣾  ●  task 1           Own session   thinking                    4m12s · ↓  18.1k tokens
+      ≈  ●  task 2           Own session   thinking                    4m12s · ↓  18.1k tokens

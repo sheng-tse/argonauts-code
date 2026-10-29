@@ -1,5 +1,5 @@
 ---
-source: crates/tui/tests/snap_questions.rs
+source: crates/tui/tests/it/snap_questions.rs
 expression: shown
 ---
 ────────────────────────────────────────────────────────────────────────────────
@@ -10,7 +10,10 @@ expression: shown
   ❯ 1. Half to even
     2. Half up
     3. Type my own answer
+    4. Carry on without me
+       build:fix-money decides and goes on; its pick is kept as an assumption to
+       review
 
-  Enter to choose · Tab to add a note · Esc to carry on without me
+  Enter to choose · Tab to add a note · Esc back to the list
 
   ǁ supervised mode on

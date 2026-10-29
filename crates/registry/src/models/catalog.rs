@@ -1,15 +1,17 @@
 //! The model catalog's layers, each later one winning field by field: the catalog shipped in
-//! `catalog/models.toml`, the copy of that file on Argonauts Code's main branch fetched once a day
-//! and checked against the hash published next to it, what the CLIs say of their own models,
-//! and your own `models.toml`.
+//! `catalog/models.toml`, the copy served beside the update manifests, fetched once a day and
+//! signed with the same minisign keys, what the CLIs say of their own models, and your own
+//! `models.toml`.
 
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use argonauts_core::input::EFFORT_LEVELS;
 use argonauts_core::model_catalog::{CATALOG_VERSION, CatalogEntry, EffortNote, ModelCatalog};
+use argonauts_core::model_picker::LocalModel;
 use argonauts_core::registry::{ModelEntry, RegistryKind};
 use argonauts_core::sha256_hex;
+use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -17,8 +19,9 @@ use super::files::ModelsFile;
 
 const SHIPPED: &str = include_str!("../../catalog/models.toml");
 
-/// The shipped catalog's path on the main branch, so a fix there reaches every install.
-pub const CATALOG_URL: &str = "https://raw.githubusercontent.com/sheng-tse/argonauts-code/main/crates/registry/catalog/models.toml";
+/// Where the catalog is served, beside the update manifests, so a model that ships after a
+/// release reaches every install. Its signature is beside it as `models.toml.minisig`.
+pub const CATALOG_URL: &str = "https://argonauts-code.github.io/updates/v1/models.toml";
 
 /// New models don't ship by the hour, so a catalog a day old is still good.
 pub const CATALOG_FRESH_FOR: time::Duration = time::Duration::days(1);
@@ -29,6 +32,8 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_CATALOG_BYTES: usize = 1024 * 1024;
 
 const MAX_NAME_CHARS: usize = 60;
+/// Past any window a model takes today.
+const MAX_WINDOW: u64 = 16 * 1024 * 1024;
 const MAX_LINE_CHARS: usize = 200;
 
 /// The catalog this build shipped with.
@@ -48,7 +53,8 @@ pub fn layered(
     yours: &[ModelsFile],
 ) -> ModelCatalog {
     let mut catalog = shipped_catalog().clone();
-    if let Some(fetched) = fetched {
+    // A copy published before the one this build ships would put older facts over newer ones.
+    if let Some(fetched) = fetched.filter(|fetched| !published_before(fetched, &catalog)) {
         catalog.merge(fetched.clone());
     }
     catalog.merge(cli_layer(discovered));
@@ -89,7 +95,22 @@ pub fn parse_catalog(text: &str) -> Result<ModelCatalog, String> {
     Ok(catalog)
 }
 
+/// Whether `catalog` was published before `than`: a day earlier, or no day where `than` says
+/// one, as every copy from before catalogs carried their day.
+pub fn published_before(catalog: &ModelCatalog, than: &ModelCatalog) -> bool {
+    match (&catalog.published, &than.published) {
+        (_, None) => false,
+        (None, Some(_)) => true,
+        (Some(day), Some(than)) => day < than,
+    }
+}
+
 fn check_catalog(catalog: &ModelCatalog) -> Result<(), String> {
+    if let Some(day) = &catalog.published {
+        let format = time::macros::format_description!("[year]-[month]-[day]");
+        time::Date::parse(day, format)
+            .map_err(|_| format!("its published day {day:?} isn't a YYYY-MM-DD date"))?;
+    }
     if catalog.version > CATALOG_VERSION {
         return Err(format!(
             "its format {} is newer than this Argonauts Code reads ({CATALOG_VERSION})",
@@ -101,6 +122,9 @@ fn check_catalog(catalog: &ModelCatalog) -> Result<(), String> {
     }
     for note in &catalog.efforts {
         check_note(note).map_err(|e| format!("[[effort]] {}: {e}", note.level))?;
+    }
+    for model in &catalog.local {
+        check_local(model).map_err(|e| format!("[[local]] {}: {e}", model.tag))?;
     }
     for price in &catalog.prices {
         check_text("a price's model", &price.model, MAX_NAME_CHARS)
@@ -147,6 +171,56 @@ pub(crate) fn check_entry(entry: &CatalogEntry) -> Result<(), String> {
         check_note(note)?;
     }
     Ok(())
+}
+
+/// A local model's facts must be ones a computer can rank by: a tag a shell reads as one word,
+/// sizes that are amounts, and a score out of 100 with where it came from.
+fn check_local(model: &LocalModel) -> Result<(), String> {
+    check_text("its tag", &model.tag, MAX_NAME_CHARS)?;
+    if model.tag.contains(char::is_whitespace) || model.tag.starts_with('-') {
+        return Err("its tag must be one word".to_owned());
+    }
+    check_text("name", &model.name, MAX_NAME_CHARS)?;
+    if model.window == 0 || model.window > MAX_WINDOW {
+        return Err(format!("window must be 1 to {MAX_WINDOW} tokens"));
+    }
+    for (what, figure) in [
+        ("weights_gb", model.weights_gb),
+        ("download_gb", model.download_gb),
+        ("context_kib_per_token", model.context_kib_per_token),
+    ] {
+        if !figure.0.is_finite() || figure.0 < 0.0 {
+            return Err(format!("{what} must be 0 or more"));
+        }
+    }
+    if let Some(month) = &model.released
+        && !is_month(month)
+    {
+        return Err(format!("released {month:?} isn't a month such as 2025-07"));
+    }
+    if let Some(coding) = &model.coding {
+        if !(0.0..=100.0).contains(&coding.score.0) {
+            return Err("a coding score is out of 100".to_owned());
+        }
+        check_text("a coding score's source", &coding.source, MAX_LINE_CHARS)?;
+        check_text("a coding score's date", &coding.checked, MAX_NAME_CHARS)?;
+    }
+    if let Some(next) = &model.replaced_by {
+        check_text("replaced_by", next, MAX_NAME_CHARS)?;
+    }
+    Ok(())
+}
+
+/// `2025-07`.
+fn is_month(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() == 7
+        && bytes[4] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(at, b)| at == 4 || b.is_ascii_digit())
+        && matches!(text[5..].parse::<u8>(), Ok(1..=12))
 }
 
 pub(crate) fn check_note(note: &EffortNote) -> Result<(), String> {
@@ -243,18 +317,24 @@ pub(crate) fn described(entry: &ModelEntry) -> CatalogEntry {
     }
 }
 
-/// The catalog last fetched, as the model cache keeps it: the text, the hash the repository
-/// published with it, and when it was fetched or last found unchanged.
+/// The catalog last fetched, as the model cache keeps it: the text and its hash, the signature
+/// it was served with, and when it was fetched or last found unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FetchedCatalog {
     #[serde(with = "time::serde::rfc3339")]
     pub fetched: OffsetDateTime,
     pub sha256: String,
+    /// The `.minisig` file, so a catalog signed the same way isn't downloaded again. A cache
+    /// from before catalogs were signed has none, and fetches the signed one.
+    #[serde(default)]
+    pub signature: String,
     pub text: String,
 }
 
 impl FetchedCatalog {
-    /// Checked on every read, so a cache cut short or edited by hand counts for nothing.
+    /// Checked against its hash on every read, so a cache cut short or garbled counts for
+    /// nothing. The hash proves no signer: one who edits the text and its hash together edits
+    /// your own files, where the signature was checked when it was fetched.
     pub fn catalog(&self) -> Result<ModelCatalog, String> {
         if sha256_hex(self.text.as_bytes()) != self.sha256 {
             return Err("the catalog doesn't match its hash".to_owned());
@@ -263,26 +343,31 @@ impl FetchedCatalog {
     }
 }
 
-/// Where the daily catalog comes from: `url`, with its SHA-256 at `url` plus `.sha256`.
+/// Where the daily catalog comes from: `url`, signed at `url` plus `.minisig` by one of `keys`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogSource {
     pub url: String,
+    /// Minisign public keys, as a `.pub` file's second line holds one.
+    pub keys: Vec<String>,
 }
 
 impl CatalogSource {
-    pub fn argonauts() -> Self {
+    /// The catalog served beside the update manifests, signed by one of the keys that sign
+    /// them.
+    pub fn argonauts(keys: &[&str]) -> Self {
         Self {
             url: CATALOG_URL.to_owned(),
+            keys: keys.iter().map(|key| (*key).to_owned()).collect(),
         }
     }
 
-    fn hash_url(&self) -> String {
-        format!("{}.sha256", self.url)
+    fn signature_url(&self) -> String {
+        format!("{}.minisig", self.url)
     }
 
-    /// Reads the published hash first, and the catalog itself only when that hash isn't the
-    /// one `known` holds. What it fetches must match the hash and parse; otherwise the error
-    /// says why, and the catalog fetched before stays.
+    /// Reads the signature first, and the catalog itself only when that signature isn't the
+    /// one `known` came with. What it fetches must be signed by one of the keys and parse;
+    /// otherwise the error says why, and the catalog fetched before stays.
     pub async fn fetch(
         &self,
         known: Option<&FetchedCatalog>,
@@ -290,19 +375,11 @@ impl CatalogSource {
     ) -> Result<(FetchedCatalog, ModelCatalog), String> {
         let client = reqwest::Client::builder()
             .timeout(FETCH_TIMEOUT)
+            .user_agent(concat!("argonauts/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| format!("couldn't start an HTTP client: {e}"))?;
-        let hash_url = self.hash_url();
-        let published = get(&client, &hash_url).await?;
-        let sha256 = published
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(format!("{hash_url} holds no SHA-256"));
-        }
-        if let Some(known) = known.filter(|known| known.sha256 == sha256)
+        let signature = get(&client, &self.signature_url()).await?;
+        if let Some(known) = known.filter(|known| known.signature == signature)
             && let Ok(catalog) = known.catalog()
         {
             let fetched = FetchedCatalog {
@@ -312,22 +389,48 @@ impl CatalogSource {
             return Ok((fetched, catalog));
         }
         let text = get(&client, &self.url).await?;
-        if sha256_hex(text.as_bytes()) != sha256 {
+        if !signed_by(text.as_bytes(), &signature, &self.keys) {
             return Err(format!(
-                "{} doesn't match the hash published with it",
+                "{} isn't signed by a key this Argonauts Code trusts",
                 self.url
             ));
         }
         let fetched = FetchedCatalog {
             fetched: now,
-            sha256,
+            sha256: sha256_hex(text.as_bytes()),
+            signature,
             text,
         };
         let catalog = fetched
             .catalog()
             .map_err(|e| format!("{}: {e}", self.url))?;
+        // The signature proves who signed it, not when: a copy older than what this build
+        // ships, or than the one fetched before, is refused, so none rolls facts back.
+        let cached = known.and_then(|known| known.catalog().ok());
+        let newest = [Some(shipped_catalog()), cached.as_ref()];
+        if newest
+            .into_iter()
+            .flatten()
+            .any(|than| published_before(&catalog, than))
+        {
+            return Err(format!(
+                "{} was published before the catalog this Argonauts Code already has",
+                self.url
+            ));
+        }
         Ok((fetched, catalog))
     }
+}
+
+/// Whether `signature`, a `.minisig` file, signs `data` with one of `keys`. A key that isn't a
+/// minisign public key signs nothing.
+fn signed_by(data: &[u8], signature: &str, keys: &[String]) -> bool {
+    let Ok(signature) = Signature::decode(signature) else {
+        return false;
+    };
+    keys.iter()
+        .filter_map(|key| PublicKey::from_base64(key.trim()).ok())
+        .any(|key| key.verify(data, &signature, false).is_ok())
 }
 
 async fn get(client: &reqwest::Client, url: &str) -> Result<String, String> {

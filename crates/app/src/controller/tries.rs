@@ -68,6 +68,10 @@ impl SessionRunner for Tries {
         self.inner.take_over_command(cli_session, workdir)
     }
 
+    fn seat_take_over_command(&self, cli_session: &str, workdir: &Path) -> Option<CommandSpec> {
+        self.inner.seat_take_over_command(cli_session, workdir)
+    }
+
     fn cheapest_model(&self) -> Option<String> {
         self.inner.cheapest_model()
     }

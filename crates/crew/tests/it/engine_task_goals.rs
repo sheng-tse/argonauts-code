@@ -527,6 +527,7 @@ fn task_of(worker: &str) -> argonauts_core::events::task::TaskSpec {
         limit: argonauts_core::events::task::TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 

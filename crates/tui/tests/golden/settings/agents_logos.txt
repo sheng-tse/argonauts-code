@@ -1,0 +1,11 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Agents
+  The agents Argonauts Code can use (CLIs, endpoints, ACP agents): add one (Hermes, OpenClaw,
+  OpenCode, Ollama, your own CLI), turn one on or off, check its login
+
+  ❯ 1. ◧◨ claude-code        ✔ on
+    2. ◧◨ codex              ✔ on · gpt-5.6
+    3.    local (endpoint)   http://localhost:8080/v1
+    4.    Add an endpoint    an OpenAI-compatible server, by its base URL
+
+  Enter to choose · ↑↓  to move · type to filter · Esc to close

@@ -277,9 +277,203 @@ impl ContextUsage {
     }
 }
 
+/// What a session holds at its start, before its CLI counts it: what the last fresh session
+/// on the same CLI and model held then, or, on a very first run, an estimate. A session starts
+/// without messages, so none are listed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartingCount {
+    pub agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
+    /// What the CLI holds back for compacting, past the point where the session compacts.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub buffer: u64,
+    /// In the CLI's order, each with its colour where the CLI has one.
+    pub parts: Vec<StartPart>,
+    /// The instruction files the CLI loads by itself, each by its own count.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<NamedTokens>,
+    /// The tools the CLI names as the session starts, where it lists them apart from what
+    /// they take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<StartingTools>,
+    pub from: StartedFrom,
+    /// When the CLI's own count first comes. `None` for a CLI no recording ships for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_count: Option<FirstCount>,
+}
+
+/// What of a CLI's ends when its own count of a session first comes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstCount {
+    /// Its first answer, as Claude Code's count by category.
+    Answer,
+    /// Its first turn, whose usage totals every request in it, as Codex's.
+    Turn,
+    /// Its first step, a single request, as OpenCode's and agy's.
+    Step,
+}
+
+impl FirstCount {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Answer => "answer",
+            Self::Turn => "turn",
+            Self::Step => "step",
+        }
+    }
+
+    /// Whether the first usage the CLI reports holds every request of its turn, so it says
+    /// what the first request held only when no tool ran before it.
+    pub fn totals_the_turn(self) -> bool {
+        self == Self::Turn
+    }
+}
+
+/// A part of what a session holds at its start: one the CLI names itself, or one Argonauts Code
+/// names by what it holds, which the screen words with the CLI's name as it stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "KeptPart")]
+pub struct StartPart {
+    /// What the part holds, for a part the CLI has no name of its own for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holds: Option<StartHolds>,
+    /// The CLI's own name for the part. Empty where `holds` says what it is.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    pub tokens: u64,
+    /// Claude Code's name for the colour it draws in.
+    pub color: String,
+}
+
+/// What a part of a session's start holds, where the CLI has no name of its own for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartHolds {
+    /// The CLI's own prompt and tools.
+    OwnPromptAndTools,
+    /// The instruction files the CLI loads by itself.
+    InstructionFiles,
+    /// Argonauts Code's tools and the lines about them.
+    AppTools,
+}
+
+impl StartPart {
+    /// A part the CLI names itself.
+    pub fn named(name: impl Into<String>, tokens: u64, color: impl Into<String>) -> Self {
+        Self {
+            holds: None,
+            name: name.into(),
+            tokens,
+            color: color.into(),
+        }
+    }
+
+    pub fn holding(holds: StartHolds, tokens: u64, color: impl Into<String>) -> Self {
+        Self {
+            holds: Some(holds),
+            name: String::new(),
+            tokens,
+            color: color.into(),
+        }
+    }
+}
+
+/// A part as a start was kept: before parts were kept by what they hold, each had the words
+/// the app gave it, which read back as what they name.
+#[derive(Deserialize)]
+struct KeptPart {
+    #[serde(default)]
+    holds: Option<StartHolds>,
+    #[serde(default)]
+    name: String,
+    tokens: u64,
+    color: String,
+}
+
+impl From<KeptPart> for StartPart {
+    fn from(kept: KeptPart) -> Self {
+        let worded = match kept.name.as_str() {
+            _ if kept.holds.is_some() => kept.holds,
+            name if name.ends_with("'s own prompt and tools") => {
+                Some(StartHolds::OwnPromptAndTools)
+            }
+            "Instruction files" => Some(StartHolds::InstructionFiles),
+            "Argonauts Code's tools" => Some(StartHolds::AppTools),
+            _ => None,
+        };
+        match worded {
+            Some(holds) => Self::holding(holds, kept.tokens, kept.color),
+            None => Self::named(kept.name, kept.tokens, kept.color),
+        }
+    }
+}
+
+impl StartingCount {
+    /// What the parts hold together.
+    pub fn used(&self) -> u64 {
+        self.parts.iter().map(|part| part.tokens).sum()
+    }
+}
+
+/// How many tools a CLI names at a session's start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartingTools {
+    pub named: u32,
+    /// How many of them a read-only session offers, where Argonauts Code gives it fewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<u32>,
+}
+
+/// Where a starting count comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "from")]
+pub enum StartedFrom {
+    /// The last fresh session on the same CLI and model, as it started.
+    LastSession,
+    /// The CLI's own prompt and tools as recorded for its `version`, and what this machine
+    /// adds to them, counted at a token per 4 characters.
+    Recording { version: String },
+    /// Only what this machine adds, for a CLI no recording ships for.
+    Unrecorded,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A start kept before parts were kept by what they hold reads them by their words, and
+    /// one the CLI named stays named.
+    #[test]
+    fn a_start_kept_with_worded_parts_still_reads() {
+        let kept = r#"{"agent":"codex","model":"gpt-6-luna","parts":[
+            {"name":"Codex's own prompt and tools","tokens":15236,"color":"promptBorder","kind":"used"},
+            {"name":"Instruction files","tokens":1200,"color":"claude","kind":"used"},
+            {"name":"Argonauts Code's tools","tokens":900,"color":"cyan_FOR_SUBAGENTS_ONLY","kind":"used"},
+            {"name":"System prompt","tokens":4380,"color":"promptBorder","kind":"used"}
+        ],"from":{"from":"last_session"},"first_count":"turn"}"#;
+        let start: StartingCount = serde_json::from_str(kept).expect("a kept start");
+        assert_eq!(
+            start.parts,
+            [
+                StartPart::holding(StartHolds::OwnPromptAndTools, 15_236, "promptBorder"),
+                StartPart::holding(StartHolds::InstructionFiles, 1_200, "claude"),
+                StartPart::holding(StartHolds::AppTools, 900, "cyan_FOR_SUBAGENTS_ONLY"),
+                StartPart::named("System prompt", 4_380, "promptBorder"),
+            ]
+        );
+        let again: StartingCount =
+            serde_json::from_str(&serde_json::to_string(&start).expect("written"))
+                .expect("read back");
+        assert_eq!(again, start);
+    }
 
     fn row(name: &str, tokens: u64, kind: ContextKind) -> ContextCategory {
         ContextCategory {

@@ -119,7 +119,6 @@ impl Setup {
             servers: None,
             current,
             untrusted,
-            project_dir_exists: finish::project_dir(&ctx.env).is_dir(),
             guides_answer: templates::guides_answer(&ctx.env),
             role_keys: crate::controller::settings::model_keys(),
             models: models_by_agent(ctx),
@@ -140,8 +139,6 @@ impl Setup {
             Step::Workflow,
             Step::Approvals,
             Step::Trust,
-            Step::ProjectFolder,
-            Step::Guides,
         ]);
         let mut setup = Self {
             open: None,
@@ -437,23 +434,9 @@ impl Setup {
                 }
             }
         }
-        if self.answers.create_project_dir {
-            let dir = finish::project_dir(&env);
-            if let Err(err) = std::fs::create_dir_all(&dir) {
-                notices.push((
-                    NoteLevel::Error,
-                    format!("Couldn't make {}: {err}", env.display(&dir)),
-                ));
-            }
-        }
-        // A yes you gave without a terminal isn't yours, so it isn't kept.
-        if let Some(yes) = self.answers.guides.filter(|_| env.interactive)
-            && let Err(err) = templates::keep_guides_answer(&env, yes)
-        {
-            notices.push((NoteLevel::Warn, format!("Couldn't keep your answer: {err}")));
-        }
-        // After the project's folder is made, so its READMEs go in with it.
-        let in_project = self.answers.guides.or(self.view.guides_answer) == Some(true);
+        // The guide pages go into this repo only where you once said yes to them; this
+        // folder's `.argonauts/` is made when a change first needs it.
+        let in_project = self.view.guides_answer == Some(true);
         let pages = templates::write(&env, in_project);
         notices.extend(pages.notices);
         if let Err(err) = ctx.settings.reload(&env) {

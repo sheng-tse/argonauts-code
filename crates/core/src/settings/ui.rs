@@ -2,6 +2,7 @@
 
 mod agents_in_conversation;
 mod check;
+mod council;
 mod look;
 mod mods;
 mod places;
@@ -16,6 +17,7 @@ use crate::names::ModelRef;
 
 pub use agents_in_conversation::AgentsInConversation;
 pub use check::{BadValue, UiProblem, drop_bad_values};
+pub use council::{Bubbles, CouncilView};
 pub use look::{
     ClockStyle, ColorText, Crossing, DurationStyle, FormatSettings, LevelSettings, Percent,
     PlanUsageWording, ResetStyle, State, StateStyle, StatesSettings, Theme, Threshold, TokenStyle,
@@ -26,7 +28,7 @@ pub use mods::{
     RunLimitKind, RunLimitsKeys, RunLimitsRun, RunsKeys, SpendBy, SpendKeys, UiModsSettings, Units,
 };
 pub use places::{
-    AboveInputSettings, HiddenLine, PanelBar, PanelContext, UsagePeriod, UsageTab, ViewOpen,
+    AboveInputSettings, HiddenLine, PaidByPlace, PanelContext, UsagePeriod, UsageTab, ViewOpen,
     ViewTab, ViewsSettings, WhenQuestion,
 };
 
@@ -121,6 +123,9 @@ pub struct UiSettings {
     pub glyphs: Glyphs,
     /// How the welcome header draws the mode's mascot.
     pub mascot: MascotDrawing,
+    /// Each CLI's and model's logo before its name: `auto` where the terminal draws pictures in
+    /// its cells, the coloured dot elsewhere, or `off` for the dot everywhere.
+    pub logos: Logos,
     /// Cells for East Asian ambiguous-width characters, 1 or 2, like vim's `ambiwidth`.
     pub ambiguous_width: u8,
     /// Say once at start-up when an installed agent CLI is newer than the one Argonauts Code
@@ -133,6 +138,14 @@ pub struct UiSettings {
     pub notices: Notices,
     /// When a crew agent shows in the conversation: once it finishes, or as it works.
     pub agents_in_conversation: AgentsInConversation,
+    /// How Council's talk shows: `messages` in bubbles, as a group conversation reads in
+    /// Messages, or a `transcript` of one block per message.
+    pub council_view: CouncilView,
+    /// How the bubbles of Council's messages are drawn.
+    pub bubbles: Bubbles,
+    /// Where free and paid tokens show beside the plan's: `end_line`, under a run's end line,
+    /// and `usage`, as a who-paid bar in Overview's Tokens. Empty shows them nowhere.
+    pub paid_by: Vec<PaidByPlace>,
 }
 
 /// How the main agent writes its answers, whatever CLI it is.
@@ -213,8 +226,6 @@ pub struct PanelSettings {
     /// Also list running agents under each workflow row.
     pub agents: bool,
     pub max_rows: u32,
-    /// What a run row's bar measures: agents (Claude Code's), tasks, spend, or time
-    pub bar: PanelBar,
     /// How a row shows its agent's context: pills, words, or off
     pub context: PanelContext,
 }
@@ -225,7 +236,6 @@ impl Default for PanelSettings {
             subagents: CliInternals::Discovered,
             agents: false,
             max_rows: 5,
-            bar: PanelBar::Agents,
             context: PanelContext::Pills,
         }
     }
@@ -247,6 +257,18 @@ pub enum Glyphs {
     Unicode,
     /// `*`, `<>`, `v`, `>`, and `o` in their place.
     Ascii,
+}
+
+/// Whether CLIs and models show their logos, `ui.logos`. The logo drawing reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Logos {
+    /// The logo where the terminal draws pictures in its cells through the kitty protocol's
+    /// placeholders (Ghostty, kitty), the coloured dot and the name elsewhere.
+    #[default]
+    Auto,
+    /// The coloured dot and the name in every terminal.
+    Off,
 }
 
 /// How the welcome header draws the mode's mascot.
@@ -279,7 +301,7 @@ impl Default for UiSettings {
             screen: ScreenMode::Fullscreen,
             keymap: BTreeMap::new(),
             screen_reader: false,
-            motion: Motion::Normal,
+            motion: Motion::Full,
             color: ColorChoice::Auto,
             bell: true,
             live_area_max: 0.6,
@@ -308,11 +330,15 @@ impl Default for UiSettings {
             workflow: WorkflowViewSettings::default(),
             glyphs: Glyphs::Unicode,
             mascot: MascotDrawing::Auto,
+            logos: Logos::Auto,
             ambiguous_width: 1,
             newer_cli_notice: true,
             plugin_output: PluginOutput::Show,
             notices: Notices::WhenEnabled,
             agents_in_conversation: AgentsInConversation::WhenDone,
+            council_view: CouncilView::Messages,
+            bubbles: Bubbles::Auto,
+            paid_by: vec![PaidByPlace::EndLine, PaidByPlace::Usage],
         }
     }
 }
@@ -375,13 +401,30 @@ pub enum ScreenMode {
     Inline,
 }
 
+/// How much moves on screen, `ui.motion`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Motion {
-    /// Spinners and word-by-word streaming.
-    Normal,
-    /// Static spinners, a line at a time.
+    /// Spinners turn, text streams word by word, and the Behaviors world moves where something
+    /// happened.
+    Full,
+    /// Spinners stand still, text arrives a line at a time, and each of the world's motions is
+    /// drawn as a still sign, such as an arrowhead or a plume.
     Reduced,
+    /// As reduced, and a change you make shows at once, with no frames in between.
+    Off,
+}
+
+impl Motion {
+    /// Reduced or off: what would move is drawn still.
+    pub fn is_reduced(self) -> bool {
+        self != Motion::Full
+    }
+
+    /// Off: a change jumps to its end instead of moving there.
+    pub fn skips_frames(self) -> bool {
+        self == Motion::Off
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -466,4 +509,58 @@ pub enum ConversationTrigger {
     Finished,
     /// An agent's CLI went down.
     AgentDown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ui(text: &str) -> Result<UiSettings, toml::de::Error> {
+        toml::from_str(text)
+    }
+
+    #[test]
+    fn motion_is_full_reduced_or_off_and_normal_no_longer_reads() {
+        assert_eq!(UiSettings::default().motion, Motion::Full);
+        for (word, motion, reduced, skips) in [
+            ("full", Motion::Full, false, false),
+            ("reduced", Motion::Reduced, true, false),
+            ("off", Motion::Off, true, true),
+        ] {
+            let read = ui(&format!("motion = \"{word}\"")).unwrap().motion;
+            assert_eq!(read, motion);
+            assert_eq!(
+                (read.is_reduced(), read.skips_frames()),
+                (reduced, skips),
+                "{word}"
+            );
+        }
+        assert!(ui("motion = \"normal\"").is_err());
+    }
+
+    #[test]
+    fn logos_council_and_paid_by_have_their_defaults() {
+        let defaults = UiSettings::default();
+        assert_eq!(defaults.logos, Logos::Auto);
+        assert_eq!(defaults.council_view, CouncilView::Messages);
+        assert_eq!(defaults.bubbles, Bubbles::Auto);
+        assert_eq!(defaults.paid_by, [PaidByPlace::EndLine, PaidByPlace::Usage]);
+        let set = ui("logos = \"off\"\ncouncil_view = \"transcript\"\npaid_by = []").unwrap();
+        assert_eq!(set.logos, Logos::Off);
+        assert_eq!(set.council_view, CouncilView::Transcript);
+        assert!(set.paid_by.is_empty());
+        assert_eq!(
+            ui("paid_by = [\"usage\"]").unwrap().paid_by,
+            [PaidByPlace::Usage]
+        );
+        assert!(ui("paid_by = [\"row\"]").is_err());
+        assert!(ui("logos = \"letters\"").is_err());
+    }
+
+    #[test]
+    fn the_panel_bar_is_no_setting() {
+        let table = toml::Table::try_from(UiSettings::default()).unwrap();
+        let panel = table["panel"].as_table().unwrap();
+        assert!(!panel.contains_key("bar"), "{panel:?}");
+    }
 }

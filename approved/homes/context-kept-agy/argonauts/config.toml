@@ -1,0 +1,9 @@
+# Set up with Council, and agy on gemini-3.8-flash-low to talk to. state/ keeps the start of
+# the last fresh agy session on it: its own prompt and tools, and the project's AGENTS.md.
+workflow = "council"
+
+[crew]
+main = "antigravity-cli/gemini-3.8-flash-low"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]

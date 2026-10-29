@@ -1,6 +1,5 @@
 ---
 source: crates/tui/tests/it/snap_workflows.rs
-assertion_line: 645
 expression: text
 ---
 ──────────────────────────────────────────────────────────────────────────
@@ -8,8 +7,8 @@ expression: text
  One small change, reviewed by another provider        0/2 agents · 1m30s
 
  ╭ Phases ──────────┬ Build · 2 agents ─────────────────────────────────╮
- │ ❯ 1 Build    0/2 │  ⏺ build:task-017-rewrit…  Qwen3 Coder 480… 1m01s │
- │                  │  ◌ reviewer · task-001     GPT 5.6                │
+ │ ❯ ⣾ Build    0/2 │  ⣾ build:task-017-rewrit…  ●  Qwen3 Coder…  1m01s │
+ │                  │  ◌ reviewer · task-001     ●  GPT 5.6             │
  │                  │                                                   │
  │                  │                                                   │
  │                  │                                                   │

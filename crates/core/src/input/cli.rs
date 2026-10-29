@@ -1,6 +1,9 @@
 //! Parsing with the commands of the main agent's CLI added to Argonauts Code's own.
 
-use super::{InputError, ParsedInput, SlashCommand, parse_input, parse_slash, split_word};
+use super::scope_flag::scope_of_flag;
+use super::{
+    InputError, ParsedInput, SlashCommand, WorkflowVerb, bad, parse_input, parse_slash, split_word,
+};
 use crate::cli_commands::{CliCommandSet, CommandKind};
 
 /// [`parse_input`] with the main agent's commands added, Argonauts Code's own names first. A CLI's
@@ -51,12 +54,22 @@ pub fn parse_input_with(
             name: found.name.clone(),
             args: args.to_owned(),
         },
-        CommandKind::Workflow if args.trim().is_empty() => {
-            return Err(InputError::BadArguments {
-                command: typed.clone(),
-                problem: format!("needs a request: /{typed} <request>"),
-            });
-        }
+        // Bare, it switches to the workflow, as `/workflow <name>` does.
+        CommandKind::Workflow if args.trim().is_empty() => SlashCommand::Workflow {
+            name: Some(found.name.clone()),
+            action: WorkflowVerb::Use,
+        },
+        // A place flag alone switches to it there, as `/workflow <name> --session` does.
+        CommandKind::Workflow if only_a_flag(args) => match scope_of_flag(args.trim()) {
+            Some(scope) => SlashCommand::SavedIn {
+                scope,
+                change: Box::new(SlashCommand::Workflow {
+                    name: Some(found.name.clone()),
+                    action: WorkflowVerb::Use,
+                }),
+            },
+            None => return Err(not_a_request(&found.name, args)),
+        },
         CommandKind::Workflow => SlashCommand::WorkflowRequest {
             workflow: found.name.clone(),
             request: args.trim().to_owned(),
@@ -69,6 +82,24 @@ pub fn parse_input_with(
         }
     };
     Ok(ParsedInput::Slash { command })
+}
+
+/// Whether a workflow command's words are one flag, such as `--session`, and no request. A run
+/// with a flag for its request would spend every seat's turn on nothing.
+pub(super) fn only_a_flag(args: &str) -> bool {
+    let mut words = args.split_whitespace();
+    matches!((words.next(), words.next()), (Some(word), None) if word.starts_with("--"))
+}
+
+/// Why `/<workflow> <flag>` runs nothing.
+pub(super) fn not_a_request(workflow: &str, args: &str) -> InputError {
+    bad(
+        workflow,
+        format!(
+            "{} isn't a request; type one after /{workflow}, or /{workflow} alone to switch to it",
+            args.trim()
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -186,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn a_workflow_of_yours_is_a_command_that_runs_one_request_with_it() {
+    fn a_workflow_of_yours_is_a_command_that_switches_bare_and_runs_one_request_with_words() {
         let mut set = set();
         set.commands.insert(
             0,
@@ -211,10 +242,30 @@ mod tests {
         );
         assert_eq!(
             parse_input_with("/spec-first", Some(&set)),
-            Err(InputError::BadArguments {
-                command: "spec-first".into(),
-                problem: "needs a request: /spec-first <request>".into()
+            slash(SlashCommand::Workflow {
+                name: Some("spec-first".into()),
+                action: crate::input::WorkflowVerb::Use
             })
+        );
+        // A place flag alone switches to it there; any other flag alone is no request, so
+        // nothing runs on it.
+        assert_eq!(
+            parse_input_with("/spec-first --session", Some(&set)),
+            slash(SlashCommand::SavedIn {
+                scope: crate::settings::SettingScope::Session,
+                change: Box::new(SlashCommand::Workflow {
+                    name: Some("spec-first".into()),
+                    action: crate::input::WorkflowVerb::Use
+                }),
+            })
+        );
+        let Err(err) = parse_input_with("/spec-first --verbose", Some(&set)) else {
+            panic!("a flag ran as a request");
+        };
+        assert_eq!(
+            err.to_string(),
+            "/spec-first: --verbose isn't a request; type one after /spec-first, or /spec-first \
+             alone to switch to it"
         );
         // `/workflow` itself is Argonauts Code's own, whatever your workflows are called.
         assert_eq!(

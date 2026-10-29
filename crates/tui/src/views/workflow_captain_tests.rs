@@ -327,14 +327,8 @@ fn a_merged_captain_run_says_who_did_its_work() {
 /// round's finding with its answer, and the verdict with its note.
 #[test]
 fn a_handed_over_review_opens_as_its_picture() {
-    let mut picture = picture!("captain_review_agent");
     // A blank line between the view's sections, and no stop or restart once it's done.
-    let spaced = picture.space_sections(0, &["Prompt", "Earlier findings", "Activity", "Outcome"]);
-    picture.reword(
-        17 + spaced,
-        "m message · x stop · r restart · p pause",
-        "m message · p pause",
-    );
+    let picture = picture!("captain_review_agent");
     let mut view = WorkflowView::new(at_one_minute());
     press(&mut view, KeyCode::Enter);
     press(&mut view, KeyCode::Enter);
@@ -410,6 +404,5 @@ fn a_handed_over_review_opens_as_its_picture() {
     assert!(view.accept(&ViewData::Agent {
         view: Box::new(opened),
     }));
-    let rows = 18 + spaced;
-    picture.assert_drawn(0..rows, &drawn(&mut view, 23 + spaced as u16), 5);
+    picture.assert_drawn(0..22, &drawn(&mut view, 27), 5);
 }

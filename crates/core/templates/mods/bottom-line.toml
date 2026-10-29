@@ -4,10 +4,11 @@ left  = ["mode", "artifact"]    # "mode" always stays: it tells you whether Argo
 right = ["plan-usage"]          # more for either side: branch · spend · context · tokens · awake · stats · checks, or a mod of yours
 
 [plan-usage]                    # how that mod draws when it sits on this line
-show    = "all"                 # all: every CLI in the crew · main: only the one in use · near-limit
+show    = "main-and-most-used"  # the one in use and the most used · all: every CLI in the crew · main: only the one in use · near-limit
 windows = "both"                # both (for the one in use) · fullest · 5h · 7d
 as      = "used"                # used · left
 resets  = "near-limit"          # near-limit · always · never
+holding-up = true               # a CLI joins while a running task waits on it: out, down or 90% used
 
 [narrow]
 drop = ["spend", "branch"]      # what goes first; then bars step down to compact, then gauges

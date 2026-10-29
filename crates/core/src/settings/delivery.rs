@@ -96,8 +96,10 @@ pub enum UnbornLanding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct HistorySettings {
-    /// Whether a workflow in a folder without git may keep that history. Off leaves such a
-    /// folder to conversation and Captain, and a workflow there says git is needed.
+    /// Whether a folder without git may keep that history: from a workflow's first record, or
+    /// from Captain's first write, so `/rewind` works there. Off leaves such a folder to
+    /// conversation and Captain with nothing to rewind to, and a workflow there says git is
+    /// needed.
     pub enabled: bool,
     /// A new file bigger than this many megabytes stays out of the history, and is listed. 0
     /// turns the limit off.

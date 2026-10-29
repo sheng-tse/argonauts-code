@@ -312,8 +312,9 @@ mod tests {
     use super::*;
     use crate::workflow::builtin;
 
-    fn council() -> Workflow {
-        builtin::load("council").unwrap_or_else(|err| panic!("{err}"))
+    /// The crew's fixed phases, whose planning loop has drafts and critique to size.
+    fn base() -> Workflow {
+        builtin::load("base").unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn find<'a>(steps: &'a mut [Step], name: &str) -> Option<&'a mut Step> {
@@ -330,7 +331,7 @@ mod tests {
 
     #[test]
     fn sizing_leaves_steps_out_and_changes_counts() {
-        let workflow = council();
+        let workflow = base();
         assert_eq!(sized(&workflow, &workflow), Ok(Vec::new()));
 
         let mut smaller = workflow.clone();
@@ -344,7 +345,7 @@ mod tests {
             .steps
             .retain(|step| step.name.as_deref() != Some("critique"));
         planning.max = Some(1);
-        let changes = sized(&workflow, &smaller).expect("still council");
+        let changes = sized(&workflow, &smaller).expect("still the base phases");
         assert_eq!(
             changes,
             [
@@ -364,7 +365,7 @@ mod tests {
         let before = drafts.count.clone();
         drafts.count = Some(Count::Fixed(1));
         drafts.label = Some("plan:{provider}".to_owned());
-        let changes = sized(&workflow, &fewer).expect("still council");
+        let changes = sized(&workflow, &fewer).expect("still the base phases");
         let said = format!("1 agent at drafts instead of {}", count(before.as_ref()));
         assert_eq!(changes, [said]);
         assert_eq!(agents(None), "the workflow's number of agents");
@@ -373,7 +374,7 @@ mod tests {
 
     #[test]
     fn another_workflow_is_not_a_sizing() {
-        let workflow = council();
+        let workflow = base();
         let captain = builtin::load("maker-checker").unwrap_or_else(|err| panic!("{err}"));
         let refused = sized(&workflow, &captain).expect_err("another workflow");
         assert!(refused.starts_with("its phases are"), "{refused}");
@@ -404,7 +405,7 @@ mod tests {
     /// the main agent is told to, still keeps the workflow.
     #[test]
     fn understand_and_the_final_check_are_codes() {
-        let workflow = council();
+        let workflow = base();
         let mut written = workflow.clone();
         written
             .phases

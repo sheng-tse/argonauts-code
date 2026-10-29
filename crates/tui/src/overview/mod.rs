@@ -13,6 +13,8 @@ pub mod deep_lines;
 pub(crate) mod golden;
 mod health;
 mod home;
+#[cfg(test)]
+mod laws_tests;
 mod limits;
 pub mod periods;
 mod plan_windows;
@@ -28,12 +30,12 @@ mod usage;
 mod view;
 mod watch;
 
-pub use cards::{UsageCard, UsageCards, cli_role, period_words};
+pub use cards::{UsageCard, UsageCards, period_words};
 pub use context::{
     ContextPrinted, conversation as conversation_context, session_use as session_context,
 };
 pub use home::spoken as spoken_overview;
-pub use stats::behaviors::spoken as spoken_behaviors;
+pub use stats::behaviors::{places as world_places, spoken as spoken_behaviors};
 pub use status::{StatusCard, StatusCards};
 pub use view::{OverviewView, Tab};
 pub use watch::UsageWatch;

@@ -4,18 +4,18 @@
  › final: GPT 6 Luna on Codex approved Haiku 5.5's change, 1 note · Gemini 3.8 Flash on agy signs off
 
  ╭ Phases ──────────┬ Final · 2 agents ─────────────────────────────────────────────────────────────────────────────╮
- │   ✔ Build    1/1 │  ✔ review:final    GPT 6 Luna on Codex · 16.8k tok · approved · 1 note                     4s │
- │   ✔ Review   2/2 │  ⏺ sign-off:money  Gemini 3.8 Flash on agy · 9.1k tok                                      3s │
- │ ❯ 3 Final    1/2 │                                                                                               │
- │                  │   round 2 of the review: Codex sent the first change back in Review, and Haiku 5.5 fixed it   │
+ │   ✔ Build    1/1 │  ✔ review:final    ◧◨ 6 Luna on Codex                                       16.8k tok      4s │
+ │   ✔ Review   2/2 │  ⣾ sign-off:money  ◧◨ 3.8 Flash on agy                                       9.1k tok      3s │
+ │ ❯ ⣾ Final    1/2 │                                                                                               │
+ │                  │                                                                                               │
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
  ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save
 
   the same box after ↑, on Review
  ╭ Phases ──────────┬ Review · 2 agents ────────────────────────────────────────────────────────────────────────────╮
- │   ✔ Build    1/1 │  ✔ review:money         GPT 6 Luna on Codex · 51.8k tok · sent it back · 1 blocking        7s │
- │ ❯ ✔ Review   2/2 │  ✔ fix:review-findings  Haiku 5.5 · 15.4k tok · fixed the sign bug                        13s │
- │   3 Final    1/2 │                                                                                               │
+ │   ✔ Build    1/1 │  « review:money         ◧◨ 6 Luna on Codex                                  51.8k tok      7s │
+ │ ❯ ✔ Review   2/2 │  ✔ fix:review-findings  ◧◨ Haiku 5.5                                        15.4k tok     13s │
+ │   ⣾ Final    1/2 │                                                                                               │
  │                  │                                                                                               │
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
 

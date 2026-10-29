@@ -65,22 +65,23 @@ fn a_run_keeps_a_hidden_history_and_writes_its_work_back() -> anyhow::Result<()>
     scenario.shot(&pty, "policy_runs_in_a_folder_without_git")?;
 
     // The conversation says where the work went and what it changed, and the run that ended
-    // keeps its row under the input for a while, its name in words, saying the same of where.
+    // keeps its row under the input for a while, its name in words and its mark done.
     pty.wait_for(
         r"Written into your folder · 1 file \+1 \u{2212}0 · history kept by Argonauts",
         WAIT,
     )?;
     pty.wait_for(
-        r"\u{2714} \S+(?: \S+)* +\u{25b0}+  2/2 · \S+ · \u{2193}  \S+ tokens · written into your folder",
+        r"\u{2714}  \S+(?: \S+)* +\u{25b0}+  (\d+)/(\d+) · \S+ · \u{2193}  \S+ tokens",
         WAIT,
     )?;
     Ok(())
 }
 
 /// Captain is the CLI itself in your folder, and needs no git: the turn edits your files as it
-/// would anywhere, nothing warns about commits, and no history is kept that nobody asked for.
+/// would anywhere, and nothing warns about commits. Its first write keeps a hidden history
+/// under Argonauts Code's home, so /rewind can put it back, and your folder gets no .git.
 #[test]
-fn captain_works_in_the_folder_directly_and_keeps_no_history() -> anyhow::Result<()> {
+fn captain_works_in_the_folder_directly_and_keeps_a_hidden_history() -> anyhow::Result<()> {
     const TASK: &str = "In notes.txt, change draft to final, then run echo hi > shell.txt";
     let scenario = Scenario::new("ui/direct_captain.toml")?;
     std::fs::create_dir_all(scenario.repo.home())?;
@@ -106,9 +107,10 @@ fn captain_works_in_the_folder_directly_and_keeps_no_history() -> anyhow::Result
     for trouble in ["not a git repository", "without a commit", "can't put back"] {
         assert!(!done.contains(trouble), "{trouble}:\n{done}");
     }
+    assert!(done.contains("Captain keeps its history"), "{done}");
     assert!(!root.join(".git").exists(), "the folder got a .git");
     let histories = walk_for(scenario.repo.home(), "history.git");
-    assert!(histories.is_empty(), "a history was kept: {histories:?}");
+    assert_eq!(histories.len(), 1, "one history: {histories:?}");
     scenario.shot(&pty, "captain_in_a_folder_without_git")
 }
 

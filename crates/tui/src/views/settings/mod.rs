@@ -1,5 +1,5 @@
 //! Settings screens: the pickers under the input for `/model`, `/effort`, `/workflow`, and the
-//! other settings commands, the scope question, `/config`, and `/approvals`.
+//! other settings commands, `/config`, and `/approvals`.
 //!
 //! Keys reach a picker through the runtime: while `bottom.picker` is open it gets every key
 //! first, and each [`PickerEvent`] but `Unhandled` comes back here through [`on_picker`].
@@ -15,7 +15,7 @@ pub mod permissions;
 mod table;
 pub mod words;
 
-pub(crate) use panel::{draw_editor, edit_key};
+pub(crate) use panel::draw_editor;
 
 #[cfg(test)]
 mod picker_pictures;
@@ -277,6 +277,8 @@ fn open_picker(mut picker: Picker, cx: &mut Cx<'_>) {
         .push(UserMessage::command(format!("/{}", picker.flow.command)));
     picker.flow.echoed_at = Some(cx.model.history.cells().len());
     picker.vim = cx.model.bottom.mode.vim.is_some();
+    picker.session_key = cx.model.bottom.save_for_session_key.clone();
+    flow::name_session_key(&mut picker);
     cx.model.bottom.picker = Some(picker);
 }
 

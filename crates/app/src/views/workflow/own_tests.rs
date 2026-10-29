@@ -403,7 +403,8 @@ fn the_header_the_phases_and_the_bottom_row_count_alike_through_a_recorded_run()
                 (done + count.done, total + count.total)
             });
         let header = (view.agents_done, view.agents_total);
-        let bottom = (row.agents_done, row.agents_total);
+        // A row with no agent yet has nothing to count.
+        let bottom = row.count.unwrap_or_default();
         compared += 1;
         if header != phases || header != bottom {
             unlike.push((events[at].seq, header, phases, bottom));

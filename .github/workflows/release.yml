@@ -229,6 +229,16 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      # The npm package gets its xz check (packaging/npm) before anything is uploaded, so the release's copy is the
+      # one npm publishes, and each checksum dist wrote for it reads the new file.
+      - name: Add the xz check to the npm package
+        shell: bash
+        run: |
+          set -eu
+          for pkg in target/distrib/*-npm-package.tar.gz; do
+            python3 packaging/npm/add_xz_check.py "$pkg" --checksums \
+              target/distrib/*.sha256 target/distrib/*.sum target/distrib/*.json dist-manifest.json
+          done
       - id: cargo-cyclonedx
         shell: bash
         run: |

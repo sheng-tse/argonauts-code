@@ -73,7 +73,7 @@ fn the_arrows_set_the_highlighted_models_effort_and_enter_saves_both() {
     let lines: Vec<&str> = text.lines().collect();
     let at = lines.iter().position(|line| line.contains("◉")).unwrap();
     assert!(
-        lines[at - 2].contains("Other model…") && lines[at + 2].contains("Enter to choose"),
+        lines[at - 2].contains("Other model…") && lines[at + 2].contains("Enter to save"),
         "the line sits between the list and the hints\n{text}"
     );
 
@@ -281,14 +281,18 @@ fn left_goes_back_a_level_and_right_opens_one() {
         "the first level stays"
     );
 
-    // From the scope question, ← goes back to the values.
+    // A value picked saves at once and closes the picker.
     screen.press(KeyCode::Enter);
-    screen.press(KeyCode::Enter);
-    assert_eq!(screen.title(), "Where to save it");
-    screen.press(KeyCode::Left);
-    assert_eq!(screen.labels(), values);
-    screen.press(KeyCode::Left);
-    assert_eq!(screen.labels(), keys);
+    let out = screen.press(KeyCode::Enter);
+    assert!(
+        matches!(
+            out.commands.as_slice(),
+            [UiCommand::SetSetting { scope: None, .. }]
+        ),
+        "{:?}",
+        out.commands
+    );
+    assert!(screen.model.bottom.picker.is_none());
 }
 
 #[test]

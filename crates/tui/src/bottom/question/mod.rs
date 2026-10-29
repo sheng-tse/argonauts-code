@@ -1,8 +1,9 @@
 //! A question or an approval takes the keys the moment it shows, from wherever they were, and
 //! stands in for the input until it's answered. One you set off yourself, such as
-//! a confirm or the save-scope question, closes on Esc as Claude Code's do. On one work waits
-//! on, Esc means "carry on without me": it leaves the screen, and whoever asked decides and
-//! goes on. Letters do nothing, a digit picks, and Enter confirms. Keys typed in a burst as it
+//! a confirm, closes on Esc as Claude Code's do. On a run's question, Esc goes back to the list
+//! unanswered: the question waits, and "Carry on without me", its last numbered option, is how
+//! whoever asked decides and goes on. Letters do nothing, a digit picks, and Enter confirms.
+//! Keys typed in a burst as it
 //! shows are dropped, as Claude Code's dialogs drop them, so a sentence meant for the input
 //! can't answer it, and nothing on screen says so.
 
@@ -13,6 +14,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::bottom::composer::{Composer, ComposerEvent};
+use crate::council::edits::SheetKey;
 use crate::text::sanitize_line;
 use crate::theme::AgentColor;
 use crate::views::list;
@@ -21,8 +23,15 @@ pub use render::QuestionView;
 
 pub const NOTE_PLACEHOLDER: &str = "and add a note";
 
-/// Esc on what work waits on: nothing is picked, and the one who asked decides.
+/// Esc on an app's question that work waits on: nothing is picked, and the one who asked
+/// decides.
 pub const ESC_HINT: &str = "Esc to carry on without me";
+
+/// Esc on a run's question: it leaves the screen unanswered and waits for you.
+pub const BACK_HINT: &str = "Esc back to the list";
+
+/// A run's question's last option: whoever asked decides in your place and goes on.
+pub const CARRY_ON: &str = "Carry on without me";
 
 /// What a free-text question's open answer field shows until you type.
 pub const ANSWER_PLACEHOLDER: &str = "Type your answer";
@@ -72,8 +81,8 @@ pub struct QuestionPrompt {
     pub guard_until: Option<Instant>,
     /// It has shown, so the guard it starts with is spent.
     pub shown: bool,
-    /// Esc took it off the screen. It comes back only when you open it again, from the list
-    /// of what needs you.
+    /// Esc took it off the screen unanswered. It comes back only when you open it again, from
+    /// the list of what needs you or its run's row.
     pub dismissed: bool,
     pub allow_note: bool,
     /// A note on an option after Tab, or the answer typed into a free-text option.
@@ -109,6 +118,9 @@ pub struct QuestionPrompt {
     /// What Enter does where "choose" isn't the word, such as `Enter to confirm` on a trust
     /// question.
     pub enter_hint: Option<String>,
+    /// A sheet one option opens in the question's own place, such as Approve with edits on a
+    /// council's plan. It takes the keys until it answers or goes back.
+    pub sheet: Option<Box<crate::council::edits::InQuestion>>,
 }
 
 /// One question's chip on a question that asks several.
@@ -198,6 +210,9 @@ pub struct QuestionOption {
     /// Its answer carries your words, such as the changes to make. On a question that takes notes,
     /// picking it opens the note line first, and a checklist opens it after the ticks.
     pub asks_note: bool,
+    /// The council's seats that back it, as a side of a point left open: drawn after its label,
+    /// in one column for every option that has some.
+    pub seats: Vec<crate::council::Face>,
 }
 
 /// A model an option names, drawn in its CLI's color.
@@ -273,6 +288,7 @@ impl QuestionOption {
             items: Vec::new(),
             on: false,
             asks_note: false,
+            seats: Vec::new(),
         }
     }
 
@@ -390,6 +406,7 @@ impl QuestionPrompt {
             framed: false,
             warns: false,
             enter_hint: None,
+            sheet: None,
         };
         question.open_field();
         question
@@ -529,6 +546,16 @@ impl QuestionPrompt {
             };
         }
         self.selected = self.selected.min(self.options.len() - 1);
+        if let Some(sheet) = self.sheet.as_mut().filter(|sheet| sheet.open) {
+            return match sheet.key(key) {
+                SheetKey::Moved => QuestionEvent::Moved,
+                SheetKey::Answer(note) => QuestionEvent::Answered {
+                    index: sheet.option,
+                    note,
+                    checked: Vec::new(),
+                },
+            };
+        }
         if let Some(event) = self.checklist_key(key) {
             return event;
         }
@@ -828,6 +855,12 @@ impl QuestionPrompt {
     /// A view leaves the question as it was, pointer and note included, so coming back finds it
     /// ready.
     fn pick(&mut self, index: usize, confirmed: bool) -> QuestionEvent {
+        if let Some(sheet) = self.sheet.as_mut().filter(|sheet| sheet.option == index) {
+            sheet.open = true;
+            self.move_to(index);
+            self.note = None;
+            return QuestionEvent::Moved;
+        }
         let kind = self.options[index].kind;
         match kind {
             OptionKind::View => return QuestionEvent::OpenView { index },

@@ -1,0 +1,58 @@
+# The main agent answers one question, then answers every get_context_usage with the count
+# context/claude-code draws: Opus 5.5's 1M window, 32.3k in it, 237 MCP tools that load on
+# demand, one memory file and 33 skills, as claude-code-count.jsonl holds it. These rules
+# come before the default fake agents'.
+
+[[rule]]
+argv0 = "claude"
+prompt_contains = 'What does this repo hold'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-context-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-opus-5-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-context-claude","message":{"id":"msg-context","content":[{"type":"text","text":"It holds a README and a CLAUDE.md."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-context-claude","result":"It holds a README and a CLAUDE.md.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"answer","answer_markdown":"It holds a README and a CLAUDE.md.","estimate":null}}'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+hang = true
+
+# Claude Code still loading: the session starts and says nothing, as context/claude-code-loading
+# draws it.
+[[rule]]
+argv0 = "claude"
+prompt_contains = 'Look at the README'
+stdin_prompt = "line"
+[[rule.step]]
+hang = true

@@ -9,11 +9,14 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 
 use super::by_model::{PART_BAR, a_piece};
-use super::cli::{OUTCOME_LABEL, Stats, cost_each, count, model_style, outcome_row, took};
+use super::cli::{
+    Stats, cost_each, count, model_fill, model_style, outcome_label, outcome_row, took,
+};
 use super::data::{Cli, DayPart, Model, most};
-use super::draw::{self, Entry, Fared};
+use super::draw::{self, Fared, Fill, Legend};
 use super::grid::{self, Body, Layout};
-use super::together::Part;
+use super::table::{Counted, Table};
+use super::together::{Part, Together};
 use crate::format;
 use crate::kit::bars::fit_keeping_bars;
 use crate::kit::{Drawn, Frame, Header, Kit, fit, spread};
@@ -55,24 +58,52 @@ impl Stats<'_> {
         }
     }
 
-    /// Every role together: the period's chart stacked by role, beside what each used.
-    pub fn all_roles(&self, kit: &Kit<'_>, frame: Frame) -> Drawn {
-        let parts: Vec<Part<'_>> = self
-            .crew
-            .filled()
-            .into_iter()
+    /// Every role as the table reads it, in the order By role lists them.
+    pub(super) fn role_counted(&self) -> Vec<Counted> {
+        (self.crew.filled().into_iter())
             .map(|role| {
                 let all = self.in_role(role);
-                Part {
+                Counted {
                     name: role.plural().to_owned(),
-                    style: draw::role_style(kit, role),
+                    search: role.plural().to_owned(),
                     spent: all.spent,
                     took_secs: all.took_secs,
+                }
+            })
+            .collect()
+    }
+
+    /// Every role together: three bars of what each used over a table of them, beside the
+    /// period's chart stacked by role.
+    pub fn all_roles(&self, kit: &Kit<'_>, frame: Frame, table: &Table, in_table: bool) -> Drawn {
+        let roles = self.crew.filled();
+        let counted = self.role_counted();
+        let parts: Vec<Part<'_>> = (roles.iter().zip(counted))
+            .enumerate()
+            .map(|(at, (role, counted))| {
+                let role = *role;
+                Part {
+                    counted,
+                    fill: draw::role_style(kit, role).into(),
+                    logo: None,
+                    group: 0,
+                    folds: false,
+                    rank: at,
+                    stack: at,
                     holds: Box::new(move |part: &DayPart| part.role == Some(role)),
                 }
             })
             .collect();
-        self.together(kit, frame, "all roles", "role", &parts)
+        let stacks: Vec<Fill> = parts.iter().map(|part| part.fill).collect();
+        let look = Together {
+            title: "all roles",
+            by: "role",
+            parts: &parts,
+            stacks: &stacks,
+            table,
+            in_table,
+        };
+        self.together(kit, frame, look)
     }
 
     /// A card for each role, `picked` the one the keys are on, and how they're laid out.
@@ -94,7 +125,10 @@ impl Stats<'_> {
         let bodies = roles
             .into_iter()
             .enumerate()
-            .map(|(at, role)| self.role_body(kit, &self.in_role(role), names, layout.inner(at)))
+            .map(|(at, role)| {
+                let columns = (names, outcome_label(layout.least_inner()));
+                self.role_body(kit, &self.in_role(role), columns, layout.inner(at))
+            })
             .collect();
         (grid::draw(kit, layout, bodies, picked), layout)
     }
@@ -102,7 +136,13 @@ impl Stats<'_> {
     /// One role: its tokens, what it did and its spend, a bar for each model that filled it,
     /// how its work fared and what it caught, its pace over the period, and who was best at
     /// it or what a piece of it cost.
-    fn role_body(&self, kit: &Kit<'_>, all: &InRole<'_>, names: usize, inner: usize) -> Body {
+    fn role_body(
+        &self,
+        kit: &Kit<'_>,
+        all: &InRole<'_>,
+        (names, labels): (usize, usize),
+        inner: usize,
+    ) -> Body {
         let role = all.role;
         let color = draw::role_style(kit, role);
         let used = all.spent.total_tokens();
@@ -128,7 +168,7 @@ impl Stats<'_> {
             .map(|(cli, model)| {
                 let style = model_style(kit, cli, model);
                 let tokens = model.spent_in(role).total_tokens();
-                let mut row = draw::swatch(kit, style);
+                let mut row = draw::swatch(kit, model_fill(kit, cli, model));
                 row.push(Span::raw(model.name.clone()));
                 // A name cut to its column keeps a blank before the bar.
                 let mut row = fit(truncate_spans(&row, names - 1), names);
@@ -148,7 +188,7 @@ impl Stats<'_> {
         }
         pace.push(kit.dim(words));
 
-        let [fared, caught] = self.role_facts(kit, all, inner);
+        let [fared, caught] = self.role_facts(kit, all, (labels, inner));
         let rest = vec![
             Vec::new(),
             fared,
@@ -161,7 +201,12 @@ impl Stats<'_> {
 
     /// The two rows under a role's bars, on a card `inner` cells across: how its work fared,
     /// and what it caught or passed on.
-    fn role_facts(&self, kit: &Kit<'_>, all: &InRole<'_>, inner: usize) -> [Vec<Span<'static>>; 2] {
+    fn role_facts(
+        &self,
+        kit: &Kit<'_>,
+        all: &InRole<'_>,
+        (labels, inner): (usize, usize),
+    ) -> [Vec<Span<'static>>; 2] {
         let crew = self.crew;
         let outcomes = &crew.outcomes;
         let back: u32 = all
@@ -186,18 +231,23 @@ impl Stats<'_> {
                         f64::from(turns) / f64::from(done)
                     ),
                 };
-                let in_full = fact(kit, "turns", turns, &in_conversations("a conversation"));
+                let in_full = fact(
+                    kit,
+                    ("turns", labels),
+                    turns,
+                    &in_conversations("a conversation"),
+                );
                 let turns = if spans_width(&in_full) <= inner {
                     in_full
                 } else {
-                    fact(kit, "turns", turns, &in_conversations("each"))
+                    fact(kit, ("turns", labels), turns, &in_conversations("each"))
                 };
                 let runs = if crew.workflows == 1 { "run" } else { "runs" };
                 [
                     turns,
                     fact(
                         kit,
-                        "handed",
+                        ("handed", labels),
                         crew.workflows,
                         &format!(" {runs} to the crew"),
                     ),
@@ -219,8 +269,8 @@ impl Stats<'_> {
                     ),
                 };
                 [
-                    outcome_row(kit, "runs", runs, "merged"),
-                    fact(kit, "plans", all.done, &tasks),
+                    outcome_row(kit, ("runs", labels), runs, "merged"),
+                    fact(kit, ("plans", labels), all.done, &tasks),
                 ]
             }
             StatsRole::Worker => {
@@ -229,15 +279,20 @@ impl Stats<'_> {
                     .map(|why| format!(" · most: {why}"))
                     .unwrap_or_default();
                 [
-                    outcome_row(kit, "tasks", crew.fared, "first pass"),
-                    fact(kit, "returns", returns, &why),
+                    outcome_row(kit, ("tasks", labels), crew.fared, "first pass"),
+                    fact(kit, ("returns", labels), returns, &why),
                 ]
             }
             StatsRole::Reviewer => {
                 let tasks = if back == 1 { "task" } else { "tasks" };
                 [
-                    outcome_row(kit, "reviews", accepted, "accepted"),
-                    fact(kit, "caught", back, &format!(" {tasks} to send back")),
+                    outcome_row(kit, ("reviews", labels), accepted, "accepted"),
+                    fact(
+                        kit,
+                        ("caught", labels),
+                        back,
+                        &format!(" {tasks} to send back"),
+                    ),
                 ]
             }
             StatsRole::Judge => {
@@ -248,8 +303,8 @@ impl Stats<'_> {
                     (worker, _) => format!(" · {worker} for the worker"),
                 };
                 [
-                    outcome_row(kit, "signed", accepted, "passed"),
-                    fact(kit, "rulings", outcomes.rulings(), &sided),
+                    outcome_row(kit, ("signed", labels), accepted, "passed"),
+                    fact(kit, ("rulings", labels), outcomes.rulings(), &sided),
                 ]
             }
             StatsRole::Merger => {
@@ -265,8 +320,8 @@ impl Stats<'_> {
                 };
                 let words = format!(" {conflicts} · {} failed", outcomes.merges_failed);
                 [
-                    outcome_row(kit, "merges", merges, "clean"),
-                    fact(kit, "settled", outcomes.merges_settled, &words),
+                    outcome_row(kit, ("merges", labels), merges, "clean"),
+                    fact(kit, ("settled", labels), outcomes.merges_settled, &words),
                 ]
             }
         }
@@ -312,7 +367,8 @@ impl Stats<'_> {
         }
     }
 
-    /// What each role caught or changed, a bar and its legend each: the runs the orchestrator
+    /// What each role caught or changed, a bar each and a table of its parts under it, every
+    /// role's in the same columns, then what they are parts of: the runs the orchestrator
     /// planned again, why the reviewers sent work back, whom the judge sided with, and the
     /// conflicts the merger settled. Nothing when no role has any of it.
     pub fn caught_or_changed(&self, kit: &Kit<'_>, frame: Frame) -> Option<Drawn> {
@@ -332,32 +388,34 @@ impl Stats<'_> {
         let room = inner.saturating_sub(spans_width(&left) + 2);
         drawn.push(spread(left, truncate_spans(&note, room), inner));
         let bar = inner.saturating_sub(ROLE_COLUMN);
-        for group in groups {
+        let tables: Vec<Vec<Legend>> = (groups.iter())
+            .map(|group| {
+                let whole: u32 = group.parts.iter().map(|(n, _, _)| n).sum();
+                let row = |(n, style, name): &(u32, Style, String)| {
+                    let n = u64::from(*n);
+                    Legend::of(*style, name, (n, n, u64::from(whole)), n.to_string())
+                };
+                group.parts.iter().map(row).collect()
+            })
+            .collect();
+        let columns = draw::table_columns(tables.iter().flatten(), bar, false);
+        let indent = || Span::raw(" ".repeat(ROLE_COLUMN));
+        for (group, table) in groups.iter().zip(&tables) {
             drawn.push(Vec::new());
-            let parts: Vec<(u64, Style)> = group
-                .parts
-                .iter()
-                .map(|(n, style, _)| (u64::from(*n), *style))
+            let parts: Vec<(u64, Fill)> = (table.iter())
+                .map(|row| (row.part.value, row.part.fill))
                 .collect();
             let mut row = fit(vec![Span::raw(group.role.plural())], ROLE_COLUMN);
             row.extend(draw::stacked(kit, &parts, bar));
             drawn.push(row);
-            let entries: Vec<Entry> = group
-                .parts
-                .into_iter()
-                .filter(|(n, _, _)| *n > 0)
-                .map(|(n, style, name)| Entry {
-                    style,
-                    name,
-                    amount: n.to_string(),
-                    note: String::new(),
-                })
-                .collect();
-            for line in draw::legend(kit, &entries, Some(group.of), bar) {
-                let mut row = vec![Span::raw(" ".repeat(ROLE_COLUMN))];
+            for line in draw::table(kit, table, columns, false) {
+                let mut row = vec![indent()];
                 row.extend(line);
                 drawn.push(row);
             }
+            let mut row = vec![indent()];
+            row.extend(draw::table_note(kit, columns, group.of.clone(), bar));
+            drawn.push(row);
         }
         Some(frame.draw(kit, drawn))
     }
@@ -472,8 +530,8 @@ struct Caught {
 
 /// `returns  6 · most: a test missing`: a label, a count, and what the count is of. A count
 /// of nothing says `none`.
-fn fact(kit: &Kit<'_>, label: &str, n: u32, words: &str) -> Vec<Span<'static>> {
-    let mut row = vec![kit.dim(format!("{label:<OUTCOME_LABEL$}"))];
+fn fact(kit: &Kit<'_>, (label, width): (&str, usize), n: u32, words: &str) -> Vec<Span<'static>> {
+    let mut row = vec![kit.dim(format!("{label:<width$}"))];
     if n == 0 {
         row.push(kit.dim("none"));
         return row;

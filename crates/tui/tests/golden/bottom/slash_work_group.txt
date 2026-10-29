@@ -1,0 +1,16 @@
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Work
+  /ask                          Answer only, never a run
+  /captain                      The CLI you talk to does the work itself                                        in use
+  /orchestrator                 The orchestrator plans and delegates; workers build, reviewers check      set up first
+  /council                      Each seat answers alone, then they talk until every seat agrees and split the w… ready
+  /crew                         The crew does it
+  /follow-up                    Follow up on a finished run
+  /issue                        Work on a GitHub issue: pick one of the open ones, or name it
+Runs
+  /status                       Where each run stands: goal, plan, tasks, limit, plan usage. Costs nothing. s in it a…
+  /workflows                    The workflow view (Ctrl+T). Its Library tab shows, copies, and diffs workflow files
+  /context                      What fills the main session's context, and the crew's (all expands every list)
+  /rewind                       Go back to a checkpoint

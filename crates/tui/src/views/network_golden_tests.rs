@@ -208,13 +208,7 @@ fn drawn(data: WorkflowData) -> Buffer {
 }
 
 fn the_picture() -> Picture {
-    let mut picture = picture!("network_after");
-    picture.bright_frames();
-    // The frame while the network is down starts at row 2, and the one once it's back at 19.
-    for top in [2, 19] {
-        picture.reword(top + 9, "Gemma4 E2b", "Gemma4 E2B");
-    }
-    picture
+    picture!("network_after")
 }
 
 #[test]

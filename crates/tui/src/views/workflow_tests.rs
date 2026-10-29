@@ -159,7 +159,7 @@ fn a_workflow_of_one_phase_shows_that_phase_by_its_own_name() {
         1,
         "{text}"
     );
-    assert!(text.contains("❯ 1 Translate the changelog 0/1"), "{text}");
+    assert!(text.contains("❯ ⣾ Translate the changelog 0/1"), "{text}");
     assert!(
         text.contains("┬ Translate the changelog · 1 agent ─"),
         "{text}"
@@ -195,7 +195,7 @@ fn twelve_phases_are_numbered_in_their_own_order_and_scroll() {
     let text = draw(&mut view, 100, 24);
     let shown = left_pane(&text);
     assert!(shown[0].ends_with("✔  Survey   1/1"), "{text}");
-    assert!(shown[3].starts_with(" ❯ 4  Numbers  0/1"), "{text}");
+    assert!(shown[3].starts_with(" ❯ ⣾  Numbers  0/1"), "{text}");
     assert!(shown[9].contains("10 Index"), "{text}");
     assert!(shown[11].contains("12 Announce"), "{text}");
     assert!(text.contains("┬ Numbers · 1 agent ─"), "{text}");
@@ -239,7 +239,7 @@ fn phases_that_repeat_stay_apart_and_keep_their_own_agents() {
     let shown = left_pane(&text);
     assert!(shown[0].contains("✔ Fix"), "{text}");
     assert!(shown[1].contains("✔ Review"), "{text}");
-    assert!(shown[2].contains("❯ 3 Fix"), "{text}");
+    assert!(shown[2].contains("❯ ⣾ Fix"), "{text}");
     assert!(shown[3].contains("4 Review"), "{text}");
     assert!(text.contains("fix:second-pass"), "{text}");
     assert!(!text.contains("fix:first-pass"), "{text}");
@@ -340,7 +340,7 @@ fn a_reported_workflow_is_drawn_with_its_own_words() {
     assert!(text.contains("réécrire-les-docs"), "{text}");
     let shown = left_pane(&text);
     assert!(shown[0].contains("✔ Lire     1/1"), "{text}");
-    assert!(shown[1].contains("❯ 2 Réécrire 0/2"), "{text}");
+    assert!(shown[1].contains("❯ ⣾ Réécrire 0/2"), "{text}");
     assert!(shown[2].contains("3 Relire"), "{text}");
     assert!(text.contains("┬ Réécrire · 2 agents ─"), "{text}");
     assert!(text.contains("1/3 agents"), "{text}");
@@ -382,6 +382,49 @@ fn the_kind_of_workflow_opens_its_description_and_tokens_stay_off_the_header() {
     assert!(!text.contains("tokens"), "{text}");
 }
 
+/// Opened from a council's task, the view's head names the way, the task, its seat and the
+/// council, the way's line under it with the counts at the right, and Esc goes back to the
+/// council.
+#[test]
+fn a_council_tasks_view_names_whose_task_it_is_and_goes_back_to_the_council() {
+    let data = workflow(
+        "maker-checker",
+        vec![phase(
+            "Build",
+            RowStatus::Running,
+            vec![agent("s-001", "build:store", RowStatus::Running)],
+        )],
+    );
+    let task = crate::council::story::task_header();
+    let data = WorkflowData {
+        id: task.workflow.clone(),
+        ..data
+    };
+    let mut view = WorkflowView::new(data).for_council_task(task, crate::council::story::faces());
+    let text = draw(&mut view, 120, 14);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[1].trim_end(),
+        // The seat's logo, where no picture draws it, is its CLI's dot.
+        " Maker-checker  Redis bucket · ●  Opus 5.5's task in the council Rate limit the API",
+        "{text}"
+    );
+    assert!(
+        lines[2].starts_with(" A worker builds, a reviewer sends it back until it holds"),
+        "{text}"
+    );
+    assert!(
+        lines[2].trim_end().ends_with("0/1 agents · 14m00s"),
+        "{text}"
+    );
+    assert!(
+        lines
+            .last()
+            .is_some_and(|row| row.contains("esc back to the council")),
+        "{text}"
+    );
+}
+
 #[test]
 fn a_step_you_require_carries_a_mark_and_the_others_keep_their_column() {
     let mut data = workflow(
@@ -408,7 +451,7 @@ fn a_step_you_require_carries_a_mark_and_the_others_keep_their_column() {
     let text = draw(&mut view, 100, 14);
     let shown = left_pane(&text);
     assert!(shown[0].contains("✔   Plan"), "{text}");
-    assert!(shown[1].contains("❯ 2   Review"), "{text}");
+    assert!(shown[1].contains("❯ ⣾   Review"), "{text}");
     assert!(shown[2].contains("3 ★ Secrets scan"), "{text}");
     assert!(shown[3].contains("4 ★ Benchmark"), "{text}");
     assert!(shown[4].contains("5   Sign off"), "{text}");
@@ -434,7 +477,7 @@ fn a_workflow_with_no_required_step_has_no_column_for_the_mark() {
     ));
     let text = draw(&mut view, 100, 14);
     // The pane is never under sixteen cells, and the count ends at its edge.
-    assert!(text.contains("│ ❯ 1 Build    0/1 │"), "{text}");
+    assert!(text.contains("│ ❯ ⣾ Build    0/1 │"), "{text}");
     assert!(!text.contains('★'), "{text}");
 }
 
@@ -521,13 +564,13 @@ fn an_agent_on_a_goal_carries_its_squares_its_try_and_the_lines_met() {
     let text = draw(&mut view, 120, 30);
     let store = row_of(&text, "build:store");
     assert!(
-        store.contains("✔ build:store  GPT 5.6 · ▪▪ goal met in 2 tries"),
+        store.contains("✔ build:store  ●  GPT 5.6 · ▪▪ goal met in 2 tries"),
         "{text}"
     );
     assert!(store.trim_end().ends_with("4m10s │"), "{text}");
     let cli = row_of(&text, "build:cli");
     assert!(
-        cli.contains("❯⏺ build:cli    GPT 5.6 · ▪▪▪ try 3 · 2 of 3 lines met"),
+        cli.contains("❯⣾ build:cli    ●  GPT 5.6 · ▪▪▪ try 3 · 2 of 3 lines met"),
         "{text}"
     );
     assert!(cli.trim_end().ends_with("6m02s │"), "{text}");
@@ -547,9 +590,9 @@ fn a_narrow_pane_keeps_the_squares_and_cuts_the_goals_words() {
     press(&mut view, KeyCode::Right);
     let text = draw(&mut view, 80, 30);
     for (label, squares, time) in [
-        ("build:store", "GPT 5.6 · ▪▪ ", "4m10s │"),
-        ("build:cli", "GPT 5.6 · ▪▪▪ ", "6m02s │"),
-        ("build:docs", "GPT 5.6 · ▪▪ ", "1m30s │"),
+        ("build:store", "●  GPT 5.6 · ▪▪ ", "4m10s │"),
+        ("build:cli", "●  GPT 5.6 · ▪▪▪ ", "6m02s │"),
+        ("build:docs", "●  GPT 5.6 · ▪▪ ", "1m30s │"),
     ] {
         let row = row_of(&text, label);
         assert!(row.contains(squares), "{text}");
@@ -609,7 +652,7 @@ fn the_goal_panel_under_the_agents_shows_the_selected_agents_goal() {
     assert!(text.contains("Codex says"), "{text}");
     let footer = lines.last().unwrap().trim_end();
     assert!(
-        footer.starts_with(" ↑↓  select · ⏎ open · g its goal · "),
+        footer.starts_with(" ↑↓  select · space peek · enter open · g its goal · "),
         "{footer}"
     );
 
@@ -747,8 +790,8 @@ fn p_holds_the_selected_agents_goal_and_e_opens_its_lines() {
     let hints = footer(&mut view);
     assert!(
         hints.starts_with(
-            "↑↓  select · ⏎ open · g its goal · p pause the goal · e edit its lines · \
-             m message · x stop"
+            "↑↓  select · space peek · enter open · g its goal · p pause the goal · \
+             e edit its lines · m message · x stop"
         ),
         "{hints}"
     );
@@ -759,8 +802,8 @@ fn p_holds_the_selected_agents_goal_and_e_opens_its_lines() {
     let hints = buffer_text(&buf).lines().last().unwrap().trim().to_owned();
     assert_eq!(
         hints,
-        "↑↓  select · ⏎ open · g its goal · p pause the goal · e edit its lines · m message · \
-         x stop · esc back"
+        "↑↓  select · space peek · enter open · g its goal · p pause the goal · \
+         e edit its lines · x stop · esc back"
     );
     let held = view.handle_key(key(KeyCode::Char('p')), &ctx);
     assert!(
@@ -1017,7 +1060,7 @@ fn a_step_tried_again_is_one_row_that_says_so_and_unfolds_its_tries() {
     assert!(text.contains("┬ Work · 3 agents ─"), "{text}");
     // The step's own row says what came before, where Claude Code's rows have their state.
     assert!(
-        text.contains("12.0k tok · fallback after GPT 5.6 Luna failed twice"),
+        text.contains("· fallback after GPT 5.6 Luna failed twice") && text.contains("12.0k tok"),
         "{text}"
     );
     assert!(!text.contains('⎿'), "{text}");
@@ -1078,4 +1121,30 @@ fn a_run_that_stopped_fully_says_so_in_its_header() {
     view.render(area, &mut buf, &ctx);
     let text = buffer_text(&buf);
     assert!(text.contains("· stopped"), "{text}");
+}
+
+/// A row not started yet and one started and waiting its turn for a slot are different in
+/// shape, in plain glyphs too.
+#[test]
+fn a_queued_row_and_one_not_started_have_marks_of_their_own() {
+    use argonauts_core::views::RowStatus;
+
+    for glyphs in [crate::theme::Glyphs::UNICODE, crate::theme::Glyphs::ASCII] {
+        let mut theme = crate::theme::Theme::dark();
+        theme.glyphs = glyphs;
+        let (waiting, _) = super::workflow_rows::glyph(RowStatus::Waiting, false, &theme);
+        let (queued, _) = super::workflow_rows::glyph(RowStatus::Queued, false, &theme);
+        assert_ne!(waiting, queued);
+    }
+}
+
+/// A row that never ran is marked in the dim text colour, which reads on the dark background,
+/// not the faint one kept for rules.
+#[test]
+fn a_row_that_never_ran_reads_in_the_dim_colour() {
+    use argonauts_core::views::RowStatus;
+
+    let theme = crate::theme::Theme::dark();
+    let (mark, role) = super::workflow_rows::glyph(RowStatus::Skipped, false, &theme);
+    assert_eq!((mark, role), ("–", crate::theme::Role::Dim));
 }

@@ -12,6 +12,7 @@ use crate::api::{
     ApprovalAnswer, DiffScope, DiffView, RawView, StatusSummary, SteerAck, TakeOverTicket,
 };
 use crate::clock::Clock;
+use crate::events::council::CouncilAction;
 use crate::events::goal::GoalAction;
 use crate::events::run::{RunOutcome, WaitReason};
 use crate::events::session::QueuedMessage;
@@ -202,6 +203,11 @@ pub enum EngineCommand {
     /// Clear the goal, turn the workflow into one, or change an assumption.
     Goal {
         action: GoalAction,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Write to the council that talks, to one of its seats alone, or have a seat sit out.
+    Council {
+        action: CouncilAction,
         reply: oneshot::Sender<Result<(), String>>,
     },
     /// A change to the running workflow from the next phase on. It goes through the

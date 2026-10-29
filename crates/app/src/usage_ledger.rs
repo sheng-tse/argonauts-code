@@ -12,6 +12,7 @@ use argonauts_core::api::{
     DaySpend, RunSummary, UsagePeriod, UsageShare, UsageSummary, day_format,
 };
 use argonauts_core::events::RunEvent;
+use argonauts_core::events::session::Billing;
 use argonauts_core::limits::PlanUsageReading;
 use argonauts_core::model_catalog::ModelCatalog;
 use argonauts_core::names::ModelRef;
@@ -29,9 +30,9 @@ mod rebuild;
 /// The history card's days.
 const HISTORY_DAYS: i64 = 14;
 
-/// What a share of the spend is summed by: the agent, its model and the agent's id, each as
-/// the ledger's line has it.
-type ShareKey = (String, Option<String>, String);
+/// What a share of the spend is summed by: the agent, its model, the agent's id and who paid,
+/// each as the ledger's line has it.
+type ShareKey = (String, Option<String>, String, Option<Billing>);
 
 /// One turn's or one run agent's spend.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,6 +68,10 @@ pub(crate) struct LedgerLine {
     pub conversation: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub took: u64,
+    /// Who paid for it, as its session said when it started: a plan, nobody, or a key of yours.
+    /// `None` on a line from before lines kept it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<Billing>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -81,10 +86,18 @@ pub(crate) struct TurnNote<'a> {
     pub conversation: Option<&'a str>,
     /// Seconds from the message to the end of its answer.
     pub took: u64,
+    /// Who paid for the turn's tokens when it ended.
+    pub billing: Option<Billing>,
 }
 
 impl LedgerLine {
-    fn new(day: Date, repo: &Path, run: Option<&RunId>, worker: &ModelRef, spent: &Spend) -> Self {
+    fn new(
+        day: Date,
+        repo: &Path,
+        run: Option<&RunId>,
+        (worker, billing): (&ModelRef, Option<Billing>),
+        spent: &Spend,
+    ) -> Self {
         Self {
             day,
             repo: repo.display().to_string(),
@@ -101,6 +114,7 @@ impl LedgerLine {
             hour: None,
             conversation: None,
             took: 0,
+            billing,
         }
     }
 
@@ -152,7 +166,8 @@ impl UsageLedger {
             return;
         }
         let worker = work_ledger::filed_as(self.catalog, worker);
-        let mut line = LedgerLine::new(local_day(at), repo, None, &worker, spent).at_hour(at);
+        let mut line =
+            LedgerLine::new(local_day(at), repo, None, (&worker, turn.billing), spent).at_hour(at);
         line.conversation = turn.conversation.map(str::to_owned);
         line.took = turn.took;
         if let Err(err) = self.append(&[line]) {
@@ -178,8 +193,8 @@ impl UsageLedger {
         WorkLedger::beside(&self.dir).run_ended(repo, run, events, at);
     }
 
-    /// A run's lines from its log, ended at `at`: one for each model it ran, filed under the
-    /// model as the work ledger files its sessions.
+    /// A run's lines from its log, ended at `at`: one for each model it ran and whoever paid for
+    /// it, filed under the model as the work ledger files its sessions.
     pub(crate) fn lines_of(
         &self,
         repo: &Path,
@@ -188,16 +203,22 @@ impl UsageLedger {
         at: OffsetDateTime,
     ) -> Vec<LedgerLine> {
         let reported = work_ledger::Reported::of(events);
-        let mut by_worker: BTreeMap<ModelRef, Spend> = BTreeMap::new();
+        let mut by_worker: BTreeMap<(ModelRef, Option<Billing>), Spend> = BTreeMap::new();
         for (started, session) in RunFacts::of(events).sessions.iter().enumerate() {
             let worker = work_ledger::filed_as(self.catalog, &reported.ran(started, session));
-            add_spend(by_worker.entry(worker).or_default(), &session.spent());
+            let paid = session.started.billing;
+            add_spend(
+                by_worker.entry((worker, paid)).or_default(),
+                &session.spent(),
+            );
         }
         let day = local_day(at);
         by_worker
             .iter()
             .filter(|(_, spent)| spent.total_tokens() > 0 || spent.cost_usd > 0.0)
-            .map(|(worker, spent)| LedgerLine::new(day, repo, Some(run), worker, spent).at_hour(at))
+            .map(|((worker, paid), spent)| {
+                LedgerLine::new(day, repo, Some(run), (worker, *paid), spent).at_hour(at)
+            })
             .collect()
     }
 
@@ -304,11 +325,13 @@ pub(crate) fn summary(
         .filter(|line| first.is_none_or(|first| line.day >= first))
         .collect();
 
+    // A model paid for two ways, as before and after you signed in, is two shares.
     let key = |line: &LedgerLine| {
         (
             line.agent.clone(),
             line.model.clone(),
             line.agent_id.clone(),
+            line.billing,
         )
     };
     let mut total = Spend::default();
@@ -331,7 +354,7 @@ pub(crate) fn summary(
         .into_iter()
         .map(|(key, spent)| {
             let days = week.remove(&key).unwrap_or_default().into_iter();
-            let (agent, model, agent_id) = key;
+            let (agent, model, agent_id, billing) = key;
             UsageShare {
                 agent,
                 model,
@@ -339,6 +362,7 @@ pub(crate) fn summary(
                 spent,
                 pays_per_token: false,
                 local: false,
+                billing,
                 this_week: days.map(|(day, spent)| DaySpend { day, spent }).collect(),
             }
         })
@@ -375,7 +399,12 @@ pub(crate) fn summary(
         plan_windows,
         stats: Some(stats),
         argonauts,
-        all_time_models: crate::overview::all_time_models(&ledger.dir, &lines),
+        all_time_models: crate::overview::all_time_models(
+            &ledger.dir,
+            &lines,
+            &WallClock::default(),
+            today,
+        ),
         ..UsageSummary::default()
     }
 }
@@ -416,7 +445,7 @@ mod tests {
             day,
             Path::new("/repo"),
             run.as_ref(),
-            &worker,
+            (&worker, None),
             &spend(cost, 1000, 600, 100),
         )
     }
@@ -451,6 +480,7 @@ mod tests {
         let turn = TurnNote {
             conversation: Some("conversation-007"),
             took: 42,
+            billing: Some(Billing::Plan),
         };
         ledger.turn_ended(
             Path::new("/repo"),
@@ -478,6 +508,7 @@ mod tests {
         assert_eq!(line["day"].as_str().unwrap().len(), "2026-10-04".len());
         assert_eq!(line["conversation"], "conversation-007");
         assert_eq!(line["took"], 42);
+        assert_eq!(line["billing"], "plan");
     }
 
     #[test]
@@ -508,6 +539,90 @@ mod tests {
             .collect();
         assert_eq!(costs, [("claude-code", 0.30), ("codex", 0.05)]);
         assert!(lines.iter().all(|line| line.run.as_ref() == Some(&run)));
+    }
+
+    /// A model paid for two ways is two shares on the Usage tab, each with who paid, and a line
+    /// from before sessions said who paid is a share of its own that says nothing.
+    #[test]
+    fn a_model_paid_for_two_ways_is_two_shares() {
+        let (_home, ledger) = ledger();
+        let today = date!(2026 - 10 - 04);
+        let paid = |billing| LedgerLine {
+            billing,
+            ..line(today, "codex", None, 0.25)
+        };
+        ledger
+            .append(&[
+                paid(Some(Billing::Plan)),
+                paid(Some(Billing::Paid)),
+                paid(Some(Billing::Paid)),
+                paid(None),
+            ])
+            .unwrap();
+        let summary = summary(
+            &ledger,
+            (UsagePeriod::Today, WeekStart::Monday),
+            today,
+            &[],
+            Vec::new(),
+        );
+        let mut shares: Vec<(Option<Billing>, f64)> = summary
+            .by_agent
+            .iter()
+            .map(|share| (share.billing, share.spent.cost_usd))
+            .collect();
+        shares.sort_by_key(|(billing, _)| *billing);
+        assert_eq!(
+            shares,
+            [
+                (None, 0.25),
+                (Some(Billing::Plan), 0.25),
+                (Some(Billing::Paid), 0.50)
+            ]
+        );
+    }
+
+    /// Each line keeps who paid for its sessions as they said when they started, so one model
+    /// run on a plan and on a key is two lines.
+    #[test]
+    fn a_runs_lines_keep_who_paid_for_their_sessions() {
+        use argonauts_core::events::{RunEventKind, SessionEvent};
+
+        let (_home, ledger) = ledger();
+        let task = argonauts_core::TaskId::new("task-001").unwrap();
+        let paid_by = |mut event: RunEvent, billing: Billing| {
+            if let RunEventKind::Session(SessionEvent::Started(started)) = &mut event.kind {
+                started.billing = Some(billing);
+            }
+            event
+        };
+        let (first, second) = (SessionKey::numbered(1), SessionKey::numbered(2));
+        let events = vec![
+            paid_by(
+                session_started(0, &first, Some(&task), RoleName::Worker, "claude-code"),
+                Billing::Plan,
+            ),
+            usage(1, &first, 1000, 100, 0.10),
+            paid_by(
+                session_started(2, &second, Some(&task), RoleName::Worker, "claude-code"),
+                Billing::Paid,
+            ),
+            usage(3, &second, 2000, 200, 0.20),
+        ];
+        let lines = ledger.lines_of(
+            Path::new("/repo"),
+            &run_id(),
+            &events,
+            datetime!(2026-10-04 12:00 UTC),
+        );
+        let paid: Vec<(Option<Billing>, u64)> = lines
+            .iter()
+            .map(|line| (line.billing, line.input))
+            .collect();
+        assert_eq!(
+            paid,
+            [(Some(Billing::Plan), 1000), (Some(Billing::Paid), 2000)]
+        );
     }
 
     #[test]
@@ -605,14 +720,15 @@ mod tests {
             .collect();
         assert_eq!(days, [(date!(2026 - 10 - 01), 2.00), (today, 0.50)]);
 
-        // A model's color goes by its tokens in all, so every period carries the same list.
+        // A model's color goes by what ran before the summary's today, so every period
+        // carries the same list, and a model first met today comes last with none.
         for summary in [&day, &week, &all] {
             let listed: Vec<(&str, u64)> = summary
                 .all_time_models
                 .iter()
                 .map(|model| (model.agent.as_str(), model.tokens))
                 .collect();
-            assert_eq!(listed, [("codex", 3300), ("claude-code", 1100)]);
+            assert_eq!(listed, [("codex", 2200), ("claude-code", 0)]);
         }
 
         // History is 14 days whatever the period, today last.

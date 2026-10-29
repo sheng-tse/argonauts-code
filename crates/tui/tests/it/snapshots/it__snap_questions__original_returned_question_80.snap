@@ -1,5 +1,5 @@
 ---
-source: crates/tui/tests/snap_questions.rs
+source: crates/tui/tests/it/snap_questions.rs
 expression: text(&lines)
 ---
 ────────────────────────────────────────────────────────────────────────────────
@@ -13,5 +13,7 @@ expression: text(&lines)
     4. Keep codex's work, and move on
     5. Take over myself
     6. Show the diff since fallback-1
+    7. Carry on without me
+       This part ends safely with its work kept, so nothing merges without you
 
-  Enter to choose · Tab to add a note · Esc to carry on without me
+  Enter to choose · Tab to add a note · Esc back to the list

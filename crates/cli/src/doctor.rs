@@ -1,5 +1,5 @@
-//! `argonauts doctor`: Argonauts Code's report on your agent CLIs and git, and a reminder for each
-//! run waiting a long time.
+//! `argonauts doctor`: Argonauts Code's report on itself, your agent CLIs and git, and a
+//! reminder for each run waiting a long time.
 
 use std::process::ExitCode;
 
@@ -45,11 +45,21 @@ pub async fn run(args: &DoctorArgs, set: &[String]) -> anyhow::Result<ExitCode> 
         });
     problems.extend(argonauts_app::mod_problems(None));
     if args.json {
+        let update = argonauts_core::Paths::from_env()
+            .ok()
+            .map(|paths| argonauts_app::self_update::doctor_json(&paths));
         println!(
             "{}",
-            serde_json::to_string_pretty(&json(&report, &extras)?)?
+            serde_json::to_string_pretty(&json(&report, &extras, update)?)?
         );
     } else {
+        // What the last look for a new release came to, above the CLIs in their columns.
+        if let Ok(paths) = argonauts_core::Paths::from_env() {
+            println!(
+                "{}",
+                sanitize_for_terminal(&argonauts_app::self_update::doctor_row(&paths))
+            );
+        }
         print!("{}", render(&report, &checks, &extras, &problems));
     }
     Ok(if report.ready() {
@@ -59,8 +69,13 @@ pub async fn run(args: &DoctorArgs, set: &[String]) -> anyhow::Result<ExitCode> 
     })
 }
 
-/// The report as it was, plus a `waiting` list.
-fn json(report: &DoctorReport, extras: &DoctorExtras) -> anyhow::Result<serde_json::Value> {
+/// The report as it was, plus a `waiting` list and Argonauts Code's own `update`: the version
+/// running and its last look for a new release, as the row above the CLIs says them.
+fn json(
+    report: &DoctorReport,
+    extras: &DoctorExtras,
+    update: Option<serde_json::Value>,
+) -> anyhow::Result<serde_json::Value> {
     let mut value = serde_json::to_value(report)?;
     let waiting: Vec<serde_json::Value> = extras
         .waiting
@@ -77,6 +92,10 @@ fn json(report: &DoctorReport, extras: &DoctorExtras) -> anyhow::Result<serde_js
         .collect();
     if let Some(object) = value.as_object_mut() {
         object.insert("waiting".to_owned(), serde_json::Value::Array(waiting));
+        object.insert(
+            "update".to_owned(),
+            update.unwrap_or(serde_json::Value::Null),
+        );
     }
     Ok(value)
 }
@@ -565,8 +584,10 @@ mod tests {
             &[],
         );
         assert!(text.ends_with("Its 1 worktree holds 14.2 MB.\n"), "{text}");
-        let json = json(&report(Vec::new(), None), &extras).unwrap();
+        let update = serde_json::json!({"running": "0.2.0", "last_look": null});
+        let json = json(&report(Vec::new(), None), &extras, Some(update.clone())).unwrap();
         assert_eq!(json["waiting"][0]["run"], "run-03");
         assert_eq!(json["waiting"][0]["days"], 9);
+        assert_eq!(json["update"], update);
     }
 }

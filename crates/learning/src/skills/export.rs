@@ -353,6 +353,10 @@ fn instruction(step: &Step, depth: usize) -> String {
         StepKind::Merge => "Hand the change over for review. Never merge it yourself.".to_owned(),
         StepKind::Workflow => "Follow the nested workflow's steps.".to_owned(),
         StepKind::Script => "Follow the steps of the workflow in use.".to_owned(),
+        StepKind::Talk => {
+            "Answer on your own first, then talk the answers through until everyone agrees on every point."
+                .to_owned()
+        }
     };
     if step.steps.is_empty() || depth > 2 {
         return text;

@@ -134,6 +134,17 @@ fn turns_leave_out_commands_and_subagents() {
     let last = turns_of(&home, LOOP, 1);
     assert_eq!(last.len(), 1);
     assert_eq!(last[0].from, Speaker::Agent);
+    // Each prompt has when you sent it, which tells the turns made in Claude Code's own screen.
+    let sent: Vec<_> = turns.iter().map(|turn| turn.sent).collect();
+    assert_eq!(
+        sent,
+        [
+            Some(datetime!(2026-09-28 10:01 UTC)),
+            None,
+            Some(datetime!(2026-09-28 10:03 UTC)),
+            None
+        ]
+    );
 }
 
 #[test]

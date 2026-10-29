@@ -1,0 +1,19 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Set up Orchestrator
+  One orchestrator plans and hands out the tasks, workers build them, and two reviewers check each one.
+  Every way is allowed, as by default. Space keeps one out of every plan; Enter saves and switches.
+
+    Plan        Orchestrator    ▐▌ 5.6 Luna                               Plans and hands out the tasks         Picked
+    Build       Workers         The orchestrator picks                    A ready model for each task            Ready
+    Review      Reviewers       The orchestrator picks                    2 per task, from another provider      Ready
+    Sign-off    Judge           The orchestrator picks                    Follows the reviewers                  Ready
+
+    How tasks are done          Picked per task, from what you allow
+                                ●  Own session
+  ❯                             ●  Workflows  ‹ Any ›   or a list: Maker-checker, Spec-first, …
+                                ●  Agents       Up to 4
+
+  The orchestrator picks a way for each task from these and gives its reason in a few words.
+  A list of workflows means any of them. A way you ask for in your prompt, or pick at the plan, decides that task.
+
+  space allows it or not · ←  →  any or a list · ↑  ↓  step · enter to switch to Orchestrator · esc to leave it

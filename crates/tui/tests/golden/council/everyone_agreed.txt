@@ -1,0 +1,38 @@
+                                                                                                                        
+                                                      1 Reply  ▐▌ And the balancer's probe calls /health with no key ─╮ 
+                                                                                                                        
+                                    Calls with no key: don't break them yet. Warn them for 30 days, then 401. /health   
+                                    stays open.                                                                         
+                                                                                                                        
+                                                                                                   Read by ▐▌ ▐▌ ▐▌ ▐▌  
+                                                                                                                        
+     Qwen3 Coder 30B · started before it read yours                                                                     
+   ╭─ ▐▌ The balancer spreads a client over all 3 nodes  2 Replies                                                      
+                                                                             ▐▌✘  ▐▌✔  ▐▌✘                              
+     Agreed: Redis for real, the in-memory store for tests. On calls with no key I'm with                               
+▐▌   ▐▌ 5.6 Luna: 401.                                                                                                  
+                                                                                                                        
+              ▐▌ Qwen3 Coder 30B moved to Redis after reading src/session/store.ts · 5 of 6 points agreed               
+                                                                                                                        
+     3.8 Flash                                                                                                          
+   ╭─ Calls with no key: don't break them yet  3 Replies                                                                
+                                                                              ▐▌✔  ▐▌✔  ▐▌✔                             
+     Then for 30 days calls with no key keep a small shared bucket, 10 a second, and get a                              
+▐▌   Deprecation header with the date; after that, 401. /health stays open for good.                                    
+                                                                                                                        
+                                    ✔  Everyone agreed · 6 of 6 points  ▐▌ ▐▌ ▐▌ ▐▌                                     
+                                                                                                                        
+▐▌  • • •   Opus 5.5 keeps the notes: it writes the plan and who does what                                              
+                                                                                                                        
+✻ Parleying… (4m 40s · ↓  82.9k of 200k tokens · 4/4 seats agree)                                                       
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task                                                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ↓  to manage                                           
+                                                                                                                        
+  ⣾  Rate limit the API                    ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  4/4 · 4m40s · ↓  82.9k tokens                          
+    ⎿ ✔  ▐▌ Opus 5.5                       Writing the plan            2m31s · ↓    25k tokens                          
+      ✔  ▐▌ 5.6 Luna                       Backs all 6 points          1m14s · ↓  16.1k tokens                          
+      ✔  ▐▌ 3.8 Flash                      Backs all 6 points          2m40s · ↓  23.9k tokens                          
+      ✔  ▐▌ Qwen3 Coder 30B                Backs all 6 points          2m25s · ↓  17.9k tokens                          

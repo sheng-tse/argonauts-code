@@ -1,4 +1,4 @@
-//! An action as the deeper map reads it: which call it was, and what a summarizer is shown of
+//! An action as Summaries reads it: which call it was, and what a summarizer is shown of
 //! it, its tool and its input, capped, with an edit's added and removed line counts so an
 //! append isn't read as a rewrite.
 

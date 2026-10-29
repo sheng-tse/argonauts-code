@@ -1154,6 +1154,10 @@ pub struct ContextView {
     /// What holds the main session's window to its size, where its server and CLI have said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_window: Option<WindowFigures>,
+    /// What the main session holds at its start, for the tab before its CLI counts it and for
+    /// a CLI that says only how full the session is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_start: Option<crate::events::context::StartingCount>,
 }
 
 impl ContextView {

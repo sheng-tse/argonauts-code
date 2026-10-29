@@ -1,0 +1,10 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Your setup
+  limits        spend_per_day = 5.00   when reached: fallback
+  reviewers     adds to roles/reviewer.md
+
+  ❯ 1. Use it
+       writes 2 files in ~/.argonauts/
+    2. Not now
+
+  Enter to choose · Esc for not now

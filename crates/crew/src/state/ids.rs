@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::events::approval::ApprovalEvent;
+use argonauts_core::events::council::CouncilEventKind;
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::plan::PlanEvent;
 use argonauts_core::events::run::RunLifecycle;
@@ -67,6 +68,11 @@ impl Counters {
             RunEventKind::Goal(
                 GoalEvent::ChangeRequested { id, .. } | GoalEvent::ChangeResolved { id, .. },
             ) => self.see(IdKind::Message, id.as_str()),
+            RunEventKind::Council(council) => {
+                if let CouncilEventKind::Message(message) = &council.kind {
+                    self.see(IdKind::Message, message.id.as_str());
+                }
+            }
             RunEventKind::Plan(PlanEvent::Sealed { draft, .. }) => {
                 self.see(IdKind::Draft, draft.as_str());
             }

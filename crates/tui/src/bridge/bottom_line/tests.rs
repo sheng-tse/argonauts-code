@@ -41,7 +41,7 @@ fn cli(label: &str, agent_id: &str, readings: Vec<PlanUsageReading>) -> CrewCli 
 
 fn claude() -> CrewCli {
     cli(
-        "Claude",
+        "Claude Code",
         "claude-code",
         vec![
             reading("claude-code", "seven_day", 0.56),
@@ -74,7 +74,10 @@ fn the_cli_in_use_shows_both_windows_and_the_others_their_fuller_one() {
     let other = cli_use(&claude(), false, &set, None, &clock());
     assert_eq!(shown(&other), [("7d".to_owned(), 56)]);
 
-    let pick = |windows| PlanUsageLine { windows, ..set };
+    let pick = |windows| PlanUsageLine {
+        windows,
+        ..set.clone()
+    };
     let fullest = cli_use(
         &claude(),
         true,
@@ -109,7 +112,7 @@ fn a_window_near_its_limit_shows_its_reset_time_and_is_never_hidden() {
     near.resets_at = Some(datetime!(2026-09-30 16:40 UTC));
     let mut week = reading("claude-code", "seven_day", 0.56);
     week.resets_at = Some(datetime!(2026-10-06 15:45 UTC));
-    let claude = cli("Claude", "claude-code", vec![week, near]);
+    let claude = cli("Claude Code", "claude-code", vec![week, near]);
     let set = PlanUsageLine::default();
 
     let chip = cli_use(&claude, true, &set, None, &clock());
@@ -120,20 +123,20 @@ fn a_window_near_its_limit_shows_its_reset_time_and_is_never_hidden() {
     // Not in use, and set to show only the seven days: the window at 93% still shows.
     let seven = PlanUsageLine {
         windows: PlanUsageWindows::SevenDays,
-        ..set
+        ..set.clone()
     };
     let chip = cli_use(&claude, false, &seven, None, &clock());
     assert_eq!(shown(&chip), [("5h".to_owned(), 93), ("7d".to_owned(), 56)]);
 
     let always = PlanUsageLine {
         resets: PlanUsageResets::Always,
-        ..set
+        ..set.clone()
     };
     let chip = cli_use(&claude, true, &always, None, &clock());
     assert_eq!(chip.windows[1].resets.as_deref(), Some("Tue 3:45pm"));
     let never = PlanUsageLine {
         resets: PlanUsageResets::Never,
-        ..set
+        ..set.clone()
     };
     let chip = cli_use(&claude, true, &never, None, &clock());
     assert_eq!(chip.windows[0].resets, None);
@@ -326,12 +329,24 @@ fn chip(label: &str, windows: Vec<PlanUsageReading>) -> PlanUsageChip {
     }
 }
 
+/// Claude, Codex and agy, every one of them on the line.
 fn crew_status(main: &str) -> HeaderAndBottomLine {
+    let mut status = crew_of_three(main);
+    status.line.settings = every_cli();
+    status
+}
+
+fn every_cli() -> BottomLineSettings {
+    BottomLineSettings::from_toml("[plan-usage]\nshow = \"all\"").unwrap()
+}
+
+/// Claude, Codex and agy, with the line as it ships.
+fn crew_of_three(main: &str) -> HeaderAndBottomLine {
     status(
         main,
         vec![
             chip(
-                "Claude",
+                "Claude Code",
                 vec![
                     reading("claude-code", "five_hour", 0.01),
                     reading("claude-code", "seven_day", 0.56),
@@ -359,6 +374,84 @@ fn chips(line: &BottomLine) -> Vec<(String, bool, Vec<Shown>)> {
         .collect()
 }
 
+/// As it ships the line shows the CLI in use, then the one used most over the last 30 days
+/// that isn't it, and only the one in use while nothing else was used.
+#[test]
+fn by_default_the_line_shows_the_cli_in_use_and_the_one_used_most() {
+    let names = |main: &str, most_used: &[&str]| -> Vec<(String, bool)> {
+        let mut state = AppState::default();
+        let mut status = crew_of_three(main);
+        status.line.most_used = most_used.iter().map(|cli| (*cli).to_owned()).collect();
+        state.status = Some(status);
+        chips(&built(&state))
+            .into_iter()
+            .map(|(name, main, _)| (name, main))
+            .collect()
+    };
+    let chip = |name: &str, main: bool| (name.to_owned(), main);
+    assert_eq!(
+        names("claude-code", &["claude-code", "codex", "antigravity-cli"]),
+        [chip("Claude Code", true), chip("Codex", false)]
+    );
+    assert_eq!(
+        names("claude-code", &["antigravity-cli"]),
+        [chip("Claude Code", true), chip("agy", false)]
+    );
+    assert_eq!(
+        names("codex/gpt-6.1-sol", &["codex", "claude-code"]),
+        [chip("Codex", true), chip("Claude Code", false)]
+    );
+    // One used most that the crew has no chip for gives way to the next.
+    assert_eq!(
+        names("claude-code", &["openrouter", "codex"]),
+        [chip("Claude Code", true), chip("Codex", false)]
+    );
+    assert_eq!(names("claude-code", &[]), [chip("Claude Code", true)]);
+}
+
+/// Once you pick the line's CLIs, it shows those in your order after the one in use, each
+/// with the windows you gave it, and one the crew leaves out with what is known of it.
+#[test]
+fn a_saved_list_shows_in_its_order_after_the_cli_in_use() {
+    let window = |label: &str, used| (label.to_owned(), used);
+    let saved = BottomLineSettings::from_toml(
+        "[plan-usage]\nclis = [\n  { cli = \"antigravity-cli\" },\n  { cli = \"codex\", windows = \"both\" },\n  { cli = \"openrouter\" },\n]",
+    )
+    .unwrap();
+    let mut state = AppState::default();
+    let mut status = crew_of_three("claude-code");
+    status.line.settings = saved.clone();
+    status.line.most_used = vec!["codex".into()];
+    state.status = Some(status);
+    assert_eq!(
+        chips(&built(&state)),
+        [
+            (
+                "Claude Code".to_owned(),
+                true,
+                vec![window("5h", 1), window("7d", 56)]
+            ),
+            ("agy".to_owned(), false, vec![window("5h", 2)]),
+            (
+                "Codex".to_owned(),
+                false,
+                vec![window("5h", 1), window("7d", 11)]
+            ),
+            ("OpenRouter".to_owned(), false, Vec::new()),
+        ]
+    );
+
+    // The one in use comes first, wherever the list has it.
+    let mut status = crew_of_three("codex");
+    status.line.settings = saved;
+    state.status = Some(status);
+    let names: Vec<String> = chips(&built(&state))
+        .into_iter()
+        .map(|(name, _, _)| name)
+        .collect();
+    assert_eq!(names, ["Codex", "agy", "OpenRouter"]);
+}
+
 /// The mark and the second window follow the main session from Claude Code to Codex, and the
 /// crew keeps its order.
 #[test]
@@ -372,7 +465,7 @@ fn the_mark_and_the_second_window_follow_the_main_session() {
         chips(&line),
         [
             (
-                "Claude".to_owned(),
+                "Claude Code".to_owned(),
                 true,
                 vec![window("5h", 1), window("7d", 56)]
             ),
@@ -385,7 +478,7 @@ fn the_mark_and_the_second_window_follow_the_main_session() {
     assert_eq!(
         chips(&built(&state)),
         [
-            ("Claude".to_owned(), false, vec![window("7d", 56)]),
+            ("Claude Code".to_owned(), false, vec![window("7d", 56)]),
             (
                 "Codex".to_owned(),
                 true,
@@ -401,7 +494,8 @@ fn the_mark_and_the_second_window_follow_the_main_session() {
 fn gauges_show_both_windows_of_every_cli() {
     let mut state = AppState::default();
     let mut status = crew_status("claude-code");
-    status.line.settings = BottomLineSettings::from_toml("form = \"gauges\"").unwrap();
+    status.line.settings =
+        BottomLineSettings::from_toml("form = \"gauges\"\n[plan-usage]\nshow = \"all\"").unwrap();
     state.status = Some(status);
     let windows: Vec<(String, bool, usize)> = built(&state)
         .clis()
@@ -410,7 +504,7 @@ fn gauges_show_both_windows_of_every_cli() {
     assert_eq!(
         windows,
         [
-            ("Claude".to_owned(), true, 2),
+            ("Claude Code".to_owned(), true, 2),
             ("Codex".to_owned(), false, 2),
             ("agy".to_owned(), false, 1),
         ]
@@ -441,7 +535,7 @@ fn the_main_cli_has_a_chip_even_outside_the_crew_and_newer_readings_win() {
             ("OpenCode".to_owned(), true, None),
             ("Codex".to_owned(), false, Some(42)),
             ("agy".to_owned(), false, Some(2)),
-            ("Claude".to_owned(), false, Some(20)),
+            ("Claude Code".to_owned(), false, Some(20)),
         ]
     );
 }
@@ -668,8 +762,37 @@ fn a_conversation_turns_reading_shows_before_any_status() {
     );
     assert_eq!(
         chips(&built(&state)),
-        [("Claude".to_owned(), false, vec![("5h".to_owned(), 71)])]
+        [("Claude Code".to_owned(), false, vec![("5h".to_owned(), 71)])]
     );
+}
+
+/// Before the first status, the line shows only the CLI your settings start the main session
+/// on, as the welcome names it, rather than every CLI a turn read and then fewer.
+#[test]
+fn before_any_status_the_line_shows_the_cli_the_settings_name() {
+    let mut state = AppState::default();
+    state.plan_windows.insert(
+        "claude-code".into(),
+        vec![reading("claude-code", "five_hour", 0.71)],
+    );
+    state
+        .plan_windows
+        .insert("codex".into(), vec![reading("codex", "seven_day", 0.84)]);
+    state.welcome = Some(crate::state::Welcome {
+        version: "0.2.0".to_owned(),
+        repo: "/Users/you/code/tasks-cli".to_owned(),
+        workflow: "captain".to_owned(),
+        main_agent: Some(argonauts_core::names::ModelRef::new("claude-code", None)),
+        agents: Vec::new(),
+        runs_going: 0,
+        runs_need_you: 0,
+        example_prompt: None,
+    });
+    let shown: Vec<String> = chips(&built(&state))
+        .into_iter()
+        .map(|(name, _, _)| name)
+        .collect();
+    assert_eq!(shown, ["Claude Code"]);
 }
 
 /// A Claude Code mod's status text nobody placed still shows, last and first to go, unless
@@ -1015,4 +1138,123 @@ fn the_context_part_names_the_busiest_agent_unless_only_the_main_session_is_clos
     assert_eq!(context_part(&state), fill("main", 98, Level::Danger));
     state.conversation.context = Some(counted(800_000));
     assert_eq!(context_part(&state), fill("main", 83, Level::Warn));
+}
+
+/// A run under way with one task on `worker`, in `state`, and the task's own row to change.
+fn task_on<'a>(state: &'a mut AppState, worker: &str) -> &'a mut crate::state::TaskRow {
+    use crate::state::{RunState, TaskRow};
+
+    let run_id = argonauts_core::RunId::new("run-20260930-101500-7c1e").unwrap();
+    let task = argonauts_core::TaskId::new("due-flag").unwrap();
+    let mut row = TaskRow::new(task.clone(), "Add a due flag");
+    row.worker = Some(worker.parse().unwrap());
+    row.state = Some(TaskState::Running);
+    let mut run = RunState::new(run_id.clone());
+    run.tasks.insert(task.clone(), row);
+    state.runs.insert(run_id.clone(), run);
+    state
+        .runs
+        .get_mut(&run_id)
+        .and_then(|run| run.tasks.get_mut(&task))
+        .unwrap()
+}
+
+/// Claude in use and Codex used most, with agy's reading `agy`.
+fn with_agy(agy: PlanUsageReading) -> AppState {
+    let mut state = AppState::default();
+    let mut status = crew_of_three("claude-code");
+    status.plan_chips[2] = chip("agy", vec![agy]);
+    status.line.most_used = vec!["codex".into()];
+    state.status = Some(status);
+    state
+}
+
+fn names(state: &AppState) -> Vec<String> {
+    chips(&built(state))
+        .into_iter()
+        .map(|(name, _, _)| name)
+        .collect()
+}
+
+/// A CLI the line leaves out joins it only while a running task waits on it and it's out,
+/// down or at 90% of a window, and then with its reset time, whatever `resets` says.
+#[test]
+fn a_cli_joins_while_a_running_task_waits_on_it_and_it_is_held_back() {
+    let mut out = reading("antigravity-cli", "five_hour", 1.0);
+    out.status = PlanUsageStatus::Rejected;
+    out.resets_at = Some(datetime!(2026-10-06 15:45 UTC));
+
+    // Out, and nothing waits on it.
+    let mut state = with_agy(out.clone());
+    assert_eq!(names(&state), ["Claude Code", "Codex"]);
+
+    // A task waits for it to come back.
+    task_on(&mut state, "codex/gpt-5.6-luna").waiting_on_agent = Some(crate::state::AgentWait {
+        agent_id: "antigravity-cli".into(),
+        until: out.resets_at,
+    });
+    let line = built(&state);
+    assert_eq!(names(&state), ["Claude Code", "Codex", "agy"]);
+    let agy = line.clis().last().unwrap();
+    assert_eq!(
+        agy.state,
+        CliState::Out {
+            until: Some("Tue 3:45pm".into())
+        }
+    );
+
+    // Fine, while a task works on it: it stays off.
+    let mut state = with_agy(reading("antigravity-cli", "five_hour", 0.4));
+    task_on(&mut state, "antigravity-cli/gemini-3.8-flash");
+    assert_eq!(names(&state), ["Claude Code", "Codex"]);
+
+    // At 93% while a task works on it, it joins with when the window resets.
+    let mut near = reading("antigravity-cli", "five_hour", 0.93);
+    near.resets_at = Some(datetime!(2026-09-30 16:40 UTC));
+    let mut state = with_agy(near.clone());
+    if let Some(status) = state.status.as_mut() {
+        status.line.settings =
+            BottomLineSettings::from_toml("[plan-usage]\nresets = \"never\"").unwrap();
+    }
+    task_on(&mut state, "antigravity-cli/gemini-3.8-flash");
+    let line = built(&state);
+    let agy = line.clis().last().unwrap();
+    assert_eq!(agy.name, "agy");
+    assert_eq!(agy.windows[0].resets.as_deref(), Some("4:40pm"));
+
+    // Once the run is over, or with the join turned off, it goes.
+    let mut state = with_agy(near.clone());
+    task_on(&mut state, "antigravity-cli/gemini-3.8-flash");
+    for run in state.runs.values_mut() {
+        run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
+    }
+    assert_eq!(names(&state), ["Claude Code", "Codex"]);
+    let mut state = with_agy(near);
+    task_on(&mut state, "antigravity-cli/gemini-3.8-flash");
+    if let Some(status) = state.status.as_mut() {
+        status.line.settings =
+            BottomLineSettings::from_toml("[plan-usage]\nholding-up = false").unwrap();
+    }
+    assert_eq!(names(&state), ["Claude Code", "Codex"]);
+}
+
+/// A CLI that is down joins while an agent of the run is still on it.
+#[test]
+fn a_cli_that_is_down_joins_while_an_agent_works_on_it() {
+    let mut state = AppState::default();
+    let mut status = crew_of_three("claude-code");
+    status.plan_chips[2].health = HealthState::Down;
+    state.status = Some(status);
+    assert_eq!(names(&state), ["Claude Code"]);
+    let run = with_sessions(&mut state, &[("build:due-flag", 1, 10)]);
+    if let Some(session) = state
+        .runs
+        .get_mut(&run)
+        .and_then(|run| run.sessions.values_mut().next())
+    {
+        session.agent_id = "antigravity-cli".into();
+    }
+    let line = built(&state);
+    assert_eq!(names(&state), ["Claude Code", "agy"]);
+    assert_eq!(line.clis().last().unwrap().state, CliState::Down);
 }

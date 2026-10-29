@@ -8,7 +8,7 @@ use argonauts_core::events::run::Party;
 
 use crate::bridge::tools;
 use crate::cell::{
-    AssistantMessage, Cell, CollapsedGroup, Thought, ToolCall, ToolItem, UserMessage,
+    AssistantMessage, Cell, CollapsedGroup, Notice, Thought, Tone, ToolCall, ToolItem, UserMessage,
 };
 
 use super::conversation::folds;
@@ -18,6 +18,19 @@ use super::{Cx, quiet};
 /// if it came with any.
 pub(super) fn conversation_resumed(turns: &[ReplayTurn], cx: &mut Cx<'_>) {
     cx.out.close_views = true;
+    for turn in turns {
+        print_turn(turn, cx);
+    }
+}
+
+/// `● Back from Claude Code · 2 turns made there`, then those turns as they were, under it: the
+/// words before the first ` · ` plain, the rest dim.
+pub(super) fn made_in_cli(said: &str, turns: &[ReplayTurn], cx: &mut Cx<'_>) {
+    let line = match said.split_once(" · ") {
+        Some((words, after)) => Notice::plain_with_after(Tone::Normal, words, after),
+        None => Notice::plain_with_after(Tone::Normal, said, ""),
+    };
+    cx.model.history.push(Cell::Notice(line));
     for turn in turns {
         print_turn(turn, cx);
     }

@@ -1,14 +1,13 @@
 ---
 source: crates/tui/tests/it/snap_settings.rs
-assertion_line: 55
 expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────
   Model for reviewer
   The CLIs and endpoints this role's rules allow, best fit first
 
-  ❯ 1. Claude Code ✓   opus · subscription · 42% used
-    2. Codex           1 model · API key
-    3. Ollama          1 model · local
+  ❯ 1. Claude Code ✓  opus     subscription  5h ▄▄▖▁▁▁  42%
+    2. Codex          1 model  API key
+    3. Ollama         1 model  local
 
   Enter to see its models · ↑↓  to move · type to filter · Esc to close

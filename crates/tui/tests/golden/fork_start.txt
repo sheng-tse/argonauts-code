@@ -1,52 +1,54 @@
  Your words start a workflow from Captain: the orchestrator is a fork of the main session, with the whole conversation
-                                                                                                                      
-❯ Run what we just worked out as an orchestrator workflow, with Codex as the reviewer. Keep the due …                 
-                                                                                                                      
-⏺ Starting a workflow: Orchestrator, Opus 5.5 on Claude Code, carrying this conversation; GPT 6 Luna on Codex reviews 
-  as you asked, and Haiku 5.5 on Claude Code builds.                                                                  
-                                                                                                                      
-⏺ Workflow(Add due dates · Orchestrator)                                                                              
-  ⎿  Running in background · /workflows to monitor and save                                                           
-                                                                                                                      
- Enter on the row, then on plan:orchestrator: its card                                                                
- ╭ Plan · 1 agent ───────┬ plan:orchestrator ───────────────────────────────────────────────────────────────────────╮ 
- │ ❯ ⏺ plan:orchestrator │ ⏺ Running · Opus 5.5 on Claude Code · orchestrator · read-only                           │ 
- │                       │ 54.6k tok · 2 tool calls · 21s · context 27% of 200k                                     │ 
- │                       │                                                                                          │ 
- │                       │ Forked from your main session · 48.2k tokens of conversation                             │ 
- │                       │   the brief came as its first message · your conversation goes on beside the run         │ 
- │                       │ Prompt · the brief, 14 lines · ⏎ expand                                                  │ 
- │                       │   You are now the orchestrator of the run you just started.                              │ 
- │                       │   … 13 more lines: you no longer talk to the user, the brief, and the crew's tools       │ 
- │                       │ Activity · 2 tool calls                                                                  │ 
- │                       │   ⏺ Read(src/cli.js)                                                                     │ 
- │                       │   ⏺ Grep(--due) · running                                                                │ 
- │                       │ Outcome                                                                                  │ 
- │                       │   Still running…                                                                         │ 
- ╰───────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓  agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save                     
-                                                                                                                      
-                                                                                                                      
- The same start with [crew] orchestrator set to agy: another CLI than your main session, so the brief is all it gets  
-                                                                                                                      
-❯ Run what we just worked out as an orchestrator workflow, with Codex as the reviewer. Keep the due …                 
-                                                                                                                      
-⏺ Starting a workflow: Orchestrator, Gemini 3.6 Pro on agy, starting from the brief, since agy can't carry a Claude   
-  Code conversation; GPT 6 Luna on Codex reviews as you asked, and Haiku 5.5 on Claude Code builds.                   
-                                                                                                                      
-⏺ Workflow(Add due dates · Orchestrator)                                                                              
-  ⎿  Running in background · /workflows to monitor and save                                                           
-                                                                                                                      
- ╭ Plan · 1 agent ───────┬ plan:orchestrator ───────────────────────────────────────────────────────────────────────╮ 
- │ ❯ ⏺ plan:orchestrator │ ⏺ Running · Gemini 3.6 Pro on agy · orchestrator · read-only                             │ 
- │                       │ 8.9k tok · 1 tool call · 9s                                                              │ 
- │                       │                                                                                          │ 
- │                       │ Started from the brief · written by Opus 5.5 from this conversation                      │ 
- │                       │   agy can't carry a Claude Code conversation · your conversation goes on beside the run  │ 
- │                       │ Prompt · the brief, 31 lines · ⏎ expand                                                  │ 
- │                       │   You are the orchestrator of a run. The request, as the main agent wrote it:            │ 
- │                       │   … 30 more lines: the request, what was decided in the conversation, the crew's tools   │ 
- ╰───────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓  agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save                     
-                                                                                                                      
- (the Workflow row prints once the phases are known, as today; the rows between are left out)                         
+
+❯ Run what we just worked out as an orchestrator workflow, with Codex as the reviewer. Keep the due date optional, a…
+
+⏺ Starting a workflow: Orchestrator, Opus 5.5 on Claude Code, carrying this conversation; GPT 6 Luna on Codex reviews
+  as you asked, and Haiku 5.5 on Claude Code builds.
+
+⏺ Workflow(Add due dates · Orchestrator)
+  ⎿  Running in background · /workflows to monitor and save
+
+ Enter on the row, then on plan:orchestrator: its card
+ ╭ Plan · 1 agent ───────┬ plan:orchestrator ───────────────────────────────────────────────────────────────────────╮
+ │ ❯ ⣾ plan:orchestrator │ ⣾ Running · Opus 5.5 on Claude Code · orchestrator · read-only                           │
+ │                       │ 54.6k tok · 2 tool calls · 21s · context 27% of 200k                                     │
+ │                       │                                                                                          │
+ │                       │ Forked from your main session · 48.2k tokens of conversation                             │
+ │                       │   the brief came as its first message · your conversation goes on beside the run         │
+ │                       │                                                                                          │
+ │                       │ Prompt · the brief, 14 lines · ⏎ expand                                                  │
+ │                       │   You are now the orchestrator of the run you just started.                              │
+ │                       │   … 13 more lines: its input and your request                                            │
+ │                       │                                                                                          │
+ │                       │ Activity · 2 tool calls                                                                  │
+ │                       │   ⏺ Read(src/cli.js)                                                                     │
+ │                       │   ⏺ Grep(--due) · running                                                                │
+ │                       │                                                                                          │
+ │                       │ Outcome                                                                                  │
+ │                       │   Still running…                                                                         │
+ ╰───────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save
+
+❯ Run what we just worked out as an orchestrator workflow, with Codex as the reviewer. Keep the due date optional, a…
+
+⏺ Starting a workflow: Orchestrator, Gemini 3.6 Pro on agy, starting from the brief, since agy can't carry a Claude
+  Code conversation; GPT 6 Luna on Codex reviews as you asked, and Haiku 5.5 on Claude Code builds.
+
+⏺ Workflow(Add due dates · Orchestrator)
+  ⎿  Running in background · /workflows to monitor and save
+
+ ╭ Plan · 1 agent ───────┬ plan:orchestrator ───────────────────────────────────────────────────────────────────────╮
+ │ ❯ ⏺ plan:orchestrator │ ⏺ Running · Gemini 3.6 Pro on agy · orchestrator · read-only                             │
+ │                       │ 8.9k tok · 1 tool call · 9s                                                              │
+ ╭ Plan · 1 agent ───────┬ plan:orchestrator ───────────────────────────────────────────────────────────────────────╮
+ │ ❯ ⣾ plan:orchestrator │ ⣾ Running · Gemini 3.6 Pro on agy · orchestrator · read-only                             │
+ │                       │ 8.9k tok · 1 tool call · 9s                                                              │
+ │                       │                                                                                          │
+ │                       │ Started from the brief · written by Opus 5.5 from this conversation                      │
+ │                       │   agy can't carry a Claude Code conversation · your conversation goes on beside the run  │
+ │                       │                                                                                          │
+ │                       │ Prompt · the brief, 31 lines · ⏎ expand                                                  │
+ │                       │   You are the orchestrator of a crew of coding agents. Write the workflow for one reque… │
+ │                       │   … 30 more lines: its input and your request                                            │
+ ╰───────────────────────┴─────────────────────────────────────────────────────────────────────────    1–9 of 15 ↓ ─╯
+ ↑↓  agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save

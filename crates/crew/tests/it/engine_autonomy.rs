@@ -1463,7 +1463,7 @@ async fn a_merge_reviewed_only_within_one_provider_asks() -> anyhow::Result<()> 
     assert_eq!(open_kinds(&outcome.events), [ApprovalKind::Merge]);
     let why = reasons(&outcome.events, ApprovalKind::Merge).join("\n");
     assert!(
-        why.contains("reviewer of its worker's own provider"),
+        why.contains(", picked from its builder's own provider, reviewed "),
         "{why}"
     );
     Ok(())
@@ -1502,15 +1502,258 @@ async fn on_autopilot_a_merge_reviewed_only_within_one_provider_keeps_the_branch
     );
     assert!(!run_merged(&outcome.events));
     assert!(decided(&outcome.events).contains(&(ApprovalKind::Merge, Party::Autopilot)));
+    // The line names who reviewed the task, picked from its builder's own provider.
     assert!(
         said.iter()
             .any(|note| note.starts_with("Autopilot answered ")
-                && note.ends_with(
-                    "instead of asking you, since a task's approval came from a reviewer of its \
-                 worker's own provider."
-                )),
+                && note.contains("instead of asking you, since ")
+                && note.contains(", picked from its builder's own provider, reviewed ")),
         "{said:#?}"
     );
+    Ok(())
+}
+
+/// A reviewer you chose lets the run merge on autopilot, though one provider made and reviewed
+/// the task: your choice is the rule's, as the merge's reason says.
+#[tokio::test]
+async fn on_autopilot_a_reviewer_you_chose_from_one_provider_lets_it_merge() -> anyhow::Result<()> {
+    use argonauts_core::names::RoleName;
+    use argonauts_core::settings::roles::RoleSettings;
+
+    let mut crew = Crew::new()?;
+    with_checks(&mut crew);
+    crew.settings.review.other_provider = false;
+    crew.services
+        .registry
+        .add(serde_json::from_value(serde_json::json!({
+            "id": "opencode/gpt-oss-120b",
+            "provider": "openai",
+            "kind": "cli",
+            "access": "local",
+            "cost": {"unit": "none"},
+        }))?);
+    enlist(&mut crew, "codex/gpt-x", "openai");
+    enlist(&mut crew, "opencode/gpt-oss-120b", "openai");
+    crew.services.workers.add(
+        FakeRunner::cli("antigravity-cli", "google")
+            .with_cheapest_model("gemini-3.8-flash-low")
+            .respond_with(answer),
+    );
+    crew.settings.roles.insert(
+        RoleName::Reviewer,
+        RoleSettings {
+            models: vec!["codex/gpt-x".parse()?, "opencode/gpt-oss-120b".parse()?],
+            ..RoleSettings::default()
+        },
+    );
+    let outcome = run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
+    let said = notes(&outcome.events);
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(argonauts_core::events::run::RunOutcome::Merged),
+        "{said:#?}"
+    );
+    assert!(run_merged(&outcome.events));
+    Ok(())
+}
+
+/// A crew of one provider can't keep review across providers, so the run eases that rule and
+/// says so, and the review follows it: the other member reviews, never the builder. On
+/// autopilot the merge rule still wants an approval from another provider or one you chose,
+/// so the run keeps its work on its branch, and the line names who reviewed which task.
+#[tokio::test]
+async fn on_autopilot_a_crew_of_one_provider_reviews_within_it_and_keeps_the_branch()
+-> anyhow::Result<()> {
+    let mut crew = Crew::new()?;
+    with_checks(&mut crew);
+    crew.services
+        .registry
+        .add(serde_json::from_value(serde_json::json!({
+            "id": "opencode/gpt-oss-120b",
+            "provider": "openai",
+            "kind": "cli",
+            "access": "local",
+            "cost": {"unit": "none"},
+        }))?);
+    enlist(&mut crew, "codex/gpt-x", "openai");
+    enlist(&mut crew, "opencode/gpt-oss-120b", "openai");
+    crew.services.workers.add(
+        FakeRunner::cli("antigravity-cli", "google")
+            .with_cheapest_model("gemini-3.8-flash-low")
+            .respond_with(answer),
+    );
+    let outcome = run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
+    let said = notes(&outcome.events);
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
+        "{said:#?}"
+    );
+    assert!(!run_merged(&outcome.events));
+    assert!(
+        said.iter()
+            .any(|note| note.contains("a task may be reviewed by its worker's provider")),
+        "{said:#?}"
+    );
+    assert!(
+        said.iter()
+            .any(|note| note.starts_with("Autopilot answered ")
+                && note.contains(", picked from its builder's own provider, reviewed ")),
+        "{said:#?}"
+    );
+    let reviewed_by = |cli: &str| -> anyhow::Result<usize> {
+        let fake = crew.services.workers.fake(cli).context("a crew member")?;
+        Ok(fake
+            .specs()
+            .iter()
+            .filter(|spec| spec.role == RoleName::Reviewer)
+            .count())
+    };
+    assert_eq!(
+        reviewed_by("codex/gpt-x")? + reviewed_by("opencode/gpt-oss-120b")?,
+        1
+    );
+    Ok(())
+}
+
+/// "Use the crew" names nobody to review, so on autopilot the reviewer code picked from the
+/// builder's own provider still keeps the work on its branch.
+#[tokio::test]
+async fn on_autopilot_use_the_crew_names_no_reviewer_and_keeps_the_branch() -> anyhow::Result<()> {
+    use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, RunLifecycle};
+    use argonauts_core::steps::intake::InstructionKind;
+
+    let mut crew = Crew::new()?;
+    with_checks(&mut crew);
+    crew.services
+        .registry
+        .add(serde_json::from_value(serde_json::json!({
+            "id": "opencode/gpt-oss-120b",
+            "provider": "openai",
+            "kind": "cli",
+            "access": "local",
+            "cost": {"unit": "none"},
+        }))?);
+    enlist(&mut crew, "codex/gpt-x", "openai");
+    enlist(&mut crew, "opencode/gpt-oss-120b", "openai");
+    let mut started = crew.run_started(RunMode::Crew, "use the crew to add a --verbose flag")?;
+    if let RunEventKind::Run(RunLifecycle::Started(run)) = &mut started.kind {
+        run.instructions.push(CheckedInstruction {
+            says: "use the crew".to_owned(),
+            kind: InstructionKind::Crew,
+            outcome: InstructionOutcome::Followed {
+                said: "the crew".to_owned(),
+                note: None,
+            },
+        });
+    }
+    let autopilot = RunEvent {
+        seq: 1,
+        kind: RunEventKind::Run(RunLifecycle::ApprovalModeChanged {
+            mode: ApprovalMode::Autopilot,
+            by: Party::User,
+        }),
+        ..started.clone()
+    };
+    let outcome = drive(&crew, vec![started, autopilot]).await?;
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
+        "{:#?}",
+        notes(&outcome.events)
+    );
+    assert!(!run_merged(&outcome.events));
+    Ok(())
+}
+
+/// A crew of one has nobody but the builder to review its task. The builder never reviews its
+/// own work, and another try by it would end the same way, so the task goes to the merge
+/// unreviewed. On autopilot the merge rule keeps the work on its branch, naming the task.
+#[tokio::test]
+async fn on_autopilot_a_task_nobody_but_its_builder_could_review_keeps_the_branch()
+-> anyhow::Result<()> {
+    use argonauts_core::events::task::{TaskEvent, TaskState};
+
+    let mut crew = Crew::new()?;
+    with_checks(&mut crew);
+    enlist(&mut crew, "codex/gpt-x", "openai");
+    crew.services.workers.add(
+        FakeRunner::cli("antigravity-cli", "google")
+            .with_cheapest_model("gemini-3.8-flash-low")
+            .respond_with(answer),
+    );
+    let outcome = run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
+    let said = notes(&outcome.events);
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
+        "{said:#?}"
+    );
+    assert!(!run_merged(&outcome.events));
+    assert!(
+        said.iter().any(|note| note.starts_with(
+            "Autopilot answered \"Merge this run into main?\" with \"Keep the branch\" instead \
+             of asking you, since nobody but its builder is left to review "
+        )),
+        "{said:#?}"
+    );
+    let moves: Vec<(TaskState, &str)> = outcome
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Task(TaskEvent::State { to, reason, .. }) => Some((*to, reason.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        moves.iter().any(|(to, why)| *to == TaskState::Merging
+            && why.starts_with("nobody but its builder is left to review ")
+            && why.ends_with(", so it goes to the merge unreviewed")),
+        "{moves:#?}"
+    );
+    assert!(
+        moves.iter().all(|(to, _)| *to != TaskState::NeedsYou),
+        "{moves:#?}"
+    );
+    let codex = crew
+        .services
+        .workers
+        .fake("codex/gpt-x")
+        .context("the crew")?;
+    let specs = codex.specs();
+    assert!(specs.iter().all(|spec| spec.role != RoleName::Reviewer));
+    let builds = specs
+        .iter()
+        .filter(|spec| spec.step == Some(StepName::Build))
+        .count();
+    assert_eq!(builds, 1, "one build, with no second try");
+    Ok(())
+}
+
+/// Outside autopilot the same merge asks you, and its reason names the task nobody reviewed.
+#[tokio::test]
+async fn a_merge_with_a_task_nobody_could_review_asks_naming_it() -> anyhow::Result<()> {
+    let mut crew = Crew::new()?;
+    with_checks(&mut crew);
+    enlist(&mut crew, "codex/gpt-x", "openai");
+    crew.services.workers.add(
+        FakeRunner::cli("antigravity-cli", "google")
+            .with_cheapest_model("gemini-3.8-flash-low")
+            .respond_with(answer),
+    );
+    let outcome = run(&crew).await?;
+    assert!(
+        matches!(outcome.exit, EngineExit::Waiting(_)),
+        "{:?}",
+        outcome.exit
+    );
+    assert_eq!(open_kinds(&outcome.events), [ApprovalKind::Merge]);
+    let why = reasons(&outcome.events, ApprovalKind::Merge).join("\n");
+    assert!(
+        why.contains("Nobody but its builder is left to review "),
+        "{why}"
+    );
+    assert!(!why.contains("a reviewer didn't approve"), "{why}");
     Ok(())
 }
 
@@ -1591,6 +1834,7 @@ async fn a_stopped_task_goes_to_the_other_installed_clis() -> anyhow::Result<()>
         limit: Default::default(),
         predictions: None,
         item: None,
+        way: None,
     };
     // The stopped CLI's other model is listed too, last for want of a record: the recovery
     // rules keep it when only the stopped model failed and drop it when its CLI did.
@@ -1856,8 +2100,8 @@ fn started_from(events: &[RunEvent]) -> Vec<Option<WorkflowRef>> {
         .collect()
 }
 
-/// Ultracode on council, and the main agent would run the task as maker-checker. It may only size
-/// the workflow, so the run stays council and says why.
+/// Ultracode on the crew's fixed phases, and the main agent would run the task as maker-checker. It may only size
+/// the workflow, so the run stays on them and says why.
 #[tokio::test]
 async fn the_main_agent_never_swaps_the_workflow_for_another_workflow() -> anyhow::Result<()> {
     let crew = designing_crew(support::brief(
@@ -1875,10 +2119,7 @@ async fn the_main_agent_never_swaps_the_workflow_for_another_workflow() -> anyho
         open_kinds(events)
     );
     let from = started_from(events);
-    assert!(
-        from.contains(&Some(WorkflowRef::new("council"))),
-        "{from:?}"
-    );
+    assert!(from.contains(&Some(WorkflowRef::new("base"))), "{from:?}");
     assert!(
         !from.contains(&Some(WorkflowRef::new("maker-checker"))),
         "{from:?}"
@@ -1906,13 +2147,13 @@ async fn the_main_agent_never_swaps_the_workflow_for_another_workflow() -> anyho
     assert!(text(&designs[0]).contains("## The workflow's steps"));
     assert!(!text(&designs[0]).contains("### maker-checker"));
     assert!(
-        text(&designs[1]).contains("keep `council`, the workflow's steps"),
+        text(&designs[1]).contains("keep `base`, the workflow's steps"),
         "{}",
         text(&designs[1])
     );
     assert!(
         notes(events).iter().any(|note| note.starts_with(
-            "The main agent's workflow broke the rules twice, so council runs as written."
+            "The main agent's workflow broke the rules twice, so base runs as written."
         )),
         "{:?}",
         notes(events)
@@ -1944,7 +2185,7 @@ async fn an_incomplete_design_is_said_plainly() -> anyhow::Result<()> {
         .context("the design's note")?;
     assert_eq!(
         note.line(),
-        "The main agent's design came back incomplete, so council runs as written."
+        "The main agent's design came back incomplete, so base runs as written."
     );
     let detail = note.detail().context("what the validator said")?;
     assert!(
@@ -1952,10 +2193,7 @@ async fn an_incomplete_design_is_said_plainly() -> anyhow::Result<()> {
         "{detail}"
     );
     let from = started_from(events);
-    assert!(
-        from.contains(&Some(WorkflowRef::new("council"))),
-        "{from:?}"
-    );
+    assert!(from.contains(&Some(WorkflowRef::new("base"))), "{from:?}");
     Ok(())
 }
 
@@ -1964,7 +2202,7 @@ async fn an_incomplete_design_is_said_plainly() -> anyhow::Result<()> {
 #[tokio::test]
 async fn the_main_agent_sizes_the_workflow_and_says_what_it_changed() -> anyhow::Result<()> {
     let mut sized =
-        argonauts_crew::workflow::builtin::load("council").map_err(|err| anyhow::anyhow!(err))?;
+        argonauts_crew::workflow::builtin::load("base").map_err(|err| anyhow::anyhow!(err))?;
     for phase in &mut sized.phases {
         for step in &mut phase.steps {
             step.steps
@@ -1974,7 +2212,7 @@ async fn the_main_agent_sizes_the_workflow_and_says_what_it_changed() -> anyhow:
     let composed =
         argonauts_crew::workflow::yaml::print(&sized).map_err(|err| anyhow::anyhow!(err))?;
     let crew = designing_crew(support::brief(
-        Some("council"),
+        Some("base"),
         serde_json::json!([]),
         Some(&composed),
         "One task needs no debate.",
@@ -1988,10 +2226,7 @@ async fn the_main_agent_sizes_the_workflow_and_says_what_it_changed() -> anyhow:
         open_kinds(events)
     );
     let from = started_from(events);
-    assert!(
-        from.contains(&Some(WorkflowRef::new("council"))),
-        "{from:?}"
-    );
+    assert!(from.contains(&Some(WorkflowRef::new("base"))), "{from:?}");
     let said = notes(events);
     assert!(
         said.contains(
@@ -2068,7 +2303,7 @@ async fn autopilot_with_every_provider_in_the_crew_lands() -> anyhow::Result<()>
     let mut crew = Crew::new()?;
     with_checks(&mut crew);
     let keep = serde_json::json!({
-        "template": "council",
+        "template": "base",
         "params": [],
         "composed": null,
         "why": "It fits"
@@ -2161,7 +2396,7 @@ async fn autopilot_draws_no_spot_check_of_its_own() -> anyhow::Result<()> {
 
 /// With no model of another provider to run, autopilot goes ahead on your rules alone, keeps the
 /// main agent's answers as assumptions, and says so in plain words with where to pick a judge.
-/// Its one task is deferred with no fallback left, so no task passed and nothing merges.
+/// The crew's other member reviews its one task, so the merge rule keeps the work on its branch.
 #[tokio::test]
 async fn autopilot_with_no_judge_goes_ahead_on_your_rules() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
@@ -2172,7 +2407,7 @@ async fn autopilot_with_no_judge_goes_ahead_on_your_rules() -> anyhow::Result<()
     let events = &outcome.events;
     assert_eq!(
         outcome.exit,
-        EngineExit::Finished(argonauts_core::events::run::RunOutcome::Failed),
+        EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
         "open {:?}, notes {:#?}",
         open_kinds(events),
         notes(events)
@@ -2183,7 +2418,9 @@ async fn autopilot_with_no_judge_goes_ahead_on_your_rules() -> anyhow::Result<()
     let said = notes(events);
     assert!(
         said.iter()
-            .any(|note| note.starts_with("Nothing was merged, since no task passed: \"")),
+            .any(|note| note.starts_with(
+                "Autopilot answered \"Merge this run into main?\" with \"Keep the branch\""
+            ) && note.contains(", picked from its builder's own provider, reviewed ")),
         "{said:#?}"
     );
     assert!(
@@ -2194,14 +2431,6 @@ async fn autopilot_with_no_judge_goes_ahead_on_your_rules() -> anyhow::Result<()
         ),
         "{said:#?}"
     );
-    // Nobody was there to defer the task, and the line that says nothing merged doesn't say
-    // you did.
-    let nothing = said
-        .iter()
-        .find(|note| note.starts_with("Nothing was merged"))
-        .copied()
-        .unwrap_or_default();
-    assert!(!nothing.contains("you deferred it"), "{nothing}");
     Ok(())
 }
 
@@ -2316,6 +2545,7 @@ impl Asking {
             limit: Default::default(),
             predictions: None,
             item: None,
+            way: None,
         };
         host.record(
             Some(&task),
@@ -2353,58 +2583,16 @@ impl Asking {
     }
 }
 
-/// Esc on an agent's question means "carry on without me": the question goes
-/// back to the agent at once, which is told to decide and say what it assumed, a line says so,
-/// and the closing answer lists it. Nothing waits.
+/// Carry on without me on an agent's question: the question goes back to the agent at once,
+/// which is told to decide and say what it assumed, a line says so, and the closing answer lists
+/// it. Nothing waits.
 #[tokio::test]
 async fn a_question_you_leave_goes_back_to_its_agent() -> anyhow::Result<()> {
-    use argonauts_core::api::ApprovalAnswer;
-    use argonauts_core::events::approval::{AnswerAction, LEFT_TO_THE_AGENT};
+    use argonauts_core::events::approval::LEFT_TO_THE_AGENT;
+    use argonauts_core::settings::asking::WhenDeclined;
 
-    let crew = three_provider_crew()?;
-    let started = crew.run_started(RunMode::Crew, "add a --verbose flag")?;
-    let asking = Asking::new(&crew, vec![started])?;
-    let ask = with_git_env(
-        crew.git_env(),
-        argonauts_crew::blackboard::on_report(&asking.host, &asking.task, &asking.report),
-    );
-    let leave = async {
-        let id = loop {
-            let open = asking
-                .sink
-                .events()
-                .into_iter()
-                .find_map(|event| match event.kind {
-                    RunEventKind::Approval(ApprovalEvent::Opened(opened))
-                        if opened.kind == ApprovalKind::Question =>
-                    {
-                        Some(opened.id)
-                    }
-                    _ => None,
-                });
-            if let Some(id) = open {
-                break id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        };
-        let left = ApprovalAnswer {
-            id,
-            action: AnswerAction::CarryOn,
-            text: None,
-            evidence_sha256: String::new(),
-            tasks: Vec::new(),
-        };
-        argonauts_crew::approvals::answer(&asking.host, left.clone())
-            .expect("the question is left");
-        // It is decided now, so a second Esc has nothing to leave.
-        let again = argonauts_crew::approvals::answer(&asking.host, left);
-        assert_eq!(again, Err("already decided".to_owned()));
-    };
-    let (asked, ()) = tokio::join!(ask, leave);
-    asked?;
-
-    let events = asking.sink.events();
-    assert!(open_kinds(&events).is_empty(), "something still waits");
+    let (opened, events) = leave_the_question(three_provider_crew()?).await?;
+    assert_eq!(opened.when_declined, WhenDeclined::Decide);
     let answer = posted_answer(&events);
     assert_eq!(answer.from, Party::Declined);
     assert_eq!(answer.text, LEFT_TO_THE_AGENT);
@@ -2418,6 +2606,82 @@ async fn a_question_you_leave_goes_back_to_its_agent() -> anyhow::Result<()> {
         [line]
     );
     Ok(())
+}
+
+/// With `approvals.when_declined = "stop"` the question says so when it opens, and leaving it
+/// tells its agent to stop and report rather than decide.
+#[tokio::test]
+async fn a_question_you_leave_with_stop_set_stops_its_agent() -> anyhow::Result<()> {
+    use argonauts_core::settings::asking::WhenDeclined;
+    use argonauts_crew::approvals::decline::STOP_HERE;
+
+    let mut crew = three_provider_crew()?;
+    crew.settings.approvals.when_declined = WhenDeclined::Stop;
+    let (opened, events) = leave_the_question(crew).await?;
+    assert_eq!(opened.when_declined, WhenDeclined::Stop);
+    let answer = posted_answer(&events);
+    assert_eq!(answer.from, Party::Declined);
+    assert_eq!(answer.text, STOP_HERE);
+    let line = "You left \"Question from build:add-the\", so its agent stops and reports.";
+    assert!(notes(&events).contains(&line), "{:#?}", notes(&events));
+    Ok(())
+}
+
+/// Opens a task's question for you and takes Carry on without me on it, returning the question as
+/// it opened and the run's events after. Leaving it a second time is refused.
+async fn leave_the_question(
+    crew: Crew,
+) -> anyhow::Result<(
+    Box<argonauts_core::events::approval::ApprovalOpened>,
+    Vec<RunEvent>,
+)> {
+    use argonauts_core::api::ApprovalAnswer;
+    use argonauts_core::events::approval::AnswerAction;
+
+    let started = crew.run_started(RunMode::Crew, "add a --verbose flag")?;
+    let asking = Asking::new(&crew, vec![started])?;
+    let ask = with_git_env(
+        crew.git_env(),
+        argonauts_crew::blackboard::on_report(&asking.host, &asking.task, &asking.report),
+    );
+    let leave = async {
+        let opened = loop {
+            let open = asking
+                .sink
+                .events()
+                .into_iter()
+                .find_map(|event| match event.kind {
+                    RunEventKind::Approval(ApprovalEvent::Opened(opened))
+                        if opened.kind == ApprovalKind::Question =>
+                    {
+                        Some(opened)
+                    }
+                    _ => None,
+                });
+            if let Some(opened) = open {
+                break opened;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        let left = ApprovalAnswer {
+            id: opened.id.clone(),
+            action: AnswerAction::CarryOn,
+            text: None,
+            evidence_sha256: String::new(),
+            tasks: Vec::new(),
+        };
+        argonauts_crew::approvals::answer(&asking.host, left.clone())
+            .expect("the question is left");
+        // It is decided now, so leaving it again has nothing to leave.
+        let again = argonauts_crew::approvals::answer(&asking.host, left);
+        assert_eq!(again, Err("already decided".to_owned()));
+        opened
+    };
+    let (asked, opened) = tokio::join!(ask, leave);
+    asked?;
+    let events = asking.sink.events();
+    assert!(open_kinds(&events).is_empty(), "something still waits");
+    Ok((opened, events))
 }
 
 /// A run that stops to wait for your answer ends the wait that would pass it on; when its step
@@ -2631,7 +2895,7 @@ async fn a_picked_model_that_cant_answer_leaves_it_to_the_main_agent() -> anyhow
 }
 
 /// At a phase's end too, the main agent may size what's left of the workflow, never swap it
-/// for another template. Its pick of maker-checker is refused, and the run stays council.
+/// for another template. Its pick of maker-checker is refused, and the run stays on the fixed phases.
 #[tokio::test]
 async fn at_a_phase_end_the_main_agent_keeps_the_workflow() -> anyhow::Result<()> {
     let picks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2643,7 +2907,7 @@ async fn at_a_phase_end_the_main_agent_keeps_the_workflow() -> anyhow::Result<()
             if spec.step == Some(StepName::DesignWorkflow) {
                 // The run's design keeps the workflow; each phase end wants another template.
                 let template = if picks.fetch_add(1, Ordering::SeqCst) == 0 {
-                    "council"
+                    "base"
                 } else {
                     "maker-checker"
                 };
@@ -2710,7 +2974,7 @@ async fn at_a_phase_end_the_main_agent_keeps_the_workflow() -> anyhow::Result<()
     assert!(
         said.iter().any(|note| note
             .contains("broke the rules twice, so the workflow goes on unchanged")
-            && note.contains("keep `council`, the workflow's steps")),
+            && note.contains("keep `base`, the workflow's steps")),
         "{said:#?}"
     );
     Ok(())

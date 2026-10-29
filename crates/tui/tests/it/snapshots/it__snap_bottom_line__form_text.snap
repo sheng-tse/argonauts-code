@@ -1,39 +1,39 @@
 ---
-source: crates/tui/tests/snap_bottom_line.rs
+source: crates/tui/tests/it/snap_bottom_line.rs
 expression: both
 ---
 healthy
 200 columns
-  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                                                                                 ● Claude 5h 1% · 7d 56% used  Codex 7d 11% used  agy 5h 2% used▕
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                                                                          ● Claude Code 5h 1% · 7d 56% used   Codex 7d 11% used   agy 5h 2% used▕
 150 columns
-  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                               ● Claude 5h 1% · 7d 56% used  Codex 7d 11% used  agy 5h 2% used▕
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                        ● Claude Code 5h 1% · 7d 56% used   Codex 7d 11% used   agy 5h 2% used▕
 120 columns
-  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts ● Claude 5h 1% · 7d 56% used  Codex 7d 11% used  agy 5h 2% used▕
+  ⏵⏵ auto mode on (shift+tab to cycle)            ● Claude Code 5h 1% · 7d 56% used   Codex 7d 11% used   agy 5h 2% used▕
 100 columns
-  ⏵⏵ auto mode on                    ● Claude 5h 1% · 7d 56% used  Codex 7d 11% used  agy 5h 2% used▕
+  ⏵⏵ auto mode on             ● Claude Code 5h 1% · 7d 56% used   Codex 7d 11% used   agy 5h 2% used▕
  80 columns
-  ⏵⏵ auto        ● Claude 5h 1% · 7d 56% used  Codex 7d 11% used  agy 5h 2% used▕
+  ⏵⏵ auto ● Claude Code 5h 1% · 7d 56% used   Codex 7d 11% used   agy 5h 2% used▕
  60 columns
-  ⏵⏵                ● Claude 5h 1% · 7d 56% used  Codex  agy▕
+  ⏵⏵         ● Claude Code 5h 1% · 7d 56% used   Codex   agy▕
  40 columns
-  ⏵⏵  ● Claude 5h 1% · 7d 56% used  ○  ○▕
+  ⏵⏵     ● Claude Code 56%   ○ CX   ○ AG▕
  20 columns
-  ⏵⏵     ● 56%  ○  ○▕
+  ⏵⏵    ● CC 56% ○ ○▕
 
 near a limit and out
 200 columns
-  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                                                      ● Claude 5h 93% · 7d 56% used · resets 4:40pm  Codex 7d 11% used  agy out until Tue 3:45pm▕
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                                               ● Claude Code 5h 93% · 7d 56% used · resets 4:40pm   Codex 7d 11% used   agy out until Tue 3:45pm▕
 150 columns
-  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts    ● Claude 5h 93% · 7d 56% used · resets 4:40pm  Codex 7d 11% used  agy out until Tue 3:45pm▕
+  ⏵⏵ auto mode on (shift+tab to cycle)               ● Claude Code 5h 93% · 7d 56% used · resets 4:40pm   Codex 7d 11% used   agy out until Tue 3:45pm▕
 120 columns
-  ⏵⏵ auto mode on             ● Claude 5h 93% · 7d 56% used · resets 4:40pm  Codex 7d 11% used  agy out until Tue 3:45pm▕
+  ⏵⏵ auto mode on      ● Claude Code 5h 93% · 7d 56% used · resets 4:40pm   Codex 7d 11% used   agy out until Tue 3:45pm▕
 100 columns
-  ⏵⏵ auto ● Claude 5h 93% · 7d 56% used · resets 4:40pm  Codex 7d 11% used  agy out until Tue 3:45pm▕
+  ⏵⏵          ● Claude Code 5h 93% · 7d 56% used · 4:40pm   Codex 7d 11% used   agy out · Tue 3:45pm▕
  80 columns
-  ⏵⏵          ● Claude 5h 93% · 7d 56% used · 4:40pm  Codex 7d 11% used  agy out▕
+  ⏵⏵   ● Claude Code 5h 93% · 7d 56% used · 4:40pm   Codex 7d 11% used   agy out▕
  60 columns
-  ⏵⏵  ● Claude 5h 93% · 7d 56% used · 4:40pm  Codex  agy out▕
+  ⏵⏵     ● Claude Code 5h 93% used · 4:40pm   ○ CX   agy out▕
  40 columns
-  ⏵⏵   ● Claude 93% · 4:40pm  ○  agy out▕
+  ⏵⏵  ● Claude Code 93%   ○ CX   agy out▕
  20 columns
-  ⏵⏵ ● 93%  ○  ○ out▕
+  ⏵⏵   ● 93% ○ ○ out▕

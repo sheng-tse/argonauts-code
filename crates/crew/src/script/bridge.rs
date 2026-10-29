@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::RunEventKind;
+use argonauts_core::events::council::{CheckPick, CouncilEvent, CouncilEventKind};
 use argonauts_core::events::session::{CliWorkflowRun, EndReason, InputPartKind};
 use argonauts_core::events::workflow::{
     AgentLeftOut, AgentSession, RunNote, WorkflowEvent, WorkflowReport,
@@ -15,6 +17,7 @@ use argonauts_core::log::{GAVE_NO_ANSWER, Note, NoteLevel};
 use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::session_runner::Access;
 use argonauts_core::settings::crew::CrewRole;
+use argonauts_core::workflow::StepRef;
 use argonauts_runner::{AgentCall, AgentEnd, Check, Checked, JournalEntry, Kept, Script};
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -23,8 +26,11 @@ use tokio_util::sync::CancellationToken;
 mod beside;
 mod no_answer;
 pub(super) mod reading;
+mod same_maker;
 
 use super::{goal, journal, tasks};
+use crate::council::checks::{self, Rung};
+use crate::council::{lexicon, seats};
 use crate::engine::host::{Fallbacks, Host, InPlaceOf, Ran, SessionPlan};
 use crate::engine::job_fallback;
 use crate::error::{EngineError, EngineResult, Stall};
@@ -80,6 +86,13 @@ fn round_of(call: &AgentCall) -> Round {
         call.try_number,
         call.role,
     )
+}
+
+/// Whether the call reads its task's work to review or judge it: a reviewer's or a judge's, or
+/// one that mustn't be the author's, as a cross-review is.
+fn reviews_the_work(call: &AgentCall) -> bool {
+    !call.writes
+        && (matches!(call.role, CrewRole::Reviewer | CrewRole::Judge) || call.not_the_author)
 }
 
 /// One phase's agents of one role, by label.
@@ -336,7 +349,15 @@ impl<'a> Bridge<'a> {
 
     /// The workflow in use is a council, whose proposals the stop and its lines name.
     fn is_council(&self) -> bool {
-        self.host.settings().workflow == "council"
+        seats::in_council(self.host.settings())
+    }
+
+    /// The talk of the council whose plan the tasks come from, which every check of one of
+    /// them belongs to. A council workflow that never talked keeps the step's own.
+    fn council_talk(&self) -> StepRef {
+        self.host
+            .read(|state| state.councils.newest().map(|council| council.talk.clone()))
+            .unwrap_or_else(|| self.call.at.step.clone())
     }
 
     /// The run's stop when `call`'s job can't be left out: why, in the step's own words where
@@ -404,7 +425,11 @@ impl<'a> Bridge<'a> {
     }
 
     async fn run_agent(&self, call: &AgentCall) -> EngineResult<AgentEnd> {
-        let worker = self.pick(call)?;
+        let check = self.council_check(call).await?;
+        let worker = match &check {
+            Some(check) => check.checker.clone(),
+            None => self.pick(call)?,
+        };
         if call.writes {
             return tasks::work(self, call, &worker).await;
         }
@@ -430,12 +455,40 @@ impl<'a> Bridge<'a> {
             }
             None => (self.host.repo().base_worktree.clone(), None),
         };
+        if check.is_some()
+            && let Some(change) = &change
+            && let Some(end) = self.signed(call, change)
+        {
+            return Ok(end);
+        }
+        if let Some(rung) = check.as_ref().filter(|rung| rung.is_yours()) {
+            let checks = tasks::checks_of(self, call.task.as_deref());
+            return self
+                .yours_to_check(call, &rung.checker, &workdir, change.as_ref(), checks)
+                .await;
+        }
         let reviews = change.is_some();
         let mut parts = vec![instructions::of_call(
             self.host,
             &call.prompt,
             self.author(call),
         )];
+        if check.is_some() {
+            let check = argonauts_core::prompt_files::in_use(
+                "council/check",
+                crate::prompts::council::CHECK,
+            );
+            // After the reviewers' frame, which the prompt still opens with.
+            parts.insert(
+                0,
+                part(
+                    InputPartKind::Instructions,
+                    "The council's check",
+                    check,
+                    None,
+                ),
+            );
+        }
         // What the checks said after the build, so a reviewer or a judge reads the results
         // rather than guessing at them. One about no task, as a sign-off is, reads them all.
         let checks = match call.task.as_deref() {
@@ -451,7 +504,9 @@ impl<'a> Bridge<'a> {
             .chain(&checks)
             .map(|part| part.text.len())
             .sum();
-        let reader = self.reader(call, worker, change.as_ref(), brief).await;
+        let reader = self
+            .reader(call, worker.clone(), change.as_ref(), brief)
+            .await;
         if let Some(change) = reader.change {
             parts.push(part(InputPartKind::Evidence, "the change", change, None));
         }
@@ -469,10 +524,23 @@ impl<'a> Bridge<'a> {
             });
         let fork_of = first_orchestrator
             .then(|| crate::orchestrated::fork_for(self.host, &reader.worker))
-            .flatten();
+            .flatten()
+            .filter(|_| check.is_none());
+        // A check reads the reviewers' frame, which tells it it isn't told who made the work,
+        // whatever role the workflow's step gave the call.
+        let role = match check {
+            Some(_) => RoleName::Reviewer,
+            None => call.role.fine_role(),
+        };
+        // A check goes by its task alone, never by who checks it or who made the change.
+        let label = match (&check, &call.task) {
+            (Some(_), Some(task)) => format!("check:{task}"),
+            _ => call.label.clone(),
+        };
         let plan = SessionPlan {
+            without_status: check.is_some(),
             at: Some(self.call.at.clone()),
-            role: call.role.fine_role(),
+            role,
             worker: reader.worker,
             task: None,
             access: reader.access,
@@ -482,9 +550,11 @@ impl<'a> Bridge<'a> {
             json_schema: call.schema.clone(),
             resume: None,
             slot: 0,
-            label: Some(call.label.clone()),
+            label: Some(label),
             reviews,
-            fresh: false,
+            // A check never carries on a seat's session, nor anyone's: it reads only the plan,
+            // the task, the change and what the checks printed.
+            fresh: check.is_some(),
             independent_of: self.builders(call),
             in_place_of: reader.in_place_of,
             fork_of,
@@ -504,9 +574,94 @@ impl<'a> Bridge<'a> {
         self.ran(call, &ran.key)?;
         let end = answer(self.host, call, &ran);
         if let Ok(verdict) = &end.result {
-            tasks::judged(self, call, &ran, verdict)?;
+            tasks::judged(self, call, &worker, &ran, verdict)?;
         }
         Ok(end)
+    }
+
+    /// A council's check of one task, which code assigns by the ladder rather than the role's
+    /// order, recorded once for the screen with the rung it came from. `None` for every other
+    /// call. Where only the model that made it could check it and the settings say to ask,
+    /// your answer for the council decides between that model's fresh session and you.
+    async fn council_check(&self, call: &AgentCall) -> EngineResult<Option<Rung>> {
+        let reads_a_task = call.task.is_some() && !call.writes;
+        let checks =
+            call.not_the_author || matches!(call.role, CrewRole::Reviewer | CrewRole::Judge);
+        if !(self.is_council() && reads_a_task && checks) {
+            return Ok(None);
+        }
+        let (Some(maker), Some(task)) = (
+            tasks::author(self, call),
+            tasks::task_of(self, call.task.as_deref()),
+        ) else {
+            return Ok(None);
+        };
+        let host = self.host;
+        let settings = host.settings();
+        let seats = seats::seat(settings, &DisplayNames::default()).unwrap_or_default();
+        let available = host.services().workers.available();
+        let mut set_up = roles::candidates(settings, RoleName::Reviewer);
+        set_up.extend(roles::candidates(settings, RoleName::Worker));
+        set_up.retain(|model| available.contains(model));
+        let provider = |model: &ModelRef| roles::provider(host, model);
+        let rung = checks::ladder(
+            &maker,
+            &seats,
+            &set_up,
+            &provider,
+            settings.council.same_model_check,
+        );
+        // A call that carries on after a stop picked its checker already.
+        let picked = lock(&self.sessions).contains_key(&call.index);
+        let rung = if rung.ask_first && !picked && !self.same_maker_may_check(call, &maker).await? {
+            Rung::yours(&maker)
+        } else {
+            rung
+        };
+        if rung.is_yours() {
+            // Recorded where your check opens, once however often the run resumes.
+            return Ok(Some(rung));
+        }
+        self.reads(call, &rung.checker);
+        if !picked {
+            let pick = CheckPick {
+                task: task.clone(),
+                checker: Some(rung.checker.clone()),
+                rung: rung.rung,
+            };
+            let event = CouncilEvent {
+                talk: self.council_talk(),
+                kind: CouncilEventKind::Check(pick),
+            };
+            host.record(Some(&task), None, RunEventKind::Council(event))?;
+        }
+        Ok(Some(rung))
+    }
+
+    /// A change whose added lines sign the work goes back to its maker with one line, before
+    /// any check reads it.
+    fn signed(&self, call: &AgentCall, change: &reading::Change) -> Option<AgentEnd> {
+        let asks_a_verdict = call
+            .schema
+            .as_ref()
+            .and_then(|schema| schema.get("required"))
+            .and_then(Value::as_array)
+            .is_some_and(|required| required.iter().any(|key| key == "accept"));
+        if !asks_a_verdict {
+            return None;
+        }
+        let lexicon = lexicon::of_run(self.host);
+        let signed: Vec<checks::Signed> = change
+            .diffs()
+            .flat_map(|diff| checks::signatures(diff, &lexicon))
+            .collect();
+        if signed.is_empty() {
+            return None;
+        }
+        Some(AgentEnd::answered(serde_json::json!({
+            "accept": false,
+            "findings": [checks::send_back_line(&signed)],
+        })))
     }
 
     /// Who built what a reviewer or a judge reads, so a fallback for it never comes from their
@@ -522,6 +677,8 @@ impl<'a> Bridge<'a> {
     }
 
     /// Who takes the call: the model it names, else the one of its role's models it numbers.
+    /// Code never has a task's builder review or judge it, so with nobody else in the role
+    /// the call is skipped, and the task comes to the run's merge unreviewed.
     fn pick(&self, call: &AgentCall) -> EngineResult<ModelRef> {
         if let Some(model) = &call.model {
             return model
@@ -533,12 +690,26 @@ impl<'a> Bridge<'a> {
         let picked = models
             .get(nth)
             .map(|model| self.unrepeated(call, model, &models));
-        picked.ok_or_else(|| {
-            EngineError::Refused(format!(
+        picked.ok_or_else(|| EngineError::Refused(self.nobody_to_take(call)))
+    }
+
+    /// Why nobody takes `call`: only the builder of the task it reviews was left, or its
+    /// role has no model.
+    fn nobody_to_take(&self, call: &AgentCall) -> String {
+        match tasks::task_of(self, call.task.as_deref()).filter(|_| reviews_the_work(call)) {
+            Some(task) => {
+                let nobody = crate::review::nobody_left_line(self.host, &task);
+                format!(
+                    "{} {}",
+                    tasks::SKIPPED,
+                    argonauts_core::text::clause_case(&nobody)
+                )
+            }
+            None => format!(
                 "no model is set for the {} to take {}",
                 call.role, call.label
-            ))
-        })
+            ),
+        }
     }
 
     /// `picked` for a reviewer's or a judge's call, unless another reader of the same work in
@@ -564,8 +735,9 @@ impl<'a> Bridge<'a> {
 
     /// The role's models in the order the call takes them, those at work first. A reviewer
     /// or a judge of a task comes from another provider than its author where the role has
-    /// one, one about the whole run from another than every builder's, and a call that
-    /// mustn't be the author never is.
+    /// one, and one about the whole run from another than every builder's. A call that
+    /// reviews or judges a task is never its builder, even with nobody else left, and another
+    /// that mustn't be the author isn't while anyone else may take it.
     fn ranked(&self, call: &AgentCall) -> Vec<ModelRef> {
         let host = self.host;
         let mut models = roles::candidates(host.settings(), call.role.fine_role());
@@ -574,7 +746,10 @@ impl<'a> Bridge<'a> {
             models.retain(|model| available.contains(model));
         }
         if let Some(author) = tasks::author(self, call) {
-            if call.not_the_author && models.iter().any(|model| *model != author) {
+            if reviews_the_work(call) {
+                let provider = |model: &ModelRef| roles::provider(host, model);
+                models = crate::review::reviewers::not_the_builder(&models, &author, &provider);
+            } else if call.not_the_author && models.iter().any(|model| *model != author) {
                 models.retain(|model| *model != author);
             }
             if matches!(call.role, CrewRole::Reviewer | CrewRole::Judge) || call.not_the_author {

@@ -224,9 +224,9 @@ fn is_global_only(key: &str) -> bool {
 /// The refusal `resolve` gives for the file once it holds `key`.
 fn global_only_in_project(key: &str, file: &Path) -> SettingsError {
     SettingsError::Refused(format!(
-        "{key} in {} can only be set in your global config, since it names a program for \
-         Argonauts Code to run",
-        shown(file)
+        "{key} in {} can only be set in your global config, since {}",
+        shown(file),
+        argonauts_core::settings::global_only_because(key)
     ))
 }
 

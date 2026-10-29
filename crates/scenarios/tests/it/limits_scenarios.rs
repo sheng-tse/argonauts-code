@@ -40,7 +40,9 @@ fn every_limits_scenario_renders_with_real_fixtures() {
             match step {
                 FakeStep::EmitFile(path) => assert!(fs::metadata(path).is_ok(), "{name}: {path}"),
                 FakeStep::Emit(line) => {
-                    let parsed: Result<serde_json::Value, _> = serde_json::from_str(line);
+                    // The fake fills its reset with a time as it sends the line.
+                    let sent = line.replace(&reset_in_soon(), "0");
+                    let parsed: Result<serde_json::Value, _> = serde_json::from_str(&sent);
                     assert!(parsed.is_ok(), "{name}: not JSON: {line}");
                 }
                 _ => {}
@@ -84,4 +86,43 @@ fn the_sandbox_probe_reports_each_try() {
 
     let version = Command::new(&probe).arg("--version").output().unwrap();
     assert!(version.stderr.is_empty(), "--version must skip the checks");
+    assert_eq!(probe_runs(&probe), "-p\n--version\n");
+}
+
+#[test]
+fn the_sandbox_probe_leaves_the_plan_usage_readings_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let written = dir.path().join("written.txt");
+    let probe = write_probe(&dir.path().join("probe"), "true", &[try_write(&written)]).unwrap();
+    let claude_code_reading = [
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "",
+        "--model",
+        "haiku",
+    ];
+    let codex_reading = ["app-server", "--listen", "stdio://"];
+    for reading in [&claude_code_reading[..], &codex_reading[..]] {
+        let output = Command::new(&probe).args(reading).output().unwrap();
+        assert!(output.stderr.is_empty(), "{reading:?} ran the checks");
+    }
+    assert!(!written.exists());
+
+    let session = [
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "user",
+    ];
+    let output = Command::new(&probe).args(session).output().unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(probe_lines(&stderr, LEAKED, "write").len(), 1, "{stderr}");
 }

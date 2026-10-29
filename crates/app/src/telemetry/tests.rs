@@ -44,6 +44,7 @@ fn line(day: Date, agent: &str, model: Option<&str>, tokens: u64, cost: f64) -> 
         hour: None,
         conversation: None,
         took: 0,
+        billing: None,
     }
 }
 
@@ -267,7 +268,10 @@ fn show_says_it_is_off_and_that_this_build_sends_nothing() {
     let text = show(&paths, &settings, &Found::default(), &held, now(), false);
     assert!(text.starts_with("Usage reports are off"), "{text}");
     assert!(text.contains("DO_NOT_TRACK is set"), "{text}");
-    assert!(text.contains("no PostHog key"), "{text}");
+    assert!(
+        text.contains("This is a debug build, so it sends nothing."),
+        "{text}"
+    );
     assert!(text.contains("\n  install    "), "{text}");
     assert!(!text.contains('\x1b'), "no colour off a terminal: {text}");
     assert!(!state_file(&paths).exists(), "show writes nothing");
@@ -347,8 +351,29 @@ fn off_says_so_and_how_to_turn_them_back_on() {
 }
 
 #[test]
-fn no_test_build_carries_a_key() {
-    assert!(Sender::built_in().is_none());
+fn no_test_build_sends() {
+    assert_eq!(Sender::built_in().err(), Some(Held::DebugBuild));
+}
+
+/// The project's own key unless the build names another, which sends a fork's reports to its
+/// own project, or an empty one, which turns them off for good. A host named without a key
+/// sends nothing, so the project's key never reaches another host.
+#[test]
+fn a_build_can_point_its_reports_elsewhere_or_nowhere() {
+    let ours = Sender::chosen(None, None).unwrap();
+    assert!(
+        ours.key.starts_with("phc_"),
+        "a project key, never a personal one"
+    );
+    assert_eq!(ours.address, send::US_CAPTURE);
+    let fork = Sender::chosen(Some("phc_fork_key"), Some("https://eu.i.posthog.com")).unwrap();
+    assert_eq!(fork.key, "phc_fork_key");
+    assert_eq!(fork.address, "https://eu.i.posthog.com/i/v0/e/");
+    assert!(Sender::chosen(Some(""), None).is_none());
+    assert!(Sender::chosen(Some("  "), Some("https://eu.i.posthog.com")).is_none());
+    assert!(Sender::chosen(None, Some("https://posthog.fork.example")).is_none());
+    let blank_host = Sender::chosen(None, Some("  ")).unwrap();
+    assert_eq!(blank_host.address, send::US_CAPTURE);
 }
 
 /// A run the Captain-or-crew rules sent to a workflow for ultracode, with a goal of its own set

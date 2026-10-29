@@ -15,7 +15,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Span;
 
 use super::bars::{self, Stack};
-use super::legend::{self, Entry};
+use super::legend::{self, BEFORE_NUMBERS, Entry};
 use super::{Drawn, Kit, Level, State, States, fit, ljust, rjust, spread};
 use crate::text::{str_width, truncate_spans};
 use crate::theme::Role;
@@ -194,7 +194,7 @@ pub fn meters(kit: &Kit<'_>, rows: &[MeterRow], width: usize, slots: MeterSlots)
         MeterRow::Text { .. } => None,
     })
     .max(slots.note);
-    let fixed = label_w + 1 + PERCENT_FIELD + unit_w;
+    let fixed = label_w + BEFORE_NUMBERS + PERCENT_FIELD + unit_w;
     // On a narrow card the notes go before the meter gets too short to read.
     let note_w = if width >= fixed + 2 + note_w + 10 {
         note_w
@@ -216,7 +216,7 @@ pub fn meters(kit: &Kit<'_>, rows: &[MeterRow], width: usize, slots: MeterSlots)
                 tick,
             } => {
                 line.push(kit.dim(ljust(label, label_w)));
-                line.push(Span::raw(" "));
+                line.push(Span::raw(" ".repeat(BEFORE_NUMBERS)));
                 line.extend(bars::half_meter(
                     kit,
                     *ratio,
@@ -235,7 +235,7 @@ pub fn meters(kit: &Kit<'_>, rows: &[MeterRow], width: usize, slots: MeterSlots)
             }
             MeterRow::Text { label, words } => {
                 line.push(kit.dim(ljust(label, label_w)));
-                line.push(Span::raw(" "));
+                line.push(Span::raw(" ".repeat(BEFORE_NUMBERS)));
                 line.extend(words.iter().cloned());
             }
         }

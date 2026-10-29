@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use super::layout::{BODY_COL, EXPAND_HINT, indent, result_prefix};
 use super::tool::body::text_rows;
 use super::{HistoryCell, Tone};
+use crate::kit::logo::{LOGO_BEFORE, logo_before};
 use crate::render::RenderCtx;
 use crate::text::marks;
 use crate::text::{fit_lines, sanitize, sanitize_line, spans_width, str_width, wrap_spans};
@@ -40,6 +41,25 @@ pub struct Notice {
     /// The rows under `⎿` read dim through, a command in them too, as one account of what
     /// happened, such as why a run stopped and how to carry it on.
     pub dim_details: bool,
+    /// Logos before the rows under `⎿` that start with the name of a CLI or a host.
+    pub detail_logos: Vec<DetailLogo>,
+    /// Offers something about the reply above it, right under that reply with no blank row
+    /// between, its `◆` in the accent.
+    pub offer: bool,
+}
+
+/// A logo before a row under `⎿` that starts with the name of whoever it stands for, followed
+/// by a column's blanks. Where the logo draws, the name gives up two of them, so the columns
+/// after it stay where they were.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetailLogo {
+    /// The row, counted from the first under `⎿`.
+    pub row: usize,
+    /// `None` for a row of the same column that names what has no logo, as Argonauts Code:
+    /// it keeps the logo's cells blank, so its name lines up with the others'.
+    pub logo: Option<argonauts_core::logos::Logo>,
+    /// Bytes of the name at the row's start.
+    pub name: usize,
 }
 
 /// A piece of the words a notice ends with.
@@ -49,6 +69,9 @@ pub enum Trailing {
     Dim(String),
     /// A command to type, in the text color so the eye finds it among the dim words.
     Command(String),
+    /// A command to type after plain words, in the code color, as `argonauts self-update`
+    /// ends the line about an update that failed.
+    Code(String),
 }
 
 impl Notice {
@@ -67,11 +90,31 @@ impl Notice {
             headline: false,
             trailing: Vec::new(),
             dim_details: false,
+            detail_logos: Vec::new(),
+            offer: false,
         }
     }
 
-    /// `◆ Keeping the computer and its screen awake until you quit. /awake off lets them sleep
-    /// again.`: a switch you flipped, with the `◆` in the success color, how to undo it dim
+    /// `◆ Doing this alone: about 1 file · /crew to have Council do it`: an offer about the
+    /// reply above it, the words dim and the command in the text color so the eye finds it.
+    pub fn offer(
+        words: impl Into<String>,
+        command: impl Into<String>,
+        after: impl Into<String>,
+    ) -> Self {
+        Self {
+            question: true,
+            offer: true,
+            ..Self::new(Tone::Dim, words)
+        }
+        .with_trailing([
+            Trailing::Command(command.into()),
+            Trailing::Dim(after.into()),
+        ])
+    }
+
+    /// `◆ Keeping the computer and its screen awake until you quit. /awake again lets them
+    /// sleep.`: a switch you flipped, with the `◆` in the success color, how to undo it dim
     /// after it, and what it can't do dim on the row under it.
     pub fn switched(text: impl Into<String>, undo: Option<String>, caveat: Option<String>) -> Self {
         Self {
@@ -82,8 +125,8 @@ impl Notice {
         }
     }
 
-    /// `● Fell back to Claude Code as reviewer · no second try, this error repeats every time`:
-    /// the bullet in the tone, the words plain, and `after` dim.
+    /// `● Back from Claude Code · 2 turns made there`: the bullet in the tone, the words plain,
+    /// and `after` dim.
     pub fn plain_with_after(tone: Tone, text: impl Into<String>, after: impl Into<String>) -> Self {
         Self {
             decided: Some(after.into()),
@@ -163,6 +206,8 @@ impl HistoryCell for Notice {
         let hang = str_width(&glyph) + 1;
         let glyph_role = if self.headline {
             Role::Text
+        } else if self.offer {
+            Role::Accent
         } else {
             self.tone.role()
         };
@@ -213,6 +258,7 @@ impl HistoryCell for Notice {
             let (words, role) = match piece {
                 Trailing::Dim(words) => (words, Role::Dim),
                 Trailing::Command(words) => (words, Role::Text),
+                Trailing::Code(words) => (words, Role::Code),
             };
             spans.push(Span::styled(
                 sanitize_line(words).into_owned(),
@@ -239,12 +285,46 @@ impl HistoryCell for Notice {
         } else {
             self.detail.iter().collect()
         };
+        // Every row with a logo, or with the logo's cells kept blank, gives up the same blanks
+        // after its name, as many as the tightest can, so the column after stays in line.
+        let give_up = self
+            .detail_logos
+            .iter()
+            .filter_map(|logo| {
+                let detail = shown.get(logo.row)?;
+                let rest = detail.get(logo.name..)?;
+                let blanks = rest.len() - rest.trim_start_matches(' ').len();
+                Some(blanks.saturating_sub(1))
+            })
+            .min()
+            .unwrap_or(0);
         for (i, detail) in shown.into_iter().enumerate() {
-            let first = if i == 0 {
+            let mut first = if i == 0 {
                 result_prefix(theme)
             } else {
                 vec![indent(BODY_COL)]
             };
+            let logo = self.detail_logos.iter().find(|logo| logo.row == i);
+            let picture = logo.map(|logo| match &logo.logo {
+                Some(drawn) => logo_before(drawn, theme),
+                None if theme.logo_pictures => {
+                    vec![Span::raw(" ".repeat(usize::from(LOGO_BEFORE)))]
+                }
+                None => Vec::new(),
+            });
+            let detail: std::borrow::Cow<'_, str> = match (logo, picture) {
+                (Some(logo), Some(picture)) if !picture.is_empty() => {
+                    let given_up = spans_width(&picture);
+                    first.extend(picture);
+                    let (name, rest) = detail.split_at(logo.name.min(detail.len()));
+                    let blanks = rest.len() - rest.trim_start_matches(' ').len();
+                    // One blank always stays between the name and what follows it.
+                    let from = given_up.min(give_up).min(blanks.saturating_sub(1));
+                    format!("{name}{}", &rest[from..]).into()
+                }
+                _ => detail.as_str().into(),
+            };
+            let detail = detail.as_ref();
             // A detail set in under the one before, as /doctor's notes under an agent are, hangs
             // under its own words when it wraps.
             let set_in = detail.len() - detail.trim_start_matches(' ').len();
@@ -265,6 +345,10 @@ impl HistoryCell for Notice {
         }
         fit_lines(&mut lines, width);
         lines
+    }
+
+    fn continues_previous(&self) -> bool {
+        self.offer
     }
 }
 
@@ -522,24 +606,45 @@ mod tests {
     }
 
     #[test]
-    fn a_fallback_colors_its_bullet_alone_and_dims_why() {
+    fn a_plain_notice_colors_its_bullet_alone_and_dims_what_follows() {
         let mut theme = Theme::dark();
         theme.glyphs = Glyphs::UNICODE;
         let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
-        let lines = Notice::plain_with_after(
-            Tone::Warning,
-            "Fell back to Claude Code as reviewer",
-            "no second try, this error repeats every time",
-        )
-        .lines(&ctx);
+        let lines =
+            Notice::plain_with_after(Tone::Warning, "Back from Claude Code", "2 turns made there")
+                .lines(&ctx);
         assert_eq!(
             plain_text(&lines),
-            "● Fell back to Claude Code as reviewer · no second try, this error repeats every time"
+            "● Back from Claude Code · 2 turns made there"
         );
         let spans = &lines[0].spans;
         assert_eq!(spans[0].style, marks::decoration(theme.style(Role::Warn)));
         assert_eq!(spans[2].style, theme.style(Role::Text));
         assert_eq!(spans[3].style, theme.style(Role::Dim));
+    }
+
+    #[test]
+    fn an_offer_hangs_under_the_reply_with_its_command_in_the_text_color() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+        let offer = Notice::offer(
+            "Doing this alone: about 1 file · ",
+            "/crew",
+            " to have Council do it",
+        );
+        let lines = offer.lines(&ctx);
+        assert_eq!(
+            plain_text(&lines),
+            "◆ Doing this alone: about 1 file · /crew to have Council do it"
+        );
+        let spans = &lines[0].spans;
+        assert_eq!(spans[0].style, marks::decoration(theme.style(Role::Accent)));
+        assert_eq!(spans[2].style, theme.style(Role::Dim));
+        assert_eq!(spans[3].style, theme.style(Role::Text));
+        assert_eq!(spans[4].style, theme.style(Role::Dim));
+        assert!(offer.continues_previous());
+        assert!(!Notice::new(Tone::Dim, "a line of its own").continues_previous());
     }
 
     #[test]

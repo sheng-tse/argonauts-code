@@ -437,3 +437,132 @@ fn the_greeting_gets_its_picture_on_the_full_screen_and_none_when_narrow() {
     assert!(!sent.contains("\x1b_G"), "{sent:?}");
     assert!(sent.contains('▗'), "the argonaut's own cells: {sent:?}");
 }
+
+/// After a font size change the full screen takes the picture off wherever it showed, even
+/// when the header went out of view meanwhile, and places it again where the header's cells
+/// are once they show.
+#[test]
+fn on_the_full_screen_a_resize_takes_the_picture_off_and_places_it_again() {
+    let (mut ui, t0) = full_screen();
+    ui.use_pictures(Some(Graphics::Kitty), Some((9, 21)));
+    ui.model_mut().history.push(header("orchestrator", None));
+    ui.frame(t0).unwrap();
+    written(&mut ui);
+    let id = "i=1296105472";
+
+    // The same columns and rows, as a small font change can keep.
+    ui.resize(Size::new(COLUMNS, ROWS), None);
+    ui.frame(t0 + Duration::from_millis(50)).unwrap();
+    let sent = written(&mut ui);
+    let off = sent
+        .find(&format!("\x1b_Ga=d,d=i,q=2,{id}\x1b\\"))
+        .expect("taken off");
+    let again = sent
+        .rfind(&format!("\x1b_Ga=p,q=2,C=1,c=9,r=3,{id}"))
+        .expect("placed");
+    assert!(off < again, "{sent:?}");
+    assert_eq!(placed_at(&sent), Some("\x1b[2;2H"));
+
+    // Output that pushes the header out of view lands with the resize, so the frame after
+    // shows no header: the picture still comes off.
+    for line in 0..ROWS * 2 {
+        ui.model_mut().history.push(crate::cell::Notice::new(
+            crate::cell::Tone::Normal,
+            format!("line {line}"),
+        ));
+    }
+    ui.resize(Size::new(COLUMNS - 4, ROWS), None);
+    ui.frame(t0 + Duration::from_millis(100)).unwrap();
+    let sent = written(&mut ui);
+    assert!(
+        sent.contains(&format!("\x1b_Ga=d,d=i,q=2,{id}\x1b\\")),
+        "{sent:?}"
+    );
+    assert!(!sent.contains("a=p"), "{sent:?}");
+}
+
+/// A new cell size frees the pictures drawn for the old one, and the header gets them drawn
+/// for the new one.
+#[test]
+fn a_new_cell_size_sends_the_mascot_drawn_for_it() {
+    let (mut full, t0) = full_screen();
+    let (mut inline, _) = ui();
+    for ui in [&mut full, &mut inline] {
+        ui.use_pictures(Some(Graphics::Kitty), Some((9, 21)));
+        ui.model_mut().history.push(header("orchestrator", None));
+        ui.frame(t0).unwrap();
+        written(ui);
+        ui.measure_cells_with(|| Some((12, 28)));
+        ui.resize(Size::new(COLUMNS, ROWS), None);
+        ui.frame(t0 + Duration::from_millis(50)).unwrap();
+        let sent = written(ui);
+        assert!(
+            sent.contains("\x1b_Ga=d,d=I,q=2,i=1296105472\x1b\\"),
+            "{sent:?}"
+        );
+        assert_eq!(
+            pictures_in(sent.as_bytes()),
+            [picture(Mascot::Medusa, Look::Normal, (12, 28), 0)
+                .unwrap()
+                .into_owned()]
+        );
+        assert!(sent.contains("c=9,r=3,i=1296105473"), "{sent:?}");
+        assert_eq!(ui.picture_terminal(), Some((Graphics::Kitty, (12, 28))));
+    }
+}
+
+/// Inline, a resize places the picture in the header's cells again while they show: the same
+/// picture, taken off wherever the terminal left it.
+#[test]
+fn inline_a_resize_places_the_picture_again_in_the_headers_cells() {
+    let (mut ui, t0) = ui();
+    ui.use_pictures(Some(Graphics::Kitty), Some((9, 21)));
+    ui.model_mut().history.push(header("orchestrator", None));
+    ui.frame(t0).unwrap();
+    written(&mut ui);
+    ui.resize(Size::new(COLUMNS, ROWS), None);
+    ui.frame(t0 + Duration::from_millis(50)).unwrap();
+    let sent = written(&mut ui);
+    let at = sent
+        .find("\x1b_Ga=d,d=i,q=2,i=1296105472\x1b\\")
+        .expect("taken off");
+    assert!(sent[..at].ends_with("\x1b[2;2H"), "{sent:?}");
+    assert!(
+        sent.contains("\x1b_Ga=p,q=2,C=1,c=9,r=3,i=1296105472\x1b\\"),
+        "{sent:?}"
+    );
+    assert!(
+        pictures_in(sent.as_bytes()).is_empty(),
+        "nothing sent again"
+    );
+}
+
+/// Inline, a font change that rewraps the screen moves the picture to where the cursor says
+/// the header went: here a smaller font wraps nothing, and the terminal pulled a row back down
+/// from scrollback, so everything stands a row lower.
+#[test]
+fn inline_a_rewrap_moves_the_picture_to_where_the_cursor_says_the_header_went() {
+    let (mut ui, t0) = ui();
+    ui.use_pictures(Some(Graphics::Kitty), Some((9, 21)));
+    ui.model_mut().history.push(header("orchestrator", None));
+    ui.frame(t0).unwrap();
+    written(&mut ui);
+    let resting = ui.terminal().resting().expect("the cursor rests");
+    let lower = Position::new(resting.x, resting.y + 1);
+    ui.resize(Size::new(COLUMNS + 20, ROWS), Some(lower));
+    ui.frame(t0 + Duration::from_millis(50)).unwrap();
+    let sent = written(&mut ui);
+    let at = sent
+        .find("\x1b_Ga=d,d=i,q=2,i=1296105472\x1b\\")
+        .expect("taken off");
+    assert!(sent[..at].ends_with("\x1b[3;2H"), "{sent:?}");
+    assert!(
+        sent.contains("\x1b_Ga=p,q=2,C=1,c=9,r=3,i=1296105472\x1b\\"),
+        "{sent:?}"
+    );
+    // Without the cursor's word, the header can't be found after a rewrap, and its picture
+    // stays where the terminal keeps it.
+    ui.resize(Size::new(COLUMNS, ROWS), None);
+    ui.frame(t0 + Duration::from_millis(100)).unwrap();
+    assert!(!written(&mut ui).contains("\x1b_G"));
+}

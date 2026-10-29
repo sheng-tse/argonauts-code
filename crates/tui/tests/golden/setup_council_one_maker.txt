@@ -1,0 +1,26 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Set up Council
+  Each seat answers alone first, then they talk until every seat agrees, then they split the work.
+  Seats see each other only as Seat letters, never a name, a maker or a CLI. You see real names.
+
+    Seat                 ▐1 Opus 5.5 · 1       Note keeper    Proposes, lists the points, writes the plan        Ready
+    Seat                 ▐2 Opus 5.5 · 2       Skeptic        Argues against where most seats lean               Ready
+    Seat                 ▐3 Opus 5.5 · 3       Proposer       Says what it thinks is right                       Ready
+                         ○  Add one            Up to 6, the same model again too
+                         ▐▌ Codex              Logged out · run codex login, and it shows here
+                         ▐▌ agy                Not installed · /agents add agy
+                         ▐▌ OpenCode           Not installed · /agents add opencode
+  ❯ Checks             ‹ ▐▌ A fresh Opus 5.5 session ›        Blind to who made it; no other maker set up   Same maker
+
+    How tasks are done   Picked per task, from what you allow
+                         ●  Own session
+                         ●  Workflows    Any     or a list: Maker-checker, Spec-first, …
+                         ●  Agents       Up to 4
+
+  Only Claude Code is set up, so a fresh Opus 5.5 session checks each task. It never sees the talk or who made
+  the change, but it may still favour its own style, and each check is marked as such. ←  →  offers Sonnet 5:
+  another model, but the same maker. Three Opus 5.5 seats tend to make the same mistakes; the skeptic helps.
+  The note keeper picks a way for each task from these and gives its reason in a few words.
+  A list of workflows means any of them. A way you ask for in your prompt, or pick at the plan, decides that task.
+
+  space adds or drops · tab to the next column · ←  →  to change · ↑  ↓  to move · enter to switch · esc to leave it

@@ -8,6 +8,7 @@
 pub mod assemble;
 pub mod board;
 pub mod catalog;
+pub mod council;
 pub mod divide;
 pub mod fallback;
 pub mod files;

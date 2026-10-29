@@ -73,15 +73,22 @@ pub fn bottom_line() -> AppEvent {
     status_with(json!({}))
 }
 
-/// The idle bottom line with some fields replaced, such as `{"approval_mode": "auto"}`.
+/// The idle bottom line with some fields replaced, such as `{"approval_mode": "auto"}`. The
+/// line's own facts are laid over its defaults key by key, so Codex stays the CLI used most.
 pub fn status_with(changes: Value) -> AppEvent {
     let mut status = json!({"title": "Argonauts Code", "repo": REPO, "workflow": WORKFLOW, "run": null,
         "main_agent": MAIN_AGENT,
         "plan_chips": [chip("Claude", Some(plan_usage("claude-code", 0.71)), "healthy"),
                    chip("Codex", Some(plan_usage("codex", 0.38)), "healthy")],
+        "line": {"most_used": ["claude-code", "codex"]},
         "spent": spend(0, 0.0), "limit": null, "narrator": "on_demand",
         "approval_mode": "supervised"});
-    if let (Value::Object(status), Value::Object(changes)) = (&mut status, changes) {
+    if let (Value::Object(status), Value::Object(mut changes)) = (&mut status, changes) {
+        if let (Some(Value::Object(line)), Some(Value::Object(changed))) =
+            (status.get_mut("line"), changes.remove("line"))
+        {
+            line.extend(changed);
+        }
         status.extend(changes);
     }
     app(json!({"type": "status", "status": status}))
@@ -281,18 +288,16 @@ pub fn start_work_choice(id: &str) -> AppEvent {
     )
 }
 
-/// The scope question after a picker: session `s`, just me `m`, shared `p`, everywhere `e`.
-pub fn scope_choice(id: &str, title: &str, recommended: &str, warning: Option<&str>) -> AppEvent {
-    let scopes = [
-        ('s', "Just this session", "session"),
-        ('m', "This project, just me", "project_local"),
-        ('p', "This project, shared", "project"),
-        ('e', "Everywhere", "global"),
-    ];
-    let options = scopes
-        .iter()
-        .map(|(key, label, value)| option(*key, label, choose(value), *value == recommended))
-        .collect();
-    let body: Vec<&str> = warning.into_iter().collect();
-    choice(id, "setting_scope", title, &body, options)
+/// A safety change asking to confirm: Change it `y`, Keep it as it is `n`.
+pub fn safety_choice(id: &str, change: &str) -> AppEvent {
+    choice(
+        id,
+        "confirm_safety_setting",
+        "Change a safety setting?",
+        &[change],
+        vec![
+            option('y', "Change it", json!({"action": "approve"}), false),
+            option('n', "Keep it as it is", json!({"action": "cancel"}), false),
+        ],
+    )
 }

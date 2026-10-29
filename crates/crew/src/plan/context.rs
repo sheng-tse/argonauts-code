@@ -253,7 +253,10 @@ pub async fn step_input(host: &Host, call: &StepCall) -> EngineResult<String> {
         Some("plan") => {
             let chosen = host.read(|state| state.plan.chosen().cloned());
             if let Some(chosen) = chosen {
-                parts.push(crate::plan::drafts::read_text(&chosen)?);
+                // As agents read every plan: never with who wrote it.
+                let text = crate::plan::drafts::read_text(&chosen)?;
+                let lexicon = crate::council::lexicon::of_run(host);
+                parts.push(crate::council::relay::hide_who_wrote(&lexicon, &text));
             }
         }
         Some("diff") => {

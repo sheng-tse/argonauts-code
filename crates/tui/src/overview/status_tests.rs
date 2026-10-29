@@ -50,20 +50,27 @@ fn the_run_card_counts_its_tasks_by_state_and_lists_each_with_who_has_it() {
         rows[1].ends_with("1 of 4 merged [needs you] │"),
         "{rows:#?}"
     );
-    // One bar of the four tasks, then each state that has any with its count.
+    // One bar of the four tasks, then a row for each state that has any: its count and its
+    // share of them, in one column whatever the counts.
     assert!(rows[2].contains('█'), "{rows:#?}");
+    for (row, state) in [
+        (3, "merged"),
+        (4, "running"),
+        (5, "waiting"),
+        (6, "needs you"),
+    ] {
+        let expected = format!(" │ ██  {state:<16}{:>10}  {:>4}", 1, "25%");
+        assert!(rows[row].starts_with(&expected), "{state}: {rows:#?}");
+        assert!(rows[row].ends_with(" │"), "{state}: {rows:#?}");
+    }
     assert!(
-        rows[3].starts_with(" │ ▌ merged 1   ▌ running 1   ▌ waiting 1   ▌ needs you 1  "),
+        rows[8].starts_with(" │ Goal  Reports export as CSV from the API"),
         "{rows:#?}"
     );
-    assert!(
-        rows[5].starts_with(" │ Goal  Reports export as CSV from the API"),
-        "{rows:#?}"
-    );
-    assert!(rows[6].starts_with(" │ Plan  4 tasks:"), "{rows:#?}");
+    assert!(rows[9].starts_with(" │ Plan  4 tasks:"), "{rows:#?}");
     for (row, parts) in [
         (
-            8,
+            11,
             [
                 "✔ task-001",
                 "CSV writer",
@@ -72,7 +79,7 @@ fn the_run_card_counts_its_tasks_by_state_and_lists_each_with_who_has_it() {
             ],
         ),
         (
-            9,
+            12,
             [
                 "◐ task-002",
                 "Report endpoint",
@@ -81,7 +88,7 @@ fn the_run_card_counts_its_tasks_by_state_and_lists_each_with_who_has_it() {
             ],
         ),
         (
-            10,
+            13,
             [
                 "○ task-003",
                 "Docs and examples",
@@ -90,7 +97,7 @@ fn the_run_card_counts_its_tasks_by_state_and_lists_each_with_who_has_it() {
             ],
         ),
         (
-            11,
+            14,
             [
                 "◆ task-004",
                 "Review",
@@ -103,7 +110,39 @@ fn the_run_card_counts_its_tasks_by_state_and_lists_each_with_who_has_it() {
             assert!(rows[row].contains(part), "{part}: {rows:#?}");
         }
     }
-    assert_eq!(rows.len(), 13, "{rows:#?}");
+    assert_eq!(rows.len(), 16, "{rows:#?}");
+}
+
+/// Above the input the run's states share one row, so the card keeps its rows for the tasks.
+#[test]
+fn the_pinned_run_card_keeps_its_states_on_one_row() {
+    let rows = drawn(&sample::status(), 110, |cards, kit, frame| {
+        Some(cards.pinned(kit, StatusCard::Run, Form::Full, frame))
+    });
+    assert!(
+        rows[3].starts_with(" │ ▌ merged 1   ▌ running 1   ▌ waiting 1   ▌ needs you 1  "),
+        "{rows:#?}"
+    );
+    assert!(rows[4].contains("task-001    CSV writer"), "{rows:#?}");
+}
+
+/// A state with too few of the tasks to make one percent still says it has some.
+#[test]
+fn a_state_with_a_sliver_of_the_tasks_reads_under_one_percent() {
+    let mut summary = sample::status();
+    let (merged, running) = (summary.tasks[0].clone(), summary.tasks[1].clone());
+    summary.tasks = std::iter::repeat_n(merged, 200).chain([running]).collect();
+    let rows = drawn(&summary, 110, |cards, kit, frame| {
+        Some(cards.run(kit, frame, RunShape::WHOLE))
+    });
+    assert!(
+        rows[3].starts_with(" │ ██  merged                 200  100%"),
+        "{rows:#?}"
+    );
+    assert!(
+        rows[4].starts_with(" │ ██  running                  1   <1%"),
+        "{rows:#?}"
+    );
 }
 
 #[test]
@@ -112,7 +151,7 @@ fn spend_says_when_no_limit_is_set_and_meters_one_that_is() {
         cards.spend(kit, frame)
     });
     assert!(free[1].ends_with("$1.20 · no limit set │"), "{free:#?}");
-    assert!(free[2].contains("tokens 1.2M"), "{free:#?}");
+    assert!(free[2].contains("tokens   1.2M"), "{free:#?}");
     assert!(
         free[3].contains("none, so nothing stops this run"),
         "{free:#?}"
@@ -125,7 +164,7 @@ fn spend_says_when_no_limit_is_set_and_meters_one_that_is() {
         capped[1].ends_with("$1.20 of $3.00  [40%] │"),
         "{capped:#?}"
     );
-    assert!(capped[2].contains("spend ━"), "{capped:#?}");
+    assert!(capped[2].contains("spend   ━"), "{capped:#?}");
     assert!(capped[2].contains(" 40%"), "{capped:#?}");
 }
 
@@ -211,4 +250,36 @@ fn every_card_keeps_inside_its_width() {
             }
         }
     }
+}
+
+/// Where the terminal draws logos, each task's row has the logo of who has it before the name,
+/// and the column widens to hold it.
+#[test]
+fn the_run_card_puts_each_workers_logo_before_its_name() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    use crate::kit::logo::golden::{count, pictured, with_stand_ins};
+    use crate::overview::golden::{Picture, Region, assert_matches, keep, theme};
+
+    let theme = pictured(&theme());
+    let kit = Kit::new(&theme);
+    let names = sample::names();
+    let summary = sample::status();
+    let cards = StatusCards {
+        summary: &summary,
+        names: &names,
+        title: Some("export-reports-csv"),
+    };
+    let drawn = cards.run(&kit, Frame::view(110), RunShape::WHOLE);
+    let area = Rect::new(0, 0, 110, drawn.lines.len() as u16);
+    let mut buf = Buffer::empty(area);
+    for (y, line) in drawn.lines.iter().enumerate() {
+        buf.set_line(0, y as u16, line, area.width);
+    }
+    assert_eq!(count(&buf), 4);
+    let shown = with_stand_ins(&buf);
+    keep("run_card_logos", &shown);
+    let picture = Picture::load("run_card_logos");
+    assert_matches(&picture, &shown, &Region::whole(&picture, (0, 0)), &theme);
 }

@@ -1,0 +1,27 @@
+# Codex still loading: the session starts and says nothing, as context/codex-loading
+# draws it. These rules come before the default fake agents'.
+
+[[rule]]
+argv0 = "codex"
+prompt_contains = 'Look at the README'
+stdin_prompt = "all"
+[[rule.step]]
+hang = true
+
+# The main agent answers one question in a turn whose totals put ~61.4k in its context, as
+# context/codex counts it: 61,000 tokens in, none cached, 400 out.
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = 'What does this repo hold'
+stdin_prompt = "all"
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"thread-context-codex"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"kind\":\"answer\",\"answer_markdown\":\"It holds a README and an AGENTS.md.\",\"estimate\":null}"}}'
+[[rule.step]]
+emit = '{"type":"turn.completed","usage":{"input_tokens":61000,"cached_input_tokens":0,"output_tokens":400,"reasoning_output_tokens":0}}'
+[[rule.step]]
+exit = 0

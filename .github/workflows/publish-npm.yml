@@ -9,6 +9,11 @@
 # hand from a maintainer's machine (`npm publish --access public` on the package dist built, signed in to npm),
 # then the package gets this repository's release.yml and the `release` environment as its trusted publisher, and
 # every later release comes through here.
+#
+# npm never takes a version twice, so a version already there is skipped and a rerun of a release that got that far
+# goes green. The package has the xz check (packaging/npm), which release.yml adds before the release uploads it, so
+# npm gets the very file the release holds: on Linux it unpacks the program with the system's tar, which needs xz, and
+# without it the install would end with only "tar: Error is not recoverable". A package without it isn't published.
 name: Publish to npm
 
 on:
@@ -31,6 +36,9 @@ jobs:
     env:
       PLAN: ${{ inputs.plan }}
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - name: Fetch the npm package
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -53,5 +61,14 @@ jobs:
           fi
           for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith("-npm-package.tar.gz")] | any)'); do
             pkg=$(echo "$release" | jq --raw-output '.artifacts[] | select(endswith("-npm-package.tar.gz"))')
+            name=$(tar --extract --to-stdout --gzip --file "./npm/${pkg}" package/package.json | jq --raw-output .name)
+            version=$(tar --extract --to-stdout --gzip --file "./npm/${pkg}" package/package.json | jq --raw-output .version)
+            # Empty for a version npm doesn't have, and for a package it has never had, which npm says on stderr.
+            published=$(npm view "${name}@${version}" version || true)
+            if [ "$published" = "$version" ]; then
+              echo "npm already has ${name} ${version}, so it's skipped."
+              continue
+            fi
+            python3 packaging/npm/add_xz_check.py --has-check "./npm/${pkg}"
             npm publish --access public --tag "$tag" "./npm/${pkg}"
           done

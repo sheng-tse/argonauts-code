@@ -1,6 +1,7 @@
 //! `/templates`: lists the workflows and the prompts, marks the workflow in use and the files
-//! of your own, and copies one into this folder's `.argonauts/`, or into `~/.argonauts/` for
-//! every folder. Typed alone it asks which one under the list, then where to put the copy.
+//! of your own, and copies one where your changes save: into `~/.argonauts/` for every folder
+//! when they save everywhere, else into this folder's `.argonauts/`. Typed alone it asks which
+//! one under the list, and the copy goes there at once.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,21 +13,20 @@ use argonauts_core::events::approval::{AnswerAction, AnswerOption};
 use argonauts_core::input::PromptsAction;
 use argonauts_core::names::ChoiceId;
 use argonauts_core::prompt_files::{self, PROJECT_DIR, PromptDirs, Template};
+use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::crew::CrewRole;
+use argonauts_core::settings::saving::SaveChangesTo;
 use argonauts_core::template_list::{ChangedIn, TemplateEntry, TemplateList};
 use argonauts_core::{layout, workflow_files};
 use argonauts_runner::Origin;
 
-use super::{Ctx, Effect, prompt_templates, workflows};
+use super::{Ctx, Effect, prompt_templates, settings, workflows};
 use crate::choices::{self, choose, option};
 use crate::prompts::catalog;
 use crate::setup::reference;
 
 /// What a `/templates` question closes with when nothing was picked.
 const NOTHING_COPIED: &str = "Nothing copied.";
-
-const THIS_FOLDER: &str = "this-folder";
-const EVERY_FOLDER: &str = "every-folder";
 
 /// The keys of the list's options, top down.
 const KEYS: &str = "123456789abcdfghijklmnopqrsuvwxyz";
@@ -38,26 +38,35 @@ pub(crate) struct TemplatesState {
 }
 
 enum Pending {
-    /// Which workflow or role's prompts to copy.
-    Which,
-    /// Where the copy of the one picked goes.
-    Where { name: String },
+    /// Which workflow or role's prompts to copy, and every folder's `~/.argonauts/` when the
+    /// copy goes there.
+    Which { global: bool },
 }
 
 pub(crate) fn owns_choice(state: &TemplatesState, id: &ChoiceId) -> bool {
     state.pending.contains_key(id)
 }
 
+/// `asked` is the place a flag named for the copy.
 pub(crate) fn command(
     ctx: &mut Ctx,
     state: &mut TemplatesState,
     name: Option<String>,
-    global: bool,
+    asked: Option<SettingScope>,
 ) -> anyhow::Result<Vec<Effect>> {
+    let global = match asked {
+        Some(SettingScope::Session) => {
+            anyhow::bail!(
+                "A copy is a file, so --session doesn't fit; --global or --project says where it goes."
+            )
+        }
+        Some(scope) => scope == SettingScope::Global,
+        None => settings::save_changes_to(ctx) == SaveChangesTo::Everywhere,
+    };
     let Some(name) = name else {
         let list = list(ctx);
         ctx.send(AppEvent::Templates { list: list.clone() });
-        ask_which(ctx, state, &list);
+        ask_which(ctx, state, &list, global);
         return Ok(Vec::new());
     };
     if let Some(copied) = copy(ctx, &name, global)? {
@@ -95,7 +104,7 @@ fn copy(ctx: &Ctx, name: &str, global: bool) -> anyhow::Result<Option<Copied>> {
 }
 
 /// Asks which of the listed ones to copy: the arrows move over them and Enter picks.
-fn ask_which(ctx: &mut Ctx, state: &mut TemplatesState, list: &TemplateList) {
+fn ask_which(ctx: &mut Ctx, state: &mut TemplatesState, list: &TemplateList, global: bool) {
     let entries = list
         .workflows
         .iter()
@@ -121,26 +130,9 @@ fn ask_which(ctx: &mut Ctx, state: &mut TemplatesState, list: &TemplateList) {
     ask(
         ctx,
         state,
-        Pending::Which,
+        Pending::Which { global },
         "Copy which one?".to_owned(),
         options,
-    );
-}
-
-/// Asks where the copy of `name` goes.
-fn ask_where(ctx: &mut Ctx, state: &mut TemplatesState, name: &str) {
-    let mut here = option('t', "This folder", choose(THIS_FOLDER), true);
-    here.detail = Some(format!("{}/", ctx.env.shown(&write_dir(ctx, false))));
-    let mut everywhere = option('e', "Every folder", choose(EVERY_FOLDER), false);
-    everywhere.detail = Some(format!("{}/", ctx.env.shown(&write_dir(ctx, true))));
-    ask(
-        ctx,
-        state,
-        Pending::Where {
-            name: name.to_owned(),
-        },
-        format!("Copy {name} into"),
-        vec![here, everywhere],
     );
 }
 
@@ -175,14 +167,8 @@ pub(crate) fn answer_choice(
         return Ok(Vec::new());
     };
     match (pending, action) {
-        (Pending::Which, AnswerAction::Choose { value }) => {
-            close(ctx, id, format!("Copying {value}."));
-            ask_where(ctx, state, &value);
-            Ok(Vec::new())
-        }
-        (Pending::Where { name }, AnswerAction::Choose { value }) => {
-            let copied = copy(ctx, &name, value == EVERY_FOLDER);
-            match copied {
+        (Pending::Which { global }, AnswerAction::Choose { value: name }) => {
+            match copy(ctx, &name, global) {
                 Ok(Some(copied)) => {
                     close(ctx, id, copied.said);
                     Ok(copied.effects)
@@ -383,17 +369,23 @@ mod tests {
     use super::*;
     use crate::controller::test_support::TestDriver;
 
-    fn templates(name: Option<&str>, global: bool) -> UiCommand {
-        UiCommand::Slash {
-            command: SlashCommand::Templates {
-                name: name.map(str::to_owned),
-                global,
+    /// `/templates`, with `place` as a flag would name it.
+    fn templates(name: Option<&str>, place: Option<SettingScope>) -> UiCommand {
+        let command = SlashCommand::Templates {
+            name: name.map(str::to_owned),
+        };
+        let command = match place {
+            Some(scope) => SlashCommand::SavedIn {
+                scope,
+                change: Box::new(command),
             },
-        }
+            None => command,
+        };
+        UiCommand::Slash { command }
     }
 
     async fn listed(driver: &mut TestDriver) -> TemplateList {
-        driver.send(templates(None, false)).await;
+        driver.send(templates(None, None)).await;
         match driver
             .until(|event| matches!(event, AppEvent::Templates { .. }))
             .await
@@ -438,7 +430,8 @@ mod tests {
         assert!(list.prompts.iter().all(|p| p.changed.is_none()));
 
         // A copy of a workflow in this folder takes the built-in's place.
-        driver.send(templates(Some("Maker-checker"), false)).await;
+        let here = Some(SettingScope::Project);
+        driver.send(templates(Some("Maker-checker"), here)).await;
         let wrote = said(&mut driver, "maker-checker.toml").await;
         assert!(wrote.starts_with("Wrote "), "{wrote}");
         let file = driver
@@ -449,12 +442,13 @@ mod tests {
             std::fs::read_to_string(&file).unwrap(),
             workflow_files::built_in("maker-checker").unwrap()
         );
-        driver.send(templates(Some("maker-checker"), false)).await;
+        driver.send(templates(Some("maker-checker"), here)).await;
         let kept = said(&mut driver, "is there already").await;
         assert!(kept.contains("so it was kept"), "{kept}");
 
-        // A role's prompts go in together, and one you edit marks the role.
-        driver.send(templates(Some("reviewers"), true)).await;
+        // A role's prompts go in together, where your changes go: every folder. One you edit
+        // marks the role.
+        driver.send(templates(Some("reviewers"), None)).await;
         let wrote = said(&mut driver, "The prompts the reviewers read").await;
         assert!(!wrote.contains("0 written now"), "{wrote}");
         let frame = driver.env.paths.home().join("prompts/frames/reviewer.md");
@@ -524,7 +518,7 @@ mod tests {
     /// Typed alone, the command asks which of the listed ones to copy, then where, and the
     /// copy lands there.
     #[tokio::test]
-    async fn typed_alone_it_asks_which_one_and_where_then_copies_it() {
+    async fn typed_alone_it_asks_which_one_then_copies_it_where_your_changes_go() {
         let mut driver = TestDriver::start().await;
         let list = listed(&mut driver).await;
         let which = question(&mut driver).await;
@@ -550,19 +544,12 @@ mod tests {
         keys.dedup();
         assert_eq!(keys.len(), which.options.len(), "one key each");
 
-        assert_eq!(
-            pick(&mut driver, &which, "Maker-checker").await,
-            "Copying Maker-checker."
-        );
-        let where_to = question(&mut driver).await;
-        assert_eq!(where_to.title, "Copy Maker-checker into");
-        let places: Vec<(&str, bool)> = where_to
-            .options
-            .iter()
-            .map(|o| (o.label.as_str(), o.recommended))
-            .collect();
-        assert_eq!(places, [("This folder", true), ("Every folder", false)]);
-        let wrote = pick(&mut driver, &where_to, "This folder").await;
+        // With --project, the pick goes into this folder, and nothing asks where.
+        driver
+            .send(templates(None, Some(SettingScope::Project)))
+            .await;
+        let which = question(&mut driver).await;
+        let wrote = pick(&mut driver, &which, "Maker-checker").await;
         assert!(wrote.starts_with("Wrote "), "{wrote}");
         let file = driver
             .env
@@ -570,8 +557,8 @@ mod tests {
             .join(".argonauts/workflows/maker-checker.toml");
         assert!(file.is_file());
 
-        // A role's prompts, for every folder.
-        driver.send(templates(None, false)).await;
+        // A role's prompts, where your changes go: every folder.
+        driver.send(templates(None, None)).await;
         let which = question(&mut driver).await;
         assert_eq!(
             which
@@ -581,9 +568,7 @@ mod tests {
                 .and_then(|o| o.detail.as_deref()),
             Some("workflow · changed here")
         );
-        pick(&mut driver, &which, "reviewers").await;
-        let where_to = question(&mut driver).await;
-        let wrote = pick(&mut driver, &where_to, "Every folder").await;
+        let wrote = pick(&mut driver, &which, "reviewers").await;
         assert!(
             wrote.starts_with("The prompts the reviewers read"),
             "{wrote}"
@@ -598,13 +583,17 @@ mod tests {
         );
 
         // Leaving the question copies nothing.
-        driver.send(templates(None, false)).await;
+        driver.send(templates(None, None)).await;
         let which = question(&mut driver).await;
         assert_eq!(
             answer(&mut driver, &which, AnswerAction::Cancel).await,
             NOTHING_COPIED
         );
         pick_nothing_new(&driver);
+        let session = templates(Some("captain"), Some(SettingScope::Session));
+        driver.send(session).await;
+        let refused = said(&mut driver, "--session").await;
+        assert!(refused.contains("A copy is a file"), "{refused}");
         driver.exit().await;
     }
 
@@ -622,7 +611,12 @@ mod tests {
     #[tokio::test]
     async fn a_prompt_goes_by_its_id_and_an_unknown_name_says_so() {
         let mut driver = TestDriver::start().await;
-        driver.send(templates(Some("frames/judge"), false)).await;
+        driver
+            .send(templates(
+                Some("frames/judge"),
+                Some(SettingScope::ProjectLocal),
+            ))
+            .await;
         let wrote = said(&mut driver, "frames/judge.md").await;
         assert!(wrote.starts_with("Wrote "), "{wrote}");
         assert!(
@@ -632,7 +626,7 @@ mod tests {
                 .join(".argonauts/prompts/frames/judge.md")
                 .is_file()
         );
-        driver.send(templates(Some("nope"), false)).await;
+        driver.send(templates(Some("nope"), None)).await;
         let missing = said(&mut driver, "nope").await;
         assert!(
             missing.contains("There's no workflow, role or prompt named nope"),

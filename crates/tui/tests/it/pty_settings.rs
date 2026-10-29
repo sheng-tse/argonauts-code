@@ -124,8 +124,10 @@ fn all_settings_view_layers() {
     assert_frames(&view, COLS);
 }
 
+/// A value's number saves it at once, with nothing asked of where; ctrl+s on a value keeps it
+/// for this session only.
 #[test]
-fn settings_picker_then_scope_question() {
+fn settings_picker_saves_a_pick_at_once() {
     let script = theme_answers(vec![vec![theme_row("project")], vec![theme_row("project")]]);
     let mut driver = TestDriver::start(script);
     driver.wait_visible(MODE_IDLE);
@@ -136,56 +138,31 @@ fn settings_picker_then_scope_question() {
         "{}",
         picker.visible_text()
     );
+    assert!(
+        row_of(&picker, "ctrl\\+s for this session only").is_some(),
+        "{}",
+        picker.visible_text()
+    );
     driver.press(Key::Char('3'));
-    let question = driver.wait_visible("Everywhere");
-    assert_order(
-        &question,
-        &[
-            "Just this session",
-            "This project, just me",
-            "This project, shared",
-            "Everywhere",
-        ],
+    let set = driver.wait_command("set_setting");
+    assert_eq!(
+        set,
+        json!({"type": "set_setting", "key": "ui.theme", "value": "\"light\""})
     );
-    for (n, label) in [
-        "Just this session",
-        "This project, just me",
-        "This project, shared",
-        "Everywhere",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let row = &question.visible[expect_row(&question, label)];
-        assert!(
-            row.contains(&format!("{}. {label}", n + 1)),
-            "{label} takes its number alone: {row:?}"
-        );
-    }
-    assert!(
-        row_of(&question, "❯ \\d\\. Everywhere").is_some(),
-        "the command's default is picked:\n{}",
-        question.visible_text()
-    );
-    assert!(
-        row_of(&question, "(?i)project")
-            .is_some_and(|row| row < expect_row(&question, "Just this session")),
-        "a project file sets it, so saving everywhere changes nothing; the question says so:\n{}",
-        question.visible_text()
-    );
-    close_everything(&mut driver);
-    driver.submit("still here");
-    driver.assert_no_command("set_setting");
 
-    open_theme_picker(&mut driver);
-    driver.press(Key::Char('3'));
-    driver.wait_visible("Everywhere");
-    driver.press(Key::Char('2'));
+    let picker = open_theme_picker(&mut driver);
+    assert!(
+        row_of(&picker, "Where to save it").is_none(),
+        "{}",
+        picker.visible_text()
+    );
+    driver.press(Key::Down);
+    driver.press(Key::Ctrl('s'));
     let set = driver.wait_command("set_setting");
     assert_eq!(
         set,
         json!({"type": "set_setting", "key": "ui.theme", "value": "\"light\"",
-               "scope": "project_local"})
+               "scope": "session"})
     );
 }
 

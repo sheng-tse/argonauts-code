@@ -19,14 +19,15 @@ use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind
 use argonauts_core::events::run::{ForkFrom, Party};
 use argonauts_core::events::run::{RunLifecycle, RunMode};
 use argonauts_core::events::session::{
-    AskedBy, EndReason, InputPart, InputPartKind, SessionEnd, SessionEvent, SessionStarted,
+    AskedBy, Billing, EndReason, InputPart, InputPartKind, SessionEnd, SessionEvent, SessionStarted,
 };
 use argonauts_core::events::task::{CheckOutcome, TaskKind};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::layout::{self, session_files};
 use argonauts_core::limits::CheckRequest;
 use argonauts_core::main_sessions::{MainSession, MainSessionLease};
-use argonauts_core::names::{ModelRef, PlanLabel, RoleName, SessionKey};
+use argonauts_core::meter::who_pays;
+use argonauts_core::names::{ModelRef, PlanLabel, RoleName, SeatId, SessionKey};
 use argonauts_core::paths::create_private_dir_all;
 use argonauts_core::session_runner::{
     Access, RunnerEvent, SessionControl, SessionLimits, SessionRunner, SessionSpec,
@@ -34,6 +35,7 @@ use argonauts_core::session_runner::{
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit, OnHit};
+use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::steps::{
     Step, StepError, StepName, StepObserver, StepOutcome, StepRequest, decode, output_schema,
 };
@@ -118,6 +120,14 @@ pub struct Ask<I> {
     /// How long the ask's session may run. Its meter stops it there, as it stops a task at its
     /// time limit, and the ask comes back with that limit hit.
     pub time_limit: Option<Duration>,
+    /// The council seat it speaks for. A seat carries on its own session, found by the seat
+    /// alone, so two seats of one model never share one. Seats are never blind: that would
+    /// refuse every CLI that doesn't isolate.
+    pub seat: Option<SeatId>,
+    /// A council's check, which must never learn who made the change: no status part and no
+    /// status tool, since the status names each task's model. A seat's session goes without
+    /// them too, whatever this says.
+    pub without_status: bool,
 }
 
 impl<I> Ask<I> {
@@ -148,6 +158,8 @@ impl<I> Ask<I> {
             independent_of: Vec::new(),
             optional: false,
             time_limit: None,
+            seat: None,
+            without_status: false,
         }
     }
 }
@@ -194,6 +206,8 @@ pub struct SessionPlan {
     pub independent_of: Vec<ModelRef>,
     /// The model the step asked, when it gave the session to `worker` before the start.
     pub in_place_of: Option<InPlaceOf>,
+    /// As [`Ask::without_status`].
+    pub without_status: bool,
 }
 
 /// The model a step asked for a session, and why it gave the session to another.
@@ -304,6 +318,8 @@ struct Identity {
     item: Option<String>,
     /// The label its plan gave it, which wins over the step's pattern.
     given_label: Option<String>,
+    /// The council seat it speaks for, whose own session it carries on.
+    seat: Option<SeatId>,
 }
 
 impl Identity {
@@ -317,6 +333,7 @@ impl Identity {
             slot: plan.slot,
             item: None,
             given_label: plan.label.clone(),
+            seat: None,
         }
     }
 
@@ -344,6 +361,7 @@ impl Identity {
                     && session.task == self.task
                     && *session.asked_worker() == self.worker
                     && session.started.step == self.step
+                    && session.started.seat == self.seat
             })
     }
 }
@@ -409,6 +427,8 @@ struct Launch {
     refused: Refused,
     /// The main session it starts as a copy of, on the CLI that runs it.
     fork_of: Option<ForkFrom>,
+    /// As [`Ask::without_status`].
+    without_status: bool,
 }
 
 /// `fork` when `worker` runs on the CLI whose session it copies. A fallback on another CLI
@@ -460,6 +480,17 @@ impl Host {
 
     pub fn settings(&self) -> &Settings {
         &self.shared.settings
+    }
+
+    /// Who pays for the tokens of a session `worker` runs, kept on the session's start so a
+    /// run's tokens split into plan, free and paid however your settings change later.
+    fn who_pays(&self, worker: &dyn SessionRunner) -> Billing {
+        let model = worker.model_run().model;
+        who_pays(
+            &self.shared.settings,
+            &worker.agent_id().0,
+            model.as_deref(),
+        )
     }
 
     pub fn services(&self) -> &Services {
@@ -748,6 +779,8 @@ impl Host {
             independent_of,
             optional,
             time_limit,
+            seat,
+            without_status,
         } = ask;
         let ask = Ask {
             input: serde_json::to_string_pretty(&input)?,
@@ -768,6 +801,8 @@ impl Host {
             independent_of,
             optional,
             time_limit,
+            seat,
+            without_status,
         };
         let identity = Identity {
             at: ask.at.clone(),
@@ -778,6 +813,7 @@ impl Host {
             slot: ask.slot,
             item: ask.item.clone(),
             given_label: None,
+            seat: ask.seat.clone(),
         };
         let job = Job {
             at: ask.at.clone(),
@@ -896,6 +932,7 @@ impl Host {
             time_limit: ask.time_limit,
             refused: Refused::EndsPaused,
             fork_of: on_its_cli(ask.fork_of.clone(), &identity.worker),
+            without_status: ask.without_status,
         })?;
         let Launched {
             key,
@@ -1044,7 +1081,10 @@ impl Host {
             role: identity.role,
             step: identity.step,
             access,
-            lifetime: lifetime::lifetime(&self.shared.settings, identity.role),
+            lifetime: match identity.seat {
+                Some(_) => SessionLifetime::Seat,
+                None => lifetime::lifetime(&self.shared.settings, identity.role),
+            },
             resumed_from: None,
             follow_key: None,
             workflow_step: Some(at.step.clone()),
@@ -1053,6 +1093,8 @@ impl Host {
             asked_by: None,
             asked_why: None,
             forked: false,
+            seat: identity.seat.clone(),
+            billing: Some(self.who_pays(worker.as_ref())),
         };
         let task = identity.task.as_ref();
         self.record(
@@ -1379,6 +1421,7 @@ impl Host {
             time_limit: None,
             refused: Refused::LeftOut,
             fork_of: on_its_cli(plan.fork_of, &running),
+            without_status: plan.without_status,
         })?;
         let task = live.task.clone();
         let (sender, ended) = oneshot::channel();
@@ -1502,6 +1545,12 @@ impl Host {
                 crate::workflow::naming::inner_workflow_name(state, &workflow.id, &workflow.name)
             });
         }
+        let todos = match &event {
+            RunnerEvent::Agent(argonauts_core::AgentEvent::Todo { items }) => {
+                crate::task::todos::count(items)
+            }
+            _ => None,
+        };
         let outside_note = match &event {
             RunnerEvent::Agent(agent) => self.outside_note(key, agent),
             RunnerEvent::Session(SessionEvent::Ended(_)) => {
@@ -1528,6 +1577,9 @@ impl Host {
         for kind in kinds {
             self.record_as(source, task, Some(key), kind)?;
         }
+        if let (Some(task), Some(todos)) = (task, todos) {
+            self.record_todos(source, key, task, todos)?;
+        }
         if let Some(text) = outside_note {
             let note = RunEventKind::Note(argonauts_core::Note {
                 level: argonauts_core::NoteLevel::Quiet,
@@ -1536,6 +1588,32 @@ impl Host {
             self.record_as(source, task, Some(key), note)?;
         }
         Ok(())
+    }
+
+    /// Records a task's to-do count when its worker's own list changed it. A reviewer's or a
+    /// checker's list is its own, and counts nothing for the task.
+    fn record_todos(
+        &self,
+        source: &str,
+        key: &SessionKey,
+        task: &TaskId,
+        (done, total): (u32, u32),
+    ) -> EngineResult<()> {
+        let changed = self.read(|state| {
+            let worker = state
+                .sessions
+                .get(key)
+                .is_some_and(|session| session.started.role == RoleName::Worker);
+            let before = state.tasks.progress.get(task).and_then(|task| task.todos);
+            worker && before != Some((done, total))
+        });
+        if !changed {
+            return Ok(());
+        }
+        let todos =
+            RunEventKind::Task(argonauts_core::events::task::TaskEvent::Todos { done, total });
+        self.record_as(source, Some(task), Some(key), todos)
+            .map(drop)
     }
 
     /// The line a worker's write outside the project leaves once it's done. Its own folder,
@@ -1751,7 +1829,19 @@ impl Host {
             time_limit,
             refused,
             fork_of,
+            without_status,
         } = launch;
+        // A session that carries on a seat's own speaks for that seat too, as the task a seat
+        // does in the session it talked in.
+        let seat = identity.seat.clone().or_else(|| {
+            let carried = earlier
+                .as_ref()
+                .map(|record| record.key.clone())
+                .or_else(|| resume.clone())?;
+            self.read(|state| state.sessions.get(&carried)?.started.seat.clone())
+        });
+        // A seat never learns which model sits in which seat, and the status names them.
+        let without_status = without_status || seat.is_some();
         // A copy of the main session is a session of its own: nothing earlier carries on.
         let fork = fork_of.filter(|_| earlier.is_none());
         let worker = self.shared.services.workers.get(&identity.worker)?;
@@ -1798,8 +1888,12 @@ impl Host {
                             (None, Access::NoTools) => None,
                             (None, _) => Some(self.shared.repo.base_worktree.as_path()),
                         };
-                        let reuse = self.read(|state| {
-                            lifetime::choose(
+                        let reuse = self.read(|state| match &identity.seat {
+                            Some(_) if blind || fresh => Ok(Reuse::Fresh),
+                            Some(seat) => {
+                                Ok(lifetime::of_seat(state, &settings, seat, next_folder))
+                            }
+                            None => lifetime::choose(
                                 state,
                                 &settings,
                                 &self.shared.mains,
@@ -1808,7 +1902,7 @@ impl Host {
                                 identity.task.as_ref(),
                                 next_folder,
                                 blind || fresh,
-                            )
+                            ),
                         })?;
                         match reuse {
                             Reuse::Fresh => None,
@@ -1855,9 +1949,7 @@ impl Host {
             }
             (None, _) => self.shared.repo.base_worktree.clone(),
         };
-        let status_file = worker
-            .capabilities()
-            .status_tool
+        let status_file = (worker.capabilities().status_tool && !without_status)
             .then(|| session_dir.join(session_files::STATUS));
         let task_spec = identity.task.as_ref().and_then(|task| {
             self.read(|state| state.tasks.get(task).map(|record| record.spec.clone()))
@@ -1865,7 +1957,11 @@ impl Host {
         let (goal_sha256, lifetime) = self.read(|state| {
             (
                 state.goal.approved_sha256().map(str::to_owned),
-                lifetime::lifetime(&settings, identity.role),
+                if seat.is_some() {
+                    SessionLifetime::Seat
+                } else {
+                    lifetime::lifetime(&settings, identity.role)
+                },
             )
         });
 
@@ -1899,6 +1995,8 @@ impl Host {
             forked: fork.is_some(),
             asked_why,
             asked_by,
+            seat,
+            billing: Some(self.who_pays(worker.as_ref())),
         };
         self.record(
             identity.task.as_ref(),
@@ -1937,7 +2035,7 @@ impl Host {
             path,
             viewer: viewer.clone(),
         });
-        let status_part = status_part || status.is_none();
+        let status_part = !without_status && (status_part || status.is_none());
         // A session carrying on already read its frame and instructions.
         let mut parts = if continuing || carries_on_in_role {
             parts

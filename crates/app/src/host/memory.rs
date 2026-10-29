@@ -241,7 +241,6 @@ pub(crate) async fn machine(in_use: u64) -> Option<MachineMemory> {
             total,
             in_use,
             free: vm_free().await.unwrap_or(0),
-            mac: true,
         })
     } else {
         let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
@@ -258,7 +257,6 @@ pub(crate) async fn machine(in_use: u64) -> Option<MachineMemory> {
             total,
             in_use,
             free: kib("MemAvailable:").unwrap_or(0),
-            mac: false,
         })
     }
 }

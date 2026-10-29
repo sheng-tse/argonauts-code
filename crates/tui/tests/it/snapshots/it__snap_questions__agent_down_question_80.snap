@@ -1,5 +1,5 @@
 ---
-source: crates/tui/tests/snap_questions.rs
+source: crates/tui/tests/it/snap_questions.rs
 expression: text(&lines)
 ---
 ● Claude Code is down
@@ -19,5 +19,8 @@ expression: text(&lines)
        an agent for each, from every installed CLI
     3. Wait for Claude Code
        tried again at 2:40 PM
+    4. Carry on without me
+       The main agent picks for each task and goes on; kept as an assumption to
+       review
 
-  Enter to choose · Tab to add a note · Esc to carry on without me
+  Enter to choose · Tab to add a note · Esc back to the list

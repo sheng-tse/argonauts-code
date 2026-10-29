@@ -95,6 +95,7 @@ fn test_task(build: &TaskSpec, n: u32, interfaces: &[TaskId], frozen: &[String])
         limit: TaskLimit::default(),
         predictions: None,
         item: build.item.clone(),
+        way: None,
     }
 }
 

@@ -1,0 +1,13 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Opus 5.5 · 1's plan repeats your private words
+
+  9 words in a row match what you wrote to it in private at 10:46 AM. No task reads the plan until you choose.
+  ❯ 1. Ask Opus 5.5 · 1 to write the plan again without your words
+       It gets one more try, told only that it repeated what you wrote to it
+    2. Share your private message with the council
+       Every seat reads it, and it binds them like anything you write to the council
+    3. Seal it as written: every task reads these words, not your message
+    4. Carry on without me
+       The note keeper writes the plan again without your words
+
+  Enter to choose · Tab to add a note · Esc back to the list · shift+tab to cycle modes

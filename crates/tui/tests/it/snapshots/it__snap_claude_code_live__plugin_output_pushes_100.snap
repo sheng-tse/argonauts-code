@@ -1,8 +1,8 @@
 ---
-source: crates/tui/tests/snap_claude_code_live.rs
+source: crates/tui/tests/it/snap_claude_code_live.rs
 expression: text(&view.lines)
 ---
 ────────────────────────────────────────────────────────────────────────────────────────── captain ─
 ❯ Try "review the last commit"
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ auto mode on      ● Claude 5h ▄▄▄▄▄▄ 53%  PR #482 · 2 reviews waiting  pr-tools: 檢查清單已載入
+  ⏵⏵ auto mode on     ● Claude 5h ▄▄▄▁▁▁  53%  PR #482 · 2 reviews waiting  pr-tools: 檢查清單已載入

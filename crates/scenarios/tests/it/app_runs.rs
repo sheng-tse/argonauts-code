@@ -7,14 +7,13 @@ use crate::app_support;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, bail};
 use app_support::*;
 use argonauts_core::agent_panel::{AgentPanelRows, CrewState, CrewTarget};
+use argonauts_core::app::{AnswerTarget, UiCommand, ViewData};
 use argonauts_core::app::{AppChoice, AppEvent, AppMode, ChoiceKind};
-use argonauts_core::app::{UiCommand, ViewData};
 use argonauts_core::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
 };
@@ -27,7 +26,9 @@ use argonauts_core::names::ModelRef;
 use argonauts_core::views::CheckpointRow;
 use argonauts_core::workflow::{Count, StepKind};
 use argonauts_core::{Paths, RepoId, RunId};
-use argonauts_scenarios::{Scenario, WAIT, past_the_question_guard, scenario_file};
+use argonauts_scenarios::{
+    Scenario, WAIT, on_the_default_workflow, past_the_question_guard, scenario_file,
+};
 use argonauts_testkit::{FakeScenario, Invocation, Key, Pty};
 use serde_json::{Value, json};
 
@@ -91,7 +92,7 @@ fn is_resumed(event: &argonauts_core::events::RunEvent) -> bool {
 
 #[test]
 fn app_example_small_fix_captain() -> anyhow::Result<()> {
-    let scenario = scenario_with(&merge_question_config())?;
+    let scenario = scenario_with(&on_the_default_workflow(&merge_question_config()))?;
     scenario.repo.write("notes.txt", "scratch notes\n")?;
     scenario.repo.write("todo.txt", "later\n")?;
     let mut pty = start(&scenario)?;
@@ -145,7 +146,10 @@ fn app_example_bigger_task_crew() -> anyhow::Result<()> {
     // The example runs the workflow as it is, without the main agent designing one.
     let workflows =
         config_with_workflows("orchestrator_designs = false\nadapt_at_phase_ends = false\n");
-    let scenario = scenario_with(&codex_config(&format!("{workflows}\n{YOU_ANSWER}")))?;
+    // The crew's fixed phases, whose drafting agents the fakes play.
+    let config = codex_config(&format!("{workflows}\n{YOU_ANSWER}"));
+    let scenario = scenario_with(&format!("workflow = \"{FIXED_PHASES}\"\n{config}"))?;
+    write_fixed_phases(&scenario.repo.global_config())?;
     let mut pty = start(&scenario)?;
     submit(&mut pty, requests::CREW_TASK)?;
 
@@ -209,7 +213,7 @@ fn app_ultracode_sends_a_small_task_to_the_crew() -> anyhow::Result<()> {
         } else {
             GLOBAL_CONFIG.to_owned()
         };
-        let scenario = scenario_with(&config)?;
+        let scenario = scenario_with(&on_the_default_workflow(&config))?;
         let mut pty = start(&scenario)?;
         if on {
             pty.wait_for("  ultracode ─", WAIT)?;
@@ -296,17 +300,17 @@ fn app_close_screen_run_continues_and_reattaches() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// How the panel row of a run that waits on you ends, before what it asks where the screen
-/// holds the run.
-const NEEDS_YOU_ROW: &str = "· needs you";
+/// The panel row of a run that waits on you, where the screen holds the run: its mark, ◆, two
+/// blanks and its name, picked or not. A question's own heading has one blank after its ◆.
+const NEEDS_YOU_ROW: &str = "(?m)^[ ❯] ◆  \\S";
 
-/// Fails when a run waiting on you has a panel row, which ends `· needs you` and what it asks,
-/// or counts in the bottom line, `← 1 needs you`, or when the app attached to it or listed rows
-/// for the panel. The line under the header says `1 run needs you`.
+/// Fails when a run waiting on you has a panel row, marked ◆, or counts in the bottom line,
+/// `← 1 needs you`, or when the app attached to it or listed rows for the panel. The line under
+/// the header says `1 run needs you`.
 fn check_off_the_panel(scenario: &Scenario, pty: &Pty) -> anyhow::Result<()> {
     let text = pty.screen().visible_text();
     assert!(
-        !text.contains(NEEDS_YOU_ROW),
+        !regex::Regex::new(NEEDS_YOU_ROW)?.is_match(&text),
         "the run got a panel row:\n{text}"
     );
     assert!(
@@ -424,7 +428,7 @@ fn app_waiting_run_belongs_to_the_conversation_that_started_it() -> anyhow::Resu
     check_bottom_row(&pty)?;
     pty.wait_for("◆ Merge this run into main?", WAIT)?;
     // The question takes the keys.
-    pty.wait_for(r"(?m)^  Enter to \w+.* · Esc to ", WAIT)?;
+    pty.wait_for(r"(?m)^  Enter to \w+.* · Esc (to|back) ", WAIT)?;
     scenario.shot(&pty, "app_continue_brings_back_the_conversations_run")?;
     Ok(())
 }
@@ -471,10 +475,15 @@ fn app_start_names_a_newer_cli_then_an_older_run_once_each() -> anyhow::Result<(
     rotate_trace(&scenario, "first")?;
     let mut pty = start(&scenario)?;
     check_bottom_row(&pty)?;
-    // Both would be on screen by now: the first start had them up with its welcome.
-    thread::sleep(Duration::from_secs(1));
+    // Through its start, the app has sent every line it says once.
+    wait_start_through(&scenario)?;
+    let notices = notices(&scenario)?;
     let said = pty.screen().text();
     for line in [NEWER, SHOWN_ONCE, OLDER] {
+        assert!(
+            !notices.iter().any(|notice| notice.contains(line)),
+            "{line} was said again: {notices:?}"
+        );
         assert!(!said.contains(line), "{line} was said again:\n{said}");
     }
     quit(&mut pty)
@@ -1050,7 +1059,12 @@ fn prompt_of(invocation: &Invocation) -> String {
     )
 }
 
-/// `/rewind task-001` opens its picker; this returns the picker's newest rows, still open.
+/// The rewind picker's own key, which nothing else on the screen shows. The transcript already
+/// names `fallback-1`, so waiting for the row's text could press a key before the picker opens.
+const REWIND_PICKER_KEY: &str = "go back to it";
+
+/// `/rewind task-001` opens its picker; this returns the picker's newest rows, still open and
+/// drawn.
 fn open_rewind(scenario: &Scenario, pty: &mut Pty) -> anyhow::Result<Vec<CheckpointRow>> {
     let is_picker = |event: &AppEvent| matches!(event, AppEvent::View { data } if matches!(**data, ViewData::Checkpoints { .. }));
     let before = events(scenario)?
@@ -1059,26 +1073,29 @@ fn open_rewind(scenario: &Scenario, pty: &mut Pty) -> anyhow::Result<Vec<Checkpo
         .count();
     submit(pty, "/rewind task-001")?;
     let shown = wait_events(scenario, "the /rewind picker", before + 1, is_picker)?;
-    match shown.last() {
+    let rows = match shown.last() {
         Some(AppEvent::View { data }) => match data.as_ref() {
-            ViewData::Checkpoints { checkpoints, .. } => Ok(checkpoints.clone()),
+            ViewData::Checkpoints { checkpoints, .. } => checkpoints.clone(),
             other => bail!("not the /rewind picker: {other:?}"),
         },
         _ => bail!("no /rewind picker"),
-    }
+    };
+    pty.wait_for_visible(REWIND_PICKER_KEY, WAIT)?;
+    Ok(rows)
 }
 
 fn list_checkpoints(scenario: &Scenario, pty: &mut Pty) -> anyhow::Result<Vec<CheckpointRow>> {
     let rows = open_rewind(scenario, pty)?;
-    pty.wait_for("Rewind", WAIT)?;
     pty.press(Key::Esc)?;
+    pty.wait_until("the /rewind picker to close", WAIT, |screen| {
+        !screen.visible_text().contains(REWIND_PICKER_KEY)
+    })?;
     Ok(rows)
 }
 
 /// Picks fallback-1, the only checkpoint, so the newest is the one picked.
 fn ask_rewind(scenario: &Scenario, pty: &mut Pty) -> anyhow::Result<AppChoice> {
     open_rewind(scenario, pty)?;
-    pty.wait_for("fallback-1", WAIT)?;
     pty.press(Key::Enter)?;
     wait_shown_choice(scenario, pty, ChoiceKind::ConfirmRewind)
 }
@@ -1086,8 +1103,6 @@ fn ask_rewind(scenario: &Scenario, pty: &mut Pty) -> anyhow::Result<AppChoice> {
 /// `/rewind` at the merge approval: the task's branch goes back to `fallback-1`, and the run's
 /// branch drops the work after it, which stays on the replaced branch.
 #[test]
-#[ignore = "a waiting approval holds the keys and Esc keeps the branch, so /rewind can't be \
-            typed at a waiting merge question"]
 fn app_checkpoints_and_rewind_commands() -> anyhow::Result<()> {
     let scenario = scenario_with(&codex_config(&format!(
         "{}\n[fallback]\nmode = \"auto\"\norder = [\"codex\"]\n",
@@ -1118,7 +1133,20 @@ fn app_checkpoints_and_rewind_commands() -> anyhow::Result<()> {
     let tag = format!("argonauts/{run}/task-001/fallback-1");
     let kept_on = format!("argonauts/{run}/task-001-replaced-1");
 
-    pass_task_on(&mut pty)?;
+    set_question_aside(&mut pty)?;
+    // Set aside, the merge question still waits: Esc sent no answer for it.
+    let answered = commands(&scenario)?.into_iter().any(|command| {
+        matches!(
+            command,
+            UiCommand::Answer {
+                to: AnswerTarget::Approval { .. },
+                ..
+            } | UiCommand::SetAside {
+                to: AnswerTarget::Approval { .. }
+            }
+        )
+    });
+    assert!(!answered, "Esc answered the merge question");
     let listed = list_checkpoints(&scenario, &mut pty)?;
     let [row] = listed.as_slice() else {
         bail!("one approval, not {listed:?}");
@@ -1146,7 +1174,12 @@ fn app_checkpoints_and_rewind_commands() -> anyhow::Result<()> {
 
     let confirm = ask_rewind(&scenario, &mut pty)?;
     answer_question(&mut pty, number_of(&confirm.options, 'y'))?;
-    wait_choice_closed(&scenario, &confirm.id)?;
+    let outcome = wait_choice_closed(&scenario, &confirm.id)?;
+    assert!(
+        outcome.starts_with("Rewound"),
+        "{outcome}\n{}",
+        pty.screen().visible.join("\n")
+    );
     wait_journal(&run_dir, "the rewind", |event| {
         matches!(
             &event.kind,
@@ -1180,7 +1213,7 @@ fn app_checkpoints_and_rewind_commands() -> anyhow::Result<()> {
     );
 
     // The rewind opens a fresh merge question, which takes the keys as it shows.
-    pass_task_on(&mut pty)?;
+    set_question_aside(&mut pty)?;
     let listed = list_checkpoints(&scenario, &mut pty)?;
     assert!(listed.iter().all(|row| row.rewound_here), "{listed:?}");
     scenario.shot(&pty, "app_checkpoints_and_rewind_commands")?;
@@ -1331,8 +1364,12 @@ fn remember_answered_pick(pty: &mut Pty) -> anyhow::Result<()> {
 fn app_remember_pick_saves_fallback_rule() -> anyhow::Result<()> {
     let key = REMEMBERED_RULE;
 
-    // Remembered as you pick, and saved for the project.
-    let scenario = scenario_with(&fallback_question_config())?;
+    // Remembered as you pick, and saved for the project, where your changes go.
+    let config = format!(
+        "save_changes_to = \"this_project\"\n{}",
+        fallback_question_config()
+    );
+    let scenario = scenario_with(&config)?;
     scenario
         .repo
         .write(".argonauts/config.toml", &format!("{KEPT_COMMENT}\n"))?;
@@ -1344,7 +1381,6 @@ fn app_remember_pick_saves_fallback_rule() -> anyhow::Result<()> {
     let rule = format!("[\"{pick}\"]");
     answer_question(&mut pty, remember_toggle(&question))?;
     pty.press(Key::Char(pick_key))?;
-    answer_scope(&scenario, &mut pty, 'p', None)?;
     let changed = wait_setting_changed(&scenario, key, 1)?;
     assert!(same_toml(&changed, &rule), "{changed}");
     let project = read(&project_config(&scenario))?;
@@ -1386,8 +1422,12 @@ fn app_remember_pick_saves_fallback_rule() -> anyhow::Result<()> {
 fn app_remember_answered_pick_saves_fallback_rule() -> anyhow::Result<()> {
     let key = REMEMBERED_RULE;
 
-    // Remembered after the answer, and saved for just you.
-    let scenario = scenario_with(&fallback_question_config())?;
+    // Remembered after the answer, and saved for just you, where your changes go.
+    let config = format!(
+        "save_changes_to = \"just_you\"\n{}",
+        fallback_question_config()
+    );
+    let scenario = scenario_with(&config)?;
     let mut pty = start(&scenario)?;
     start_captain(&scenario, &mut pty, LIMITED_TASK)?;
     let question = wait_approval(&scenario, ApprovalKind::Fallback)?;
@@ -1399,7 +1439,6 @@ fn app_remember_answered_pick_saves_fallback_rule() -> anyhow::Result<()> {
             |command| matches!(command, UiCommand::RememberPick { id, .. } if *id == question.id),
         ))
     })?;
-    answer_scope(&scenario, &mut pty, 'm', None)?;
     wait_setting_changed(&scenario, key, 1)?;
     let local = read(&project_local_config(&scenario))?;
     assert!(

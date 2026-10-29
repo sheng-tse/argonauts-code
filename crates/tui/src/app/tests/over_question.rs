@@ -81,10 +81,11 @@ fn the_question_draws_under_the_view_and_takes_its_keys() {
     // Its rows stand as they were, and the question's rule takes the row its keys had.
     assert_eq!(rows[top + 10], "probe row 10", "{rows:#?}");
     assert!(rows[top + 11].starts_with("──"), "{rows:#?}");
-    assert_eq!(rows[top + 12], " Merge task-002 into main?", "{rows:#?}");
+    // Under the view the question draws as it does alone.
+    assert_eq!(rows[top + 12], "◆ Merge task-002 into main?", "{rows:#?}");
     assert!(!rows.iter().any(|row| row == "probe keys"), "{rows:#?}");
     assert!(
-        rows.iter().any(|row| row == " ❯ 1. Merge"),
+        rows.iter().any(|row| row == "  ❯ 1. Merge"),
         "the question has the pointer: {rows:#?}"
     );
 

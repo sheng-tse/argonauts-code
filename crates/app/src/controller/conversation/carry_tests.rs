@@ -69,7 +69,7 @@ async fn set_main(driver: &TestDriver, worker: &str) {
         .send(UiCommand::SetSetting {
             key: "crew.main".to_owned(),
             value: format!("\"{worker}\""),
-            scope: SettingScope::Session,
+            scope: Some(SettingScope::Session),
         })
         .await;
 }

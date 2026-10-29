@@ -3,6 +3,7 @@
 //! so has shown once ([`notice`]), and nothing ever goes in CI, with `DO_NOT_TRACK`, or from an
 //! agent's own session. `argonauts telemetry show` prints the next report first and `off` stops
 //! them. A failed send waits for the next day, and none ever slows the app or shows an error.
+//! Only optimized builds send; a debug build never does ([`send`]).
 
 mod event;
 pub(crate) mod notice;
@@ -120,7 +121,7 @@ pub(crate) async fn machine() -> Machine {
 /// At start: sends the event in the background when one is due. Nothing goes before the usage
 /// line has shown, nor while anything asks for quiet.
 pub(crate) fn send_when_due(paths: &Paths, settings: &Settings, found: Found) {
-    let Some(sender) = Sender::built_in() else {
+    let Ok(sender) = Sender::built_in() else {
         return;
     };
     if !may_send(paths, settings, &|name| std::env::var(name).ok()) {
@@ -145,7 +146,7 @@ pub(crate) fn send_when_due(paths: &Paths, settings: &Settings, found: Found) {
 /// After `argonauts run` without the app: the day's report, when one is due. The CLIs are
 /// asked their versions only then.
 pub(crate) async fn send_after_run(env: &AppEnv, settings: &Settings) {
-    let due = Sender::built_in().is_some()
+    let due = Sender::built_in().is_ok()
         && may_send(&env.paths, settings, &|name| std::env::var(name).ok())
         && State::load(&state_file(&env.paths))
             .is_some_and(|state| state.due(OffsetDateTime::now_utc()) == Due::NextStart);
@@ -250,8 +251,8 @@ fn held(settings: &Settings, var: &dyn Fn(&str) -> Option<String>) -> Vec<Held> 
     if set("CI") {
         held.push(Held::Ci);
     }
-    if Sender::built_in().is_none() {
-        held.push(Held::NoKey);
+    if let Err(why) = Sender::built_in() {
+        held.push(why);
     }
     held
 }
@@ -297,8 +298,8 @@ fn turn_on(paths: &Paths, now: OffsetDateTime) -> anyhow::Result<String> {
          show prints it, and off stops them."
             .to_owned(),
     ];
-    if Sender::built_in().is_none() {
-        said.push("This build has no PostHog key, so it sends nothing.".to_owned());
+    if let Err(why) = Sender::built_in() {
+        said.push(show::held_line(why).to_owned());
     }
     if notice::quiet(&|name| std::env::var(name).ok()) {
         said.push("DO_NOT_TRACK or CI is set, so nothing is sent while it is.".to_owned());

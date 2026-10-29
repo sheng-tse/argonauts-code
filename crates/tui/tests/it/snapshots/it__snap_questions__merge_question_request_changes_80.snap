@@ -1,5 +1,5 @@
 ---
-source: crates/tui/tests/snap_questions.rs
+source: crates/tui/tests/it/snap_questions.rs
 expression: text(&lines)
 ---
 ────────────────────────────────────────────────────────────────────────────────
@@ -17,5 +17,7 @@ expression: text(&lines)
     4. Keep the branch
     5. Abandon the run
     6. Show the diff
+    7. Carry on without me
+       This part ends safely with its work kept, so nothing merges without you
 
   Space to tick · Enter to add a note · Esc to go back

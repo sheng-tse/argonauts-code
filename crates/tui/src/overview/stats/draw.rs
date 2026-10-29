@@ -1,30 +1,43 @@
-//! What Stats draws with beyond the kit: a model's shade of its CLI's color, thin bars of
-//! shaded parts on a faint track, ten small squares for how work fared, a sparkline, the
-//! chart's columns stacked by CLI, and a legend that flows. A bar is a thin line through the
-//! middle of its cells and a square is one cell wide in every font, so nothing touches the
-//! row above or the cell beside it; a blank cell always sits between a bar or squares and
-//! the words after them.
+//! What Stats draws with beyond the kit and its fills ([`super::fills`]): thin bars of parts on
+//! a faint track, ten small squares for how work fared, a sparkline, the chart's columns
+//! stacked by CLI or model, and the table of a bar's parts under it. A bar is a thin line
+//! through the middle of its cells and a square is one cell wide in every font, so nothing
+//! touches the row above or the cell beside it; a blank cell always sits between a bar or
+//! squares and the words after them. A CLI's models share its hue, so a bar of models fills
+//! each one's cells with its texture instead.
 
 use argonauts_core::crew_stats::StatsRole;
+use argonauts_core::display_names::cut_at_word;
+use argonauts_core::logos::Logo;
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 
+use super::fills::table_swatch;
+pub(in crate::overview) use super::fills::{Fill, swatch};
+use crate::kit::legend::{self, Columns, Figure, TableRow};
+use crate::kit::logo::logo_spans;
 use crate::kit::{Kit, merge};
 pub(in crate::overview) use crate::overview::shades::shade;
-use crate::text::spans_width;
+use crate::text::{str_width, truncate_spans};
 use crate::theme::{Brightness, ColorLevel, Role, nearest_ansi256};
-use crate::views::layout::cut;
 
 /// The most cells of a model's name on a card or in a legend, the longest the drawings write
 /// whole. A longer one is cut with `…`, as a provider's own id for a model often has to be.
 pub(super) const MODEL_NAME: usize = 16;
 
-/// The fewest cells of a name a legend keeps on a row too narrow for the whole entry.
-const LEAST_LEGEND_NAME: usize = 4;
-
-/// A model's name as a legend writes it.
+/// A model's name as a legend writes it, cut as [`cut_name`] cuts it.
 pub(super) fn model_name(name: &str) -> String {
-    cut(name, MODEL_NAME)
+    cut_name(name, MODEL_NAME)
+}
+
+/// `name` in `cells`: whole where it fits, else cut at a word, with a blank left after the `…`
+/// for fonts that draw it two cells wide.
+pub(super) fn cut_name(name: &str, cells: usize) -> String {
+    if str_width(name) <= cells {
+        name.to_owned()
+    } else {
+        cut_at_word(name, cells.saturating_sub(1))
+    }
 }
 
 /// The colour a role draws in wherever Stats shows the roles side by side. The workers, the
@@ -153,7 +166,7 @@ pub(in crate::overview) fn bar(
 const THIN: &str = "━";
 const THIN_TRACK: &str = "─";
 /// A stacked bar's parts without color, each its own line.
-const THIN_PARTS: [&str; 4] = ["━", "═", "─", "╌"];
+pub(super) const THIN_PARTS: [&str; 4] = ["━", "═", "─", "╌"];
 
 /// The cells `value` of `whole` takes of `cells`: its share in whole percents, as a legend
 /// writes it, so a bar and the numbers beside it agree.
@@ -191,10 +204,10 @@ pub(in crate::overview) fn thin(
 
 /// Parts side by side in one thin bar exactly `cells` wide, each its share of the cells by
 /// largest remainder. A part too small for a cell of its own has none: its number is in the
-/// legend.
-pub(in crate::overview) fn stacked(
+/// legend. A model's part fills its cells with its texture.
+pub(in crate::overview) fn stacked<F: Into<Fill> + Copy>(
     kit: &Kit<'_>,
-    parts: &[(u64, Style)],
+    parts: &[(u64, F)],
     cells: usize,
 ) -> Vec<Span<'static>> {
     let total: u64 = parts.iter().map(|(value, _)| value).sum();
@@ -204,20 +217,214 @@ pub(in crate::overview) fn stacked(
     let values: Vec<u64> = parts.iter().map(|(value, _)| *value).collect();
     let widths = by_largest_remainder(&values, total, cells);
     let mut out = Vec::new();
-    for (k, ((_, style), width)) in parts.iter().zip(widths).enumerate() {
+    for (k, ((_, fill), width)) in parts.iter().zip(widths).enumerate() {
         if width == 0 {
             continue;
         }
-        out.push(if kit.has_color() {
-            Span::styled(THIN.repeat(width), fill_style(kit, *style))
-        } else {
-            Span::raw(THIN_PARTS[k % THIN_PARTS.len()].repeat(width))
+        let fill: Fill = (*fill).into();
+        out.push(match fill.texture {
+            Some(texture) => Span::styled(texture.repeat(width), fill_style(kit, fill.style)),
+            None if kit.has_color() => Span::styled(THIN.repeat(width), fill.style),
+            None => Span::raw(THIN_PARTS[k % THIN_PARTS.len()].repeat(width)),
         });
     }
     merge(out)
 }
 
-fn fill_style(kit: &Kit<'_>, style: Style) -> Style {
+/// A part of a bar the keys may light only some of: what it counts, how much of that is lit,
+/// and its fill.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Lit {
+    pub value: u64,
+    pub lit: u64,
+    pub fill: Fill,
+}
+
+/// [`stacked`] where the keys point at one thing that each part holds some of: a part's
+/// cells split between what of it is lit, in its fill, and the rest in grey. With `apart` a
+/// blank cell sits between parts, as between CLIs, and every part over nothing gets a cell.
+pub(super) fn stacked_lit(
+    kit: &Kit<'_>,
+    parts: &[Lit],
+    apart: bool,
+    cells: usize,
+) -> Vec<Span<'static>> {
+    let total: u64 = parts.iter().map(|part| part.value).sum();
+    if total == 0 {
+        return thin(kit, 0, 1, cells, Style::new());
+    }
+    let values: Vec<u64> = parts.iter().map(|part| part.value).collect();
+    let widths = if apart {
+        let gaps = values
+            .iter()
+            .filter(|value| **value > 0)
+            .count()
+            .saturating_sub(1);
+        let mut widths = cells_of(&values, total, cells.saturating_sub(gaps));
+        // A part too narrow a bar to keep a cell needs no blank before it either: the blank
+        // goes to the widest part, so the bar keeps its width.
+        let drawn = widths.iter().filter(|width| **width > 0).count();
+        let spare = gaps.saturating_sub(drawn.saturating_sub(1));
+        if let Some(widest) = (0..widths.len()).max_by_key(|at| widths[*at]) {
+            widths[widest] += spare;
+        }
+        widths
+    } else {
+        by_largest_remainder(&values, total, cells)
+    };
+    let grey = fill_style(kit, kit.fg(Role::Faint));
+    let mut out = Vec::new();
+    for (k, (part, width)) in parts.iter().zip(widths).enumerate() {
+        if width == 0 {
+            continue;
+        }
+        if apart && !out.is_empty() {
+            out.push(Span::raw(" "));
+        }
+        let glyph = part.fill.texture.unwrap_or(if kit.has_color() {
+            THIN
+        } else {
+            THIN_PARTS[k % THIN_PARTS.len()]
+        });
+        let lit = part.lit.min(part.value);
+        let split = cells_of(&[lit, part.value - lit], part.value, width);
+        let styles = [fill_style(kit, part.fill.style), grey];
+        for (cells, style) in split.into_iter().zip(styles) {
+            if cells > 0 {
+                out.push(Span::styled(glyph.repeat(cells), style));
+            }
+        }
+    }
+    merge(out)
+}
+
+/// A part of a bar and its row in the table under it: its swatch, a logo before it where one
+/// stands for the part, its name, and its amount and share.
+#[derive(Debug, Clone)]
+pub(super) struct Legend {
+    pub part: Lit,
+    pub logo: Option<Logo>,
+    pub name: String,
+    pub figure: Figure,
+    /// The keys are on its row.
+    pub pointed: bool,
+}
+
+impl Legend {
+    /// A part in `fill` that no logo stands for and the keys don't point at: `value` of
+    /// `whole`, of which `lit` stays lit, written as `amount`.
+    pub fn of(
+        fill: impl Into<Fill>,
+        name: &str,
+        (value, lit, whole): (u64, u64, u64),
+        amount: String,
+    ) -> Self {
+        Self {
+            part: Lit {
+                value,
+                lit,
+                fill: fill.into(),
+            },
+            logo: None,
+            name: name.to_owned(),
+            figure: Figure {
+                amount,
+                share: legend::share(value, whole),
+            },
+            pointed: false,
+        }
+    }
+}
+
+/// The columns of tables of one measure that share them, `width` cells wide: the names as
+/// wide as the longest of `legends`, and the amounts as the widest. Their emblems keep cells for
+/// a logo where any of them has one, and with `pointer` the rows keep cells for the keys'.
+pub(super) fn table_columns<'a>(
+    legends: impl Iterator<Item = &'a Legend> + Clone,
+    width: usize,
+    pointer: bool,
+) -> Columns {
+    let widest = (legends.clone())
+        .map(|row| str_width(&row.figure.amount))
+        .max();
+    let longest = (legends.clone()).map(|row| str_width(&row.name)).max();
+    let logos = legends.into_iter().any(|row| row.logo.is_some());
+    let emblem = if logos { EMBLEM } else { legend::SWATCH };
+    let (widest, longest) = (widest.unwrap_or(0), longest.unwrap_or(0));
+    let columns = Columns::packed(width, emblem, 1, widest, longest);
+    if pointer {
+        columns
+    } else {
+        columns.unpointed()
+    }
+}
+
+/// A table's rows in `columns`, one for each of `legends`, the parts of one bar in its order:
+/// the swatch of each, its logo first where the table has logos, its name, amount and share.
+/// With `zeros` off, a part of nothing has no row.
+pub(super) fn table(
+    kit: &Kit<'_>,
+    legends: &[Legend],
+    columns: Columns,
+    zeros: bool,
+) -> Vec<Vec<Span<'static>>> {
+    (legends.iter().enumerate())
+        .filter(|(_, row)| zeros || row.part.value > 0)
+        .map(|(k, row)| {
+            let swatch = table_swatch(kit, row.part.fill, k);
+            let emblem = if columns.emblem >= EMBLEM {
+                emblem(kit, row.logo.as_ref(), swatch)
+            } else {
+                vec![swatch, Span::raw("  ")]
+            };
+            let row = TableRow {
+                emblem,
+                name: vec![Span::raw(row.name.clone())],
+                figures: vec![row.figure.clone()],
+                pointed: row.pointed,
+            };
+            legend::table_row(kit, columns, &row)
+        })
+        .collect()
+}
+
+/// A dim row under a table, from where its swatches start, such as what its parts are parts
+/// of: the rest of a row `width` wide, cut with `…` where it's longer.
+pub(super) fn table_note(
+    kit: &Kit<'_>,
+    columns: Columns,
+    words: String,
+    width: usize,
+) -> Vec<Span<'static>> {
+    let mut row = vec![Span::raw(" ".repeat(columns.pointer))];
+    let room = width.saturating_sub(columns.pointer);
+    row.extend(truncate_spans(&[kit.dim(words)], room));
+    row
+}
+
+/// The cells of what stands before a name in a table row with logos: a logo, a blank, a
+/// swatch and two blanks. A table without logos keeps [`legend::SWATCH`]'s alone.
+pub(super) const EMBLEM: usize = 7;
+
+/// What stands before a name in a table row, [`EMBLEM`] cells: a logo, a blank, `swatch` two
+/// cells wide and two blanks. A row with no logo keeps its cells blank, so every name of the
+/// table starts in one column.
+pub(super) fn emblem(
+    kit: &Kit<'_>,
+    logo: Option<&Logo>,
+    swatch: Span<'static>,
+) -> Vec<Span<'static>> {
+    let mut emblem = match logo {
+        Some(logo) => logo_spans(logo, kit.theme),
+        None => vec![Span::raw("  ")],
+    };
+    emblem.push(Span::raw(" "));
+    emblem.push(swatch);
+    emblem.push(Span::raw("  "));
+    emblem
+}
+
+pub(super) fn fill_style(kit: &Kit<'_>, style: Style) -> Style {
     if kit.has_color() { style } else { Style::new() }
 }
 
@@ -317,16 +524,6 @@ fn peak(values: &[Option<u64>]) -> u64 {
     values.iter().flatten().copied().max().unwrap_or(0)
 }
 
-/// A legend's swatch: a square, then a blank cell before the name.
-pub(in crate::overview) fn swatch(kit: &Kit<'_>, style: Style) -> Vec<Span<'static>> {
-    let square = if kit.glyphs.halves.is_some() {
-        "■"
-    } else {
-        "#"
-    };
-    vec![Span::styled(square, fill_style(kit, style)), Span::raw(" ")]
-}
-
 /// One part of `total`, as a meter on the track.
 pub(in crate::overview) fn meter(
     kit: &Kit<'_>,
@@ -402,9 +599,10 @@ pub(super) fn squares(kit: &Kit<'_>, fared: Fared, room: usize) -> Vec<Span<'sta
 /// Columns `rows` high, each its parts stacked from the bottom in order, a part taking its
 /// share of the fullest column's height in whole cells. A column is `width` cells with the
 /// blank after it: two cells and a blank, or one cell. A column with no parts stays empty.
+/// A model's part is drawn in its texture.
 pub(super) fn columns(
     kit: &Kit<'_>,
-    columns: &[Vec<(u64, Style)>],
+    columns: &[Vec<(u64, Fill)>],
     rows: usize,
     width: usize,
 ) -> Vec<Vec<Span<'static>>> {
@@ -415,19 +613,19 @@ pub(super) fn columns(
         .unwrap_or(0)
         .max(1);
     // Each column's cells from the bottom, as the part filling each.
-    let stacks: Vec<Vec<(usize, Style)>> = columns
+    let stacks: Vec<Vec<(usize, Fill)>> = columns
         .iter()
         .map(|parts| {
             let mut cells = Vec::new();
-            for (k, (value, style)) in parts.iter().enumerate() {
+            for (k, (value, fill)) in parts.iter().enumerate() {
                 let height = (*value as f64 / top as f64 * rows as f64).round() as usize;
-                cells.extend(std::iter::repeat_n((k, *style), height));
+                cells.extend(std::iter::repeat_n((k, *fill), height));
             }
             cells.truncate(rows);
             cells
         })
         .collect();
-    let block = if width > 1 { "██" } else { "█" };
+    let cells = if width > 1 { 2 } else { 1 };
     const FILLS: [&str; 4] = ["█", "▓", "▒", "░"];
     let mut out = Vec::new();
     for row in (0..rows).rev() {
@@ -437,10 +635,14 @@ pub(super) fn columns(
                 line.push(Span::raw(" "));
             }
             line.push(match stack.get(row) {
-                None => Span::raw(" ".repeat(block.chars().count())),
-                Some((_, style)) if kit.has_color() => Span::styled(block, *style),
-                Some((part, _)) => {
-                    Span::raw(FILLS[part % FILLS.len()].repeat(block.chars().count()))
+                None => Span::raw(" ".repeat(cells)),
+                Some((part, fill)) => {
+                    let glyph = fill.texture.unwrap_or(if kit.has_color() {
+                        "█"
+                    } else {
+                        FILLS[part % FILLS.len()]
+                    });
+                    Span::styled(glyph.repeat(cells), fill_style(kit, fill.style))
                 }
             });
         }
@@ -449,126 +651,12 @@ pub(super) fn columns(
     out
 }
 
-/// One entry of a flowing legend: its color's swatch, its name, a bold amount and a dim
-/// share or note.
-#[derive(Clone)]
-pub(super) struct Entry {
-    pub style: Style,
-    pub name: String,
-    pub amount: String,
-    pub note: String,
-}
-
-/// Entries one after another, three cells apart, onto as many rows of `width` as they need.
-/// When the notes would take a row of their own, the entries go without them.
-pub(super) fn legend(
-    kit: &Kit<'_>,
-    entries: &[Entry],
-    tail: Option<String>,
-    width: usize,
-) -> Vec<Vec<Span<'static>>> {
-    legend_apart(kit, entries, tail, width, 3)
-}
-
-/// [`legend`] with the entries `gap` cells apart.
-pub(super) fn legend_apart(
-    kit: &Kit<'_>,
-    entries: &[Entry],
-    tail: Option<String>,
-    width: usize,
-    gap: usize,
-) -> Vec<Vec<Span<'static>>> {
-    let rows = flow(kit, entries, tail.clone(), width, gap);
-    if rows.len() < 2 || entries.iter().all(|entry| entry.note.is_empty()) {
-        return rows;
-    }
-    let bare: Vec<Entry> = entries
-        .iter()
-        .map(|entry| Entry {
-            note: String::new(),
-            ..entry.clone()
-        })
-        .collect();
-    let shorter = flow(kit, &bare, tail, width, gap);
-    if shorter.len() < rows.len() {
-        shorter
-    } else {
-        rows
-    }
-}
-
-/// Entries on as few rows of `width` as they need, then shared evenly between those rows, so
-/// six that need two rows read three and three. Where an even row would run over, they flow.
-pub(super) fn legend_even(
-    kit: &Kit<'_>,
-    entries: &[Entry],
-    width: usize,
-    gap: usize,
-) -> Vec<Vec<Span<'static>>> {
-    let flowed = flow(kit, entries, None, width, gap);
-    if flowed.len() < 2 {
-        return flowed;
-    }
-    let even: Vec<Vec<Span<'static>>> = entries
-        .chunks(entries.len().div_ceil(flowed.len()))
-        .flat_map(|row| flow(kit, row, None, usize::MAX, gap))
-        .collect();
-    if even.iter().all(|row| spans_width(row) <= width) {
-        even
-    } else {
-        flowed
-    }
-}
-
-fn flow(
-    kit: &Kit<'_>,
-    entries: &[Entry],
-    tail: Option<String>,
-    width: usize,
-    gap: usize,
-) -> Vec<Vec<Span<'static>>> {
-    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
-    let mut row: Vec<Span<'static>> = Vec::new();
-    let mut place = |spans: Vec<Span<'static>>, row: &mut Vec<Span<'static>>| {
-        let needs = spans_width(&spans) + if row.is_empty() { 0 } else { gap };
-        if !row.is_empty() && spans_width(row) + needs > width {
-            rows.push(std::mem::take(row));
-        }
-        if !row.is_empty() {
-            row.push(Span::raw(" ".repeat(gap)));
-        }
-        row.extend(spans);
-    };
-    for entry in entries {
-        let mut numbers = Vec::new();
-        if !entry.amount.is_empty() {
-            numbers.push(Span::raw(" "));
-            numbers.push(kit.strong(entry.amount.clone()));
-        }
-        if !entry.note.is_empty() {
-            numbers.push(kit.dim(format!(" {}", entry.note)));
-        }
-        let mut spans = swatch(kit, entry.style);
-        // On a row too narrow for the whole entry the name gives way, never its numbers.
-        let room = width.saturating_sub(spans_width(&spans) + spans_width(&numbers));
-        spans.push(Span::raw(cut(&entry.name, room.max(LEAST_LEGEND_NAME))));
-        spans.extend(numbers);
-        place(spans, &mut row);
-    }
-    if let Some(tail) = tail {
-        place(vec![kit.dim(tail)], &mut row);
-    }
-    if !row.is_empty() {
-        rows.push(row);
-    }
-    rows
-}
-
 #[cfg(test)]
 mod tests {
     use ratatui::style::Color;
 
     use super::*;
+    use crate::text::spans_width;
     use crate::theme::{ColorLevel, Theme};
 
     fn colored() -> Theme {
@@ -615,6 +703,92 @@ mod tests {
         assert_eq!(squares, 10);
     }
 
+    /// The text of `spans` and the color of each, without the empty ones.
+    fn runs(spans: &[Span<'_>]) -> Vec<(String, Option<Color>)> {
+        (spans.iter())
+            .filter(|span| !span.content.is_empty())
+            .map(|span| (span.content.to_string(), span.style.fg))
+            .collect()
+    }
+
+    #[test]
+    fn parts_apart_keep_a_blank_between_them_and_the_bar_its_width() {
+        let theme = colored();
+        let kit = Kit::new(&theme);
+        let part = |value: u64, role: Role| Lit {
+            value,
+            lit: value,
+            fill: kit.fg(role).into(),
+        };
+        let parts = [
+            part(58, Role::Success),
+            part(31, Role::Warn),
+            part(11, Role::Danger),
+        ];
+        let bar = runs(&stacked_lit(&kit, &parts, true, 30));
+        let shape: Vec<&str> = bar.iter().map(|(text, _)| text.as_str()).collect();
+        assert_eq!(
+            shape,
+            [
+                "━".repeat(16),
+                " ".into(),
+                "━".repeat(9),
+                " ".into(),
+                "━".repeat(3)
+            ]
+        );
+        // A part too small for a cell gets one, and the bar stays as wide.
+        let parts = [
+            part(990, Role::Success),
+            part(9, Role::Warn),
+            part(1, Role::Danger),
+        ];
+        let bar = stacked_lit(&kit, &parts, true, 20);
+        let width: usize = bar.iter().map(|span| span.content.chars().count()).sum();
+        assert_eq!(width, 20);
+        assert_eq!(runs(&bar).len(), 5, "{bar:?}");
+    }
+
+    #[test]
+    fn a_part_lit_in_part_keeps_the_rest_of_its_cells_in_grey() {
+        let theme = colored();
+        let kit = Kit::new(&theme);
+        let green = kit.fg(Role::Success);
+        let parts = [
+            Lit {
+                value: 60,
+                lit: 15,
+                fill: green.into(),
+            },
+            Lit {
+                value: 40,
+                lit: 0,
+                fill: kit.fg(Role::Warn).into(),
+            },
+        ];
+        // The first part's 12 cells split 3 lit and 9 grey, and the second's 8 are grey.
+        let grey = kit.fg(Role::Faint).fg;
+        assert_eq!(
+            runs(&stacked_lit(&kit, &parts, false, 20)),
+            [("━".repeat(3), green.fg), ("━".repeat(17), grey)]
+        );
+    }
+
+    #[test]
+    fn without_color_a_table_swatch_is_the_line_its_part_draws_in() {
+        let mut theme = Theme::dark().with_level(ColorLevel::None);
+        theme.glyphs = crate::theme::Glyphs::UNICODE;
+        let kit = Kit::new(&theme);
+        let fill: Fill = kit.fg(Role::Success).into();
+        let swatches: Vec<String> = (0..4)
+            .map(|k| table_swatch(&kit, fill, k).content.into_owned())
+            .collect();
+        assert_eq!(swatches, ["━━", "══", "──", "╌╌"]);
+        let theme = colored();
+        let kit = Kit::new(&theme);
+        assert_eq!(table_swatch(&kit, fill, 2).content, "██");
+    }
+
     #[test]
     fn a_stacked_bar_is_exactly_its_width_with_what_is_left_over_by_largest_remainder() {
         let theme = colored();
@@ -639,6 +813,69 @@ mod tests {
         // 6.67 cells each: the first two take the two left over.
         assert_eq!(cells(&[1, 1, 1], 20), [7, 7, 6]);
         assert_eq!(cells(&[990, 9, 1], 20), [20]);
+    }
+
+    #[test]
+    fn a_clis_models_fill_their_parts_and_swatches_with_their_textures() {
+        let theme = colored();
+        let kit = Kit::new(&theme);
+        let hue = kit.fg(Role::CliCodex);
+        let models: Vec<(u64, Fill)> = (0..5)
+            .map(|place| {
+                (
+                    10,
+                    Fill::model(&kit, shade(&kit, Role::CliCodex, place), place),
+                )
+            })
+            .collect();
+        let bar = stacked(&kit, &models, 10);
+        let drawn: Vec<(&str, Style)> = bar
+            .iter()
+            .map(|span| (span.content.as_ref(), span.style))
+            .collect();
+        // The fourth and the fifth share the rest's solid grey, as one run.
+        let grey = kit.fg(Role::CatOther);
+        assert_eq!(drawn, [("██▚▚⣿⣿", hue), ("████", grey)]);
+        let swatches: Vec<String> = models
+            .iter()
+            .map(|(_, fill)| swatch(&kit, *fill)[0].content.to_string())
+            .collect();
+        assert_eq!(swatches, ["█", "▚", "⣿", "█", "█"]);
+
+        // A CLI or a role draws solid, as before.
+        let solid = stacked(&kit, &[(1, hue), (1, grey)], 4);
+        let text: String = solid.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "━━━━");
+        assert_eq!(swatch(&kit, hue)[0].content, "■");
+    }
+
+    /// A long model name stops at a word, and its `…` keeps a blank after it.
+    #[test]
+    fn a_long_model_name_is_cut_at_a_word() {
+        assert_eq!(cut_name("GLM 5.3 Flash Free", 16), "GLM 5.3 Flash…");
+        assert_eq!(cut_name("DeepSeek V4.1 Flash Free", 16), "DeepSeek V4.1…");
+        assert_eq!(cut_name("Qwen3 Coder 30B", 16), "Qwen3 Coder 30B");
+    }
+
+    #[test]
+    fn without_color_a_models_texture_still_tells_it_apart() {
+        let mut theme = colored();
+        theme.level = ColorLevel::None;
+        let kit = Kit::new(&theme);
+        let models: Vec<(u64, Fill)> = (0..3)
+            .map(|place| (1, Fill::model(&kit, Style::new(), place)))
+            .collect();
+        let text: String = stacked(&kit, &models, 6)
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text, "██▚▚⣿⣿");
+        let column = columns(&kit, std::slice::from_ref(&models), 3, 1);
+        let rows: Vec<String> = column
+            .iter()
+            .map(|row| row.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+        assert_eq!(rows, ["⣿", "▚", "█"]);
     }
 
     #[test]

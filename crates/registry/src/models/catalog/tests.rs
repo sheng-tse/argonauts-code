@@ -243,7 +243,8 @@ fn your_models_toml_wins_over_every_other_layer() {
 
     let discovered = crate::models::discovery::parse_codex_models(CODEX).unwrap();
     let fetched: ModelCatalog = parse_catalog(
-        "[[model]]\nid = \"claude-code/claude-opus-5-5\"\ndescription = \"Fetched\"\n\
+        "published = \"2026-12-01\"\n\
+         [[model]]\nid = \"claude-code/claude-opus-5-5\"\ndescription = \"Fetched\"\n\
          [[model]]\nid = \"codex/gpt-6-sol\"\nname = \"Fetched Sol\"\n",
     )
     .unwrap();
@@ -287,8 +288,9 @@ fn a_bad_description_in_your_file_says_which_entry() {
     assert!(error.contains("turbo"), "{error}");
 }
 
-/// A server on this machine in place of GitHub, answering `routes` and counting requests.
-fn serve(routes: Vec<(&'static str, String)>) -> (String, mpsc::Receiver<String>) {
+/// A server on this computer in place of the real one, answering `routes` and counting
+/// requests.
+fn serve(routes: Vec<(String, String)>) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let (seen, requests) = mpsc::channel();
@@ -321,28 +323,69 @@ fn serve(routes: Vec<(&'static str, String)>) -> (String, mpsc::Receiver<String>
     (base, requests)
 }
 
-const NEWER: &str = "version = 1\n\n[[model]]\nid = \"claude-code/claude-opus-6\"\n\
+const NEWER: &str = "version = 1\npublished = \"2026-12-01\"\n\n[[model]]\n\
+                     id = \"claude-code/claude-opus-6\"\n\
                      description = \"Shipped after the release\"\nrank = 0\n";
 
-fn source(base: &str) -> CatalogSource {
-    CatalogSource {
-        url: format!("{base}/catalog/models.toml"),
+/// A copy signed before the build shipped: what it says is older than the build's own.
+const OLDER: &str = "version = 1\npublished = \"2026-09-01\"\n\n[[model]]\n\
+                     id = \"claude-code\"\ndescription = \"An older word\"\n";
+
+/// A minisign key made for one test, never one that signs a release.
+struct Signer {
+    keys: minisign::KeyPair,
+}
+
+impl Signer {
+    fn new() -> Self {
+        Self {
+            keys: minisign::KeyPair::generate_unencrypted_keypair().unwrap(),
+        }
+    }
+
+    fn public(&self) -> String {
+        self.keys.pk.to_base64()
+    }
+
+    /// The `.minisig` file for `text`.
+    fn sign(&self, text: &str) -> String {
+        minisign::sign(
+            Some(&self.keys.pk),
+            &self.keys.sk,
+            std::io::Cursor::new(text.as_bytes()),
+            Some("argonauts-code model catalog"),
+            None,
+        )
+        .unwrap()
+        .into_string()
     }
 }
 
-#[tokio::test]
-async fn the_fetch_checks_the_hash_and_skips_an_unchanged_catalog() {
-    let hash = sha256_hex(NEWER.as_bytes());
-    let (base, requests) = serve(vec![
-        ("/catalog/models.toml", NEWER.to_owned()),
+fn source(base: &str, signer: &Signer) -> CatalogSource {
+    CatalogSource {
+        url: format!("{base}/catalog/models.toml"),
+        keys: vec![signer.public()],
+    }
+}
+
+/// The catalog and its signature where a source at `base` + `prefix` looks for them.
+fn signed(prefix: &'static str, text: &str, signer: &Signer) -> Vec<(String, String)> {
+    vec![
+        (format!("{prefix}/catalog/models.toml"), text.to_owned()),
         (
-            "/catalog/models.toml.sha256",
-            format!("{hash}  models.toml\n"),
+            format!("{prefix}/catalog/models.toml.minisig"),
+            signer.sign(text),
         ),
-    ]);
+    ]
+}
+
+#[tokio::test]
+async fn the_fetch_checks_the_signature_and_skips_an_unchanged_catalog() {
+    let signer = Signer::new();
+    let (base, requests) = serve(signed("", NEWER, &signer));
     let now = datetime!(2026-10-01 09:00 UTC);
-    let (fetched, catalog) = source(&base).fetch(None, now).await.unwrap();
-    assert_eq!(fetched.sha256, hash);
+    let (fetched, catalog) = source(&base, &signer).fetch(None, now).await.unwrap();
+    assert_eq!(fetched.sha256, sha256_hex(NEWER.as_bytes()));
     assert_eq!(fetched.fetched, now);
     assert_eq!(
         catalog
@@ -354,41 +397,81 @@ async fn the_fetch_checks_the_hash_and_skips_an_unchanged_catalog() {
     let paths: Vec<String> = requests.try_iter().collect();
     assert_eq!(
         paths,
-        ["/catalog/models.toml.sha256", "/catalog/models.toml"]
+        ["/catalog/models.toml.minisig", "/catalog/models.toml"]
     );
 
     let later = datetime!(2026-10-02 09:00 UTC);
-    let (again, _) = source(&base).fetch(Some(&fetched), later).await.unwrap();
+    let (again, _) = source(&base, &signer)
+        .fetch(Some(&fetched), later)
+        .await
+        .unwrap();
     assert_eq!(again.fetched, later);
     let paths: Vec<String> = requests.try_iter().collect();
     assert_eq!(
         paths,
-        ["/catalog/models.toml.sha256"],
-        "an unchanged hash needs no download"
+        ["/catalog/models.toml.minisig"],
+        "an unchanged signature needs no download"
+    );
+}
+
+/// A signed copy published before the catalog in hand rolls nothing back: the fetch refuses
+/// it, and layered over the shipped catalog it counts for nothing.
+#[tokio::test]
+async fn a_signed_copy_older_than_the_catalog_in_hand_is_refused() {
+    let signer = Signer::new();
+    let mut routes = signed("/older", OLDER, &signer);
+    routes.extend(signed("/newer", NEWER, &signer));
+    let (base, _) = serve(routes);
+    let now = datetime!(2026-12-02 09:00 UTC);
+    let older = source(&format!("{base}/older"), &signer)
+        .fetch(None, now)
+        .await
+        .unwrap_err();
+    assert!(
+        older.contains("was published before the catalog"),
+        "{older}"
+    );
+    let (newer, _) = source(&format!("{base}/newer"), &signer)
+        .fetch(None, now)
+        .await
+        .unwrap();
+    // A replay of the older copy after the newer one is refused too.
+    let replayed = source(&format!("{base}/older"), &signer)
+        .fetch(Some(&newer), now)
+        .await
+        .unwrap_err();
+    assert!(replayed.contains("was published before"), "{replayed}");
+    let catalog = layered(Some(&parse_catalog(OLDER).unwrap()), &[], &[], &[]);
+    assert_ne!(
+        catalog.label(&id("claude-code")).description.as_deref(),
+        Some("An older word")
     );
 }
 
 #[tokio::test]
-async fn a_catalog_that_fails_its_hash_or_needs_a_newer_build_is_refused() {
-    let (base, _) = serve(vec![
-        ("/bad/catalog/models.toml", NEWER.to_owned()),
-        ("/bad/catalog/models.toml.sha256", "0".repeat(64)),
-        ("/newer/catalog/models.toml", "version = 2\n".to_owned()),
-        (
-            "/newer/catalog/models.toml.sha256",
-            sha256_hex(b"version = 2\n"),
-        ),
-        ("/nohash/catalog/models.toml", NEWER.to_owned()),
-        ("/nohash/catalog/models.toml.sha256", "not found".to_owned()),
-    ]);
+async fn a_catalog_another_key_signed_or_one_needing_a_newer_build_is_refused() {
+    let signer = Signer::new();
+    let stranger = Signer::new();
+    let mut routes = signed("/forged", NEWER, &stranger);
+    routes.extend(signed("/newer", "version = 2\n", &signer));
+    routes.push(("/garbled/catalog/models.toml".to_owned(), NEWER.to_owned()));
+    routes.push((
+        "/garbled/catalog/models.toml.minisig".to_owned(),
+        "not a signature".to_owned(),
+    ));
+    routes.push(("/unsigned/catalog/models.toml".to_owned(), NEWER.to_owned()));
+    let (base, _) = serve(routes);
     let now = datetime!(2026-10-01 09:00 UTC);
     for (path, why) in [
-        ("bad", "doesn't match the hash published with it"),
+        ("forged", "isn't signed by a key this Argonauts Code trusts"),
+        (
+            "garbled",
+            "isn't signed by a key this Argonauts Code trusts",
+        ),
         ("newer", "newer than this Argonauts Code reads"),
-        ("nohash", "holds no SHA-256"),
-        ("missing", "answered 404"),
+        ("unsigned", "answered 404"),
     ] {
-        let error = source(&format!("{base}/{path}"))
+        let error = source(&format!("{base}/{path}"), &signer)
             .fetch(None, now)
             .await
             .unwrap_err();
@@ -401,6 +484,7 @@ fn a_cached_catalog_counts_only_while_it_matches_its_hash() {
     let fetched = FetchedCatalog {
         fetched: datetime!(2026-10-01 09:00 UTC),
         sha256: sha256_hex(NEWER.as_bytes()),
+        signature: String::new(),
         text: NEWER.to_owned(),
     };
     assert!(fetched.catalog().is_ok());
@@ -427,10 +511,8 @@ fn quiet_settings() -> Settings {
 #[tokio::test]
 async fn the_registry_fetches_the_catalog_once_a_day_and_keeps_it_in_the_cache() {
     let hash = sha256_hex(NEWER.as_bytes());
-    let (base, requests) = serve(vec![
-        ("/catalog/models.toml", NEWER.to_owned()),
-        ("/catalog/models.toml.sha256", hash.clone()),
-    ]);
+    let signer = Signer::new();
+    let (base, requests) = serve(signed("", NEWER, &signer));
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("models-cache.json");
     let settings = quiet_settings();
@@ -438,7 +520,7 @@ async fn the_registry_fetches_the_catalog_once_a_day_and_keeps_it_in_the_cache()
 
     let registry = FileRegistry::from_files(&settings, None, None)
         .with_cache(&cache)
-        .with_catalog_source(source(&base));
+        .with_catalog_source(source(&base, &signer));
     assert!(
         registry.catalog().label(&opus6).new,
         "only the shipped one so far"
@@ -455,7 +537,7 @@ async fn the_registry_fetches_the_catalog_once_a_day_and_keeps_it_in_the_cache()
     // The next start reads it from the cache, and within the day fetches nothing.
     let next = FileRegistry::from_files(&settings, None, None)
         .with_cache(&cache)
-        .with_catalog_source(source(&base));
+        .with_catalog_source(source(&base, &signer));
     assert!(!next.catalog().label(&opus6).new);
     next.discover().await;
     assert_eq!(requests.try_iter().count(), 0);
@@ -467,7 +549,7 @@ async fn the_registry_fetches_the_catalog_once_a_day_and_keeps_it_in_the_cache()
     let (gone, _) = serve(Vec::new());
     let offline = FileRegistry::from_files(&settings, None, None)
         .with_cache(&cache)
-        .with_catalog_source(source(&gone));
+        .with_catalog_source(source(&gone, &signer));
     offline.discover().await;
     assert!(!offline.catalog().label(&opus6).new);
     let skipped = offline.discovery_skipped();
@@ -531,4 +613,72 @@ fn every_shipped_model_has_a_list_price() {
         parse_catalog("[[price]]\nmodel = \"x\"\ninput = -1.0\noutput = 1.0\n").is_err(),
         "a negative price is refused"
     );
+}
+
+const SAMPLE_LOCAL: &str = "version = 1\npublished = \"2026-12-01\"\n\n[[local]]\ntag = \"sample:14b\"\nname = \"Sample 14B\"\n\
+                            window = 65536\nweights_gb = 9.0\ndownload_gb = 9.0\n\
+                            context_kib_per_token = 32.0\nreleased = \"2026-09\"\n\
+                            coding = { score = 45.0, source = \"a sample leaderboard\", \
+                            checked = \"2026-10-20\" }\n";
+
+/// The shipped catalog's local models each use tools and run at a window it ranks them at.
+#[test]
+fn the_shipped_catalog_lists_local_models_it_can_rank() {
+    let local = &shipped_catalog().local;
+    assert!(!local.is_empty());
+    for model in local {
+        assert!(model.tools, "{}", model.tag);
+        assert!(
+            crate::models::suggested::ranked_window(model.window).is_some(),
+            "{}",
+            model.tag
+        );
+    }
+}
+
+/// A served catalog brings a local model that shipped after the release, and its facts win
+/// over the shipped ones for a model both list.
+#[test]
+fn a_fetched_catalog_adds_local_models_and_its_facts_win() {
+    let shipped = shipped_catalog().local.len();
+    let newer = parse_catalog(SAMPLE_LOCAL).unwrap();
+    let layered = layered(Some(&newer), &[], &[], &[]);
+    assert_eq!(layered.local.len(), shipped + 1);
+    let sample = layered
+        .local
+        .iter()
+        .find(|model| model.tag == "sample:14b")
+        .unwrap();
+    assert_eq!(sample.coding.as_ref().unwrap().score.0, 45.0);
+
+    let mut again = newer.clone();
+    again.local[0].name = "Sample 14B, again".to_owned();
+    let mut twice = newer;
+    twice.merge(again);
+    assert_eq!(twice.local.len(), 1);
+    assert_eq!(twice.local[0].name, "Sample 14B, again");
+}
+
+#[test]
+fn a_local_model_with_a_bad_month_score_or_tag_is_refused() {
+    for (from, to, why) in [
+        (
+            "released = \"2026-09\"",
+            "released = \"September\"",
+            "isn't a month",
+        ),
+        ("score = 45.0", "score = 145.0", "out of 100"),
+        (
+            "tag = \"sample:14b\"",
+            "tag = \"sample 14b\"",
+            "must be one word",
+        ),
+        ("window = 65536", "window = 0", "window must be"),
+    ] {
+        let error = parse_catalog(&SAMPLE_LOCAL.replace(from, to)).unwrap_err();
+        assert!(
+            error.contains("[[local]]") && error.contains(why),
+            "{error}"
+        );
+    }
 }

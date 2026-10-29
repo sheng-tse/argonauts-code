@@ -163,9 +163,17 @@ pub struct EvidenceFacts {
     pub checks_passed: Option<bool>,
     pub reviews_approved: Option<bool>,
     /// Every task's standing approval came from a reviewer of another provider than the task's
-    /// worker by the registry.
+    /// worker by the registry, or from one you chose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed_by_other_provider: Option<bool>,
+    /// The tasks whose approval came only from reviewers code picked from the worker's own
+    /// provider, each with who gave the approval that stands.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approved_within_provider: Vec<WithinProvider>,
+    /// The tasks that came to the merge unreviewed, since nobody but their builder, or their
+    /// builder's provider, may review them: why, for each, naming the task.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreviewed: Vec<String>,
     /// Every acceptance test fails on the stubs and passes on the run branch.
     pub acceptance_tests_valid: Option<bool>,
     pub untested_criteria: Vec<String>,
@@ -198,6 +206,17 @@ pub struct EvidenceFacts {
     /// Across every run.
     pub spent_today_usd: f64,
     pub send_backs: u32,
+}
+
+/// A task whose approval came only from a reviewer code picked from its worker's own provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithinProvider {
+    /// As the merge table names it.
+    pub task: String,
+    /// Who gave the approval that stands, as people read it: `Sonnet 5 on Claude Code`.
+    pub reviewer: String,
+    /// It reviewed in the place of a reviewer that was out.
+    pub fallback: bool,
 }
 
 /// What auto needs to grant a task that needs you one more try. The engine fills in what it

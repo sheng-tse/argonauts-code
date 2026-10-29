@@ -130,6 +130,7 @@ mod tests {
                 comments: Vec::new(),
                 tamper_suspected: false,
             },
+            picked_by: None,
         }
     }
 
@@ -147,6 +148,7 @@ mod tests {
                     reasons: Vec::new(),
                     required_changes: Vec::new(),
                 },
+                picked_by: None,
             },
         ];
         assert_eq!(next_round(&reviews), 3);

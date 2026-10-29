@@ -11,4 +11,4 @@ expression: text(lines)
      Created hello.txt with a greeting.
 
 ● GPT 5.6 on Codex · worker · task-002 (Hello file)
-  ⎿  Done · 2 tool uses · report ✓ · 30s · 28.0k tokens
+  ⎿  Done (2 tool uses · 28.0k tokens · 30s) · report ✓

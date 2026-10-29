@@ -953,6 +953,8 @@ fn started(seq: u64, stopped: &str) -> RunEvent {
                 asked_by: None,
                 asked_why: None,
                 forked: false,
+                seat: None,
+                billing: None,
             }))),
         )
     }

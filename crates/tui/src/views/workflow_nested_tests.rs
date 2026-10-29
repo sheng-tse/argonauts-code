@@ -731,9 +731,8 @@ fn opened(view: &mut WorkflowView, data: AgentData) {
 /// count and tokens, and its phases on one line. Its left pane is the same outline.
 #[test]
 fn the_workers_agent_view_shows_its_workflow() {
-    let mut picture = picture!("nested_worker_agent");
     // Claude Code leaves a blank line between an open agent's sections.
-    let spaced = picture.space_sections(0, &["Activity", "Its workflow", "Outcome"]);
+    let picture = picture!("nested_worker_agent");
     let mut view = WorkflowView::new(due_dates(Moment::Working));
     press(&mut view, KeyCode::Enter);
     press(&mut view, KeyCode::Enter);
@@ -758,16 +757,15 @@ fn the_workers_agent_view_shows_its_workflow() {
     );
     data.facts = vec!["worker".to_owned(), "worktree".to_owned()];
     opened(&mut view, data);
-    picture.assert_drawn(0..17 + spaced, &drawn(&mut view, 22 + spaced as u16), 5);
+    picture.assert_drawn(0..20, &drawn(&mut view, 25), 5);
 }
 
 /// Enter on an agent inside: its first line says whose workflow it's in, its CLI reports a
 /// shortened prompt and only its last call, and its keys only move, scroll and expand.
 #[test]
 fn an_inner_agents_view_says_whose_workflow_it_is_in() {
-    let mut picture = picture!("nested_inner_agent");
     // Claude Code leaves a blank line between an open agent's sections.
-    let spaced = picture.space_sections(0, &["Activity", "Outcome"]);
+    let picture = picture!("nested_inner_agent");
     let mut view = WorkflowView::new(due_dates(Moment::Working));
     press(&mut view, KeyCode::Enter);
     for _ in 0..4 {
@@ -788,15 +786,14 @@ fn an_inner_agents_view_says_whose_workflow_it_is_in() {
         3,
     );
     opened(&mut view, data);
-    picture.assert_drawn(0..12 + spaced, &drawn(&mut view, 17 + spaced as u16), 5);
+    picture.assert_drawn(0..14, &drawn(&mut view, 19), 5);
 }
 
 /// The agent view of an agent two levels inside says in words how deep it is.
 #[test]
 fn the_deepest_agents_view_names_its_levels() {
-    let mut picture = picture!("nested_deepest");
     // Claude Code leaves a blank line between an open agent's sections.
-    let spaced = picture.space_sections(29, &["Activity", "Outcome"]);
+    let picture = picture!("nested_deepest");
     let mut view = WorkflowView::new(due_dates(Moment::Deepest));
     press(&mut view, KeyCode::Enter);
     for _ in 0..7 {
@@ -817,7 +814,7 @@ fn the_deepest_agents_view_names_its_levels() {
         2,
     );
     opened(&mut view, data);
-    picture.assert_drawn(29..43 + spaced, &drawn(&mut view, 19 + spaced as u16), 5);
+    picture.assert_drawn(29..45, &drawn(&mut view, 21), 5);
 }
 
 /// Opened from its row in the bottom list, the run's view opens on Build with add-due-flag
@@ -861,7 +858,7 @@ fn left_out(mut row: AgentRow, why: &str) -> AgentRow {
 /// One row as the agents pane draws it, `width` cells after the three the picture indents it
 /// by, its labels as wide as `label`, in a workflow that `own_cli` runs when one does.
 fn one_row(row: &WorkflowRow, label: usize, width: usize, own_cli: Option<&str>) -> Buffer {
-    use super::workflow_rows::{Around, Cells, Models, RowColumns};
+    use super::workflow_rows::{Around, Cells, RowColumns};
     let theme = dark();
     let state = state();
     let ctx = ViewCtx {
@@ -871,11 +868,9 @@ fn one_row(row: &WorkflowRow, label: usize, width: usize, own_cli: Option<&str>)
     };
     let mut data = due_dates(Moment::Working);
     data.phases[0].rows = vec![row.clone()];
-    let models = Models::of(&data, &ctx);
     let around = Around {
         run: &data.run,
         own_cli,
-        models: &models,
         ticking: 0,
         ctx: &ctx,
     };
@@ -885,33 +880,11 @@ fn one_row(row: &WorkflowRow, label: usize, width: usize, own_cli: Option<&str>)
     super::workflow_pictures::buffer_of(&[line], u16::try_from(width + 3).unwrap())
 }
 
-/// Each row names the model that did the job: a fallback says whose place it takes and why,
-/// then its verdict first once it answers; a hand-over has no mark; a job left out is grey,
-/// with no numbers.
+/// Each row names the model that did the job: a fallback at work is marked as one, and
+/// once it answers as its verdict says; a job left out is a grey dash, with no numbers.
 #[test]
 fn each_moved_row_reads_as_its_picture() {
-    let mut picture = picture!("moved_rows");
-    // A fallback says whose place it took, after its verdict once it answered.
-    // Out of a box the words grow into the gap before the time, which keeps its column.
-    picture.in_place_of(3, "Opus 5.5", None);
-    picture.reword(
-        3,
-        &format!("overloaded{}", " ".repeat(20)),
-        &format!("overloaded{}", " ".repeat(12)),
-    );
-    picture.in_place_of(6, "GPT 5.6 Luna", None);
-    picture.reword(
-        6,
-        &format!("crashed{}", " ".repeat(13)),
-        &format!("crashed{}", " ".repeat(5)),
-    );
-    picture.in_place_of(9, "GPT 5.6 Luna", Some("approved"));
-    let done = picture.text(9..10).remove(0);
-    let gap = done[done.find("Luna").expect("the fallback") + "Luna".len()..]
-        .chars()
-        .take_while(|ch| *ch == ' ')
-        .count();
-    picture.reword(9, &format!("Luna{}", " ".repeat(gap)), "Luna   ");
+    let picture = picture!("moved_rows");
     let warn = |words: &str| RowNote::new(words, Tone::Warn);
     let rows = [
         (
@@ -1016,8 +989,7 @@ fn reviewing() -> WorkflowData {
 /// The fallback from another CLI in its box, in the orchestrator run.
 #[test]
 fn a_fallback_reads_as_its_picture_in_its_box() {
-    let mut picture = picture!("moved_rows");
-    picture.in_place_of(26, "GPT 5.6 Luna", None);
+    let picture = picture!("moved_rows");
     let mut view = WorkflowView::new(reviewing());
     picture.assert_drawn(19..31, &drawn(&mut view, 12), 0);
 }
@@ -1026,16 +998,7 @@ fn a_fallback_reads_as_its_picture_in_its_box() {
 /// and says why this model may review the work.
 #[test]
 fn a_fallbacks_view_says_whose_place_it_takes() {
-    let mut picture = picture!("moved_agent");
-    // It says whose place it takes, and why, as the row does.
-    picture.reword(4, "Fallback for ", "In place of ");
-    picture.reword(4, " on Codex, which", ", which");
-    // Every call shows, so the title says how many there are, as every agent view's does.
-    picture.reword(
-        10,
-        "Activity · last 3 of 3 tool calls · ⏎ expand",
-        "Activity · 3 tool calls",
-    );
+    let picture = picture!("moved_agent");
     let mut view = WorkflowView::new(reviewing());
     press(&mut view, KeyCode::Enter);
     press(&mut view, KeyCode::Down);
@@ -1069,28 +1032,15 @@ fn a_fallbacks_view_says_whose_place_it_takes() {
     opened(&mut view, data);
     // In this run GPT 5.6 Luna is Codex's second model, which has its second colour.
     let state = ranked_with("gpt-5.6-luna");
-    let spaced = picture.space_sections(0, &["Prompt", "Activity", "Outcome"]);
-    picture.assert_drawn(
-        0..18 + spaced,
-        &drawn_in(&mut view, 23 + spaced as u16, &state),
-        5,
-    );
+    picture.assert_drawn(0..21, &drawn_in(&mut view, 26, &state), 5);
 }
 
 /// A council goes on without the job no model could take: grey, uncounted, and said once in
-/// the pane's title.
-///
-/// One label column holds for the whole workflow, every level of it, sized to the labels its
-/// rows have: 10 cells here. The picture is wrong to fit its column to labels of phases that
-/// haven't started, 14 cells, so the test moves the models to the workflow's column.
+/// the pane's title. One label column holds for the whole workflow, every level of it, sized
+/// to the labels its rows have.
 #[test]
 fn a_job_left_out_reads_as_its_picture() {
-    let mut picture = picture!("council_after");
-    // The counts stand right-aligned after every phase's name, as Claude Code lays them out.
-    picture.reword(6, "Propose  1/2     ", "Propose      1/2 ");
-    for (row, label) in [(6, "propose:p1"), (7, "propose:p2"), (8, "propose:p3")] {
-        picture.reword(row, &format!("{label}     "), &format!("{label}  "));
-    }
+    let picture = picture!("council_after");
     let propose = phase(
         "Propose",
         RowStatus::Running,
@@ -1208,7 +1158,7 @@ fn a_job_left_outs_view_reads_as_its_picture() {
     let (left, top) = (0..buf.area.height)
         .find_map(|y| {
             let row = text(y);
-            let at = row.find("✘ Left out")?;
+            let at = row.find("× Left out")?;
             Some((row[..at].chars().count() as u16, y))
         })
         .expect("the view's state line");

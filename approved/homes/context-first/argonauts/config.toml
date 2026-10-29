@@ -1,0 +1,9 @@
+# Set up with the recommended answers, Council and Claude Code to talk to, with the main
+# session's model named, so its window is known before its first session.
+workflow = "council"
+
+[crew]
+main = "claude-code/claude-opus-5-5"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]

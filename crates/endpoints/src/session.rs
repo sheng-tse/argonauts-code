@@ -110,6 +110,8 @@ pub(crate) async fn start(
         asked_by: None,
         asked_why: None,
         forked: false,
+        seat: None,
+        billing: None,
     };
     let input = SessionInput {
         launch: launch_record(

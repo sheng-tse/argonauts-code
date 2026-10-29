@@ -124,8 +124,8 @@ async fn an_unclear_request_starts_without_asking() {
     driver.exit().await;
 }
 
-/// Words that set the crew show the crew understood and apply to the request, with no
-/// "Keep this crew?" question on autopilot: one line says how to keep it.
+/// Words that set the crew show the crew understood and apply to the request alone, with
+/// nothing asked or saved.
 #[tokio::test]
 async fn words_that_set_the_crew_ask_nothing() {
     let mut driver = on_autopilot().await;
@@ -142,12 +142,6 @@ async fn words_that_set_the_crew_ask_nothing() {
         .await;
     driver
         .until(|event| matches!(event, AppEvent::CrewForRequest { .. }))
-        .await;
-    driver
-        .until(|event| {
-            matches!(event, AppEvent::Notice { text, .. }
-                if text == "Decided on autopilot · this applies to this request only. /config keeps it for later ones.")
-        })
         .await;
     started(&driver).await;
     assert!(
@@ -201,25 +195,6 @@ async fn autopilot_coming_on_starts_the_work_a_question_offered() {
     );
     assert!(outcome.ends_with(" starts work on it."), "{outcome}");
     started(&driver).await;
-    driver.exit().await;
-}
-
-/// "Keep this crew?" open when autopilot comes on closes as kept for its request alone.
-#[tokio::test]
-async fn autopilot_coming_on_keeps_what_was_said_for_its_request() {
-    let mut driver = asking_you().await;
-    let others = json!({"says": "all the other agents need to be codex", "kind": "others",
-        "who": "codex", "model": "", "effort": "", "value": "", "scope": "this_request"});
-    driver.agent.push(reply("change", vec![others]));
-    driver
-        .submit("all the other agents need to be codex. add due dates")
-        .await;
-    let question = asked(&mut driver, ChoiceKind::KeepInstructions).await;
-    let outcome = closed_by_autopilot(&mut driver, &question).await;
-    assert_eq!(
-        outcome,
-        "Decided on autopilot · this applies to this request only. /config keeps it for later ones."
-    );
     driver.exit().await;
 }
 

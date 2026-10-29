@@ -21,6 +21,7 @@ use std::fmt;
 
 use ratatui::text::{Line, Span};
 
+use crate::council::picture::Picture;
 use crate::render::RenderCtx;
 use crate::theme::Role;
 
@@ -30,7 +31,7 @@ pub use decided::DecidedOnAutopilot;
 pub use diff::{DiffCell, DiffHunk, DiffKind, DiffLine, DiffParseError, DiffView};
 pub use group::CollapsedGroup;
 pub use header::{AgentReady, MARK_COL, MARK_MIN_WIDTH, SessionHeader, TEXT_COL};
-pub use notice::{ExitNote, HungLine, Notice, ResultLine, Trailing};
+pub use notice::{DetailLogo, ExitNote, HungLine, Notice, ResultLine, Trailing};
 pub use record::Record;
 pub use shell::{ShellEnd, ShellRun};
 pub use templates::{TemplateFolder, TemplateRows};
@@ -66,6 +67,12 @@ pub trait HistoryCell: fmt::Debug + Send {
     /// prints: the greeting's argonaut.
     fn takes_the_mascot_picture(&self) -> bool {
         false
+    }
+
+    /// A picture drawn under its rows' words where the terminal draws one there, at `cell`
+    /// pixels a cell: a council bubble.
+    fn picture_under(&self, _ctx: &RenderCtx<'_>, _cell: (u16, u16)) -> Option<Picture> {
+        None
     }
 }
 
@@ -184,6 +191,10 @@ impl HistoryCell for Cell {
 
     fn takes_the_mascot_picture(&self) -> bool {
         self.inner().takes_the_mascot_picture()
+    }
+
+    fn picture_under(&self, ctx: &RenderCtx<'_>, cell: (u16, u16)) -> Option<Picture> {
+        self.inner().picture_under(ctx, cell)
     }
 }
 

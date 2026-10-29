@@ -21,8 +21,8 @@ What the crew did: every CLI together, then each one by itself                  
 │ ● Claude Code             2.9M tok │  │ ○ Codex                  1.55M tok │  │ ○ agy                    0.55M tok │
 │ 35 tasks              Max · ~$7.90 │  │ 28 tasks · 14 reviews Plus · $2.75 │  │ 63 reviews            Pro · ~$0.55 │
 │                                    │  │                                    │  │                                    │
-│ ■ Opus 5.5         ━━━━ 2.1M · 24  │  │ ■ GPT 5.6          ━━━━ 1.2M · 21  │  │ ■ Gemini 3.6 Pro   ━━━━ 0.43M · 49 │
-│ ■ Sonnet 5.5       ━━━━ 0.8M · 11  │  │ ■ GPT 5.6 Luna     ━━━━ 0.35M · 7  │  │ ■ Gemini 3.6 Flash ━━━━ 0.12M · 14 │
+│ █ Opus 5.5         ━━━━ 2.1M · 24  │  │ █ GPT 5.6          ━━━━ 1.2M · 21  │  │ █ Gemini 3.6 Pro   ━━━━ 0.43M · 49 │
+│ ▚ Sonnet 5.5       ━━━━ 0.8M · 11  │  │ ▚ GPT 5.6 Luna     ━━━━ 0.35M · 7  │  │ ▚ Gemini 3.6 Flash ━━━━ 0.12M · 14 │
 │                                    │  │                                    │  │                                    │
 │ tasks    ▪▪▪▪▪▪▪▪▪▪ 94% first pass │  │ tasks    ▪▪▪▪▪▪▪▪▪▪ 89% first pass │  │ tasks    none                      │
 │ reviews  none                      │  │ reviews  ▪▪▪▪▪▪▪▪▪▪ 86% accepted   │  │ reviews  ▪▪▪▪▪▪▪▪▪▪ 92% accepted   │
@@ -33,17 +33,17 @@ What the crew did: every CLI together, then each one by itself                  
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ◆ who did what                                               every model that filled the role · enter opens a role │
 │                                                                                                                    │
-│ orchestrator    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
-│                 ■ Opus 5.5 14 workflows                                                                            │
+│ orchestrator    ██████████████████████████████████████████████████████████████████████████████████████████████████ │
+│                 █ Opus 5.5 14 workflows                                                                            │
 │                                                                                                                    │
-│ workers         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
-│                 ■ Opus 5.5 24   ■ Sonnet 5.5 11   ■ GPT 5.6 21   ■ GPT 5.6 Luna 7   of 63 tasks                    │
+│ workers         █████████████████████████████████████▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚████████████████████████████████▚▚▚▚▚▚▚▚▚▚▚ │
+│                 █ Opus 5.5 24   ▚ Sonnet 5.5 11   █ GPT 5.6 21   ▚ GPT 5.6 Luna 7   of 63 tasks                    │
 │                                                                                                                    │
-│ reviewers       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
-│                 ■ Gemini 3.6 Pro 49   ■ GPT 5.6 14   of 63 reviews                                                 │
+│ reviewers       ██████████████████████████████████████████████████████████████████████████████████████████████████ │
+│                 █ Gemini 3.6 Pro 49   █ GPT 5.6 14   of 63 reviews                                                 │
 │                                                                                                                    │
-│ judge           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
-│                 ■ Gemini 3.6 Flash 14 sign-offs                                                                    │
+│ judge           ▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚ │
+│                 ▚ Gemini 3.6 Flash 14 sign-offs                                                                    │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 tab · ←  →  tabs · ↓  sub-tabs, then cards · 1-4 period · u tokens, tasks or spend · enter open · p pin · esc closes

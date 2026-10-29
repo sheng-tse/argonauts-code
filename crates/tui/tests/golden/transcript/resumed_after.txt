@@ -1,7 +1,7 @@
                                                                                                                       
-    ▟▙     Argonauts Code v0.0.1                                                                                      
-   ▟██▙    Claude Code · Haiku 5.5 with low effort · Council                                                          
- ▝▀▀▀▀▀▀▘  ~/workspace/rate-limiter-app/council                                                                       
+    ▗█▖ ▗▘ Argonauts Code v0.0.1                                                                                      
+ ▗▙  █ ▗▛▘ Claude Code · Haiku 5.5 with low effort · Council                                                          
+  ▀█████▄▘ ~/workspace/rate-limiter-app/council                                                                       
                                                                                                                       
                                                                                                                       
 ❯ Make the rate limiter per API key: each X-Api-Key gets its own bucket, requests without it share one. Cap refills at
@@ -14,7 +14,7 @@
   ⎿  Running in background · /workflows to monitor and save                                                           
                                                                                                                       
 ⏺ plan:orchestrator · Haiku 5.5 on Claude Code                                                                        
-  ⎿  Done · 5 tool uses · report ✓ · 31s · 34.6k tokens                                                               
+  ⎿  Done (5 tool uses · 34.6k tokens · 31s) · report ✓                                                               
                                                                                                                       
 ⏺ 3 agents started (↓  to manage)                                                                                     
    ├ propose:p1 · Haiku 5.5 on Claude Code                                                                            

@@ -1,17 +1,18 @@
 //! Session lifetimes per role: `task` (fresh per task, resumed for its retries), `run` (one
 //! session per role per run), and `project` (the role's main session, used only when it isn't
 //! busy, and rotated when full). Blind roles, and roles whose `fresh_session` says so, are
-//! always fresh.
+//! always fresh. A council's seat keeps one session of its own, found by the seat alone.
 
 use std::path::Path;
 
 use argonauts_core::TaskId;
 use argonauts_core::events::session::EndReason;
 use argonauts_core::main_sessions::{MainSession, MainSessionLease, MainSessions};
-use argonauts_core::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::names::{ModelRef, RoleName, SeatId, SessionKey};
 use argonauts_core::session_runner::Access;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::sessions::SessionLifetime;
+use argonauts_core::workflow::StepRef;
 
 use crate::error::EngineResult;
 use crate::state::RunState;
@@ -86,8 +87,64 @@ pub fn choose(
             })
             .cloned()
     };
-    // A full session rotates, so the next one starts fresh with a fallback note.
-    let reuse = |session: Option<SessionRecord>| match session {
+    let reuse = |session: Option<SessionRecord>| carry_on(session, settings);
+    match lifetime(settings, role) {
+        SessionLifetime::Task => Ok(match task {
+            Some(task) => reuse(newest(&|session| session.task.as_ref() == Some(task))),
+            None => Reuse::Fresh,
+        }),
+        SessionLifetime::Run | SessionLifetime::Seat => Ok(reuse(newest(&|_| true))),
+        SessionLifetime::Project => {
+            let Some(lease) = mains.lease(role, worker)? else {
+                return Ok(Reuse::Fresh);
+            };
+            let cli_session = continue_main(state, settings, mains.get(role, worker));
+            Ok(Reuse::Main { lease, cli_session })
+        }
+    }
+}
+
+/// How a council seat's next session starts: carrying on the seat's own last session, found
+/// by the seat alone, never by its role or model, since two seats may run the same model in
+/// the same folder. Each seat keeps one folder for the whole council, so one that worked
+/// elsewhere starts fresh rather than fail to open there.
+pub fn of_seat(
+    state: &RunState,
+    settings: &Settings,
+    seat: &SeatId,
+    workdir: Option<&Path>,
+) -> Reuse {
+    let newest = state
+        .sessions
+        .in_order()
+        .into_iter()
+        .rev()
+        .find(|session| {
+            session.started.seat.as_ref() == Some(seat) && same_folder(session, workdir)
+        })
+        .cloned();
+    carry_on(newest, settings)
+}
+
+/// The last session of `seat` in the council that talked at `talk`, which a task the seat does
+/// carries on. Every council numbers its seats from one, so the council tells them apart.
+pub fn seat_session(state: &RunState, talk: &StepRef, seat: &SeatId) -> Option<SessionKey> {
+    state
+        .sessions
+        .in_order()
+        .into_iter()
+        .rev()
+        .find(|session| {
+            session.started.seat.as_ref() == Some(seat)
+                && session.started.workflow_step.as_ref() == Some(talk)
+        })
+        .map(|session| session.key.clone())
+}
+
+/// Resumes `session` when it ended with a CLI session to carry on. A full one rotates, so the
+/// next starts fresh with a fallback note.
+fn carry_on(session: Option<SessionRecord>, settings: &Settings) -> Reuse {
+    match session {
         Some(session) if was_full(&session, settings) => Reuse::Fresh,
         Some(SessionRecord {
             key,
@@ -96,20 +153,6 @@ pub fn choose(
             ..
         }) => Reuse::Resume { key, cli_session },
         _ => Reuse::Fresh,
-    };
-    match lifetime(settings, role) {
-        SessionLifetime::Task => Ok(match task {
-            Some(task) => reuse(newest(&|session| session.task.as_ref() == Some(task))),
-            None => Reuse::Fresh,
-        }),
-        SessionLifetime::Run => Ok(reuse(newest(&|_| true))),
-        SessionLifetime::Project => {
-            let Some(lease) = mains.lease(role, worker)? else {
-                return Ok(Reuse::Fresh);
-            };
-            let cli_session = continue_main(state, settings, mains.get(role, worker));
-            Ok(Reuse::Main { lease, cli_session })
-        }
     }
 }
 
@@ -441,6 +484,76 @@ mod tests {
         record.context_used = Some(250_000);
         state.sessions.by_key.insert(record.key.clone(), record);
         assert!(matches!(pick(&state), Ok(Reuse::Fresh)));
+    }
+
+    /// Two seats of one model in one folder are two sessions: each carries on its own, never
+    /// the other's, whatever role or lifetime the model has.
+    #[test]
+    fn a_seat_carries_on_its_own_session_and_never_another_seats() {
+        let worker = ModelRef::new("claude-code", Some("opus".to_owned()));
+        let base = Path::new("/worktrees/run-1/base");
+        let talk_at = |at: u32| StepRef {
+            workflow: argonauts_core::names::WorkflowId::numbered(1),
+            phase: 1,
+            path: vec![at],
+        };
+        let talk = talk_at(0);
+        let ended = |key: &str, seat: u32| {
+            let mut record = crate::state::tests::session_record(key, &worker, RoleName::Worker);
+            record.started.seat = Some(SeatId::numbered(seat));
+            record.started.workflow_step = Some(talk.clone());
+            record.started.lifetime = SessionLifetime::Seat;
+            record.cli_session = Some(format!("ses-{key}"));
+            record.workdir = Some(base.to_path_buf());
+            record.end = Some(crate::state::tests::end(
+                EndReason::Completed,
+                Some(&format!("ses-{key}")),
+            ));
+            record
+        };
+        let mut state = RunState::default();
+        for record in [ended("s-001", 1), ended("s-002", 2)] {
+            state.sessions.by_key.insert(record.key.clone(), record);
+        }
+        let settings = Settings::default();
+        let resumed = |state: &RunState, seat: u32| match of_seat(
+            state,
+            &settings,
+            &SeatId::numbered(seat),
+            Some(base),
+        ) {
+            Reuse::Resume { cli_session, .. } => cli_session,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(resumed(&state, 1), "ses-s-001");
+        assert_eq!(resumed(&state, 2), "ses-s-002");
+        assert!(matches!(
+            of_seat(&state, &settings, &SeatId::numbered(3), Some(base)),
+            Reuse::Fresh
+        ));
+        assert_eq!(
+            seat_session(&state, &talk, &SeatId::numbered(2)).map(|key| key.as_str().to_owned()),
+            Some("s-002".to_owned())
+        );
+        // A later council numbers its seats from one too, and its seat 2 is another seat.
+        let mut later = ended("s-009", 2);
+        later.started.workflow_step = Some(talk_at(1));
+        state.sessions.by_key.insert(later.key.clone(), later);
+        assert_eq!(
+            seat_session(&state, &talk, &SeatId::numbered(2)).map(|key| key.as_str().to_owned()),
+            Some("s-002".to_owned())
+        );
+
+        // A session of the same model with no seat is never a seat's.
+        let mut plain = crate::state::tests::session_record("s-003", &worker, RoleName::Worker);
+        plain.cli_session = Some("ses-s-003".to_owned());
+        plain.workdir = Some(base.to_path_buf());
+        plain.end = Some(crate::state::tests::end(
+            EndReason::Completed,
+            Some("ses-s-003"),
+        ));
+        state.sessions.by_key.insert(plain.key.clone(), plain);
+        assert_eq!(resumed(&state, 1), "ses-s-001");
     }
 
     #[test]

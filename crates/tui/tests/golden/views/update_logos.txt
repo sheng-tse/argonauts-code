@@ -1,0 +1,7 @@
+● Update
+  ⎿     Argonauts Code 0.1.0     0.1.1 downloaded · takes over at the next start · /release-notes
+     ◧◨ Claude Code    2.1.304   up to date
+     ◧◨ Codex          0.163.0   up to date
+     ◧◨ agy            1.4.3     up to date
+     ◧◨ OpenCode       2.0.32    up to date · also through ACP
+     Codex updates on its own schedule.

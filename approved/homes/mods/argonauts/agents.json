@@ -1,0 +1,16 @@
+{
+  "agent_ids": {
+    "claude-code": {
+      "live": [
+        {
+          "agent_id": "claude-code",
+          "windows": [
+            { "key": "five_hour", "label": "session", "title": "Current session", "used": 0.5, "resets_at": "2100-01-01T05:00:00Z" }
+          ],
+          "source": "get_usage",
+          "read_at": "2100-01-01T00:00:00Z"
+        }
+      ]
+    }
+  }
+}

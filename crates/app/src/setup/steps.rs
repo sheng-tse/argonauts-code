@@ -49,9 +49,6 @@ pub(crate) struct Answers {
     /// `None` keeps the modes your file has.
     pub approvals: Option<ApprovalMode>,
     pub trust_folder: bool,
-    pub create_project_dir: bool,
-    /// Whether to write the guide pages into this repo's `.argonauts/`, when you were asked.
-    pub guides: Option<bool>,
 }
 
 impl Default for Answers {
@@ -66,8 +63,6 @@ impl Default for Answers {
             roles: BTreeMap::new(),
             approvals: Some(ApprovalMode::Auto),
             trust_folder: false,
-            create_project_dir: false,
-            guides: None,
         }
     }
 }

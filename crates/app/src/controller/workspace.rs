@@ -10,8 +10,9 @@ use argonauts_core::TaskId;
 use argonauts_core::api::DiffView;
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::log::DiffStat;
+use argonauts_core::settings::SettingScope;
 
-use super::{Ctx, Effect, ScopeRequest};
+use super::{Ctx, Effect};
 use crate::git;
 
 const EXTRA_WRITABLE: &str = "sandbox.extra_writable";
@@ -99,9 +100,14 @@ pub(crate) fn cd(
     Ok(vec![Effect::Exit])
 }
 
-/// `/add-dir <path>`: one more folder the agents may write, asked where to save like any
-/// setting. Conversation turns stay read-only.
-pub(crate) fn add_dir(ctx: &mut Ctx, path: &Path) -> anyhow::Result<Vec<Effect>> {
+/// `/add-dir <path>`: one more folder the agents may write. It lasts for this session, as
+/// Claude Code's does, unless `asked` names a file to keep it in. Conversation turns stay
+/// read-only.
+pub(crate) fn add_dir(
+    ctx: &mut Ctx,
+    path: &Path,
+    asked: Option<SettingScope>,
+) -> anyhow::Result<Vec<Effect>> {
     let dir = resolve_path(ctx, path);
     let shown = ctx.env.display(&dir);
     if !dir.is_dir() {
@@ -139,11 +145,10 @@ pub(crate) fn add_dir(ctx: &mut Ctx, path: &Path) -> anyhow::Result<Vec<Effect>>
         return Ok(Vec::new());
     }
     dirs.push(entry);
-    Ok(vec![Effect::AskScope(Box::new(ScopeRequest {
-        key: EXTRA_WRITABLE.to_owned(),
-        value: toml_list(&dirs),
-        command: "add-dir".to_owned(),
-    }))])
+    Ok(vec![Effect::SaveSettings {
+        pairs: vec![(EXTRA_WRITABLE.to_owned(), toml_list(&dirs))],
+        scope: asked.unwrap_or(SettingScope::Session),
+    }])
 }
 
 fn toml_list(items: &[String]) -> String {

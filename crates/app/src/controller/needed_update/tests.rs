@@ -87,7 +87,9 @@ fn supported() -> &'static str {
 
 fn crew_run(task: &str) -> UiCommand {
     UiCommand::Slash {
-        command: SlashCommand::Crew { task: task.into() },
+        command: SlashCommand::Crew {
+            task: Some(task.into()),
+        },
     }
 }
 

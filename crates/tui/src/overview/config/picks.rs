@@ -1,4 +1,4 @@
-//! The Behaviors rows' pickers: who writes the deeper map's summaries, and what turns them into
+//! The Behaviors rows' pickers: who writes the summaries of Summaries, and what turns them into
 //! vectors. Their choices come from the offer `d` asks with, so the summarizers read as "Summarize
 //! with" lists them, and a hosted one asks once more in that question's words. A change waits
 //! for the next `d`, which asks before it makes the map again.

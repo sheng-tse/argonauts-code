@@ -4,6 +4,7 @@
 
 use argonauts_core::api::{RunState, RunSummary};
 use argonauts_core::display_names::DisplayNames;
+use argonauts_core::logos::logo_for;
 use argonauts_core::settings::layer;
 use argonauts_core::status_tab::{
     CliStatus, StatusTabView, VersionNoteKind, VersionStanding, asking_for_providers,
@@ -13,10 +14,10 @@ use argonauts_core::text::shown_name;
 use ratatui::text::Span;
 use time::OffsetDateTime;
 
-use super::cards::cli_role;
 use crate::format::{self, WallClock};
+use crate::kit::logo::{ModelLabel, NoPicture};
 use crate::kit::{Drawn, Frame, Header, Kit, spread};
-use crate::text::{spans_width, str_width, truncate_spans};
+use crate::text::{sanitize_line, spans_width, str_width, truncate_spans};
 use crate::theme::Role;
 
 /// The runs card when this folder has none.
@@ -49,13 +50,17 @@ impl StatusTabCards<'_> {
         let view = self.view;
         let text = |words: String| vec![kit.span(words, Role::Text)];
         let dim = |words: String| vec![kit.dim(words)];
+        let in_cli = view
+            .in_cli
+            .as_ref()
+            .map(|cli| (format!("In {}", sanitize_line(&cli.cli)), cli));
         let mut facts: Vec<(&str, Vec<Vec<Span<'static>>>)> = vec![(
             "Version",
             vec![text(format!("Argonauts Code {}", view.version))],
         )];
         if let Some(conversation) = &view.conversation {
-            // As the panel's other tabs write a time of day: `7:12pm`.
-            let started = super::usage::short_time(self.clock.to_local(conversation.started));
+            // A time of day as the app writes one: `7:12 PM`.
+            let started = crate::format::ClockTime::from(self.clock.to_local(conversation.started));
             facts.push((
                 "Conversation",
                 vec![
@@ -84,7 +89,16 @@ impl StatusTabCards<'_> {
         }
         facts.push(("Folder", folder));
         if let Some(main) = &view.main {
-            let mut session = vec![text(self.names.worker(&main.worker))];
+            let worker = &main.worker;
+            let label = ModelLabel::of(self.names, worker, kit.theme, NoPicture::Nothing);
+            let mut named = label.logo;
+            let name = if label.pictured {
+                label.name
+            } else {
+                self.names.worker(worker)
+            };
+            named.extend(text(name));
+            let mut session = vec![named];
             if let Some(effort) = &main.effort {
                 session.push(dim(format!("{effort} effort")));
             }
@@ -100,6 +114,16 @@ impl StatusTabCards<'_> {
                 _ => {}
             }
             facts.push(("Main session", session));
+        }
+        // What to type in the session's own CLI to carry it on there, and the key that opens it.
+        if let Some((label, cli)) = &in_cli {
+            facts.push((
+                label.as_str(),
+                vec![
+                    text(sanitize_line(&cli.command).into_owned()),
+                    dim("o opens it".to_owned()),
+                ],
+            ));
         }
         let ultracode = if view.workflow.ultracode { "on" } else { "off" };
         facts.push((
@@ -313,29 +337,35 @@ impl<'a> PartRows<'a> {
     }
 }
 
-/// `● Claude Code     2.1.296   you@example.com · Max · checked · works`: the dot in the CLI's
-/// colour, its name, its version, who it's signed in as or what it can use, dim, then how its
+/// `● Claude Code     2.1.296   you@example.com · Max · checked · works`: the CLI's logo, or
+/// where no picture draws the dot in its colour, filled for the main session's CLI, its name, its version, who it's signed in as or what it can use, dim, then how its
 /// version stands in that standing's colour. A second row, set in under the first's words,
 /// holds a provider CLI's default model and what a new major version was checked with. In a
 /// card `inner` cells across that the first row is too long for, how the version stands has
 /// the row under who is signed in.
 fn cli_rows(kit: &Kit<'_>, cli: &CliStatus, inner: usize) -> Vec<Vec<Span<'static>>> {
-    let dot = if cli.main { "●" } else { "○" };
-    let name = padded(&cli.name, CLI_NAMES - 2);
+    let dot = if cli.main { "● " } else { "○ " };
+    let label = |mark: Span<'static>| {
+        ModelLabel::cli_named(&cli.id, &cli.name, kit.theme, NoPicture::Mark(mark))
+    };
+    let dim = label(kit.dim(dot));
+    // The name's column ends where it would after a dot, whatever stands before it.
+    let name = padded(&dim.name, CLI_NAMES.saturating_sub(spans_width(&dim.logo)));
     if !cli.installed {
-        return vec![vec![
-            kit.dim(format!("{dot} ")),
+        let mut row = dim.logo;
+        row.extend([
             kit.span(name, Role::Text),
             Span::raw(padded("—", CLI_VERSIONS)),
             kit.dim("not installed"),
             kit.dim(" · /update can't add it"),
-        ]];
+        ]);
+        return vec![row];
     }
-    let opening = vec![
-        kit.span(format!("{dot} "), cli_role(&cli.id)),
+    let mut opening = label(kit.span(dot, Role::for_cli(&cli.id))).logo;
+    opening.extend([
         kit.span(name, Role::Text),
         kit.dim(padded(cli.version.as_deref().unwrap_or("?"), CLI_VERSIONS)),
-    ];
+    ]);
     let mut rows = PartRows::after(kit, opening, CLI_NAMES + CLI_VERSIONS, inner);
     for part in who(kit, cli) {
         rows.push(part);
@@ -389,10 +419,14 @@ fn who(kit: &Kit<'_>, cli: &CliStatus) -> Vec<Vec<Span<'static>>> {
             return vec![vec![kit.span(no_provider(&cli.command), Role::Text)]];
         }
         let named = providers.iter().map(|provider| {
-            vec![
-                kit.span(provider.name.clone(), Role::Text),
+            let logo = provider_logo(&provider.name);
+            let label = ModelLabel::whole(&logo, &provider.name, kit.theme, NoPicture::Nothing);
+            let mut named = label.logo;
+            named.extend([
+                kit.span(label.name, Role::Text),
                 kit.dim(format!(" ({})", provider.billing.words())),
-            ]
+            ]);
+            named
         });
         return named.collect();
     }
@@ -420,6 +454,23 @@ fn who(kit: &Kit<'_>, cli: &CliStatus) -> Vec<Vec<Span<'static>>> {
         }
         None => with_plan(argonauts_core::status_tab::UNNAMED_ACCOUNT.to_owned()),
     }
+}
+
+/// The logo of a provider a CLI can use, known by its name: a host's own, as OpenRouter's or
+/// Ollama's, else its maker's, as OpenAI's, Mistral's, Moonshot AI's Kimi or Alibaba's Qwen.
+fn provider_logo(name: &str) -> argonauts_core::logos::Logo {
+    use argonauts_core::display_names::{maker, maker_of};
+
+    let lower = name.to_lowercase();
+    let logo = logo_for(&lower, None);
+    if logo.mark.is_some() {
+        return logo;
+    }
+    let word = lower.split_whitespace().next().unwrap_or_default();
+    let mark = maker(word)
+        .or_else(|| maker_of(word))
+        .and_then(|maker| maker.logo);
+    argonauts_core::logos::Logo { mark, ..logo }
 }
 
 /// Said of a CLI that keeps providers of its own and has none: what connects one.
@@ -506,6 +557,9 @@ pub fn spoken(view: &StatusTabView, names: &DisplayNames) -> Vec<String> {
     lines.push(format!("folder: {}, {git}", view.folder.shown));
     if let Some(main) = &view.main {
         lines.push(format!("main session: {}", names.worker(&main.worker)));
+    }
+    if let Some(cli) = &view.in_cli {
+        lines.push(format!("in {}: {}, o opens it", cli.cli, cli.command));
     }
     lines.push(format!("workflow: {}", view.workflow.name));
     lines.push(format!("mode: {}", view.mode));

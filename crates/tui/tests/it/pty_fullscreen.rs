@@ -400,6 +400,9 @@ fn ctrl_c_in_a_handed_over_program_leaves_the_app_running() {
                 .map(str::to_owned)
                 .to_vec(),
             cwd: std::env::temp_dir(),
+            env_remove: Vec::new(),
+            env_set: Vec::new(),
+            quiet: false,
         };
         let launch = TestDriver::launch(Script::idle().at(0, notice("info", "note 01")).at(0, run));
         let launch = if inline { launch.inline() } else { launch };

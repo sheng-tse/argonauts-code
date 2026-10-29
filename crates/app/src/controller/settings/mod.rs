@@ -1,10 +1,12 @@
 //! Every setting changed from inside the app: the settings commands' pickers and arguments,
-//! the scope question, the safety confirm, trust carried forward on a write, resets, the
-//! toggles, and the detected-checks offer.
+//! the safety confirm, trust carried forward on a write, resets, the toggles, and the
+//! detected-checks offer.
 //!
-//! A write goes through up to three questions, each a pending choice here: where to save it
-//! (`SettingScope`), whether to change a safety key (`ConfirmSafetySetting`), and whether to
-//! trust the project file it lands in (`TrustProject`). Then [`save`] makes it and announces it.
+//! No write asks where it goes: [`save_changes`] puts it where `save_changes_to` says, or where
+//! a flag or ctrl+s names. It goes through up to two questions, each a pending choice here:
+//! whether to change a safety key (`ConfirmSafetySetting`), and whether to trust the project
+//! file it lands in (`TrustProject`). Then [`save`] makes it and announces it in one line that
+//! says where it went.
 //!
 //! At start, a project file whose safety keys you haven't trusted gets the `TrustProject`
 //! question on its own, so they aren't ignored without your knowing.
@@ -19,9 +21,8 @@ mod pickers;
 mod refresh;
 pub(crate) mod renamed;
 mod rows;
-mod save;
+pub(crate) mod save;
 mod scope;
-mod toggles;
 
 #[cfg(test)]
 mod tests;
@@ -36,24 +37,24 @@ pub(crate) use args::{check_known, workflow_list};
 pub(crate) use models::choices as model_choices;
 pub(crate) use rows::model_keys;
 pub(crate) use rows::rows as setting_rows;
-pub(crate) use save::set_where_it_came_from;
+pub(crate) use save::{file_for, place, save_changes_to, set_where_it_came_from};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use argonauts_core::app::{AppEvent, ChoiceKind, ViewData, ViewRequest};
 use argonauts_core::events::approval::AnswerAction;
-use argonauts_core::input::SlashCommand;
+use argonauts_core::input::{AgentsAction, SlashCommand};
 use argonauts_core::names::{ChoiceId, ModelRef, RoleName};
+use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::ui::NarratorMode;
-use argonauts_core::settings::{SettingScope, asks_where};
 use argonauts_core::{KeyScheme, NoteLevel, Verbosity};
 use argonauts_registry::{
     SettingsError, SettingsWarning, WarningAbout, safety_keys_in, setting_meta,
 };
 
-use super::{Ctx, Effect, ScopeRequest};
+use super::{Ctx, Effect};
 use crate::choices::{self, NOT_CHANGED, OnSetAside};
 use crate::commands::refuse_safety_change;
 use crate::trust::{cant_trust, hash_of};
@@ -99,9 +100,6 @@ impl SettingsState {
 }
 
 enum Pending {
-    Scope {
-        change: Change,
-    },
     Confirm {
         change: Change,
         scope: SettingScope,
@@ -124,7 +122,6 @@ enum Pending {
 impl Pending {
     fn kind(&self) -> ChoiceKind {
         match self {
-            Self::Scope { .. } => ChoiceKind::SettingScope,
             Self::Confirm { .. } => ChoiceKind::ConfirmSafetySetting,
             Self::Trust { .. } | Self::TrustAtStart { .. } => ChoiceKind::TrustProject,
             Self::Checks { .. } => ChoiceKind::DetectedChecks,
@@ -146,11 +143,12 @@ pub(crate) fn interrupt(settings: &mut SettingsState) {
 
 /// `/model`, `/effort`, `/agents`, `/workflow <name>`, `/workflows`, `/approvals`, `/limit`,
 /// `/fallback`, `/permissions`, `/verbosity`, `/narrator`, `/theme`, and `/config`: a picker with
-/// no argument, the scope question with one.
+/// no argument, saved at once with one. `asked` is the place a flag named.
 pub(crate) async fn command(
     ctx: &mut Ctx,
     settings: &mut SettingsState,
     command: SlashCommand,
+    asked: Option<SettingScope>,
 ) -> Handled {
     if let SlashCommand::Model {
         role: Some(RoleName::Orchestrator),
@@ -168,7 +166,10 @@ pub(crate) async fn command(
         ..
     } = &command
     {
-        return reset_in_effect(ctx, settings, key);
+        return match asked {
+            Some(scope) => begin_reset(ctx, settings, key.clone(), scope),
+            None => reset_in_effect(ctx, settings, key),
+        };
     }
     // A `/config key=value` that can't be saved says why under the command, where a saved one
     // says where it went.
@@ -180,7 +181,7 @@ pub(crate) async fn command(
         } => Some(key.clone()),
         _ => None,
     };
-    match (write_or_pick(ctx, settings, &command), typed) {
+    match (write_or_pick(ctx, settings, &command, asked), typed) {
         (Err(err), Some(key)) => {
             let why = ctx.env.shown_in(&format!("{err:#}"));
             ctx.send(AppEvent::SettingRefused { key, why });
@@ -190,25 +191,43 @@ pub(crate) async fn command(
     }
 }
 
-/// A command's setting written, or asked where to save, else its picker opened.
-fn write_or_pick(ctx: &mut Ctx, settings: &mut SettingsState, command: &SlashCommand) -> Handled {
-    match args::setting_write(ctx, command)? {
-        // A key of yours saves at once, as Claude Code's `/config key=value` does.
-        Some(write)
-            if write.command == "config"
-                && write.also.is_empty()
-                && !asks_where(
-                    &write.key,
-                    setting_meta(&write.key).is_some_and(|m| m.safety),
-                ) =>
-        {
-            set_at_once(ctx, settings, write.key, write.value)
+/// A change typed with a place flag, such as `/effort max --session`: saved there.
+pub(crate) async fn saved_in(
+    ctx: &mut Ctx,
+    settings: &mut SettingsState,
+    change: SlashCommand,
+    scope: SettingScope,
+) -> Handled {
+    match change {
+        SlashCommand::Agents {
+            action: AgentsAction::Add { name },
+        } => super::agents_add::add(ctx, &name, Some(scope)).await,
+        SlashCommand::AddDir { path } => super::workspace::add_dir(ctx, &path, Some(scope)),
+        SlashCommand::Verbosity { level: Some(level) } => {
+            settings.hold = None;
+            verbosity(ctx, settings, level, Some(scope)).await
         }
+        SlashCommand::Vim => {
+            settings.hold = None;
+            toggle_vim(ctx, settings, Some(scope)).await
+        }
+        change => command(ctx, settings, change, Some(scope)).await,
+    }
+}
+
+/// A command's setting saved at once, as Claude Code's `/config key=value` does, else its
+/// picker opened.
+fn write_or_pick(
+    ctx: &mut Ctx,
+    settings: &mut SettingsState,
+    command: &SlashCommand,
+    asked: Option<SettingScope>,
+) -> Handled {
+    match args::setting_write(ctx, command)? {
         Some(write) => {
-            let recommended = rows::default_scope(write.command, &write.key);
             let mut pairs = vec![(write.key, write.value)];
             pairs.extend(write.also);
-            ask_where(ctx, settings, pairs, recommended)
+            save_changes(ctx, settings, pairs, asked)
         }
         None => {
             if let SlashCommand::Model {
@@ -234,39 +253,41 @@ fn write_or_pick(ctx: &mut Ctx, settings: &mut SettingsState, command: &SlashCom
     }
 }
 
-/// Saves `key` to your global file at once, unless a project file, the workflow or `--set`
-/// holds it, where a save there wouldn't show; then it says where the value is set instead.
-fn set_at_once(ctx: &mut Ctx, settings: &mut SettingsState, key: String, value: String) -> Handled {
-    let layer = ctx.settings.layer(&key);
-    if let Some(holder) = held_above_your_file(&layer) {
-        ctx.notice(
-            NoteLevel::Info,
-            format!(
-                "{key} is set by {holder}, which wins over ~/.argonauts/config.toml · /config {key} \
-                 changes it there"
-            ),
-        );
-        return Ok(Vec::new());
-    }
-    begin(
-        ctx,
-        settings,
-        Change::Set(vec![(key, value)]),
-        SettingScope::Global,
-    )
+/// Where a change to `key` saves when nothing names a place for it, as [`save_changes`] puts
+/// one.
+pub(crate) fn scope_for(ctx: &Ctx, key: &str) -> SettingScope {
+    save::place(ctx, key).scope
 }
 
-/// Who holds a value above your global file, in words, or `None` when your file decides.
-fn held_above_your_file(layer: &str) -> Option<&'static str> {
-    use argonauts_core::settings::layer;
-    Some(match layer {
-        layer::PROJECT => "the project's .argonauts/config.toml",
-        layer::PROJECT_LOCAL => "this project's .argonauts/config.local.toml",
-        layer::WORKFLOW => "the workflow",
-        layer::FLAG => "--set",
-        layer::SESSION => "this session",
-        _ => return None,
-    })
+/// Saves `pairs`, each a key and its TOML value, at once and together: where `save_changes_to`
+/// says, or in `asked` when a flag or ctrl+s names a place. The line after each says where it
+/// went, and why when a layer above moved it. A safety key still asks you to confirm the
+/// change, and a project file you haven't trusted asks first.
+///
+/// Every change made in the app saves through here. Elsewhere in the controller,
+/// `Effect::SaveChanges` asks for it.
+pub(crate) fn save_changes(
+    ctx: &mut Ctx,
+    settings: &mut SettingsState,
+    pairs: Vec<(String, String)>,
+    asked: Option<SettingScope>,
+) -> Handled {
+    let Some((first, _)) = pairs.first() else {
+        return Ok(Vec::new());
+    };
+    let scope = match asked {
+        Some(asked) => asked,
+        None => save::place(ctx, first).scope,
+    };
+    let pairs = pairs
+        .into_iter()
+        .map(|(key, value)| {
+            save::asked_place(&key, scope)?;
+            let value = args::check_known(ctx, &key, &value)?;
+            Ok((key, value))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    begin(ctx, settings, Change::Set(pairs), scope)
 }
 
 /// Reads the CLIs' model lists again in the background, as at start.
@@ -342,17 +363,17 @@ pub(crate) async fn view(
     Ok(Vec::new())
 }
 
-/// A picker's pick after the TUI asked the scope.
+/// A picker's pick: saved where your changes go, or in `scope` when one was named on purpose,
+/// as ctrl+s names this session.
 pub(crate) async fn set(
     ctx: &mut Ctx,
     settings: &mut SettingsState,
     key: String,
     value: String,
-    scope: SettingScope,
+    scope: Option<SettingScope>,
 ) -> Handled {
     settings.hold = None;
-    let value = args::check_known(ctx, &key, &value)?;
-    begin(ctx, settings, Change::Set(vec![(key, value)]), scope)
+    save_changes(ctx, settings, vec![(key, value)], scope)
 }
 
 /// A safety key you set by answering a question that said what it saves, such as a direct turn's
@@ -377,35 +398,17 @@ pub(crate) async fn reset(
     begin_reset(ctx, settings, key, scope)
 }
 
-/// The scope question for a value worked out elsewhere, such as a remembered fallback pick.
-pub(crate) async fn ask_scope(
-    ctx: &mut Ctx,
-    settings: &mut SettingsState,
-    request: ScopeRequest,
-) -> Handled {
-    settings.hold = None;
-    let value = args::check_known(ctx, &request.key, &request.value)?;
-    let recommended = rows::default_scope(&request.command, &request.key);
-    ask_where(ctx, settings, vec![(request.key, value)], recommended)
-}
-
-/// Settings worked out elsewhere, saved at a scope you already picked, such as what a request
-/// said to keep "from now on". A safety key among them still asks you to confirm.
+/// Settings worked out elsewhere in the controller, such as a remembered fallback pick or what
+/// a request said to keep "from now on": saved where `save_changes_to` says, or in `scope` when
+/// one was named on purpose. A safety key among them still asks you to confirm.
 pub(crate) fn save(
     ctx: &mut Ctx,
     settings: &mut SettingsState,
     pairs: Vec<(String, String)>,
-    scope: SettingScope,
+    scope: Option<SettingScope>,
 ) -> Handled {
     settings.hold = None;
-    let pairs = pairs
-        .into_iter()
-        .map(|(key, value)| {
-            let value = args::check_known(ctx, &key, &value)?;
-            Ok((key, value))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    begin(ctx, settings, Change::Set(pairs), scope)
+    save_changes(ctx, settings, pairs, scope)
 }
 
 /// Settings you confirmed already by picking where a setup applies on its question, so a safety
@@ -416,6 +419,27 @@ pub(crate) fn save_confirmed(
     pairs: Vec<(String, String)>,
     scope: SettingScope,
 ) -> Handled {
+    confirmed(ctx, settings, Change::Set, pairs, scope)
+}
+
+/// [`save_confirmed`] for settings your own words asked to keep, as "keep these checks" does,
+/// so the line after names each key alone.
+pub(crate) fn keep_confirmed(
+    ctx: &mut Ctx,
+    settings: &mut SettingsState,
+    pairs: Vec<(String, String)>,
+    scope: SettingScope,
+) -> Handled {
+    confirmed(ctx, settings, Change::Kept, pairs, scope)
+}
+
+fn confirmed(
+    ctx: &mut Ctx,
+    settings: &mut SettingsState,
+    change: fn(Vec<(String, String)>) -> Change,
+    pairs: Vec<(String, String)>,
+    scope: SettingScope,
+) -> Handled {
     settings.hold = None;
     let pairs = pairs
         .into_iter()
@@ -424,7 +448,7 @@ pub(crate) fn save_confirmed(
             Ok((key, value))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let change = Change::Set(pairs);
+    let change = change(pairs);
     refuse_unless_at_terminal(ctx, &change)?;
     if hold_for_orchestrator(ctx, settings, &change, scope) {
         return Ok(Vec::new());
@@ -445,14 +469,6 @@ pub(crate) async fn answer_choice(
         return Ok(Vec::new());
     };
     match (pending, action) {
-        (Pending::Scope { change }, AnswerAction::Choose { value }) => {
-            let Some(scope) = choices::scope_from_value(&value) else {
-                settings.pending.insert(id, Pending::Scope { change });
-                anyhow::bail!("{value:?} isn't a place to save a setting");
-            };
-            close(ctx, id, choices::scope_label(scope));
-            begin(ctx, settings, change, scope)
-        }
         (Pending::Confirm { change, scope }, AnswerAction::Approve) => {
             close(ctx, id, "Change it");
             trust_step(ctx, settings, change, scope)
@@ -567,19 +583,30 @@ pub(crate) fn set_aside(ctx: &mut Ctx, settings: &mut SettingsState, id: ChoiceI
     }
 }
 
-/// Sets `ui.verbosity` everywhere, or for this session when a project file or flag sets it.
+/// Saves `ui.verbosity` where your changes go, or in `asked`.
 pub(crate) async fn verbosity(
     ctx: &mut Ctx,
     settings: &mut SettingsState,
     level: Verbosity,
+    asked: Option<SettingScope>,
 ) -> Handled {
     settings.hold = None;
     let value = toml::Value::try_from(level)?.to_string();
-    toggles::save_toggle(ctx, "ui.verbosity", &value)
+    save_changes(
+        ctx,
+        settings,
+        vec![("ui.verbosity".to_owned(), value)],
+        asked,
+    )
 }
 
-/// Saves `ui.keys` everywhere, or for this session when a project file or flag sets it.
-pub(crate) async fn vim(ctx: &mut Ctx, settings: &mut SettingsState, on: bool) -> Handled {
+/// Saves `ui.keys` where your changes go, or in `asked`.
+pub(crate) async fn vim(
+    ctx: &mut Ctx,
+    settings: &mut SettingsState,
+    on: bool,
+    asked: Option<SettingScope>,
+) -> Handled {
     settings.hold = None;
     let keys = if on {
         KeyScheme::Vim
@@ -587,12 +614,16 @@ pub(crate) async fn vim(ctx: &mut Ctx, settings: &mut SettingsState, on: bool) -
         KeyScheme::Default
     };
     let value = toml::Value::try_from(keys)?.to_string();
-    toggles::save_toggle(ctx, "ui.keys", &value)
+    save_changes(ctx, settings, vec![("ui.keys".to_owned(), value)], asked)
 }
 
-pub(crate) async fn toggle_vim(ctx: &mut Ctx, settings: &mut SettingsState) -> Handled {
+pub(crate) async fn toggle_vim(
+    ctx: &mut Ctx,
+    settings: &mut SettingsState,
+    asked: Option<SettingScope>,
+) -> Handled {
     let on = ctx.settings().ui.keys != KeyScheme::Vim;
-    vim(ctx, settings, on).await
+    vim(ctx, settings, on, asked).await
 }
 
 /// "Yes, and let the main agent answer" on a go-ahead question: the main agent answers the crew's
@@ -672,30 +703,6 @@ pub(crate) async fn offer_checks(ctx: &mut Ctx, settings: &mut SettingsState) ->
     Ok(Vec::new())
 }
 
-/// Asks where to save `key = value`, and any keys that go with it, `recommended` picked.
-fn ask_where(
-    ctx: &mut Ctx,
-    settings: &mut SettingsState,
-    pairs: Vec<(String, String)>,
-    recommended: SettingScope,
-) -> Handled {
-    let Some((key, value)) = pairs.first().cloned() else {
-        return Ok(Vec::new());
-    };
-    let also: Vec<String> = pairs[1..]
-        .iter()
-        .map(|(key, value)| format!("{key} = {value}"))
-        .collect();
-    let change = Change::Set(pairs);
-    refuse_unless_at_terminal(ctx, &change)?;
-    let id = ctx.next_choice_id();
-    let mut choice = scope::scope_question(ctx, id.clone(), &key, &value, recommended);
-    choice.body.splice(1..1, also);
-    settings.pending.insert(id, Pending::Scope { change });
-    ctx.send(AppEvent::Choice { choice });
-    Ok(Vec::new())
-}
-
 /// The scope is known: hold for the orchestrator, confirm a safety key, then the trust step.
 fn begin(
     ctx: &mut Ctx,
@@ -708,7 +715,7 @@ fn begin(
         return Ok(Vec::new());
     }
     let changes: Vec<String> = match &change {
-        Change::Set(pairs) => pairs
+        Change::Set(pairs) | Change::Kept(pairs) => pairs
             .iter()
             .flat_map(|(key, value)| confirm::safety_changes(&ctx.settings, key, Some(value)))
             .collect(),
@@ -987,7 +994,7 @@ fn orchestrator_change(worker: &ModelRef) -> Change {
 
 /// `workflow = "orchestrator"` alone while no orchestrator is set.
 fn needs_orchestrator(ctx: &Ctx, change: &Change) -> bool {
-    let Change::Set(pairs) = change else {
+    let (Change::Set(pairs) | Change::Kept(pairs)) = change else {
         return false;
     };
     let quoted = args::quoted(ORCHESTRATOR);
@@ -1027,7 +1034,7 @@ fn save_checks(ctx: &mut Ctx, settings: &mut SettingsState, lines: &[String]) ->
 /// Without a terminal, or inside an agent session, no safety key changes, in any scope.
 fn refuse_unless_at_terminal(ctx: &Ctx, change: &Change) -> anyhow::Result<()> {
     let safety: Vec<String> = match change {
-        Change::Set(pairs) => pairs
+        Change::Set(pairs) | Change::Kept(pairs) => pairs
             .iter()
             .flat_map(|(key, value)| safety_keys_in(key, value))
             .collect(),

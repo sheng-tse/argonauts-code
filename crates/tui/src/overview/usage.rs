@@ -4,15 +4,16 @@
 //! 10:40pm`, `Fri 12:15am` for early tomorrow, `Tue Oct 13, 10:00pm` later on.
 
 use argonauts_core::api::{PlanUsage, UsageSummary};
+use argonauts_core::logos::logo_for;
 use argonauts_core::plan_usage::{
     Behavior, Behaviors, ExtraUsage, LiveUsage, LiveWindow, UsageShare,
 };
 use ratatui::text::Span;
 use time::{Date, Duration, OffsetDateTime, Time};
 
-use super::cards::cli_role;
 use crate::format;
 use crate::kit::bars;
+use crate::kit::logo::{logo_or, logo_picture};
 use crate::kit::{Drawn, Frame, Kit, Level, ljust, side_by_side, spread};
 use crate::text::{sanitize, str_width, truncate_spans, wrap_spans};
 use crate::theme::Role;
@@ -86,7 +87,35 @@ impl UsageTab<'_> {
         (names, picked)
     }
 
-    /// `read live 8:12pm · ctrl+r reads again`, or that a read is on its way.
+    /// The row of sub-tabs as [`sub_tabs`](Self::sub_tabs) names them, each CLI with its logo
+    /// before it where one draws, the picked one filled as every row fills it.
+    pub fn sub_tab_row(&self, kit: &Kit<'_>, focused: bool) -> Vec<Span<'static>> {
+        let (names, at) = self.sub_tabs();
+        let logos = std::iter::once(None).chain(
+            self.usage
+                .plans
+                .iter()
+                .map(|plan| Some(logo_for(&plan.agent, None))),
+        );
+        let mut spans = Vec::new();
+        for (index, (name, logo)) in names.iter().zip(logos).enumerate() {
+            if index > 0 {
+                spans.push(Span::raw(super::subtabs::TAB_GAP));
+            }
+            // The sub-tab's name has its own blanks around it.
+            if let Some(logo) = logo {
+                spans.extend(logo_picture(&logo, kit.theme));
+            }
+            spans.push(if index == at {
+                super::subtabs::chosen_sub_tab(kit, name, focused)
+            } else {
+                kit.dim(format!(" {name} "))
+            });
+        }
+        spans
+    }
+
+    /// `read live 8:12 PM · ctrl+r reads again`, or that a read is on its way.
     pub fn read_words(&self) -> String {
         let plans = &self.usage.plans;
         if plans.iter().any(|plan| plan.reading) {
@@ -100,7 +129,7 @@ impl UsageTab<'_> {
         let Some(at) = newest else {
             return "ctrl+r reads again".to_owned();
         };
-        let clock = clock_words(at, self.now, true);
+        let clock = read_clock_words(at, self.now);
         let clock = clock.strip_prefix("today ").unwrap_or(&clock);
         format!("read live {clock} · ctrl+r reads again")
     }
@@ -272,7 +301,8 @@ impl UsageTab<'_> {
             .collect()
     }
 
-    /// `● Claude Code` with `Max · in use` at the right, then each window: its bar and share,
+    /// `● Claude Code`, its logo in the dot's place where one draws, with `Max · in use` at the
+    /// right, then each window: its bar and share,
     /// and under it when it resets.
     fn card_body(&self, kit: &Kit<'_>, plan: &PlanUsage, inner: usize, label: usize) -> Drawn {
         let mut body = Drawn::new();
@@ -281,7 +311,8 @@ impl UsageTab<'_> {
         if at.is_some_and(|at| self.stop_focused(Stop::Card(at))) {
             title.style = super::view::filled_title(kit, title.style);
         }
-        let mut name = vec![kit.span("● ", cli_role(&plan.agent)), title];
+        let mut name = plan_mark(kit, plan);
+        name.push(title);
         name = truncate_spans(&name, inner);
         let notes = notes(plan);
         let right = if notes.is_empty() {
@@ -379,7 +410,7 @@ impl UsageTab<'_> {
             .map(|row| row.spans)
             .collect();
         if let Some(last) = &plan.last {
-            let mut words = format!("last read {}", clock_words(last.read_at, self.now, true));
+            let mut words = format!("last read {}", read_clock_words(last.read_at, self.now));
             if let Some(account) = &last.account {
                 words.push_str(&format!(" for {}", sanitize(account)));
             }
@@ -430,7 +461,7 @@ impl UsageTab<'_> {
     ) -> Vec<Span<'static>> {
         let level = level(used);
         let fill = match level {
-            Level::Ok => cli_role(&plan.agent),
+            Level::Ok => Role::for_cli(&plan.agent),
             other => other.fill_role(),
         };
         let label_role = match level {
@@ -475,11 +506,9 @@ impl UsageTab<'_> {
         let inner = width.saturating_sub(2);
         let bar = inner.saturating_sub(12).clamp(4, PAGE_BAR);
         let mut blocks = Vec::new();
-        let mut head = vec![
-            Span::raw(" "),
-            kit.span("● ", cli_role(&plan.agent)),
-            kit.strong(plan.name.clone()),
-        ];
+        let mut head = vec![Span::raw(" ")];
+        head.extend(plan_mark(kit, plan));
+        head.push(kit.strong(plan.name.clone()));
         let notes = notes(plan);
         if !notes.is_empty() {
             head.push(kit.dim(format!(" · {}", notes.join(" · "))));
@@ -512,7 +541,7 @@ impl UsageTab<'_> {
                     kit,
                     share.unwrap_or(0.0),
                     bar,
-                    cli_role(&plan.agent),
+                    Role::for_cli(&plan.agent),
                     None,
                 ));
                 row.push(kit.span(format!("  {}", spent_words(extra, " / ")), Role::Bright));
@@ -628,7 +657,7 @@ impl UsageTab<'_> {
         let used = self.used_now(window);
         let level = level(used);
         let fill = match level {
-            Level::Ok => cli_role(&plan.agent),
+            Level::Ok => Role::for_cli(&plan.agent),
             other => other.fill_role(),
         };
         let shown = used.map(|used| self.shown_share(used));
@@ -656,6 +685,12 @@ impl UsageTab<'_> {
 }
 
 /// The plan and whether the main agent runs on it: `Max · in use`.
+/// The mark before a plan's CLI: its logo where one draws, else its dot.
+fn plan_mark(kit: &Kit<'_>, plan: &PlanUsage) -> Vec<Span<'static>> {
+    let dot = kit.span("● ", Role::for_cli(&plan.agent));
+    logo_or(&logo_for(&plan.agent, None), kit.theme, dot)
+}
+
 fn notes(plan: &PlanUsage) -> Vec<String> {
     let mut notes: Vec<String> = plan.plan.iter().cloned().collect();
     if plan.in_use {
@@ -892,13 +927,31 @@ pub(super) fn left_words(left: Duration) -> String {
     format!("{}d", (seconds + 43_200) / 86_400)
 }
 
-/// When on the clock: `today 10:40pm` within today, the weekday and time before dawn
-/// tomorrow (`Fri 12:15am`), and the weekday, date and time after that (`Tue Oct 13,
-/// 10:00pm`). Without the time, `today` or the weekday and date (`Sun Nov 1`).
+/// When on the clock a plan window resets, as Claude Code writes it: `today 10:40pm` within
+/// today, the weekday and time before dawn tomorrow (`Fri 12:15am`), and the weekday, date and
+/// time after that (`Tue Oct 13, 10:00pm`). Without the time, `today` or the weekday and date
+/// (`Sun Nov 1`).
 pub(super) fn clock_words(at: OffsetDateTime, now: OffsetDateTime, with_time: bool) -> String {
+    on_the_clock(at, now, with_time, short_time)
+}
+
+/// When something was read, as the app writes a time of day: `today 8:12 PM`, `Tue Oct 13,
+/// 9:05 AM`, laid out as [`clock_words`] lays out a reset.
+pub(super) fn read_clock_words(at: OffsetDateTime, now: OffsetDateTime) -> String {
+    on_the_clock(at, now, true, |at| {
+        crate::format::ClockTime::from(at).to_string()
+    })
+}
+
+fn on_the_clock(
+    at: OffsetDateTime,
+    now: OffsetDateTime,
+    with_time: bool,
+    clock: impl Fn(OffsetDateTime) -> String,
+) -> String {
     let at = at.to_offset(now.offset());
     let weekday = &at.weekday().to_string()[..3];
-    let time = short_time(at);
+    let time = clock(at);
     let days = (at.date() - now.date()).whole_days();
     match (days, with_time) {
         (0, true) => format!("today {time}"),

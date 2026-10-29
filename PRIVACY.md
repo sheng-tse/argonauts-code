@@ -45,7 +45,7 @@ Questions about the reports, or a request to delete what an install id sent: ema
 These carry nothing about you or your work beyond what any download shows, such as your computer's address and the Argonauts version, except that Anthropic sees your key when you've set one.
 
 - Once a day it reads `https://argonauts-code.github.io/updates/v1/stable.json` (or `beta.json`) to see whether a new release is out, and a copy from the installer downloads it from this repository's releases. `updates.check = false` in `~/.argonauts/config.toml`, or `ARGONAUTS_DISABLE_UPDATES=1`, stops both.
-- Once a day it reads the model catalog in this repository (`raw.githubusercontent.com`) and Anthropic's public model pages (`platform.claude.com`), or, with `ANTHROPIC_API_KEY` set, Anthropic's model list with that key, so `/model` shows the current models.
+- Once a day it reads the model catalog served beside the update manifests (`https://argonauts-code.github.io/updates/v1/models.toml`, with its signature beside it) and Anthropic's public model pages (`platform.claude.com`), or, with `ANTHROPIC_API_KEY` set, Anthropic's model list with that key, so `/model` shows the current models and ranks the local ones for your computer. Nothing about your computer is sent to rank them: the ranking happens on it.
 
 ## How to see it, and how to turn it off
 
@@ -54,6 +54,7 @@ These carry nothing about you or your work beyond what any download shows, such 
 - Setting `DO_NOT_TRACK=1` in your environment stops them, whatever else is set.
 - The setting is `telemetry.enabled` in your own `~/.argonauts/config.toml`. Once you turn it off, a repository's settings can't turn it back on, and neither can an agent working for you.
 - On CI machines (when `CI` is set), nothing is sent.
-- A copy you build yourself, from source or with `cargo install`, carries no PostHog key and sends nothing.
+- Every optimized build sends the report, wherever it came from: the installer, Homebrew, npm, `cargo install argonauts-code`, or a clone built with `cargo build --release`. A debug build, such as `cargo run` in a clone, never sends anything.
+- Whoever builds Argonauts can send its reports to a PostHog project of their own, with `ARGONAUTS_POSTHOG_KEY` and `ARGONAUTS_POSTHOG_HOST` set while it compiles, or build a copy that never sends, with `ARGONAUTS_POSTHOG_KEY` set empty. A build that sets `ARGONAUTS_POSTHOG_HOST` without `ARGONAUTS_POSTHOG_KEY` sends nothing, so Argonauts' key never goes to another host. The key built in is Argonauts' project key, which can add reports and never read them.
 
 If the network is down, the report waits for the next day. It never slows Argonauts down and never shows an error.

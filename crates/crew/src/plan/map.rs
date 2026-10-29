@@ -119,7 +119,11 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     else {
         return Ok(StepDone::skipped("No mapping agent is available"));
     };
-    let plans = drafts::labeled(&latest.iter().collect::<Vec<_>>())?;
+    let plans = drafts::read_by(
+        host.run_id(),
+        &format!("map {mapping_agent}"),
+        &drafts::labeled_for_agents(host, &latest.iter().collect::<Vec<_>>())?,
+    );
     let mut mapped: Option<(Vec<MappedTopic>, SessionKey)> = None;
     let mut feedback: Vec<String> = Vec::new();
     for slot in 0..2u32 {

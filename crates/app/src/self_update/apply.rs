@@ -319,11 +319,15 @@ async fn download(download: &Download) -> Result<Vec<u8>, ApplyError> {
         .and_then(reqwest::Response::error_for_status)
         .map_err(|err| failed(err.without_url().to_string()))?;
     let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|err| failed(err.without_url().to_string()))?
-    {
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            // A body cut off partway says how much of it came, which tells more than how the
+            // connection broke.
+            Err(_) if !body.is_empty() && (body.len() as u64) < download.size => break,
+            Err(err) => return Err(failed(err.without_url().to_string())),
+        };
         body.extend_from_slice(&chunk);
         // A server sending more than the manifest says is stopped there.
         if body.len() as u64 > download.size {
@@ -773,6 +777,41 @@ mod tests {
             .unwrap();
         assert!(!left.exists(), "the gone process's copy was swept");
         assert!(!ours.exists());
+    }
+
+    #[tokio::test]
+    async fn a_download_cut_off_partway_says_how_much_of_it_came() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/argonauts-aarch64-apple-darwin.tar.xz",
+            listener.local_addr().unwrap()
+        );
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+                match stream.read(&mut buffer).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+            let head = "HTTP/1.1 200 OK\r\ncontent-length: 100\r\nconnection: close\r\n\r\n";
+            let _ = stream.write_all(head.as_bytes()).await;
+            let _ = stream.write_all(&[7u8; 61]).await;
+            let _ = stream.shutdown().await;
+        });
+        let cut = Download {
+            url,
+            sha256: "0".repeat(64),
+            size: 100,
+        };
+        assert_eq!(
+            download(&cut).await,
+            Err(ApplyError::Size { want: 100, got: 61 })
+        );
     }
 
     #[tokio::test]

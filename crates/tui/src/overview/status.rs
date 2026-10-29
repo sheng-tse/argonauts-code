@@ -3,7 +3,8 @@
 //! you. All of it comes from the summary `/status` always answered with, so it costs nothing.
 //!
 //! The same cards pin above the input, where rows are dear: the run without its goal and
-//! plan and with its first few tasks, and each card folded to one line.
+//! plan, with its states on one row instead of a table and its first few tasks, and each card
+//! folded to one line.
 
 use argonauts_core::api::{StatusSummary, TaskBrief};
 use argonauts_core::display_names::DisplayNames;
@@ -15,11 +16,13 @@ use ratatui::text::Span;
 
 use crate::format;
 use crate::kit::bars::Stack;
+use crate::kit::legend::{self, Columns, Figure, TableRow};
+use crate::kit::logo::{LOGO_BEFORE, ModelLabel, NoPicture};
 use crate::kit::{
     Badge, Drawn, Form, Frame, Header, Kit, Level, MeterRow, MeterSlots, State, States, bodies,
     ljust,
 };
-use crate::text::{sanitize_line, str_width, truncate_spans};
+use crate::text::{self, At, sanitize_line, spans_width, str_width, truncate_spans};
 use crate::theme::Role;
 
 /// From this share of a limit on, the spend shows amber.
@@ -75,6 +78,8 @@ impl StatusCard {
 pub struct RunShape<'a> {
     /// The goal and the plan, a row each.
     pub said: bool,
+    /// The tasks by state as a table under the bar, a row each; without it, all on one row.
+    pub table: bool,
     /// The most tasks it lists before it counts the rest.
     pub tasks: usize,
     /// On the tab, where the keys pick a task.
@@ -93,6 +98,7 @@ impl RunShape<'static> {
     /// The whole card, with no task picked.
     pub const WHOLE: Self = Self {
         said: true,
+        table: true,
         tasks: TASK_ROWS,
         picks: None,
     };
@@ -134,6 +140,7 @@ impl StatusCards<'_> {
             StatusCard::Run => {
                 let shape = RunShape {
                     said: false,
+                    table: false,
                     tasks: if full { PINNED_TASK_ROWS } else { 0 },
                     picks: None,
                 };
@@ -216,8 +223,8 @@ impl StatusCards<'_> {
         }
     }
 
-    /// The run: how many of its tasks are merged, a bar of them by state, the goal and the
-    /// plan, then a row for each task, as much of it as `shape` asks for.
+    /// The run: how many of its tasks are merged, a bar of them by state and how many are in
+    /// each, the goal and the plan, then a row for each task, as much of it as `shape` asks for.
     pub fn run(&self, kit: &Kit<'_>, frame: Frame, shape: RunShape<'_>) -> Drawn {
         let inner = frame.inner();
         let tasks = &self.summary.tasks;
@@ -226,7 +233,14 @@ impl StatusCards<'_> {
         body.push(self.run_header(kit, &counts).draw(kit, inner));
         if !tasks.is_empty() {
             body.append(bodies::stack(kit, &counts.stack(), &[], inner, 1, 1));
-            body.push(truncate_spans(&counts.legend(kit), inner));
+            if shape.table {
+                counts
+                    .table(kit, inner)
+                    .into_iter()
+                    .for_each(|row| body.push(row));
+            } else {
+                body.push(truncate_spans(&counts.legend(kit), inner));
+            }
         }
         let said = if shape.said {
             self.goal_and_plan(kit, inner)
@@ -292,12 +306,25 @@ impl StatusCards<'_> {
         let first = picked.map_or(0, |at| (at + 1).saturating_sub(shape.tasks));
         let last = (first + shape.tasks).min(tasks.len());
         let shown = &tasks[first.min(last)..last];
-        let worker = |task: &TaskBrief| {
-            task.worker
-                .as_ref()
-                .map_or_else(String::new, |worker| clean(&self.names.worker(worker)))
+        let label = |task: &TaskBrief| {
+            task.worker.as_ref().map(|worker| {
+                let label = ModelLabel::of(self.names, worker, kit.theme, NoPicture::Nothing);
+                let name = if label.pictured {
+                    label.name
+                } else {
+                    self.names.worker(worker)
+                };
+                (label.logo, clean(&name))
+            })
         };
-        let column = |widest: usize| if widest == 0 { 0 } else { widest + 2 };
+        let worker = |task: &TaskBrief| label(task).map(|(_, name)| name).unwrap_or_default();
+        let column = |widest: usize| {
+            if widest == 0 {
+                0
+            } else {
+                widest + legend::BETWEEN_WORDS
+            }
+        };
         let pick_w = if shape.picks.is_some() { 2 } else { 0 };
         let width = width.saturating_sub(pick_w);
         let id_w = column(widest(shown, |task| task.task.to_string()));
@@ -306,7 +333,13 @@ impl StatusCards<'_> {
         } else {
             0
         };
-        let fixed = 2 + id_w + worker_w;
+        // Where logos draw as pictures, each name has its logo before it.
+        let logo_w = if worker_w > 0 && kit.theme.logo_pictures {
+            usize::from(LOGO_BEFORE)
+        } else {
+            0
+        };
+        let fixed = 2 + id_w + worker_w + logo_w;
         // The standing keeps a third of the row at least.
         let title_w = column(widest(shown, |task| clean(&task.title)))
             .min(width.saturating_sub(fixed + width / 3))
@@ -316,8 +349,11 @@ impl StatusCards<'_> {
         for (at, task) in shown.iter().enumerate() {
             let on = picked == Some(first + at);
             let state = task_state(task.state);
-            let title = truncate_spans(&[Span::raw(clean(&task.title))], title_w - 2);
-            let title: String = title.iter().map(|span| span.content.as_ref()).collect();
+            let title = text::cut(
+                &clean(&task.title),
+                title_w - legend::BETWEEN_WORDS,
+                At::Word,
+            );
             let mut row = Vec::new();
             if let Some(picks) = shape.picks {
                 row.push(if on {
@@ -337,7 +373,10 @@ impl StatusCards<'_> {
                 Span::raw(ljust(&title, title_w))
             });
             if worker_w > 0 {
-                row.push(kit.dim(ljust(&worker(task), worker_w)));
+                let (logo, name) = label(task).unwrap_or_default();
+                let room = (worker_w + logo_w).saturating_sub(spans_width(&logo));
+                row.extend(logo);
+                row.push(kit.dim(ljust(&name, room)));
             }
             let standing = standing(task);
             // What waits for you or failed must stand out from the rows that just go on.
@@ -531,6 +570,35 @@ impl Counts {
             held_from: None,
             track: Role::BarTrack,
         }
+    }
+
+    /// A row for each state that has a task, in the bar's order: its swatch, its word, how
+    /// many, and their share of the run's tasks, each row `width` cells at most.
+    fn table(&self, kit: &Kit<'_>, width: usize) -> Vec<Vec<Span<'static>>> {
+        let whole = self.0.iter().sum::<u64>();
+        let rows: Vec<TableRow> = (STATES.iter().zip(self.0))
+            .filter(|(_, count)| *count > 0)
+            .map(|(state, count)| TableRow {
+                emblem: legend::swatch(kit, state.role()),
+                name: vec![Span::raw(state_word(*state))],
+                figures: vec![Figure {
+                    amount: count.to_string(),
+                    share: legend::share(count, whole),
+                }],
+                pointed: false,
+            })
+            .collect();
+        let widest = (rows.iter().flat_map(|row| &row.figures))
+            .map(|figure| str_width(&figure.amount))
+            .max()
+            .unwrap_or(0);
+        let longest = (rows.iter().map(|row| spans_width(&row.name)))
+            .max()
+            .unwrap_or(0);
+        let columns = Columns::packed(width, legend::SWATCH, 1, widest, longest).unpointed();
+        (rows.iter())
+            .map(|row| truncate_spans(&legend::table_row(kit, columns, row), width))
+            .collect()
     }
 
     /// `▌ merged 1   ▌ running 1`, each state that has a task, in the bar's order.

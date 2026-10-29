@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use time::Date;
 
 use crate::api::day_format;
+use crate::meter::WhoPaid;
 use crate::settings::overview::YearColors;
 
 /// The Overview's periods, as its row under the tabs names them.
@@ -151,8 +152,9 @@ pub struct OverviewModel {
     pub sessions: u32,
 }
 
-/// A model's tokens on this computer in all, under the name one record gave it. A model
-/// recorded under two names is two of these, which a screen adds up by the name it shows.
+/// A model's place in the ranking every tab colours by, under the name one record gave it,
+/// with the tokens that ran through Argonauts Code before today. A model recorded under two
+/// names is two of these, which a screen adds up by the name it shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelTokens {
     pub agent: String,
@@ -262,15 +264,20 @@ pub struct OverviewData {
     /// The period's days with work, oldest first, for the Models chart.
     #[serde(default)]
     pub model_days: Vec<ModelDay>,
-    /// Every model that has run here with its tokens in all, the most first, whatever the
-    /// period. A model's place among its CLI's models picks its shade, so every tab given
-    /// the same list draws a model in the same color.
+    /// Every model in the order every tab colours them, whatever the period, settled once a
+    /// day: what ran through Argonauts Code before today first, by its tokens, then models only
+    /// the CLIs' records hold, then models new today. A model's place among its CLI's models
+    /// picks its shade, so every tab given the same list draws a model in the same color.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub all_time_models: Vec<ModelTokens>,
     /// Claude Code's own count of the period's tokens, once its history is imported and its
     /// /stats has kept one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_stats: Option<OwnCount>,
+    /// The period's tokens by who paid for them, for the who-paid bar under the Overview's
+    /// Tokens. `None` where `ui.paid_by` leaves the Overview out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub who_paid: Option<WhoPaid>,
 }
 
 impl OverviewData {
@@ -305,6 +312,7 @@ impl OverviewData {
             model_days: Vec::new(),
             all_time_models: Vec::new(),
             claude_stats: None,
+            who_paid: None,
         }
     }
 

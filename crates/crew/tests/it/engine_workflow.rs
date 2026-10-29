@@ -922,10 +922,9 @@ async fn merged_run_resumed_in_its_run_review_stays_merged() -> anyhow::Result<(
 /// One drafting agent: `map` skips a lone draft, so the drafts agree and the fast path takes it to
 /// the plan approval.
 #[tokio::test]
-async fn council_plans_with_one_drafting_agent() -> anyhow::Result<()> {
+async fn the_fixed_phases_plan_with_one_drafting_agent() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
     crew.answering_worker("claude-code/opus", "anthropic");
-    crew.settings.workflow = "council".to_owned();
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.evolution.propose_every = 0;
     let outcomes = crew
@@ -970,9 +969,9 @@ async fn council_plans_with_one_drafting_agent() -> anyhow::Result<()> {
 }
 
 /// A workflow that only sets settings has no phases of its own, so its run starts from the
-/// default crew workflow's.
+/// crew's fixed phases, never Council's talk.
 #[tokio::test]
-async fn a_workflow_without_phases_starts_from_the_default_crew_workflow() -> anyhow::Result<()> {
+async fn a_workflow_without_phases_starts_from_the_fixed_phases() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
     crew.answering_worker("claude-code/opus", "anthropic");
     crew.settings.workflow = "ablate-no-critique".to_owned();
@@ -994,7 +993,7 @@ async fn a_workflow_without_phases_starts_from_the_default_crew_workflow() -> an
         .unwrap_or_else(|| panic!("no workflow started"));
     assert_eq!(
         started.from.as_ref().map(|from| from.as_str()),
-        Some("council")
+        Some("base")
     );
     Ok(())
 }

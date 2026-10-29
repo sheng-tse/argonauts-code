@@ -1,0 +1,14 @@
+---
+source: crates/tui/tests/it/snap_settings.rs
+expression: "picker_lines(picker, width)"
+---
+────────────────────────────────────────────────────────────────────────────────
+  Theme
+  Light or dark colors, or follow the terminal
+
+    1. auto
+    2. dark ✓
+  ❯ 3. light
+    4. Reset    remove it from this project's file
+
+  Enter to save · ctrl+s for this session only · ↑↓  to move · Esc to close

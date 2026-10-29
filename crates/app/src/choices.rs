@@ -4,7 +4,6 @@
 use argonauts_core::app::{AppChoice, ChoiceKind};
 use argonauts_core::events::approval::{AnswerAction, AnswerOption, FreeText};
 use argonauts_core::names::ChoiceId;
-use argonauts_core::settings::SettingScope;
 
 pub(crate) use argonauts_core::app::NOT_CHANGED;
 pub(crate) const JUST_ASKING: &str = "Start work on it? · no, just asking";
@@ -52,8 +51,7 @@ pub(crate) fn on_set_aside(kind: ChoiceKind) -> OnSetAside {
     }
 }
 
-/// The fixed options of each kind, in order. `SettingScope` recommends the command's default
-/// through [`scope_options`], and `Init` steps build theirs with [`init_options`].
+/// The fixed options of each kind, in order. `Init` steps build theirs with [`init_options`].
 pub(crate) fn options(kind: ChoiceKind) -> Vec<AnswerOption> {
     match kind {
         ChoiceKind::StartWork => vec![
@@ -62,7 +60,6 @@ pub(crate) fn options(kind: ChoiceKind) -> Vec<AnswerOption> {
             option('n', "No, just asking", choose("no"), false),
         ],
         ChoiceKind::ConfirmTakeOver => vec![option('t', "Take over", AnswerAction::TakeOver, true)],
-        ChoiceKind::SettingScope => scope_options(SettingScope::ProjectLocal),
         ChoiceKind::ConfirmSafetySetting => vec![
             option('y', "Change it", AnswerAction::Approve, false),
             option('n', "Keep it as it is", AnswerAction::Cancel, false),
@@ -86,7 +83,6 @@ pub(crate) fn options(kind: ChoiceKind) -> Vec<AnswerOption> {
             option('y', "Write it", AnswerAction::Approve, false),
             option('n', "Not now", AnswerAction::Cancel, false),
         ],
-        ChoiceKind::KeepInstructions => keep_options(),
         ChoiceKind::RefusedCommands => vec![
             option('y', "Yes, and continue", choose("continue"), true),
             option('n', "No", choose("no"), false),
@@ -113,112 +109,13 @@ pub(crate) fn options(kind: ChoiceKind) -> Vec<AnswerOption> {
         | ChoiceKind::Git
         | ChoiceKind::Templates
         | ChoiceKind::NeededUpdate => Vec::new(),
+        // Nothing asks where to save any more; a recorded one still reads.
+        ChoiceKind::SettingScope | ChoiceKind::KeepInstructions => Vec::new(),
     }
-}
-
-/// Where a request's "from now on" is kept, yours first, and the request alone last.
-pub(crate) fn keep_options() -> Vec<AnswerOption> {
-    let mut options: Vec<AnswerOption> = [
-        ('m', SettingScope::ProjectLocal),
-        ('p', SettingScope::Project),
-        ('e', SettingScope::Global),
-    ]
-    .into_iter()
-    .map(|(key, scope)| {
-        option(
-            key,
-            scope_label(scope),
-            choose(scope_value(scope)),
-            scope == SettingScope::ProjectLocal,
-        )
-    })
-    .collect();
-    options.push(option(
-        'r',
-        "Just this request",
-        choose(JUST_THIS_REQUEST),
-        false,
-    ));
-    options
-}
-
-/// Where the crew your words set is kept: the request alone first, then this
-/// conversation, which writes nothing either, then the repository's shared settings.
-pub(crate) fn keep_crew_options() -> Vec<AnswerOption> {
-    let mut save = option(
-        'p',
-        "Save for this repository",
-        choose(scope_value(SettingScope::Project)),
-        false,
-    );
-    save.detail = Some("writes [crew] in .argonauts/config.toml".to_owned());
-    vec![
-        option('r', "Just this request", choose(JUST_THIS_REQUEST), true),
-        option(
-            's',
-            "This conversation",
-            choose(scope_value(SettingScope::Session)),
-            false,
-        ),
-        save,
-    ]
 }
 
 /// The `Choose` value of a dry run's Edit it.
 pub(crate) const EDIT_IT: &str = "edit";
-
-/// The `Choose` value that keeps nothing past the request.
-pub(crate) const JUST_THIS_REQUEST: &str = "request";
-
-/// Just this session `s`, This project, just me `m`, This project, shared `p`, Everywhere `e`.
-pub(crate) fn scope_options(recommended: SettingScope) -> Vec<AnswerOption> {
-    [
-        ('s', SettingScope::Session),
-        ('m', SettingScope::ProjectLocal),
-        ('p', SettingScope::Project),
-        ('e', SettingScope::Global),
-    ]
-    .into_iter()
-    .map(|(key, scope)| {
-        option(
-            key,
-            scope_label(scope),
-            choose(scope_value(scope)),
-            scope == recommended,
-        )
-    })
-    .collect()
-}
-
-pub(crate) fn scope_label(scope: SettingScope) -> &'static str {
-    match scope {
-        SettingScope::Session => "Just this session",
-        SettingScope::ProjectLocal => "This project, just me",
-        SettingScope::Project => "This project, shared",
-        SettingScope::Global => "Everywhere",
-    }
-}
-
-/// The `Choose` value for a scope, its serde name.
-pub(crate) fn scope_value(scope: SettingScope) -> &'static str {
-    match scope {
-        SettingScope::Session => "session",
-        SettingScope::ProjectLocal => "project_local",
-        SettingScope::Project => "project",
-        SettingScope::Global => "global",
-    }
-}
-
-pub(crate) fn scope_from_value(value: &str) -> Option<SettingScope> {
-    [
-        SettingScope::Session,
-        SettingScope::ProjectLocal,
-        SettingScope::Project,
-        SettingScope::Global,
-    ]
-    .into_iter()
-    .find(|scope| scope_value(*scope) == value)
-}
 
 /// One answer of a guided-setup step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,13 +193,6 @@ pub(crate) fn choose(value: &str) -> AnswerAction {
 mod tests {
     use super::*;
 
-    const SCOPES: [SettingScope; 4] = [
-        SettingScope::Session,
-        SettingScope::ProjectLocal,
-        SettingScope::Project,
-        SettingScope::Global,
-    ];
-
     /// An option's key, label, and action.
     type Shape<'a> = (char, &'a str, AnswerAction);
 
@@ -331,16 +221,7 @@ mod tests {
                 vec![('t', "Take over", TakeOver)],
                 OnSetAside::Cancel,
             ),
-            (
-                ChoiceKind::SettingScope,
-                vec![
-                    ('s', "Just this session", choose("session")),
-                    ('m', "This project, just me", choose("project_local")),
-                    ('p', "This project, shared", choose("project")),
-                    ('e', "Everywhere", choose("global")),
-                ],
-                OnSetAside::NotChanged,
-            ),
+            (ChoiceKind::SettingScope, Vec::new(), OnSetAside::NotChanged),
             (
                 ChoiceKind::ConfirmSafetySetting,
                 vec![
@@ -385,12 +266,7 @@ mod tests {
             (ChoiceKind::Init, Vec::new(), OnSetAside::Recommended),
             (
                 ChoiceKind::KeepInstructions,
-                vec![
-                    ('m', "This project, just me", choose("project_local")),
-                    ('p', "This project, shared", choose("project")),
-                    ('e', "Everywhere", choose("global")),
-                    ('r', "Just this request", choose("request")),
-                ],
+                Vec::new(),
                 OnSetAside::JustThisRequest,
             ),
             (ChoiceKind::Permission, Vec::new(), OnSetAside::No),
@@ -476,21 +352,6 @@ mod tests {
                 | ChoiceKind::RenamedSettings => {}
             }
         }
-
-        // The scope question recommends the command's default, and only that.
-        for scope in SCOPES {
-            let options = scope_options(scope);
-            let picked: Vec<AnswerAction> = options
-                .iter()
-                .filter(|option| option.recommended)
-                .map(|option| option.action.clone())
-                .collect();
-            assert_eq!(picked, vec![choose(scope_value(scope))]);
-            assert_eq!(scope_from_value(scope_value(scope)), Some(scope));
-            let serde_name = serde_json::to_value(scope).unwrap();
-            assert_eq!(serde_name, scope_value(scope));
-        }
-        assert_eq!(scope_from_value("somewhere"), None);
 
         // A setup step: a, b, c in order, the first recommended; nothing to pick is Continue.
         let answers = ["one", "two", "three"].map(|value| InitAnswer {

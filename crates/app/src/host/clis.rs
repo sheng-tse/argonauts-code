@@ -91,7 +91,7 @@ pub(crate) fn file_registry(
 ) -> Arc<FileRegistry> {
     let trusted = repo.map(RepoModels::trusted_hashes).unwrap_or_default();
     let claude = cache.map(|_| ClaudeSource::for_settings(settings));
-    let catalog = cache.map(|_| CatalogSource::argonauts());
+    let catalog = cache.map(|_| CatalogSource::argonauts(&crate::self_update::PUBLIC_KEYS));
     let opencode = AskOpenCode {
         confine: crate::confine::read_only(settings, repo),
         in_repo: repo.is_some_and(RepoModels::trusted),

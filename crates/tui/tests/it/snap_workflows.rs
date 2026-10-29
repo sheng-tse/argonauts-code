@@ -122,13 +122,13 @@ fn nested_row() -> NestedWorkflowRow {
 
 /// A run's workflow a few hours in: two phases done, one building with a nested workflow and a
 /// failure, and two waiting.
-fn ui_kit() -> WorkflowData {
+fn todo_tui() -> WorkflowData {
     WorkflowData {
         run: run(),
         id: WorkflowId::numbered(1),
-        name: "argonauts-ui-kit".into(),
-        description: "Build a standalone Rust UI kit prototype that matches Claude Code: inline \
-                      conversation, history cells, the bottom region, and the agent panel"
+        name: "todo-tui".into(),
+        description: "Build a terminal todo app: an inline task list, a history of what \
+                      changed, the bottom input, and the reminders panel"
             .into(),
         agents_done: 8,
         agents_total: 12,
@@ -296,7 +296,7 @@ fn demo_tests() -> WorkflowData {
 
 fn prompt() -> String {
     let mut lines = vec![
-        "Build the terminal and the whole bottom region of the UI kit.".to_owned(),
+        "Build the terminal and the whole bottom region of the todo app.".to_owned(),
         "Read the design notes first, then the reference screenshots.".to_owned(),
     ];
     lines.extend(
@@ -524,17 +524,17 @@ fn open_agent(view: &mut WorkflowView, data: &WorkflowData, session: &str, state
 fn workflow_view() {
     let state = AppState::default();
     for (width, height) in ROW_SIZES {
-        let mut view = WorkflowView::new(ui_kit());
+        let mut view = WorkflowView::new(todo_tui());
         insta::assert_snapshot!(
             format!("workflow_view_{width}"),
             screen(&mut view, width, height, &state)
         );
     }
-    let mut view = WorkflowView::new(ui_kit());
+    let mut view = WorkflowView::new(todo_tui());
     let text = screen(&mut view, 100, 32, &state);
     assert!(text.contains("8/12 agents · 2h44m"), "{text}");
     assert!(!text.contains("$4.10"), "{text}");
-    assert!(text.contains("❯ 2 Build"), "{text}");
+    assert!(text.contains("❯ ⣾ Build"), "{text}");
     assert!(text.contains("Build · 7 agents"), "{text}");
     assert!(
         text.contains(
@@ -547,7 +547,7 @@ fn workflow_view() {
     // → moves to the rows, x asks, and the second x stops that agent.
     press(&mut view, KeyCode::Right, &state);
     press(&mut view, KeyCode::Down, &state);
-    let mut running = ui_kit();
+    let mut running = todo_tui();
     for row in running.phases.iter_mut().flat_map(|phase| &mut phase.rows) {
         if let WorkflowRow::Agent(agent) = row
             && agent.session.as_str() == "s-003"
@@ -650,7 +650,7 @@ fn long_model_names_stay_visible_at_80_columns() {
                 .unwrap_or_else(|| panic!("no {needle:?} row:\n{text}"))
                 .to_owned()
         };
-        assert!(row("reviewer").contains("GPT 5.6"), "{text}");
+        assert!(row("reviewer").contains(" 5.6"), "{text}");
         assert!(row("1m01s").contains("Qwen3 Coder"), "{text}");
     }
 }
@@ -659,7 +659,7 @@ fn long_model_names_stay_visible_at_80_columns() {
 fn agent_view() {
     let state = AppState::default();
     for (width, height) in ROW_SIZES {
-        let data = ui_kit();
+        let data = todo_tui();
         let mut view = WorkflowView::new(data.clone());
         open_agent(&mut view, &data, "s-002", &state);
         insta::assert_snapshot!(
@@ -669,7 +669,7 @@ fn agent_view() {
     }
 
     // ↑↓ switch agents in the same frame, asking for each one's answer.
-    let data = ui_kit();
+    let data = todo_tui();
     let mut view = WorkflowView::new(data.clone());
     open_agent(&mut view, &data, "s-002", &state);
     let outcome = press(&mut view, KeyCode::Down, &state);
@@ -745,7 +745,7 @@ fn agent_view_names_the_agent_and_its_run_and_tells_alike_steps_apart() {
 #[test]
 fn agent_view_sections() {
     let state = AppState::default();
-    let mut view = AgentView::new(agent_data(row_of(&ui_kit(), "s-002")));
+    let mut view = AgentView::new(agent_data(row_of(&todo_tui(), "s-002")));
     let text = screen(&mut view, 100, 32, &state);
     insta::assert_snapshot!("agent_view_sections_collapsed", text);
     let order = [
@@ -810,7 +810,7 @@ fn agent_view_sections() {
     let mut ui = UiSettings::default();
     ui.panel.subagents = CliInternals::Summary;
     state.ui = Some(ui.clone());
-    let mut view = AgentView::new(agent_data(row_of(&ui_kit(), "s-002")));
+    let mut view = AgentView::new(agent_data(row_of(&todo_tui(), "s-002")));
     let text = screen(&mut view, 100, 40, &state);
     assert!(
         text.contains("Subagents · 4 · structure not exposed · 1 done, 1 running, 1 failed"),
@@ -829,10 +829,10 @@ fn agent_view_sections() {
 #[test]
 fn a_workflow_inside_opens_in_its_phase() {
     let state = AppState::default();
-    let mut view = WorkflowView::new(ui_kit());
+    let mut view = WorkflowView::new(todo_tui());
     let text = screen(&mut view, 100, 32, &state);
     // The phase counts the agents inside.
-    assert!(text.contains("❯ 2 Build    2/4"), "{text}");
+    assert!(text.contains("❯ ⣾ Build    2/4"), "{text}");
     let nested = text
         .lines()
         .find(|line| line.contains("▾ build:c-demo-tests"))
@@ -841,7 +841,7 @@ fn a_workflow_inside_opens_in_its_phase() {
     assert!(nested.trim_end().ends_with("12m00s │"), "{text}");
     assert!(text.contains("    ✔ Draft"), "{text}");
     let name_row = text.lines().nth(1).unwrap_or_default();
-    assert!(name_row.starts_with(" argonauts-ui-kit"), "{text}");
+    assert!(name_row.starts_with(" todo-tui"), "{text}");
     assert!(!name_row.contains('›'), "{text}");
 
     press(&mut view, KeyCode::Right, &state);
@@ -1020,9 +1020,9 @@ fn run_tree_subagents_and_threads() {
     assert!(text.contains("+3 subagents"), "{text}");
     assert!(text.contains("+2 subagents"), "{text}");
     assert!(text.contains("+1 subagent "), "{text}");
-    assert!(text.contains("↷ worker · task-002"), "{text}");
+    assert!(text.contains("≈ worker · task-002"), "{text}");
     assert!(
-        text.contains("GPT 5.6 · 181.0k tok · in place of Opus"),
+        text.contains("●  GPT 5.6 · +2 subagents") && text.contains(" 181.0k tok "),
         "{text}"
     );
 
@@ -1153,6 +1153,7 @@ fn session(
         tokens_in: 90_000,
         tokens_out: 18_100,
         cost_usd: None,
+        billing: None,
         context: None,
         context_window: None,
         rotations: 0,
@@ -1174,6 +1175,7 @@ fn session(
         stalled: false,
         cli_session: None,
         sent_back: false,
+        seat: None,
         workflows: Vec::new(),
     }
 }
@@ -1194,6 +1196,9 @@ fn task(n: u32) -> TaskRow {
         reviews: 0,
         waiting_on_agent: None,
         item: None,
+        way: None,
+        todos: None,
+        reviewers: 0,
     }
 }
 
@@ -1304,19 +1309,22 @@ fn agent_panel_row_ctx() {
     let state = crew_state(OffsetDateTime::now_utc());
     let model = synced(&state, true);
     let bottom = &model.bottom;
-    assert_eq!(bottom.workflows.rows.len(), 1);
+    // The run's row and its two tasks.
+    assert_eq!(bottom.workflows.rows.len(), 3);
     // The finished drafting agent isn't listed; the two workers are, under their run, after your
     // own conversation's row.
     assert_eq!(bottom.agents.rows.len(), 3);
     let text = panel_text(&bottom.workflows, &bottom.agents, 160);
     let rows: Vec<&str> = text.lines().collect();
     assert_eq!(rows[0], "  ● main", "{text}");
-    assert!(rows[1].starts_with("  ◯ fix the export race"), "{text}");
-    // Under its run, an agent's row is a row of Claude Code's list: its dot, its name, what
-    // it's doing, and its stats. This state has no labels, so each goes by its task.
-    assert!(rows[2].starts_with("    ○ task-001  "), "{text}");
-    assert!(rows[2].contains("ctx 120k/200k"), "{text}");
-    assert!(rows[2].contains("+3 subagents"), "{text}");
+    // A model fills in for another in it, so its mark is the fallback's.
+    assert!(rows[1].starts_with("  ≈  fix the export race"), "{text}");
+    // Under its run and its tasks, an agent's row is a row of Claude Code's list: its dot, its
+    // name, what it's doing, and its stats. This state has no labels, so each goes by its task.
+    let agent = agent_rows(&text)[0];
+    assert!(rows[agent].starts_with("    ○ task-001  "), "{text}");
+    assert!(rows[agent].contains("ctx 120k/200k"), "{text}");
+    assert!(rows[agent].contains("+3 subagents"), "{text}");
 
     // Near the cap, the ctx turns to the warning color; below it, it stays dim.
     let theme = theme();
@@ -1328,7 +1336,7 @@ fn agent_panel_row_ctx() {
             .find(|span| span.content.starts_with("ctx "))
             .map(|span| span.style)
     };
-    assert_eq!(ctx_style(&lines[2]), Some(theme.style(Role::Dim)));
+    assert_eq!(ctx_style(&lines[agent]), Some(theme.style(Role::Dim)));
     let mut near = state.clone();
     if let Some(run) = near.runs.get_mut(&run())
         && let Some(claude) = run.sessions.get_mut(&key("s-104"))
@@ -1341,17 +1349,26 @@ fn agent_panel_row_ctx() {
     }
     let model = synced(&near, true);
     let lines = panel_lines(&model.bottom.workflows, &model.bottom.agents, &ctx);
-    assert_eq!(ctx_style(&lines[2]), Some(theme.style(Role::Warn)));
+    assert_eq!(ctx_style(&lines[agent]), Some(theme.style(Role::Warn)));
 
-    // Without `ui.panel.agents`, a run is one row.
+    // Without `ui.panel.agents`, a run is its row and its tasks'.
     let model = synced(&state, false);
     assert!(model.bottom.agents.rows.is_empty());
     assert_eq!(
         panel_text(&model.bottom.workflows, &model.bottom.agents, 160)
             .lines()
             .count(),
-        1
+        3
     );
+}
+
+/// Where the rows of a run's agents are in `text`, the list under the input.
+fn agent_rows(text: &str) -> Vec<usize> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, row)| row.starts_with("    ○ "))
+        .map(|(at, _)| at)
+        .collect()
 }
 
 /// An agent's context reads against its window, in the window's divisor, and alone while no
@@ -1407,7 +1424,10 @@ fn agent_panel_columns() {
     for width in [80u16, 100, 120, 200] {
         let text = panel_text(&bottom.workflows, &bottom.agents, width);
         insta::assert_snapshot!(format!("agent_panel_columns_{width}"), text);
-        let rows: Vec<&str> = text.lines().skip(2).collect();
+        let rows: Vec<&str> = text
+            .lines()
+            .filter(|row| row.starts_with("    ○ "))
+            .collect();
         assert_eq!(rows.len(), 2, "{text}");
         let cells = |row: &str| row.trim_end().chars().count();
         let widest = rows.iter().map(|row| cells(row)).max();
@@ -1447,7 +1467,10 @@ fn a_long_model_name_stays_out_of_the_list() {
         !text.contains("qwen3") && !text.contains("OpenCode"),
         "{text}"
     );
-    let rows: Vec<&str> = text.lines().skip(2).collect();
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|row| row.starts_with("    ○ "))
+        .collect();
     assert!(rows[0].starts_with("    ○ build:export-race  "), "{text}");
     assert!(rows[1].starts_with("    ○ task-002           "), "{text}");
 }
@@ -1484,9 +1507,9 @@ fn debt_markers_on_rows() {
         .lines()
         .find(|row| row.contains("worker · task-002"))
         .unwrap();
-    assert!(row.contains("↷ worker · task-002"), "{text}");
+    assert!(row.contains("≈ worker · task-002"), "{text}");
     assert!(
-        row.contains("in place of Opus · needs a review by Opus"),
+        row.contains("needs a review by Opus") && !row.contains("in place of"),
         "{text}"
     );
     assert!(!text.contains('◌'), "{text}");
@@ -1583,15 +1606,17 @@ fn a_published_page_marks_its_agents_row() {
     assert!(!text.contains("test-report"), "{text}");
 }
 
+/// A run's row carries no words: who started the run, who fills in for whom and why it needs
+/// you are in its view. The row is its mark, name, bar, count, time and tokens.
 #[test]
-fn run_row_shows_outside_agent() {
+fn a_run_row_carries_no_words() {
     let wall = OffsetDateTime::now_utc();
     let state = crew_state(wall);
     let model = synced(&state, false);
     let row = &model.bottom.workflows.rows[0];
-    assert_eq!(row.outside_agent.as_deref(), Some("via desktop-client"));
     assert_eq!(row.key, "run-01");
-    assert_eq!((row.agents_done, row.agents_total), (1, 3));
+    // It counts its tasks, neither of them merged yet.
+    assert_eq!(row.count, Some((0, 2)));
 
     // With a fixed clock the whole row reads the same every time.
     let rows = panel::run_rows(&state, wall, t0());
@@ -1601,26 +1626,28 @@ fn run_row_shows_outside_agent() {
         ..WorkflowPanel::default()
     };
     let text = panel_text(&panel, &AgentPanel::default(), 120);
-    insta::assert_snapshot!("run_row_shows_outside_agent", text);
+    insta::assert_snapshot!("a_run_row_carries_no_words", text);
     assert!(
-        text.contains("1/3 · 4m12s · ↓  54.3k tokens · via desktop-client"),
+        text.lines()
+            .next()
+            .is_some_and(|row| row.ends_with("0/2 · 4m12s · ↓  54.3k tokens")),
         "{text}"
     );
-    // At 60 columns the bar goes first, and who fills in outlasts who started the run.
+    assert!(!text.contains("desktop-client"), "{text}");
+    // At 60 columns the bar gives way and the numbers stay.
     let narrow = panel_text(&panel, &AgentPanel::default(), 60);
-    assert!(!narrow.contains('▰'), "{narrow}");
-    assert!(narrow.contains("↷ GPT 5.6 for Claude Code"), "{narrow}");
+    assert!(narrow.contains("0/2 · 4m12s · ↓  54.3k"), "{narrow}");
 }
 
 #[test]
 fn state_glyph_word_color() {
     let theme = theme();
     let state = AppState::default();
-    let data = ui_kit();
+    let data = todo_tui();
     for (session, words, role) in [
         ("s-002", "✔ Done", Role::Success),
-        ("s-005", "✘ Failed", Role::Danger),
-        ("s-006", "◌ Waiting", Role::Faint),
+        ("s-005", "× Failed", Role::Danger),
+        ("s-006", "◌ Waiting", Role::Dim),
     ] {
         let mut view = AgentView::new(agent_data(row_of(&data, session)));
         let buf = draw(&mut view, 100, 32, &state);
@@ -1636,13 +1663,13 @@ fn state_glyph_word_color() {
     running.status = RowStatus::Running;
     let mut view = AgentView::new(agent_data(running));
     let buf = draw(&mut view, 100, 32, &state);
-    // An agent at work in a workflow draws Claude Code's grey `⏺`.
+    // An agent at work in a workflow draws the turning `⣾` in the working colour.
     assert_eq!(
-        style_at(&buf, "⏺ Running").and_then(|s| s.fg),
-        fg(&theme, Role::Faint)
+        style_at(&buf, "⣾ Running").and_then(|s| s.fg),
+        fg(&theme, Role::StateWorking)
     );
 
-    // The workflow view's rows: green ✔, red ✘, and the workflow inside, open.
+    // The workflow view's rows: green ✔, red ×, and the workflow inside, open.
     let mut view = WorkflowView::new(data);
     let buf = draw(&mut view, 100, 32, &state);
     assert_eq!(
@@ -1650,12 +1677,12 @@ fn state_glyph_word_color() {
         fg(&theme, Role::Success)
     );
     assert_eq!(
-        style_at(&buf, "✘ build:d").and_then(|s| s.fg),
+        style_at(&buf, "× build:d").and_then(|s| s.fg),
         fg(&theme, Role::Danger)
     );
     assert!(style_at(&buf, "▾ build:c").is_some());
 
-    // Run rows say their state in words too, in the state's color.
+    // Run rows say their state in their mark alone, each its own shape in the state's color.
     let mut panel = WorkflowPanel {
         max_rows: 5,
         ..WorkflowPanel::default()
@@ -1674,46 +1701,33 @@ fn state_glyph_word_color() {
             format!("workflow-{i}"),
             state,
         );
-        row.agents_done = 1;
-        row.agents_total = 2;
+        row.count = Some((1, 2));
         panel.rows.push(row);
     }
     let ctx = RenderCtx::new(120, &theme, Clock::still(t0()));
     let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
     let text = common::text(&lines);
     insta::assert_snapshot!("state_glyph_word_color_rows", text);
-    let last_style = |i: usize| {
+    let mark = |i: usize| {
         lines[i]
             .spans
-            .last()
+            .iter()
+            .find(|span| !span.content.trim().is_empty())
             .map(|span| (span.content.to_string(), span.style))
     };
-    assert_eq!(
-        last_style(0),
-        Some(("needs you".into(), theme.style(Role::Warn)))
-    );
-    assert_eq!(
-        last_style(1),
-        Some(("done".into(), theme.style(Role::Success)))
-    );
-    assert_eq!(
-        last_style(2),
-        Some(("failed".into(), theme.style(Role::Danger)))
-    );
+    assert_eq!(mark(0), Some(("◆".into(), theme.style(Role::Warn))));
+    assert_eq!(mark(1), Some(("✔".into(), theme.style(Role::Success))));
+    assert_eq!(mark(2), Some(("×".into(), theme.style(Role::Danger))));
     // A pause you asked for reads plain, as its picture draws it.
-    assert_eq!(
-        last_style(3),
-        Some(("paused".into(), theme.style(Role::Text)))
-    );
-    assert_eq!(lines[0].spans[1].content, "⏸ ");
-    assert_eq!(lines[1].spans[1].content, "✔ ");
-    assert_eq!(lines[2].spans[1].content, "✘ ");
-    assert_eq!(lines[3].spans[1].content, "⏸ ");
+    assert_eq!(mark(3), Some(("‖".into(), theme.style(Role::Text))));
+    for word in ["needs you", "done", "failed", "paused"] {
+        assert!(!text.contains(word), "{text}");
+    }
 }
 
 /// Every text field set to one sample, so no view can dodge it.
 fn with_sample(sample: &str) -> (WorkflowData, AgentData) {
-    let mut data = ui_kit();
+    let mut data = todo_tui();
     data.name = sample.into();
     data.description = sample.into();
     for phase in &mut data.phases {
@@ -1726,7 +1740,7 @@ fn with_sample(sample: &str) -> (WorkflowData, AgentData) {
             }
         }
     }
-    let mut agent = agent_data(row_of(&ui_kit(), "s-002"));
+    let mut agent = agent_data(row_of(&todo_tui(), "s-002"));
     agent.row.label = sample.into();
     agent.prompt = format!("{sample}\n{sample}\n{sample}");
     for call in &mut agent.activity {
@@ -1818,7 +1832,7 @@ fn library_files() -> Vec<argonauts_core::views::WorkflowFile> {
 fn library_view() {
     use argonauts_tui::views::library::LibraryView;
     let state = AppState::default();
-    let mut run = WorkflowView::new(ui_kit());
+    let mut run = WorkflowView::new(todo_tui());
     assert!(matches!(
         press(&mut run, KeyCode::Char('l'), &state),
         ViewOutcome::Ignored

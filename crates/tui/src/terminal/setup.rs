@@ -150,6 +150,11 @@ pub fn install_panic_hook() {
     INSTALL.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
+            // A world drawing's panic is caught and ends that drawing alone: the app goes on,
+            // and the screen stays as it is.
+            if crate::world::deliver::worker::panicking_in_a_drawing() {
+                return;
+            }
             restore_after_panic();
             previous(info);
         }));
@@ -319,6 +324,26 @@ pub fn probe_pixel_mouse(timeout: std::time::Duration) -> bool {
     {
         ask(b"\x1b[?1016$p\x1b[c", attributes_said, timeout)
             .is_some_and(|answer| knows_mode(&answer, 1016))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = timeout;
+        false
+    }
+}
+
+/// Whether the terminal takes the kitty protocol's pictures, by its answer to a graphics query
+/// sent with DA1, so the wait ends at that answer. Raw mode must be on, and nothing else may
+/// read input meanwhile.
+pub fn probe_graphics(timeout: std::time::Duration) -> bool {
+    #[cfg(unix)]
+    {
+        ask(
+            &crate::mascot::placeholder::query(),
+            attributes_said,
+            timeout,
+        )
+        .is_some_and(|answer| crate::mascot::placeholder::query_answered(&answer))
     }
     #[cfg(not(unix))]
     {

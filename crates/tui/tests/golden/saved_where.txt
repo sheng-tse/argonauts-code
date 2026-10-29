@@ -1,0 +1,8 @@
+❯ /effort max
+  ⎿  Set effort to max · everywhere (~/.argonauts/config.toml)
+
+❯ /effort max --session
+  ⎿  Set effort to max · this session · was high
+
+❯ /model opus
+  ⎿  Set model to Opus 5.5 · just you (.argonauts/config.local.toml), since the team's file sets it

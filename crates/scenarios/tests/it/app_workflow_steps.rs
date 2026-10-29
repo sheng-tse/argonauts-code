@@ -89,6 +89,7 @@ fn shipped_config() -> String {
 #[test]
 fn app_crew_request_runs_the_steps_its_orchestrator_writes() -> anyhow::Result<()> {
     let scenario = scenario_with(&shipped_config())?;
+    with_council_steps(&scenario)?;
     // Tall enough for the view's Phases pane to list all six phases.
     let mut pty = scenario.launch_sized(&[], 40, 100)?;
     wait_ready(&scenario, &pty)?;
@@ -101,8 +102,8 @@ fn app_crew_request_runs_the_steps_its_orchestrator_writes() -> anyhow::Result<(
 
     // The orchestrator is the main agent and its row is named for the workflow it plans. Every
     // worker proposes and challenges, as council keeps, the builder is the first of the crew,
-    // and its reviewer a worker from another provider, since council has its workers review
-    // each other.
+    // and its check goes to a worker from another provider, by its task's name alone, since
+    // code picks a council's checkers.
     let sessions: Vec<(String, String)> = events
         .iter()
         .filter_map(|event| match &event.kind {
@@ -130,7 +131,7 @@ fn app_crew_request_runs_the_steps_its_orchestrator_writes() -> anyhow::Result<(
         assert_eq!(ran(label), Some(cli), "{label}: {sessions:?}");
     }
     assert_eq!(ran("build:rate-limit"), Some("claude-code"), "{sessions:?}");
-    assert_eq!(ran("review:rate-limit"), Some("codex"), "{sessions:?}");
+    assert_eq!(ran("check:rate-limit"), Some("codex"), "{sessions:?}");
 
     // What the views draw: the script's own name, its phases in the order it declared them,
     // and each agent with its phase, model and state.
@@ -200,8 +201,8 @@ fn app_crew_request_runs_the_steps_its_orchestrator_writes() -> anyhow::Result<(
     // challenge, the judge, the builder, the reviewer, and the merger when it wrote the commit
     // message before your rules answered. A merger the merge stopped before it wrote wasn't
     // needed, so it counts as neither done nor unfinished. The agent that wrote the steps is
-    // none of them. Its row under the input, kept a while after the end, counts the same,
-    // every one done.
+    // none of them. Its row under the input, kept a while after the end, counts its tasks, every
+    // one done, and the same tokens.
     let ended = pty
         .wait_for(
             r"Completed in \S+ · \d+ agents · \S+ tokens · merged onto main",
@@ -220,12 +221,13 @@ fn app_crew_request_runs_the_steps_its_orchestrator_writes() -> anyhow::Result<(
         "{closing}\n{unfinished:?}"
     );
     let row = line_with(&ended, "\u{25b0}");
+    let count = row
+        .split_whitespace()
+        .find_map(|word| word.split_once('/'))
+        .filter(|(done, all)| done == all);
+    assert!(count.is_some(), "{row}\n{unfinished:?}");
     assert!(
-        row.contains(&format!("  {agents}/{agents} · ")),
-        "{row}\n{unfinished:?}"
-    );
-    assert!(
-        row.ends_with(&format!(" · \u{2193}  {tokens} · merged onto main")),
+        row.ends_with(&format!(" · \u{2193}  {tokens}")),
         "{row}\n{closing}"
     );
 
@@ -279,6 +281,7 @@ fn app_crew_request_runs_the_steps_its_orchestrator_writes() -> anyhow::Result<(
 #[test]
 fn app_crew_run_in_a_folder_without_git_says_what_it_wrote() -> anyhow::Result<()> {
     let scenario = scenario_with(&shipped_config())?;
+    with_council_steps(&scenario)?;
     std::fs::remove_dir_all(scenario.repo.root().join(".git"))?;
     let mut pty = scenario.launch_sized(&[], 36, 124)?;
     wait_ready(&scenario, &pty)?;
@@ -326,15 +329,15 @@ fn app_crew_run_in_a_folder_without_git_says_what_it_wrote() -> anyhow::Result<(
     Ok(())
 }
 
-/// `/templates` on a small terminal. Its question lists ten of the names at a time, so the
-/// title, the pointer and the keys are all on the screen, going down past the last name
-/// shown brings up the next, and Enter copies the picked one into this folder.
+/// `/templates --project` on a small terminal. Its question lists ten of the names at a time,
+/// so the title, the pointer and the keys are all on the screen, going down past the last name
+/// shown brings up the next, and Enter copies the picked one into this folder at once.
 #[test]
 fn app_templates_asks_which_one_on_a_small_screen_and_copies_it() -> anyhow::Result<()> {
     let scenario = scenario_with(&shipped_config())?;
     let mut pty = scenario.launch_sized(&[], 24, 80)?;
     wait_ready(&scenario, &pty)?;
-    submit(&mut pty, "/templates")?;
+    submit(&mut pty, "/templates --project")?;
 
     let asked = pty.wait_for(r"1–10 of \d+ ↓", WAIT)?.visible_text();
     let rows: Vec<&str> = asked.lines().map(str::trim_end).collect();
@@ -365,20 +368,11 @@ fn app_templates_asks_which_one_on_a_small_screen_and_copies_it() -> anyhow::Res
     assert!(moved.contains("◆ Copy which one?"), "{moved}");
     assert!(!moved.contains("  5.  "), "{moved}");
 
-    // Back up to the second name, and into this folder.
+    // Back up to the second name, which goes into this folder with nothing more asked.
     for _ in 0..9 {
         pty.press(Key::Up)?;
     }
     pty.wait_for(r"❯ 2\.  Orchestrator", WAIT)?;
-    pty.press(Key::Enter)?;
-    let place = pty
-        .wait_for(r"◆ Copy Orchestrator into", WAIT)?
-        .visible_text();
-    assert!(
-        line_with(&place, "❯ 1. This folder").ends_with("   .argonauts/"),
-        "{place}"
-    );
-    argonauts_scenarios::past_the_question_guard();
     pty.press(Key::Enter)?;
     let copy = scenario
         .repo
@@ -446,9 +440,9 @@ fn app_workflow_of_your_own_is_made_tried_and_put_in_use() -> anyhow::Result<()>
     )?;
     assert!(run_dirs(&scenario).is_empty(), "nothing ran");
 
-    // `/workflow spec-first` makes it the workflow in use, and the rule above the input says so.
-    submit(&mut pty, "/workflow spec-first")?;
-    answer_scope(&scenario, &mut pty, 's', None)?;
+    // `/spec-first --session` makes it the workflow in use for this session at once, as
+    // `/workflow spec-first --session` does, and the rule above the input says so.
+    submit(&mut pty, "/spec-first --session")?;
     let changed = wait_until("the workflow in use to change", || {
         Ok(setting_changes(&scenario)?
             .into_iter()

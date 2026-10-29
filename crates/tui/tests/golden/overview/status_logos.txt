@@ -1,0 +1,62 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats
+
+ Version         Argonauts Code 0.0.1
+ Conversation    conversation-014 · started 7:12 PM
+ Folder          ~/workspace/rate-limiter-app · no git, workflows keep a hidden history
+ Main session    ◧◨ Opus 5.5 · xhigh effort · 212k of 1M context
+ Workflow        Captain · ultracode off · workflow size medium
+ Mode            Supervised
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ◆ your CLIs                                                          who you're signed in as, or what each can use │
+ │ ◧◨ Claude Code    2.1.296   you@example.com · Max · checked · works                                                │
+ │ ◧◨ Codex          0.160.0   another@example.org · Plus · checked                                                   │
+ │ ◧◨ agy            1.3.3     you@example.com · Google AI Pro · newer than checked · works                           │
+ │ ◧◨ OpenCode       2.0.26    ◧◨ OpenRouter (API key, billed) · ◧◨ Ollama (local) · new major version                │
+ │                             default GLM 5 on OpenRouter · checked with 1.18.34 · compared at start-up              │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ CLI health                                                                each model on its own · kept across runs │
+ │                                                                                                                    │
+ │ CLI                model            state           why                                      next check            │
+ │                                                                                                                    │
+ │ ◧◨ Claude Code     Opus 5.5         ▪ overloaded    2 overload errors in a row               2:03 PM, a test task  │
+ │                    Sonnet 5.5       ▪ healthy       ↷ review:due-tests for Opus 5.5                                │
+ │                    Haiku 5.5        ▪ healthy                                                                      │
+ │                                                                                                                    │
+ │ ◧◨ Codex           5.6              ▪ healthy                                                                      │
+ │                    5.6 Luna         ▪ degraded      reconnected twice in 2 minutes           2:01 PM, if quiet     │
+ │                                                                                                                    │
+ │ ◧◨ agy             3.6 Pro          ▪ healthy                                                                      │
+ │                    3.6 Flash        ▪ healthy                                                                      │
+ │                                                                                                                    │
+ │ ◧◨ OpenCode        not installed                                                                                   │
+ │                                                                                                                    │
+ │ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+ │                                                                                                                    │
+ │ what the states mean                ▪ healthy       takes work as asked                                            │
+ │                                     ▪ degraded      new work goes to another model first     after 2 quiet minutes │
+ │                                     ▪ overloaded    out: a fallback steps in, or it waits    a test in 5 minutes   │
+ │                                     ▪ down          every model on the CLI is out            a test in 5 minutes   │
+ │                                     ▪ testing       one test task decides: healthy or out    out if silent an hour │
+ │                                                                                                                    │
+ │ An overload or server error counts against the model it came from; two models out at once take the CLI down.       │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ◆ settings in effect                                     enter opens All settings: each key and where it came from │
+ │ ~/.argonauts/config.toml        1 key · your settings                                                              │
+ │ .argonauts/config.local.toml    1 key · this folder, only you                                                      │
+ │ mods                            6 built in · 1 of yours (checks)                                                   │
+ │ tools for the main session      start a workflow · set a goal · setup · records                                    │
+ │ MCP servers                     2 · from your Claude Code settings: github, linear                                 │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ◆ runs                                                                                              in this folder │
+ │ None yet. A workflow you start shows here, with what it's doing and anything waiting for you.                      │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ tab · ←  →  tabs · ↓  into the cards · esc closes

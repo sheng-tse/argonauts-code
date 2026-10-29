@@ -1,6 +1,7 @@
 //! The bottom line at every width in `WIDTHS`, in the healthy state and
 //! with one CLI near its limit and one out. The rows are drawn without color, so a bar reads
-//! as `█` and `░`, and once more in color at 120 columns.
+//! as `█` and `░`, and once more in color at 120 columns. Where a CLI's name has no room, two
+//! letters stand for it beside its dot.
 
 use crate::common;
 use argonauts_core::settings::bottom_line::{BottomLineSettings, LineForm};
@@ -17,6 +18,12 @@ const WIDTHS: [u16; 8] = [200, 150, 120, 100, 80, 60, 40, 20];
 
 fn cli(name: &str, windows: &[(&str, f64)]) -> CliUse {
     let mut cli = CliUse::new(name, Role::for_cli(name));
+    let id = match name {
+        "Claude Code" => "claude-code",
+        "Codex" => "codex",
+        _ => "antigravity-cli",
+    };
+    cli.logo = Some(argonauts_core::logos::logo_for(id, None));
     cli.windows = windows
         .iter()
         .map(|(label, used)| WindowUse::new(*label, *used))
@@ -26,7 +33,7 @@ fn cli(name: &str, windows: &[(&str, f64)]) -> CliUse {
 
 /// Claude in use at 1% and 56%, Codex at 11%, agy at 2%.
 fn healthy() -> Vec<CliUse> {
-    let mut claude = cli("Claude", &[("5h", 0.01), ("7d", 0.56)]);
+    let mut claude = cli("Claude Code", &[("5h", 0.01), ("7d", 0.56)]);
     claude.main = true;
     vec![
         claude,
@@ -139,7 +146,7 @@ fn the_page_s_preview_at_every_width() {
     };
     let healthy = Sample {
         clis: vec![
-            cli("Claude", "claude-code", 0.01, 0.56),
+            cli("Claude Code", "claude-code", 0.01, 0.56),
             cli("Codex", "codex", 0.01, 0.11),
             cli("agy", "antigravity-cli", 0.02, 0.01),
         ],
@@ -149,7 +156,8 @@ fn the_page_s_preview_at_every_width() {
     pressed.clis[0].five_hours = Some(0.93);
     pressed.clis[2].five_hours = Some(1.0);
     let picture = BottomLineSettings::from_toml(
-        "left = [\"mode\", \"branch\"]\nright = [\"plan-usage\", \"spend\"]",
+        "left = [\"mode\", \"branch\"]\nright = [\"plan-usage\", \"spend\"]\n\
+         [plan-usage]\nshow = \"all\"",
     )
     .unwrap();
     let theme = theme_at(ColorLevel::None);

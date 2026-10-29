@@ -2,6 +2,7 @@
 //! and what it is: `argonauts_core::hidden_git`. It gives such a folder what a workflow needs,
 //! branches and worktrees for agents working side by side, and what `/rewind` needs.
 
+use std::io::BufRead as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -128,29 +129,32 @@ impl Survey {
     /// From `new`, git's NUL-separated list of the files in `root` it doesn't track and your
     /// `.gitignore` files allow.
     pub(crate) fn of(root: &Path, new: &str, limits: &HistorySettings) -> Self {
-        let max_file = limits.max_file_mb.saturating_mul(MB);
         let mut survey = Self::default();
         for path in new.split('\0').filter(|path| !path.is_empty()) {
-            // Git names a nested repository as a folder, and can't add one with no commits.
-            if let Some(nested) = path.strip_suffix('/') {
-                survey
-                    .left_out
-                    .push(format!("{nested}/ (a git repository of its own)"));
-                survey.excluded.push(nested.to_owned());
-                continue;
-            }
-            let size = std::fs::symlink_metadata(root.join(path)).map_or(0, |meta| meta.len());
-            if max_file > 0 && size > max_file {
-                survey
-                    .left_out
-                    .push(format!("{path} (over {} MB)", limits.max_file_mb));
-                survey.excluded.push(path.to_owned());
-                continue;
-            }
-            survey.bytes = survey.bytes.saturating_add(size);
-            survey.take.push(path.to_owned());
+            survey.add(root, path, limits);
         }
         survey
+    }
+
+    /// Sorts in `path`, one of the files git doesn't hold yet.
+    fn add(&mut self, root: &Path, path: &str, limits: &HistorySettings) {
+        // Git names a nested repository as a folder, and can't add one with no commits.
+        if let Some(nested) = path.strip_suffix('/') {
+            self.left_out
+                .push(format!("{nested}/ (a git repository of its own)"));
+            self.excluded.push(nested.to_owned());
+            return;
+        }
+        let max_file = limits.max_file_mb.saturating_mul(MB);
+        let size = std::fs::symlink_metadata(root.join(path)).map_or(0, |meta| meta.len());
+        if max_file > 0 && size > max_file {
+            self.left_out
+                .push(format!("{path} (over {} MB)", limits.max_file_mb));
+            self.excluded.push(path.to_owned());
+            return;
+        }
+        self.bytes = self.bytes.saturating_add(size);
+        self.take.push(path.to_owned());
     }
 
     /// Whether a first record may take this much: a folder past `history.max_files` or
@@ -216,6 +220,59 @@ pub(crate) fn first_commit(
     })();
     let _ = std::fs::remove_dir_all(&scratch);
     Ok(Survey::of(root, &listed?, limits))
+}
+
+/// [`first_commit`] for a first record that must fit `limits`: it stops listing as soon as the
+/// folder has passed `history.max_files` or `history.max_total_mb`, which refuse it anyway, so
+/// a big folder holds nothing up while git walks the rest of it.
+pub(crate) fn first_commit_within(
+    root: &Path,
+    state_dir: &Path,
+    limits: &HistorySettings,
+) -> anyhow::Result<Survey> {
+    create_private_dir_all(state_dir)
+        .with_context(|| format!("creating {}", state_dir.display()))?;
+    let scratch = state_dir.join(format!("git-preview-{}.git", std::process::id()));
+    let surveyed = (|| {
+        init_bare(&scratch)?;
+        let mut listing = Command::new("git")
+            .arg("--git-dir")
+            .arg(&scratch)
+            .arg("--work-tree")
+            .arg(root)
+            .args(["ls-files", "--others", "--exclude-standard", "-z"])
+            .current_dir(root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .context("listing the folder's files")?;
+        let listed = listing
+            .stdout
+            .take()
+            .context("reading the folder's files")?;
+        let mut survey = Survey::default();
+        for path in std::io::BufReader::new(listed).split(b'\0') {
+            let path = path.context("reading the folder's files")?;
+            survey.add(root, &String::from_utf8_lossy(&path), limits);
+            if let Err(past) = survey.fits(limits) {
+                let _ = listing.kill();
+                let _ = listing.wait();
+                return Err(past);
+            }
+        }
+        let out = listing
+            .wait_with_output()
+            .context("listing the folder's files")?;
+        if !out.status.success() {
+            bail!(
+                "listing the folder's files failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(survey)
+    })();
+    let _ = std::fs::remove_dir_all(&scratch);
+    surveyed
 }
 
 /// Makes `root` a git repository as `git init` does, then stages what `survey` takes and,
@@ -549,6 +606,37 @@ mod tests {
         let err = record(&env.repo_root, &limits, "first", Writers::Maybe).unwrap_err();
         assert!(err.to_string().contains("history.max_files"), "{err}");
         assert!(git::head(&env.repo_root).is_err(), "nothing was recorded");
+    }
+
+    /// A first record that must fit stops listing once the folder is past a limit, and says
+    /// which: it never reads the rest of a big folder. One that fits is the whole survey.
+    #[test]
+    fn a_first_record_stops_listing_once_the_folder_is_past_its_limits() {
+        let folder = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        for n in 0..40 {
+            std::fs::write(folder.path().join(format!("note-{n:02}.md")), "made up\n").unwrap();
+        }
+        let few = HistorySettings {
+            max_files: 5,
+            ..HistorySettings::default()
+        };
+        let err = first_commit_within(folder.path(), state.path(), &few).unwrap_err();
+        assert!(
+            err.to_string().contains("6 files"),
+            "it stopped at the sixth: {err}"
+        );
+        assert!(err.to_string().contains("history.max_files (5)"), "{err}");
+        let small = HistorySettings {
+            max_total_mb: 0,
+            ..HistorySettings::default()
+        };
+        let whole = first_commit_within(folder.path(), state.path(), &small).unwrap();
+        assert_eq!(
+            whole,
+            first_commit(folder.path(), state.path(), &small).unwrap()
+        );
+        assert_eq!(whole.take.len(), 40);
     }
 
     #[test]

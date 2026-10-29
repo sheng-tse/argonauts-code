@@ -1,6 +1,6 @@
-> Make the rate limiter per API key: each X-Api-Key gets its own bucket, requests without it share one. Cap…
+❯ Make the rate limiter per API key: each X-Api-Key gets its own bucket, requests without it share one. Cap the burs…
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ⎿  Done · 3 tool uses · report ✓ · 13s · 46.2k tokens
+  ⎿  Done (3 tool uses · 46.2k tokens · 13s) · report ✓
 
 ● final:per-key · Haiku 4.5 on Claude Code
   ⎿  Searched for 1 pattern, read 1 file (ctrl+o to expand)

@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  1 Map · 2 Planet · 3 Universe › ◧◨ Anthropic › ◧◨ Haiku 5.5                                       Labels · Summaries
+
+                                                                    ◧◨ Haiku 5.5
+                                                                    406 actions in 21 behaviors · ←  →  picks one
+                                                                    ●     Returned its structured answer           135
+                                                                          Read a source file                        53
+                                                                          Searched code by pattern                  25
+                                                                          Edited a source file                      23
+                                                                          Gave a structured answer that didn't fit  20
+                                                                          Ran the test suite                        19
+                                                                          And 15 other behaviors                   131
+
+
+
+
+
+  Returned its structured answer · a planet of ◧◨ Haiku 5.5 · 135 actions · last used 2 days ago
+     Forest: used in the last 7 days · once round in 40 s
+  Label map · 562 actions in 19 runs across 6 projects · last 30 days
+  Most common
+  Returned its structured answer   169    Ran the test suite                         27
+  Read a source file                62    Edited a source file                       26
+  Searched code by pattern          28    Gave a structured answer that didn't fit   21
+
+
+
+
+   r to cycle dates · ←  →  pick a body · scroll out · esc out to the galaxy

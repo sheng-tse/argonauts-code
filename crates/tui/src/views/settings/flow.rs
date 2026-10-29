@@ -1,6 +1,7 @@
-//! What a pick means in a settings picker: a key opens its values, a value asks where to save
-//! it, a role asks the controller for its models, a CLI opens its models (`models.rs`), a
-//! model sends the argument form, and Reset drops the key from its layer.
+//! What a pick means in a settings picker: a key opens its values, a value saves at once where
+//! your changes go (ctrl+s keeps it for this session instead), a role asks the controller for
+//! its models, a CLI opens its models (`models.rs`), a model sends the argument form, and
+//! Reset drops the key from its layer.
 //! The picker draws and moves; [`advance`] does the rest and says what the screen should do
 //! through a [`Step`].
 
@@ -11,14 +12,38 @@ use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::SettingScope;
 
 use super::words::{
-    SCOPES, capitalized, hidden_from_files, hidden_note, model_role, quote, reset_note,
-    reset_scope, role_words, row_value_words, same_value, toml_text, value_note, value_words,
-    workers_words,
+    capitalized, model_role, quote, reset_note, reset_scope, role_words, row_value_words,
+    same_value, toml_text, value_note, value_words, workers_words,
 };
 use super::{fallback, models, permissions};
 use crate::bottom::{Picker, PickerEvent, PickerRow};
 use crate::format::setting_value;
+use crate::keymap::Action;
 use crate::kit::State;
+
+/// Where a pick saves when no key keeps it for this session.
+const SAVE: &str = "Enter to save";
+
+/// The footer where a pick saves: Enter where your changes go, and the key `save_for_session`
+/// binds, ctrl+s unless rebound, for this session.
+pub fn save_hint(picker: &Picker) -> String {
+    save_hint_with(picker.session_key.as_deref())
+}
+
+fn save_hint_with(key: Option<&str>) -> String {
+    match key.or(Action::SaveForSession.default_key()) {
+        Some(key) if !key.is_empty() => format!("{SAVE} · {key} for this session only"),
+        _ => SAVE.to_owned(),
+    }
+}
+
+/// A picker that opens on a value level built its footer before it knew the key that keeps a
+/// pick for this session, so the footer names it once the picker is on screen.
+pub fn name_session_key(picker: &mut Picker) {
+    if picker.enter_hint == save_hint_with(None) {
+        picker.enter_hint = save_hint(picker);
+    }
+}
 
 /// The keys whose values change the palette, so `/theme` shows each one as you move to it.
 pub const PALETTE_KEYS: [&str; 5] = [
@@ -81,6 +106,9 @@ pub struct Flow {
     /// The setting a model pick fills, by its index in `settings`, when the model picker
     /// opened from that setting's row, such as the second judge, rather than for a role.
     pub model_for: Option<usize>,
+    /// A settings picker, where ctrl+s picks as Enter does and keeps the change for this
+    /// session only.
+    pub saves_settings: bool,
 }
 
 impl Flow {
@@ -172,28 +200,12 @@ pub enum Stage {
     OtherModel { role: Option<RoleName>, cli: String },
     /// A new endpoint: its id, base URL, and the env var holding its key.
     Endpoint,
-    /// Where to save a picked value.
-    Scope(Change),
     /// `/effort`'s slider for the main agent or a role, and the level it opened on.
     /// `was` is `None` when the CLI uses its own effort, with no level set.
     Effort {
         role: Option<RoleName>,
         was: Option<String>,
     },
-}
-
-/// A value picked and waiting for its scope.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Change {
-    pub key: String,
-    /// TOML text.
-    pub value: String,
-    /// The layer that sets the key now, for the warning when it would hide the change.
-    pub layer: String,
-    /// Where the workflow was picked, when `layer` is the workflow and a file picked it.
-    pub workflow_from: Option<String>,
-    /// The Kept line if you cancel.
-    pub kept: Kept,
 }
 
 /// The line left under the command's echo when the picker closes with no change, such as
@@ -256,7 +268,6 @@ pub enum RowAction {
         cli: String,
     },
     AddEndpoint,
-    Scope(SettingScope),
 }
 
 /// What the screen does after a key in a picker.
@@ -292,6 +303,7 @@ pub fn settings_picker_noting(
     not_installed: Vec<MissingCli>,
 ) -> Picker {
     let mut picker = Picker::new(capitalized(command), command_help(command));
+    picker.flow.saves_settings = true;
     picker.flow.command = command.to_owned();
     picker.flow.not_installed = not_installed;
     fill_settings(&mut picker, rows);
@@ -334,33 +346,17 @@ pub fn fill_settings(picker: &mut Picker, rows: Vec<SettingRow>) {
 /// `/config`'s editor for one row: its values, or a typed line, then the scope question.
 pub fn edit_picker(row: SettingRow) -> Picker {
     let mut picker = Picker::new(row.key.clone(), "");
+    picker.flow.saves_settings = true;
     picker.flow.command = row.key.clone();
     picker.flow.settings = vec![row];
     open_key(&mut picker, 0);
     picker
 }
 
-/// Where to save `value` for `row`, as a row that changes in place and then asks where opens
-/// it: straight at the question, its value picked already. Esc leaves nothing changed.
-pub fn scope_picker(row: SettingRow, value: String) -> Picker {
-    let mut picker = Picker::new(row.key.clone(), "");
-    picker.flow.command = row.key.clone();
-    let change = Change {
-        key: row.key.clone(),
-        value,
-        layer: row.layer.clone(),
-        workflow_from: row.workflow_from.clone(),
-        kept: Kept::words("Nothing changed"),
-    };
-    let default = row.default_scope;
-    picker.flow.settings = vec![row];
-    scope_question(&mut picker, change, default);
-    picker
-}
-
 /// The model picker for a role, from the controller's `Models` answer.
 pub fn models_picker(command: &str, role: Option<RoleName>, choices: &[ModelChoice]) -> Picker {
     let mut picker = Picker::default();
+    picker.flow.saves_settings = true;
     picker.flow.command = command.to_owned();
     fill_models(&mut picker, role, choices);
     picker
@@ -385,8 +381,10 @@ pub fn show_freshness(picker: &mut Picker, note: Option<&str>) {
     }
 }
 
-/// Takes a picker event and says what the screen should do.
+/// Takes a picker event and says what the screen should do. ctrl+s picks as Enter does, and
+/// the change it sends is for this session only.
 pub fn advance(picker: &mut Picker, event: PickerEvent) -> Step {
+    let for_session = std::mem::take(&mut picker.for_session);
     let step = match event {
         PickerEvent::Moved => preview(picker),
         PickerEvent::Picked(index) | PickerEvent::Reset(index) => {
@@ -409,7 +407,38 @@ pub fn advance(picker: &mut Picker, event: PickerEvent) -> Step {
         PickerEvent::Unhandled => Step::Stay,
     };
     models::follow_pointer(picker);
+    if for_session {
+        return for_this_session(step);
+    }
     step
+}
+
+/// The change a step sends, kept for this session rather than where your changes go.
+fn for_this_session(step: Step) -> Step {
+    let session = SettingScope::Session;
+    match step {
+        Step::Done(UiCommand::SetSetting { key, value, .. }) => Step::Done(UiCommand::SetSetting {
+            key,
+            value,
+            scope: Some(session),
+        }),
+        Step::Done(UiCommand::Slash { command }) => Step::Done(UiCommand::Slash {
+            command: SlashCommand::SavedIn {
+                scope: session,
+                change: Box::new(command),
+            },
+        }),
+        step => step,
+    }
+}
+
+/// Sends `value` for the setting `row`, to save where your changes go.
+fn save(row: SettingRow, value: String) -> Step {
+    Step::Done(UiCommand::SetSetting {
+        key: row.key,
+        value,
+        scope: None,
+    })
 }
 
 /// ←/→: the value on the arrows when there is one, else back a level or into the row.
@@ -482,8 +511,8 @@ fn push_level(picker: &mut Picker) {
     picker.flow.parents.push(level);
 }
 
-/// Enter on the effort slider sends the level, and Ultracode when Tab changed it, which then
-/// asks where to save them. With only Ultracode changed, the level stays as it was rather than
+/// Enter on the effort slider sends the level, and Ultracode when Tab changed it, each saved
+/// where your changes go. With only Ultracode changed, the level stays as it was rather than
 /// being saved, so flipping the toggle never pins the model's default. A model that takes one
 /// level, or none, has no level to save, so Enter sends only a changed toggle, and otherwise
 /// closes as Esc does.
@@ -534,6 +563,7 @@ pub fn effort_picker(command: &str, slider: EffortSlider) -> Picker {
         title,
         format!("How long {model} thinks before it answers, for {who}"),
     );
+    picker.flow.saves_settings = true;
     picker.flow.command = command.to_owned();
     picker.flow.stage = Stage::Effort {
         role,
@@ -617,70 +647,36 @@ fn act(picker: &mut Picker, action: RowAction) -> Step {
             picker.set_rows(Vec::new());
             picker.flow.actions.clear();
             picker.input = Some(String::new());
-            picker.enter_hint = "Enter to continue".to_owned();
+            picker.enter_hint = save_hint(picker);
             picker.flow.stage = Stage::Endpoint;
             Step::Stay
         }
-        RowAction::Scope(scope) => match &picker.flow.stage {
-            Stage::Scope(change) => Step::Done(UiCommand::SetSetting {
-                key: change.key.clone(),
-                value: change.value.clone(),
-                scope,
-            }),
-            _ => Step::Stay,
-        },
     }
 }
 
-/// A value picked for the setting at `key`, which then asks where to save it.
+/// A value picked for the setting at `key`, saved at once.
 fn set_value(picker: &mut Picker, key: usize, value: String) -> Step {
-    let Some(row) = picker.flow.settings.get(key).cloned() else {
-        return Step::Stay;
-    };
-    let kept = kept(picker);
-    let change = Change {
-        key: row.key,
-        value,
-        layer: row.layer,
-        workflow_from: row.workflow_from,
-        kept,
-    };
-    push_level(picker);
-    scope_question(picker, change, row.default_scope);
-    Step::Stay
+    match picker.flow.settings.get(key).cloned() {
+        Some(row) => save(row, value),
+        None => Step::Stay,
+    }
 }
 
 fn entered(picker: &mut Picker, text: &str) -> Step {
     match picker.flow.stage.clone() {
-        Stage::Typing { key } => {
-            let Some(row) = picker.flow.settings.get(key).cloned() else {
-                return Step::Stay;
-            };
-            let kept = kept(picker);
-            let change = Change {
-                value: toml_text(text, &row.value),
-                key: row.key,
-                layer: row.layer,
-                workflow_from: row.workflow_from,
-                kept,
-            };
-            push_level(picker);
-            scope_question(picker, change, row.default_scope);
-            Step::Stay
-        }
-        Stage::Endpoint => match endpoint(text) {
-            Ok((id, value)) => {
-                let change = Change {
-                    key: format!("endpoints.{id}"),
-                    value,
-                    layer: String::new(),
-                    workflow_from: None,
-                    kept: kept(picker),
-                };
-                push_level(picker);
-                scope_question(picker, change, SettingScope::Global);
-                Step::Stay
+        Stage::Typing { key } => match picker.flow.settings.get(key).cloned() {
+            Some(row) => {
+                let value = toml_text(text, &row.value);
+                save(row, value)
             }
+            None => Step::Stay,
+        },
+        Stage::Endpoint => match endpoint(text) {
+            Ok((id, value)) => Step::Done(UiCommand::SetSetting {
+                key: format!("endpoints.{id}"),
+                value,
+                scope: None,
+            }),
             Err(why) => {
                 picker.warning = Some(why);
                 Step::Stay
@@ -759,7 +755,6 @@ fn kept(picker: &Picker) -> Kept {
             }
             None => Kept::words("Nothing changed"),
         },
-        Stage::Scope(change) => change.kept.clone(),
         Stage::Models { role } | Stage::ModelsOf { role, .. } | Stage::OtherModel { role, .. } => {
             models::kept(picker, *role)
         }
@@ -944,6 +939,7 @@ fn agents_list(picker: &mut Picker) {
                 };
                 rows.push(PickerRow {
                     state,
+                    logo: Some(argonauts_core::logos::logo_for(id, None)),
                     ..PickerRow::new(label, note)
                 });
                 actions.push(RowAction::OpenGroup(group.clone()));
@@ -1105,7 +1101,7 @@ fn open_key(picker: &mut Picker, key: usize) {
         }
         _ => {}
     }
-    picker.enter_hint.clear();
+    picker.enter_hint = save_hint(picker);
     let mut rows = Vec::new();
     let mut actions = Vec::new();
     if allowed.is_empty() {
@@ -1116,7 +1112,13 @@ fn open_key(picker: &mut Picker, key: usize) {
         actions.push(RowAction::Type { key });
     }
     for value in &allowed {
-        let note = value_note(&row.key, &setting_value(value));
+        let note = match row.key.as_str() {
+            // Each workflow's row says what its own file says of it, yours as well as ours.
+            "workflow" => (picker.flow.settings.iter())
+                .find(|setting| setting.key == row.key && same_value(&setting.value, value))
+                .map_or_else(String::new, |setting| setting.description.clone()),
+            key => value_note(key, &setting_value(value)).to_owned(),
+        };
         rows.push(PickerRow {
             current: same_value(value, &row.value),
             ..PickerRow::new(permissions::value_in_words(&row.key, value), note)
@@ -1236,34 +1238,6 @@ fn typing(picker: &mut Picker, key: usize) {
     } else {
         setting_value(current)
     });
-    picker.enter_hint = "Enter to continue".to_owned();
+    picker.enter_hint = save_hint(picker);
     picker.flow.stage = Stage::Typing { key };
-}
-
-/// Where to save a change: four numbered rows, the default picked, and a warning on each
-/// scope a higher layer would hide it in, or once over them all when it hides every file.
-fn scope_question(picker: &mut Picker, change: Change, default: SettingScope) {
-    picker.title = "Where to save it".to_owned();
-    picker.about = format!("{} = {}", change.key, value_words(&change.value));
-    let workflow_from = change.workflow_from.as_deref();
-    let once = hidden_from_files(&change.layer, workflow_from);
-    let rows = SCOPES
-        .iter()
-        .map(|&(scope, label, place)| PickerRow {
-            warning: (once.is_none() && scope.hidden_by_value(&change.layer, workflow_from))
-                .then(|| hidden_note(&change.layer, workflow_from, scope)),
-            ..PickerRow::new(label, place)
-        })
-        .collect();
-    picker.set_rows(rows);
-    picker.warning = once;
-    picker.enter_hint = "Enter to save".to_owned();
-    picker.flow.actions = SCOPES
-        .iter()
-        .map(|&(scope, ..)| RowAction::Scope(scope))
-        .collect();
-    if let Some(at) = SCOPES.iter().position(|(scope, ..)| *scope == default) {
-        picker.point_at(at);
-    }
-    picker.flow.stage = Stage::Scope(change);
 }

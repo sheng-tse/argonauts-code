@@ -28,7 +28,8 @@ install-path = ["$XDG_BIN_HOME/", "$XDG_DATA_HOME/../bin", "~/.local/bin"]
 # Where to host releases
 hosting = "github"
 # dist 0.33 writes `steps.cargo-cyclonedx.output.paths`, which reads nothing, so the SBOMs never uploaded.
-# release.yml reads `outputs` by hand, and dist leaves it as it is.
+# release.yml reads `outputs` by hand, and adds the npm package's xz check before the upload, and dist leaves it as
+# it is.
 allow-dirty = ["ci"]
 # Whether to install an updater program
 # Off: `argonauts self-update` reads a signed manifest with channels and a staged rollout, which dist's updater

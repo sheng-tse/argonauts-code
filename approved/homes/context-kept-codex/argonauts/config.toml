@@ -1,0 +1,9 @@
+# Set up with Council, and Codex on gpt-6-luna to talk to. state/ keeps the start of
+# the last fresh Codex session on it: its own prompt and tools, and the project's AGENTS.md.
+workflow = "council"
+
+[crew]
+main = "codex/gpt-6-luna"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]

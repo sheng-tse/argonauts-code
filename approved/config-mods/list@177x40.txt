@@ -1,0 +1,41 @@
+Config › Mods: the list, the first mod chosen
+screen 177x40
+at ?,?
+size 52x13
+terminal fg=#c8d3f5 bg=#222436
+text
+Built-in
+❯ ◆ context                            context
+  ◆ plan usage         ▰▰▰▱▱▱          usage +2
+  ◆ spend                              usage
+  ◆ tokens                             usage
+  ◆ workflows                          usage
+  ◆ waiting for you                    status
+
+Yours
+  ◆ branch                             nowhere yet
+  ◆ checks                             above
+  ◆ stats                              its own page
+  ◆ bottom line                        its own page
+paint
+aaaaaaaa
+b.c.bbbbbbb............................aaaaaaa
+..c.dddd.ddddd.........eeefff..........aaaaa.aa
+..c.ddddd..............................aaaaa
+..c.dddddd.............................aaaaa
+..c.ddddddddd..........................aaaaa
+..c.ddddddd.ddd.ddd....................aaaaaa
+
+aaaaa
+..c.dddddd.............................aaaaaaa.aaa
+..c.dddddd.............................aaaaa
+..c.ddddd..............................aaa.aaa.aaaa
+..c.dddddd.dddd........................aaa.aaa.aaaa
+key
+. blank
+a fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+b fg=#b1b9f9 bold  ; Code, Question, BarFill, CatMcp
+c fg=#e6a23c  ; Accent, CatBrief
+d fg=#ffffff bold  ; Bright
+e fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+f fg=#505050  ; Faint

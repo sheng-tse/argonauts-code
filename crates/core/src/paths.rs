@@ -92,6 +92,12 @@ impl Paths {
         self.home.join("state").join("cli-versions.json")
     }
 
+    /// What each CLI and model's last fresh session held at its start, for the Context tab
+    /// before the next one counts.
+    pub fn session_starts(&self) -> PathBuf {
+        self.home.join("state").join("session-starts.json")
+    }
+
     /// The models an agent CLI listed itself last, such as `claude-code-models.json`.
     pub fn reported_models(&self, adapter: &str) -> PathBuf {
         self.home

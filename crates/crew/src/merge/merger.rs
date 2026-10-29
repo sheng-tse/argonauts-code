@@ -148,6 +148,7 @@ pub async fn resolve_main(
             }
         }
         let plan = SessionPlan {
+            without_status: false,
             at: host.read(merge_step),
             role: RoleName::Worker,
             worker: worker.clone(),
@@ -222,6 +223,7 @@ pub async fn fix_after_main(
     let mut worker = model(host.settings());
     let report = loop {
         let plan = SessionPlan {
+            without_status: false,
             at: host.read(merge_step),
             role: RoleName::Worker,
             worker: worker.clone(),

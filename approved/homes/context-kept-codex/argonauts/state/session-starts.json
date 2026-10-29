@@ -1,0 +1,58 @@
+{
+  "codex": {
+    "agent": "codex",
+    "model": "gpt-6-luna",
+    "window": 872000,
+    "buffer": 0,
+    "parts": [
+      {
+        "holds": "own_prompt_and_tools",
+        "tokens": 15236,
+        "color": "promptBorder"
+      },
+      {
+        "holds": "instruction_files",
+        "tokens": 1200,
+        "color": "claude"
+      }
+    ],
+    "files": [
+      {
+        "name": "AGENTS.md",
+        "tokens": 1200
+      }
+    ],
+    "from": {
+      "from": "last_session"
+    },
+    "first_count": "turn"
+  },
+  "codex gpt-6-luna": {
+    "agent": "codex",
+    "model": "gpt-6-luna",
+    "window": 872000,
+    "buffer": 0,
+    "parts": [
+      {
+        "holds": "own_prompt_and_tools",
+        "tokens": 15236,
+        "color": "promptBorder"
+      },
+      {
+        "holds": "instruction_files",
+        "tokens": 1200,
+        "color": "claude"
+      }
+    ],
+    "files": [
+      {
+        "name": "AGENTS.md",
+        "tokens": 1200
+      }
+    ],
+    "from": {
+      "from": "last_session"
+    },
+    "first_count": "turn"
+  }
+}

@@ -1,0 +1,40 @@
+# A council written as steps: everyone proposes and challenges, the judge decides.
+name  = "council"
+about = "No single planner: everyone proposes and challenges, the judge decides"
+adapt = true
+
+[[step]]
+name        = "Propose"
+role        = "worker"
+count       = "all"          # every worker writes a plan
+independent = true           # without seeing the others'
+keep        = true           # however the request is adapted
+
+[[step]]
+name  = "Challenge"
+role  = "worker"
+count = "all"
+does  = "Argue against the other proposals. Their authors are hidden."
+keep  = true
+
+[[step]]
+name = "Decide"
+role = "judge"
+does = "Pick the strongest plan or join the best parts. Split it into tasks."
+keep = true
+
+[[step]]
+name     = "Build"
+role     = "worker"
+for_each = "task"
+
+[[step]]
+name           = "Cross-review"
+role           = "worker"
+for_each       = "task"
+not_the_author = true        # each task goes to a worker who didn't build it
+send_back_to   = "Build"
+
+[[step]]
+name = "Sign-off"
+role = "judge"

@@ -125,7 +125,7 @@ impl Reader {
         }
         let mut lines = lines_for(event, &self.state);
         if let AppEvent::View { data } = event {
-            self.offer = Offer::for_view(data);
+            self.offer = Offer::for_view(data, &self.state.names);
             lines.extend(self.offer.as_ref().map(|offer| offer.hint().to_owned()));
         }
         match self.start_answered(event) {
@@ -175,6 +175,7 @@ impl Reader {
         if let Some(taken) = self.offer.take().and_then(|offer| offer.take(line)) {
             said.lines = taken.lines;
             said.commands.extend(taken.command);
+            self.offer = taken.again;
             return said;
         }
         // `!` runs the rest in your shell, as it does in the full screen.

@@ -205,7 +205,7 @@ fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
         contents: settings,
     });
     spec = spec.args(["--settings".to_owned(), spec_path]);
-    Ok(match session_name(dir) {
+    Ok(match session_name(req, dir) {
         Some(name) => spec.args(["--name".to_owned(), name]),
         None => spec,
     })
@@ -586,13 +586,31 @@ fn removed_env_vars(req: &SessionRequest) -> Vec<String> {
     vars
 }
 
-/// The worker sets the scratch directory to the session folder, so its name tells you which
-/// session a row in your own Claude Code agent list belongs to.
-fn session_name(scratch_dir: &Path) -> Option<String> {
-    let folder = scratch_dir.file_name()?.to_string_lossy();
-    let folder: String = folder.chars().filter(|c| !c.is_control()).collect();
-    let folder = folder.trim();
-    (!folder.is_empty()).then(|| format!("argonauts {folder}"))
+/// The name a row in your own Claude Code lists the session by: `argonauts` and the
+/// conversation's title for the session you talk to, the same on every turn. Any other session
+/// is named by its session folder, which the worker sets as the scratch directory, so the name
+/// tells you which of a run's sessions a row belongs to.
+fn session_name(req: &SessionRequest, scratch_dir: &Path) -> Option<String> {
+    let title = req
+        .preferences
+        .title
+        .as_deref()
+        .filter(|_| req.main_session);
+    let name = match title {
+        Some(title) => title.to_owned(),
+        None => scratch_dir.file_name()?.to_string_lossy().into_owned(),
+    };
+    name_for(&name)
+}
+
+/// `argonauts <words>`, the words on one line with no control characters. `None` for no words.
+pub(crate) fn name_for(words: &str) -> Option<String> {
+    let words: Vec<String> = words
+        .split_whitespace()
+        .map(|word| word.chars().filter(|c| !c.is_control()).collect::<String>())
+        .filter(|word| !word.is_empty())
+        .collect();
+    (!words.is_empty()).then(|| format!("argonauts {}", words.join(" ")))
 }
 
 /// Files Claude Code reads at start must be absolute, or they'd resolve against the worktree,

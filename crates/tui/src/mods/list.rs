@@ -1,11 +1,14 @@
-//! `/mods`: every mod in a list, the built-in cards first, and beside it the one under the
-//! pointer drawn live with where its file is, where it shows, and where its numbers come from.
-//! Enter opens a mod's page. A file that didn't load is listed last with what's wrong with it.
+//! `/mods`: every mod in a list under a heading for where it comes from, the built-in cards
+//! first, and beside it the one under the pointer drawn live with where its file is, where it
+//! shows, and where its numbers come from. Enter opens a mod's page. A file that didn't load is
+//! listed last with what's wrong with it.
 
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
 use argonauts_core::input::{ModsAction, SlashCommand};
 use argonauts_core::settings::mods::view::{FileProblem, ModRow, ModRowKind, ModsView};
-use argonauts_core::settings::mods::{ModFile, ModReading, ModSource, builtin, span_words};
+use argonauts_core::settings::mods::{
+    ModFile, ModOrigin, ModReading, ModSource, builtin, span_words,
+};
 use argonauts_core::settings::ui::ModName;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
@@ -16,15 +19,16 @@ use super::bottom_line::{self, LinePage};
 use super::draw;
 use super::page::ModPage;
 use super::rows::{PageGlyphs, breadcrumb};
-use crate::kit::{Kit, fit, spread};
-use crate::text::{sanitize_line, spans_width, str_width, wrap_text};
+use crate::kit::legend::BETWEEN_WORDS;
+use crate::kit::{Kit, fit};
+use crate::text::{At, cut_spans, sanitize_line, str_width, wrap_text};
 use crate::theme::Role;
 use crate::views::panes::{self, Footer, Side};
 use crate::views::{View, ViewCtx, ViewOutcome};
 
 /// The list's share of the screen, in cells.
 const LIST_CELLS: u16 = 52;
-/// Cells a mod's name takes in the list.
+/// Cells a mod's name takes in the list at most.
 const NAME_CELLS: usize = 16;
 /// Cells the small picture takes.
 const PICTURE_CELLS: usize = 12;
@@ -37,8 +41,9 @@ enum Page {
     Line(Box<LinePage>),
 }
 
-/// Cells a fact's name takes in the pane beside the list: `Numbers`, and the space after it.
-const FACT_CELLS: usize = 9;
+/// Cells a fact's name takes in the pane beside the list: `Numbers`, and the four blanks
+/// between two columns of words.
+const FACT_CELLS: usize = "Numbers".len() + BETWEEN_WORDS;
 
 /// One fact about a mod, its name dim and its words wrapped under themselves.
 fn fact_lines(kit: &Kit<'_>, label: &str, words: &str, width: usize) -> Vec<Line<'static>> {
@@ -162,16 +167,21 @@ impl ModsScreen {
     /// pane beside the list draws the card anyway, so on a narrow list the pictures give way
     /// for the words, all together so the columns stay in line.
     fn pictures_fit(&self, width: usize) -> bool {
-        self.view.rows.iter().all(|row| match &row.kind {
-            ModRowKind::Card { file, .. } => {
-                let words = str_width(&places_text(file)) + 1 + str_width(row.origin.word());
-                MARGIN_CELLS + NAME_CELLS + 1 + PICTURE_CELLS + 2 + words <= width
-            }
-            ModRowKind::Own { .. } => true,
+        let names = self.name_cells();
+        self.view.rows.iter().all(|row| {
+            let places = str_width(&places_of(row));
+            MARGIN_CELLS + names + 2 * BETWEEN_WORDS + PICTURE_CELLS + places <= width
         })
     }
 
-    /// One line of the list. `pictures` says whether the cards' small pictures fit.
+    /// The names' column: as wide as the longest, at most [`NAME_CELLS`].
+    fn name_cells(&self) -> usize {
+        let names = self.view.rows.iter().map(|row| str_width(&title_of(row)));
+        names.max().unwrap_or(0).min(NAME_CELLS)
+    }
+
+    /// One line of the list: the mod's name, its small picture where `pictures` say they fit,
+    /// and where it shows, each column 4 blanks after the one before.
     fn row_line(
         &self,
         kit: &Kit<'_>,
@@ -196,7 +206,9 @@ impl ModsScreen {
             Span::raw(" "),
         ];
         let mut places_role = Role::Dim;
-        let (title, picture, places) = match &row.kind {
+        // Only real numbers get a picture here. The pane beside it draws sample ones and says
+        // so. A mod that draws itself has none, and its words stay in the column of the rest.
+        let picture = match &row.kind {
             ModRowKind::Card {
                 file,
                 reading,
@@ -206,43 +218,44 @@ impl ModsScreen {
                 if *hidden_by_line {
                     places_role = Role::Warn;
                 }
-                // Only real numbers get a picture here. The pane beside it draws sample ones
-                // and says so.
-                let picture = pictures.then(|| {
-                    reading
-                        .as_ref()
-                        .map(|reading| draw::small(kit, file, reading))
-                        .unwrap_or_default()
-                });
-                (file.title.clone(), picture, places_text(file))
+                reading
+                    .as_ref()
+                    .map(|reading| draw::small(kit, file, reading))
+                    .unwrap_or_default()
             }
-            ModRowKind::Own { .. } => (row.name.replace('-', " "), None, "its own page".to_owned()),
+            ModRowKind::Own { .. } => Vec::new(),
         };
+        let title = vec![Span::styled(title_of(row), name_style)];
         left.extend(fit(
-            vec![Span::styled(sanitize_line(&title).into_owned(), name_style)],
-            NAME_CELLS,
+            cut_spans(&title, self.name_cells(), At::Word),
+            self.name_cells(),
         ));
-        left.push(Span::raw(" "));
-        // A mod that draws itself has no small picture, so its words take that room.
-        if let Some(picture) = picture {
+        left.push(Span::raw(" ".repeat(BETWEEN_WORDS)));
+        if pictures {
             left.extend(fit(picture, PICTURE_CELLS));
-            left.push(Span::raw("  "));
+            left.push(Span::raw(" ".repeat(BETWEEN_WORDS)));
         }
-        left.push(kit.span(places, places_role));
-        let origin = vec![kit.dim(row.origin.word())];
-        let room = width.saturating_sub(spans_width(&origin) + 1);
-        let left = if spans_width(&left) > room {
-            crate::text::truncate_spans(&left, room)
-        } else {
-            left
-        };
-        Line::from(spread(left, origin, width))
+        left.push(kit.span(places_of(row), places_role));
+        Line::from(fit(left, width))
     }
 
-    fn list_lines(&self, kit: &Kit<'_>, width: usize) -> Vec<Line<'static>> {
+    /// The list's lines, and which of them the pointer is on.
+    fn list_lines(&self, kit: &Kit<'_>, width: usize) -> (Vec<Line<'static>>, usize) {
         let mut lines = Vec::new();
+        let mut pointed = 0;
         let pictures = self.pictures_fit(width);
+        let mut origin = None;
         for (index, row) in self.view.rows.iter().enumerate() {
+            if origin != Some(row.origin) {
+                if origin.is_some() {
+                    lines.push(Line::default());
+                }
+                lines.push(Line::from(kit.dim(heading(row.origin))));
+                origin = Some(row.origin);
+            }
+            if index == self.selected {
+                pointed = lines.len();
+            }
             lines.push(self.row_line(kit, row, index == self.selected, width, pictures));
         }
         if !self.view.problems.is_empty() {
@@ -256,6 +269,9 @@ impl ModsScreen {
             lines.push(Line::from(kit.span(heading, Role::Warn)));
             for (index, problem) in self.view.problems.iter().enumerate() {
                 let selected = self.view.rows.len() + index == self.selected;
+                if selected {
+                    pointed = lines.len();
+                }
                 let pointer = if selected {
                     PageGlyphs::for_kit(kit).pointer
                 } else {
@@ -268,7 +284,7 @@ impl ModsScreen {
                 ]));
             }
         }
-        lines
+        (lines, pointed)
     }
 
     /// The right pane for a card: its drawing, then the facts about it.
@@ -442,14 +458,9 @@ impl View for ModsScreen {
             None => String::new(),
         };
         panes::draw_box(buf, &panes, ["Mods", &name], Side::Left, theme);
-        let list = self.list_lines(&kit, usize::from(panes.left.width));
+        let (list, at) = self.list_lines(&kit, usize::from(panes.left.width));
         // The pointer's line stays in view on a short screen.
         let height = usize::from(panes.left.height);
-        let at = if self.selected < self.view.rows.len() {
-            self.selected
-        } else {
-            self.selected + 2
-        };
         let offset = (at + 1).saturating_sub(height);
         let shown: Vec<Line<'static>> = list.into_iter().skip(offset).collect();
         panes::put_lines(buf, panes.left, &shown);
@@ -536,6 +547,32 @@ impl View for ModsScreen {
 
 /// Where a card shows, for its row: the first place and how many more. The pane beside the
 /// list names them all.
+/// The heading over the mods that come from `origin`.
+fn heading(origin: ModOrigin) -> &'static str {
+    match origin {
+        ModOrigin::BuiltIn => "Built-in",
+        ModOrigin::Yours => "Yours",
+        ModOrigin::Project => "Project",
+    }
+}
+
+/// A mod's name as the list shows it.
+fn title_of(row: &ModRow) -> String {
+    match &row.kind {
+        ModRowKind::Card { file, .. } => sanitize_line(&file.title).into_owned(),
+        ModRowKind::Own { .. } => row.name.replace('-', " "),
+    }
+}
+
+/// Where a mod shows, as the list says it: a card's places, or that a mod which draws itself
+/// has its own page.
+fn places_of(row: &ModRow) -> String {
+    match &row.kind {
+        ModRowKind::Card { file, .. } => places_text(file),
+        ModRowKind::Own { .. } => "its own page".to_owned(),
+    }
+}
+
 fn places_text(file: &ModFile) -> String {
     match file.places.as_slice() {
         _ if !file.shown => "hidden".to_owned(),
@@ -566,7 +603,7 @@ mod tests {
                     let file = check::read(built.name, built.text).unwrap();
                     ModRowKind::Card {
                         built_in: Some(Box::new(file.clone())),
-                        reading: Some(ModReading::sample(file.body)),
+                        reading: Some(ModReading::sample_for(&file)),
                         file: Box::new(file),
                         note: None,
                         needs_trust: false,
@@ -648,6 +685,35 @@ mod tests {
         screen.handle_key(key(code), &ctx)
     }
 
+    /// At every real size, each mod chosen in turn, its card drawn beside the list.
+    #[test]
+    fn the_list_keeps_the_screen_laws_with_each_mod_chosen() {
+        use argonauts_testkit::screen::{Look, REAL_SIZES, laws};
+        let theme = crate::overview::golden::theme();
+        let state = AppState::default();
+        let ctx = ViewCtx {
+            theme: &theme,
+            state: &state,
+            now: std::time::Instant::now(),
+        };
+        let mods = sample_view().rows.len();
+        for size in REAL_SIZES {
+            let mut screen = ModsScreen::new(sample_view());
+            for chosen in 0..mods {
+                let area = Rect::new(0, 0, size.cols, size.rows);
+                let mut buf = Buffer::empty(area);
+                screen.render(area, &mut buf, &ctx);
+                let grid = crate::stability::grid::grid(&buf);
+                laws::assert_kept(
+                    &grid,
+                    &Look::new(),
+                    &format!("Mods at {size}, mod {chosen}"),
+                );
+                screen.handle_key(key(KeyCode::Down), &ctx);
+            }
+        }
+    }
+
     #[test]
     fn the_list_names_every_mod_and_draws_the_one_under_the_pointer() {
         let mut screen = ModsScreen::new(sample_view());
@@ -670,10 +736,10 @@ mod tests {
         // The context card, drawn, with where its file would be.
         assert!(text.contains("◆ context"), "{text}");
         assert!(
-            text.contains("File     ~/.argonauts/mods/context.toml"),
+            text.contains("File       ~/.argonauts/mods/context.toml"),
             "{text}"
         );
-        assert!(text.contains("Shows    on the Context tab"), "{text}");
+        assert!(text.contains("Shows      on the Context tab"), "{text}");
     }
 
     #[test]
@@ -689,7 +755,7 @@ mod tests {
         let row = text.lines().find(|line| line.contains("❯ ◆ plan usage"));
         assert!(row.unwrap().contains("usage +1 "), "{text}");
         assert!(
-            text.contains("Shows    on the Usage tab, on the bottom line"),
+            text.contains("Shows      on the Usage tab, on the bottom line"),
             "{text}"
         );
     }
@@ -746,13 +812,19 @@ mod tests {
         screen.selected = at;
         let text = screen_text(&mut screen, 120, 30);
         assert!(
-            text.contains("Shows    nowhere yet; its page ticks a place"),
+            text.contains("Shows      nowhere yet; its page ticks a place"),
             "{text}"
         );
-        assert!(
-            text.contains("It asks for the bottom line: its page ticks that on"),
-            "{text}"
-        );
+        // The fact wraps under its own words in the pane beside the list.
+        let rows: Vec<&str> = text.lines().collect();
+        let asks = rows
+            .iter()
+            .position(|row| row.contains("It asks for the bottom line: its page ticks that"))
+            .unwrap_or_else(|| panic!("{text}"));
+        let at = rows[asks].find("It asks").unwrap_or_default();
+        let column = rows[asks][..at].chars().count();
+        let under: String = rows[asks + 1].chars().skip(column).collect();
+        assert!(under.starts_with("on "), "{text}");
     }
 
     #[test]
@@ -786,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn at_100_columns_the_words_stay_whole_and_the_pictures_give_way() {
+    fn the_words_stay_whole_and_the_pictures_give_way_first() {
         let mut view = sample_view();
         if let ModRowKind::Card { file, .. } = &mut view.rows[1].kind {
             file.places
@@ -813,9 +885,18 @@ mod tests {
             assert!(row.contains(&format!(" {place} ")), "{name}: {row}\n{text}");
         }
         assert!(!text.contains('…'), "{text}");
-        // The pictures come back where there's room for them.
+        // Each column 4 blanks after the longest entry of the one before, and the pictures
+        // the first to give way.
+        assert!(text.contains("◆ context            context "), "{text}");
         let wide = screen_text(&mut screen, 120, 30);
-        assert!(wide.contains("◆ context          ━━━━"), "{wide}");
+        assert!(wide.contains("◆ context            ━━━━"), "{wide}");
+        // Where a mod comes from heads its group.
+        let heads: Vec<&str> = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("│ "))
+            .filter(|line| line.starts_with("Built-in ") || line.starts_with("Yours "))
+            .collect();
+        assert_eq!(heads.len(), 2, "{text}");
     }
 
     #[test]

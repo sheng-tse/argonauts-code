@@ -1,4 +1,4 @@
-# The fake Claude Code hits its usage limit, which resets in 20 seconds. Codex takes the task
+# The fake Claude Code hits its usage limit, which resets in 6 seconds. Codex takes the task
 # and is still working when Claude Code comes back; moving the task back resumes Claude Code.
 
 [version]

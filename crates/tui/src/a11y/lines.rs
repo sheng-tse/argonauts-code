@@ -54,6 +54,7 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             })
             .collect(),
         AppEvent::SettingRefused { why, .. } => labeled("error", why),
+        AppEvent::CommandReplied { reply } => labeled("notice", &reply.text),
         AppEvent::Hint { text } => labeled("notice", text),
         AppEvent::Updated { words } => labeled("notice", words),
         AppEvent::PullRequestFollowed { followed, .. } => labeled("pull request", &followed.said),
@@ -64,8 +65,10 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             .flat_map(|text| labeled("taken back", text))
             .collect(),
         AppEvent::CliCommands { .. }
+        | AppEvent::MainStart { .. }
         | AppEvent::Names { .. }
         | AppEvent::RepoFiles { .. }
+        | AppEvent::WorkflowStatuses { .. }
         | AppEvent::BackgroundRuns { .. }
         | AppEvent::PastBegins
         | AppEvent::PastDrawn => Vec::new(),
@@ -119,6 +122,15 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             );
             lines
         }
+        AppEvent::TurnsMadeInCli { said, turns } => {
+            let mut lines = vec![said.clone()];
+            lines.extend(
+                turns
+                    .iter()
+                    .flat_map(|turn| labeled(&party(&turn.from, &state.names), &turn.text)),
+            );
+            lines
+        }
         AppEvent::Report { title, lines } => {
             let mut said = labeled("report", title);
             said.extend(lines.iter().cloned());
@@ -129,7 +141,7 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
         // The tab shows where an update is; its end is said.
         AppEvent::DeepProgress { .. } => Vec::new(),
         AppEvent::DeepDone { done } => {
-            labeled("deeper map", &crate::overview::deep_lines::ended(done))
+            labeled("Summaries", &crate::overview::deep_lines::ended(done))
         }
         AppEvent::Templates { list } => {
             let said = |label: &str, entries: &[argonauts_core::template_list::TemplateEntry]| {

@@ -154,9 +154,10 @@ fn has_phases(host: &Host, name: &str) -> bool {
 /// Where the crew goes when the chosen workflow is a Captain one: the workflow setup recommends.
 pub const CAPTAIN_CREW_WORKFLOW: &str = "orchestrator";
 
-/// Whose phases a workflow with none of its own runs: the workflow the built-in settings are, so
-/// a workflow that changes one key of them, as an ablation does, runs as that change of it.
-pub const BASE_PHASES_WORKFLOW: &str = "council";
+/// Whose phases a workflow with none of its own runs: the crew's fixed phases, so a workflow
+/// that changes one key of the built-in settings, as an ablation does, runs as that change of
+/// them.
+pub const BASE_PHASES_WORKFLOW: &str = argonauts_core::workflow_files::BASE.0;
 
 /// Whether any step of the workflow builds the Captain task from the goal.
 pub fn builds_goal(workflow: &Workflow) -> bool {

@@ -16,7 +16,7 @@ use argonauts_tui::state::{AppState, RunState};
 use argonauts_tui::theme::Role;
 use argonauts_tui::views::settings::all_settings::AllSettingsView;
 use argonauts_tui::views::settings::approvals::ApprovalsView;
-use argonauts_tui::views::settings::flow::{self, Kept, Step};
+use argonauts_tui::views::settings::flow::{self, Step};
 use argonauts_tui::views::{View, ViewCtx, ViewOutcome};
 use common::{fg, still, style_of, t0, text, theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -71,23 +71,73 @@ fn workflows() -> Picker {
         "maker-checker",
         "best-of-n",
         "draft-and-vote",
-        "ablate-read",
-        "ablate-map",
-        "ablate-critic",
-        "ablate-run_review",
+        "ablate-no-blind",
+        "ablate-no-anonymize",
+        "ablate-no-critique",
+        "ablate-fixed-roles",
     ];
     let allowed: Vec<String> = names.iter().map(|name| format!("\"{name}\"")).collect();
     let allowed: Vec<&str> = allowed.iter().map(String::as_str).collect();
-    flow::settings_picker(
+    // A row for each workflow with the `about` its file opens with, as the controller sends
+    // them, then captain's values, as Enter on its row opens them.
+    let rows = names
+        .iter()
+        .zip(&allowed)
+        .map(|(name, value)| {
+            let (_, text) = argonauts_core::workflow_files::BUILT_IN
+                .iter()
+                .find(|(built_in, _)| built_in == name)
+                .expect("a built-in workflow");
+            let file: toml::Table = text.parse().expect("a workflow file");
+            let about = file
+                .get("about")
+                .and_then(toml::Value::as_str)
+                .unwrap_or("");
+            let layer = if *name == "captain" {
+                "project"
+            } else {
+                "built-in"
+            };
+            row("workflow", value, layer, &allowed, about.trim())
+        })
+        .collect();
+    let mut picker = flow::settings_picker("workflow", rows);
+    for key in [KeyCode::Down, KeyCode::Down, KeyCode::Enter] {
+        press(&mut picker, key);
+    }
+    picker
+}
+
+/// A workflow file of yours shows the `about` it opens with beside its name, as the built-in
+/// ones do.
+#[test]
+fn a_workflow_of_yours_shows_its_about() {
+    let allowed = ["\"captain\"", "\"careful\""];
+    let mut picker = flow::settings_picker(
         "workflow",
-        vec![row(
-            "workflow",
-            "\"captain\"",
-            "project",
-            &allowed,
-            "How the crew works together",
-        )],
-    )
+        vec![
+            row(
+                "workflow",
+                "\"captain\"",
+                "project",
+                &allowed,
+                "The CLI you talk to does the work itself",
+            ),
+            row(
+                "workflow",
+                "\"careful\"",
+                "built-in",
+                &allowed,
+                "Two reviewers sign off on every change (from ~/.argonauts/workflows/careful.toml)",
+            ),
+        ],
+    );
+    press(&mut picker, KeyCode::Enter);
+    let shown = picker_lines(&picker, 120);
+    assert!(
+        shown.contains("careful") && shown.contains("Two reviewers sign off on every change"),
+        "{shown}"
+    );
 }
 
 #[test]
@@ -96,8 +146,8 @@ fn settings_picker_frame() {
     check_picker("settings_picker_frame", &picker);
 
     let shown = picker_lines(&picker, 80);
-    assert!(shown.contains("❯ 3. captain ✓"), "{shown}");
-    assert!(shown.contains("↓ 8. ablate-map"), "{shown}");
+    assert!(shown.contains("❯  3. captain ✓"), "{shown}");
+    assert!(shown.contains("↓  8. ablate-no-anonymize"), "{shown}");
     assert!(shown.contains("… +3 more"), "{shown}");
     assert!(!shown.contains("Reset"), "Reset is past the fold:\n{shown}");
 
@@ -105,9 +155,9 @@ fn settings_picker_frame() {
     let lines = picker.lines(&still(&theme, 80));
     assert_eq!(style_of(&lines, "✓").unwrap().fg, fg(Role::Success));
     assert_eq!(style_of(&lines, "───").unwrap().fg, fg(Role::Question));
-    assert_eq!(style_of(&lines, "Workflow").unwrap().fg, fg(Role::Question));
+    assert_eq!(style_of(&lines, "workflow").unwrap().fg, fg(Role::Question));
     assert_eq!(
-        style_of(&lines, "The CLI you talk to does the work itself")
+        style_of(&lines, "A worker builds, a reviewer sends it back")
             .unwrap()
             .fg,
         fg(Role::Dim)
@@ -122,59 +172,35 @@ fn settings_picker_frame() {
     assert!(!end.contains("more"), "{end}");
 }
 
+/// A value saves at once where your changes go, with nothing asked; the values' footer says
+/// so and names ctrl+s, which keeps a pick for this session only.
 #[test]
-fn scope_question() {
+fn a_value_saves_at_once() {
     let mut picker = flow::settings_picker(
         "theme",
-        vec![SettingRow {
-            default_scope: SettingScope::Global,
-            ..row(
-                "ui.theme",
-                "\"dark\"",
-                "project",
-                &["\"auto\"", "\"dark\"", "\"light\""],
-                "Light or dark colors, or follow the terminal",
-            )
-        }],
+        vec![row(
+            "ui.theme",
+            "\"dark\"",
+            "project",
+            &["\"auto\"", "\"dark\"", "\"light\""],
+            "Light or dark colors, or follow the terminal",
+        )],
     );
-    assert_eq!(press(&mut picker, KeyCode::Char('3')), Step::Stay);
-    check_picker("scope_question", &picker);
-
+    press(&mut picker, KeyCode::Down);
+    check_picker("theme_values", &picker);
     let shown = picker_lines(&picker, 80);
-    let order: Vec<usize> = [
-        "This project's file sets this",
-        "Just this session",
-        "This project, just me",
-        "This project, shared",
-        "❯ 4. Everywhere",
-    ]
-    .iter()
-    .map(|needle| {
-        shown
-            .find(needle)
-            .unwrap_or_else(|| panic!("{needle}:\n{shown}"))
-    })
-    .collect();
-    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{shown}");
-    for (n, label) in ["session", "just me", "shared", "Everywhere"]
-        .into_iter()
-        .enumerate()
-    {
-        let line = shown.lines().find(|line| line.contains(label)).unwrap();
-        assert!(line.contains(&format!("{}. ", n + 1)), "{line:?}");
-    }
-
-    // Saving just for you in this project isn't hidden by the shared file, so no warning.
-    press(&mut picker, KeyCode::Up);
-    press(&mut picker, KeyCode::Up);
-    let local = picker_lines(&picker, 80);
-    assert!(!local.contains("won't change"), "{local}");
-
+    assert!(
+        shown.contains("Enter to save · ctrl+s for this session only"),
+        "{shown}"
+    );
+    assert!(!shown.contains("Where to save it"), "{shown}");
     assert_eq!(
-        press(&mut picker, KeyCode::Esc),
-        Step::Cancel {
-            kept: Kept::as_value("theme", "dark")
-        }
+        press(&mut picker, KeyCode::Char('3')),
+        Step::Done(UiCommand::SetSetting {
+            key: "ui.theme".into(),
+            value: "\"light\"".into(),
+            scope: None,
+        })
     );
 }
 
@@ -360,11 +386,10 @@ fn models_picker() {
     check_picker("models_picker", &picker);
 
     let shown = picker_lines(&picker, 120);
-    assert!(shown.contains("❯ 1. Claude Code ✓"), "{shown}");
-    assert!(shown.contains("opus · subscription · 42% used"), "{shown}");
-    assert!(shown.contains("2. Codex"), "{shown}");
-    assert!(shown.contains("1 model · API key"), "{shown}");
-    assert!(shown.contains("3. Ollama"), "{shown}");
+    assert!(shown.contains("Claude Code ✓  opus"), "{shown}");
+    assert!(shown.contains("subscription  5h ▄▄▖▁▁▁  42%"), "{shown}");
+    assert!(shown.contains("Codex          1 model  API key"), "{shown}");
+    assert!(shown.contains("Ollama         1 model  local"), "{shown}");
     assert!(shown.contains("Enter to see its models"), "{shown}");
 
     assert_eq!(press(&mut picker, KeyCode::Enter), Step::Stay);
@@ -802,18 +827,15 @@ fn fallback_picker() {
     assert!(values.contains("note+summary ✓"), "{values}");
     assert!(values.contains("Reset"), "{values}");
 
-    // Picking one asks where to save it, this project first, like every fallback row.
-    press(&mut picker, KeyCode::Char('2'));
-    let scope = picker_lines(&picker, 120);
-    assert!(scope.contains("fallback.context = note"), "{scope}");
+    // Picking one saves it at once, where your changes go.
     let Step::Done(UiCommand::SetSetting { key, value, scope }) =
-        press(&mut picker, KeyCode::Enter)
+        press(&mut picker, KeyCode::Char('2'))
     else {
-        panic!("the scope answer saves the value");
+        panic!("the pick saves the value");
     };
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
-        ("fallback.context", "\"note\"", SettingScope::Project)
+        ("fallback.context", "\"note\"", None)
     );
 
     // The summarizer takes any worker, typed.
@@ -874,18 +896,15 @@ fn fallback_picker_with_vim_keys() {
     let reset = Some(4);
     assert_eq!(moves, [Some(2), Some(0), reset, Some(3), Some(2), Some(1)]);
 
-    // `l` chooses `note` and then the scope under the pointer, this project.
-    press(&mut picker, KeyCode::Char('l'));
-    let scope = picker_lines(&picker, 120);
-    assert!(scope.contains("fallback.context = note"), "{scope}");
+    // `l` chooses `note`, which saves it.
     let Step::Done(UiCommand::SetSetting { key, value, scope }) =
         press(&mut picker, KeyCode::Char('l'))
     else {
-        panic!("`l` saves the value where the pointer is");
+        panic!("`l` saves the value under the pointer");
     };
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
-        ("fallback.context", "\"note\"", SettingScope::Project)
+        ("fallback.context", "\"note\"", None)
     );
 
     // `h` goes back to the keys, as ← does, and closes from them without saving anything.
@@ -898,31 +917,20 @@ fn fallback_picker_with_vim_keys() {
         Step::Cancel { .. }
     ));
 
-    // The summarizer is typed, so `hjkl` in a worker's name are text, and the scope keeps its
-    // letter.
+    // The summarizer is typed, so `hjkl` in a worker's name are text, and Enter saves it.
     let mut picker = vim_picker();
     type_text(&mut picker, "Gl");
     assert_eq!(picker.input.as_deref(), Some(""));
     type_text(&mut picker, "claude-code/haiku");
     assert_eq!(picker.input.as_deref(), Some("claude-code/haiku"));
-    press(&mut picker, KeyCode::Enter);
-    let scope = picker_lines(&picker, 120);
-    assert!(
-        scope.contains("fallback.summarizer = claude-code/haiku"),
-        "{scope}"
-    );
     let Step::Done(UiCommand::SetSetting { key, value, scope }) =
-        press(&mut picker, KeyCode::Char('2'))
+        press(&mut picker, KeyCode::Enter)
     else {
-        panic!("a scope's number saves the value");
+        panic!("Enter saves the typed value");
     };
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
-        (
-            "fallback.summarizer",
-            "\"claude-code/haiku\"",
-            SettingScope::ProjectLocal
-        )
+        ("fallback.summarizer", "\"claude-code/haiku\"", None)
     );
 
     // `/` filters the rows, Esc leaves the filter and keeps the picker open, and Enter picks
@@ -1080,8 +1088,7 @@ fn all_settings_view() {
     let editing = screen(&mut view, 120, 32, &state);
     assert!(editing.contains("dark ✓"), "{editing}");
     assert!(editing.contains("Reset"), "{editing}");
-    key(&mut view, KeyCode::Char('3'), &state);
-    let outcome = key(&mut view, KeyCode::Char('2'), &state);
+    let outcome = key(&mut view, KeyCode::Char('3'), &state);
     let ViewOutcome::Send(command) = outcome else {
         panic!("{outcome:?}");
     };
@@ -1090,7 +1097,7 @@ fn all_settings_view() {
         UiCommand::SetSetting {
             key: "ui.theme".into(),
             value: "\"light\"".into(),
-            scope: SettingScope::ProjectLocal
+            scope: None
         }
     );
 
@@ -1126,10 +1133,6 @@ fn all_settings_view_opens_an_editor_with_right_and_left_goes_back() {
         key(&mut view, KeyCode::Right, &state),
         ViewOutcome::Consumed
     ));
-    key(&mut view, KeyCode::Char('3'), &state);
-    assert!(screen(&mut view, 120, 32, &state).contains("Where to save it"));
-    key(&mut view, KeyCode::Left, &state);
-    assert!(screen(&mut view, 120, 32, &state).contains("dark ✓"));
     assert!(matches!(
         key(&mut view, KeyCode::Left, &state),
         ViewOutcome::Consumed
@@ -1222,18 +1225,13 @@ fn all_settings_view_edits_the_fallback_summarizer_with_vim_keys() {
     let clear = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
     view.handle_key(clear, &ctx(&theme, &state));
     type_text(&mut view, "ollama/llama3.2");
-    key(&mut view, KeyCode::Enter, &state);
-    let outcome = key(&mut view, KeyCode::Char('2'), &state);
+    let outcome = key(&mut view, KeyCode::Enter, &state);
     let ViewOutcome::Send(UiCommand::SetSetting { key, value, scope }) = outcome else {
-        panic!("the scope's number saves the value: {outcome:?}");
+        panic!("Enter saves the typed value: {outcome:?}");
     };
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
-        (
-            "fallback.summarizer",
-            "\"ollama/llama3.2\"",
-            SettingScope::ProjectLocal
-        )
+        ("fallback.summarizer", "\"ollama/llama3.2\"", None)
     );
 }
 
@@ -1373,15 +1371,12 @@ fn approvals_view() {
     let marked = screen(&mut view, 120, 40, &state);
     assert!(marked.contains("marked wrong"), "{marked}");
 
-    // An edit goes through the scope question. The merge's mode is past who checks.
+    // An edit saves at once. The merge's mode is past who checks.
     key(&mut view, KeyCode::Home, &state);
     for _ in 0..2 {
         key(&mut view, KeyCode::Down, &state);
     }
     key(&mut view, KeyCode::Enter, &state);
-    key(&mut view, KeyCode::Char('3'), &state);
-    let question = screen(&mut view, 120, 40, &state);
-    assert!(question.contains("Where to save it"), "{question}");
     let outcome = key(&mut view, KeyCode::Char('3'), &state);
     let ViewOutcome::Send(command) = outcome else {
         panic!("{outcome:?}");
@@ -1391,7 +1386,7 @@ fn approvals_view() {
         UiCommand::SetSetting {
             key: "approvals.merge.mode".into(),
             value: "\"auto\"".into(),
-            scope: SettingScope::Project
+            scope: None
         }
     );
 }
@@ -1416,8 +1411,7 @@ fn pastes_reach_the_settings_editors() {
     ));
     let editing = screen(&mut view, 120, 32, &state);
     assert!(editing.contains("#ff8800"), "{editing}");
-    key(&mut view, KeyCode::Enter, &state);
-    let outcome = key(&mut view, KeyCode::Char('2'), &state);
+    let outcome = key(&mut view, KeyCode::Enter, &state);
     let ViewOutcome::Send(UiCommand::SetSetting {
         key: saved, value, ..
     }) = outcome
@@ -1561,7 +1555,7 @@ fn permissions_picker() {
         assert!(shown.contains(words), "{words}:\n{shown}");
     }
 
-    // Whose rules: each choice in words, the one in effect marked, then where to save it.
+    // Whose rules: each choice in words, the one in effect marked, and a pick saves at once.
     press(&mut picker, KeyCode::Char('1'));
     check_picker("permissions_mode_values", &picker);
     let values = picker_lines(&picker, 120);
@@ -1574,17 +1568,14 @@ fn permissions_picker() {
             && values.contains("No protection at all, neither Argonauts Code's nor the tool's"),
         "{values}"
     );
-    press(&mut picker, KeyCode::Char('3'));
-    let scope = picker_lines(&picker, 120);
-    assert!(scope.contains("sandbox.mode = tool"), "{scope}");
     let Step::Done(UiCommand::SetSetting { key, value, scope }) =
-        press(&mut picker, KeyCode::Enter)
+        press(&mut picker, KeyCode::Char('3'))
     else {
-        panic!("the scope answer saves the value");
+        panic!("the pick saves the value");
     };
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
-        ("sandbox.mode", "\"tool\"", SettingScope::Project)
+        ("sandbox.mode", "\"tool\"", None)
     );
 
     // A role opens its own keys. What it leaves unset follows every agent.
@@ -1608,19 +1599,14 @@ fn permissions_picker() {
         "{network}"
     );
     assert!(!network.contains("Reset"), "{network}");
-    press(&mut picker, KeyCode::Char('2'));
     let Step::Done(UiCommand::SetSetting { key, value, scope }) =
-        press(&mut picker, KeyCode::Enter)
+        press(&mut picker, KeyCode::Char('2'))
     else {
-        panic!("the scope answer saves the value");
+        panic!("the pick saves the value");
     };
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
-        (
-            "roles.reviewer.sandbox.network",
-            "false",
-            SettingScope::Project
-        )
+        ("roles.reviewer.sandbox.network", "false", None)
     );
 
     // The worker's own rules can be reset back to every agent's.

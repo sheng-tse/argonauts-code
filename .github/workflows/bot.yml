@@ -1,0 +1,56 @@
+# Answers /bot commands in pull request comments (packaging/bot/commands.py). `/bot rerun failed` reruns the failed
+# jobs of the pull request's latest commit, and `/bot stop` stops its runs still going. Maintainers can do both; the
+# pull request's author can rerun its jobs twice for each commit. Anyone else's comment starts nothing, so a stranger
+# can't make the bot answer. One pull request's commands are answered one at a time, so two sent together can't both
+# read the same count of an author's reruns.
+#
+# It acts as the Argonauts Bot app, from the repository variable ARGONAUTS_BOT_APP_ID and the secret
+# ARGONAUTS_BOT_KEY, through a token made for this job alone, which may rerun and stop runs and comment, and nothing
+# else. A comment runs this workflow and the script as they are on the default branch, never the pull request's code,
+# and the comment's text reaches the script only through an environment variable.
+name: Bot
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  command:
+    name: Command
+    if: >-
+      github.event.issue.pull_request
+      && startsWith(github.event.comment.body, '/bot')
+      && github.event.comment.user.type != 'Bot'
+      && (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+      || github.event.comment.user.login == github.event.issue.user.login)
+    concurrency:
+      group: bot-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: packaging/bot
+      - name: Make the bot's token
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ARGONAUTS_BOT_APP_ID }}
+          private-key: ${{ secrets.ARGONAUTS_BOT_KEY }}
+          permission-actions: write
+          permission-pull-requests: write
+      - name: Answer the command
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          BOT_LOGIN: ${{ steps.token.outputs.app-slug }}[bot]
+        run: python3 -I packaging/bot/commands.py

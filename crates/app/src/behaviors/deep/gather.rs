@@ -1,4 +1,4 @@
-//! What the deeper map's choices are made from on this machine, without calling a model: the
+//! What Summaries' choices are made from on this machine, without calling a model: the
 //! local servers and the models they serve, with each Ollama model's size and whether it fits
 //! in memory now, each installed CLI's cheapest model, and the embedding model Ollama has.
 

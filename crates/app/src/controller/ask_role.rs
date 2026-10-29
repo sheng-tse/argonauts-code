@@ -143,6 +143,11 @@ async fn ask(
         let turn = TurnNote {
             conversation: None,
             took: end.duration_ms / 1000,
+            billing: Some(argonauts_core::meter::who_pays(
+                settings,
+                &model.agent,
+                model.model.as_deref(),
+            )),
         };
         places
             .ledger
@@ -349,6 +354,8 @@ mod tests {
                 worker_workflows: false,
                 merger: Vec::new(),
                 orchestrator_context: Default::default(),
+                orchestrator_picks: Default::default(),
+                ways: Default::default(),
             },
             ..Settings::default()
         };

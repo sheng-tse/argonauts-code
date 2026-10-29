@@ -464,6 +464,8 @@ fn judge(ctx: &Ctx, conversation: &mut ConversationState, folder: &Path) -> Opti
     };
     let launch = Launch {
         conversation: &conversation.id,
+        // A reviewer's session isn't the one named for the conversation.
+        title: "",
         turn: &turn,
         step: &step,
         text: "",

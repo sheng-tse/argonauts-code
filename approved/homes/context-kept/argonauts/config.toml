@@ -1,0 +1,9 @@
+# Set up with the recommended answers: Council, and Claude Code to talk to. state/ keeps the
+# start of the last fresh Claude Code session on Opus 5.5, as context/claude-code counts it.
+workflow = "council"
+
+[crew]
+main = "claude-code"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]

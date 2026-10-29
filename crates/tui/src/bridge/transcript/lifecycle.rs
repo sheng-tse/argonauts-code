@@ -6,8 +6,10 @@ use argonauts_core::events::RunEvent;
 use argonauts_core::events::run::{
     ClosingAnswer, Party, ResumeCause, RunOutcome, RunResumed, WaitReason,
 };
+use argonauts_core::events::session::Billing;
 use argonauts_core::hidden_git::{HISTORY_KEPT, MergedInto};
-use argonauts_core::settings::ui::VerbTheme;
+use argonauts_core::meter::WhoPaid;
+use argonauts_core::settings::ui::{PaidByPlace, UiSettings, VerbTheme};
 use argonauts_core::{RunId, Spend, TaskId, Verbosity};
 use time::OffsetDateTime;
 
@@ -222,7 +224,7 @@ pub(super) fn waiting(reason: &WaitReason, clock: &WallClock, cx: &mut Cx<'_>) {
 }
 
 /// `● Merged the run into main (4 tasks, 7 files, +120 -18)`, then `⎿  Run finished · 42s ·
-/// $0.06 · run review saved`, then the turn end.
+/// $0.06 · run review saved` with who paid for its tokens under it, then the turn end.
 pub(super) fn run_end(
     event: &RunEvent,
     story: &RunStory,
@@ -330,7 +332,11 @@ pub(super) fn run_end(
         if story.run_review {
             finished.push_str(" · run review saved");
         }
-        emit(cx, notice.with_detail(finished));
+        notice = notice.with_detail(finished);
+        if let Some(paid) = state.and_then(|run| who_paid_line(run, cx.settings)) {
+            notice = notice.with_detail(paid);
+        }
+        emit(cx, notice);
         if let Some(answer) = &story.closing {
             emit_closing(answer, cx);
         }
@@ -348,6 +354,61 @@ pub(super) fn run_end(
             end = end.unfinished();
         }
         emit(cx, end);
+    }
+}
+
+/// Who paid for a run's tokens, for the dim line under its end line where `ui.paid_by` puts
+/// it: `1.2M plan · 232k free · 58k paid $0.31`, `all free`, or `all paid $2.14`. A run all on
+/// plans has nothing to say, and nor does one with a session that never said who pays. The
+/// split goes by output tokens, which every CLI counts the same way and the run's row shows.
+fn who_paid_line(run: &RunState, settings: &UiSettings) -> Option<String> {
+    if !settings.paid_by.contains(&PaidByPlace::EndLine) {
+        return None;
+    }
+    let mut paid = WhoPaid::default();
+    for session in run
+        .sessions
+        .values()
+        .filter(|session| session.tokens_out > 0)
+    {
+        let estimated = session
+            .end
+            .as_ref()
+            .is_some_and(|end| end.spend.cost_estimated);
+        paid.count(
+            session.billing?,
+            session.tokens_out,
+            session.cost_usd,
+            estimated,
+        );
+    }
+    // Paid tokens with no cost at all say no amount rather than a made-up one.
+    let cost = paid.paid_cost();
+    let cost = if cost.cost_usd > 0.0 || !cost.cost_partial {
+        format!(" {}", format::spend(&cost))
+    } else {
+        String::new()
+    };
+    match paid.all_by() {
+        Some(Billing::Plan) => None,
+        Some(Billing::Free) => Some("all free".to_owned()),
+        Some(Billing::Paid) => Some(format!("all paid{cost}")),
+        // Nothing counted, or a mix: each part that has tokens.
+        None => {
+            let parts = [
+                (Billing::Plan, "plan", ""),
+                (Billing::Free, "free", ""),
+                (Billing::Paid, "paid", cost.as_str()),
+            ];
+            let words: Vec<String> = parts
+                .into_iter()
+                .filter(|(billing, ..)| paid.tokens(*billing) > 0)
+                .map(|(billing, word, cost)| {
+                    format!("{} {word}{cost}", format::tokens(paid.tokens(billing)))
+                })
+                .collect();
+            (!words.is_empty()).then(|| words.join(" · "))
+        }
     }
 }
 
@@ -612,3 +673,7 @@ pub(super) fn main_moved(commits: u32, cx: &mut Cx<'_>) {
     );
     emit(cx, Notice::new(Tone::Dim, text));
 }
+
+#[cfg(test)]
+#[path = "who_paid_tests.rs"]
+mod who_paid_tests;

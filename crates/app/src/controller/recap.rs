@@ -1,40 +1,44 @@
 //! Recaps and titles, built by code.
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use argonauts_core::TaskId;
 use argonauts_core::api::StatusSummary;
 use argonauts_core::app::TurnReply;
 use argonauts_core::events::run::{
     ClosingAnswer, KEPT_ON_ITS_BRANCH, RunLifecycle, RunMode, RunOutcome, says_merged,
 };
-use argonauts_core::events::task::TaskState;
+use argonauts_core::events::task::{CheckKind, TaskEvent, TaskKind, TaskState};
 use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_crew::merge::final_check::CHECK_SCOPE;
+use argonauts_crew::task::checks::{held_back_file, is_no_command_checks};
 
 /// Longest title, in characters. The terminal cuts the rest anyway.
 const TITLE_MAX: usize = 60;
 
-/// Such as "Export now takes --json. All 4 tasks merged, and the checks pass. Ask for another
-/// change, or /resume an older run." A run that ended starts with what changed, from its
-/// closing answer, rather than its goal, which only repeats what you asked. A run that didn't
-/// merge never says it did, and one kept on its branch says so and why, as its answer does.
+/// Such as "Export now takes --json. All 4 tasks merged, and the checks pass: tests ran on each
+/// task and on the merge. Ask for another change, or /resume an older run." A run that ended
+/// starts with what changed, from the closing answer in its `events`, rather than its goal,
+/// which only repeats what you asked. A run that didn't merge never says it did, and one kept
+/// on its branch says so and why, as its answer does. A merged run says the checks pass only
+/// when its events show they all ran and passed, and otherwise what didn't run.
 pub(crate) fn recap_from_summary(
     summary: &StatusSummary,
     outcome: Option<RunOutcome>,
-    closing: Option<&ClosingAnswer>,
+    events: &[RunEvent],
 ) -> String {
+    let closing = closing_in(events);
     let main_agent = match outcome {
         Some(outcome) => closing.and_then(|closing| what_changed(closing, outcome)),
         None => Some(goal_line(summary)),
     };
     let tasks = Tasks::count(summary);
     let rest = match outcome {
-        Some(RunOutcome::Merged) => match tasks.merged_phrase() {
-            Some(merged) => format!(
-                "{}, and the checks pass. Ask for another change, or /resume an older run.",
-                capitalized(&merged)
-            ),
-            None => "It merged, and the checks pass. Ask for another change, or /resume an older \
-                     run."
-                .to_owned(),
-        },
+        Some(RunOutcome::Merged) => {
+            let merged = capitalized(&tasks.merged_phrase().unwrap_or("it merged".to_owned()));
+            let checked = RanChecks::read(events).said(&merged, tasks.merged);
+            format!("{checked} Ask for another change, or /resume an older run.")
+        }
         // A run that didn't merge only merged its tasks into its own branch, so they're done,
         // never "merged" beside an ending that says nothing merged.
         Some(RunOutcome::PullRequest) => {
@@ -66,8 +70,180 @@ pub(crate) fn recap_from_summary(
     }
 }
 
+/// What a run's own events say of its command checks: which ran, each on how many of its tasks
+/// and whether on the merge, which failed at their newest run, and, when none ran, the file
+/// that holds the checks it left out.
+#[derive(Debug, Default)]
+struct RanChecks {
+    /// In the order they first ran.
+    names: Vec<String>,
+    /// Where each check ran, by its name.
+    ran_on: BTreeMap<String, RanOn>,
+    /// Each check's newest outcome, by where it ran and its name.
+    newest: BTreeMap<(TaskId, String), bool>,
+    held_back_in: Option<String>,
+}
+
+/// Where one check ran: the run's tasks it ran on, and whether it ran on the merge.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct RanOn {
+    tasks: BTreeSet<TaskId>,
+    merge: bool,
+}
+
+impl RanOn {
+    /// Whether it ran over all the work of a run with `merged` tasks merged: on every one, or
+    /// on the merge alone, which holds them all.
+    fn covers(&self, merged: usize) -> bool {
+        self.tasks.len() >= merged || self.tasks.is_empty()
+    }
+
+    /// `each task and on the merge`, `2 of 3 tasks`, `the merge`.
+    fn said(&self, merged: usize) -> String {
+        let and_merge = if self.merge { " and on the merge" } else { "" };
+        match self.tasks.len() {
+            0 => "the merge".to_owned(),
+            checked if checked >= merged => {
+                let tasks = if merged == 1 { "the task" } else { "each task" };
+                format!("{tasks}{and_merge}")
+            }
+            checked => format!("{checked} of {merged} tasks{and_merge}"),
+        }
+    }
+}
+
+impl RanChecks {
+    fn read(events: &[RunEvent]) -> Self {
+        // A test task's commands fail against the stubs by design, and its stub check stands
+        // for them, so only the other tasks' commands count.
+        let tasks: BTreeSet<&TaskId> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                RunEventKind::Task(TaskEvent::Created(spec))
+                    if !matches!(spec.kind, TaskKind::AcceptanceTests { .. }) =>
+                {
+                    event.task_id.as_ref()
+                }
+                _ => None,
+            })
+            .collect();
+        let mut ran = Self::default();
+        for event in events {
+            let (RunEventKind::Check(outcome), Some(task)) = (&event.kind, &event.task_id) else {
+                continue;
+            };
+            if is_no_command_checks(outcome) {
+                if let Some(file) = held_back_file(outcome) {
+                    ran.held_back_in = Some(file.to_owned());
+                }
+                continue;
+            }
+            let command = matches!(
+                outcome.kind,
+                CheckKind::Command | CheckKind::AffectedTests | CheckKind::FullSuite
+            ) && outcome.command.is_some();
+            let on_merge = task.as_str() == CHECK_SCOPE;
+            if !command || !(on_merge || tasks.contains(task)) {
+                continue;
+            }
+            let name = outcome.name.trim().to_owned();
+            if !ran.names.contains(&name) {
+                ran.names.push(name.clone());
+            }
+            let ran_on = ran.ran_on.entry(name.clone()).or_default();
+            if on_merge {
+                ran_on.merge = true;
+            } else {
+                ran_on.tasks.insert(task.clone());
+            }
+            ran.newest.insert((task.clone(), name), outcome.passed);
+        }
+        ran
+    }
+
+    /// The recap's sentence about the checks after `merged`, "All 3 tasks merged", with
+    /// `merged_tasks` of them merged.
+    fn said(&self, merged: &str, merged_tasks: usize) -> String {
+        let failed = |on_merge: bool| -> Vec<&str> {
+            let mut names: Vec<&str> = Vec::new();
+            for ((task, name), passed) in &self.newest {
+                if !passed
+                    && (task.as_str() == CHECK_SCOPE) == on_merge
+                    && !names.contains(&name.as_str())
+                {
+                    names.push(name);
+                }
+            }
+            names
+        };
+        let on_merge = failed(true);
+        if !on_merge.is_empty() {
+            return format!(
+                "{merged}. The final check failed ({}) and you merged anyway.",
+                listed(&on_merge)
+            );
+        }
+        let on_tasks = failed(false);
+        if !on_tasks.is_empty() {
+            return format!(
+                "{merged}. A task's checks failed ({}) and you merged anyway.",
+                listed(&on_tasks)
+            );
+        }
+        if self.names.is_empty() {
+            return match &self.held_back_in {
+                Some(file) => format!(
+                    "{merged}. No checks ran, since checks.run in {file} waits until you trust \
+                     that file: /setup."
+                ),
+                None => {
+                    format!(
+                        "{merged}. No checks ran, since none are set: /config checks.run sets them."
+                    )
+                }
+            };
+        }
+        // The checks that ran in the same places go together, in the order they first ran.
+        let mut places: Vec<(&RanOn, Vec<&str>)> = Vec::new();
+        for name in &self.names {
+            let ran_on = &self.ran_on[name];
+            match places.iter_mut().find(|(place, _)| *place == ran_on) {
+                Some((_, names)) => names.push(name),
+                None => places.push((ran_on, vec![name])),
+            }
+        }
+        let said: Vec<String> = places
+            .iter()
+            .enumerate()
+            .map(|(at, (place, names))| {
+                let ran = if at == 0 { " ran" } else { "" };
+                format!("{}{ran} on {}", listed(names), place.said(merged_tasks))
+            })
+            .collect();
+        let said = match said.as_slice() {
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+            [] => String::new(),
+        };
+        if places.iter().all(|(place, _)| place.covers(merged_tasks)) {
+            format!("{merged}, and the checks pass: {said}.")
+        } else {
+            format!("{merged}. The checks pass where they ran: {said}.")
+        }
+    }
+}
+
+/// "tests", "tests and lint", "tests, lint and types".
+fn listed(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 /// The newest closing answer in a run's events.
-pub(crate) fn closing_in(events: &[RunEvent]) -> Option<&ClosingAnswer> {
+fn closing_in(events: &[RunEvent]) -> Option<&ClosingAnswer> {
     events.iter().rev().find_map(|event| match &event.kind {
         RunEventKind::Run(RunLifecycle::ClosingAnswer(answer)) => Some(answer.as_ref()),
         _ => None,
@@ -281,9 +457,10 @@ fn capitalized(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use argonauts_core::RunId;
     use argonauts_core::api::TaskBrief;
     use argonauts_core::events::run::{CaptainOrCrewDecision, ChangedFile};
-    use argonauts_core::{RunId, TaskId};
+    use argonauts_core::events::task::{CheckOutcome, MergeEvent};
 
     fn task(n: u32, state: TaskState) -> TaskBrief {
         TaskBrief {
@@ -308,9 +485,9 @@ mod tests {
     fn recap_from_status_summary() {
         let merged = summary((1..=4).map(|n| task(n, TaskState::Merged)).collect());
         assert_eq!(
-            recap_from_summary(&merged, Some(RunOutcome::Merged), None),
-            "All 4 tasks merged, and the checks pass. Ask for another change, or /resume an \
-             older run."
+            recap_from_summary(&merged, Some(RunOutcome::Merged), &[]),
+            "All 4 tasks merged. No checks ran, since none are set: /config checks.run sets \
+             them. Ask for another change, or /resume an older run."
         );
         let stopped = summary(vec![
             task(1, TaskState::Merged),
@@ -318,20 +495,20 @@ mod tests {
             task(3, TaskState::Cancelled),
         ]);
         assert_eq!(
-            recap_from_summary(&stopped, Some(RunOutcome::Stopped), None),
+            recap_from_summary(&stopped, Some(RunOutcome::Stopped), &[]),
             "The run stopped, with 1 of 2 tasks done. /resume goes on from there."
         );
         let mut going = stopped.clone();
         going.waiting = vec!["the merge approval".to_owned()];
         assert_eq!(
-            recap_from_summary(&going, None, None),
+            recap_from_summary(&going, None, &[]),
             "Export now takes --json. 1 of 2 tasks merged, 1 working. Waiting on the merge \
              approval."
         );
         let mut needs_you = summary(vec![task(1, TaskState::NeedsYou)]);
         needs_you.waiting = vec!["Fix add so it returns a + b needs you".to_owned()];
         assert_eq!(
-            recap_from_summary(&needs_you, None, None),
+            recap_from_summary(&needs_you, None, &[]),
             "Export now takes --json. The task isn't merged. Waiting on Fix add so it returns a + \
              b needs you."
         );
@@ -339,32 +516,32 @@ mod tests {
         let mut asking = summary(Vec::new());
         asking.waiting = vec!["Question from build:greet".to_owned()];
         assert_eq!(
-            recap_from_summary(&asking, None, None),
+            recap_from_summary(&asking, None, &[]),
             "Export now takes --json. Waiting on Question from build:greet."
         );
         let mut working = summary(Vec::new());
         working.recent = vec!["Goal approved".to_owned()];
         assert_eq!(
-            recap_from_summary(&working, None, None),
+            recap_from_summary(&working, None, &[]),
             "Export now takes --json. It's under way. Last: Goal approved."
         );
         let empty = StatusSummary::default();
         assert_eq!(
-            recap_from_summary(&empty, Some(RunOutcome::Abandoned), None),
+            recap_from_summary(&empty, Some(RunOutcome::Abandoned), &[]),
             "You abandoned the run, so nothing merged."
         );
         let one = summary(vec![task(1, TaskState::Merged)]);
         assert_eq!(
-            recap_from_summary(&one, Some(RunOutcome::PullRequest), None),
+            recap_from_summary(&one, Some(RunOutcome::PullRequest), &[]),
             "The work waits in a pull request for review, with the task done."
         );
         // A run kept on its branch never says its task merged.
         assert_eq!(
-            recap_from_summary(&one, Some(RunOutcome::BranchLeft), None),
+            recap_from_summary(&one, Some(RunOutcome::BranchLeft), &[]),
             "Kept on its branch, not merged, with the task done. /resume picks it up."
         );
         assert_eq!(
-            recap_from_summary(&stopped, Some(RunOutcome::Failed), None),
+            recap_from_summary(&stopped, Some(RunOutcome::Failed), &[]),
             "The run failed, with 1 of 2 tasks done. /status shows where."
         );
     }
@@ -386,16 +563,19 @@ mod tests {
             left: Vec::new(),
             decided: Vec::new(),
         };
+        let ran = [checked(1, "tests", true)];
+        let events = with_closing(&ran, &closing);
         assert_eq!(
-            recap_from_summary(&one, Some(RunOutcome::Merged), Some(&closing)),
+            recap_from_summary(&one, Some(RunOutcome::Merged), &events),
             "Fixed parse() and format_cents() in invoice/money.py. The task merged, and the \
-             checks pass. Ask for another change, or /resume an older run."
+             checks pass: tests ran on the task. Ask for another change, or /resume an older run."
         );
         closing.by = None;
+        let events = with_closing(&ran, &closing);
         assert_eq!(
-            recap_from_summary(&one, Some(RunOutcome::Merged), Some(&closing)),
-            "Changed invoice/money.py. The task merged, and the checks pass. Ask for another \
-             change, or /resume an older run."
+            recap_from_summary(&one, Some(RunOutcome::Merged), &events),
+            "Changed invoice/money.py. The task merged, and the checks pass: tests ran on the \
+             task. Ask for another change, or /resume an older run."
         );
     }
 
@@ -421,12 +601,175 @@ mod tests {
             left: vec![kept.to_owned()],
             decided: Vec::new(),
         };
-        let recap = recap_from_summary(&one, Some(RunOutcome::BranchLeft), Some(&closing));
+        let recap = recap_from_summary(
+            &one,
+            Some(RunOutcome::BranchLeft),
+            &with_closing(&[], &closing),
+        );
         assert_eq!(
             recap,
             format!("Changed invoice/money.py. {kept}, with the task done. /resume picks it up.")
         );
         assert!(!says_merged(&recap), "{recap}");
+    }
+
+    fn event(task: Option<&str>, kind: RunEventKind) -> RunEvent {
+        RunEvent {
+            seq: 0,
+            ts: time::macros::datetime!(2026-10-09 10:42 UTC),
+            run_id: RunId::new("run-007").unwrap(),
+            task_id: task.map(|task| TaskId::new(task).unwrap()),
+            session: None,
+            source: "argonauts-code".to_owned(),
+            kind,
+        }
+    }
+
+    fn outcome(name: &str, passed: bool) -> CheckOutcome {
+        CheckOutcome {
+            name: name.to_owned(),
+            kind: CheckKind::Command,
+            passed,
+            command: Some(vec![
+                "python3".to_owned(),
+                "-m".to_owned(),
+                "unittest".to_owned(),
+            ]),
+            exit_code: Some(if passed { 0 } else { 1 }),
+            duration_ms: 30,
+            summary: String::new(),
+            output_tail: String::new(),
+            violations: Vec::new(),
+            sandboxed: true,
+            skipped: false,
+        }
+    }
+
+    /// Task `n` made, then its check `name` run.
+    fn checked(n: u32, name: &str, passed: bool) -> Vec<RunEvent> {
+        let task = TaskId::numbered(n);
+        let spec = crate::client::test_support::task_spec(n as usize);
+        vec![
+            event(
+                Some(task.as_str()),
+                RunEventKind::Task(TaskEvent::Created(Box::new(spec))),
+            ),
+            event(
+                Some(task.as_str()),
+                RunEventKind::Check(outcome(name, passed)),
+            ),
+        ]
+    }
+
+    fn on_the_merge(name: &str, passed: bool) -> Vec<RunEvent> {
+        vec![
+            event(
+                Some(CHECK_SCOPE),
+                RunEventKind::Check(outcome(name, passed)),
+            ),
+            event(None, RunEventKind::Merge(MergeEvent::FinalCheck { passed })),
+        ]
+    }
+
+    fn with_closing(ran: &[Vec<RunEvent>], closing: &ClosingAnswer) -> Vec<RunEvent> {
+        let mut events: Vec<RunEvent> = ran.iter().flatten().cloned().collect();
+        events.push(event(
+            None,
+            RunEventKind::Run(RunLifecycle::ClosingAnswer(Box::new(closing.clone()))),
+        ));
+        events
+    }
+
+    /// The recap says the checks pass only when the run's events show they ran and passed, on
+    /// each task and on the merge; otherwise it says what didn't run, or what failed.
+    #[test]
+    fn a_merged_runs_recap_says_what_its_checks_did() {
+        let three = summary((1..=3).map(|n| task(n, TaskState::Merged)).collect());
+        let closing = ClosingAnswer {
+            text: "Money rounding now uses Decimal. Three tasks changed invoice/.".to_owned(),
+            by: Some("claude-code/haiku".parse().unwrap()),
+            files: Vec::new(),
+            checks: Vec::new(),
+            tests: Vec::new(),
+            left: Vec::new(),
+            decided: Vec::new(),
+        };
+        let recap = |ran: &[Vec<RunEvent>]| {
+            recap_from_summary(
+                &three,
+                Some(RunOutcome::Merged),
+                &with_closing(ran, &closing),
+            )
+        };
+        let tasks = |passed: bool| {
+            (1..=3)
+                .map(|n| checked(n, "tests", passed))
+                .collect::<Vec<_>>()
+        };
+        let mut all = tasks(true);
+        all.push(on_the_merge("tests", true));
+        assert_eq!(
+            recap(&all),
+            "Money rounding now uses Decimal. All 3 tasks merged, and the checks pass: tests ran \
+             on each task and on the merge. Ask for another change, or /resume an older run."
+        );
+        assert_eq!(
+            recap(&[]),
+            "Money rounding now uses Decimal. All 3 tasks merged. No checks ran, since none are \
+             set: /config checks.run sets them. Ask for another change, or /resume an older run."
+        );
+        let mut failed = tasks(true);
+        failed.push(on_the_merge("tests", false));
+        assert_eq!(
+            recap(&failed),
+            "Money rounding now uses Decimal. All 3 tasks merged. The final check failed (tests) \
+             and you merged anyway. Ask for another change, or /resume an older run."
+        );
+        // A failure a task fixed later is no failure; its newest run counts.
+        let mut fixed = tasks(false);
+        fixed.extend(tasks(true));
+        assert!(recap(&fixed).contains("and the checks pass: tests ran on each task."));
+        // One task ran no checks.
+        let some = vec![checked(1, "tests", true), checked(2, "tests", true)];
+        assert!(
+            recap(&some).contains("The checks pass where they ran: tests ran on 2 of 3 tasks."),
+            "{}",
+            recap(&some)
+        );
+        // Each check says where it ran: one that ran on a task alone isn't said to run on each.
+        let mut apart = tasks(true);
+        apart.push(checked(2, "lint", true));
+        apart.push(on_the_merge("tests", true));
+        assert!(
+            recap(&apart).contains(
+                "All 3 tasks merged. The checks pass where they ran: tests ran on each task and \
+                 on the merge, and lint on 1 of 3 tasks."
+            ),
+            "{}",
+            recap(&apart)
+        );
+        let mut together = tasks(true);
+        together.extend((1..=3).map(|n| checked(n, "lint", true)));
+        together.push(on_the_merge("types", true));
+        assert!(
+            recap(&together).contains(
+                "and the checks pass: tests and lint ran on each task, and types on the merge."
+            ),
+            "{}",
+            recap(&together)
+        );
+        // The checks wait in a file you haven't trusted.
+        let mut marker = argonauts_crew::task::checks::no_command_checks(CheckKind::Command);
+        marker.summary = argonauts_crew::task::checks::held_back_text(".argonauts/config.toml");
+        let held = vec![vec![event(Some("task-001"), RunEventKind::Check(marker))]];
+        assert!(
+            recap(&held).contains(
+                "No checks ran, since checks.run in .argonauts/config.toml waits until you trust \
+                 that file: /setup."
+            ),
+            "{}",
+            recap(&held)
+        );
     }
 
     #[test]

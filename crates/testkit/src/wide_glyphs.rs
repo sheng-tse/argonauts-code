@@ -3,7 +3,8 @@
 //! `■` against anything but a blank (`▪` is the small one that fits), and an arrow before text
 //! is followed by two blanks, or not used. A glyph followed straight by another isn't widened,
 //! so the pairs key hints write, `↑↓`, `↑/↓` and `←/→`, are one mark, and so is an arrow before
-//! punctuation, as in `ctrl+↑,`. An arrow before a frame's rule, as a scroll mark on a box's edge,
+//! punctuation, as in `ctrl+↑,`. Two arrows a blank apart, `↑ ↓` and `← →`, are one mark too,
+//! each first one spilling into its blank. An arrow before a frame's rule, as a scroll mark on a box's edge,
 //! has the room it needs, and so has a list's scroll mark in the pointer's column, which every
 //! row keeps one cell wide for `❯`.
 
@@ -32,7 +33,9 @@ pub fn crowded(row: &str) -> Vec<usize> {
             }
             let next = cells.get(at + 1).copied();
             let arrow = |at: usize| cells.get(at).is_some_and(|c| ARROWS.contains(c));
-            let pair = (c == '↑' && next == Some('↓')) || (next == Some('/') && arrow(at + 2));
+            let pair = (c == '↑' && next == Some('↓'))
+                || (next == Some('/') && arrow(at + 2))
+                || (blank(at + 1) && arrow(at + 2));
             let mark = next.is_some_and(|c| matches!(c, ',' | '.' | ')' | ';' | ':'));
             let digit = |at: usize| cells.get(at).is_some_and(char::is_ascii_digit);
             let pointer = at == 2 && blank(0) && blank(1) && blank(3) && digit(4);
@@ -62,5 +65,7 @@ mod tests {
         assert!(crowded("  ↑/↓  to navigate · ctrl+↑, to jump").is_empty());
         assert!(crowded("  ↓ 8. Gemma3 12B").is_empty());
         assert_eq!(crowded("  ↑/↓ to navigate"), [4]);
+        assert!(crowded("  ↑ ↓  to pick a task · ← →  to change its way").is_empty());
+        assert_eq!(crowded("  ↑ ↓ to pick"), [4]);
     }
 }

@@ -2,6 +2,9 @@
 //! branch of its own, its worker's session, a commit when the session ends, and its checks. The
 //! script's own steps review it, so the engine's review stays out, and what they accepted is
 //! merged into the run when the script ends.
+//!
+//! A task the approved plan holds under the same name takes the plan's paths and way, and its
+//! first turn is done that way: see [`ways::first_turn`].
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -10,10 +13,10 @@ use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::session::CHILD_GROUP;
 use argonauts_core::events::task::{
-    CheckOutcome, ReviewEvent, TaskKind, TaskLimit, TaskSpec, TaskState,
+    CheckOutcome, ReviewEvent, TaskKind, TaskLimit, TaskSpec, TaskState, Way,
 };
 use argonauts_core::labels;
-use argonauts_core::names::ModelRef;
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::steps::judgment::{ReviewComment, ReviewOutput, ReviewVerdict};
 use argonauts_core::steps::plan::Severity;
@@ -23,11 +26,12 @@ use serde_json::Value;
 
 use super::bridge::reading::Change;
 use super::bridge::{Bridge, lock};
+use crate::council::ways;
 use crate::engine::host::{Host, Ran};
 use crate::error::{EngineError, EngineResult};
 use crate::review::{Verdict, with_findings};
 use crate::roles;
-use crate::task::pipeline::{self, Until};
+use crate::task::pipeline;
 use crate::task::support::{newest_worker_session, record_of, state_of, worker_of};
 use crate::task::{self, machine::Trigger, worktree};
 use crate::workflow::StepAt;
@@ -141,6 +145,16 @@ impl Book {
         self.keep_on_disk(&entries)
     }
 
+    /// The task's way couldn't be done, so it counts as not accepted until a writer works it
+    /// again.
+    fn refuse(&self, task: &TaskId) -> EngineResult<()> {
+        let mut entries = lock(&self.entries);
+        for entry in entries.iter_mut().filter(|entry| entry.task == *task) {
+            entry.accepted = Some(false);
+        }
+        self.keep_on_disk(&entries)
+    }
+
     /// The judge kept one of a step's tries, so the others are never merged.
     pub fn keep(&self, kept: &Kept) -> EngineResult<()> {
         // The tries of one step share their label up to the try's number.
@@ -222,7 +236,11 @@ pub(super) async fn work(
     };
     let _turn = entry.turn.lock().await;
     let task = &entry.task;
+    let planned_way = host
+        .read(|state| state.tasks.get(task).map(|record| record.spec.way.clone()))
+        .unwrap_or_else(|| ways::planned(host, &entry.name).and_then(|spec| spec.way));
     let nests = call.own_workflow
+        || matches!(planned_way.map(|way| way.how), Some(Way::CliWorkflow))
         || call
             .phase
             .as_ref()
@@ -243,10 +261,19 @@ pub(super) async fn work(
         ));
         return Ok(end);
     }
+    // Why the task's way couldn't finish its first turn.
+    let mut way_failed: Option<String> = None;
     let state = if host.read(|state| state.tasks.get(task).is_none()) {
+        let spec = spec(host, call, &entry.name, task, worker, depends_on);
+        if let Some(why) = ways::refusal(host, &spec) {
+            return Ok(failed(call, &why));
+        }
         // The brief is the call's words, under the name of whoever wrote them.
         crate::prompts::instructions::brief_written_by(host, task, bridge.author(call))?;
-        task::create(host, spec(host, call, task, worker, depends_on))?;
+        task::create(host, spec)?;
+        // Before the task opens a worktree, so a council's seat that builds it carries its
+        // session on in the folder it talked in.
+        crate::council::talk::folder::hand_to_script_task(host, task, worker).await?;
         // A step kept going `until` a condition has its task worked as that goal from the
         // writer's first turn.
         if let Some(until) = call.until.as_deref().filter(|_| call.writes) {
@@ -261,7 +288,7 @@ pub(super) async fn work(
                 max_rounds.copied(),
             )?;
         }
-        pipeline::drive(host, task, at, Until::ChecksPassed).await?
+        first_turn(host, task, at, &mut way_failed).await?
     } else {
         match state_of(host, task)? {
             // This very call did its work before the run stopped, so it isn't done twice.
@@ -269,10 +296,15 @@ pub(super) async fn work(
             TaskState::InReview => pipeline::revise(host, task, at, &call.prompt).await?,
             // A goal's next round on work the run already merged.
             TaskState::Merged => pipeline::send_back(host, task, at, &call.prompt).await?,
-            // The run stopped mid-task, and the task picks up where it was.
-            _ => pipeline::drive(host, task, at, Until::ChecksPassed).await?,
+            // The run stopped mid-task, and the task picks up where it was, its way with it.
+            _ => first_turn(host, task, at, &mut way_failed).await?,
         }
     };
+    if let Some(why) = way_failed {
+        // What it built so far doesn't merge as if it were the whole task.
+        bridge.tasks.refuse(task)?;
+        return Ok(failed(call, &why));
+    }
     if !already && matches!(state, TaskState::InReview | TaskState::Merged) {
         bridge.tasks.worked(task, call.index)?;
     }
@@ -311,9 +343,35 @@ pub(super) async fn work(
     Ok(end)
 }
 
+/// The call's end when its task's way couldn't be done, saying why on its row.
+fn failed(call: &AgentCall, why: &str) -> AgentEnd {
+    let mut end = AgentEnd::answered(Value::Null);
+    end.result = Err(format!("{}: {why}", call.label));
+    end
+}
+
+/// The task's first turn, done its way. A way that couldn't finish says why in `failed`.
+async fn first_turn(
+    host: &Host,
+    task: &TaskId,
+    at: &StepAt,
+    failed: &mut Option<String>,
+) -> EngineResult<TaskState> {
+    match Box::pin(ways::first_turn(host, task, at)).await? {
+        Ok(state) => Ok(state),
+        Err(why) => {
+            *failed = Some(why);
+            state_of(host, task)
+        }
+    }
+}
+
+/// The task as the call asks for it, with the paths and way of the plan's task of the same
+/// name, when the approved plan has one.
 fn spec(
     host: &Host,
     call: &AgentCall,
+    name: &str,
     task: &TaskId,
     worker: &ModelRef,
     depends_on: Vec<TaskId>,
@@ -330,13 +388,18 @@ fn spec(
         .task
         .clone()
         .unwrap_or_else(|| labels::slug(&call.label, 3));
-    TaskSpec {
+    let planned = ways::planned(host, name);
+    let (owned_paths, read_only_paths, planned_way) = match planned {
+        Some(planned) => (planned.owned_paths, planned.read_only_paths, planned.way),
+        None => (Vec::new(), Vec::new(), None),
+    };
+    let spec = TaskSpec {
         id: task.clone(),
         title: call.label.clone(),
         task: call.prompt.clone(),
         kind: TaskKind::Build,
-        owned_paths: Vec::new(),
-        read_only_paths: Vec::new(),
+        owned_paths,
+        read_only_paths,
         forbidden_paths: Vec::new(),
         hidden_paths: Vec::new(),
         depends_on,
@@ -347,7 +410,9 @@ fn spec(
         limit: TaskLimit::default(),
         predictions: None,
         item: Some(item),
-    }
+        way: planned_way,
+    };
+    ways::briefed(spec)
 }
 
 /// The worktree and the change of the task a reader's call is about, when the task has one.
@@ -611,10 +676,12 @@ pub(super) fn task_of(bridge: &Bridge<'_>, task: Option<&str>) -> Option<TaskId>
 
 /// A reader's answer about a task that says whether it accepts it is the script's verdict. It
 /// is recorded as a review of the task under the name of whoever gave it, so the merge
-/// approval shows who approved what and your merge rules can weigh it.
+/// approval shows who approved what and your merge rules can weigh it, with whether you chose
+/// them. `asked` is the model the call went to.
 pub(super) fn judged(
     bridge: &Bridge<'_>,
     call: &AgentCall,
+    asked: &ModelRef,
     ran: &Ran,
     answer: &Value,
 ) -> EngineResult<()> {
@@ -648,6 +715,15 @@ pub(super) fn judged(
         judged
     };
     let host = bridge.host;
+    // A verdict is a review whatever role the workflow gave the call, unless a judge gave it. A
+    // model the workflow's own words name is one you chose; one the orchestrator named for this
+    // request is code's pick.
+    let role = match call.role.fine_role() {
+        RoleName::Judge => RoleName::Judge,
+        _ => RoleName::Reviewer,
+    };
+    let named_by_step = call.model.is_some() && bridge.workflow_words.is_some();
+    let picked_by = crate::review::picked_for(host, role, asked, &ran.worker, named_by_step);
     for (task, round) in judged {
         if host.read(|state| state.tasks.get(&task).is_none()) {
             continue;
@@ -657,6 +733,7 @@ pub(super) fn judged(
             blind: false,
             round,
             review: review_of(accept, answer),
+            picked_by: Some(picked_by),
         };
         host.record(Some(&task), Some(&ran.key), RunEventKind::Review(review))?;
     }

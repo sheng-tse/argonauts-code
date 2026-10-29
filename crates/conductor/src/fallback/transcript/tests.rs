@@ -72,6 +72,8 @@ impl Log {
             asked_by: None,
             asked_why: None,
             forked: false,
+            seat: None,
+            billing: None,
         };
         self.session(session, SessionEvent::Started(Box::new(started)));
     }

@@ -14,6 +14,7 @@ use argonauts_core::events::approval::{
 use argonauts_core::events::task::TaskKind;
 use argonauts_core::names::ApprovalId;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::steps::judgment::ReviewVerdict;
 use argonauts_core::{DiffStat, Spend, TaskId};
 use argonauts_tui::HistoryCell;
@@ -133,6 +134,7 @@ fn opened(title: &str, packet: MergePacket, options: Vec<AnswerOption>) -> Appro
         evidence_sha256: "e3b0c442".into(),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options,
         free_text: FreeText::Guidance,
         needs_you: true,
@@ -147,25 +149,51 @@ fn question(opened: &ApprovalOpened) -> Vec<String> {
     drawn(&question.lines(&still(&theme, WIDTH)))
 }
 
-/// How the picture's keys row ends, and how the screen's does: Esc on a run's question means
-/// "carry on without me" everywhere, whoever asked then decides, and Shift+Tab changes the
-/// mode from a question too. The end of this row is the one place these questions are
-/// unlike the picture.
+/// How the picture's keys row ends, and how the screen's does: Esc on a run's question goes
+/// back to the list everywhere, the question waiting, and Shift+Tab changes the mode from a
+/// question too. The end of this row is the one place these questions are unlike the picture.
 const PICTURED_ESC: &str = "Esc to set aside";
-const ESC: &str = "Esc to carry on without me · shift+tab to cycle modes";
+const ESC: &str = "Esc back to the list · shift+tab to cycle modes";
+
+/// What Carry on without me says on a question that ends a run's part, under its row.
+const CARRIES_ON: &str = "This part ends safely with its work kept, so nothing merges without you";
 
 /// The question's rows against the picture's, cell for cell, but for what Esc is called on
-/// the keys row.
+/// the keys row, and the question's last option, Carry on without me, which the picture
+/// predates, after the picture's own.
 fn assert_question(drawn: &[String], picture: &[&str]) {
     let keys = picture.len() - 1;
-    assert_eq!(drawn[..keys], picture[..keys], "{}", drawn.join("\n"));
+    let options = picture
+        .iter()
+        .filter(|row| {
+            let row = row.trim_start().trim_start_matches("❯ ");
+            row.split_once(". ")
+                .is_some_and(|(number, _)| number.parse::<usize>().is_ok())
+        })
+        .count();
+    let mut wanted: Vec<String> = picture[..keys - 1]
+        .iter()
+        .map(|row| (*row).to_owned())
+        .collect();
+    let label = format!("    {}. Carry on without me", options + 1);
+    // Where the picture puts each option's words beside it, these go in the same column.
+    let beside = wanted.last().and_then(|row| {
+        let gap = row.find(". ")? + 2;
+        let words = row[gap..].find("  ")? + gap;
+        let start = words + row[words..].len() - row[words..].trim_start().len();
+        Some(row[..start].chars().count())
+    });
+    match beside {
+        Some(column) => wanted.push(format!("{label:<column$}{CARRIES_ON}")),
+        None => {
+            wanted.push(label);
+            wanted.push(format!("       {CARRIES_ON}"));
+        }
+    }
+    wanted.push(String::new());
     assert!(picture[keys].ends_with(PICTURED_ESC), "{}", picture[keys]);
-    assert_eq!(
-        drawn[keys..],
-        [picture[keys].replace(PICTURED_ESC, ESC)],
-        "{}",
-        drawn.join("\n")
-    );
+    wanted.push(picture[keys].replace(PICTURED_ESC, ESC));
+    assert_eq!(drawn, wanted, "{}", drawn.join("\n"));
 }
 
 #[test]

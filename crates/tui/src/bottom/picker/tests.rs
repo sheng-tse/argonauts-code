@@ -50,6 +50,36 @@ fn numbers_pick_and_typing_filters() {
     assert_eq!(press(&mut picker, KeyCode::Esc), PickerEvent::Closed);
 }
 
+/// Typing a filter leaves every row where it stood: the columns are measured over the whole
+/// list, and a row keeps its number.
+#[test]
+fn a_filter_moves_no_column_and_keeps_each_rows_number() {
+    let mut rows: Vec<&str> = vec!["haiku", "opus"];
+    let many: Vec<String> = (0..10).map(|n| format!("model-{n}")).collect();
+    rows.extend(many.iter().map(String::as_str));
+    rows.push("gpt-5.6");
+    let mut picker = picker(&rows);
+    let row_of = |text: &str, label: &str| -> String {
+        text.lines()
+            .find(|line| line.contains(label))
+            .unwrap_or_else(|| panic!("{label} in {text}"))
+            .to_owned()
+    };
+    for _ in 0..12 {
+        press(&mut picker, KeyCode::Down);
+    }
+    let before = row_of(&text(&picker, 100), "gpt-5.6");
+    for key in ['g', 'p', 't'] {
+        press(&mut picker, KeyCode::Char(key));
+    }
+    let after = row_of(&text(&picker, 100), "gpt-5.6");
+    assert_eq!(
+        after.trim_start_matches(['❯', ' ']),
+        before.trim_start_matches(['❯', ' '])
+    );
+    assert!(after.contains("13. "), "{after}");
+}
+
 #[test]
 fn letters_pick_when_rows_have_them() {
     let mut picker = picker(&["Just this session", "Everywhere"]);
@@ -102,7 +132,7 @@ fn long_lists_scroll_with_arrows_on_the_edges() {
     let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
     let mut picker = picker(&labels);
     let first = text(&picker, 60);
-    assert!(first.contains("↓ 8. row 8"), "{first}");
+    assert!(first.contains("↓  8. row 8"), "{first}");
     assert!(first.contains("… +4 more"), "{first}");
     assert!(!first.contains("row 9"), "{first}");
 
@@ -110,8 +140,8 @@ fn long_lists_scroll_with_arrows_on_the_edges() {
         press(&mut picker, KeyCode::Down);
     }
     let scrolled = text(&picker, 60);
-    assert!(scrolled.contains("↑ 2. row 2"), "{scrolled}");
-    assert!(scrolled.contains("❯ 9. row 9"), "{scrolled}");
+    assert!(scrolled.contains("↑  2. row 2"), "{scrolled}");
+    assert!(scrolled.contains("❯  9. row 9"), "{scrolled}");
     assert!(scrolled.contains("… +3 more"), "{scrolled}");
 
     press(&mut picker, KeyCode::End);
@@ -347,4 +377,57 @@ fn a_rows_state_comes_before_its_description_in_the_states_color() {
     for line in narrow.lines() {
         assert!(crate::text::str_width(line) <= 44, "{line:?}");
     }
+}
+
+/// The cells of the gauge's line drawn in the warning colour's hatching, at `now`.
+fn hatched(picker: &Picker, theme: &Theme, now: Instant) -> usize {
+    let ctx = RenderCtx::new(100, theme, Clock::still(now));
+    let lines = picker.lines(&ctx);
+    let gauge = lines
+        .iter()
+        .find(|line| plain_text(std::slice::from_ref(*line)).contains("this pick"))
+        .expect("the gauge's line");
+    plain_text(std::slice::from_ref(gauge)).matches('╱').count()
+}
+
+/// Moving to another row springs the gauge to its new ends within a fifth of a second, asking
+/// for frames only while it moves, and with reduced motion it jumps.
+#[test]
+fn the_gauge_springs_to_the_row_the_pointer_moved_to() {
+    use super::Gauge;
+
+    let mut theme = Theme::dark();
+    theme.glyphs = Glyphs::UNICODE;
+    let before = Gauge {
+        label: "this pick".to_owned(),
+        fits: 0.2,
+        needs: 0.2,
+        words: "10 of 50 GB".to_owned(),
+        ..Gauge::default()
+    };
+    let moved_at = Instant::now();
+    let after = Gauge {
+        fits: 0.2,
+        needs: 0.6,
+        words: "30 of 50 GB".to_owned(),
+        ..before.clone()
+    }
+    .moving_from(&before, moved_at);
+    let mut picker = picker(&["one", "two"]);
+    picker.gauge = Some(after);
+
+    let at = |ms: u64| moved_at + std::time::Duration::from_millis(ms);
+    let (start, middle, end) = (
+        hatched(&picker, &theme, at(0)),
+        hatched(&picker, &theme, at(40)),
+        hatched(&picker, &theme, at(200)),
+    );
+    assert_eq!(start, 0);
+    assert!(0 < middle && middle < end, "{start} {middle} {end}");
+    assert!(picker.next_change(&Clock::still(at(40)), &theme).is_some());
+    assert_eq!(picker.next_change(&Clock::still(at(200)), &theme), None);
+
+    theme.reduced_motion = true;
+    assert_eq!(hatched(&picker, &theme, at(0)), end);
+    assert_eq!(picker.next_change(&Clock::still(at(40)), &theme), None);
 }

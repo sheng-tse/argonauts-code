@@ -1,0 +1,26 @@
+<div class="scroll"><pre class="term grid"><span style="color:var(--term-faint)">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+ <span style="font-weight:700">Fix the money rounding</span>
+<span style="color:var(--term-dim)"> orchestrator workflow · totals round as the ledger does, each part reviewed on another CLI    0/2 agents · 3m05s</span>
+ <span style="color:var(--term-amb)">◆</span> Question from build:fix-money
+
+<span style="color:var(--term-faint)"> ╭ Phases ──────────┬ Build · 2 agents ──────────────────────────────────────────────────────────────────────────╮</span>
+ <span style="color:var(--term-faint)">│</span>   <span style="color:var(--term-amb)">◆</span> Build    0/2 <span style="color:var(--term-faint)">│</span> <span style="color:#b1b9f9">❯</span><span style="color:var(--term-amb)">◆</span> build:fix-money           Haiku 5.5                                   12.6k tok   1m12s <span style="color:var(--term-faint)">│</span>
+ <span style="color:var(--term-faint)">│</span>   2 Review       <span style="color:var(--term-faint)">│</span>  <span style="color:#b1b9f9">⣾</span> build:ledger-tests        Sonnet 5.5                                   9.3k tok     38s <span style="color:var(--term-faint)">│</span>
+ <span style="color:var(--term-faint)">│</span>   3 Sign-off     <span style="color:var(--term-faint)">│</span>                                                                                            <span style="color:var(--term-faint)">│</span>
+ <span style="color:var(--term-faint)">│</span>   4 Merge        <span style="color:var(--term-faint)">│</span>                                                                                            <span style="color:var(--term-faint)">│</span>
+<span style="color:var(--term-faint)"> ╰──────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯</span>
+<span style="color:var(--term-faint)">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+<span style="color:var(--term-amb)">◆</span> Question from build:fix-money
+<span style="color:var(--term-dim)">  Agent: build:fix-money · Haiku 5.5 on Claude Code</span>
+
+  Should totals round half to even, as the ledger does, or half up?
+  <span style="color:#b1b9f9">❯ 1. Half to even</span>
+    2. Half up
+    3. Carry on without me
+<span style="color:var(--term-dim)">       build:fix-money decides and goes on; its pick is kept as an assumption to review</span>
+
+<span style="color:var(--term-dim)">  Enter to choose · Tab to add a note · Esc back to the list · shift+tab to cycle modes</span>
+
+  <span style="color:#b1b9f9">⣾</span>  Add due dates           <span style="color:#b1b9f9">━━━━━━━━━━</span><span style="color:var(--term-faint)">──────────</span>   2/4    4m12s   128k
+  <span style="color:var(--term-amb)">◆</span>  Fix the money rounding  <span style="color:#b1b9f9"></span><span style="color:var(--term-faint)">────────────────────</span>   0/2    3m05s  21.9k
+  ‖  Per key rate limit      <span style="color:#b1b9f9">━━━━━━━</span><span style="color:var(--term-faint)">─────────────</span>   1/3    1m02s  31.4k</pre></div>

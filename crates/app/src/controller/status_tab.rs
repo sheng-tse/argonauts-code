@@ -180,6 +180,7 @@ async fn read(
         })
         .unwrap_or_default();
     let health = status_health::rows(ctx, &clis, &at_work);
+    let in_cli = conversation::in_cli::here(ctx, conversation);
     StatusTabView {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         conversation: conversation::started(conversation).map(|started| Conversation {
@@ -205,6 +206,7 @@ async fn read(
         clis,
         settings: settings_in_effect(ctx, conversation),
         main: Some(main),
+        in_cli,
         runs: listed,
         run,
         health,

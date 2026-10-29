@@ -33,15 +33,14 @@ pub fn body_rows(rows: usize) -> u16 {
 }
 
 impl ConfigTab {
-    /// How many setting rows the tab would show, for the panel's height. The question of where
-    /// to save takes the rows' place, with its title, its own rows and its hint.
+    /// How many setting rows the tab would show, for the panel's height. A Behaviors row's
+    /// picker takes the rows' place, with its title, its own rows and its hint.
     pub fn wanted(&self, state: &AppState) -> usize {
-        let editor = self.editor().map_or(0, |editor| editor.rows.len() + 3);
         // The title, what the choice does over two lines or three, and the keys.
         let picker = self
             .picker()
             .map_or(0, |picker| picker.rows.len().max(1) + 6);
-        self.shown(state).len().max(editor).max(picker).max(1)
+        self.shown(state).len().max(picker).max(1)
     }
 }
 
@@ -65,12 +64,11 @@ pub fn draw(tab: &mut ConfigTab, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>
         put(&mut y, line);
     }
     y += 1;
-    // The question of where to save a row's change shows in the rows' place, as does a
-    // Behaviors row's picker.
+    // A Behaviors row's picker shows in the rows' place.
     if let Some(picking) = tab.picking.as_mut() {
         picking.sync(&state.names);
     }
-    if let Some(editor) = tab.editor().or_else(|| tab.picker()) {
+    if let Some(editor) = tab.picker() {
         let bottom = area.y + area.height;
         let rows = Rect::new(area.x, y, area.width, bottom.saturating_sub(y));
         crate::views::settings::draw_editor(editor, rows, buf, ctx);

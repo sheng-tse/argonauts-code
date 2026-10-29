@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use argonauts_testkit::pty::Placeholder;
 use argonauts_testkit::{Key, Pty, PtyCommand};
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -126,6 +127,47 @@ fn enter_waits_for_the_typed_text_on_screen_not_any_output() {
         pty.screen().text()
     );
     pty.wait_for_exit(WAIT).unwrap();
+}
+
+#[test]
+fn a_picture_sent_before_the_alternate_screen_leaves_its_placeholders_blank() {
+    // A picture and its placement for placeholders, sent on the main screen; then its two
+    // placeholder cells on the alternate screen; then the picture sent again there.
+    let picture =
+        r"\033_Ga=t,f=100,q=2,i=7,m=0;iVBORw0KGgo=\033\\\033_Ga=p,U=1,i=7,c=2,r=1,q=2\033\\";
+    let cells =
+        r"\033[38;2;0;0;7m\364\216\273\256\314\205\314\205\364\216\273\256\314\205\314\215\033[0m";
+    let script = format!(
+        "printf '{picture}\\033[?1049h\\033[1;1H{cells} one'; read _; \
+         printf '{picture} two'; read _"
+    );
+    let mut pty = Pty::spawn(
+        PtyCommand::new("/bin/sh")
+            .args(["-c", &script])
+            .size(5, 40)
+            .takes_pictures(),
+    )
+    .unwrap();
+    pty.wait_for_visible("one", WAIT).unwrap();
+    let blank = pty.check_pictures().unwrap_err().to_string();
+    assert!(
+        blank.contains("placeholder for picture 7 on the alternate screen, which holds none"),
+        "{blank}"
+    );
+
+    pty.press(Key::Enter).unwrap();
+    pty.wait_for_visible("two", WAIT).unwrap();
+    pty.wait_for_pictures(WAIT).unwrap();
+    let cells = pty.cells();
+    assert!(cells.alternate());
+    for col in 0..2 {
+        assert_eq!(
+            cells.get(0, col).and_then(|cell| cell.picture),
+            Some(Placeholder { id: 7, shows: true })
+        );
+    }
+    pty.press(Key::Enter).unwrap();
+    assert_eq!(pty.wait_for_exit(WAIT).unwrap(), 0);
 }
 
 /// Set on the test program when it runs as the program in an outer pty.

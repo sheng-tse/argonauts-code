@@ -1,3 +1,3 @@
 Settings   Overview    Status    Config    Usage    Context    Limits    Stats                 Today  Week  Month  All
 
-r to cycle dates · tab By CLI, By model, By role · ↓  into the cards · ↑  tabs · esc closes
+r to cycle dates · tab By CLI, By model, By role · ↓  into the table · ↑  tabs · esc closes

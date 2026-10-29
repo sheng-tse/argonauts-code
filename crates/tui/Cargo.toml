@@ -12,6 +12,7 @@ categories.workspace = true
 # What the crate builds with. Tests and the pictures, snapshots and recordings they read
 # stay in the repository.
 include = [
+    "/assets/logos/*.png",
     "/assets/mascots/cells.json",
     "/assets/mascots/pictures.json",
     "/assets/mascots/pictures/**",
@@ -31,27 +32,29 @@ test = false
 anyhow.workspace = true
 argonauts-core.workspace = true
 base64.workspace = true
-crossterm = { workspace = true, features = ["event-stream"] }
+crossterm.workspace = true
 dirs.workspace = true
 # The mascot's pictures: reading, fitting and writing PNGs.
-flate2 = "1.1.10"
+flate2.workspace = true
 futures.workspace = true
-nix = { workspace = true, features = ["poll", "term"] }
-pulldown-cmark = { version = "0.13.4", default-features = false }
+nix.workspace = true
+pulldown-cmark.workspace = true
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 shell-words.workspace = true
 signal-hook.workspace = true
-similar = { workspace = true, features = ["inline"] }
-syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
+similar.workspace = true
+syntect.workspace = true
 thiserror.workspace = true
 time.workspace = true
+# The world's drawing: anti-aliased paths, gradients and blending.
+tiny-skia.workspace = true
 tokio.workspace = true
 toml.workspace = true
-two-face = { version = "0.5.1", default-features = false, features = ["syntect-fancy"] }
-unicode-linebreak = "0.1.5"
-unicode-segmentation = "1.13.3"
+two-face.workspace = true
+unicode-linebreak.workspace = true
+unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
@@ -59,8 +62,6 @@ unicode-width.workspace = true
 argonauts-adapter-claude-code.workspace = true
 argonauts-testkit.workspace = true
 insta.workspace = true
-# The hangup tests open their own pty and keep its side from the app.
-nix = { workspace = true, features = ["fs", "poll", "term"] }
 regex.workspace = true
 strip-ansi-escapes.workspace = true
 tempfile.workspace = true

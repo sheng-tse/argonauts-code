@@ -20,11 +20,13 @@ pub mod render;
 pub mod terminal;
 pub mod text;
 pub mod theme;
+pub mod world;
 
 // What connects the screen to the app controller.
 pub mod a11y;
 pub mod bridge;
 pub mod commands;
+pub mod council;
 pub mod keymap;
 pub mod mentions;
 pub mod mods;
@@ -37,6 +39,10 @@ pub mod state;
 pub mod views;
 pub mod welcome;
 
+#[cfg(test)]
+mod approved_screen;
+#[cfg(test)]
+mod cpu_time;
 mod options;
 #[cfg(test)]
 mod picture_dump;

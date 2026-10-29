@@ -1,4 +1,4 @@
-//! The kept deeper map as the Behaviors map reads it: each summarized action's place and
+//! The kept Summaries as the Behaviors map reads them: each summarized action's place and
 //! summary by the key the map's records give it, and who summarized them. Reading it calls no
 //! model and reads no run's log.
 
@@ -16,7 +16,7 @@ use super::records::CONVERSATION;
 use super::store::{MapMaker, Store};
 use crate::adapters::builtin_adapters;
 
-/// One summarized action on the deeper map, both axes in 0..1.
+/// One summarized action on Summaries, both axes in 0..1.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct KeptPlace {
     pub x: f32,
@@ -26,7 +26,8 @@ pub(crate) struct KeptPlace {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct KeptPlaces {
-    /// Who summarized them, as the line under the sub-tabs says it: `Qwen3 Coder 30B on Ollama`.
+    /// Who summarized them, as the line under the map and the legend name the model:
+    /// `Qwen3 Coder 30B (64k)`.
     pub by: String,
     /// They were placed by their words, with no embedding model.
     pub by_words: bool,
@@ -49,7 +50,7 @@ impl KeptPlaces {
     }
 }
 
-/// The deeper map that's kept, or `None` before one is made.
+/// The Summaries that are kept, or `None` before they're made.
 pub(crate) fn kept_places(paths: &Paths, names: &DisplayNames) -> Option<KeptPlaces> {
     let store = Store::new(paths);
     let layout = store.layout()?;
@@ -67,12 +68,12 @@ pub(crate) fn kept_places(paths: &Paths, names: &DisplayNames) -> Option<KeptPla
             Some((map_key(&point.action), place))
         })
         .collect();
-    let mut kept = KeptPlaces::new(summarizer_of(&layout.maker, names), places);
+    let mut kept = KeptPlaces::new(model_name(&layout.maker, names), places);
     kept.by_words = layout.maker.embedder == WORD_VECTORS;
     Some(kept)
 }
 
-/// Who made the kept deeper map, by name.
+/// Who made the kept Summaries, by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct KeptMaker {
     /// Such as `Qwen3 Coder 30B on Ollama`.
@@ -81,7 +82,7 @@ pub(crate) struct KeptMaker {
     pub embedder: String,
 }
 
-/// Who made the deeper map that's kept, or `None` before one is made. Only its maker is read,
+/// Who made the Summaries that are kept, or `None` before they're made. Only its maker is read,
 /// so `/config` can say what auto came to as it opens.
 pub(crate) fn kept_maker(paths: &Paths, names: &DisplayNames) -> Option<KeptMaker> {
     let maker = Store::new(paths).maker()?;
@@ -89,6 +90,19 @@ pub(crate) fn kept_maker(paths: &Paths, names: &DisplayNames) -> Option<KeptMake
         summarizer: summarizer_of(&maker, names),
         embedder: embedder_name(&maker.embedder, names),
     })
+}
+
+/// The summarizer as the legend names a model: `Qwen3 Coder 30B (64k)`.
+fn model_name(maker: &MapMaker, names: &DisplayNames) -> String {
+    maker
+        .summarizer
+        .parse::<ModelRef>()
+        .map_or(maker.summarizer.clone(), |model| {
+            let model = names.running(&model);
+            names
+                .model(&model.agent, model.model.as_deref())
+                .unwrap_or_else(|| names.cli(&model.agent))
+        })
 }
 
 fn summarizer_of(maker: &MapMaker, names: &DisplayNames) -> String {
@@ -162,6 +176,22 @@ mod tests {
         assert_eq!(map_key(&turn), "council-3f9a1c2b4d5e/c-7/3/t1");
     }
 
+    /// The line under the map names the summarizer as the legend names a model, tag and all.
+    #[test]
+    fn the_map_names_its_summarizer_as_the_legend_does() {
+        let maker = MapMaker {
+            summarizer: "ollama/qwen3-coder:30b-64k".to_owned(),
+            prompt: String::new(),
+            embedder: WORD_VECTORS.to_owned(),
+        };
+        let names = DisplayNames::default();
+        assert_eq!(
+            Some(model_name(&maker, &names)),
+            names.model("ollama", Some("qwen3-coder:30b-64k"))
+        );
+        assert!(summarizer_of(&maker, &names).starts_with("Qwen3 Coder 30B on "));
+    }
+
     #[test]
     fn a_summarizer_is_named_as_the_questions_name_it() {
         let names = DisplayNames::default();
@@ -222,10 +252,14 @@ mod tests {
         .await
         .unwrap();
         let kept = kept_places(&paths, &names).unwrap();
-        assert!(kept.by.starts_with("Qwen3 Coder 30B on "), "{}", kept.by);
+        assert_eq!(kept.by, "Qwen3 Coder 30B");
         assert!(kept.by_words, "no embedding model answers in a test");
         let maker = kept_maker(&paths, &names).unwrap();
-        assert_eq!(maker.summarizer, kept.by);
+        assert!(
+            maker.summarizer.starts_with("Qwen3 Coder 30B on "),
+            "{}",
+            maker.summarizer
+        );
         assert_eq!(maker.embedder, "word vectors");
         let place = kept
             .of("council-3f9a1c2b4d5e/run-01/s-001/t0")

@@ -3,10 +3,11 @@
 //! Enter carries one on, `b` branches from it, and `a` lists every folder's sessions. A run is
 //! never listed on its own: it comes back with the conversation that started it, whose row is
 //! marked while one of its runs waits on you. `/` narrows the list as you type, since its
-//! letters are keys.
+//! letters are keys. The row under the list names the CLI that holds the one picked and what to
+//! type there; `o` opens it there, and `c` copies a command whose flags matter.
 
 use argonauts_core::app::{ConversationSummary, UiCommand, ViewData, ViewRequest};
-use argonauts_core::cli_sessions::{CliSession, CliSessionRef};
+use argonauts_core::cli_sessions::{CliSession, CliSessionRef, InItsCli};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::input::{ResumeTarget, SlashCommand};
 use argonauts_core::names::ConversationId;
@@ -19,7 +20,8 @@ use ratatui::widgets::{Clear, Widget};
 use time::OffsetDateTime;
 
 use crate::format::{WallClock, agent_label};
-use crate::text::sanitize_line;
+use crate::kit::logo::{LOGO_BEFORE, ModelLabel, NoPicture};
+use crate::text::{sanitize_line, spans_width};
 use crate::theme::{Role, Theme};
 
 use super::list::{self, ListState};
@@ -34,8 +36,10 @@ const GAP: usize = 2;
 const MARGIN: usize = 4;
 
 /// The columns' widths. The title takes what's left of the row, up to [`TITLE_MOST`]. Where a
-/// row is from holds the longest of the names, a CLI's or the app's own.
+/// row is from holds the longest of the names, a CLI's or the app's own, and where logos draw,
+/// the logo's cells before it.
 const FROM: usize = 18;
+const FROM_WITH_LOGOS: usize = FROM + 1;
 const LAST_USED: usize = 14;
 const LENGTH: usize = 10;
 const TITLE_MOST: usize = 62;
@@ -72,12 +76,21 @@ pub struct ResumePicker {
     /// The CLIs' sessions listed are every folder's.
     every_folder: bool,
     page: usize,
+    /// How each row's session carries on in its CLI's own screen, where the app knows.
+    in_cli: Vec<InItsCli>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Row {
     Conversation(usize),
     Session(usize),
+}
+
+/// Where a row comes from as its column draws it: the logo's cells, the name and its style.
+struct Origin {
+    logo: Vec<Span<'static>>,
+    name: String,
+    style: Style,
 }
 
 /// A row by what it lists, which a fresh list or a new filter keeps selected.
@@ -101,9 +114,94 @@ impl ResumePicker {
             confirm_open: None,
             every_folder: false,
             page: 1,
+            in_cli: Vec::new(),
         };
         picker.rows = picker.merged();
         picker
+    }
+
+    /// How the rows' sessions carry on in their CLIs' own screens.
+    pub fn with_in_cli(mut self, in_cli: Vec<InItsCli>) -> Self {
+        self.in_cli = in_cli;
+        self
+    }
+
+    /// How `row`'s session carries on in its CLI's own screen: a conversation's main session,
+    /// or the CLI's own.
+    fn in_cli_of(&self, row: Row) -> Option<&InItsCli> {
+        match row {
+            Row::Conversation(i) => {
+                let id = &self.conversations[i].conversation;
+                self.in_cli
+                    .iter()
+                    .find(|cli| cli.conversation.as_ref() == Some(id))
+            }
+            Row::Session(i) => {
+                let session = self.sessions[i].reference();
+                self.in_cli
+                    .iter()
+                    .find(|cli| cli.conversation.is_none() && cli.session == session)
+            }
+        }
+    }
+
+    fn selected_in_cli(&self) -> Option<&InItsCli> {
+        self.in_cli_of(self.selected_row()?)
+    }
+
+    /// The rows under the list the box keeps for the CLI's command: two where a command is
+    /// long enough to take a row of its own, so the box keeps its height as you move.
+    fn foot_rows(&self) -> usize {
+        self.in_cli
+            .iter()
+            .map(|cli| if cli.local_model { 2 } else { 1 })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// `In Claude Code: claude --resume <id> · 2 turns made there since you left`, or for a
+    /// command whose flags matter, the CLI on one row and the whole command on the next.
+    fn foot(&self, theme: &Theme) -> Vec<Line<'static>> {
+        let dim = theme.style(Role::Dim);
+        let code = theme.style(Role::Text);
+        let Some(cli) = self.selected_in_cli() else {
+            return vec![Line::default(); self.foot_rows()];
+        };
+        let name = clean(&cli.cli);
+        let command = clean(&cli.command);
+        let mut after = Vec::new();
+        if cli.made_there > 0 {
+            after.push(format!(
+                "{} made there since you left",
+                counted(cli.made_there, "turn")
+            ));
+        }
+        if let Some(also) = &cli.also {
+            after.push(format!("or {}", clean(also)));
+        }
+        let after: Vec<Span<'static>> = after
+            .into_iter()
+            .map(|part| Span::styled(format!(" · {part}"), dim))
+            .collect();
+        let mut lines = if cli.local_model {
+            vec![
+                Line::from(Span::styled(format!("In {name}, on its local model:"), dim)),
+                Line::from([vec![Span::styled(command, code)], after].concat()),
+            ]
+        } else {
+            vec![Line::from(
+                [
+                    vec![
+                        Span::styled(format!("In {name}: "), dim),
+                        Span::styled(command, code),
+                    ],
+                    after,
+                ]
+                .concat(),
+            )]
+        };
+        lines.resize(self.foot_rows().max(lines.len()), Line::default());
+        lines
     }
 
     /// Each list is newest first already, so a merge keeps that. On a tie a conversation comes
@@ -207,19 +305,29 @@ impl ResumePicker {
         }
     }
 
-    /// Where a row is from: Argonauts Code's own conversations, or a CLI by its name and color.
-    fn from(&self, row: Row, names: &DisplayNames, theme: &Theme) -> (String, Style) {
+    /// Where a row comes from: a session's CLI by its logo, where one draws, and its whole
+    /// name. Argonauts Code's own conversations have no logo, and keep its cells blank there,
+    /// so every name lines up.
+    fn from(&self, row: Row, names: &DisplayNames, theme: &Theme) -> Origin {
         match row {
-            Row::Conversation(_) => (
-                "Argonauts Code".to_owned(),
-                theme.style(Role::Text).add_modifier(Modifier::BOLD),
-            ),
+            Row::Conversation(_) => Origin {
+                logo: if theme.logo_pictures {
+                    vec![Span::raw(" ".repeat(usize::from(LOGO_BEFORE)))]
+                } else {
+                    Vec::new()
+                },
+                name: "Argonauts Code".to_owned(),
+                style: theme.style(Role::Text).add_modifier(Modifier::BOLD),
+            },
             Row::Session(i) => {
                 let id = self.sessions[i].agent_id.0.as_str();
-                (
-                    names.cli(&sanitize_line(id)),
-                    theme.style(Role::for_cli(id)),
-                )
+                let name = names.cli(&sanitize_line(id));
+                let label = ModelLabel::cli_named(id, &name, theme, NoPicture::Nothing);
+                Origin {
+                    logo: label.logo,
+                    name: label.name,
+                    style: theme.style(Role::for_cli(id)),
+                }
             }
         }
     }
@@ -265,12 +373,17 @@ impl ResumePicker {
         let marks = Marks::for_theme(theme);
         let dim = theme.style(Role::Dim);
         let picked = theme.style(Role::Question);
+        let from_cells = if theme.logo_pictures {
+            FROM_WITH_LOGOS
+        } else {
+            FROM
+        };
         let title_width = width
-            .saturating_sub(MARGIN + FROM + LAST_USED + LENGTH)
+            .saturating_sub(MARGIN + from_cells + LAST_USED + LENGTH)
             .clamp(TITLE_LEAST, TITLE_MOST);
         let mut lines = vec![Line::from(vec![
             Span::raw(" ".repeat(MARGIN)),
-            Span::styled(cell("from", FROM), dim),
+            Span::styled(cell("from", from_cells), dim),
             Span::styled(cell("first prompt or title", title_width), dim),
             Span::styled(cell("last used", LAST_USED), dim),
             Span::styled("length", dim),
@@ -278,13 +391,14 @@ impl ResumePicker {
         for (i, row) in self.rows.iter().enumerate() {
             let selected = i == self.list.selected;
             let needs_you = matches!(*row, Row::Conversation(c) if self.conversations[c].needs_you);
-            let (from, from_style) = self.from(*row, names, theme);
+            let from = self.from(*row, names, theme);
+            let from_width = from_cells.saturating_sub(spans_width(&from.logo));
             let title_style = if selected {
                 picked
             } else {
                 theme.style(Role::Text)
             };
-            lines.push(Line::from(vec![
+            let mut spans = vec![
                 if selected {
                     Span::styled(format!("{} ", marks.selected), picked)
                 } else {
@@ -296,14 +410,18 @@ impl ResumePicker {
                     Span::raw(" ")
                 },
                 Span::raw(" "),
-                Span::styled(cell(&from, FROM), from_style),
+            ];
+            spans.extend(from.logo);
+            spans.extend([
+                Span::styled(cell(&from.name, from_width), from.style),
                 Span::styled(cell(&self.title(*row), title_width), title_style),
                 Span::styled(
                     cell(&last_used(self.updated(*row), &self.clock), LAST_USED),
                     dim,
                 ),
                 Span::styled(self.length(*row), dim),
-            ]));
+            ]);
+            lines.push(Line::from(spans));
         }
         if self.rows.is_empty() {
             let text = if self.filter.trim().is_empty() {
@@ -357,26 +475,42 @@ impl ResumePicker {
             ];
         }
         let letters = !self.filtering;
-        let mut keys: Vec<(&str, u8)> = vec![("↑↓  pick", 9)];
+        let in_cli = self.selected_in_cli();
+        let mut keys: Vec<(String, u8)> = vec![("↑↓  pick".to_owned(), 9)];
         if self.selected_row().is_some() {
-            keys.push(("enter continues it", 8));
+            keys.push(("enter continues it".to_owned(), 8));
+            if let Some(cli) = in_cli.filter(|_| letters) {
+                keys.push((format!("o opens it in {}", clean(&cli.cli)), 7));
+                if cli.local_model {
+                    keys.push(("c copies the command".to_owned(), 7));
+                }
+            }
             if letters {
-                keys.push(("b branches from it, the original untouched", 6));
+                // Beside `o`, the shorter words leave it room.
+                let branch = if in_cli.is_some() {
+                    "b branches from it"
+                } else {
+                    "b branches from it, the original untouched"
+                };
+                keys.push((branch.to_owned(), 6));
             }
         }
-        if letters {
+        // A whole command to copy keeps the row to the keys for the session picked.
+        let copies = in_cli.is_some_and(|cli| cli.local_model);
+        if letters && !copies {
             let folders = if self.every_folder {
                 "a this folder"
             } else {
                 "a every folder"
             };
-            keys.extend([(folders, 5), ("/ search", 7), ("esc", 9)]);
-        } else {
-            keys.push(("esc clears the search", 9));
+            keys.extend([(folders.to_owned(), 5), ("/ search".to_owned(), 7)]);
         }
-        keys.into_iter()
-            .map(|(key, keep)| (key.to_owned(), keep))
-            .collect()
+        if letters {
+            keys.push(("esc".to_owned(), 9));
+        } else {
+            keys.push(("esc clears the search".to_owned(), 9));
+        }
+        keys
     }
 
     /// The keys on one row, the ones that matter least left out until the rest fit.
@@ -416,6 +550,7 @@ impl ResumePicker {
         ];
         body.extend(table.iter().skip(1 + self.list.offset).take(shown).cloned());
         body.push(Line::default());
+        body.extend(self.foot(theme));
         body.push(self.key_line(inner, theme));
         let rule = "─".repeat(width.saturating_sub(2));
         let mut lines = vec![Line::from(Span::styled(format!("╭{rule}╮"), faint))];
@@ -476,6 +611,27 @@ impl ResumePicker {
                 target: Some(target),
             },
         })
+    }
+
+    /// `o`: the session picked opens in its CLI's own screen, here, and the conversation comes
+    /// back to it after.
+    fn open_in_cli(&mut self) -> ViewOutcome {
+        self.confirm_open = None;
+        match self.selected_in_cli() {
+            Some(cli) => ViewOutcome::Send(UiCommand::OpenInItsCli {
+                session: cli.session.clone(),
+                conversation: cli.conversation.clone(),
+            }),
+            None => ViewOutcome::Consumed,
+        }
+    }
+
+    /// `c`: the command whose flags matter, for the clipboard.
+    fn copy_command(&self) -> ViewOutcome {
+        match self.selected_in_cli().filter(|cli| cli.local_model) {
+            Some(cli) => ViewOutcome::Copy(cli.command.clone()),
+            None => ViewOutcome::Consumed,
+        }
     }
 
     /// `a`: the list again with every folder's sessions, or with this folder's alone.
@@ -648,7 +804,9 @@ pub(crate) fn ago(at: OffsetDateTime, now: OffsetDateTime) -> String {
 impl View for ResumePicker {
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
         // The heading stays; the rows scroll under it.
-        self.page = usize::from(area.height).saturating_sub(AROUND).max(1);
+        self.page = usize::from(area.height)
+            .saturating_sub(AROUND + self.foot_rows())
+            .max(1);
         self.list.keep_visible(self.rows.len(), self.page);
         // An empty list still has its one row, which says so.
         let shown = self.rows.len().clamp(1, self.page);
@@ -696,6 +854,8 @@ impl View for ResumePicker {
             KeyCode::Char('q') if letters => return ViewOutcome::Close,
             KeyCode::Char('b') if letters => return self.branch(),
             KeyCode::Char('a') if letters => return self.other_folders(),
+            KeyCode::Char('o') if letters => return self.open_in_cli(),
+            KeyCode::Char('c') if letters => return self.copy_command(),
             KeyCode::Enter => return self.enter(),
             _ => {}
         }
@@ -720,6 +880,7 @@ impl View for ResumePicker {
         let ViewData::ResumeList {
             conversations,
             sessions,
+            in_cli,
         } = data
         else {
             return false;
@@ -727,6 +888,7 @@ impl View for ResumePicker {
         let keep = self.selected_row().map(|row| self.picked(row));
         self.conversations = conversations.clone();
         self.sessions = sessions.clone();
+        self.in_cli = in_cli.clone();
         self.session_ids = short_ids(&self.sessions);
         self.relist(keep);
         true
@@ -948,6 +1110,7 @@ mod tests {
         let data = ViewData::ResumeList {
             conversations: Vec::new(),
             sessions: view.sessions.clone(),
+            in_cli: Vec::new(),
         };
         assert!(view.accept(&data));
         let (picked, _) = view.selected_session().unwrap();

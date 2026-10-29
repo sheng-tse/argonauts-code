@@ -1,5 +1,7 @@
 use argonauts_core::api::UsagePeriod;
 use argonauts_core::crew_stats::StatsRole;
+use crossterm::event::KeyCode;
+use ratatui::buffer::Buffer;
 use time::macros::{date, datetime};
 use time::{Duration, OffsetDateTime};
 
@@ -133,12 +135,10 @@ fn by_cli_matches_its_drawing() {
     let now = next_friday();
     let usage = by_cli_example(now).usage(UsagePeriod::All);
     let screen = screen(&theme(), usage, now, &[], SCREEN);
-    dump(
-        "by_cli_after",
-        &screen,
-        AT,
-        include_str!("../../../tests/golden/stats/by_cli_after.html"),
-    );
+    let together = include_str!("../../../tests/golden/stats/by_cli_together.html");
+    dump("by_cli_together", &screen, together_at(&screen), together);
+    let who = include_str!("../../../tests/golden/stats/who_did_what.html");
+    dump("who_did_what", &screen, who_at(&screen), who);
     assert_by_cli(&screen);
 }
 
@@ -202,17 +202,22 @@ fn a_model_spelled_three_ways_draws_as_one() {
     assert_by_cli(&screen);
 }
 
-/// The By CLI screen of [`by_cli_example`] against its drawing.
-fn assert_by_cli(screen: &ratatui::buffer::Buffer) {
+/// The By CLI screen of [`by_cli_example`] against its drawings: the all-together card
+/// against its own, and the rest against the screen's, whose all-together card is from
+/// before its table and six rows shorter.
+fn assert_by_cli(screen: &Buffer) {
     let theme = theme();
-    let screen = screen.clone();
     let html = include_str!("../../../tests/golden/stats/by_cli_after.html");
-    assert_matches("by CLI", html, &theme, &screen, AT, words(html, 1));
-    assert_matches("by CLI", html, &theme, &screen, AT, periods(html));
-    // The card's first row has its own drawing since: over every day so far it says whose
-    // work this is.
-    assert_matches("by CLI", html, &theme, &screen, AT, rows(3..4));
-    assert_matches("by CLI", html, &theme, &screen, AT, rows(5..18));
+    assert_matches("by CLI", html, &theme, screen, AT, words(html, 1));
+    assert_matches("by CLI", html, &theme, screen, AT, periods(html));
+    assert_matches("by CLI", html, &theme, screen, AT, rows(3..4));
+    let together = include_str!("../../../tests/golden/stats/by_cli_together.html");
+    assert_picture("by CLI together", together, screen, together_at(screen));
+    let down = |by: isize| Offset {
+        rows: AT.rows + TALLER + by,
+        columns: AT.columns,
+    };
+    assert_matches("by CLI", html, &theme, screen, down(0), rows(17..19));
     // The drawing leaves each card's dot without its CLI's color, which the one card's
     // drawing gives it.
     let dots = [
@@ -220,29 +225,126 @@ fn assert_by_cli(screen: &ratatui::buffer::Buffer) {
         "row 20 col 42 '○': drawing None",
         "row 20 col 82 '○': drawing None",
     ];
-    assert_different_only_in("by CLI", html, &theme, &screen, AT, rows(19..27), &dots);
+    assert_different_only_in("by CLI", html, &theme, screen, down(0), rows(19..27), &dots);
     // A card has a blank row between its parts since, so what follows its tasks is a row
     // lower for each part before it. Its plan's row is the one card's drawing's too.
-    let down = |by: isize| Offset {
-        rows: AT.rows + by,
-        columns: AT.columns,
+    assert_matches("by CLI", html, &theme, screen, down(1), rows(27..28));
+    assert_matches("by CLI", html, &theme, screen, down(2), rows(28..29));
+    assert_matches("by CLI", html, &theme, screen, down(3), rows(30..32));
+    // Who did what to its first bar. A table under each bar since takes the place of the
+    // drawing's legend, and the box is its own picture's.
+    assert_matches("by CLI", html, &theme, screen, down(3), rows(32..36));
+    let who = include_str!("../../../tests/golden/stats/who_did_what.html");
+    assert_picture("who did what", who, screen, who_at(screen));
+}
+
+/// Where who did what starts on the screen: its top row is the one over its title.
+fn who_at(screen: &Buffer) -> Offset {
+    Offset {
+        rows: row_of(screen, "◆ who did what") as isize - 1,
+        columns: 1,
+    }
+}
+
+/// Asserts the app's own picture of a box of By CLI, `html`, matches the screen from `at`,
+/// every row of it.
+fn assert_picture(name: &str, html: &str, screen: &Buffer, at: Offset) {
+    let theme = theme();
+    let compared = Compared {
+        theme: &theme,
+        screen,
+        at,
+        named: Some(app_drawn),
     };
-    assert_matches("by CLI", html, &theme, &screen, down(1), rows(27..28));
-    assert_matches("by CLI", html, &theme, &screen, down(2), rows(28..29));
-    assert_matches("by CLI", html, &theme, &screen, down(3), rows(30..32));
-    // The drawing gives Sonnet 5.5's 11 of the 63 tasks 18 of the workers' bar's 98 cells,
-    // where they come to 17.1, so its part is a cell longer there and GPT 5.6's a cell
-    // shorter.
-    let known = ["row 38 col 72 '━': drawing Some(\"m-sonnet\")"];
-    assert_different_only_in(
-        "by CLI",
-        html,
-        &theme,
-        &screen,
-        down(3),
-        rows(32..47),
-        &known,
+    compared.assert_matches(name, html, rows(0..drawing(html).len()));
+}
+
+/// The rows the all-together card's tables, and the blank row under each of its bars, add to
+/// the screen's drawing of By CLI.
+const TALLER: isize = 9;
+
+/// Where the all-together card starts on the screen: its top row is the one over its title.
+fn together_at(screen: &Buffer) -> Offset {
+    Offset {
+        rows: row_of(screen, "◆ all together") as isize - 1,
+        columns: 1,
+    }
+}
+
+/// The all-together card of [`by_cli_example`], after `keys`, on a screen `width` wide.
+fn by_cli_screen(keys: &[KeyCode], width: u16) -> Buffer {
+    let now = next_friday();
+    let usage = by_cli_example(now).usage(UsagePeriod::All);
+    screen(&theme(), usage, now, keys, width)
+}
+
+/// ↓ from the sub-tabs points at the first CLI of the table under the bar by CLI, and ↓
+/// again at the next: Codex stays lit in that bar, in its own share of each kind of token
+/// and of how the tasks fared, and in the chart, and the rest of every bar turns grey.
+#[test]
+fn the_pointed_cli_stays_lit_in_every_bar() {
+    let keys = [KeyCode::Down, KeyCode::Down, KeyCode::Down];
+    let screen = by_cli_screen(&keys, SCREEN);
+    let html = include_str!("../../../tests/golden/stats/by_cli_pointed.html");
+    let at = together_at(&screen);
+    dump("by_cli_pointed", &screen, at, html);
+    assert_picture("the pointed CLI", html, &screen, at);
+    let shown = text(&screen);
+    assert!(
+        shown.contains("↑↓  CLI or role · enter opens or closes it"),
+        "{shown}"
     );
+}
+
+/// Where the card Enter opened starts on the screen: its top row is the one over its title.
+fn opened_at(screen: &Buffer) -> Offset {
+    Offset {
+        rows: row_of(screen, "opened with enter") as isize - 1,
+        columns: 1,
+    }
+}
+
+/// Enter on a CLI of the table opens its card under the cards: its models, its kinds of work,
+/// and its tokens as a bar with a table of their kinds under it.
+#[test]
+fn a_cli_opened_matches_its_picture() {
+    let keys = [KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Enter];
+    let screen = by_cli_screen(&keys, SCREEN);
+    let html = include_str!("../../../tests/golden/stats/opened_cli.html");
+    let at = opened_at(&screen);
+    dump("opened_cli", &screen, at, html);
+    assert_picture("a CLI opened", html, &screen, at);
+}
+
+/// Enter on a role of By role's table opens its card: the models that filled it, and their
+/// tokens as a bar with a table of their kinds under it.
+#[test]
+fn a_role_opened_matches_its_picture() {
+    let keys = [
+        KeyCode::Down,
+        KeyCode::Right,
+        KeyCode::Right,
+        KeyCode::Down,
+        KeyCode::Down,
+        KeyCode::Down,
+        KeyCode::Enter,
+    ];
+    let screen = by_cli_screen(&keys, SCREEN);
+    let html = include_str!("../../../tests/golden/stats/opened_role.html");
+    let at = opened_at(&screen);
+    dump("opened_role", &screen, at, html);
+    assert_picture("a role opened", html, &screen, at);
+}
+
+/// At 80 columns the chart keeps its place beside the bars, and the tables keep their
+/// names whole.
+#[test]
+fn by_clis_tables_fit_eighty_columns() {
+    let screen = by_cli_screen(&[], 80);
+    let html = include_str!("../../../tests/golden/stats/by_cli_narrow.html");
+    let at = together_at(&screen);
+    dump("by_cli_narrow", &screen, at, html);
+    assert_picture("by CLI at 80 columns", html, &screen, at);
 }
 
 /// This week's numbers, each day's tokens by CLI from Sunday up to Friday.
@@ -296,23 +398,12 @@ fn the_week_matches_its_drawing() {
     let usage = week_example().usage(UsagePeriod::Week);
     let screen = screen(&theme, usage, friday(), &[], SCREEN);
     let html = include_str!("../../../tests/golden/stats/week_card.html");
-    let at = Offset {
-        rows: 4,
-        columns: 1,
-    };
-    // The drawing's bar of how the tasks fared has the shares of every day so far, while
-    // its numbers under it are this week's: 17 of 19 passed first time and none was sent
-    // back twice, so the bar has two cells fewer in green and none in red.
-    let known = [
-        "row 12 col 107 '━': drawing Some(\"term-grn\")",
-        "row 12 col 108 '━': drawing Some(\"term-grn\")",
-        "row 12 col 114 '━': drawing Some(\"term-red\")",
-        "row 12 col 115 '━': drawing Some(\"term-red\")",
-    ];
+    let at = together_at(&screen);
     dump("week_card", &screen, at, html);
-    assert_different_only_in("the week", html, &theme, &screen, at, rows(0..15), &known);
+    assert_picture("the week", html, &screen, at);
 }
 
+/// The all-together card's bars and tables up close, from the bar by CLI's label on.
 #[test]
 fn the_all_together_card_up_close_matches_its_drawing() {
     use StatsRole::{Reviewer, Worker};
@@ -328,11 +419,11 @@ fn the_all_together_card_up_close_matches_its_drawing() {
     let screen = screen(&theme, usage, friday(), &[], SCREEN + 2);
     let html = include_str!("../../../tests/golden/stats/together_zoom_after.html");
     let at = Offset {
-        rows: 7,
+        rows: row_of(&screen, "tokens by CLI") as isize,
         columns: 35,
     };
     dump("together_zoom_after", &screen, at, html);
-    assert_matches("up close", html, &theme, &screen, at, rows(0..11));
+    assert_picture("up close", html, &screen, at);
 }
 
 /// A Saturday, so each of its week's seven days has its bar.
@@ -460,9 +551,10 @@ fn the_rows_of_how_work_fared_match_their_drawing() {
     let theme = theme();
     let kit = crate::kit::Kit::new(&theme);
     let fared = |first, once, more| super::draw::Fared { first, once, more };
+    let labels = super::cli::outcome_label(40);
     let lines = vec![
-        super::cli::outcome_row(&kit, "tasks", fared(0, 2, 0), "first pass"),
-        super::cli::outcome_row(&kit, "reviews", fared(2, 1, 0), "accepted"),
+        super::cli::outcome_row(&kit, ("tasks", labels), fared(0, 2, 0), "first pass"),
+        super::cli::outcome_row(&kit, ("reviews", labels), fared(2, 1, 0), "accepted"),
     ];
     let screen = lines_screen(lines, 40);
     let html = include_str!("../../../tests/golden/stats/zoom_first_after.html");
@@ -478,6 +570,16 @@ fn the_rows_of_how_work_fared_match_their_drawing() {
 /// before its bar, so every card keeps its bars and counts at every width.
 #[test]
 fn a_long_model_name_leaves_every_card_its_bars() {
+    // A card's row of one model: its texture's swatch, a blank and its name.
+    fn names_a_model(row: &str) -> bool {
+        row.split("│ ").any(|cell| {
+            let mut chars = cell.chars();
+            chars.next().is_some_and(|swatch| "█▚⣿░".contains(swatch))
+                && chars.next() == Some(' ')
+                && chars.next().is_some_and(char::is_alphabetic)
+        })
+    }
+
     let theme = theme();
     let now = next_friday();
     let long = (CLAUDE, "opus-extended-thinking-5.5");
@@ -492,7 +594,7 @@ fn a_long_model_name_leaves_every_card_its_bars() {
         );
         let screen = screen(&theme, example.usage(UsagePeriod::All), now, &[], width);
         let shown = text(&screen);
-        let rows: Vec<&str> = shown.lines().filter(|line| line.contains("│ ■ ")).collect();
+        let rows: Vec<&str> = shown.lines().filter(|line| names_a_model(line)).collect();
         assert!(rows.len() >= 3, "{width}:\n{shown}");
         for row in rows {
             assert!(row.contains("━━━━"), "{width}: a bar on {row}");
@@ -544,7 +646,7 @@ fn one_model_two_ways(now: OffsetDateTime) -> Example {
 /// - "Claude Code  models" is the card's title row, `● Claude Code` with `5.5M tok` at the
 ///   right, in the card's frame.
 /// - "  ▪ Haiku 5.5     5.50M  · 9 tasks" is the card's one row of Haiku 5.5,
-///   `■ Haiku 5.5  ━━━━  5.5M · 9 tasks`: the card's legend square in the model's own shade
+///   `█ Haiku 5.5  ━━━━  5.5M · 9 tasks`: the card's swatch in the model's own texture
 ///   where the picture has `▪` in `#f3b27a`, a bar between the name and the tokens, and the
 ///   tokens to two figures as every card writes them, `5.5M` for `5.50M`.
 /// - "who did what · orchestrators" is the card `◆ who did what` with `orchestrator` at the
@@ -599,7 +701,7 @@ fn one_model_spelled_two_ways_is_one_row_as_its_picture_says() {
         .split_at("Haiku 5.5".len());
     let (tokens, tasks) = rest.trim().split_once("  ").unwrap();
     let row = &haiku_rows[0];
-    assert!(row.contains(&format!("■ {name} ")), "{row}");
+    assert!(row.contains(&format!("█ {name} ")), "{row}");
     let figures = |tokens: &str| -> f64 { tokens.trim_end_matches('M').parse().unwrap() };
     let drawn = row
         .split_whitespace()
@@ -619,14 +721,27 @@ fn one_model_spelled_two_ways_is_one_row_as_its_picture_says() {
             .iter()
             .position(|row| row.contains("│ orchestrator "))
             .unwrap();
-    let legend = shown[orchestrators + 1].trim_matches([' ', '│']);
-    let models: Vec<&str> = legend
-        .split('■')
-        .map(|part| part.split("   of ").next().unwrap_or_default().trim())
-        .filter(|part| !part.is_empty())
+    // Each row under the bar: what the shares are of under the role's name, then a model's
+    // logo, swatch, name, count and share.
+    let table: Vec<(String, String)> = (shown[orchestrators + 1..].iter())
+        .map(|row| row.chars().skip(3).collect::<String>())
+        .take_while(|row| !row.trim_matches([' ', '│']).is_empty())
+        .map(|row| {
+            let of: String = row.chars().take(16).collect();
+            (of.trim().to_owned(), row.chars().skip(16).collect())
+        })
+        .collect();
+    let models: Vec<String> = (table.iter())
+        .map(|(_, row)| {
+            let words: Vec<&str> = (row.split_whitespace())
+                .filter(|word| !word.starts_with(['●', '█', '▚', '⣿', '░', '│']))
+                .collect();
+            let (name, figures) = words.split_at(words.len() - 2);
+            format!("{} {}", name.join(" "), figures[0])
+        })
         .collect();
     let pictured: Vec<&str> = after[3].trim().split(" · ").collect();
-    assert_eq!(models, pictured, "{legend}");
-    assert!(legend.ends_with("of 3 workflows"), "{legend}");
+    assert_eq!(models, pictured, "{shown:#?}");
+    assert_eq!(table[0].0, "3 workflows", "{shown:#?}");
     assert!(!shown.iter().any(|row| row.contains("Haiku 5.5 0")));
 }

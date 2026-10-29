@@ -1,8 +1,8 @@
 ✶ Add the --json flag to the export command… (44s · ↓  470 tokens · thinking with xhigh effort)
-  ⎿ Next: Write the tests, then run them all
+  ⎿  Next: Write the tests, then run them all
 
-✶ Add the --json flag to the export command… (1m 12s · ↓  470 tokens · esc to interrupt)
+✶ Add the --json flag to the export command… (1m 12s · ↓  470 tokens)
   no token for 20 seconds: fully red; back to orange the moment tokens come
 
 ● Running 1 shell command…
-  ⎿ $ git log --oneline -3 main && git status --short
+  ⎿  $ git log --oneline -3 main && git status --short

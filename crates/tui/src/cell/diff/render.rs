@@ -99,7 +99,7 @@ impl Layout {
                 Some(Role::AddedRow),
                 Role::AddedWord,
             ),
-            DiffKind::Context => (" ", Role::Dim, None, Role::Text),
+            DiffKind::Context => (" ", Role::Text, None, Role::Text),
         };
         let (fill, text_style, word_style) = match row {
             Some(row) if self.fills => {

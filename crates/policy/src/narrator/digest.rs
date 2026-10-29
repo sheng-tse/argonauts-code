@@ -310,7 +310,7 @@ fn review_line(event: &RunEvent, review: &ReviewEvent) -> Option<String> {
             "{who}: {reviewer} reviewed (round {round}): {}",
             name(&review.verdict)
         ),
-        ReviewEvent::Settled { judge, ruling } => {
+        ReviewEvent::Settled { judge, ruling, .. } => {
             format!("{who}: {judge} ruled {}", name(&ruling.verdict))
         }
         ReviewEvent::TestsWritten {

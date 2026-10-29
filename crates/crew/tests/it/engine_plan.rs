@@ -342,10 +342,12 @@ fn plan_json(marker: &str, counters: &str) -> Value {
 
 /// The plan's marker, from its sealed text.
 fn marker(text: &str) -> &str {
-    ["CLAUDE", "CODEX", "AGY", "OTHER", "MERGED", "QWEN", "OSS"]
-        .into_iter()
-        .find(|m| text.contains(&format!("{m} rate limits")))
-        .unwrap_or("NONE")
+    [
+        "ALPHA", "BRAVO", "CHARLIE", "OTHER", "MERGED", "ECHO", "OSS",
+    ]
+    .into_iter()
+    .find(|m| text.contains(&format!("{m} rate limits")))
+    .unwrap_or("NONE")
 }
 
 /// A mapping agent answer: one disputed topic when `disputed`, quoting each plan's own choice.
@@ -514,13 +516,13 @@ fn experiment_report(spec: &SessionSpec) -> Value {
             "finding": format!("{option} works"), "works": true })
 }
 
-const CLAUDE_WINS: &[(&str, f64)] = &[("CLAUDE", 9.0), ("CODEX", 5.0), ("AGY", 5.0)];
+const CLAUDE_WINS: &[(&str, f64)] = &[("ALPHA", 9.0), ("BRAVO", 5.0), ("CHARLIE", 5.0)];
 
 fn three(disputed: bool, scores: &'static [(&'static str, f64)]) -> Vec<FakeRunner> {
     vec![
-        crew_worker(CLAUDE, "anthropic", "CLAUDE", "Redis", disputed, scores),
-        crew_worker(CODEX, "openai", "CODEX", "memory", disputed, scores),
-        crew_worker(AGY, "google", "AGY", "Redis", disputed, scores),
+        crew_worker(CLAUDE, "anthropic", "ALPHA", "Redis", disputed, scores),
+        crew_worker(CODEX, "openai", "BRAVO", "memory", disputed, scores),
+        crew_worker(AGY, "google", "CHARLIE", "Redis", disputed, scores),
     ]
 }
 
@@ -591,13 +593,16 @@ async fn plan_drafts_blind_and_sealed() -> anyhow::Result<()> {
     }
 
     // Each drafting agent ran fresh and read-only, and saw no other draft.
-    for (worker, own) in [(CLAUDE, "CLAUDE"), (CODEX, "CODEX"), (AGY, "AGY")] {
+    for (worker, own) in [(CLAUDE, "ALPHA"), (CODEX, "BRAVO"), (AGY, "CHARLIE")] {
         let specs = bench.specs_of(worker, StepName::Draft);
         assert_eq!(specs.len(), 1, "{worker}");
         assert_eq!(specs[0].access, Access::ReadOnly);
         assert_eq!(specs[0].resume, None);
         let prompt = prompt_text(&specs[0]);
-        for other in ["CLAUDE", "CODEX", "AGY"].into_iter().filter(|m| *m != own) {
+        for other in ["ALPHA", "BRAVO", "CHARLIE"]
+            .into_iter()
+            .filter(|m| *m != own)
+        {
             assert!(
                 !prompt.contains(&format!("{other} rate limits")),
                 "{worker} saw {other}"
@@ -801,8 +806,8 @@ async fn judged(bench: &Bench, mapping_agent: &str) -> anyhow::Result<StepDone> 
 async fn plan_cross_judging_excludes_self_and_provider() -> anyhow::Result<()> {
     // Two drafting agents of one provider: neither may score the other's plan.
     let workers = vec![
-        crew_worker(CLAUDE, "anthropic", "CLAUDE", "Redis", true, CLAUDE_WINS),
-        crew_worker(CODEX, "openai", "CODEX", "memory", true, CLAUDE_WINS),
+        crew_worker(CLAUDE, "anthropic", "ALPHA", "Redis", true, CLAUDE_WINS),
+        crew_worker(CODEX, "openai", "BRAVO", "memory", true, CLAUDE_WINS),
         crew_worker(
             "opencode/gpt-oss",
             "openai",
@@ -847,11 +852,11 @@ async fn plan_cross_judging_excludes_self_and_provider() -> anyhow::Result<()> {
     // The claude judge scores both gpt plans in both orders; each gpt judge scores the claude
     // plan in both orders.
     assert_eq!(scored, 8);
-    for (worker, own) in [(CODEX, "CODEX"), ("opencode/gpt-oss", "OTHER")] {
+    for (worker, own) in [(CODEX, "BRAVO"), ("opencode/gpt-oss", "OTHER")] {
         for spec in bench.specs_of(worker, StepName::Judge) {
             let input: JudgeInput = input_of(&spec).expect("judge input");
             assert!(
-                input.plans.iter().all(|p| marker(&p.text) == "CLAUDE"),
+                input.plans.iter().all(|p| marker(&p.text) == "ALPHA"),
                 "{own}"
             );
             assert!(!prompt_text(&spec).contains(CLAUDE));
@@ -873,7 +878,7 @@ async fn plan_cross_judging_excludes_self_and_provider() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn plan_near_tie_goes_to_approval() -> anyhow::Result<()> {
-    const EVEN: &[(&str, f64)] = &[("CLAUDE", 7.0), ("CODEX", 7.2), ("AGY", 6.9)];
+    const EVEN: &[(&str, f64)] = &[("ALPHA", 7.0), ("BRAVO", 7.2), ("CHARLIE", 6.9)];
     let bench = Bench::new(three(true, EVEN), |_| {}, Vec::new())?;
     let done = judged(&bench, AGY).await?;
     assert!(done.summary.unwrap_or_default().contains("near tie"));
@@ -898,7 +903,7 @@ async fn plan_decision_records() -> anyhow::Result<()> {
     let done = judged(&bench, AGY).await?;
     let state = bench.state();
     let chosen = state.plan.chosen().expect("a clear winner");
-    assert!(std::fs::read_to_string(&chosen.path)?.contains("CLAUDE rate limits"));
+    assert!(std::fs::read_to_string(&chosen.path)?.contains("ALPHA rate limits"));
     assert!(
         done.summary
             .unwrap_or_default()
@@ -1000,7 +1005,7 @@ async fn plan_experiment_within_limit() -> anyhow::Result<()> {
         let value = match spec.step {
             Some(StepName::ProposeExperiment) => proposals.clone(),
             Some(StepName::ExperimentReport) => experiment_report(spec),
-            Some(StepName::Draft) => plan_json("CLAUDE", "Redis"),
+            Some(StepName::Draft) => plan_json("ALPHA", "Redis"),
             Some(StepName::Judge) => match input_of::<JudgeInput>(spec) {
                 Some(input) => judge_json(&input, CLAUDE_WINS),
                 None => json!({ "scores": [] }),
@@ -1011,8 +1016,8 @@ async fn plan_experiment_within_limit() -> anyhow::Result<()> {
     });
     let workers = vec![
         main_agent,
-        crew_worker(CODEX, "openai", "CODEX", "memory", true, CLAUDE_WINS),
-        crew_worker(AGY, "google", "AGY", "Redis", true, CLAUDE_WINS),
+        crew_worker(CODEX, "openai", "BRAVO", "memory", true, CLAUDE_WINS),
+        crew_worker(AGY, "google", "CHARLIE", "Redis", true, CLAUDE_WINS),
     ];
     let bench = Bench::new(workers, |_| {}, vec![approved_goal()?])?;
     judged(&bench, AGY).await?;
@@ -1118,7 +1123,7 @@ async fn a_401_on_an_experiment_goes_again_then_to_another_agent() -> anyhow::Re
             let value = match spec.step {
                 Some(StepName::ProposeExperiment) => proposals.clone(),
                 Some(StepName::ExperimentReport) => experiment_report(spec),
-                Some(StepName::Draft) => plan_json("CLAUDE", "Redis"),
+                Some(StepName::Draft) => plan_json("ALPHA", "Redis"),
                 Some(StepName::Judge) => match input_of::<JudgeInput>(spec) {
                     Some(input) => judge_json(&input, CLAUDE_WINS),
                     None => json!({ "scores": [] }),
@@ -1141,14 +1146,14 @@ async fn a_401_on_an_experiment_goes_again_then_to_another_agent() -> anyhow::Re
                 failures,
                 &failed,
                 redis,
-                answers("CODEX", "memory", true, CLAUDE_WINS),
+                answers("BRAVO", "memory", true, CLAUDE_WINS),
             )),
             FakeRunner::cli(AGY, "google").respond_with(failing_first(
                 experiment,
                 failures,
                 &failed,
                 redis,
-                answers("AGY", "Redis", true, CLAUDE_WINS),
+                answers("CHARLIE", "Redis", true, CLAUDE_WINS),
             )),
         ];
         let bench = Bench::new(
@@ -1217,19 +1222,19 @@ async fn a_judges_fallback_comes_from_outside_the_providers_it_judges() -> anyho
             usize::MAX,
             &Arc::default(),
             |_| true,
-            answers("CLAUDE", "Redis", false, CLAUDE_WINS),
+            answers("ALPHA", "Redis", false, CLAUDE_WINS),
         ));
         let mut workers = vec![
             claude,
-            crew_worker(CODEX, "openai", "CODEX", "memory", false, CLAUDE_WINS),
-            crew_worker(AGY, "google", "AGY", "Redis", false, CLAUDE_WINS),
+            crew_worker(CODEX, "openai", "BRAVO", "memory", false, CLAUDE_WINS),
+            crew_worker(AGY, "google", "CHARLIE", "Redis", false, CLAUDE_WINS),
             crew_worker(GPT_OSS, "openai", "OSS", "memory", false, CLAUDE_WINS),
         ];
         if with_qwen {
             workers.push(crew_worker(
                 QWEN,
                 "alibaba",
-                "QWEN",
+                "ECHO",
                 "memory",
                 false,
                 CLAUDE_WINS,
@@ -1297,13 +1302,13 @@ async fn a_drafting_agents_fallback_seals_the_plan_under_its_own_name() -> anyho
         usize::MAX,
         &Arc::default(),
         |_| true,
-        answers("CLAUDE", "Redis", false, CLAUDE_WINS),
+        answers("ALPHA", "Redis", false, CLAUDE_WINS),
     ));
     let workers = vec![
         claude,
-        crew_worker(CODEX, "openai", "CODEX", "memory", false, CLAUDE_WINS),
-        crew_worker(AGY, "google", "AGY", "Redis", false, CLAUDE_WINS),
-        crew_worker(QWEN, "alibaba", "QWEN", "memory", false, CLAUDE_WINS),
+        crew_worker(CODEX, "openai", "BRAVO", "memory", false, CLAUDE_WINS),
+        crew_worker(AGY, "google", "CHARLIE", "Redis", false, CLAUDE_WINS),
+        crew_worker(QWEN, "alibaba", "ECHO", "memory", false, CLAUDE_WINS),
     ];
     let drafting_agents: Vec<ModelRef> = [CLAUDE, CODEX, AGY]
         .iter()
@@ -1343,7 +1348,7 @@ async fn a_drafting_agents_fallback_seals_the_plan_under_its_own_name() -> anyho
 const QWEN: &str = "opencode/qwen3-coder";
 const GPT_OSS: &str = "opencode/gpt-oss";
 /// A judge that scores GPT OSS's draft over Qwen's.
-const OSS_WINS: &[(&str, f64)] = &[("OSS", 9.0), ("QWEN", 4.0)];
+const OSS_WINS: &[(&str, f64)] = &[("OSS", 9.0), ("ECHO", 4.0)];
 
 /// Claude, Codex and agy draft, with Qwen and GPT OSS as the fallbacks that may take a
 /// drafting agent's place, two at once. Claude answers its draft sessions as `claude` says.
@@ -1352,9 +1357,9 @@ fn bench_with_two_fallbacks(
 ) -> anyhow::Result<Bench> {
     let workers = vec![
         FakeRunner::cli(CLAUDE, "anthropic").respond_with(claude),
-        crew_worker(CODEX, "openai", "CODEX", "memory", false, OSS_WINS),
-        crew_worker(AGY, "google", "AGY", "Redis", false, OSS_WINS),
-        crew_worker(QWEN, "alibaba", "QWEN", "memory", false, OSS_WINS),
+        crew_worker(CODEX, "openai", "BRAVO", "memory", false, OSS_WINS),
+        crew_worker(AGY, "google", "CHARLIE", "Redis", false, OSS_WINS),
+        crew_worker(QWEN, "alibaba", "ECHO", "memory", false, OSS_WINS),
         crew_worker(GPT_OSS, "openai", "OSS", "Redis", false, OSS_WINS),
     ];
     let drafting_agents: Vec<ModelRef> = [CLAUDE, CODEX, AGY]
@@ -1405,7 +1410,7 @@ fn sealed_and_said(bench: &Bench) -> (Vec<String>, Vec<String>) {
 #[tokio::test]
 async fn two_fallbacks_draft_at_once_and_a_judge_picks_the_drafting_agents_plan()
 -> anyhow::Result<()> {
-    let bench = bench_with_two_fallbacks(answers("CLAUDE", "Redis", false, OSS_WINS))?;
+    let bench = bench_with_two_fallbacks(answers("ALPHA", "Redis", false, OSS_WINS))?;
     let claude_code = argonauts_core::names::AgentId("claude-code".to_owned());
     bench
         .services
@@ -1425,7 +1430,7 @@ async fn two_fallbacks_draft_at_once_and_a_judge_picks_the_drafting_agents_plan(
     let picks = bench.specs_of(AGY, StepName::Judge);
     assert_eq!(picks.len(), 1, "{said:?}");
     let shown = prompt_text(&picks[0]);
-    assert!(shown.contains("QWEN rate limits") && shown.contains("OSS rate limits"));
+    assert!(shown.contains("ECHO rate limits") && shown.contains("OSS rate limits"));
     assert!(
         !shown.contains("qwen3-coder") && !shown.contains("gpt-oss"),
         "unnamed"
@@ -1457,7 +1462,7 @@ async fn a_second_fallback_joins_the_one_that_took_a_drafting_agents_place_midwa
         usize::MAX,
         &Arc::default(),
         |_| true,
-        answers("CLAUDE", "Redis", false, OSS_WINS),
+        answers("ALPHA", "Redis", false, OSS_WINS),
     ))?;
     bench.step("draft", "draft", json!({})).await?;
 
@@ -1484,7 +1489,7 @@ async fn a_second_fallback_joins_the_one_that_took_a_drafting_agents_place_midwa
 /// why.
 #[tokio::test]
 async fn with_no_judge_to_ask_the_first_fallbacks_draft_is_kept() -> anyhow::Result<()> {
-    let bench = bench_with_two_fallbacks(answers("CLAUDE", "Redis", false, OSS_WINS))?;
+    let bench = bench_with_two_fallbacks(answers("ALPHA", "Redis", false, OSS_WINS))?;
     for out in ["claude-code", "codex", "antigravity-cli"] {
         let agent_id = argonauts_core::names::AgentId(out.to_owned());
         bench
@@ -1531,6 +1536,7 @@ async fn tie_breaker_rotates_by_phase() -> anyhow::Result<()> {
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     };
     let specs = [
         spec("task-001", TaskKind::Interface, &[]),
@@ -1751,7 +1757,7 @@ async fn codex_orchestrates_and_gemini_reviews_with_exactly_those_roles() -> any
 
     let output = |reviewer: &str| {
         json!({
-            "plan": plan_json("CODEX", "Redis"),
+            "plan": plan_json("BRAVO", "Redis"),
             "tasks": [
                 { "key": "store", "title": "Counter store", "task": "Build the store.",
                   "kind": "build", "owned_paths": ["src/store/"], "read_only_paths": [],
@@ -1880,7 +1886,7 @@ async fn the_trial_plan_with_contracts_first_keeps_every_task_reviewed() -> anyh
                 "criteria": ["G1"] })
     };
     let output = json!({
-        "plan": plan_json("CODEX", "Redis"),
+        "plan": plan_json("BRAVO", "Redis"),
         "tasks": [
             task("iface", "interface", "src/types.js"),
             task("impl", "build", "src/store.js"),
@@ -2244,7 +2250,7 @@ async fn a_near_tie_is_yours_to_pick_before_dividing() -> anyhow::Result<()> {
     Ok(())
 }
 
-const EVEN: &[(&str, f64)] = &[("CLAUDE", 7.0), ("CODEX", 7.2), ("AGY", 6.9)];
+const EVEN: &[(&str, f64)] = &[("ALPHA", 7.0), ("BRAVO", 7.2), ("CHARLIE", 6.9)];
 
 /// In auto the main agent answers the crew's questions, so a near tie goes to the plan the judges
 /// scored highest, and only the plan approval after it remains.

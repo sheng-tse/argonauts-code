@@ -27,6 +27,7 @@ use argonauts_core::settings::updates::UpdateChannel;
 use semver::Version;
 
 pub use apply::{Layout, program_to_save};
+pub use daily::{doctor_json, doctor_row};
 
 /// Marks the version this process runs as in use while it runs, so an update in another
 /// process never removes it from under this one.

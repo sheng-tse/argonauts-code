@@ -1,0 +1,15 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Add due dates
+ orchestrator workflow · add --due to the todo CLI, each part reviewed on another CLI          4/7 agents · 4m12s
+ › review: GPT 5.6 Luna sent build:due-flag back; round 2 is under way
+
+ ╭ Phases ──────────┬ Review · 5 agents ────────────────────────────────────────────────────────────────────────╮
+ │   ✔ Build    2/2 │  ✔ review:due-tests     Opus 5.5                                        18.4k tok     41s │
+ │   ⣾ Review   2/5 │ ❯« review:due-flag      5.6 Luna                                        21.7k tok     46s │
+ │   3 Sign-off     │  ⣾ review:due-parse     Sonnet 5.5                                       9.3k tok     38s │
+ │   4 Merge        │  × review:due-store     Qwen3 Coder 30B (64k)                          102.4k tok   2m03s │
+ │                  │  ◌ review:due-docs      Nemotron 3.5 Super VL Free                                        │
+ │                  │                                                                                           │
+ │                  │                                                                                           │
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  select · space peek · enter open · m message · x stop · r restart · p pause · esc back · s save

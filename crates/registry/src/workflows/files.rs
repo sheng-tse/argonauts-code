@@ -260,10 +260,15 @@ fn body_hash(body: &str) -> String {
 fn header(workflow: &BuiltinWorkflow) -> String {
     let name = workflow.name;
     let what = if name == BASE_WORKFLOW {
+        let default = if name == DEFAULT_WORKFLOW {
+            ", the default when no setting names one"
+        } else {
+            ""
+        };
         format!(
-            "The {name} workflow. The built-in settings are {name}'s, so this file sets no key, \
-             and a key set here would hide the same key in the files before the one that picks \
-             it. The protocol keys are below, commented out at their defaults."
+            "The {name} workflow{default}. The built-in settings are {name}'s, so this file sets \
+             no key, and a key set here would hide the same key in the files before the one that \
+             picks it. The protocol keys are below, commented out at their defaults."
         )
     } else if name == DEFAULT_WORKFLOW {
         format!(
@@ -492,7 +497,7 @@ mod tests {
             } else if name == BASE_WORKFLOW {
                 assert!(header.contains("settings are council's"), "{header}");
             } else {
-                assert!(header.contains("captain is the default"), "{header}");
+                assert!(header.contains("council is the default"), "{header}");
             }
             assert!(
                 header.contains(&format!("/workflow diff {name}")),
@@ -555,15 +560,15 @@ mod tests {
             "{council}"
         );
         let read_back = council.parse::<Table>().unwrap();
-        assert_eq!(read_back["step"].as_array().unwrap().len(), 6, "{council}");
+        // Council talks in its phases, with no steps for a script to follow.
+        assert!(read_back.get("step").is_none(), "{council}");
         assert_eq!(
             read_back["phases"].as_array().unwrap().len(),
             4,
             "{council}"
         );
-        // Its settings sit between its steps and its phases, as in the built-in's file.
+        // Its settings sit before its phases, as in the built-in's file.
         let at = |text: &str| council.find(text).unwrap_or_else(|| panic!("{text}"));
-        assert!(at("\n[[step]]\n") < at("\n[critique]\n"), "{council}");
         assert!(at("\n[routing]\n") < at("\n[[phases]]\n"), "{council}");
         assert!(council.contains("\nname  = \"council\"\n"), "{council}");
         assert!(council.contains("\n[critique]\n"), "{council}");

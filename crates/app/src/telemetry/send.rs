@@ -9,10 +9,16 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use super::event::{DailyUsage, EVENT};
+use super::show::Held;
 
 /// PostHog Cloud's capture address in its US region, where reports go unless the build names
 /// another host.
 pub(crate) const US_CAPTURE: &str = "https://us.i.posthog.com/i/v0/e/";
+
+/// Argonauts Code's PostHog project key. It can add events to the project and never read them,
+/// so it's no secret, and every optimized build carries it: the installer's, Homebrew's, npm's,
+/// `cargo install argonauts-code` and a clone built with `--release`.
+const PROJECT_KEY: &str = "phc_xDqZhz6envcZv9tVL6s7j7upbCrPFWzf8HJR5uXvHDrg";
 
 /// The capture path on a PostHog host.
 const CAPTURE_PATH: &str = "/i/v0/e/";
@@ -28,18 +34,33 @@ pub(crate) struct Sender {
 }
 
 impl Sender {
-    /// The project key comes from `ARGONAUTS_POSTHOG_KEY` when the program is built, and never
-    /// from the repository, and the host from `ARGONAUTS_POSTHOG_HOST` beside it. A build without
-    /// the key sends nothing. Only a release build carries it, so no test binary can send, this
-    /// crate's or any that builds it as a dependency.
-    pub fn built_in() -> Option<Self> {
-        let key = if cfg!(test) || cfg!(debug_assertions) {
-            None
-        } else {
-            option_env!("ARGONAUTS_POSTHOG_KEY")
+    /// Where this build sends, or why it never does. Only an optimized build sends, so no debug
+    /// or test binary can, this crate's or any that builds it as a dependency. A fork points its
+    /// reports at its own project with `ARGONAUTS_POSTHOG_KEY` and `ARGONAUTS_POSTHOG_HOST` when
+    /// it builds, or turns them off for good with the key set empty.
+    pub fn built_in() -> Result<Self, Held> {
+        if cfg!(test) || cfg!(debug_assertions) {
+            return Err(Held::DebugBuild);
+        }
+        Self::chosen(
+            option_env!("ARGONAUTS_POSTHOG_KEY"),
+            option_env!("ARGONAUTS_POSTHOG_HOST"),
+        )
+        .ok_or(Held::NoKey)
+    }
+
+    /// The project's key unless the build named one, and none when it named an empty one. The
+    /// project's key goes only to the project's host, so a build that named a host of its own
+    /// and no key sends nothing.
+    pub(crate) fn chosen(key: Option<&str>, host: Option<&str>) -> Option<Self> {
+        let host = host.map(str::trim).filter(|host| !host.is_empty());
+        let key = match (key, host) {
+            (Some(key), _) => key.trim(),
+            (None, Some(_)) => return None,
+            (None, None) => PROJECT_KEY,
         };
-        key.filter(|key| !key.trim().is_empty()).map(|key| Self {
-            address: capture_address(option_env!("ARGONAUTS_POSTHOG_HOST")),
+        (!key.is_empty()).then(|| Self {
+            address: capture_address(host),
             key: key.to_owned(),
         })
     }

@@ -12,7 +12,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 
 use crate::behaviors::actions::Action;
-pub(crate) use crate::behaviors::actions::Outcome;
+pub(crate) use crate::behaviors::actions::{Outcome, SessionEnded};
 
 /// One tool call, as recorded, with its label.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +20,8 @@ pub(crate) struct Recorded {
     /// Its project's state folder, run or conversation, session and call, which no other
     /// action shares.
     pub key: String,
+    /// The same without the call: the session it was taken in.
+    pub session: String,
     pub run: Option<String>,
     /// The CLI's adapter id and the model's id.
     pub cli: String,
@@ -36,9 +38,16 @@ pub(crate) struct Recorded {
     /// its labels were kept with.
     pub what: String,
     pub behavior: Behavior,
+    /// Its tool call failed.
+    pub failed: bool,
     /// Part of a task's work, which has an outcome once the run ends.
     pub in_task: bool,
     pub outcome: Option<Outcome>,
+    /// When its outcome was settled.
+    pub settled_at: Option<OffsetDateTime>,
+    /// How and when its session ended, once the log says.
+    pub ended: Option<SessionEnded>,
+    pub ended_at: Option<OffsetDateTime>,
     pub place: Option<String>,
     pub run_shows: Option<String>,
 }
@@ -60,19 +69,19 @@ pub(crate) fn project_name(state: &Path) -> String {
     crate::behaviors::records::project_name(&name).to_owned()
 }
 
-/// The actions of every project, or of the one whose state folder is `only`, since `since`
-/// when it's given. An ended run's labels are read as they were kept, so a log is labelled
-/// once however often the map opens.
-pub(crate) fn records(
-    paths: &Paths,
-    only: Option<&Path>,
-    since: Option<OffsetDateTime>,
-) -> Records {
+/// Every action of every project, of all time. An ended run's labels are read as they were
+/// kept, so a log is labelled once however often the map opens.
+pub(crate) fn every_action(paths: &Paths) -> Vec<Action> {
+    crate::behaviors::records::Records::of(paths).actions(None)
+}
+
+/// The map's records of `every` action, or of those in the project whose state folder is
+/// `only`.
+pub(crate) fn records(every: Vec<Action>, only: Option<&Path>) -> Records {
     let only = only
         .and_then(Path::file_name)
         .map(|name| name.to_string_lossy().into_owned());
-    let actions = crate::behaviors::records::Records::of(paths)
-        .actions(since)
+    let actions = every
         .into_iter()
         .filter(|action| only.as_ref().is_none_or(|repo| action.repo == *repo))
         .collect();
@@ -81,21 +90,46 @@ pub(crate) fn records(
 
 /// The map's records of `actions`, each numbered within its session.
 pub(crate) fn of_actions(actions: Vec<Action>) -> Records {
-    let sources = |conversation: bool| {
-        actions
-            .iter()
-            .filter(|action| action.conversation == conversation)
-            .map(|action| (action.repo.as_str(), action.run.as_str()))
-            .collect::<BTreeSet<_>>()
-            .len()
-    };
-    let (runs, conversations) = (sources(false), sources(true));
     let mut actions: Vec<Recorded> = actions.into_iter().map(recorded).collect();
     number_within_sessions(&mut actions);
-    Records {
-        actions,
-        runs,
-        conversations,
+    Records::counted(actions)
+}
+
+impl Records {
+    /// Those taken at or after `since`, with the runs and conversations they came from.
+    pub fn since(&self, since: Option<OffsetDateTime>) -> Records {
+        let Some(since) = since else {
+            return self.clone();
+        };
+        Records::counted(
+            self.actions
+                .iter()
+                .filter(|recorded| recorded.at >= since)
+                .cloned()
+                .collect(),
+        )
+    }
+
+    fn counted(actions: Vec<Recorded>) -> Records {
+        let sources = |conversation: bool| {
+            actions
+                .iter()
+                .filter(|recorded| recorded.run.is_none() == conversation)
+                .map(|recorded| {
+                    recorded
+                        .session
+                        .rsplit_once('/')
+                        .map_or("", |(source, _)| source)
+                })
+                .collect::<BTreeSet<_>>()
+                .len()
+        };
+        let (runs, conversations) = (sources(false), sources(true));
+        Records {
+            actions,
+            runs,
+            conversations,
+        }
     }
 }
 
@@ -124,11 +158,10 @@ fn recorded(action: Action) -> Recorded {
             .to_owned(),
         )
     });
+    let session = format!("{}/{}/{}", action.repo, action.run, action.session);
     Recorded {
-        key: format!(
-            "{}/{}/{}/{}",
-            action.repo, action.run, action.session, action.call
-        ),
+        key: format!("{session}/{}", action.call),
+        session,
         run,
         cli: action.cli,
         model: action.model,
@@ -145,8 +178,12 @@ fn recorded(action: Action) -> Recorded {
             input => input_words(input),
         },
         behavior: action.behavior,
+        failed: action.ok == Some(false),
         in_task: action.task.is_some(),
         outcome: action.outcome,
+        settled_at: action.settled_at,
+        ended: action.ended,
+        ended_at: action.ended_at,
         place: place.map(str::to_owned),
         run_shows,
     }
@@ -163,15 +200,14 @@ fn role_words(role: StatsRole) -> &'static str {
 
 /// Each action's place among its session's, and the session's count.
 fn number_within_sessions(actions: &mut [Recorded]) {
-    let session = |key: &str| key.rsplit_once('/').map_or(key, |(s, _)| s).to_owned();
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for action in actions.iter_mut() {
-        let seen = counts.entry(session(&action.key)).or_default();
+        let seen = counts.entry(action.session.clone()).or_default();
         *seen += 1;
         action.nth = *seen;
     }
     for action in actions.iter_mut() {
-        action.of = counts[&session(&action.key)];
+        action.of = counts[&action.session];
     }
 }
 

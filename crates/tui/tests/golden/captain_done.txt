@@ -14,8 +14,8 @@
  ✔ Merged onto main · 3f9c2a1 · 3 files +40 −5 · Haiku 5.5 built it, GPT 6 Luna reviewed, Gemini 3.8 Flash signed off
 
  ╭ Phases ──────────┬ Final · 2 agents ─────────────────────────────────────────────────────────────────────────────╮
- │   ✔ Build    1/1 │  ✔ review:final    GPT 6 Luna on Codex · 16.8k tok · approved · 1 note                     4s │
- │   ✔ Review   2/2 │  ✔ sign-off:money  Gemini 3.8 Flash on agy · 12.3k tok · approved                          6s │
+ │   ✔ Build    1/1 │  ✔ review:final    ◧◨ 6 Luna on Codex                                       16.8k tok      4s │
+ │   ✔ Review   2/2 │  ✔ sign-off:money  ◧◨ 3.8 Flash on agy                                      12.3k tok      6s │
  │ ❯ ✔ Final    2/2 │                                                                                               │
  │                  │                                                                                               │
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯

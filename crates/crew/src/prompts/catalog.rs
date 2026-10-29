@@ -6,8 +6,10 @@ use argonauts_core::prompt_files::Template;
 use argonauts_core::settings::crew::CrewRole;
 
 use super::{
-    board, divide, fallback, frame, goal, merge, plan, review, task, understand, workflow, writer,
+    board, council, divide, fallback, frame, goal, merge, plan, review, task, understand, workflow,
+    writer,
 };
+use crate::council::talk;
 
 const fn entry(
     id: &'static str,
@@ -123,6 +125,42 @@ pub const ALL: &[Template] = &[
         plan::MAP,
     ),
     entry(
+        "council/talk-first",
+        CrewRole::Orchestrator,
+        "answer alone in a council",
+        talk::FIRST_ANSWER,
+    ),
+    entry(
+        "council/talk-points",
+        CrewRole::Orchestrator,
+        "list the points a council agrees on",
+        talk::POINTS,
+    ),
+    entry(
+        "council/talk-message",
+        CrewRole::Orchestrator,
+        "write to the council",
+        talk::MESSAGE,
+    ),
+    entry(
+        "council/talk-tapback",
+        CrewRole::Orchestrator,
+        "react to a council's message",
+        talk::TAPBACK,
+    ),
+    entry(
+        "council/talk-private",
+        CrewRole::Orchestrator,
+        "answer the user in private",
+        talk::PRIVATE,
+    ),
+    entry(
+        "council/talk-plan",
+        CrewRole::Orchestrator,
+        "write the council's plan",
+        talk::PLAN,
+    ),
+    entry(
         "plan/merge-drafts",
         CrewRole::Orchestrator,
         "merge plans",
@@ -203,6 +241,48 @@ pub const ALL: &[Template] = &[
         plan::EXPERIMENT_REPORT,
     ),
     entry(
+        "council/seat",
+        CrewRole::Worker,
+        "sit in a council",
+        council::SEAT,
+    ),
+    entry(
+        "council/skeptic-note",
+        CrewRole::Worker,
+        "who the skeptic is",
+        council::SKEPTIC_NOTE,
+    ),
+    entry(
+        "council/proposer",
+        CrewRole::Worker,
+        "a proposer's role",
+        council::PROPOSER,
+    ),
+    entry(
+        "council/skeptic",
+        CrewRole::Worker,
+        "a skeptic's role",
+        council::SKEPTIC,
+    ),
+    entry(
+        "council/checker",
+        CrewRole::Worker,
+        "a checker's role",
+        council::CHECKER,
+    ),
+    entry(
+        "council/notes",
+        CrewRole::Worker,
+        "keep the council's notes",
+        council::NOTES,
+    ),
+    entry(
+        "council/turn",
+        CrewRole::Worker,
+        "a turn of the council's talk",
+        council::TURN,
+    ),
+    entry(
         "frames/reviewer",
         CrewRole::Reviewer,
         "frame",
@@ -213,6 +293,12 @@ pub const ALL: &[Template] = &[
         CrewRole::Reviewer,
         "review a change",
         review::REVIEW,
+    ),
+    entry(
+        "council/check",
+        CrewRole::Reviewer,
+        "check a council's task blind",
+        council::CHECK,
     ),
     entry(
         "review/settle",

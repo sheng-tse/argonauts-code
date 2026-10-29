@@ -1,6 +1,6 @@
 //! A fallback question answered with an agent, without Remember this pick on, stays offered as a
 //! rule on one line where the question was: ↑ picks the line, and `m` saves the pick with
-//! `UiCommand::RememberPick`, after the app asks where. It goes once you send anything else.
+//! `UiCommand::RememberPick`, where your changes go. It goes once you send anything else.
 
 use argonauts_core::RunId;
 use argonauts_core::names::ApprovalId;

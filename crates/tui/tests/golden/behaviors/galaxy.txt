@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  1 Map · 2 Planet · 3 Universe › ◧◨ Anthropic                                                      Labels · Summaries
+
+                                                                    ◧◨ Anthropic
+                                                                    2 models · ←  →  picks one
+                                                                    ●  ◧◨ Haiku 5.5                                406
+                                                                       ◧◨ Haiku 4.5                                 22
+
+
+
+
+
+
+
+
+
+
+  ◧◨ Haiku 5.5 · a star · 406 actions · last used 5 min ago
+     At the core: Anthropic's most used model · enter to see its system
+  Label map · 562 actions in 19 runs across 6 projects · last 30 days
+  Most common
+  Returned its structured answer   169    Ran the test suite                         27
+  Read a source file                62    Edited a source file                       26
+  Searched code by pattern          28    Gave a structured answer that didn't fit   21
+
+
+
+
+   r to cycle dates · ←  →  pick a star · enter its system · scroll in or out · esc out to the universe

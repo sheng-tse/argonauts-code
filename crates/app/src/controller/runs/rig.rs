@@ -19,6 +19,7 @@ use argonauts_core::events::run::{ResumeCause, RunLifecycle, RunOutcome, RunResu
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{ApprovalId, ModelRef};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::steps::SchemaStepRunner;
 use argonauts_core::{Paths, RunId, TaskId};
 use argonauts_testkit::{FakeDirectory, FakeRunner, TempRepo};
@@ -248,6 +249,7 @@ pub(crate) fn question(run: &RunId, seq: u64, id: &str) -> RunEvent {
         evidence_sha256: "e".repeat(64),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options: Vec::new(),
         free_text: FreeText::Answer,
         needs_you: true,

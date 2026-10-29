@@ -1,0 +1,39 @@
+Stats › By model, all time: the table of models
+screen 177x40
+at ?,35
+size 139x10
+terminal fg=#c8d3f5 bg=#222436
+text
+         model                                                                                ▾tokens           spend            time
+  ￼￼ ██  Haiku 5.5                                                                              6.50M   51%    ~$0.38    5%       21m   25%
+  ￼￼ ▚▚  Opus 5.5                                                                               1.97M   16%     $5.35   68%       15m   17%
+  ￼￼ ██  6 Luna                                                                                 1.47M   12%    ~$0.07    1%        4m    5%
+  ￼￼ ██  Qwen3 Coder 30B (64k)                                                                  1.43M   11%     $0.00    0%       32m   38%
+  ￼￼ ▚▚  6.1 Sol                                                                                0.63M    5%    ~$0.37    5%        4m    5%
+  ￼￼ ⣿⣿  6 Astra                                                                                0.39M    3%    ~$1.55   20%        2m    3%
+  ￼￼ ██  3.8 Flash (Low)                                                                        0.20M    2%    ~$0.20    2%        2m    3%
+  ￼￼ ▚▚  Gemma4 E2B                                                                             0.09M    1%     $0.00    0%        3m    4%
+  ↓  2 more below
+paint
+.........aaaaa................................................................................aaaaaaa...........aaaaa............aaaa
+..bb.cc..aaaaa.aaa..............................................................................aaaaa...aaa....aaaaaa....aa.......aaa...aaa
+..bb.cc..aaaa.aaa...............................................................................aaaaa...aaa.....aaaaa...aaa.......aaa...aaa
+..dd.ee..a.aaaa.................................................................................aaaaa...aaa....aaaaaa....aa........aa....aa
+..ff.gg..aaaaa.aaaaa.aaa.aaaaa..................................................................aaaaa...aaa.....aaaaa....aa.......aaa...aaa
+..dd.ee..aaa.aaa................................................................................aaaaa....aa....aaaaaa....aa........aa....aa
+..dd.ee..a.aaaaa................................................................................aaaaa....aa....aaaaaa...aaa........aa....aa
+..hh.ii..aaa.aaaaa.aaaaa........................................................................aaaaa....aa....aaaaaa....aa........aa....aa
+..ff.gg..aaaaaa.aaa.............................................................................aaaaa....aa.....aaaaa....aa........aa....aa
+..j..j.jjjj.jjjjj
+key
+. blank
+a fg=#c8d3f5  ; the terminal's own
+b logo=claudecode
+c fg=#f7a07f  ; CliClaude
+d logo=codex
+e fg=#6a9ee6  ; CliCodex
+f logo=ollama
+g fg=#c27cb4  ; CliOpenCode
+h logo=antigravity
+i fg=#6cd1cf  ; CliAgy
+j fg=#999999  ; Dim, ModeSupervised, SyntaxComment

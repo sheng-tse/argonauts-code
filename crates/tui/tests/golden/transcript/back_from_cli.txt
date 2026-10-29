@@ -1,0 +1,12 @@
+● Back from Claude Code · 2 turns made there
+
+❯ Make the due date optional
+
+● The --due flag is optional now, and list puts undated tasks last.
+
+❯ Run the tests
+
+● Bash(cargo test)
+  ⎿  48 passed, 0 failed
+
+● All 48 tests pass.

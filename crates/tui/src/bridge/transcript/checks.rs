@@ -8,12 +8,24 @@ use crate::cell::ToolState;
 use super::steps::step;
 use super::{Cx, emit};
 
+/// What the item says when a run has no command checks and its marker doesn't say why.
+const NONE_SET: &str = "No command checks set · /config checks.run";
+
 /// `● Checks(tests, lint, link check)` then `⎿  All 3 passed` or what failed. In a crew run the
 /// task shows by its label, `Checks(build:flag · tests)`; `None` is the final check.
 pub(super) fn report(task: Option<&str>, checks: &[CheckOutcome], label: bool, cx: &mut Cx<'_>) {
     if checks.is_empty() && task.is_none() {
         return;
     }
+    // Why no command checks ran, as the run's marker says it: none are set, or the file that
+    // sets them waits for your trust.
+    let why_none = checks
+        .iter()
+        .filter(|check| is_unset(check))
+        .map(|check| check.summary.trim())
+        .rfind(|summary| !summary.is_empty())
+        .unwrap_or(NONE_SET)
+        .to_owned();
     let checks: Vec<&CheckOutcome> = checks.iter().filter(|check| !is_unset(check)).collect();
     let listed: Vec<&CheckOutcome> = checks
         .iter()
@@ -48,7 +60,7 @@ pub(super) fn report(task: Option<&str>, checks: &[CheckOutcome], label: bool, c
         })
         .collect();
     if listed.is_empty() {
-        details.push("No command checks set · /config checks.run".to_owned());
+        details.push(why_none);
     } else if failed.is_empty() {
         details.push(match listed.as_slice() {
             [check] => passed_line(check),

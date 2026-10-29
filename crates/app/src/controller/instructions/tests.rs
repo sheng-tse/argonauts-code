@@ -1567,3 +1567,22 @@ fn cheap_and_only_claude_has_sonnet_build_and_haiku_review_and_the_merge_waits()
     let verdict = argonauts_policy::rules::merge::check(&facts, &resolved.approvals.rules.merge);
     assert_ne!(verdict.verdict, Verdict::Approve, "{:?}", verdict.reasons);
 }
+
+#[test]
+fn asking_to_keep_checks_names_them_and_keeps_them() {
+    for message in [
+        "keep these checks",
+        "Keep the tests, please",
+        "save those checks for later",
+    ] {
+        assert!(asks_to_keep_checks(message), "{message}");
+    }
+    for message in [
+        "keep going",
+        "don't keep these checks",
+        "never save the tests",
+        "the checks look right",
+    ] {
+        assert!(!asks_to_keep_checks(message), "{message}");
+    }
+}

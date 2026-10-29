@@ -285,6 +285,45 @@ pub fn line_meter(
     merge(out)
 }
 
+/// A plan window's meter, as the bottom line and the pickers draw a window: the lower half of
+/// each cell, its edge to half a cell and at least half a cell for anything used, over a thin
+/// faint line at the foot of the cells it leaves, so a row of them reads as marks beside their
+/// numbers rather than blocks, and by its shape without colour too. Without colour or block
+/// glyphs it is the block meter, which has a form for both.
+pub fn window_meter(kit: &Kit<'_>, ratio: f64, cells: usize, fill: Role) -> Vec<Span<'static>> {
+    let ratio = ratio.clamp(0.0, 1.0);
+    if !kit.has_color() || kit.theme.glyphs.is_ascii() {
+        return block_meter(kit, ratio, cells, fill, Role::BarTrack);
+    }
+    let mut halves = round(ratio * (cells * 2) as f64);
+    if ratio > 0.0 {
+        halves = halves.max(1);
+    }
+    let cell = |at: usize| match halves.saturating_sub(at * 2) {
+        0 => Span::styled("▁", kit.fg(Role::Faint)),
+        1 => Span::styled("▖", kit.fg(fill)),
+        _ => Span::styled("▄", kit.fg(fill)),
+    };
+    merge((0..cells).map(cell).collect())
+}
+
+/// A plan window's meter in whole cells, as the bottom line draws a window: [`window_meter`]
+/// with its edge on a cell's edge, and at least one cell for any use, so it never leaves half a
+/// cell blank before the track.
+pub fn whole_window_meter(
+    kit: &Kit<'_>,
+    share: f64,
+    cells: usize,
+    fill: Role,
+) -> Vec<Span<'static>> {
+    let share = share.clamp(0.0, 1.0);
+    let mut filled = (share * cells as f64).round();
+    if share > 0.0 {
+        filled = filled.max(1.0);
+    }
+    window_meter(kit, filled / cells.max(1) as f64, cells, fill)
+}
+
 /// A thin bar of `━`: the share in `fill`, the rest of the track faint, and at least one
 /// cell of fill for any share above nothing. Without colour it is the line meter.
 pub fn thin_bar(kit: &Kit<'_>, ratio: f64, cells: usize, fill: Role) -> Vec<Span<'static>> {
@@ -332,7 +371,8 @@ pub fn then(row: &mut Vec<Span<'static>>, next: Vec<Span<'static>>) {
 }
 
 /// `row` cut to `width` without cutting into a bar or squares: words that don't fit are cut
-/// with `…` or left out, and a bar that doesn't fit whole goes with all that follows it.
+/// with `…` a cell short, since Iosevka paints the `…` two cells wide, or left out, and a bar
+/// that doesn't fit whole goes with all that follows it.
 pub fn fit_keeping_bars(row: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
     if crate::text::spans_width(&row) <= width {
         return row;
@@ -347,7 +387,8 @@ pub fn fit_keeping_bars(row: Vec<Span<'static>>, width: usize) -> Vec<Span<'stat
             continue;
         }
         if !span.content.chars().any(is_bar) && width > used + 1 {
-            kept.extend(crate::text::truncate_spans(&[span], width - used));
+            let cut = crate::text::cut_spans(&[span], width - used, crate::text::At::Char);
+            kept.extend(cut);
         }
         break;
     }

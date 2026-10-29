@@ -5,8 +5,9 @@
 //! lists every place at once with its replacement. The same file keeps real home folders,
 //! mail addresses, plans and ids out of the code, and checks the ties a word list can't see: a key
 //! spelled unlike its field, a slash command unlike its variant, a prompt template without its
-//! file, a role outside the one list, and a recordings folder named by version. A recorded
-//! session keeps only a placeholder for a file its CLI bundles, since that text is its maker's.
+//! file, a role outside the one list, a recordings folder named by version, and a dependency
+//! a member names with its own version or features. A recorded session keeps only a
+//! placeholder for a file its CLI bundles, since that text is its maker's.
 //!
 //! Two checks need more than the files. The crew's catalog test compares each template's
 //! text with the file its id names. A snapshot no test draws shows only once every test has
@@ -775,6 +776,50 @@ fn a_role_outside_the_list_is_found_in_a_workflows_file_and_in_a_file_of_phases(
 }
 
 #[test]
+fn every_dependency_and_its_features_come_from_the_workspace() {
+    report::fail_on(
+        "dependencies a member names its own way",
+        &structure::member_dependencies(tree::files()),
+    );
+}
+
+#[test]
+fn a_dependency_with_its_own_version_or_features_is_found() {
+    let file = |path: &str, text: &str| tree::File {
+        path: path.to_owned(),
+        text: Some(text.to_owned()),
+    };
+    let files = [
+        file(
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/core\"]\n\n[workspace.dependencies]\nnix = \"0.31.3\"\n",
+        ),
+        file(
+            "crates/core/Cargo.toml",
+            "[package]\nname = \"argonauts-core\"\n\n[dependencies]\nanyhow.workspace = true\n\
+             nix = { workspace = true, features = [\"user\"] }\nflate2 = \"1.1.10\"\n\n\
+             [dev-dependencies]\nsimilar = { workspace = true, default-features = false }\n\
+             tempfile = { workspace = true, optional = true }\n\n\
+             [target.'cfg(unix)'.build-dependencies.landlock]\nversion = \"0.4.7\"\n",
+        ),
+    ];
+    let found: Vec<(Option<usize>, String)> = structure::member_dependencies(&files)
+        .into_iter()
+        .map(|place| (place.line, place.found))
+        .collect();
+    let place = |line: usize, name: &str| (Some(line), name.to_owned());
+    assert_eq!(
+        found,
+        [
+            place(6, "nix"),
+            place(7, "flate2"),
+            place(10, "similar"),
+            place(13, "landlock"),
+        ]
+    );
+}
+
+#[test]
 fn no_recordings_folder_is_named_by_version() {
     let table = table::load();
     let places = structure::fixture_folders(&table, tree::files());
@@ -852,20 +897,30 @@ fn the_living_docs_hold_no_retired_name() {
     };
     let table = table::load();
     let living = table::living_docs(&docs);
+    let mut unread = Vec::new();
     let files: Vec<tree::File> = living
         .files
         .iter()
-        .filter_map(|name| {
-            let text = std::fs::read_to_string(docs.join(name)).ok()?;
-            Some(tree::File {
+        .filter_map(|name| match std::fs::read_to_string(docs.join(name)) {
+            Ok(text) => Some(tree::File {
                 path: name.clone(),
                 text: Some(text),
-            })
+            }),
+            Err(err) => {
+                unread.push(format!("{name}: {err}"));
+                None
+            }
         })
         .collect();
     assert!(
+        unread.is_empty(),
+        "{}: living docs that can't be read:\n{}",
+        docs.display(),
+        unread.join("\n")
+    );
+    assert!(
         !files.is_empty(),
-        "{}: none of the living docs is there",
+        "{}: living-docs.toml lists no doc",
         docs.display()
     );
     let lookup = words::Lookup::new(&table);

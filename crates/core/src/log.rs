@@ -276,6 +276,12 @@ pub const RUN_REVIEW_FAILED: &str = "The run review failed. The run's result sta
 /// merge`. The main view says it on the run's last row instead of a row of its own.
 pub const COPIES_REMOVED: &str = "the run's copies removed: ";
 
+/// How the line starts that says the main agent takes a change alone while a crew workflow is
+/// only the default, as in `Doing this alone: about 1 file · /crew to have Council do it`. It
+/// offers something about the reply above it, so the main view draws it right under that reply,
+/// at every verbosity: `◆` in the accent, the words dim and the command in the text colour.
+pub const DOING_THIS_ALONE: &str = "Doing this alone";
+
 /// Why a fallback skips the retry, after ` · ` at the end of its note. The main view draws
 /// these words dim and the ones before them plain.
 pub const NO_SECOND_TRY: &str = "no second try, this error repeats every time";
@@ -297,6 +303,12 @@ pub const NOBODY_TO_FALL_BACK_TO: &str = "Nobody to fall back to";
 /// `propose:p3 runs on Gemini 3.8 Flash (Low): agy no longer offers Gemini 3.6 Flash
 /// (Low)`. The screen draws the line's words plain.
 pub const NO_LONGER_OFFERS: &str = " no longer offers ";
+
+/// How the line starts that says a background update couldn't put a release in place, as in
+/// `Couldn't update to 0.1.1: the download stopped at 61% · argonauts self-update`. The main
+/// view draws its mark in the warning color, its words plain and the command after the last
+/// ` · ` as code.
+pub const COULDNT_UPDATE_TO: &str = "Couldn't update to ";
 
 /// One line in plain words. Lines after the first are its detail, such as a validator's
 /// errors, which the main view keeps for Ctrl+O, but for the rows right under the first

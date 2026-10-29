@@ -16,6 +16,7 @@ use argonauts_core::api::{
 use argonauts_core::app::{AppEvent, UiCommand};
 use argonauts_core::clock::SystemClock;
 use argonauts_core::events::RunEvent;
+use argonauts_core::events::council::CouncilAction;
 use argonauts_core::events::goal::GoalAction;
 use argonauts_core::events::session::QueuedMessage;
 use argonauts_core::future::BoxFuture;
@@ -115,6 +116,10 @@ pub(crate) enum Call {
     Goal {
         run: RunId,
         action: GoalAction,
+    },
+    Council {
+        run: RunId,
+        action: CouncilAction,
     },
 }
 
@@ -457,6 +462,14 @@ impl ConductorApi for FakeConductor {
         });
         ready(Ok(()))
     }
+
+    fn council(&self, run: &RunId, action: CouncilAction) -> BoxFuture<'_, Result<(), ApiError>> {
+        self.record(Call::Council {
+            run: run.clone(),
+            action,
+        });
+        ready(Ok(()))
+    }
 }
 
 /// An approvals call, as the fake recorded it.
@@ -616,16 +629,38 @@ impl Default for CliOptions {
 /// What a global file holds that a test didn't write, as after a setup that picked council.
 pub(crate) const SET_UP_GLOBAL: &str = "workflow = \"council\"\n";
 
+/// The line that keeps a test's global file on the built-in default workflow, which nobody chose.
+const ON_THE_DEFAULT: &str = "# The workflow is the built-in default.\n";
+
 /// Names council in the global file unless it names a workflow already, as after a setup: the
-/// crew most of these tests drive. With no setting naming a workflow, Captain would run.
+/// crew most of these tests drive, chosen as you would choose it. A file that says it stays on
+/// the default names none.
 pub(crate) fn set_up_with_council(global: &std::path::Path) {
     let text = std::fs::read_to_string(global).unwrap_or_default();
     let names_one = text
         .parse::<toml::Table>()
         .is_ok_and(|table| table.contains_key("workflow"));
-    if !names_one {
+    if !names_one && !text.contains(ON_THE_DEFAULT) {
         std::fs::create_dir_all(global.parent().expect("a folder")).expect("the home folder");
         std::fs::write(global, format!("{SET_UP_GLOBAL}{text}")).expect("a global config");
+    }
+}
+
+/// `options` on the built-in default workflow: council, which nobody chose, so the
+/// Captain-or-crew rules may leave a small change to the main agent.
+pub(crate) fn on_the_default_workflow(options: CliOptions) -> CliOptions {
+    let prepare = options.prepare;
+    CliOptions {
+        prepare: Some(Box::new(move |repo: &TempRepo| {
+            if let Some(prepare) = prepare {
+                prepare(repo);
+            }
+            let global = repo.global_config();
+            let text = std::fs::read_to_string(&global).unwrap_or_default();
+            std::fs::create_dir_all(global.parent().expect("a folder")).expect("the home folder");
+            std::fs::write(&global, format!("{ON_THE_DEFAULT}{text}")).expect("a global config");
+        })),
+        ..options
     }
 }
 

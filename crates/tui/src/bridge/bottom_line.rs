@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use argonauts_core::Spend;
 use argonauts_core::app::{HeaderAndBottomLine, LineFacts};
+use argonauts_core::events::task::TaskState;
 use argonauts_core::limits::{HealthState, PlanUsageReading, PlanUsageStatus};
+use argonauts_core::logos::logo_for;
 use argonauts_core::settings::bottom_line::{
     ARTIFACT, AWAKE, BRANCH, CONTEXT, LineForm, MODE, PLAN_USAGE, PlanUsageAs, PlanUsageLine,
     PlanUsageResets, PlanUsageShow, PlanUsageWindows, SPEND, STATS, TOKENS,
@@ -19,18 +21,20 @@ use argonauts_core::settings::mods::ModPlace;
 use argonauts_core::settings::ui::{NarratorMode, PluginOutput, UiSettings};
 use time::{OffsetDateTime, UtcOffset};
 
-use super::status::{agent_for_label, focus_run, label_for_agent};
+use super::status::{agent_for_label, focus_run};
 use crate::bottom::{AddedPart, BottomLine, CliState, CliUse, LinePart, MAIN, PartBody, WindowUse};
 use crate::cell::Tone;
 use crate::format;
 use crate::kit::Levels;
 use crate::overview::stats::pinned::StatsCard;
-use crate::state::{AppState, binding_reading};
+use crate::state::{AppState, SessionStatus, binding_reading};
 use crate::text::sanitize_line;
 use crate::theme::Role;
 
+mod picker;
 mod preview;
 
+pub use picker::LinePicker;
 pub use preview::{Sample, SampleCli, preview};
 
 /// The built-in mod that shows the run on screen. On the line it is the running workflow.
@@ -58,8 +62,20 @@ pub fn build(
     // Before the controller's first status the line is as it ships, with whatever a turn's
     // events already read.
     let unset = LineFacts::default();
+    let facts = state.status.as_ref().map_or(&unset, |status| &status.line);
+    build_from(state, facts, settings, slots, now)
+}
+
+/// [`build`] with `facts` in place of the status's, as `/bottom-line`'s picker previews the
+/// line it would save.
+fn build_from(
+    state: &AppState,
+    facts: &LineFacts,
+    settings: &UiSettings,
+    slots: &BTreeMap<String, PartBody>,
+    now: OffsetDateTime,
+) -> BottomLine {
     let status = state.status.as_ref();
-    let facts = status.map_or(&unset, |status| &status.line);
     let set = &facts.settings;
     let clock = Clock {
         now,
@@ -221,23 +237,132 @@ impl Source<'_> {
         })
     }
 
-    /// One chip per CLI in the crew, in the crew's order, as the settings show them.
+    /// The chips the settings pick: the CLIs `clis` lists after the one in use, or else the
+    /// ones `show` names. Then any other CLI a running task waits on while it's out, down or at
+    /// 90% joins them, with its reset time.
     fn clis(&self) -> Vec<CliUse> {
         let set = &self.facts.settings.plan_usage;
-        // Gauges are one cell a window, so every CLI has room for both of its own.
-        let both = self.facts.settings.form == LineForm::Gauges;
-        let main = self.status.map(|status| status.main_agent.agent.as_str());
-        crew(self.state, self.status)
+        let mut crew = crew(self.state, self.status);
+        // A CLI you listed that the crew leaves out still has its chip, with what is known.
+        for line_cli in set.clis.iter().flatten() {
+            if !crew.iter().any(|cli| key(cli) == line_cli.cli) {
+                crew.push(bare(self.state, &line_cli.cli));
+            }
+        }
+        let picked = self.picked(&crew);
+        let near_only = set.clis.is_none() && set.show == PlanUsageShow::NearLimit;
+        let mut chips: Vec<CliUse> = picked
             .iter()
-            .map(|cli| {
-                let is_main = main.is_some() && cli.agent_id.as_deref() == main;
-                let spent = agent_spend(self.state, cli);
-                let mut chip = cli_use(cli, is_main || both, set, spent, &self.clock);
-                chip.main = is_main;
-                chip
-            })
-            .filter(|cli| shows(cli, set.show))
-            .collect()
+            .map(|(cli, windows)| self.chip(cli, *windows, set))
+            .filter(|chip| !near_only || chip.needs_you())
+            .collect();
+        if set.holding_up {
+            let waits_on = held_up_on(self.state);
+            // The reset time shows with it, so its colour is never the only sign.
+            let with_reset = PlanUsageLine {
+                resets: match set.resets {
+                    PlanUsageResets::Never => PlanUsageResets::NearLimit,
+                    resets => resets,
+                },
+                ..set.clone()
+            };
+            let joins = crew
+                .iter()
+                .filter(|cli| !picked.iter().any(|(shown, _)| key(shown) == key(cli)))
+                .filter(|cli| waits_on.iter().any(|id| id == key(cli)))
+                .map(|cli| self.chip(cli, None, &with_reset))
+                .filter(CliUse::needs_you);
+            chips.extend(joins);
+        }
+        chips
+    }
+
+    /// The CLIs the settings put on the line, in order, each with the windows `clis` gives it.
+    fn picked<'c>(&self, crew: &'c [CrewCli]) -> Vec<(&'c CrewCli, Option<PlanUsageWindows>)> {
+        let set = &self.facts.settings.plan_usage;
+        let Some(listed) = &set.clis else {
+            return self
+                .shown_by(set.show, crew)
+                .into_iter()
+                .map(|cli| (cli, None))
+                .collect();
+        };
+        // The one in use comes first wherever the list has it, with the windows it gives it.
+        let main = crew.iter().filter(|cli| self.is_main(cli)).map(|cli| {
+            let windows = listed
+                .iter()
+                .find(|line_cli| line_cli.cli == key(cli))
+                .and_then(|line_cli| line_cli.windows);
+            (cli, windows)
+        });
+        let listed = listed.iter().filter_map(|line_cli| {
+            let cli = crew
+                .iter()
+                .find(|cli| key(cli) == line_cli.cli && !self.is_main(cli))?;
+            Some((cli, line_cli.windows))
+        });
+        main.chain(listed).collect()
+    }
+
+    /// One CLI's chip. The one in use shows both its windows, as does one given both, and the
+    /// others their fuller one.
+    fn chip(
+        &self,
+        cli: &CrewCli,
+        windows: Option<PlanUsageWindows>,
+        set: &PlanUsageLine,
+    ) -> CliUse {
+        let own = PlanUsageLine {
+            windows: windows.unwrap_or(set.windows),
+            ..set.clone()
+        };
+        // Gauges are one cell a window, so every CLI has room for both of its own.
+        let gauges = self.facts.settings.form == LineForm::Gauges;
+        let main = self.is_main(cli);
+        let both = main || gauges || windows == Some(PlanUsageWindows::Both);
+        let spent = agent_spend(self.state, cli);
+        let mut chip = cli_use(cli, both, &own, spent, &self.clock);
+        chip.main = main;
+        chip
+    }
+
+    /// The main session is on it: the CLI the status names, or before the first status, the
+    /// one your settings start the main session on.
+    fn is_main(&self, cli: &CrewCli) -> bool {
+        let main = self.main_agent();
+        main.is_some() && cli.agent_id.as_deref() == main
+    }
+
+    fn main_agent(&self) -> Option<&str> {
+        match self.status {
+            Some(status) => Some(status.main_agent.agent.as_str()),
+            None => self
+                .state
+                .welcome
+                .as_ref()
+                .and_then(|welcome| welcome.main_agent.as_ref())
+                .map(|main| main.agent.as_str()),
+        }
+    }
+
+    /// The CLIs `show` names while no list is saved: every CLI in the crew's order, or the one
+    /// in use, alone or with the one used most after it.
+    fn shown_by<'c>(&self, show: PlanUsageShow, crew: &'c [CrewCli]) -> Vec<&'c CrewCli> {
+        let is_main = |cli: &CrewCli| self.is_main(cli);
+        let main = crew.iter().filter(|cli| is_main(cli));
+        match show {
+            PlanUsageShow::All | PlanUsageShow::NearLimit => crew.iter().collect(),
+            PlanUsageShow::Main => main.collect(),
+            // Before anything names the CLI in use, whatever a turn read shows.
+            PlanUsageShow::MainAndMostUsed if self.main_agent().is_none() => crew.iter().collect(),
+            PlanUsageShow::MainAndMostUsed => {
+                let most_used = self.facts.most_used.iter().find_map(|used| {
+                    crew.iter()
+                        .find(|cli| key(cli) == used.as_str() && !is_main(cli))
+                });
+                main.chain(most_used).collect()
+            }
+        }
     }
 
     /// The last seven days with their sparkline. While a run with a limit has the screen it is
@@ -389,6 +514,7 @@ fn crew(state: &AppState, status: Option<&HeaderAndBottomLine>) -> Vec<CrewCli> 
             let reading = chip.reading.iter().chain(&chip.windows).next();
             let agent_id = reading
                 .map(|reading| reading.agent_id.0.clone())
+                .or_else(|| state.names.cli_id(&chip.label))
                 .or_else(|| agent_for_label(&chip.label).map(str::to_owned));
             let mut readings = chip.windows.clone();
             readings.extend(chip.reading.clone());
@@ -432,7 +558,7 @@ fn crew(state: &AppState, status: Option<&HeaderAndBottomLine>) -> Vec<CrewCli> 
     for (agent_id, readings) in &state.plan_windows {
         if chips_of(agent_id, &clis) == 0 {
             clis.push(CrewCli {
-                label: label_for_agent(agent_id),
+                label: state.names.cli(agent_id),
                 agent_id: Some(agent_id.clone()),
                 health: state
                     .health
@@ -445,23 +571,64 @@ fn crew(state: &AppState, status: Option<&HeaderAndBottomLine>) -> Vec<CrewCli> 
     if let Some(main) = status.map(|status| &status.main_agent.agent)
         && chips_of(main, &clis) == 0
     {
-        clis.insert(
-            0,
-            CrewCli {
-                label: label_for_agent(main),
-                agent_id: Some(main.clone()),
-                health: state
-                    .health
-                    .get(main)
-                    .map_or(HealthState::Healthy, |health| health.state),
-                readings: Vec::new(),
-            },
-        );
+        clis.insert(0, bare(state, main));
     }
     for cli in &mut clis {
         cli.readings = newest_per_window(std::mem::take(&mut cli.readings));
     }
     clis
+}
+
+/// The CLIs a run under way waits on, by id: one a task waits for while it's out, and one a
+/// task or an agent of the run is working on now.
+fn held_up_on(state: &AppState) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let mut add = |id: &str| {
+        if !ids.iter().any(|known| known == id) {
+            ids.push(id.to_owned());
+        }
+    };
+    for run in state.runs.values().filter(|run| run.finished.is_none()) {
+        for task in run.tasks.values() {
+            if let Some(wait) = &task.waiting_on_agent {
+                add(&wait.agent_id);
+            }
+            let working = matches!(
+                task.state,
+                Some(TaskState::Running | TaskState::Checking | TaskState::InReview)
+            );
+            if let Some(worker) = task.worker.as_ref().filter(|_| working) {
+                add(&worker.agent);
+            }
+        }
+        let working = |status: SessionStatus| {
+            matches!(
+                status,
+                SessionStatus::Starting | SessionStatus::Working | SessionStatus::Sleeping
+            )
+        };
+        for session in run
+            .sessions
+            .values()
+            .filter(|session| working(session.status))
+        {
+            add(&session.agent_id);
+        }
+    }
+    ids
+}
+
+/// A CLI nothing was read for yet, with its health as the screen knows it.
+fn bare(state: &AppState, agent_id: &str) -> CrewCli {
+    CrewCli {
+        label: state.names.cli(agent_id),
+        agent_id: Some(agent_id.to_owned()),
+        health: state
+            .health
+            .get(agent_id)
+            .map_or(HealthState::Healthy, |health| health.state),
+        readings: Vec::new(),
+    }
 }
 
 fn newest_per_window(readings: Vec<PlanUsageReading>) -> Vec<PlanUsageReading> {
@@ -503,6 +670,7 @@ pub fn cli_use(
 ) -> CliUse {
     let key = cli.agent_id.as_deref().unwrap_or(&cli.label);
     let mut chip = CliUse::new(sanitize_line(&cli.label).trim(), Role::for_cli(key));
+    chip.logo = Some(logo_for(key, None));
     chip.main = main;
     // A window that has reset since it was read says nothing about the plan now.
     let live: Vec<PlanUsageReading> = cli
@@ -550,19 +718,15 @@ pub fn cli_use(
         .collect();
     windows.sort_by_key(|window| window_minutes(&window.label));
     chip.windows = shown_windows(windows, main, set.windows);
-    if chip.windows.is_empty() && !has_plan(&cli.label) {
+    if chip.windows.is_empty() && !has_plan(key) {
         chip.note = spent_usd.filter(|spent| *spent > 0.0).map(format::usd);
     }
     chip
 }
 
-/// Whether a CLI has a chip, by `[plan-usage] show`.
-fn shows(cli: &CliUse, show: PlanUsageShow) -> bool {
-    match show {
-        PlanUsageShow::All => true,
-        PlanUsageShow::Main => cli.main,
-        PlanUsageShow::NearLimit => cli.needs_you(),
-    }
+/// The id a CLI goes by in the settings, such as `claude-code`.
+fn key(cli: &CrewCli) -> &str {
+    cli.agent_id.as_deref().unwrap_or(&cli.label)
 }
 
 /// The windows a chip shows, by `[plan-usage] windows`. Whatever the setting, a window at
@@ -647,8 +811,8 @@ fn window_minutes(label: &str) -> (u64, usize) {
 }
 
 /// Subscription CLIs have a plan, so one without a reading has simply not been read yet.
-fn has_plan(label: &str) -> bool {
-    matches!(label, "Claude" | "Codex") || label == "agy" || label.starts_with("agy ")
+fn has_plan(cli: &str) -> bool {
+    matches!(cli, "claude-code" | "codex" | "antigravity-cli")
 }
 
 /// `$0.21/$5.00`, `48.2k/2m tokens`, or the spend alone without a limit it can be read against.

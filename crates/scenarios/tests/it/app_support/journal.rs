@@ -16,6 +16,7 @@ use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::layout::run_files;
 use argonauts_core::names::{ApprovalId, ModelRef};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::{Paths, RepoId, RunId, TaskId};
 use argonauts_scenarios::Scenario;
 use serde_json::Value;
@@ -89,6 +90,7 @@ pub fn fabricate_waiting_run(scenario: &Scenario, days_waiting: i64) -> anyhow::
         evidence_sha256: "1".repeat(64),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options: vec![
             AnswerOption {
                 key: 'a',

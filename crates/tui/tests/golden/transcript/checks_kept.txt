@@ -1,0 +1,2 @@
+❯ keep these checks
+  ⎿  Kept checks.run · just you (.argonauts/config.local.toml)

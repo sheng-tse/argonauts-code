@@ -3,6 +3,7 @@
 //! With `ARGONAUTS_TEST_TRACE=<file>` set, the controller appends every command and event to
 //! that file as JSONL ([`TraceLine`]), which the non-UI scenario tests assert on.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -11,11 +12,11 @@ use time::OffsetDateTime;
 use crate::agent_panel::AgentPanelRows;
 use crate::api::{DiffScope, DiffView, RawView, RunSummary, StatusSummary, TakeOverTicket};
 use crate::cli_commands::CliCommandSet;
-use crate::cli_sessions::CliSession;
+use crate::cli_sessions::{CliSession, CliSessionRef, InItsCli};
 use crate::display_names::DisplayNames;
 use crate::events::RunEvent;
 use crate::events::approval::{AnswerAction, AnswerOption, FreeText};
-use crate::events::context::{ContextDetail, ContextUsage};
+use crate::events::context::{ContextDetail, ContextUsage, StartingCount};
 use crate::events::run::{CaptainOrCrewDecision, CheckedInstruction, Party, RunMode, WaitReason};
 use crate::input::{MentionTarget, SlashCommand, WorkflowAction};
 use crate::limits::CostEstimate;
@@ -32,6 +33,7 @@ use crate::settings::SettingScope;
 use crate::settings::approvals::ApprovalMode;
 use crate::settings::bottom_line::BottomLineSettings;
 use crate::settings::limit::LimitAmount;
+use crate::settings::saving::SaveChangesTo;
 use crate::settings::ui::{NarratorMode, TakeOverWhere, UiSettings};
 use crate::steps::intake::ChangeEstimate;
 use crate::views::{
@@ -76,13 +78,14 @@ pub enum UiCommand {
         #[serde(default)]
         tasks: Vec<TaskId>,
         /// A fallback question's remember key was on, so the picked candidate is also saved as a
-        /// fallback rule for the task's role and the stopped agent. The app asks where.
+        /// fallback rule for the task's role and the stopped agent, where your changes go.
         #[serde(default, skip_serializing_if = "is_false")]
         remember: bool,
     },
-    /// Esc on a waiting question or approval. For a run's, it means "carry on without me": the
-    /// engine takes an option in your place, as `approvals.when_declined` says, and nothing
-    /// waits. An app choice closes as its [`ChoiceKind`] says.
+    /// Esc on an app choice, which closes as its [`ChoiceKind`] says. Sent for a run's question
+    /// or approval, it means "carry on without me": the engine takes an option in your place,
+    /// as `approvals.when_declined` says, and nothing waits. The screen's own Esc on a run's
+    /// question sends nothing, and the question waits until it is answered.
     SetAside {
         to: AnswerTarget,
     },
@@ -110,6 +113,13 @@ pub enum UiCommand {
     /// as a CLI's login.
     TerminalReturned {
         argv: Vec<String>,
+    },
+    /// `o`: open this session in its CLI's own screen, here, and come back to it after.
+    OpenInItsCli {
+        session: CliSessionRef,
+        /// The conversation that carries it, for one of Argonauts Code's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<ConversationId>,
     },
     /// From a picker; the slash form arrives as `Slash`.
     Reassign {
@@ -223,23 +233,43 @@ pub enum UiCommand {
         run: Option<RunId>,
         action: crate::events::goal::GoalAction,
     },
+    /// What you say to a run's council while it sits: a message to every seat, one to a seat
+    /// alone, or a private message of yours shared with them all. `None` is the run on screen.
+    Council {
+        run: Option<RunId>,
+        action: crate::events::council::CouncilAction,
+    },
+    /// `o` twice on a council seat's session: the seat sits out the talk while its session
+    /// opens in its CLI's own screen, here, and rejoins with what it missed once that CLI quits.
+    CarryOnSeat {
+        run: RunId,
+        seat: crate::names::SeatId,
+        session: CliSessionRef,
+    },
     Request {
         view: ViewRequest,
     },
-    /// A setting picked in a picker or `/config`, after the TUI asked the scope. The argument
-    /// form (`/effort high`) arrives as `Slash`. A safety key needs the `ConfirmSafetySetting`
-    /// choice and never changes inside an agent session.
+    /// A setting picked in a picker or `/config`. The argument form (`/effort high`) arrives as
+    /// `Slash`. A safety key needs the `ConfirmSafetySetting` choice and never changes inside
+    /// an agent session.
     SetSetting {
         key: String,
         /// TOML text.
         value: String,
-        scope: SettingScope,
+        /// A place named on purpose, as ctrl+s names this session. `None` saves where
+        /// `save_changes_to` says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<SettingScope>,
     },
     /// A picker's Reset row: removes `key` from `scope` so the layer below shows through. A file
     /// scope keeps the file's comments. Same safety confirm and agent-session refusal as a set.
     ResetSetting {
         key: String,
         scope: SettingScope,
+    },
+    /// A key on a workflow's setup sheet, which the app answers with the sheet again.
+    SetupSheet {
+        action: crate::setup_sheet::SheetAction,
     },
     /// A mod's page saved, reset, or trusted its file.
     Mod {
@@ -287,18 +317,18 @@ pub enum UiCommand {
         reply: CommandReply,
     },
     /// Saves the pick recorded for an answered fallback question as a fallback rule for the
-    /// question's role and the stopped agent, as `Answer.remember` does at answer time. The app
-    /// asks where to save it.
+    /// question's role and the stopped agent, as `Answer.remember` does at answer time. It saves
+    /// where your changes go.
     RememberPick {
         run: RunId,
         id: ApprovalId,
     },
-    /// Makes or adds to the deeper Behaviors map as its questions were answered, in the
+    /// Makes or adds to the Summaries map of Behaviors as its questions were answered, in the
     /// background. Its progress arrives as `DeepProgress` and its end as `DeepDone`.
     DeepStart {
         start: crate::deep_map::DeepStart,
     },
-    /// `x` while the deeper map is being made: it stops, keeping every summary it finished.
+    /// `x` while the Summaries map is being made: it stops, keeping every summary it finished.
     DeepStop,
 }
 
@@ -415,9 +445,20 @@ pub enum ViewRequest {
     },
     /// `/issue`'s list: the repository's open issues, yours first. Answered with `Issues`.
     Issues,
-    /// What `d` on the Behaviors map asks before the deeper map is made: what to summarize and
+    /// What `d` on the Behaviors map asks before the Summaries map is made: what to summarize and
     /// who summarizes. Answered with `DeepOffer`, and never with a model call.
     DeepOffer,
+    /// The letters a council's seat reads the other seats by, for the key at the head of its
+    /// session's view. Only your screen asks, and nothing records them. Answered with
+    /// `SeatKey`.
+    SeatKey {
+        run: RunId,
+        /// The step of the council the seat sits at.
+        talk: crate::workflow::StepRef,
+        /// The council's seats, in seat order.
+        seats: Vec<crate::names::SeatId>,
+        reader: crate::names::SeatId,
+    },
 }
 
 impl ViewRequest {
@@ -598,6 +639,21 @@ pub enum AppEvent {
     RunInTerminal {
         argv: Vec<String>,
         cwd: PathBuf,
+        /// Variables the command runs without, such as the ones that tell a CLI it runs
+        /// inside another session.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        env_remove: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        env_set: Vec<(String, String)>,
+        /// The app says what came back, so the screen says nothing when it ends well.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        quiet: bool,
+    },
+    /// Turns made in a CLI's own screen on the conversation's session, drawn under one line
+    /// such as `Back from Claude Code · 2 turns made there`, oldest first.
+    TurnsMadeInCli {
+        said: String,
+        turns: Vec<ReplayTurn>,
     },
     /// The `[ui]` settings in effect changed, whatever the cause. The TUI applies them at once.
     UiSettings {
@@ -638,6 +694,12 @@ pub enum AppEvent {
     RepoFiles {
         paths: Vec<String>,
     },
+    /// Each workflow command's status for the `/` menu, by the workflow's name: in use, ready,
+    /// or set up first. Sent at start, and again when a setting, a workflow file or a login
+    /// read makes one different.
+    WorkflowStatuses {
+        statuses: Vec<(String, crate::setup_sheet::WorkflowStatus)>,
+    },
     /// What the screen calls each CLI and model. Sent at start and whenever the model lists
     /// are read again.
     Names {
@@ -653,12 +715,25 @@ pub enum AppEvent {
         /// Removed from `scope` rather than set.
         #[serde(default)]
         reset: bool,
+        /// Why it went to `scope` rather than where `save_changes_to` says, or why it changes
+        /// nothing here yet, as the words the line ends with: "since the team's file sets it".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        why: Option<String>,
+        /// Saved because your own words asked to keep it, as "keep these checks" does, so the
+        /// line under your message names the key alone: "Kept checks.run · just you (…)".
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        kept: bool,
     },
     /// `/config key=value` left the key as it was, and why: a key that isn't a setting, or a
     /// value its picker doesn't offer. It prints under the command, as a saved change does.
     SettingRefused {
         key: String,
         why: String,
+    },
+    /// A line under a command you typed that changed nothing, such as `Council is the workflow
+    /// already · Opus 5.5 and Codex propose`.
+    CommandReplied {
+        reply: CommandReply,
     },
     /// Every event of an attached run up to `seq` was history. Only later ones ring the bell or
     /// notify.
@@ -680,6 +755,18 @@ pub enum AppEvent {
         /// journal, so `/artifacts` and the key that opens the latest have them again.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         artifacts: Vec<crate::artifacts::Artifact>,
+    },
+    /// What the main session holds at its start, sent when it's worked out and whenever it
+    /// changes, so the Context mod above the input has it before its CLI counts the session.
+    MainStart {
+        start: Box<StartingCount>,
+        /// The window is its CLI's own figure, not the model list's.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cli_window: bool,
+        /// Its CLI works out how full the session is from its totals, so the figure is an
+        /// estimate.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        estimated: bool,
     },
     /// What follows, up to `PastDrawn`, is a conversation's or a run's record, drawn by the
     /// printers that drew it live, in order. Nothing in it happens again: no question opens, no
@@ -741,11 +828,11 @@ pub enum AppEvent {
         event: ShellEvent,
     },
     Exit,
-    /// The deeper Behaviors map's update has done another request's worth.
+    /// The Summaries map's update has done another request's worth.
     DeepProgress {
         progress: crate::deep_map::DeepProgress,
     },
-    /// The deeper map's update ended: done, stopped, or failed. The map it kept is asked for
+    /// The Summaries map's update ended: done, stopped, or failed. The map it kept is asked for
     /// again.
     DeepDone {
         done: crate::deep_map::DeepDone,
@@ -772,6 +859,20 @@ pub enum ShellEvent {
         /// Ctrl+C stopped it.
         stopped: bool,
     },
+}
+
+impl AppEvent {
+    /// `argv` in the terminal in `cwd`, in the app's own environment, the screen saying how it
+    /// ended.
+    pub fn run_in_terminal(argv: Vec<String>, cwd: PathBuf) -> Self {
+        Self::RunInTerminal {
+            argv,
+            cwd,
+            env_remove: Vec::new(),
+            env_set: Vec::new(),
+            quiet: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -917,6 +1018,32 @@ pub struct LineFacts {
     /// controller knows of one the screen didn't watch being published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact: Option<PublishedArtifact>,
+    /// Whether a run that goes on after you quit keeps the computer awake, which the exit
+    /// hint says.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub runs_keep_awake: bool,
+    /// The conversation on screen once it has a turn, which the lines left on quit say how to
+    /// resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<ConversationId>,
+    /// How its main session carries on in its CLI's own screen, which they say too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_cli: Option<InItsCli>,
+    /// The CLIs used over the last 30 days by their ids, the most used first, worked out once
+    /// when the app starts: the line shows the first that isn't the one in use beside it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub most_used: Vec<String>,
+    /// What each CLI without a plan spent over the last seven days, by its id, as `/bottom-line`
+    /// shows it in a plan's place.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub spent_this_week: BTreeMap<String, f64>,
+    /// Where a change to the line saves when nothing names a place, as `/bottom-line` says.
+    #[serde(default, skip_serializing_if = "is_everywhere")]
+    pub saves_to: SaveChangesTo,
+}
+
+fn is_everywhere(saves_to: &SaveChangesTo) -> bool {
+    *saves_to == SaveChangesTo::Everywhere
 }
 
 impl LineFacts {
@@ -1128,8 +1255,8 @@ pub enum ChoiceKind {
     /// One step of the guided setup: one option per answer, the recommended one first so Enter
     /// takes it. Esc takes the recommended answers for this step and the rest.
     Init,
-    /// Where to save a setting given as a command's argument, such as `/effort high`. Options
-    /// are the [`SettingScope`] names with the command's default recommended. Esc cancels.
+    /// Where to save a setting. No longer asked, since every change saves where
+    /// `save_changes_to` says; a recorded one still reads.
     SettingScope,
     /// Check commands found in the repo, offered once: Use these `y`, Edit them `e`, or Skip
     /// `n`. Esc leaves it for the next run.
@@ -1143,9 +1270,8 @@ pub enum ChoiceKind {
     /// `/connect`: Write it `y`, which keeps a backup of the outside agent's config first, or Not
     /// now `n`. The body shows the file and the entry. Esc means not now.
     ConfirmConnect,
-    /// A request said "from now on": This project, just me `m`, This project, shared `p`,
-    /// Everywhere `e`, or Just this request `r`. The body says what it would keep. Esc keeps
-    /// it for this request only.
+    /// Where to keep what a request said "from now on". No longer asked, since it saves where
+    /// `save_changes_to` says; a recorded one still reads.
     KeepInstructions,
     /// A direct turn's CLI asks before an edit, a command, or another tool: Yes, Yes and don't
     /// ask again, or No, which tells it to stop. The body shows the edit or the command. Esc
@@ -1167,11 +1293,10 @@ pub enum ChoiceKind {
     /// `/workflow try`: what a workflow would run for a request, in the body. Run it `y` runs
     /// that one request with it, and Edit it `e` opens its file. Esc closes, and nothing ran.
     TryWorkflow,
-    /// The main session's proposed setup: where it applies (this request, this conversation,
-    /// this repository, all your repositories) or Not now `n`, and Show what would be written
-    /// `d`. The body is the setup, then after a blank line what each place would write. Esc
-    /// means not now. Each row of the setup is split by tabs into parts, plain then dim in
-    /// turn, so its notes show dim.
+    /// The main session's proposed setup: Use it `y`, with where it goes beside it, or Not now
+    /// `n`, and Show what would be written `d`. The body is the setup, then after a blank line
+    /// what yes would write. Esc means not now. Each row of the setup is split by tabs into
+    /// parts, plain then dim in turn, so its notes show dim.
     Setup,
     /// `/git`: how this folder keeps history, one option per way with the one in use marked,
     /// then, for making it a repository, whether to go ahead once the body has shown what
@@ -1213,6 +1338,10 @@ pub enum ViewData {
         /// rest under a Kind column.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         sessions: Vec<CliSession>,
+        /// How each listed conversation's main session and each CLI session carries on in its
+        /// CLI's own screen, for the row under the list and `o`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        in_cli: Vec<InItsCli>,
     },
     /// A goal run's goal.
     Goal {
@@ -1291,6 +1420,11 @@ pub enum ViewData {
     Workflow {
         view: Box<WorkflowView>,
     },
+    /// A workflow that isn't ready, opened by its command: its setup sheet, in place of the
+    /// input.
+    SetupSheet {
+        sheet: Box<crate::setup_sheet::SetupSheet>,
+    },
     Agent {
         view: Box<AgentView>,
     },
@@ -1367,9 +1501,16 @@ pub enum ViewData {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         open: Option<usize>,
     },
-    /// The deeper map's questions, with this machine's choices and the recorded actions.
+    /// The Summaries map's questions, with this machine's choices and the recorded actions.
     DeepOffer {
         offer: Box<crate::deep_map::DeepOffer>,
+    },
+    /// The letter a council's seat reads every seat by, its own among them, in seat order.
+    SeatKey {
+        run: RunId,
+        talk: crate::workflow::StepRef,
+        reader: crate::names::SeatId,
+        letters: Vec<(crate::names::SeatId, crate::names::SeatLetter)>,
     },
 }
 
@@ -1421,8 +1562,7 @@ pub struct SettingRow {
     pub key: String,
     /// TOML text; empty when unset, such as `narrator.model` by default.
     pub value: String,
-    /// `built-in`, `global`, `project`, `project-local`, `workflow`, `flag`, or `session`. The
-    /// scope question warns when it's above the scope you pick, since saving there changes nothing.
+    /// `built-in`, `global`, `project`, `project-local`, `workflow`, `flag`, or `session`.
     pub layer: String,
     /// For a value from the workflow, the settings file that picked the workflow (`global`,
     /// `project`, or `project-local`), since saving there or later wins over it. `None` when the
@@ -1437,7 +1577,7 @@ pub struct SettingRow {
     pub allowed: Vec<String>,
     pub description: String,
     /// What an `auto` value comes to here, when that's known without asking anything, such as
-    /// `Qwen3 Coder 30B on Ollama` for the summarizer the deeper Behaviors map was made with.
+    /// `Qwen3 Coder 30B on Ollama` for the summarizer the Summaries map was made with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picked: Option<String>,
 }

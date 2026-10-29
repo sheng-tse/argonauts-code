@@ -132,6 +132,7 @@ pub struct Observer {
     context_cap: Option<u64>,
     pub facts: Facts,
     started: Instant,
+    /// The last reading sent, as [`reading`] compares it, and when.
     limit_sent: Option<(SpendStatus, Instant)>,
     stalled: bool,
     events: u32,
@@ -297,16 +298,29 @@ impl Observer {
         self.meter.tool_calls()
     }
 
-    /// Emits `Session(AgentSession)` the first time an id is known, and again if it changes.
+    /// Emits `Session(CliSession)` the first time an id is known, and again if it changes, then
+    /// how to carry the session on in its CLI's own screen.
     pub fn cli_session(&mut self, id: String) {
         if id.is_empty() || self.facts.cli_session.as_deref() == Some(id.as_str()) {
             return;
         }
         self.facts.cli_session = Some(id.clone());
+        let ctx = &self.ctx;
+        let carry_on = super::request::carry_on_command(
+            &ctx.spec.model,
+            &id,
+            &ctx.spec.workdir,
+            ctx.adapter.as_ref(),
+            &ctx.settings,
+            ctx.registry.as_deref(),
+        );
         self.out.session(SessionEvent::CliSession {
             id,
             transcript: None,
         });
+        if let Some(command) = carry_on {
+            self.out.session(SessionEvent::CarryOn(command));
+        }
     }
 
     /// Any output at all counts as activity, and ends a silence.
@@ -398,7 +412,7 @@ impl Observer {
         self.watch_the_worktree(&event);
         let verdict = self.watchdogs.observe(&event, Instant::now());
         actions.extend(self.watchdog_action(verdict));
-        self.limit(false);
+        self.limit(Instant::now(), false);
         actions
     }
 
@@ -438,7 +452,7 @@ impl Observer {
         self.watchdogs.network(offline, now);
         let verdict = self.watchdogs.tick(now, cpu_busy);
         actions.extend(self.watchdog_action(verdict));
-        self.limit(false);
+        self.limit(now, false);
         actions
     }
 
@@ -454,7 +468,7 @@ impl Observer {
             );
         }
         self.record_spend();
-        self.limit(true);
+        self.limit(Instant::now(), true);
     }
 
     /// Keeps what the CLI session has spent so far, for a later session that resumes it.
@@ -891,19 +905,35 @@ impl Observer {
         }
     }
 
-    /// `Limit(Limit)` when the reading changed, at most once a second unless `now`.
-    fn limit(&mut self, now: bool) {
+    /// `Limit(Limit)` when the reading changed, at most once a second unless its level
+    /// changed, and always for the last one (`force`), which carries the minutes run in all.
+    fn limit(&mut self, at: Instant, force: bool) {
         let status = self.meter.status();
-        let at = Instant::now();
-        match self.limit_sent {
-            Some((sent, _)) if sent == status => return,
-            Some((_, sent_at)) if !now && at.duration_since(sent_at) < LIMIT_EVERY => return,
-            _ => {}
+        let current = reading(&status);
+        if let Some((sent, sent_at)) = self.limit_sent {
+            let soon = at.saturating_duration_since(sent_at) < LIMIT_EVERY;
+            if !force && (sent == current || (soon && sent.level == current.level)) {
+                return;
+            }
         }
-        self.limit_sent = Some((status, at));
+        self.limit_sent = Some((current, at));
         self.out
             .session(SessionEvent::Limit(LimitEvent::Spend(status)));
     }
+}
+
+/// A limit reading as far as its readers can tell one from the next. The minutes a session has
+/// run tick on with the clock, so they count only where a minutes limit binds, and then in
+/// whole minutes and whole percents of it.
+fn reading(status: &SpendStatus) -> SpendStatus {
+    let mut reading = *status;
+    if status.binding == Some(LimitDimension::Minutes) {
+        reading.work.minutes = status.work.minutes.floor();
+        reading.fraction_used = status.fraction_used.map(|used| (used * 100.0).round());
+    } else {
+        reading.work.minutes = 0.0;
+    }
+    reading
 }
 
 fn meter_action(verdict: MeterVerdict) -> Option<Action> {
@@ -1083,6 +1113,88 @@ mod tests {
             }
             notes
         }
+
+        /// The limit readings sent so far.
+        async fn readings(&mut self) -> Vec<SpendStatus> {
+            let mut sent = Vec::new();
+            let wait = Duration::from_millis(100);
+            while let Ok(Some(event)) = tokio::time::timeout(wait, self.handle.events.recv()).await
+            {
+                if let RunnerEvent::Session(SessionEvent::Limit(LimitEvent::Spend(status))) = event
+                {
+                    sent.push(status);
+                }
+            }
+            sent
+        }
+
+        /// Ticks once a second for `seconds`, with `spent` dollars reported at `spend_at`.
+        fn run_for(&mut self, seconds: u64, spend_at: u64, spent: f64) {
+            for second in 1..=seconds {
+                if second == spend_at {
+                    self.obs.meter.observe(&AgentEvent::Usage {
+                        input_tokens: 100,
+                        output_tokens: 10,
+                        cached_tokens: 0,
+                        cost_usd: Some(spent),
+                        cumulative: true,
+                    });
+                }
+                let at = self.at(Duration::from_secs(second));
+                self.obs.tick_at(at, None);
+            }
+        }
+    }
+
+    /// The minutes a session has run tick on every second, but nobody reads them under a spend
+    /// limit: two minutes with one spend send two readings, not one a second.
+    #[tokio::test]
+    async fn a_limit_reading_goes_out_when_what_it_says_changes() {
+        let limits = SessionLimits {
+            limit: Some(LimitAmount {
+                unit: LimitUnit::Usd,
+                amount: 5.0,
+            }),
+            ..SessionLimits::default()
+        };
+        let mut w = watched(TestAdapter::new("true"), limits);
+        w.run_for(120, 30, 0.5);
+        w.obs.limit(w.at(MINUTE * 2), true);
+        let sent = w.readings().await;
+        let spent: Vec<f64> = sent.iter().map(|status| status.spend.cost_usd).collect();
+        // The last reading goes out though it says what the one before did.
+        assert_eq!(spent, [0.0, 0.5, 0.5], "{sent:?}");
+        // Each reading still carries the minutes run, for whoever shows them.
+        assert!(
+            (sent[1].work.minutes - 0.5).abs() < 1e-9,
+            "{:?}",
+            sent[1].work
+        );
+        assert!(
+            (sent[2].work.minutes - 2.0).abs() < 1e-9,
+            "{:?}",
+            sent[2].work
+        );
+    }
+
+    /// Where a minutes limit binds, a reading goes out as the whole minutes or the whole
+    /// percents of the limit change, not every second.
+    #[tokio::test]
+    async fn under_a_minutes_limit_a_reading_goes_out_per_minute_and_percent() {
+        let limits = SessionLimits {
+            max_minutes: Some(60.0),
+            ..SessionLimits::default()
+        };
+        let mut w = watched(TestAdapter::new("true"), limits);
+        w.run_for(180, 0, 0.0);
+        let sent = w.readings().await;
+        assert!(
+            sent.iter()
+                .all(|status| status.binding == Some(LimitDimension::Minutes)),
+            "{sent:?}"
+        );
+        // The first, then three whole minutes and five whole percents: nine of 180 ticks.
+        assert_eq!(sent.len(), 9, "{sent:?}");
     }
 
     /// An observer of a build session, which answers in the report's format.

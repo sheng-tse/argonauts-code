@@ -129,6 +129,8 @@ impl Run {
             asked_by: None,
             asked_why: None,
             forked: false,
+            seat: None,
+            billing: None,
         };
         let at = Some(agent.session);
         self.send(

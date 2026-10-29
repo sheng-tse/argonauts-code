@@ -228,6 +228,26 @@ fn optional<T: serde::de::DeserializeOwned>(value: &Value) -> Option<T> {
     (!value.is_null()).then(|| serde_json::from_value(value.clone()).unwrap())
 }
 
+/// The arguments as a recording made before a run's sessions turned Codex's memories off ran
+/// them: without that one switch, unless its notes say it had it.
+fn as_recorded(fixture: &Fixture, args: Vec<String>) -> Vec<String> {
+    if fixture.meta["memories_off"].as_bool() == Some(true) {
+        return args;
+    }
+    let switch = args
+        .windows(2)
+        .position(|pair| pair[0] == "--disable" && pair[1] == "memories");
+    match switch {
+        Some(at) => args
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != at && *i != at + 1)
+            .map(|(_, arg)| arg.clone())
+            .collect(),
+        None => args,
+    }
+}
+
 #[test]
 fn command_still_builds_the_recorded_arguments() {
     for name in fixture_names() {
@@ -235,7 +255,12 @@ fn command_still_builds_the_recorded_arguments() {
         let spec = CodexAdapter.command(&recorded_request(&fixture)).unwrap();
         let recorded: Vec<String> = serde_json::from_value(fixture.meta["args"].clone()).unwrap();
         assert_eq!(spec.program, fixture.meta["program"], "{}", fixture.name);
-        assert_eq!(spec.args, recorded, "{}", fixture.name);
+        assert_eq!(
+            as_recorded(&fixture, spec.args),
+            recorded,
+            "{}",
+            fixture.name
+        );
     }
 }
 

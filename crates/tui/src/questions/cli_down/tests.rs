@@ -11,6 +11,7 @@ use argonauts_core::events::approval::{
 };
 use argonauts_core::names::{AgentId, ApprovalId, RoleName};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use time::macros::datetime;
@@ -80,6 +81,7 @@ fn opened(packet: AgentDownPacket, options: Vec<AnswerOption>) -> ApprovalOpened
         evidence_sha256: "0".repeat(64),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options,
         free_text: FreeText::Guidance,
         needs_you: true,
@@ -141,6 +143,11 @@ fn the_title_names_the_cli_and_the_options_say_what_they_mean() {
             (
                 "Choose per task".to_owned(),
                 "an agent for each, from every installed CLI".to_owned()
+            ),
+            (
+                "Carry on without me".to_owned(),
+                "The main agent picks for each task and goes on; kept as an assumption to review"
+                    .to_owned()
             ),
         ]
     );
@@ -262,32 +269,10 @@ fn an_explanation_the_event_carries_is_kept() {
 }
 
 /// The workflow view of a run paused on Claude Code, and under it the question, on a screen
-/// of 124 by 24: the view takes twelve rows, and the question's rule takes its keys' row.
+/// of 124 by 30: the view takes twelve rows, and the question's rule takes its keys' row.
 #[test]
 fn under_the_workflow_view_the_question_reads_as_its_picture() {
-    let mut picture = picture!("workflow_cli_down");
-    // The picture gives Build's rows the whole workflow's label column; the view lays each
-    // phase out by its own labels.
-    picture.label_column(6, "build:due-flag", "build:due-tests  ".len());
-    picture.label_column(7, "build:due-tests", "build:due-tests  ".len());
-    // The picture says paused, which now only a pause you asked for reads: these tasks wait
-    // for their CLI.
-    picture.reword(3, "2 tasks paused", "2 tasks wait for it");
-    picture.reword(
-        6,
-        "paused · work so far kept",
-        "waits for Claude Code · work so far kept",
-    );
-    picture.reword(13, "Two tasks are paused,", "Two tasks wait for it,");
-    // Esc means carry on without me, as it does on every question a run asks: whoever asked
-    // then decides, and here the tasks go on waiting. The picture calls it setting the
-    // question aside, and ends the row there.
-    picture.reword(
-        19,
-        "Esc to set aside",
-        "Esc to carry on without me · shift+tab to cycle modes",
-    );
-
+    let picture = picture!("workflow_cli_down");
     let theme = dark();
     let state = AppState::default();
     let now = Instant::now();
@@ -313,8 +298,12 @@ fn under_the_workflow_view_the_question_reads_as_its_picture() {
     let mut bottom = BottomState::new();
     bottom.question = Some(question);
 
-    let ctx = RenderCtx::new(124, &theme, Clock::still(now)).with_rows(24);
-    let drawn = bottom.render_docked(&ctx, 22, false, rows, true);
-    assert_eq!(drawn.lines.len(), 20);
-    picture.assert_drawn(0..20, &buffer_of(&drawn.lines, 124), 0);
+    let ctx = RenderCtx::new(124, &theme, Clock::still(now)).with_rows(30);
+    let drawn = bottom.render_docked(&ctx, 28, false, rows, true);
+    assert_eq!(drawn.lines.len(), 26);
+    let buf = buffer_of(&drawn.lines, 124);
+    picture.assert_drawn(0..11, &buf, 0);
+    // The question under it, drawn as it is alone, with its last row, Carry on without me, and
+    // Esc back to the list.
+    picture!("cli_down_question").assert_drawn(0..15, &buf, 11);
 }

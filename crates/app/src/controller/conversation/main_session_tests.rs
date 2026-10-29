@@ -256,6 +256,130 @@ async fn real_work_starts_the_workflow_in_use_when_the_session_hands_it_over() {
     driver.exit().await;
 }
 
+/// Checks the session passes with its call reach the run as a setting of the request, where
+/// you set none, so they hold for that run alone and nothing asks you about them.
+#[tokio::test]
+async fn checks_the_session_picks_reach_its_run() {
+    let driver = claude_code("").await;
+    driver
+        .agent
+        .push(FakeSession::completed("Started.").with_delay(Duration::from_secs(3)));
+    driver.submit(WORK).await;
+    let spec = spec_number(&driver, 0).await;
+    let checks = json!([{"name": "tests", "command": ["python3", "-m", "unittest", "-q"]}]);
+    let answer = calling(
+        &spec,
+        START_WORKFLOW,
+        json!({ "request": "Add dates.", "checks": checks }),
+    );
+    let run = followed_run(&driver).await;
+    let settings = driver
+        .conductor
+        .starts()
+        .last()
+        .map(|start| start.request_settings.clone())
+        .unwrap_or_default();
+    assert!(
+        settings
+            .iter()
+            .any(|setting| setting.starts_with("checks.run=") && setting.contains("unittest")),
+        "{settings:?}"
+    );
+    driver.conductor.push(&run, agent_started(&run, 1)).await;
+    let answer = answer.await.unwrap();
+    assert!(answer.text.contains("for this run alone"), "{answer:?}");
+    driver.exit().await;
+}
+
+/// "Keep these checks" after a run that had checks of its own saves those checks where a change
+/// to them goes, this project just for you, as yours: the file holds them, the save's line says
+/// it kept them and where, and nothing asks.
+#[tokio::test]
+async fn keeping_a_runs_checks_saves_them_with_no_question() {
+    use argonauts_core::app::AppMode;
+
+    let mut driver = claude_code("").await;
+    for answer in ["Started.", "Kept.", "Kept."] {
+        driver
+            .agent
+            .push(FakeSession::completed(answer).with_delay(Duration::from_secs(3)));
+    }
+    driver.submit(WORK).await;
+    let spec = spec_number(&driver, 0).await;
+    let checks = json!([{"name": "tests", "command": ["python3", "-m", "unittest", "-q"]}]);
+    let answer = calling(
+        &spec,
+        START_WORKFLOW,
+        json!({ "request": "Add dates.", "checks": checks }),
+    );
+    let run = followed_run(&driver).await;
+    driver.conductor.push(&run, agent_started(&run, 1)).await;
+    answer.await.unwrap();
+    driver.until(turn_ended).await;
+    let merged = RunLifecycle::Finished {
+        outcome: RunOutcome::Merged,
+        detail: None,
+    };
+    driver
+        .conductor
+        .push(&run, rig::event(&run, 2, RunEventKind::Run(merged)))
+        .await;
+    driver
+        .until(|event| {
+            matches!(
+                event,
+                AppEvent::Mode {
+                    mode: AppMode::Idle
+                }
+            )
+        })
+        .await;
+
+    driver.submit("keep these checks").await;
+    let spec = spec_saying(&driver, "keep these checks").await;
+    let kept = call(
+        &spec,
+        "argonauts_setup",
+        json!({"asked": "keep these checks", "settings": {"checks.run": checks}}),
+    )
+    .await;
+    assert!(!kept.is_error, "{kept:?}");
+    assert!(kept.text.contains("just for them ("), "{kept:?}");
+    driver
+        .until(|event| matches!(event, AppEvent::SettingChanged { key, kept: true, .. } if key == "checks.run"))
+        .await;
+    let saved = std::fs::read_to_string(driver.env.project_local_config()).unwrap();
+    assert!(saved.contains("unittest"), "{saved}");
+    assert!(
+        !driver
+            .seen()
+            .iter()
+            .any(|event| matches!(event, AppEvent::Choice { .. })),
+        "nothing asked"
+    );
+    driver.exit().await;
+}
+
+/// The session whose prompt carries `said`, once it starts.
+async fn spec_saying(driver: &TestDriver, said: &str) -> SessionSpec {
+    let deadline = tokio::time::Instant::now() + max_wait();
+    loop {
+        let found = driver
+            .agent
+            .specs()
+            .into_iter()
+            .find(|spec| spec.prompt.iter().any(|part| part.text.contains(said)));
+        if let Some(spec) = found {
+            return spec;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no session for {said:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 /// A run that fails before any agent starts: the tool answers with the failure, as a failure,
 /// and never says the run started. The session that heard it says so, so it isn't told again.
 #[tokio::test]
@@ -604,7 +728,16 @@ async fn your_thinking_speed_and_language_go_with_each_turn() {
     driver.agent.push(FakeSession::completed("Done."));
     driver.submit(WORK).await;
     driver.until(turn_ended).await;
-    assert!(spec_number(&driver, 0).await.preferences.is_default());
+    // Only the title the session is named by goes by default.
+    let preferences = spec_number(&driver, 0).await.preferences;
+    assert!(preferences.title.is_some());
+    assert!(
+        argonauts_core::session_runner::SessionPreferences {
+            title: None,
+            ..preferences
+        }
+        .is_default()
+    );
     driver.exit().await;
 }
 

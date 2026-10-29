@@ -360,8 +360,11 @@ fn renders_rules_label_prompt_and_cursor() {
     assert_eq!(input[2].style, theme.style(Role::Dim));
     let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
     let busy = c.render(&ctx, true, true);
+    assert_eq!(
+        busy.lines[1].spans[0].style,
+        decoration(theme.style(Role::Text))
+    );
     let dim = decoration(theme.style(Role::Dim));
-    assert_eq!(busy.lines[1].spans[0].style, dim);
     let unfocused = c.render(&ctx, false, false);
     assert_eq!(unfocused.lines[1].spans[0].style, dim);
     assert_eq!(unfocused.lines[1].spans[1].content, "Ask anything");

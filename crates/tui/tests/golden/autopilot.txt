@@ -1,5 +1,5 @@
 ● build:due-dates · Haiku 5.5 on Claude Code
-  ⎿ Done · 7 tool uses · decided 1 thing on autopilot · 14s
+  ⎿  Done (7 tool uses · 14s) · report ✓ · decided 1 thing on autopilot
 
 ● Merged into main (1 task, 4 files, +45 -5). 14 tests pass.
   - Decided on autopilot: negative amounts round half toward +∞, as apply_discount already does

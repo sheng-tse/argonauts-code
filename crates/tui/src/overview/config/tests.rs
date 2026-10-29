@@ -29,7 +29,7 @@ fn settings() -> Vec<SettingRow> {
         ("compaction", "\"inherit\"", "built-in"),
         ("fallback.mode", "\"auto\"", "built-in"),
         ("ui.tips", "true", "built-in"),
-        ("ui.motion", "\"normal\"", "built-in"),
+        ("ui.motion", "\"full\"", "built-in"),
         ("ui.recaps", "true", "built-in"),
         ("captain.rewind", "true", "built-in"),
         ("ui.verbosity", "\"normal\"", "built-in"),
@@ -332,8 +332,8 @@ fn usage_reports_say_what_they_send() {
     );
 }
 
-/// A toggle flips at once and saves to your global file without a word in the conversation;
-/// Esc then says what changed under the command.
+/// A toggle flips at once and saves where your changes go without a word in the
+/// conversation; Esc then says what changed under the command.
 #[test]
 fn a_toggle_saves_at_once_and_esc_says_what_changed() {
     let state = state();
@@ -353,7 +353,7 @@ fn a_toggle_saves_at_once_and_esc_says_what_changed() {
     };
     assert_eq!(
         (saved_key.as_str(), value.as_str(), scope),
-        ("ui.tips", "false", SettingScope::Global)
+        ("ui.tips", "false", None)
     );
     let shown = rows(&mut view, &state, 100);
     assert!(
@@ -477,27 +477,14 @@ fn on_row(view: &mut OverviewView, state: &AppState, words: &str) {
     key(view, state, KeyCode::Down);
 }
 
-/// A row that asks where steps in place like any other, then asks where to save in the rows'
-/// place; the panel stays up over the app's safety question, and Esc says the change once it
-/// is saved, in the row's words.
+/// A safety row steps in place like any other and saves at once; the panel stays up over the
+/// app's safety question, and Esc says the change once it is saved, in the row's words.
 #[test]
-fn a_safety_row_steps_asks_where_and_says_its_change_once_saved() {
+fn a_safety_row_saves_at_once_and_says_its_change_once_saved() {
     let mut state = state();
     let mut view = with_a_safety_start_mode();
     on_row(&mut view, &state, "default approval");
-    assert!(matches!(
-        key(&mut view, &state, KeyCode::Right),
-        ViewOutcome::Consumed
-    ));
-    let shown = rows(&mut view, &state, 100);
-    assert!(
-        shown.iter().any(|row| row.contains("Where to save it")),
-        "{shown:#?}"
-    );
-    for place in ["Just this session", "Everywhere", "Enter to save"] {
-        assert!(shown.iter().any(|row| row.contains(place)), "{shown:#?}");
-    }
-    let sent = key(&mut view, &state, KeyCode::Enter);
+    let sent = key(&mut view, &state, KeyCode::Right);
     let ViewOutcome::SaveQuietly(UiCommand::SetSetting {
         key: saved,
         value,
@@ -508,16 +495,14 @@ fn a_safety_row_steps_asks_where_and_says_its_change_once_saved() {
     };
     assert_eq!(
         (saved.as_str(), value.as_str(), scope),
-        (
-            "approvals.start_mode",
-            "\"approvals\"",
-            SettingScope::Global
-        )
+        ("approvals.start_mode", "\"approvals\"", None)
     );
     assert!(view.stays_over_question(), "the app may ask about it");
-    state
-        .setting_outcomes
-        .push(SettingOutcome::Changed { key: saved, value });
+    state.setting_outcomes.push(SettingOutcome::Changed {
+        key: saved,
+        value,
+        scope: SettingScope::Global,
+    });
     rows(&mut view, &state, 100);
     assert!(!view.stays_over_question());
     let closed = key(&mut view, &state, KeyCode::Esc);
@@ -535,7 +520,6 @@ fn a_change_left_as_it_was_takes_its_value_back() {
     let mut state = state();
     let mut view = with_a_safety_start_mode();
     on_row(&mut view, &state, "network");
-    key(&mut view, &state, KeyCode::Enter);
     assert!(matches!(
         key(&mut view, &state, KeyCode::Enter),
         ViewOutcome::SaveQuietly(_)
@@ -560,25 +544,6 @@ fn a_change_left_as_it_was_takes_its_value_back() {
         matches!(&closed, ViewOutcome::CloseSaying { line, .. } if line == "Config dialog dismissed"),
         "{closed:?}"
     );
-}
-
-/// Esc on the question of where goes back to the rows with nothing sent.
-#[test]
-fn esc_on_the_question_of_where_goes_back_to_the_rows() {
-    let state = state();
-    let mut view = with_a_safety_start_mode();
-    on_row(&mut view, &state, "network");
-    key(&mut view, &state, KeyCode::Enter);
-    assert!(matches!(
-        key(&mut view, &state, KeyCode::Esc),
-        ViewOutcome::Consumed
-    ));
-    let shown = rows(&mut view, &state, 100);
-    assert!(
-        !shown.iter().any(|row| row.contains("Where to save it")),
-        "{shown:#?}"
-    );
-    assert!(!view.stays_over_question());
 }
 
 /// A link row leaves the panel for its own picker; the last row opens All settings over it.
@@ -819,7 +784,7 @@ fn autopilot_coming_back_draws_as_the_picture() {
     assert_matches(&picture, &buf, &region, &theme);
 }
 
-/// The Behaviors rows as `config_rows` shows them among the others, once a deeper map is made:
+/// The Behaviors rows as `config_rows` shows them among the others, once Summaries is made:
 /// the value, then dim, what it comes to, three cells after it. The tab keeps its own columns,
 /// the pointer's four cells and the label column at 43, where that picture sets its rows at 3
 /// and 38, and draws values in the text colour as every other row does.
@@ -831,7 +796,7 @@ fn the_behaviors_rows_say_what_their_values_come_to() {
         ..setting(key, "\"auto\"", "built-in")
     };
     let mut view = config_view(vec![
-        setting("behaviors.map", "\"deeper\"", "global"),
+        setting("behaviors.map", "\"summaries\"", "global"),
         picked("behaviors.summarizer", "Qwen3 Coder 30B on Ollama"),
         picked("behaviors.embedder", "nomic-embed-text on Ollama"),
     ]);
@@ -863,9 +828,9 @@ fn the_behaviors_rows_say_what_their_values_come_to() {
     assert_eq!(buf[(56, summarizer)].fg, dim, "what auto came to");
 }
 
-/// Before a deeper map is made, auto has picked nothing, so the rows say what it would pick.
+/// Before Summaries is made, auto has picked nothing, so the rows say what it would pick.
 #[test]
-fn the_behaviors_rows_say_what_auto_means_before_a_deeper_map() {
+fn the_behaviors_rows_say_what_auto_means_before_any_summaries() {
     let state = state();
     let mut view = config_view(vec![
         setting("behaviors.map", "\"labels\"", "built-in"),
@@ -930,7 +895,7 @@ fn row_with(view: &mut OverviewView, state: &AppState, label: &str) -> String {
 fn saved(outcome: ViewOutcome) -> (String, String) {
     match outcome {
         ViewOutcome::SaveQuietly(UiCommand::SetSetting { key, value, scope }) => {
-            assert_eq!(scope, SettingScope::Global);
+            assert_eq!(scope, None, "a row saves where your changes go");
             (key, value)
         }
         outcome => panic!("{outcome:?}"),
@@ -1022,7 +987,7 @@ fn a_local_summarizer_saves_and_the_row_names_it() {
     key(&mut view, &state, KeyCode::Down);
     let (key_saved, value) = saved(key(&mut view, &state, KeyCode::Enter));
     assert_eq!(key_saved, "behaviors.summarizer");
-    assert_eq!(value, "\"ollama/gemma3:12b-32k\"");
+    assert_eq!(value, "\"ollama/gemma3:12b\"");
     let row = row_with(&mut view, &state, "Behaviors summarizer");
     assert!(row.contains("Gemma 3 12B on Ollama ›"), "{row}");
     assert!(
@@ -1084,10 +1049,7 @@ fn a_hosted_summarizer_asks_once_more_before_it_saves() {
     open_picker(&mut view, &state, "summarizer", &page_offer());
     key(&mut view, &state, KeyCode::Char('5'));
     let (_, value) = saved(key(&mut view, &state, KeyCode::Char('2')));
-    assert_eq!(
-        value, "\"ollama/qwen3-coder:30b-64k\"",
-        "the local one instead"
-    );
+    assert_eq!(value, "\"ollama/qwen3-coder:30b\"", "the local one instead");
 
     let mut view = behaviors_view();
     open_picker(&mut view, &state, "summarizer", &page_offer());

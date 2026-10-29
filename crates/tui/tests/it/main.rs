@@ -4,6 +4,7 @@
 mod common;
 mod pty_support;
 
+mod golden_files;
 mod golden_folders;
 mod pty_a11y;
 mod pty_composer;
@@ -15,6 +16,8 @@ mod pty_gone;
 mod pty_keys;
 mod pty_layout;
 mod pty_live;
+mod pty_logos;
+mod pty_pictures;
 mod pty_questions;
 mod pty_replay;
 mod pty_settings;

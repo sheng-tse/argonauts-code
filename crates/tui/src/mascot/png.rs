@@ -135,6 +135,33 @@ pub fn encode_quickly(image: &Rgba) -> Vec<u8> {
     encode_packed(image, Compression::fast())
 }
 
+/// [`encode_quickly`], given up as soon as `stop` says so, which it asks every few rows: a
+/// picture no longer wanted costs at most a millisecond or two more.
+pub fn encode_quickly_unless(image: &Rgba, stop: impl Fn() -> bool) -> Option<Vec<u8>> {
+    const ROWS_AT_ONCE: usize = 16;
+    let stride = image.width * PIXEL;
+    let mut packed = ZlibEncoder::new(Vec::new(), Compression::fast());
+    let mut filtered = Vec::with_capacity(ROWS_AT_ONCE * (stride + 1));
+    for (at, row) in image
+        .pixels
+        .chunks(stride.max(1))
+        .take(image.height)
+        .enumerate()
+    {
+        if at % ROWS_AT_ONCE == 0 {
+            if stop() {
+                return None;
+            }
+            packed.write_all(&filtered).ok()?;
+            filtered.clear();
+        }
+        filtered.push(0);
+        filtered.extend_from_slice(row);
+    }
+    packed.write_all(&filtered).ok()?;
+    Some(png_of(image, &packed.finish().ok()?))
+}
+
 fn encode_packed(image: &Rgba, compression: Compression) -> Vec<u8> {
     let stride = image.width * PIXEL;
     let mut filtered = Vec::with_capacity(image.height * (stride + 1));
@@ -146,7 +173,11 @@ fn encode_packed(image: &Rgba, compression: Compression) -> Vec<u8> {
     // Writing to memory can't fail.
     let _ = packed.write_all(&filtered);
     let packed = packed.finish().unwrap_or_default();
+    png_of(image, &packed)
+}
 
+/// The PNG of `image` from its rows already filtered and packed.
+fn png_of(image: &Rgba, packed: &[u8]) -> Vec<u8> {
     let mut header = Vec::with_capacity(13);
     for side in [image.width, image.height] {
         header.extend_from_slice(&u32::try_from(side).unwrap_or(u32::MAX).to_be_bytes());
@@ -155,7 +186,7 @@ fn encode_packed(image: &Rgba, compression: Compression) -> Vec<u8> {
     let mut out = SIGNATURE.to_vec();
     for (kind, data) in [
         (b"IHDR", header.as_slice()),
-        (b"IDAT", packed.as_slice()),
+        (b"IDAT", packed),
         (b"IEND", &[]),
     ] {
         out.extend_from_slice(&u32::try_from(data.len()).unwrap_or(u32::MAX).to_be_bytes());

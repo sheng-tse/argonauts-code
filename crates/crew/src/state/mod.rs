@@ -28,7 +28,7 @@ pub mod workflow;
 
 /// Bumped whenever the snapshot's shape changes. A snapshot of another version can't be
 /// restored, so a run that has one needs its log replayed from the start.
-pub const ENGINE_STATE_VERSION: u32 = 1;
+pub const ENGINE_STATE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunState {
@@ -46,6 +46,9 @@ pub struct RunState {
     pub merge: merge::MergeState,
     pub blackboard: blackboard::Board,
     pub run_review: run_review::RunReviewState,
+    /// Each council's talk, folded from its events.
+    #[serde(default)]
+    pub councils: crate::council::talk::Councils,
 }
 
 impl RunState {
@@ -142,6 +145,7 @@ impl RunState {
             RunEventKind::RunReview(e) => self.run_review.apply(e, event),
             RunEventKind::Note(note) => self.run.noted(note, event.seq),
             RunEventKind::Workflow(e) => self.workflows.apply(e, event),
+            RunEventKind::Council(e) => self.councils.apply_at(e, event.ts),
         }
     }
 
@@ -278,6 +282,8 @@ pub(crate) mod tests {
             asked_by: None,
             asked_why: None,
             forked: false,
+            seat: None,
+            billing: None,
         }
     }
 
@@ -336,6 +342,7 @@ pub(crate) mod tests {
             evidence_sha256: "evidence".to_owned(),
             mode: ApprovalMode::Supervised,
             decide_with: argonauts_core::settings::approvals::DecideWith::Rules,
+            when_declined: argonauts_core::settings::asking::WhenDeclined::Decide,
             options: Vec::new(),
             free_text: FreeText::None,
             needs_you,

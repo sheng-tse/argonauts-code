@@ -1,32 +1,33 @@
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
-   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
-  What your agents did, from 562 actions in 19 runs · last 30 days                                                    
-                                                                                                                      
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
 
-[picture]
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
 
-Comparing GPT 6 Luna                                                                                                  
-with the other models                                                                                                 
-red: Luna does this more                                                                                              
-blue: Luna does this less                                                                                             
-                                                                                                                      
-○ Haiku 5.5         406                                                                                               
-● GPT 6 Luna         66                                                                                               
-○ GPT 5.6 Luna       49                                                                                               
-○ Haiku 4.5          22                                                                                               
-○ Gemini 3.8 Flash   19                                                                                               
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
 
-[picture]
+                                                                    Comparing ◧◨ 6 Luna
+                                                                    With the rest, on the land:
+                                                                    Red where it does more, blue where less
+                                                                       Much more 2x as often or more
+                                                                       More      1.25x to 2x
+                                                                       Less      0.5x to 0.8x
+                                                                       Much less 0.5x or less
+                                                                       Untinted  About the same, or too few
 
-                                                                                                                      
-  lit: checked git status or diff and read git history · 6 actions, 4 of them GPT 6 Luna's                            
-                                                                                                                      
-  Distinctive to GPT 6 Luna · 66 actions; the others 496                                                              
-  ❯ checked git status or diff and read git history         4 (6.1%)   others   2 (0.4%)                              
-    checked git status or diff and ran a shell command      3 (4.5%)   others   4 (0.8%)                              
-    ran the test suite                                      8 (12.1%)   others  19 (3.8%)                             
-    returned its structured answer                         34 (51.5%)   others 135 (27.2%)                            
-    edited a source file                                    3 (4.5%)   others  23 (4.6%)                              
-                                                                                                                      
-  r to cycle dates · g group · s this project · d deeper map · ↑  ↓  behavior · enter actions · esc back              
+                                                                    ○  ◧◨ Haiku 5.5   406
+                                                                    ●  ◧◨ 6 Luna       66
+                                                                    ○  ◧◨ 5.6 Luna     49
+                                                                    ↓  2 more below
+
+  Lit: checked git status or diff and read git history · 6 actions, 4 of them GPT 6 Luna's
+
+  Label map · 562 actions in 19 runs across 6 projects · last 30 days
+  Distinctive to GPT 6 Luna · 66 actions; the others 496
+  ❯ Checked git status or diff and read git history         4   (6.1%)   others   2   (0.4%)
+    Checked git status or diff and ran a shell command      3   (4.5%)   others   4   (0.8%)
+    Ran the test suite                                      8  (12.1%)   others  19   (3.8%)
+    Returned its structured answer                         34  (51.5%)   others 135  (27.2%)
+    Edited a source file                                    3   (4.5%)   others  23   (4.6%)
+
+
+   r to cycle dates · s this project · d summaries · ↑  ↓  behavior · enter actions · ←  →  model · esc back

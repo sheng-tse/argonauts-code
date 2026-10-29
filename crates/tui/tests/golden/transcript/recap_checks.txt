@@ -1,0 +1,8 @@
+※ recap: Money rounding now uses Decimal. All 3 tasks merged, and the checks pass: tests ran on each task and on the
+  merge. Ask for another change, or /resume an older run. (disable recaps in /config)
+
+※ recap: Money rounding now uses Decimal. All 3 tasks merged. No checks ran, since none are set: /config checks.run sets
+  them. Ask for another change, or /resume an older run. (disable recaps in /config)
+
+※ recap: Money rounding now uses Decimal. All 3 tasks merged. The final check failed (tests) and you merged anyway. Ask
+  for another change, or /resume an older run. (disable recaps in /config)

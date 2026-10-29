@@ -1,8 +1,10 @@
 # What /model says about each model. Argonauts Code ships this file, and each day it fetches the
-# copy on the main branch, checked against models.toml.sha256 next to it, so a model that
-# ships after a release still gets its description. Your own ~/.argonauts/models.toml wins.
+# copy served beside the update manifests, signed with the same minisign keys as
+# models.toml.minisig, so a model that ships after a release still gets its description. Your
+# own ~/.argonauts/models.toml wins.
 #
-# After an edit, update the hash, or the fetched copy is refused:
+# Builds before 0.2.0 fetch this file from the main branch instead, checked against
+# models.toml.sha256 next to it, so after an edit update the hash too:
 #   shasum -a 256 models.toml | cut -d' ' -f1 > models.toml.sha256
 #
 # Names come from the id ("claude-opus-5-5" reads "Opus 5.5"), so an entry sets `name` only
@@ -10,6 +12,9 @@
 # the levels a model takes, lowest first; an empty list means it takes none.
 
 version = 1
+# The day this copy is published, inside what its signature covers. Move it on with every edit:
+# an install refuses a served copy published before the one it ships or fetched last.
+published = "2026-10-26"
 
 # Claude Code, as its own picker shows it on 2026-10-09 (2.1.295).
 
@@ -317,3 +322,82 @@ model = "gemini-3.6-pro"
 input = 2.0
 output = 12.0
 cache_read = 0.2
+
+# Local coding models with tool use that /model offers to download where one isn't installed.
+# Facts, not verdicts: each computer ranks them the same way, by the largest window from 64k,
+# 32k or 16k whose memory fits two thirds of what models may use there, then the best coding
+# score, then the newer, then the smaller. A model with no score or month ranks after those
+# with one.
+#
+# `window` is the largest window a model is run at, `weights_gb` what its weights take once
+# loaded, and `context_kib_per_token` what each token of its window adds: estimates until a
+# model has loaded on a computer, when Ollama's own figure counts. `coding` is a public coding
+# leaderboard's score, with the leaderboard and the day it was read, checked again monthly:
+#   coding = { score = 51.0, source = "the leaderboard's name", checked = "2026-10-20" }
+# `replaced_by` names the tag offered in a model's place.
+
+[[local]]
+tag = "qwen3-coder:30b"
+name = "Qwen3 Coder 30B"
+window = 65536
+weights_gb = 19.0
+download_gb = 19.0
+context_kib_per_token = 96.0
+released = "2025-07"
+
+[[local]]
+tag = "qwen3.5:27b"
+name = "Qwen3.5 27B"
+window = 65536
+weights_gb = 17.0
+download_gb = 17.0
+context_kib_per_token = 64.0
+thinking = true
+released = "2026-02"
+
+[[local]]
+tag = "devstral:24b"
+name = "Devstral 24B"
+window = 65536
+weights_gb = 14.0
+download_gb = 14.0
+context_kib_per_token = 64.0
+released = "2025-05"
+
+[[local]]
+tag = "gpt-oss:20b"
+name = "GPT-OSS 20B"
+window = 65536
+weights_gb = 14.0
+download_gb = 14.0
+context_kib_per_token = 32.0
+thinking = true
+released = "2025-08"
+
+[[local]]
+tag = "qwen3:8b"
+name = "Qwen3 8B"
+window = 32768
+weights_gb = 6.0
+download_gb = 6.0
+context_kib_per_token = 32.0
+thinking = true
+released = "2025-04"
+
+[[local]]
+tag = "qwen2.5-coder:7b"
+name = "Qwen2.5 Coder 7B"
+window = 32768
+weights_gb = 5.0
+download_gb = 5.0
+context_kib_per_token = 32.0
+released = "2024-09"
+
+[[local]]
+tag = "llama3.2:latest"
+name = "Llama3.2"
+window = 32768
+weights_gb = 2.0
+download_gb = 2.0
+context_kib_per_token = 64.0
+released = "2024-09"

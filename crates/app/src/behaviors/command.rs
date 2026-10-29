@@ -286,6 +286,8 @@ mod tests {
             ok: Some(true),
             behavior,
             ended: None,
+            ended_at: None,
+            settled_at: None,
             input: serde_json::Value::Null,
             conversation: !run.starts_with("run-"),
             note: None,

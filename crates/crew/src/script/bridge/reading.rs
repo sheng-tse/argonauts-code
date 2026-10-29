@@ -48,6 +48,11 @@ impl Change {
         }
     }
 
+    /// Each piece's diff as git wrote it, for a scan of the lines it adds.
+    pub(in crate::script) fn diffs(&self) -> impl Iterator<Item = &str> {
+        self.pieces.iter().map(|piece| piece.diff.as_str())
+    }
+
     pub(in crate::script) fn of_tasks(changes: Vec<(String, String)>) -> Option<Self> {
         let pieces: Vec<Piece> = changes
             .into_iter()

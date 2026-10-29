@@ -132,7 +132,8 @@ pub fn list(picker: &mut Picker) {
     }
     picker.title = "Permissions".to_owned();
     picker.about =
-        "For every agent, unless its role sets its own. Pick one, then where to save it".to_owned();
+        "For every agent, unless its role sets its own. Pick one; it saves where your changes go"
+            .to_owned();
     show(picker, rows, actions);
 }
 

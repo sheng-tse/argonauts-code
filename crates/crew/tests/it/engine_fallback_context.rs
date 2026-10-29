@@ -1031,5 +1031,6 @@ fn spec() -> TaskSpec {
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }

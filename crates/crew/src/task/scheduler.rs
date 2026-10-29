@@ -15,13 +15,14 @@ use argonauts_core::settings::Settings;
 use argonauts_core::settings::limit::LimitUnit;
 
 use crate::captain;
+use crate::council::ways;
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::state::RunState;
 use crate::state::tasks::TaskEntry;
 use crate::task::contracts;
 use crate::task::machine::{self, Trigger};
-use crate::task::pipeline::{self, Until, dependencies_done, transition};
+use crate::task::pipeline::{dependencies_done, transition};
 use crate::task::support::changed_since;
 use crate::workflow::{Flow, StepAt, StepCall, StepDone, runner};
 
@@ -125,7 +126,7 @@ pub async fn run_tasks(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             active.insert(task.clone());
             let (host, at) = (host.clone(), at.clone());
             jobs.spawn(async move {
-                let state = pipeline::drive(&host, &task, &at, Until::Merged).await;
+                let state = ways::drive_planned(&host, &task, &at).await;
                 (task, state)
             });
         }
@@ -244,10 +245,13 @@ fn tasks_to_drive(
                 .count();
         let mut tasks: Vec<TaskId> = startable(state, host.settings(), running)
             .into_iter()
-            .filter(|task| !active.contains(task))
+            .filter(|task| !active.contains(task) && !ways::driven_by_its_way(state, task))
             .collect();
         for record in state.tasks.by_id.values() {
             let task = &record.spec.id;
+            if ways::driven_by_its_way(state, task) {
+                continue;
+            }
             let resumable = matches!(
                 record.state,
                 TaskState::Running
@@ -306,11 +310,11 @@ fn finished(host: &Host) -> Option<StepDone> {
         });
     }
     let left_out = left_out(&snapshot);
-    let settled = snapshot
-        .tasks
-        .by_id
-        .values()
-        .all(|record| machine::is_final(record.state) || left_out.contains(&record.spec.id));
+    let settled = snapshot.tasks.by_id.values().all(|record| {
+        machine::is_final(record.state)
+            || left_out.contains(&record.spec.id)
+            || ways::driven_by_its_way(&snapshot, &record.spec.id)
+    });
     settled.then(|| StepDone::done(summary(&snapshot)))
 }
 

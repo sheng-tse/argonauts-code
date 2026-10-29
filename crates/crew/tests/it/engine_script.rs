@@ -140,6 +140,8 @@ fn crew(workflow: &str) -> anyhow::Result<(Crew, Arc<FakeRunner>)> {
         worker_workflows: false,
         merger: Vec::new(),
         orchestrator_context: Default::default(),
+        orchestrator_picks: Default::default(),
+        ways: Default::default(),
     };
     crew.settings.workflow = workflow.to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -1014,6 +1016,8 @@ send_back_to   = "Build"
         worker_workflows: false,
         merger: Vec::new(),
         orchestrator_context: Default::default(),
+        orchestrator_picks: Default::default(),
+        ways: Default::default(),
     };
     crew.settings.workflow = "cross".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -1818,9 +1822,12 @@ async fn an_agent_cut_short_by_a_wait_for_others_goes_again_when_the_run_wakes()
         worker_workflows: false,
         merger: Vec::new(),
         orchestrator_context: Default::default(),
+        orchestrator_picks: Default::default(),
+        ways: Default::default(),
     };
     crew.settings.workflow = "council".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
+    crew.with_council_steps()?;
     let _env = crew.repo.env_guard();
 
     let first = crew.start(RunMode::Crew, REQUEST).await?;
@@ -1955,6 +1962,8 @@ async fn a_files_orchestrator_step_on_the_main_sessions_cli_starts_as_its_fork()
         worker_workflows: false,
         merger: Vec::new(),
         orchestrator_context: Default::default(),
+        orchestrator_picks: Default::default(),
+        ways: Default::default(),
     };
     crew.settings.workflow = "spec-first".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -2026,6 +2035,8 @@ async fn on_autopilot_a_new_workflow_file_goes_from_request_to_merge() -> anyhow
         worker_workflows: false,
         merger: Vec::new(),
         orchestrator_context: Default::default(),
+        orchestrator_picks: Default::default(),
+        ways: Default::default(),
     };
     crew.settings.workflow = "spec-first".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -2148,6 +2159,8 @@ fn scripted(script: String) -> anyhow::Result<Crew> {
         worker_workflows: false,
         merger: Vec::new(),
         orchestrator_context: Default::default(),
+        orchestrator_picks: Default::default(),
+        ways: Default::default(),
     };
     crew.settings.workflow = "orchestrator".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -2369,10 +2382,108 @@ async fn a_cross_review_of_an_earlier_build_doesnt_count() -> anyhow::Result<()>
     assert!(
         notes(events)
             .iter()
-            .any(|note| note.contains("a reviewer of its worker's own provider")),
+            .any(|note| note.contains(", picked from its builder's own provider, reviewed ")),
         "{:#?}",
         notes(events)
     );
+    Ok(())
+}
+
+/// A review only the task's builder could take is skipped rather than given to the builder,
+/// whatever the reviewers' list says. On autopilot the run keeps its work on its branch, and
+/// the reason names the task nobody reviewed.
+#[tokio::test]
+async fn on_autopilot_a_review_only_its_builder_could_take_keeps_the_branch() -> anyhow::Result<()>
+{
+    let mut crew = scripted(build_and_review(&[("field", "Due field")]))?;
+    crew.settings.crew.reviewer = vec![WORKER.parse()?];
+    let _env = crew.repo.env_guard();
+    let outcome = on_autopilot(&crew).await?;
+    let events = &outcome.events;
+    let said = notes(events);
+
+    assert_eq!(
+        ran_on(events, "review:field"),
+        Vec::<String>::new(),
+        "{said:#?}"
+    );
+    assert!(
+        said.contains(
+            &"review:field skipped, since nobody outside its builder's provider is left to \
+              review build:field"
+        ),
+        "{said:#?}"
+    );
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(RunOutcome::BranchLeft),
+        "{said:#?}"
+    );
+    assert!(
+        said.contains(
+            &"Autopilot answered \"Merge this run into main?\" with \"Keep the branch\" instead \
+              of asking you, since nobody outside its builder's provider is left to review \
+              build:field."
+        ),
+        "{said:#?}"
+    );
+    Ok(())
+}
+
+/// A script's review records whether you chose its reviewer. One you named for the role from
+/// the builder's own provider lets the run merge on autopilot; the same model taken from the
+/// crew is code's pick, so the run keeps its work on its branch.
+#[tokio::test]
+async fn on_autopilot_a_scripts_reviewer_you_chose_from_the_builders_provider_lets_it_merge()
+-> anyhow::Result<()> {
+    use argonauts_core::events::task::PickedBy;
+    use argonauts_core::settings::roles::RoleSettings;
+
+    for named in [true, false] {
+        let mut crew = scripted(build_and_review(&[("field", "Due field")]))?;
+        crew.services
+            .workers
+            .add(FakeRunner::cli(SAME_PROVIDER_JUDGE, "openai").respond_with(
+                |spec| match spec.step {
+                    Some(StepName::ModelJudge) => approves(),
+                    _ => FakeSession::structured(json!({"accept": true, "findings": []})),
+                },
+            ));
+        if named {
+            let models = vec![SAME_PROVIDER_JUDGE.parse()?];
+            let reviewers = RoleSettings {
+                models,
+                ..RoleSettings::default()
+            };
+            crew.settings.roles.insert(RoleName::Reviewer, reviewers);
+        } else {
+            crew.settings.crew.reviewer = vec![SAME_PROVIDER_JUDGE.parse()?];
+        }
+        let _env = crew.repo.env_guard();
+        let outcome = on_autopilot(&crew).await?;
+        let events = &outcome.events;
+        let picked: Vec<Option<PickedBy>> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                RunEventKind::Review(ReviewEvent::Reviewed { picked_by, .. }) => Some(*picked_by),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(ran_on(events, "review:field"), [SAME_PROVIDER_JUDGE]);
+        let (by, ended) = if named {
+            (PickedBy::You, RunOutcome::Merged)
+        } else {
+            (PickedBy::Code, RunOutcome::BranchLeft)
+        };
+        assert_eq!(picked, [Some(by)]);
+        assert_eq!(
+            outcome.exit,
+            EngineExit::Finished(ended),
+            "{:#?}",
+            notes(events)
+        );
+    }
     Ok(())
 }
 

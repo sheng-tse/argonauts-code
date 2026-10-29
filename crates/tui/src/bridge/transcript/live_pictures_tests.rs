@@ -8,7 +8,7 @@ use ratatui::text::Line;
 use serde_json::json;
 
 use super::live_rows_tests::{Screen, finished, pending, started};
-use super::picture_check::{Unlike, assert_matches};
+use super::picture_check::assert_matches;
 use crate::bottom::{Activity, WorkingLine};
 use crate::render::{Clock, RenderCtx};
 use crate::state::Welcome;
@@ -16,17 +16,6 @@ use crate::state::Welcome;
 const WIDTH: u16 = 118;
 const FOLDER: &str = "/work/captain";
 const PROMPT: &str = "Fix the money rounding so the three failing tests in tests/test_money.py pass. Don't change the tests.";
-
-/// Your message starts with `❯`, as the screen's reference and Claude Code draw it; the
-/// pictures draw it as `>`.
-const PROMPT_GLYPH: Unlike = Unlike {
-    row: 0,
-    cols: (0, 0),
-    why: "the message's glyph is ❯ on screen",
-};
-
-/// A fold line's counts are bold, as the screen's reference says; the pictures draw them dim.
-const BOLD_COUNTS: &str = "a fold line's counts are bold";
 
 fn in_folder(screen: &mut Screen) {
     screen.state.welcome = Some(Welcome {
@@ -80,14 +69,16 @@ fn edit_input() -> serde_json::Value {
     })
 }
 
-/// The turn's working line as the bottom draws it 9 seconds in, while the edit runs.
+/// The turn's working line as the bottom draws it 9 seconds in, the edit a second into its run.
 fn working_line() -> Line<'static> {
     let theme = Screen::theme();
     let start = Instant::now();
     let now = start + Duration::from_secs(9);
     let mut line = WorkingLine::new("Sailing", start);
     line.tokens_down = 2_100;
-    line.activity = Activity::RunningTool { since: now };
+    line.activity = Activity::RunningTool {
+        since: now - Duration::from_secs(1),
+    };
     line.hide_while_text_streams = true;
     let ctx = RenderCtx::new(WIDTH, &theme, Clock::new(start, now));
     line.line(&ctx)
@@ -111,31 +102,7 @@ fn live_moment_the_edit_s_row_is_there_while_it_runs() {
         include_str!("../../../tests/golden/transcript/live_moment.txt"),
         include_str!("../../../tests/golden/transcript/live_moment.html"),
         &Screen::theme(),
-        &[
-            PROMPT_GLYPH,
-            Unlike {
-                row: 2,
-                cols: (7, 7),
-                why: BOLD_COUNTS,
-            },
-            Unlike {
-                row: 2,
-                cols: (19, 19),
-                why: BOLD_COUNTS,
-            },
-            Unlike {
-                row: 2,
-                cols: (35, 53),
-                why: "a fold line offers ctrl+o to expand, as Claude Code's does and as the \
-                      sticky_after picture draws it",
-            },
-            Unlike {
-                row: 7,
-                cols: (33, 60),
-                why: "the working line ends with what the turn does; esc to interrupt is on the \
-                      bottom line, as in Claude Code 2.1.295",
-            },
-        ],
+        &[],
     );
 }
 
@@ -184,35 +151,7 @@ fn live_done_the_edit_s_row_is_filled_in_place() {
         include_str!("../../../tests/golden/transcript/live_done.txt"),
         include_str!("../../../tests/golden/transcript/live_done.html"),
         &Screen::theme(),
-        &[
-            Unlike {
-                row: 1,
-                cols: (11, 40),
-                why: "the picture counts a longer patch than it shows: ten added lines would \
-                      number its rows past 9, and its gutter would be wider than drawn",
-            },
-            Unlike {
-                row: 2,
-                cols: (6, 6),
-                why: "a context row's number is dim, as Claude Code draws it",
-            },
-            Unlike {
-                row: 5,
-                cols: (6, 6),
-                why: "the gap between a patch's changes is the theme's ⋮, the picture's …",
-            },
-            Unlike {
-                row: 3,
-                cols: (9, 70),
-                why: "the marker sits right against the text, as the screen's reference and \
-                      Claude Code draw it; the picture puts a space after it",
-            },
-            Unlike {
-                row: 4,
-                cols: (9, 70),
-                why: "the marker sits right against the text, as for the row above",
-            },
-        ],
+        &[],
     );
 }
 
@@ -248,7 +187,7 @@ fn scrolled_past_a_prompt() -> (crate::app::Scrollback, crate::theme::Theme) {
     reply.extend([
         Line::from(vec![
             hook(),
-            Span::styled("Done · 3 tool uses · report ✓ · 13s · 46.2k tokens", dim),
+            Span::styled("Done (3 tool uses · 46.2k tokens · 13s) · report ✓", dim),
         ]),
         Line::default(),
         Line::from(vec![
@@ -299,14 +238,6 @@ fn sticky_after_the_prompt_being_answered_stays_at_the_top() {
         include_str!("../../../tests/golden/transcript/sticky_after.txt"),
         include_str!("../../../tests/golden/transcript/sticky_after.html"),
         &theme,
-        &[
-            PROMPT_GLYPH,
-            Unlike {
-                row: 0,
-                cols: (107, 117),
-                why: "the prompt is cut a cell short of the edge, as Claude Code cuts its own; \
-                      the picture cuts it ten cells sooner",
-            },
-        ],
+        &[],
     );
 }

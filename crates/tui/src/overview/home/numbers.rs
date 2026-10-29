@@ -1,55 +1,81 @@
 //! The Overview sub-tab under the year: three groups of numbers, Tokens, Days and Sessions,
 //! each a column of labels, a column of values in the accent and dim notes after them, so
 //! everything lines up across and down. Under them the tokens drawn as two thin bars, by kind
-//! and by CLI, with their legends; then one fun fact, what's worth knowing, and where the
-//! numbers came from.
+//! and by CLI, with their legends, each CLI's under its logo, and a third, of who paid, where
+//! anything was free or paid; then one fun fact, what's worth knowing, and where the numbers
+//! came from.
 
 use argonauts_core::display_names::DisplayNames;
+use argonauts_core::events::session::Billing;
+use argonauts_core::logos::{Logo, logo_for};
 use argonauts_core::overview::{OverviewData, OverviewPeriod, OwnCount};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use time::Duration;
 
 use super::facts::{fun_fact, worth_knowing};
-use super::look::{
-    big, cli_short, cli_style, days, dollars, duration, hour_word, model_word, share, short_date,
-};
-use crate::format::{UNKNOWN, thousands};
-use crate::kit::{Drawn, Kit, bars, fit, ljust};
+use super::look::{big, days, dollars, duration, hour_word, model_word, share, short_date};
+use crate::format::{self, UNKNOWN, thousands};
+use crate::kit::legend::{self, BEFORE_NUMBERS, BEFORE_SHARE, BETWEEN_WORDS, Entry};
+use crate::kit::{Drawn, Kit, fit, ljust};
 use crate::overview::stats::draw;
-use crate::text::{spans_width, str_width, truncate_spans};
+use crate::text::{str_width, truncate_spans};
 use crate::theme::Role;
 
-/// The first two groups' columns in cells. Tokens' is the wider: its labels are names, and
-/// the longest is the app's own.
-const TOKENS: usize = 45;
-const DAYS: usize = 39;
-/// In a group the label's column, under Tokens the names', and the value's.
+/// The app's own count, the longest of Tokens' labels, and what stands after it where
+/// Claude Code's own count is shown too.
+const OURS: &str = "Argonauts Code";
+const ADDS: &str = "+ workflow agents";
+/// In a group the label's column and the value's, and the second group's column.
 const LABEL: usize = 13;
-const NAME: usize = 16;
 const VALUE: usize = 10;
-/// From this width the groups stand side by side: two columns, then the third's label, its
-/// value and a share after it.
-const SIDE_BY_SIDE: usize = TOKENS + DAYS + LABEL + VALUE + 3;
+const DAYS: usize = 39;
 /// The block's widest, so its bars stay bars on a wide screen.
 const WIDEST: usize = 116;
-/// What stands before each bar, and the blank cells after the words.
-const BY_KIND: &str = "by kind";
-const BY_CLI: &str = "by CLI";
-const AFTER_WORDS: usize = 2;
+/// What stands before each bar.
+const BY_KIND: &str = "By kind";
+const BY_CLI: &str = "By CLI";
+const WHO_PAID: &str = "Who paid";
 /// Blank cells between the first bar and the second's words.
-const BETWEEN_BARS: usize = 3;
-/// Blank cells between two entries of a legend.
-const LEGEND_GAP: usize = 2;
+const BETWEEN_BARS: usize = BETWEEN_WORDS;
+/// The most entries a legend puts on a row.
+const LEGEND_COLUMNS: usize = 4;
+/// The most rows a legend takes under a bar that has another beside it.
+const ROWS_BESIDE: usize = 2;
 
 /// The kinds of tokens in the order their bar draws them, the bulk that came from cache
 /// first and quiet, then what was written to it, what the models wrote, and new input.
 const KINDS: [(&str, Role); 4] = [
-    ("cache read", Role::TokensCached),
-    ("write", Role::TokensInput),
-    ("output", Role::TokensOutput),
-    ("input", Role::Success),
+    ("Cache read", Role::TokensCached),
+    ("Write", Role::TokensInput),
+    ("Output", Role::TokensOutput),
+    ("Input", Role::Success),
 ];
+
+/// Who paid for tokens, in the order their bar draws them: the plans' quiet bulk first, then
+/// what cost nothing, then what a key paid for.
+const PAYERS: [(Billing, &str, Role); 3] = [
+    (Billing::Plan, "Plan", Role::Faint),
+    (Billing::Free, "Free", Role::Success),
+    (Billing::Paid, "Paid", Role::AgentPurple),
+];
+
+/// Tokens' column of labels: the longest, the app's own name, and a number's room.
+fn names_column() -> usize {
+    str_width(OURS) + BEFORE_NUMBERS
+}
+
+/// The first group's column, the widest: its labels are names and its notes words, with a
+/// column of words' room after them.
+fn tokens_column() -> usize {
+    names_column() + VALUE + str_width(ADDS) + BETWEEN_WORDS
+}
+
+/// From this width the groups stand side by side: two columns, then the third's label, its
+/// value and a share after it.
+fn side_by_side() -> usize {
+    tokens_column() + DAYS + LABEL + VALUE + 3
+}
 
 /// One number: its label, its value, and what's worth saying after it.
 struct Fact {
@@ -67,11 +93,11 @@ impl Fact {
         }
     }
 
-    /// The label in a column `labels` cells wide and the value in its own, with a blank kept
-    /// after a long one.
+    /// The label in a column `labels` cells wide and the value in its own, a long one keeping
+    /// a number's room after the label and a share's after the value.
     fn spans(&self, kit: &Kit<'_>, labels: usize) -> Vec<Span<'static>> {
-        let label = labels.max(str_width(&self.label) + 1);
-        let value = VALUE.max(str_width(&self.value) + 1);
+        let label = labels.max(str_width(&self.label) + BEFORE_NUMBERS);
+        let value = VALUE.max(str_width(&self.value) + BEFORE_SHARE);
         vec![
             kit.dim(ljust(&self.label, label)),
             Span::styled(ljust(&self.value, value), kit.bold(Role::Question)),
@@ -87,11 +113,35 @@ struct Group {
     facts: Vec<Fact>,
 }
 
-/// A part of a bar: its name in the legend, its tokens, and its color.
+/// A part of a bar: its name in the legend, its tokens, and its colour, with the logo its
+/// legend shows before the name where the part is a CLI's.
 struct Part {
     name: String,
     tokens: u64,
-    style: Style,
+    role: Role,
+    logo: Option<Logo>,
+}
+
+/// The bars' rows, and the cells of the kinds' bar, which the payers' bar under them is as
+/// wide as.
+struct Bars {
+    rows: Vec<Vec<Span<'static>>>,
+    kind_cells: usize,
+}
+
+/// Cells of a bar's words and the blanks before the bar.
+fn label(words: &str) -> usize {
+    str_width(words) + BEFORE_NUMBERS
+}
+
+/// Where the bars under one another start, past the longest of their words, so switching to a
+/// period with a payers' bar never moves the others.
+fn bars_at() -> usize {
+    [BY_KIND, BY_CLI, WHO_PAID]
+        .map(label)
+        .into_iter()
+        .max()
+        .unwrap_or(0)
 }
 
 /// What the numbers draw from.
@@ -101,13 +151,21 @@ pub struct Numbers<'a> {
 }
 
 impl Numbers<'_> {
-    /// The three groups, then the two bars, in `width` cells.
+    /// The three groups, then the bars, in `width` cells.
     pub fn block(&self, kit: &Kit<'_>, width: usize) -> Drawn {
         let width = width.min(WIDEST);
         let mut drawn = self.groups(kit, width);
         drawn.push(Vec::new());
-        for row in self.bars(kit, width) {
+        let bars = self.bars(kit, width);
+        let who_paid = self.who_paid(kit, width, &bars);
+        for row in bars.rows {
             drawn.push(row);
+        }
+        if let Some(rows) = who_paid {
+            drawn.push(Vec::new());
+            for row in rows {
+                drawn.push(row);
+            }
         }
         drawn
     }
@@ -117,13 +175,14 @@ impl Numbers<'_> {
     pub fn groups(&self, kit: &Kit<'_>, width: usize) -> Drawn {
         let groups = self.facts();
         let mut drawn = Drawn::new();
-        if width >= SIDE_BY_SIDE {
+        let tokens = tokens_column();
+        if width >= side_by_side() {
             // The third group has what the two columns leave, and a long name is cut in it.
             let side_by_side = |cells: [Vec<Span<'static>>; 3]| {
                 let [first, second, third] = cells;
-                let mut row = fit(first, TOKENS);
+                let mut row = fit(first, tokens);
                 row.extend(fit(second, DAYS));
-                row.extend(truncate_spans(&third, width - TOKENS - DAYS));
+                row.extend(truncate_spans(&third, width - tokens - DAYS));
                 row
             };
             let fact = |group: &Group, at: usize| {
@@ -172,8 +231,8 @@ impl Numbers<'_> {
             ));
         }
         // What /stats leaves out is said only beside its count.
-        let adds = own.map_or("", |_| "+ workflow agents");
-        tokens.push(Fact::new("Argonauts Code", big(data.total.total()), adds));
+        let adds = own.map_or("", |_| ADDS);
+        tokens.push(Fact::new(OURS, big(data.total.total()), adds));
         tokens.push(Fact::new("API value", dollars(data.api_value), ""));
 
         let peak_hour = data
@@ -185,17 +244,17 @@ impl Numbers<'_> {
             .map(|(hour, _)| format!("peak {}", hour_word(hour)));
         let days_of = vec![
             Fact::new(
-                "active",
+                "Active",
                 data.active_days.to_string(),
                 format!("of {}", data.span_days),
             ),
             Fact::new(
-                "streak",
+                "Streak",
                 days(data.streak),
                 format!("longest {}", data.longest_streak),
             ),
             Fact::new(
-                "busiest",
+                "Busiest",
                 data.peak_day.map_or(UNKNOWN.to_owned(), short_date),
                 peak_hour.unwrap_or_default(),
             ),
@@ -206,12 +265,12 @@ impl Numbers<'_> {
             secs => duration(secs),
         };
         let mut sessions = vec![
-            Fact::new("sessions", thousands(u64::from(data.sessions())), ""),
-            Fact::new("longest", longest, ""),
+            Fact::new("Sessions", thousands(u64::from(data.sessions())), ""),
+            Fact::new("Longest", longest, ""),
         ];
         if let Some(model) = data.models.first() {
             sessions.push(Fact::new(
-                "favourite",
+                "Favorite",
                 model_word(self.names, &model.agent, model.model.as_deref()),
                 share(model.tokens.total(), data.total.total()),
             ));
@@ -219,7 +278,7 @@ impl Numbers<'_> {
         [
             Group {
                 title: "Tokens",
-                labels: NAME,
+                labels: names_column(),
                 facts: tokens,
             },
             Group {
@@ -235,7 +294,7 @@ impl Numbers<'_> {
         ]
     }
 
-    fn kinds(&self, kit: &Kit<'_>) -> Vec<Part> {
+    fn kinds(&self) -> Vec<Part> {
         let total = self.data.total;
         let counts = [
             total.cache_read,
@@ -249,69 +308,127 @@ impl Numbers<'_> {
             .map(|((name, role), tokens)| Part {
                 name: (*name).to_owned(),
                 tokens,
-                style: kit.fg(*role),
+                role: *role,
+                logo: None,
             })
             .collect()
     }
 
-    fn clis(&self, kit: &Kit<'_>) -> Vec<Part> {
+    fn clis(&self) -> Vec<Part> {
         let clis = self.data.by_cli().into_iter();
         clis.map(|(agent, tokens)| Part {
-            name: cli_short(self.names, &agent),
+            name: self.names.cli(&agent),
             tokens,
-            style: cli_style(kit, &agent),
+            role: Role::for_cli(&agent),
+            logo: Some(logo_for(&agent, None)),
         })
         .collect()
     }
 
     /// The tokens by kind and, where more than one CLI worked, by CLI: side by side with each
-    /// legend under its bar where both fit, else one bar a row.
-    fn bars(&self, kit: &Kit<'_>, width: usize) -> Vec<Vec<Span<'static>>> {
-        let kinds = self.kinds(kit);
-        let clis = self.clis(kit);
-        let (kinds_legend, clis_legend) = (legend(kit, &kinds), legend(kit, &clis));
-        let words = |words: &str| str_width(words) + AFTER_WORDS;
-        // Side by side the first bar takes five cells in eight of what the words leave.
-        let bars = width.saturating_sub(words(BY_KIND) + BETWEEN_BARS + words(BY_CLI));
-        let kind_cells = bars * 5 / 8;
-        let cli_cells = bars - kind_cells;
-        let cli_at = width - cli_cells;
-        let fits = words(BY_KIND) + spans_width(&kinds_legend) + LEGEND_GAP <= cli_at
-            && spans_width(&clis_legend) <= cli_cells;
+    /// legend under its bar where both fit in two rows, else one bar a row. A blank row
+    /// stands between each bar and its legend.
+    fn bars(&self, kit: &Kit<'_>, width: usize) -> Bars {
+        let (kinds, clis) = (self.kinds(), self.clis());
+        let (kind_entries, cli_entries) = (entries(&kinds), entries(&clis));
+        let at = bars_at();
+        // Side by side the first bar takes five cells in eight of what the words leave, and
+        // the CLIs' bar more where its legend needs them, so each legend stays under its bar.
+        let room = width.saturating_sub(at + BETWEEN_BARS + label(BY_CLI));
+        let beside = |entries: &[Entry]| legend::width_in_rows(kit, entries, ROWS_BESIDE);
+        let cli_cells = (room - room * 5 / 8).max(beside(&cli_entries)).min(room);
+        let kind_cells = room - cli_cells;
+        let fits = beside(&kind_entries) <= kind_cells && beside(&cli_entries) <= cli_cells;
         if clis.len() > 1 && fits {
-            let mut row = vec![kit.dim(ljust(BY_KIND, words(BY_KIND)))];
+            let mut row = vec![kit.dim(ljust(BY_KIND, at))];
             row.extend(bar(kit, &kinds, kind_cells));
             row.push(Span::raw(" ".repeat(BETWEEN_BARS)));
-            row.push(kit.dim(ljust(BY_CLI, words(BY_CLI))));
+            row.push(kit.dim(ljust(BY_CLI, label(BY_CLI))));
             row.extend(bar(kit, &clis, cli_cells));
-            let mut under = vec![Span::raw(" ".repeat(words(BY_KIND)))];
-            under.extend(kinds_legend);
-            let mut under = fit(under, cli_at);
-            under.extend(clis_legend);
-            return vec![row, under];
+            let kinds_legend = legend::legend(kit, &kind_entries, kind_cells, LEGEND_COLUMNS);
+            let clis_legend = legend::legend(kit, &cli_entries, cli_cells, LEGEND_COLUMNS);
+            let cli_at = width - cli_cells;
+            let mut rows = vec![row, Vec::new()];
+            for line in 0..kinds_legend.len().max(clis_legend.len()) {
+                let mut under = vec![Span::raw(" ".repeat(at))];
+                under.extend(kinds_legend.get(line).cloned().unwrap_or_default());
+                let mut under = fit(under, cli_at);
+                under.extend(clis_legend.get(line).cloned().unwrap_or_default());
+                rows.push(under);
+            }
+            return Bars { rows, kind_cells };
         }
-        // One bar a row, the two bars starting in one column.
-        let label = words(BY_KIND).max(words(BY_CLI));
-        let mut rows = Vec::new();
-        let mut one = |name: &str, parts: &[Part], legend: Vec<Span<'static>>| {
-            let mut row = vec![kit.dim(ljust(name, label))];
-            row.extend(bar(kit, parts, width.saturating_sub(label)));
-            rows.push(row);
-            let mut under = vec![Span::raw(" ".repeat(label))];
-            under.extend(legend);
-            rows.push(bars::fit_keeping_bars(under, width));
-        };
-        one(BY_KIND, &kinds, kinds_legend);
+        let cells = width.saturating_sub(at);
+        let mut rows = under_one_another(kit, BY_KIND, &kinds, &kind_entries, cells);
         if clis.len() > 1 {
-            one(BY_CLI, &clis, clis_legend);
+            rows.push(Vec::new());
+            rows.extend(under_one_another(kit, BY_CLI, &clis, &cli_entries, cells));
         }
-        rows
+        Bars {
+            rows,
+            kind_cells: cells,
+        }
+    }
+
+    /// The period's parts by who paid, those with tokens. None where nothing was free or paid,
+    /// since a period all on plans has nothing to say, or where the card leaves them out.
+    fn payers(&self) -> Option<Vec<Part>> {
+        let paid = self.data.who_paid?;
+        if paid.free == 0 && paid.paid == 0 {
+            return None;
+        }
+        let parts = PAYERS
+            .iter()
+            .filter(|(billing, ..)| paid.tokens(*billing) > 0)
+            .map(|(billing, name, role)| Part {
+                name: (*name).to_owned(),
+                tokens: paid.tokens(*billing),
+                role: *role,
+                logo: None,
+            });
+        Some(parts.collect())
+    }
+
+    /// What the paid tokens cost, `~$41.20`, where any came with a cost.
+    fn paid_cost(&self) -> Option<String> {
+        let paid = self.data.who_paid?;
+        let cost = paid.paid_cost();
+        (paid.paid > 0 && (cost.cost_usd > 0.0 || !cost.cost_partial)).then(|| format::spend(&cost))
+    }
+
+    /// Who paid for the period's tokens as one more bar, under the kinds' bar and as wide,
+    /// with its legend under it and what the paid part cost after the legend.
+    fn who_paid(
+        &self,
+        kit: &Kit<'_>,
+        width: usize,
+        bars: &Bars,
+    ) -> Option<Vec<Vec<Span<'static>>>> {
+        let parts = self.payers()?;
+        let at = bars_at();
+        let mut rows = vec![{
+            let mut row = vec![kit.dim(ljust(WHO_PAID, at))];
+            row.extend(bar(kit, &parts, bars.kind_cells));
+            row
+        }];
+        rows.push(Vec::new());
+        let cost = self.paid_cost().map(|cost| kit.dim(format!(" · {cost}")));
+        let after = cost.as_ref().map_or(0, |cost| str_width(&cost.content));
+        let room = width.saturating_sub(at + after);
+        let mut legend = legend::legend(kit, &entries(&parts), room, LEGEND_COLUMNS);
+        if let (Some(last), Some(cost)) = (legend.last_mut(), cost) {
+            last.push(cost);
+        }
+        for line in legend {
+            let mut under = vec![Span::raw(" ".repeat(at))];
+            under.extend(line);
+            rows.push(truncate_spans(&under, width));
+        }
+        Some(rows)
     }
 
     /// The tokens by kind and by CLI in words, for where bars can't be read.
     pub fn shares(&self) -> Vec<String> {
-        let theme = crate::theme::Theme::dark().with_level(crate::theme::ColorLevel::None);
-        let kit = Kit::new(&theme);
         let words = |parts: &[Part]| {
             let whole: u64 = parts.iter().map(|part| part.tokens).sum();
             parts
@@ -320,10 +437,18 @@ impl Numbers<'_> {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let mut lines = vec![format!("{BY_KIND}: {}", words(&self.kinds(&kit)))];
-        let clis = self.clis(&kit);
+        let mut lines = vec![format!("{BY_KIND}: {}", words(&self.kinds()))];
+        let clis = self.clis();
         if clis.len() > 1 {
             lines.push(format!("{BY_CLI}: {}", words(&clis)));
+        }
+        if let Some(payers) = self.payers() {
+            let cost = self.paid_cost().map(|cost| format!(" · {cost}"));
+            lines.push(format!(
+                "{WHO_PAID}: {}{}",
+                words(&payers),
+                cost.unwrap_or_default()
+            ));
         }
         lines
     }
@@ -354,23 +479,45 @@ fn own_note(own: &OwnCount, data: &OverviewData) -> String {
 
 /// The parts as one thin bar, each its share of the cells.
 fn bar(kit: &Kit<'_>, parts: &[Part], cells: usize) -> Vec<Span<'static>> {
-    let parts: Vec<(u64, Style)> = parts.iter().map(|part| (part.tokens, part.style)).collect();
+    let parts: Vec<(u64, Style)> = parts
+        .iter()
+        .map(|part| (part.tokens, kit.fg(part.role)))
+        .collect();
     draw::stacked(kit, &parts, cells)
 }
 
-/// `■ cache read 97%  ■ write 2%`: each part's square, its name and its share.
-fn legend(kit: &Kit<'_>, parts: &[Part]) -> Vec<Span<'static>> {
+/// `▌ Cache read    90%      ▌ Write     5%`: each part's swatch in its colour, a CLI's logo
+/// after it, its name and its share. The swatch keys the part of the bar, the logo says who.
+fn entries(parts: &[Part]) -> Vec<Entry> {
     let whole: u64 = parts.iter().map(|part| part.tokens).sum();
-    let mut row = Vec::new();
-    for (at, part) in parts.iter().enumerate() {
-        if at > 0 {
-            row.push(Span::raw(" ".repeat(LEGEND_GAP)));
+    let entry = |part: &Part| {
+        let entry = Entry::new(part.role, part.name.clone(), "").shared(share(part.tokens, whole));
+        match &part.logo {
+            Some(logo) => entry.with_logo(logo.clone()),
+            None => entry,
         }
-        row.extend(draw::swatch(kit, part.style));
-        row.push(Span::raw(part.name.clone()));
-        row.push(kit.dim(format!(" {}", share(part.tokens, whole))));
+    };
+    parts.iter().map(entry).collect()
+}
+
+/// A bar the width's room after its words, a blank row, and its legend under the bar.
+fn under_one_another(
+    kit: &Kit<'_>,
+    words: &str,
+    parts: &[Part],
+    entries: &[Entry],
+    cells: usize,
+) -> Vec<Vec<Span<'static>>> {
+    let at = bars_at();
+    let mut row = vec![kit.dim(ljust(words, at))];
+    row.extend(bar(kit, parts, cells));
+    let mut rows = vec![row, Vec::new()];
+    for line in legend::legend(kit, entries, cells, LEGEND_COLUMNS) {
+        let mut under = vec![Span::raw(" ".repeat(at))];
+        under.extend(line);
+        rows.push(under);
     }
-    row
+    rows
 }
 
 /// `All time · Last 7 days · Last 30 days`, the one shown bold in the accent.

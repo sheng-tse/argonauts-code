@@ -1,25 +1,33 @@
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
-   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
-  What your agents did, from 562 actions in 19 runs across 6 projects · Argonauts' labels                             
-                                                                                                                      
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
 
-[picture]
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
 
-Every model                                                                                                           
-nothing compared                                                                                                      
-←  →  compares one with                                                                                               
-the rest                                                                                                              
-                                                                                                                      
-● Haiku 5.5         406                                                                                               
-● GPT 6 Luna         66                                                                                               
-● GPT 5.6 Luna       49                                                                                               
-● Haiku 4.5          22                                                                                               
-● Gemini 3.8 Flash   19                                                                                               
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
 
-[picture]
+                                                                    Every model
+                                                                    Nothing compared · ←  →  compares one
+                                                                    ●  ◧◨ Haiku 5.5   406
+                                                                    ●  ◧◨ 6 Luna       66
+                                                                    ●  ◧◨ 5.6 Luna     49
+                                                                    ●  ◧◨ Haiku 4.5    22
+                                                                    ●  ◧◨ 3.8 Flash    19
 
-                                                                                                                      
-  Pick a model with ←  →  to see what it does more or less than the rest.                                             
-                                                                                                                      
-  r to cycle dates · g group · s this project · d deeper map · ←  →  compare · ↓  the list · esc back                 
+
+
+
+
+
+
+  Point at anything on the map to see what it is.
+
+  Label map · 562 actions in 19 runs across 6 projects · last 30 days
+  Most common
+  Returned its structured answer   169    Ran the test suite                         27
+  Read a source file                62    Edited a source file                       26
+  Searched code by pattern          28    Gave a structured answer that didn't fit   21
+
+
+
+
+   r to cycle dates · s this project · d summaries · tab groupings · ←  →  compare · t top view · esc back

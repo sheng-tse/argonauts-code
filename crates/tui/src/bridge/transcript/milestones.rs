@@ -80,6 +80,8 @@ pub(super) struct RunStory {
     pub run_name: Option<String>,
     /// The reviewers the request named, said beside the workflow's phases.
     pub reviewers_asked: Option<String>,
+    /// The checks the main agent picked for the run, said under the workflow's row.
+    pub checks_picked: Option<String>,
     /// Printed at the run's end, after the merge line.
     pub closing: Option<ClosingAnswer>,
     /// Its waits for nobody and its tries after each.
@@ -122,6 +124,7 @@ impl Milestones {
                         .crew
                         .then(|| workflows::reviewers_asked(started, &cx.state.names))
                         .flatten();
+                    story.checks_picked = workflows::checks_picked(started);
                     steps::run_started(started, story.reviewers_asked.is_some(), cx);
                 }
                 RunLifecycle::Resumed(resumed) => {

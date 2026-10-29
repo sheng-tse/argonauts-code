@@ -26,5 +26,7 @@ expression: text(&lines)
     6. Pick another agent
     7. Show the diff
     8. ☐ Remember this pick
+    9. Carry on without me
+       This part ends safely with its work kept, so nothing merges without you
 
-  Enter to choose · Tab to add a note · Esc to carry on without me · shift+tab to cycle modes
+  Enter to choose · Tab to add a note · Esc back to the list · shift+tab to cycle modes

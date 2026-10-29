@@ -658,7 +658,12 @@ on = ["needs_you"]
 fn conversation_commands_are_safety_keys_only_your_global_config_may_set() {
     assert_eq!(
         GLOBAL_ONLY_KEYS,
-        ["notifications.conversation.*", "telemetry.*", "updates.*"]
+        [
+            "notifications.conversation.*",
+            "telemetry.*",
+            "updates.*",
+            "save_changes_to"
+        ]
     );
     for key in GLOBAL_ONLY_KEYS {
         assert!(SAFETY_KEYS.contains(key), "{key}");

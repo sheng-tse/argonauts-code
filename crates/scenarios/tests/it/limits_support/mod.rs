@@ -26,7 +26,7 @@ pub use events::*;
 pub use fakes::*;
 pub use probe::*;
 pub use questions::*;
-pub use render::{RESET_LATER, RESET_SOON, SOON, render as render_scenario};
+pub use render::{RESET_LATER, RESET_SOON, SOON, render as render_scenario, reset_in_soon};
 
 /// The prompt every task here gets. The recorded build runs of all three agents answered it.
 pub const TASK: &str =

@@ -47,6 +47,9 @@ struct Known {
     stamp: Stamp,
     /// `None` when nothing a wake can end holds the run.
     wait: Option<Wait>,
+    /// When its soonest open fallback question stops waiting for you, by the settings the last
+    /// check read.
+    asks_until: Option<OffsetDateTime>,
 }
 
 /// A journal only grows, so the same length and modified time mean the same events.
@@ -109,18 +112,22 @@ struct OpenFallback {
 }
 
 impl WaitingRuns {
-    /// The soonest time a run waiting out an outage tries again, after `now`, as its journal
-    /// said when last read, so the app wakes it then rather than up to a check later.
+    /// The soonest time after `now` a waiting run tries again after an outage, or a fallback
+    /// question it waits on stops waiting for you, as its journal said when last read, so the
+    /// app wakes it then rather than up to a check later.
     pub(crate) fn soonest(&self, now: OffsetDateTime) -> Option<OffsetDateTime> {
         self.known
             .values()
-            .filter_map(|known| match &known.wait {
-                Some(Wait::Cli {
-                    until: Some(until), ..
-                }) => Some(*until),
-                _ => None,
+            .flat_map(|known| {
+                let retries = match &known.wait {
+                    Some(Wait::Cli {
+                        until: Some(until), ..
+                    }) => Some(*until),
+                    _ => None,
+                };
+                retries.into_iter().chain(known.asks_until)
             })
-            .filter(|until| *until > now)
+            .filter(|at| *at > now)
             .min()
     }
 
@@ -161,7 +168,15 @@ impl WaitingRuns {
             {
                 due.push((run.clone(), cause));
             }
-            known.insert(run, Known { stamp, wait });
+            let asks_until = wait.as_ref().and_then(|wait| wait.asks_until(settings));
+            known.insert(
+                run,
+                Known {
+                    stamp,
+                    wait,
+                    asks_until,
+                },
+            );
         }
         // Runs whose folders went away drop out here.
         self.known = known;
@@ -219,6 +234,18 @@ impl Wait {
             }
             WaitReason::Paused => None,
         }
+    }
+
+    /// When the soonest open fallback question stops waiting for you, by `settings` unless the
+    /// run keeps its own.
+    fn asks_until(&self, settings: &Settings) -> Option<OffsetDateTime> {
+        let Self::Fallbacks { open, own_settings } = self else {
+            return None;
+        };
+        let settings = own_settings.as_deref().unwrap_or(settings);
+        open.iter()
+            .filter_map(|fallback| ask_deadline(settings, fallback))
+            .min()
     }
 
     fn wakes(
@@ -382,16 +409,21 @@ fn open_fallbacks(events: &[RunEvent], waiting_on: &[ApprovalId]) -> Vec<OpenFal
 }
 
 fn ask_timeout_passed(settings: &Settings, fallback: &OpenFallback, now: OffsetDateTime) -> bool {
+    ask_deadline(settings, fallback).is_some_and(|at| at <= now)
+}
+
+/// When the fallback question stops waiting for you and the fallback goes ahead.
+fn ask_deadline(settings: &Settings, fallback: &OpenFallback) -> Option<OffsetDateTime> {
     let ApprovalPacket::Fallback(plan) = &fallback.opened.packet else {
-        return false;
+        return None;
     };
     let applied = settings
         .fallback
         .applied_to(fallback.role, &plan.stopped.agent_id());
     match applied.ask_timeout.parse() {
-        Ok(Some(timeout)) => fallback.opened_at + timeout <= now,
+        Ok(Some(timeout)) => Some(fallback.opened_at + timeout),
         // "none" waits for you; a bad span was already refused when the settings loaded.
-        Ok(None) | Err(_) => false,
+        Ok(None) | Err(_) => None,
     }
 }
 
@@ -698,6 +730,11 @@ mod tests {
             waiting_runs
                 .due(&env, &settings, &Board::default(), now)
                 .is_empty()
+        );
+        // The app wakes the run when the question stops waiting, not a check later.
+        assert_eq!(
+            waiting_runs.soonest(now),
+            Some(asked_at + time::Duration::hours(3))
         );
     }
 

@@ -211,6 +211,9 @@ pub fn spoken(view: &ModsView) -> Vec<String> {
 }
 
 #[cfg(test)]
+mod drawings_tests;
+
+#[cfg(test)]
 mod tests {
     use argonauts_core::settings::mods::view::ModRow;
     use argonauts_core::settings::mods::{ModBody, check};
@@ -296,7 +299,7 @@ mod tests {
         let kit = Kit::new(&theme);
         let view = view();
         let band = above_input(&kit, &view, room(40));
-        assert_eq!(band.height(), 5);
+        assert_eq!(band.height(), 7);
         let part = line_part(&kit, &view, "branch").unwrap();
         let words: String = part.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(words, "main");

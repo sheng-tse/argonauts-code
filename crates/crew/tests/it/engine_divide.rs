@@ -12,21 +12,28 @@ use serde_json::{Value, json};
 use argonauts_core::api::ApprovalAnswer;
 use argonauts_core::engine::RepoContext;
 use argonauts_core::events::approval::{
-    AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket, PlanPacket,
+    AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
+    PlanPacket, WayObjection,
+};
+use argonauts_core::events::council::{
+    CouncilEvent, CouncilEventKind, CouncilMessage, MessageKind, Point, PointStance, PointState,
+    Seat, SeatRole, Seating, Speaker, Stance, TextPart,
 };
 use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
 use argonauts_core::events::plan::{DivideEvent, JudgingResult, PlanEvent, PlanTally};
 use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunStarted};
-use argonauts_core::events::task::{MergeEvent, TaskEvent, TaskKind, TaskState};
+use argonauts_core::events::task::{MergeEvent, TaskEvent, TaskKind, TaskState, Way};
 use argonauts_core::events::workflow::StepEnd;
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{DraftId, WorkflowId};
+use argonauts_core::names::{DraftId, MessageId, SeatId, WorkflowId};
 use argonauts_core::session_runner::SessionSpec;
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::settings::council::SameModelCheck;
 use argonauts_core::settings::protocol::JudgingMethod;
 use argonauts_core::steps::StepName;
 use argonauts_core::workflow::{StandardPhase, StepRef};
-use argonauts_core::{RepoId, RunId};
+use argonauts_core::{RepoId, RunId, TaskId};
 use argonauts_crew::approvals;
 use argonauts_crew::divide;
 use argonauts_crew::engine::host::Host;
@@ -73,6 +80,38 @@ impl Stage {
         configure: impl FnOnce(&mut Settings),
         answers: fn(&SessionSpec) -> FakeSession,
     ) -> anyhow::Result<Self> {
+        Self::built(
+            files,
+            new_dependencies,
+            configure,
+            answers,
+            REQUEST,
+            Vec::new(),
+        )
+    }
+
+    /// A run whose request is `request`.
+    fn asking(request: &str, configure: impl FnOnce(&mut Settings)) -> anyhow::Result<Self> {
+        Self::built(&[], &[], configure, answer, request, Vec::new())
+    }
+
+    /// A run whose request is `request`, after a council talked as `talk` says.
+    fn after_talk(
+        request: &str,
+        talk: Vec<RunEventKind>,
+        configure: impl FnOnce(&mut Settings),
+    ) -> anyhow::Result<Self> {
+        Self::built(&[], &[], configure, answer, request, talk)
+    }
+
+    fn built(
+        files: &[(&str, &str)],
+        new_dependencies: &[&str],
+        configure: impl FnOnce(&mut Settings),
+        answers: fn(&SessionSpec) -> FakeSession,
+        request: &str,
+        talk: Vec<RunEventKind>,
+    ) -> anyhow::Result<Self> {
         let repo = TempRepo::new()?;
         for (path, text) in files {
             repo.write(path, text)?;
@@ -102,7 +141,7 @@ impl Stage {
             worktrees: repo.home().join("worktrees/repo/run-01"),
             base_worktree: repo.home().join("worktrees/repo/run-01/base"),
         };
-        let history = history(&run, &context, &base, new_dependencies)?;
+        let history = history(&run, &context, &base, new_dependencies, request, talk)?;
         let (engine, sink, _commands) =
             engine_context_in(&services, settings, context, history.clone());
         let shared = shared_in(&repo, &engine, RunState::fold(&history))?;
@@ -253,6 +292,45 @@ async fn plan_approval_after_divide() -> anyhow::Result<()> {
             ..
         })
     )));
+    Ok(())
+}
+
+/// A task the plan gives no way takes the rule of thumb's, and the record says so from the
+/// graph on, so the run list can say how each task runs: the plan's two tasks on every request
+/// by Maker-checker, the rest in their worker's own session.
+#[tokio::test]
+async fn a_task_the_plan_gives_no_way_takes_the_rule_of_thumbs_from_the_graph_on()
+-> anyhow::Result<()> {
+    use argonauts_core::events::task::Way;
+
+    let stage = Stage::new(&[], &[], |_| {})?;
+    let mut step = stage.start();
+    stage
+        .answer(&mut step, 1, AnswerAction::Approve, None)
+        .await?;
+    step.await??;
+    let events = stage.sink.events();
+    let ways: Vec<Option<Way>> = events
+        .iter()
+        .flat_map(|event| match &event.kind {
+            RunEventKind::Divide(DivideEvent::Graph(graph)) => graph.tasks.clone(),
+            RunEventKind::Task(TaskEvent::Created(spec)) => vec![(**spec).clone()],
+            _ => Vec::new(),
+        })
+        .map(|spec| spec.way.map(|way| way.how))
+        .collect();
+    assert_eq!(ways.len(), 10, "five in the graph and five created");
+    let (graph, created) = ways.split_at(5);
+    assert_eq!(graph, created, "the tasks keep the graph's ways");
+    let maker_checker = Some(Way::Workflow {
+        name: argonauts_core::workflow::WorkflowRef::new("maker-checker"),
+    });
+    let by_maker_checker = graph.iter().filter(|way| **way == maker_checker).count();
+    let own_session = graph
+        .iter()
+        .filter(|way| **way == Some(Way::OwnSession))
+        .count();
+    assert_eq!((by_maker_checker, own_session), (2, 3), "{ways:?}");
     Ok(())
 }
 
@@ -520,11 +598,15 @@ fn proposal() -> Value {
     })
 }
 
+const REQUEST: &str = "Rate-limit the API per key.";
+
 fn history(
     run: &RunId,
     context: &RepoContext,
     base: &str,
     new_dependencies: &[&str],
+    request: &str,
+    talk: Vec<RunEventKind>,
 ) -> anyhow::Result<Vec<RunEvent>> {
     let drafts = context.run_dir.join("drafts");
     std::fs::create_dir_all(&drafts)?;
@@ -557,7 +639,7 @@ fn history(
         sha256: "0".repeat(64),
     };
     let started = RunStarted {
-        request: "Rate-limit the API per key.".to_owned(),
+        request: request.to_owned(),
         title: "Rate limits".to_owned(),
         mode: RunMode::Crew,
         forced: true,
@@ -581,7 +663,7 @@ fn history(
         required_steps: Vec::new(),
         starts_from: None,
     };
-    let kinds = vec![
+    let mut kinds = vec![
         RunEventKind::Run(RunLifecycle::Started(Box::new(started))),
         RunEventKind::Goal(GoalEvent::Approved {
             file: goal,
@@ -611,6 +693,7 @@ fn history(
             near_tie: false,
         })),
     ];
+    kinds.extend(talk);
     Ok(kinds
         .into_iter()
         .enumerate()
@@ -669,4 +752,512 @@ fn provider(worker: &str) -> &'static str {
     CREW.iter()
         .find(|(name, _)| *name == worker)
         .map_or("unknown", |(_, provider)| provider)
+}
+
+/// The step's end, or an error once it waits too long, as on an approval that opened again
+/// and that the test never answers.
+async fn ends(step: Step) -> anyhow::Result<StepDone> {
+    tokio::time::timeout(deadline::scaled(Duration::from_secs(20)), step)
+        .await
+        .context("the step still waits")??
+}
+
+/// Each task as the approved plan created it: its title, its way, and whether you asked for it.
+fn created_ways(events: &[RunEvent]) -> Vec<(String, Option<(Way, bool)>)> {
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Task(TaskEvent::Created(spec)) => Some((
+                spec.title.clone(),
+                spec.way
+                    .as_ref()
+                    .map(|way| (way.how.clone(), way.asked_by_you)),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+fn workflow_way(name: &str) -> Way {
+    Way::Workflow {
+        name: argonauts_core::workflow::WorkflowRef::new(name),
+    }
+}
+
+#[tokio::test]
+async fn a_way_your_request_names_binds_and_the_rest_follow_the_rule_of_thumb() -> anyhow::Result<()>
+{
+    let stage = Stage::asking(
+        "Rate-limit the API per key: the store by Maker-checker.",
+        |s| s.divide.predictions = false,
+    )?;
+    let mut step = stage.start();
+    stage
+        .answer(&mut step, 1, AnswerAction::Approve, None)
+        .await?;
+    ends(step).await?;
+
+    let created = created_ways(&stage.sink.events());
+    let way_of = |title: &str| {
+        created
+            .iter()
+            .find(|(created, _)| created == title)
+            .and_then(|(_, way)| way.clone())
+    };
+    assert_eq!(way_of("store"), Some((workflow_way("maker-checker"), true)));
+    assert_eq!(
+        way_of("middleware"),
+        Some((workflow_way("maker-checker"), false))
+    );
+    assert_eq!(way_of("api"), Some((Way::OwnSession, false)));
+    assert!(
+        created.iter().all(|(_, way)| way.is_some()),
+        "every task is done some way: {created:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_way_the_plan_leaves_out_holds_work_until_you_approve_it_again() -> anyhow::Result<()> {
+    let stage = Stage::asking(
+        "Rate-limit the API per key, and the docs across agents.",
+        |s| s.divide.predictions = false,
+    )?;
+    let mut step = stage.start();
+    let first = stage
+        .answer(&mut step, 1, AnswerAction::Approve, None)
+        .await?;
+    let lacks = "You asked for work done by agents, and no task in the plan is.";
+    assert!(plan_packet(&first)?.flags.iter().any(|flag| flag == lacks));
+    let again = stage
+        .answer(&mut step, 2, AnswerAction::Approve, None)
+        .await?;
+    assert!(
+        plan_packet(&again)?
+            .flags
+            .iter()
+            .any(|flag| flag == &format!("Before work starts: {lacks}")),
+        "{:?}",
+        plan_packet(&again)?.flags
+    );
+    ends(step).await?;
+
+    let events = stage.sink.events();
+    assert_eq!(
+        plan_approvals(&events).len(),
+        2,
+        "approved twice, it goes ahead"
+    );
+    assert!(events.iter().any(|event| matches!(
+        &event.kind,
+        RunEventKind::Note(note) if note.text == format!("The plan went ahead as approved: {lacks}")
+    )));
+    assert_eq!(created_ways(&events).len(), 5);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_way_you_change_at_the_approval_binds_and_is_recorded() -> anyhow::Result<()> {
+    let stage = Stage::new(&[], &[], |settings| settings.divide.predictions = false)?;
+    let mut step = stage.start_workflow()?;
+    stage
+        .answer(
+            &mut step,
+            1,
+            AnswerAction::ApproveWithEdits,
+            Some("task-002 way 3 agents"),
+        )
+        .await?;
+    let reopened = stage
+        .answer(
+            &mut step,
+            2,
+            AnswerAction::ApproveWithEdits,
+            Some("task-002 way maker-checker"),
+        )
+        .await?;
+    assert!(
+        plan_packet(&reopened)?.flags.iter().any(|flag| flag
+            == "Your edits weren't applied: store can't take 3 agents: its paths don't split \
+                into parts that share no files."),
+        "{:?}",
+        plan_packet(&reopened)?.flags
+    );
+    ends(step).await?;
+
+    let events = stage.sink.events();
+    let way_of_store = created_ways(&events)
+        .into_iter()
+        .find(|(title, _)| title == "store")
+        .and_then(|(_, way)| way);
+    assert_eq!(way_of_store, Some((workflow_way("maker-checker"), true)));
+    let decided = events
+        .iter()
+        .find_map(|e| match &e.kind {
+            RunEventKind::Plan(PlanEvent::Decided(decision)) => Some(decision.clone()),
+            _ => None,
+        })
+        .context("no Plan::Decided")?;
+    assert!(
+        decided.rationale.ends_with(
+            "You changed how store is done: by Maker-checker, where the note keeper had it in \
+             its own session."
+        ),
+        "{}",
+        decided.rationale
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_workflow_one_task_cant_follow_is_named_before_work_starts() -> anyhow::Result<()> {
+    let stage = Stage::asking(
+        "Rate-limit the API per key: the store by Plan-first.",
+        |s| s.divide.predictions = false,
+    )?;
+    // Its first step is the orchestrator's, which plans a whole request.
+    stage.repo.write(
+        ".argonauts/workflows/plan-first.toml",
+        "name = \"plan-first\"\n[[step]]\nname = \"Plan\"\nrole = \"orchestrator\"\n\
+         [[step]]\nname = \"Build\"\nrole = \"worker\"\n",
+    )?;
+    let mut step = stage.start();
+    let first = stage
+        .answer(&mut step, 1, AnswerAction::SendBack, Some("Try again."))
+        .await?;
+    ends(step).await?;
+    assert!(
+        plan_packet(&first)?.flags.iter().any(|flag| flag
+            == "store: Plan-first can't do one task: its Plan step is the orchestrator's."),
+        "{:?}",
+        plan_packet(&first)?.flags
+    );
+    Ok(())
+}
+
+/// In auto the run may settle the plan for you, except a plan that breaks a way you asked for:
+/// that one waits for you.
+#[tokio::test]
+async fn a_plan_that_breaks_your_way_waits_for_you_in_auto() -> anyhow::Result<()> {
+    let stage = Stage::asking(
+        "Rate-limit the API per key: the store by Plan-first.",
+        |s| {
+            s.divide.predictions = false;
+            s.approvals.plan.mode = ApprovalMode::Auto;
+        },
+    )?;
+    stage.repo.write(
+        ".argonauts/workflows/plan-first.toml",
+        "name = \"plan-first\"\n[[step]]\nname = \"Plan\"\nrole = \"orchestrator\"\n\
+         [[step]]\nname = \"Build\"\nrole = \"worker\"\n",
+    )?;
+    let mut step = stage.start();
+    let first = stage
+        .answer(&mut step, 1, AnswerAction::SendBack, Some("Try again."))
+        .await?;
+    ends(step).await?;
+    assert_eq!(first.mode, ApprovalMode::Supervised);
+    assert!(first.needs_you);
+    Ok(())
+}
+
+/// On autopilot nothing waits for you: a plan that breaks a way you asked for opens and is
+/// approved as it stands at once in your place, one line says what it lacks, and the run's
+/// closing answer lists it among what autopilot decided.
+#[tokio::test]
+async fn a_plan_that_breaks_your_way_goes_ahead_on_autopilot_and_says_so() -> anyhow::Result<()> {
+    let stage = Stage::asking(
+        "Rate-limit the API per key: the store by Plan-first.",
+        |s| {
+            s.divide.predictions = false;
+            s.approvals.plan.mode = ApprovalMode::Autopilot;
+        },
+    )?;
+    stage.repo.write(
+        ".argonauts/workflows/plan-first.toml",
+        "name = \"plan-first\"\n[[step]]\nname = \"Plan\"\nrole = \"orchestrator\"\n\
+         [[step]]\nname = \"Build\"\nrole = \"worker\"\n",
+    )?;
+    let done = ends(stage.start()).await?;
+    assert_eq!(
+        done.summary
+            .as_deref()
+            .map(|summary| summary.split(':').next()),
+        Some(Some("Plan approved on autopilot")),
+        "{done:?}"
+    );
+    let events = stage.sink.events();
+    let opened = plan_approvals(&events);
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert!(!opened[0].needs_you, "nothing asked you");
+    let decided: Vec<&ApprovalDecided> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Approval(ApprovalEvent::Decided(decided))
+                if decided.id == opened[0].id =>
+            {
+                Some(decided)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(decided.len(), 1, "{decided:?}");
+    assert_eq!(decided[0].by, Party::Autopilot);
+    assert_eq!(decided[0].action, AnswerAction::Approve);
+    assert_eq!(
+        stage.host.read(approvals::autopilot::decided),
+        ["\"Approve this plan?\" took \"Approve the plan\"".to_owned()]
+    );
+    let said: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Note(note) if note.text.starts_with("Autopilot approved the plan") => {
+                Some(note.text.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0]
+            .ends_with("store: Plan-first can't do one task: its Plan step is the orchestrator's."),
+        "{said:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_council_that_asks_before_a_same_maker_check_asks_once_at_the_plan() -> anyhow::Result<()>
+{
+    let flags_with = |check: SameModelCheck| async move {
+        let stage = Stage::asking(
+            "Rate-limit the API per key: the store by Maker-checker.",
+            |s| {
+                s.divide.predictions = false;
+                s.workflow = "council".to_owned();
+                s.council.same_model_check = check;
+                s.crew.clear();
+                s.crew.add(CREW[0].0.parse().expect("a model"));
+            },
+        )?;
+        let mut step = stage.start();
+        let first = stage
+            .answer(&mut step, 1, AnswerAction::SendBack, Some("Try again."))
+            .await?;
+        ends(step).await?;
+        anyhow::Ok(plan_packet(&first)?.flags.clone())
+    };
+
+    let asked = flags_with(SameModelCheck::Ask).await?;
+    let asks: Vec<&String> = asked
+        .iter()
+        .filter(|flag| flag.starts_with("Same maker: "))
+        .collect();
+    assert_eq!(asks.len(), 1, "{asked:?}");
+    assert!(
+        asks[0].contains("checks store") && asks[0].ends_with("Approving the plan lets it."),
+        "{asks:?}"
+    );
+    let allowed = flags_with(SameModelCheck::Allow).await?;
+    assert!(
+        !allowed.iter().any(|flag| flag.starts_with("Same maker: ")),
+        "{allowed:?}"
+    );
+    Ok(())
+}
+
+/// A council where `objector` objects to your one point, `yours`, saying `why`.
+fn objected(objector: &SeatId, yours: &str, why: &str) -> anyhow::Result<Vec<RunEventKind>> {
+    let talk = StepRef {
+        workflow: WorkflowId::parse("wf-001").context("a workflow id")?,
+        phase: 1,
+        path: vec![0],
+    };
+    let mut seats = Vec::new();
+    for (at, (worker, _)) in CREW.iter().enumerate() {
+        seats.push(Seat {
+            id: SeatId::numbered(at as u32 + 1),
+            model: worker.parse()?,
+            role: SeatRole::Proposer,
+            number: None,
+        });
+    }
+    let against = vec![PointStance {
+        point: 1,
+        stance: Stance::Object,
+    }];
+    let kinds = [
+        CouncilEventKind::Seated(Seating {
+            seats,
+            notes: Some(SeatId::numbered(1)),
+        }),
+        CouncilEventKind::Points {
+            points: vec![Point {
+                number: 1,
+                words: yours.to_owned(),
+                state: PointState::Yours,
+                raised_by: None,
+                sides: Vec::new(),
+            }],
+        },
+        CouncilEventKind::Message(Box::new(CouncilMessage {
+            id: MessageId::numbered(1),
+            from: Speaker::Seat(objector.clone()),
+            kind: MessageKind::Talk,
+            text: vec![TextPart::Words(why.to_owned())],
+            reply_to: None,
+            mentions: Vec::new(),
+            stances: against.clone(),
+            hidden: 0,
+            hidden_names: Vec::new(),
+            guesses_hidden: 0,
+            rewritten: false,
+            declined: false,
+            started_before: None,
+        })),
+        CouncilEventKind::Stances {
+            seat: objector.clone(),
+            stances: against,
+        },
+    ];
+    Ok(kinds
+        .into_iter()
+        .map(|kind| {
+            RunEventKind::Council(CouncilEvent {
+                talk: talk.clone(),
+                kind,
+            })
+        })
+        .collect())
+}
+
+/// A task done by a workflow carries how many steps the workflow declares, which its row
+/// counts done of before they start.
+#[tokio::test]
+async fn a_task_done_by_a_workflow_carries_its_steps() -> anyhow::Result<()> {
+    let stage = Stage::asking(
+        "Rate-limit the API per key: the store by Maker-checker.",
+        |s| {
+            s.divide.predictions = false;
+        },
+    )?;
+    let mut step = stage.start();
+    stage
+        .answer(&mut step, 1, AnswerAction::Approve, None)
+        .await?;
+    ends(step).await?;
+    let steps = stage
+        .sink
+        .events()
+        .iter()
+        .find_map(|event| match &event.kind {
+            RunEventKind::Task(TaskEvent::Created(spec)) if spec.title == "store" => {
+                spec.way.as_ref().map(|way| way.steps)
+            }
+            _ => None,
+        });
+    assert_eq!(steps, Some(Some(2)), "Maker-checker builds, then checks");
+    Ok(())
+}
+
+/// The seat you name for the work you ask a way for does that work.
+#[tokio::test]
+async fn the_seat_you_name_with_a_way_does_that_task() -> anyhow::Result<()> {
+    let stored = |request: &'static str| async move {
+        let talk = objected(&SeatId::numbered(2), "the limits", "Fine.")?;
+        let stage = Stage::after_talk(request, talk, |s| s.divide.predictions = false)?;
+        let mut step = stage.start();
+        stage
+            .answer(&mut step, 1, AnswerAction::Approve, None)
+            .await?;
+        ends(step).await?;
+        let worker = stage
+            .sink
+            .events()
+            .iter()
+            .find_map(|event| match &event.kind {
+                RunEventKind::Task(TaskEvent::Created(spec)) if spec.title == "store" => {
+                    Some(spec.worker.clone())
+                }
+                _ => None,
+            });
+        anyhow::Ok(worker.flatten())
+    };
+    let gpt: argonauts_core::names::ModelRef = CREW[1].0.parse()?;
+    let named =
+        stored("Rate-limit the API per key: let GPT 5.6 do the store by Maker-checker.").await?;
+    assert_eq!(named, Some(gpt.clone()));
+    let unnamed = stored("Rate-limit the API per key: the store by Maker-checker.").await?;
+    assert_ne!(
+        unnamed,
+        Some(gpt),
+        "the plan alone gives the store to another model"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_seats_objection_to_your_way_is_shown_and_recorded_and_yours_stands() -> anyhow::Result<()>
+{
+    let talk = objected(
+        &SeatId::numbered(2),
+        "the store by Maker-checker",
+        "A store this small needs no checker. Its own session is enough.",
+    )?;
+    let stage = Stage::after_talk(
+        "Rate-limit the API per key: the store by Maker-checker.",
+        talk,
+        |s| s.divide.predictions = false,
+    )?;
+    let mut step = stage.start();
+    stage
+        .answer(
+            &mut step,
+            1,
+            AnswerAction::ApproveWithEdits,
+            Some("task-001 way maker-checker"),
+        )
+        .await?;
+    ends(step).await?;
+
+    let events = stage.sink.events();
+    let (shown, offer) = events
+        .iter()
+        .find_map(|e| match &e.kind {
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) => match &opened.packet {
+                ApprovalPacket::Plan(plan) => Some((plan.objections.clone(), plan.offer.clone())),
+                _ => None,
+            },
+            _ => None,
+        })
+        .context("no plan approval")?;
+    // Approve with edits offers the ways the council's setup allows, own session first.
+    let offer = offer.context("a plan with ways offers them")?;
+    assert_eq!(offer.ways.first(), Some(&Way::OwnSession));
+    assert_eq!(
+        shown,
+        [WayObjection {
+            task: TaskId::numbered(2),
+            seat: SeatId::numbered(2),
+            reason: vec![TextPart::Words(
+                "A store this small needs no checker".to_owned()
+            )],
+        }]
+    );
+    let decided = events
+        .iter()
+        .find_map(|e| match &e.kind {
+            RunEventKind::Plan(PlanEvent::Decided(decision)) => Some(decision.clone()),
+            _ => None,
+        })
+        .context("no Plan::Decided")?;
+    assert!(
+        decided.rationale.ends_with(
+            "store is done by Maker-checker, as you asked. A seat objected: A store this small \
+             needs no checker · yours stands"
+        ),
+        "{}",
+        decided.rationale
+    );
+    Ok(())
 }

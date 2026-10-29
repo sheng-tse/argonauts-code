@@ -1,0 +1,38 @@
+Thread  ·  ▐▌ 3.8 Flash's message and its 3 replies                                    esc to go back to the whole talk 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+     3.8 Flash                                                                                                          
+   ╭─ ▐▌ An in-memory bucket on each node                                                                               
+                                                                               ▐▌✔  ▐▌✘                                 
+     The balancer spreads a client over all 3 nodes, so a third each still lets bursts                                  
+     through. Redis is already here for sessions (src/session/store.ts); keep your                                      
+     interface for the tests. And the balancer's probe calls /health with no key, so a                                  
+▐▌   plain 401 takes a node out.                                                                                        
+                                                                                                                        
+     Qwen3 Coder 30B · started before it read yours                                                                     
+                                                                             ▐▌✘  ▐▌✔  ▐▌✘                              
+     Agreed: Redis for real, the in-memory store for tests. On calls with no key I'm with                               
+▐▌   ▐▌ 5.6 Luna: 401.                                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                    Calls with no key: don't break them yet. Warn them for 30 days, then 401. /health   
+                                    stays open.                                                                         
+                                                                                                                        
+                                                                                                   Read by ▐▌ ▐▌ ▐▌ ▐▌  
+                                                                                                                        
+     3.8 Flash                                                                                                          
+   ╭─ Calls with no key: don't break them yet                                                                           
+                                                                              ▐▌✔  ▐▌✔  ▐▌✔                             
+     Then for 30 days calls with no key keep a small shared bucket, 10 a second, and get a                              
+▐▌   Deprecation header with the date; after that, 401. /health stays open for good.                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────── thread ─
+❯ Reply in this thread; every seat sees it                                                                              
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  esc to go back · ↑ ↓  to pick a message · r to reply to it                                                            

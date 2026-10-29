@@ -9,11 +9,11 @@
 //! the session picked out can't start anything.
 
 use argonauts_core::events::run::{
-    CaptainOrCrewDecision, InstructionOutcome, RunMode, handed_over,
+    CaptainOrCrewDecision, CheckedInstruction, InstructionOutcome, RunMode, handed_over,
 };
 use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::protocol::{CaptainKind, ForcedMode};
+use argonauts_core::settings::protocol::{CaptainKind, CheckCommand, ForcedMode};
 use argonauts_core::steps::intake::{Instruction, InstructionKind};
 use argonauts_core::text::sentence_case;
 use argonauts_crew::ultra as ultra_engine;
@@ -35,7 +35,10 @@ pub(super) fn tool() -> MainTool {
         name: NAME,
         about: "`argonauts_start_workflow` hands work to the user's crew: Argonauts Code starts the \
                 workflow they chose, other agents plan, build and review the work, and its \
-                closing answer lands in this conversation.",
+                closing answer lands in this conversation. When the user has set no checks, \
+                pass the commands that show the change works in its `checks`: they hold for \
+                that run alone. You never write checks, or any setting, into the files in \
+                .argonauts/ yourself.",
         offered,
         call,
     }
@@ -109,6 +112,15 @@ fn call(ctx: &mut Ctx, conversation: &mut ConversationState, call: Call) -> Vec<
             &call.turn,
         ));
     start.required_steps = super::super::talk::required_steps(conversation, &call.turn);
+    // Checks the session picked hold for this run alone, where you set none.
+    let checks = Picked::from_call(call.arguments.get("checks"), ctx.settings());
+    if let Some(setting) = checks.setting() {
+        start.request_settings.push(setting);
+        followed_by_the_checks(&mut start.instructions, &checks);
+    }
+    if let Picked::ForTheRun(list) = &checks {
+        super::super::talk::run_checks::ran_with(conversation, list);
+    }
     if same_model && mode == RunMode::Crew {
         start
             .request_settings
@@ -120,7 +132,7 @@ fn call(ctx: &mut Ctx, conversation: &mut ConversationState, call: Call) -> Vec<
         start = planned(start);
     }
     // The crew shown is the one the run has, the models it adds around your words included.
-    keep::offer_in_run(ctx, conversation, &applied, Some(&start.request_settings));
+    keep::offer_in_run(ctx, &applied, Some(&start.request_settings));
     let (what, began) = match &in_use {
         Some(workflow) => (
             format!("The {workflow} workflow"),
@@ -166,10 +178,11 @@ fn call(ctx: &mut Ctx, conversation: &mut ConversationState, call: Call) -> Vec<
     start.starts_from = begins
         .as_ref()
         .map(|begins| begins.starts_from(written_by, tokens, |id| ctx.names.cli(id)));
-    let line = crew.line(|worker| ctx.names.worker(&ctx.names.running(worker)));
+    let line = crew.line(|worker| ctx.names.worker(worker));
     let began = format!(
-        "{began} Your whole reply to the user is this one line, word for word, with nothing \
-         before or after it: {line}"
+        "{began}{} Your whole reply to the user is this one line, word for word, with nothing \
+         before or after it: {line}",
+        checks.told()
     );
     // The answer waits until the run is under way or has failed, so it tells the truth. An
     // orchestrator that copies this session hears it once the run is taken, so the copy holds
@@ -180,6 +193,101 @@ fn call(ctx: &mut Ctx, conversation: &mut ConversationState, call: Call) -> Vec<
     };
     run_news::hold(conversation, call.reply, what, began, when);
     vec![handover::start(start)]
+}
+
+/// The checks a call picked, as the run takes them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Picked {
+    /// It picked none, or none that can run.
+    Nothing,
+    /// They hold for the run, since you set none.
+    ForTheRun(Vec<CheckCommand>),
+    /// You set checks of your own, which stand, so the call's don't run.
+    YoursStand(Vec<String>),
+}
+
+impl Picked {
+    /// The call's `checks`, each with a name and a program to run. The settings say whether
+    /// you set any.
+    fn from_call(given: Option<&Value>, settings: &Settings) -> Self {
+        let mut picked: Vec<CheckCommand> = Vec::new();
+        for check in given.and_then(Value::as_array).into_iter().flatten() {
+            let Ok(check) = serde_json::from_value::<CheckCommand>(check.clone()) else {
+                continue;
+            };
+            let name = check.name.trim().to_owned();
+            let command: Vec<String> = check
+                .command
+                .iter()
+                .filter(|part| !part.is_empty())
+                .cloned()
+                .collect();
+            let named_twice = picked.iter().any(|known| known.name == name);
+            if name.is_empty() || command.is_empty() || named_twice {
+                continue;
+            }
+            picked.push(CheckCommand { name, command });
+        }
+        if picked.is_empty() {
+            return Self::Nothing;
+        }
+        if settings.checks.run.is_empty() {
+            Self::ForTheRun(picked)
+        } else {
+            Self::YoursStand(
+                settings
+                    .checks
+                    .run
+                    .iter()
+                    .map(|check| check.name.clone())
+                    .collect(),
+            )
+        }
+    }
+
+    /// The request setting that gives the run its checks: `checks.run=[{ name = "tests",
+    /// command = [...] }]`.
+    fn setting(&self) -> Option<String> {
+        let Self::ForTheRun(checks) = self else {
+            return None;
+        };
+        let list = toml::Value::try_from(checks).ok()?;
+        Some(format!("checks.run={list}"))
+    }
+
+    /// What the session hears of them, before the line it says.
+    fn told(&self) -> String {
+        match self {
+            Self::Nothing => String::new(),
+            Self::ForTheRun(_) => " The checks you passed run on each task and on the merge, \
+                for this run alone. If the user asks to keep them, pass these same checks as \
+                checks.run to argonauts_setup, which saves them with no question."
+                .to_owned(),
+            Self::YoursStand(names) => format!(
+                " The user's own checks run ({}), so the ones you passed don't.",
+                names.join(", ")
+            ),
+        }
+    }
+}
+
+/// Words of yours that asked for checks to run are followed once the session's checks hold
+/// for the run, which is what they asked for; words asking for fewer stay refused. The
+/// workflow's row names the checks, so the start line needn't say them again.
+fn followed_by_the_checks(instructions: &mut [CheckedInstruction], checks: &Picked) {
+    if !matches!(checks, Picked::ForTheRun(_)) {
+        return;
+    }
+    for instruction in instructions {
+        let refused = matches!(instruction.outcome, InstructionOutcome::NotFollowed { .. });
+        let asks = instructions::asks_for_checks(&instruction.says);
+        if instruction.kind == InstructionKind::Checks && refused && asks {
+            instruction.outcome = InstructionOutcome::Followed {
+                said: String::new(),
+                note: None,
+            };
+        }
+    }
 }
 
 /// The instructions a call passed: a list of them, as the tool asks, or one alone, either of
@@ -655,6 +763,79 @@ mod tests {
         let named = said(Mode, "the captain workflow", "", "");
         let applied = checked(&settings, "Run it on the captain workflow.", &[named]);
         assert_eq!(applied.asked.mode, Some(RunMode::Captain));
+    }
+
+    /// Checks the session picks hold for its run where you set none, as one request setting
+    /// the settings read as a file's; checks you set stand. A check with no program, no name, or
+    /// a name already used is left out.
+    #[test]
+    fn checks_the_session_picks_hold_for_the_run_where_none_are_set() {
+        let given = json!([
+            {"name": "tests", "command": ["python3", "-m", "unittest", "-q"]},
+            {"name": "tests", "command": ["pytest"]},
+            {"name": "lint", "command": []},
+            {"name": " ", "command": ["true"]},
+            "cargo test",
+        ]);
+        let picked = Picked::from_call(Some(&given), &Settings::default());
+        let setting = picked.setting().expect("a setting for the run");
+        let resolved = argonauts_registry::resolve(&argonauts_registry::SettingsSources {
+            request: vec![setting],
+            ..argonauts_registry::SettingsSources::default()
+        })
+        .unwrap();
+        let tests = CheckCommand {
+            name: "tests".to_owned(),
+            command: ["python3", "-m", "unittest", "-q"]
+                .map(str::to_owned)
+                .to_vec(),
+        };
+        assert_eq!(resolved.settings.checks.run, std::slice::from_ref(&tests));
+        assert!(
+            picked.told().contains("for this run alone"),
+            "{}",
+            picked.told()
+        );
+
+        let mut yours = Settings::default();
+        yours.checks.run = vec![CheckCommand {
+            name: "lint".to_owned(),
+            command: vec!["ruff".to_owned(), "check".to_owned()],
+        }];
+        let stands = Picked::from_call(Some(&given), &yours);
+        assert_eq!(stands.setting(), None);
+        assert!(
+            stands.told().contains("own checks run (lint)"),
+            "{}",
+            stands.told()
+        );
+        assert_eq!(
+            Picked::from_call(None, &Settings::default()),
+            Picked::Nothing
+        );
+        assert_eq!(Picked::Nothing.told(), "");
+
+        // Your words that asked for checks are followed by the session's.
+        let refused = |says: &str| CheckedInstruction {
+            says: says.to_owned(),
+            kind: InstructionKind::Checks,
+            outcome: InstructionOutcome::NotFollowed {
+                why: "checks.run is a safety setting".to_owned(),
+            },
+        };
+        let mut instructions = vec![
+            refused("make sure the tests pass"),
+            refused("skip the tests"),
+        ];
+        followed_by_the_checks(&mut instructions, &Picked::ForTheRun(vec![tests]));
+        assert_eq!(instructions[1], refused("skip the tests"));
+        assert_eq!(
+            instructions[0].outcome,
+            InstructionOutcome::Followed {
+                said: String::new(),
+                note: None,
+            }
+        );
     }
 
     /// A refusal says why for each instruction, so the session can correct its call.

@@ -7,7 +7,8 @@ use argonauts_core::api::UsagePeriod;
 use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, UiCommand, ViewRequest};
 use argonauts_core::events::run::Party;
 use argonauts_core::input::{
-    Handler, MentionTarget, ParsedInput, SlashCommand, ViewAction, parse_input_with,
+    Handler, LineChange, MentionTarget, ParsedInput, SlashCommand, ViewAction, WorkflowVerb,
+    parse_input_with,
 };
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::stats::StatsPeriod;
@@ -150,9 +151,14 @@ impl InputRouter {
                 cx.model.bottom.composer.keywords.clone_from(&set.keywords);
             }
             AppEvent::RepoFiles { paths } => cx.model.bottom.menus.set_files(paths),
+            AppEvent::WorkflowStatuses { statuses } => {
+                cx.model.bottom.menus.workflow_statuses = statuses.iter().cloned().collect();
+            }
             AppEvent::Hint { text } => notice(cx, text.clone(), Tone::Dim),
             AppEvent::Attached { .. } | AppEvent::Detached { .. } | AppEvent::Run { .. } => {
-                let mentions = mentions::candidates(cx.state);
+                // A council's seats come first while it talks here.
+                let seats = mentions::seats(&cx.model.bottom.council.faces);
+                let mentions = mentions::seats_first(seats, mentions::candidates(cx.state));
                 if cx.model.bottom.menus.mentions != mentions {
                     cx.model.bottom.menus.mentions = mentions;
                 }
@@ -203,6 +209,8 @@ impl InputRouter {
     }
 
     fn submit(&mut self, text: &str, shown: &str, cx: &mut Cx<'_>) {
+        // Whatever you send takes the reply's row away; a message to the council answers it.
+        let replying = cx.model.bottom.replying.take();
         // Typed alone, these leave as `/exit` does, as in Claude Code, instead of going to the
         // agent as a message.
         if matches!(text.trim(), "exit" | "quit") {
@@ -245,6 +253,25 @@ impl InputRouter {
         self.typed_mid_answer = (matches!(parsed, Ok(ParsedInput::Slash { .. }))
             && answer_running(cx))
         .then(|| (text.trim().to_owned(), cx.now));
+        // A workflow's command goes over the line it leaves, now or once its sheet saves, with
+        // a place flag too. Mid-answer every command's line gets its command over it already.
+        let switch = |command: &SlashCommand| {
+            matches!(
+                command,
+                SlashCommand::Workflow {
+                    name: Some(_),
+                    action: WorkflowVerb::Use,
+                }
+            )
+        };
+        let switches = match &parsed {
+            Ok(ParsedInput::Slash {
+                command: SlashCommand::SavedIn { change, .. },
+            }) => switch(change),
+            Ok(ParsedInput::Slash { command }) => switch(command),
+            _ => false,
+        };
+        cx.model.typed_workflow = (switches && !answer_running(cx)).then(|| text.trim().to_owned());
         // Printing or pinning the tab opens no view.
         self.status_view = matches!(
             parsed,
@@ -265,9 +292,19 @@ impl InputRouter {
         );
         match parsed {
             Ok(ParsedInput::Empty) => empty_enter(cx),
-            Ok(ParsedInput::Plain { text }) => plain(text, shown, workflow, pictures, cx),
-            Ok(ParsedInput::Mention { .. }) if cx.model.bottom.menus.starts_with_file(text) => {
-                plain(text.trim().to_owned(), shown, workflow, pictures, cx);
+            Ok(ParsedInput::Plain { text }) => {
+                if !to_council(&text, &pictures, replying.as_ref(), cx) {
+                    plain(text, shown, workflow, pictures, cx);
+                }
+            }
+            // A seat's name up front is a mention its council reads, not a worker to steer.
+            Ok(ParsedInput::Mention { .. })
+                if cx.model.bottom.menus.starts_with_file(text)
+                    || cx.model.bottom.council.faces.starts_with_seat(text) =>
+            {
+                if !to_council(text, &pictures, replying.as_ref(), cx) {
+                    plain(text.trim().to_owned(), shown, workflow, pictures, cx);
+                }
             }
             Ok(ParsedInput::Mention {
                 target,
@@ -303,6 +340,7 @@ impl InputRouter {
                 | AppEvent::Notice { .. }
                 | AppEvent::SettingChanged { .. }
                 | AppEvent::SettingRefused { .. }
+                | AppEvent::CommandReplied { .. }
         );
         let opens = matches!(event, AppEvent::View { .. });
         if !prints && !opens {
@@ -423,6 +461,25 @@ fn plain(
     });
 }
 
+/// While a council talks, a message goes to its seats, as a reply when you picked one. One
+/// with pictures goes as any other, since a council reads words only. False when it didn't go.
+fn to_council(
+    text: &str,
+    pictures: &[argonauts_core::pictures::Picture],
+    replying: Option<&crate::council::reply::ReplyBar>,
+    cx: &mut Cx<'_>,
+) -> bool {
+    let say = match pictures {
+        [] => cx.model.bottom.council.say(text, replying),
+        _ => None,
+    };
+    let Some(command) = say.and_then(|say| say.command()) else {
+        return false;
+    };
+    cx.out.send(command);
+    true
+}
+
 fn mention(target: MentionTarget, message: String, typed: &str, cx: &mut Cx<'_>) {
     let name = typed
         .trim_start()
@@ -513,8 +570,19 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
         .next()
         .unwrap_or_default();
     let handler = commands::handler(name, cx.state.cli_commands.as_ref());
+    // `/config key=value --session` prints under the command, as it does without the flag.
+    if let SlashCommand::SavedIn { change, .. } = &command
+        && let SlashCommand::Config {
+            key: Some(key),
+            value: Some(_),
+            reset: false,
+        } = change.as_ref()
+    {
+        cx.model.typed_config = Some((key.clone(), typed.trim().to_owned()));
+    }
     match (handler, command) {
         (Handler::Ui, SlashCommand::Workflows) => super::keys::open_tree(cx),
+        (Handler::Ui, SlashCommand::Overview) => super::keys::open_overview(cx),
         (Handler::Ui, SlashCommand::Copy { nth }) => copy_answer(nth, cx),
         (Handler::Ui, SlashCommand::Help) => {
             cx.out.views_as_panel = answer_running(cx);
@@ -531,6 +599,18 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
             let on = cx.settings.keys != KeyScheme::Vim;
             cx.out.vim = Some(on);
             cx.out.send(UiCommand::Vim { on });
+            cx.model.bottom.composer.set_vim(on);
+            cx.model.bottom.mode.vim = cx.model.bottom.composer.vim_mode();
+        }
+        // `/vim --session`: the keys change here at once, and the controller saves it there.
+        (Handler::Both, SlashCommand::SavedIn { scope, change })
+            if *change == SlashCommand::Vim =>
+        {
+            let on = cx.settings.keys != KeyScheme::Vim;
+            cx.out.vim = Some(on);
+            cx.out.send(UiCommand::Slash {
+                command: SlashCommand::SavedIn { scope, change },
+            });
             cx.model.bottom.composer.set_vim(on);
             cx.model.bottom.mode.vim = cx.model.bottom.composer.vim_mode();
         }
@@ -636,6 +716,24 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
                     reset: false,
                 },
             });
+        }
+        // A bare `/bottom-line` is its picker, which saves through the command once you pick.
+        (
+            Handler::Both,
+            SlashCommand::BottomLine {
+                change: LineChange::Open,
+                scope,
+            },
+        ) => {
+            let bottom = &cx.model.bottom;
+            let picker = super::bottom_line::LinePicker::new(
+                cx.state,
+                bottom.mode.clone(),
+                cx.settings,
+                &bottom.line_slots,
+                scope,
+            );
+            cx.out.open(picker);
         }
         (Handler::Both, SlashCommand::Theme { name: None }) => cx.out.send(UiCommand::Request {
             view: ViewRequest::Settings {
@@ -861,6 +959,52 @@ mod tests {
         assert!(format!("{:?}", out.views[0]).starts_with("ArtifactsView"));
     }
 
+    /// A bare `/bottom-line` opens its picker on this screen; its typed forms go to the
+    /// controller, which saves them.
+    #[test]
+    fn bottom_line_opens_its_picker_and_its_words_go_on() {
+        let mut screen = Screen::idle();
+        let out = screen.submit("/bottom-line");
+        assert!(out.commands.is_empty(), "{:?}", out.commands);
+        assert_eq!(out.views.len(), 1);
+        assert!(format!("{:?}", out.views[0]).starts_with("LinePicker"));
+
+        let out = screen.submit("/bottom-line add agy");
+        assert!(out.views.is_empty());
+        assert!(
+            matches!(
+                out.commands.as_slice(),
+                [UiCommand::Slash {
+                    command: SlashCommand::BottomLine {
+                        change: LineChange::Add { .. },
+                        scope: None
+                    }
+                }]
+            ),
+            "{:?}",
+            out.commands
+        );
+    }
+
+    /// `/overview` opens the usage panel on its Overview tab, which asks for its numbers.
+    #[test]
+    fn overview_opens_the_panel_on_its_overview_tab() {
+        let mut screen = Screen::idle();
+        let mut out = screen.submit("/overview");
+        assert_eq!(
+            out.commands,
+            [UiCommand::Request {
+                view: argonauts_core::app::ViewRequest::Overview {
+                    period: argonauts_core::overview::OverviewPeriod::All,
+                    import: None,
+                },
+            }]
+        );
+        assert_eq!(out.views.len(), 1);
+        let view = out.views.remove(0);
+        assert!(format!("{view:?}").contains("tab: Overview"), "{view:?}");
+    }
+
     #[test]
     fn the_main_agents_commands_join_the_menu_and_parse() {
         let mut screen = Screen::idle();
@@ -1068,6 +1212,31 @@ mod tests {
         let mut working = Screen::new(fixture::working_state());
         working.submit("keep the old API");
         assert!(working.model.history.cells().is_empty());
+    }
+
+    /// A council reads words only, so while one talks a prompt with a picture still goes out
+    /// with its picture.
+    #[test]
+    fn a_picture_goes_with_its_prompt_while_a_council_talks() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        let mut screen = Screen::idle();
+        screen.model.bottom.council.talking = true;
+        let composer = &mut screen.model.bottom.composer;
+        composer.handle_paste(&path.display().to_string());
+        let crate::bottom::ComposerEvent::Submitted { text, shown } =
+            composer.handle_key(KeyEvent::from(KeyCode::Enter))
+        else {
+            panic!("not sent");
+        };
+        let out = screen.act(UiAction::Submit { text, shown });
+        let [UiCommand::Submit { pictures, .. }] = out.commands.as_slice() else {
+            panic!("{:?}", out.commands);
+        };
+        assert_eq!(pictures.len(), 1);
     }
 
     /// A picture dropped into the input goes out with the prompt, and its echo has a row for
@@ -1345,7 +1514,7 @@ mod tests {
                 .menus
                 .commands
                 .iter()
-                .any(|c| c.name == "captain" && c.needs_argument)
+                .any(|c| c.name == "crew" && c.needs_argument)
         );
         assert_eq!(bottom.menus.mentions, mentions::candidates(&screen.state));
 
@@ -1586,6 +1755,8 @@ mod tests {
             scope: argonauts_core::settings::SettingScope::Global,
             previous: None,
             reset: false,
+            why: None,
+            kept: false,
         };
         screen.event(changed("false"));
         assert!(screen.model.bottom.composer.workflow_word_off);

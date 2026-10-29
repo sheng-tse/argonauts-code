@@ -16,13 +16,12 @@ use argonauts_scenarios::{Scenario, past_the_guard_of, scenario_file};
 use argonauts_testkit::{FakeKind, FakeModelServer, FakeRule, FakeScenario, FakeStep, Key, Pty};
 
 /// The keys an Enter-through setup writes, and nothing else.
-const SETUP_KEYS: [&str; 14] = [
+const SETUP_KEYS: [&str; 13] = [
     "crew.main",
     "crew.worker",
     "crew.reviewer",
     "crew.judge",
     "workflow",
-    "roles.orchestrator.models",
     "approvals.understand.mode",
     "approvals.plan.mode",
     "approvals.merge.mode",
@@ -146,7 +145,7 @@ fn assert_recommended_global(scenario: &Scenario) -> anyhow::Result<()> {
     assert!(toml_value(&text, "crew.main").is_some_and(|v| v.contains("claude-code")));
     assert!(same_toml(
         &toml_value(&text, "workflow").unwrap_or_default(),
-        "\"orchestrator\""
+        "\"council\""
     ));
     for key in SETUP_KEYS.iter().filter(|k| k.ends_with(".mode")) {
         assert!(
@@ -500,11 +499,11 @@ fn app_setup_again_keeps_your_choices_and_workflows() -> anyhow::Result<()> {
         toml_value(&text, "crew.main").is_some_and(|v| v.contains("codex")),
         "{text}"
     );
-    // The workflow step recommends Orchestrator every time, so Enter through it picks that.
+    // The workflow step recommends Council every time, so Enter through it picks that.
     assert!(
         same_toml(
             &toml_value(&text, "workflow").unwrap_or_default(),
-            "\"orchestrator\""
+            "\"council\""
         ),
         "{text}"
     );
@@ -547,7 +546,7 @@ fn app_setup_shows_terms_note_once() -> anyhow::Result<()> {
 }
 
 #[test]
-fn app_setup_writes_orchestrator_and_councils_file_sets_no_key() -> anyhow::Result<()> {
+fn app_setup_writes_council_and_its_file_sets_no_key() -> anyhow::Result<()> {
     let scenario = first_run_scenario()?;
     let mut pty = launch_setup(&scenario, &["setup"], &[])?;
     enter_through(&scenario, &mut pty)?;
@@ -556,7 +555,7 @@ fn app_setup_writes_orchestrator_and_councils_file_sets_no_key() -> anyhow::Resu
     assert!(
         same_toml(
             &toml_value(&text, "workflow").unwrap_or_default(),
-            "\"orchestrator\""
+            "\"council\""
         ),
         "{text}"
     );
@@ -572,10 +571,12 @@ fn app_setup_writes_orchestrator_and_councils_file_sets_no_key() -> anyhow::Resu
         settings.is_empty(),
         "the council workflow sets {settings:?} over your settings:\n{workflow}"
     );
+    // Council talks in its phases, so it has no steps for an orchestrator to adapt.
     assert!(
-        same_toml(&toml_value(&workflow, "adapt").unwrap_or_default(), "true"),
-        "the council workflow's steps are its orchestrator's to adapt:\n{workflow}"
+        toml_value(&workflow, "adapt").is_none(),
+        "the council workflow has no steps to adapt:\n{workflow}"
     );
-    scenario.shot(&pty, "app_setup_writes_orchestrator")?;
+    assert!(workflow.contains("kind  = \"talk\""), "{workflow}");
+    scenario.shot(&pty, "app_setup_writes_council")?;
     Ok(())
 }

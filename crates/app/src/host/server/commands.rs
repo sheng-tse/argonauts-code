@@ -200,6 +200,13 @@ pub(crate) fn command(request: ControlRequest) -> Result<(EngineCommand, EngineR
                 EngineReply::Unit(wait),
             )
         }
+        ControlRequest::Council { action } => {
+            let (reply, wait) = oneshot::channel();
+            (
+                EngineCommand::Council { action, reply },
+                EngineReply::Unit(wait),
+            )
+        }
     };
     Ok(made)
 }

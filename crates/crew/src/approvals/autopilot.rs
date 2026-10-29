@@ -23,13 +23,13 @@ use argonauts_core::text::{clause_case, sentence_case};
 use argonauts_core::{Note, NoteLevel};
 
 use crate::engine::host::Host;
-use crate::error::EngineResult;
+use crate::error::{EngineError, EngineResult};
 use crate::merge::in_the_way::MERGE_LATER;
 use crate::state::RunState;
 use crate::state::approvals::ApprovalRecord;
 use crate::workflow::change;
 
-use super::{configured, lock, only_yours, own_settings};
+use super::{ApprovalRequest, Opening, configured, lock, only_yours, open_yours, own_settings};
 
 /// What ends a part safely and keeps its work, the first one a question offers. Deferring a
 /// question lets the run go on without it, keeping the branch leaves the merge to you later, and
@@ -513,8 +513,61 @@ fn first_sentence(text: &str) -> &str {
     text[..end].trim_end_matches('.')
 }
 
-/// Every part autopilot ended in your place, and every question or approval you left with
-/// Esc, one line each as the transcript said it, for the run's closing answer to list.
+/// Opens `request` and settles it at once in your place with its `action` option, for an
+/// approval autopilot decides without weighing it, such as a plan that breaks a way you asked
+/// for. Both are recorded, so the screen still shows what was decided and the run's closing
+/// answer lists it under what autopilot decided. One a re-entered step finds decided comes back
+/// as it was.
+pub fn open_and_settle(
+    host: &Host,
+    request: ApprovalRequest,
+    action: AnswerAction,
+    because: String,
+) -> EngineResult<ApprovalDecided> {
+    let id = match open_yours(host, request, because)? {
+        Opening::Decided(decided) => return Ok(*decided),
+        Opening::Waiting { id, .. } => id,
+    };
+    let desk = &host.shared().desk;
+    let _deciding = lock(&desk.deciding);
+    let record = host
+        .read(|state| state.approvals.by_id.get(&id).cloned())
+        .ok_or_else(|| EngineError::Refused(format!("no approval {id}")))?;
+    if let Some(decided) = record.decided {
+        return Ok(decided);
+    }
+    if !record
+        .opened
+        .options
+        .iter()
+        .any(|option| option.action == action)
+    {
+        return Err(EngineError::Refused(format!(
+            "approval {id} offers no {action:?}"
+        )));
+    }
+    let decided = ApprovalDecided {
+        id,
+        action,
+        text: None,
+        by: Party::Autopilot,
+        evidence_sha256: record.opened.evidence_sha256.clone(),
+        auto_preview: None,
+        tasks: Vec::new(),
+    };
+    host.record(
+        record.opened.task.as_ref(),
+        None,
+        RunEventKind::Approval(ApprovalEvent::Decided(decided.clone())),
+    )?;
+    change::on_decided(host, &record.opened, &decided);
+    desk.wake(&decided);
+    Ok(decided)
+}
+
+/// Every part autopilot ended in your place, and every question or approval you left to carry
+/// on without you, one line each as the transcript said it, for the run's closing answer to
+/// list.
 pub fn endings(state: &RunState) -> Vec<String> {
     let mut decided: Vec<&ApprovalRecord> = state
         .approvals
@@ -537,7 +590,7 @@ pub fn endings(state: &RunState) -> Vec<String> {
                 .options
                 .iter()
                 .find(|option| option.action == decided.action)?;
-            // What you left with Esc says so in its own words.
+            // What you left to carry on without you says so in its own words.
             if decided.by == Party::Declined {
                 return Some(super::decline::line(
                     &record.opened,
@@ -650,6 +703,7 @@ mod tests {
     use argonauts_core::events::approval::{ApprovalPacket, FreeText};
     use argonauts_core::names::ApprovalId;
     use argonauts_core::settings::approvals::DecideWith;
+    use argonauts_core::settings::asking::WhenDeclined;
 
     use super::*;
     use crate::approvals::options;
@@ -683,6 +737,7 @@ mod tests {
             evidence_sha256: String::new(),
             mode: ApprovalMode::Autopilot,
             decide_with: DecideWith::Rules,
+            when_declined: WhenDeclined::Decide,
             options,
             free_text: FreeText::None,
             needs_you: false,

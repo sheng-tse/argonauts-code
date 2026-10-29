@@ -93,15 +93,17 @@ fn limits_edge_outage() -> anyhow::Result<()> {
         seq_of(&events, committed),
         opened_at(&events, ApprovalKind::AgentDown)
     ));
-    pty.wait_for("Claude down", WAIT)?;
+    pty.wait_for("Claude Code down", WAIT)?;
     limits.shot(&pty, "limits_edge_outage")
 }
 
 #[test]
 fn limits_edge_all_down_waits() -> anyhow::Result<()> {
+    // The run host stops waiting a second after the limit, before the reset, so the app is the
+    // one that wakes the run.
     let limits = setup(
         "edge-all-down-waits",
-        "crew = [\"claude-code\"]\n\n[fallback]\nmode = \"auto\"\n",
+        "crew = [\"claude-code\"]\n\n[fallback]\nmode = \"auto\"\n\n[run_host]\nwait_grace = \"1s\"\n",
     )?;
     let pty = limits.start()?;
     let events = limits.wait_for("the run to wait", LONG_WAIT, |events| {

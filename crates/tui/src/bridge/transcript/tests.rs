@@ -743,7 +743,7 @@ fn warning_notice_shows_once() {
 }
 
 #[test]
-fn a_fallback_without_a_retry_names_who_steps_in_plainly_and_why_dimly() {
+fn a_fallback_without_a_retry_names_who_steps_in_in_its_tone_and_why_dimly() {
     let mut driver = TestDriver::new();
     let line = format!(
         "Fell back to Claude Code as reviewer · {}",
@@ -758,7 +758,7 @@ fn a_fallback_without_a_retry_names_who_steps_in_plainly_and_why_dimly() {
         notice.decided.as_deref(),
         Some(argonauts_core::log::NO_SECOND_TRY)
     );
-    assert!(notice.plain_words);
+    assert!(!notice.plain_words);
     assert!(driver.printed_at(120).contains(&line));
 }
 
@@ -1519,6 +1519,8 @@ fn a_model_you_pick_is_named_as_its_list_named_it() {
         scope: argonauts_core::settings::SettingScope::Global,
         previous: Some("\"claude-code/claude-opus-5-5\"".into()),
         reset: false,
+        why: None,
+        kept: false,
     });
     // What the switch carried hangs under it, with no row between.
     driver.send(AppEvent::Continued {
@@ -1526,8 +1528,8 @@ fn a_model_you_pick_is_named_as_its_list_named_it() {
     });
     assert_eq!(
         driver.printed().trim_end(),
-        "  ⎿  Set model to GPT-6-Sol on Codex · everywhere · was Opus 5.5 on Claude Code\n     \
-         Carried over: a summary of 14 exchanges, the last 6 in full"
+        "  ⎿  Set model to GPT-6-Sol on Codex · everywhere (~/.argonauts/config.toml) ·\n     was \
+         Opus 5.5 on Claude Code\n     Carried over: a summary of 14 exchanges, the last 6 in full"
     );
 }
 
@@ -1549,10 +1551,13 @@ fn a_default_left_for_another_cli_is_named_by_its_model() {
         scope: argonauts_core::settings::SettingScope::Global,
         previous: Some("\"claude-code\"".into()),
         reset: false,
+        why: None,
+        kept: false,
     });
     assert_eq!(
         driver.printed().trim_end(),
-        "  ⎿  Set model to GPT-6-Sol on Codex · everywhere · was Opus 5.5 on Claude Code"
+        "  ⎿  Set model to GPT-6-Sol on Codex · everywhere (~/.argonauts/config.toml) ·\n     was \
+         Opus 5.5 on Claude Code"
     );
 }
 
@@ -1601,31 +1606,130 @@ fn a_change_made_mid_answer_says_it_applies_at_the_next_request() {
         scope: SettingScope::Global,
         previous: None,
         reset: false,
+        why: None,
+        kept: false,
     };
     let mut driver = TestDriver::new();
     driver.send(changed("workflow", "\"council\""));
     assert_eq!(
         driver.printed().trim(),
-        "● Set workflow = council · everywhere"
+        "⎿  Switched to Council · everywhere (~/.argonauts/config.toml)"
     );
 
     driver.model.bottom.working = Some(crate::bottom::WorkingLine::new("Rowing", Instant::now()));
     driver.send(changed("workflow", "\"captain\""));
     assert_eq!(
         driver.printed().trim(),
-        "● Set workflow = captain · everywhere · applies at the next request"
+        "⎿  Switched to Captain · everywhere (~/.argonauts/config.toml) · applies at\n     the \
+         next request"
     );
     driver.send(changed("roles.main.effort", "\"high\""));
     assert_eq!(
         driver.printed().trim(),
-        "⎿  Set effort to high · everywhere · applies at the next request"
+        "⎿  Set effort to high · everywhere (~/.argonauts/config.toml) · applies at the\n     \
+         next request"
     );
     driver.send(changed("ui.theme", "\"dark\""));
     assert_eq!(
         driver.printed().trim(),
-        "● Set ui.theme = dark · everywhere",
+        "● Set ui.theme = dark · everywhere (~/.argonauts/config.toml)",
         "a look applies at once"
     );
+}
+
+/// A workflow switched says what it was and where it went; saved again from its setup sheet,
+/// it says it was set up.
+#[test]
+fn a_switched_workflow_names_the_one_before_it() {
+    use argonauts_core::settings::SettingScope;
+
+    let mut driver = TestDriver::new();
+    driver.send(AppEvent::SettingChanged {
+        key: "workflow".into(),
+        value: "\"council\"".into(),
+        scope: SettingScope::Global,
+        previous: Some("\"captain\"".into()),
+        reset: false,
+        why: None,
+        kept: false,
+    });
+    assert_eq!(
+        driver.printed().trim(),
+        "⎿  Switched to Council · everywhere (~/.argonauts/config.toml) · was Captain"
+    );
+    driver.send(AppEvent::SettingChanged {
+        key: "workflow".into(),
+        value: "\"orchestrator\"".into(),
+        scope: SettingScope::ProjectLocal,
+        previous: Some("\"orchestrator\"".into()),
+        reset: false,
+        why: None,
+        kept: false,
+    });
+    assert_eq!(
+        driver.printed().trim(),
+        "⎿  Set up Orchestrator · just you (.argonauts/config.local.toml)"
+    );
+}
+
+/// Each change says where it went, and why when a project file moved it there, as the screen
+/// draws `/effort max`, the same for this session only, and `/model opus` where the team's file
+/// sets the model. The golden holds the rows at the screen's width of 120 columns.
+#[test]
+fn a_change_says_where_it_went() {
+    use argonauts_core::settings::SettingScope;
+
+    let golden = include_str!("../../../tests/golden/saved_where.txt");
+    let mut driver = TestDriver::new();
+    driver.state.model_words.insert(
+        "claude-code/claude-opus-5-5".to_owned(),
+        "Opus 5.5".to_owned(),
+    );
+    let changes = [
+        (
+            "/effort max",
+            "roles.main.effort",
+            "\"max\"",
+            SettingScope::Global,
+            None,
+            None,
+        ),
+        (
+            "/effort max --session",
+            "roles.main.effort",
+            "\"max\"",
+            SettingScope::Session,
+            Some("\"high\""),
+            None,
+        ),
+        (
+            "/model opus",
+            "crew.main",
+            "\"claude-code/claude-opus-5-5\"",
+            SettingScope::ProjectLocal,
+            Some("\"claude-code/claude-sonnet-4-6\""),
+            Some("since the team's file sets it"),
+        ),
+    ];
+    for (typed, key, value, scope, previous, why) in changes {
+        driver
+            .model
+            .history
+            .push(crate::cell::UserMessage::command(typed));
+        driver.send(AppEvent::SettingChanged {
+            key: key.into(),
+            value: value.into(),
+            scope,
+            previous: previous.map(Into::into),
+            reset: false,
+            why: why.map(Into::into),
+            kept: false,
+        });
+    }
+    let printed = driver.printed_at(120);
+    let rows: Vec<&str> = printed.trim_end().lines().map(str::trim_end).collect();
+    let expected: Vec<&str> = golden.trim_end().lines().map(str::trim_end).collect();
+    assert_eq!(rows, expected);
 }
 
 /// `/effort`'s Ultracode toggle reads as a result line, not as its key.
@@ -1635,7 +1739,7 @@ fn ultracode_saved_reads_as_turned_on_or_off() {
         (
             "true",
             argonauts_core::settings::SettingScope::ProjectLocal,
-            "  ⎿  Turned Ultracode on · just you",
+            "  ⎿  Turned Ultracode on · just you (.argonauts/config.local.toml)",
         ),
         (
             "false",
@@ -1650,6 +1754,8 @@ fn ultracode_saved_reads_as_turned_on_or_off() {
             scope,
             previous: None,
             reset: false,
+            why: None,
+            kept: false,
         });
         assert_eq!(driver.printed().trim_end(), line);
     }
@@ -1750,6 +1856,7 @@ fn merge_opened(tasks: usize, combined: argonauts_core::DiffStat) -> AppEvent {
     use argonauts_core::events::task::TaskKind;
     use argonauts_core::names::ApprovalId;
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+    use argonauts_core::settings::asking::WhenDeclined;
 
     let rows = (1..=tasks)
         .map(|n| MergeRow {
@@ -1798,6 +1905,7 @@ fn merge_opened(tasks: usize, combined: argonauts_core::DiffStat) -> AppEvent {
             evidence_sha256: "0".repeat(64),
             mode: ApprovalMode::Supervised,
             decide_with: DecideWith::Rules,
+            when_declined: WhenDeclined::Decide,
             options: Vec::new(),
             free_text: FreeText::Guidance,
             needs_you: true,
@@ -2175,28 +2283,28 @@ fn the_start_says_where_to_watch_it_and_leaves_the_phases_to_the_view() {
 fn a_workflow_ends_as_its_run_did() {
     use crate::bottom::WorkflowRowState;
 
-    for (outcome, word, ended, end) in [
+    for (outcome, row, ended, end) in [
         (
             RunOutcome::Failed,
-            "failed",
+            WorkflowRowState::Failed,
             "✘ Failed in",
             "The run failed",
         ),
         (
             RunOutcome::Stopped,
-            "stopped",
+            WorkflowRowState::Stopped,
             "✘ Stopped in",
             "Stopped the run",
         ),
         (
             RunOutcome::Abandoned,
-            "stopped",
+            WorkflowRowState::Stopped,
             "✘ Stopped in",
             "Abandoned the run",
         ),
         (
             RunOutcome::Merged,
-            "done",
+            WorkflowRowState::Done,
             "✔ Completed in",
             "Merged the run",
         ),
@@ -2226,7 +2334,7 @@ fn a_workflow_ends_as_its_run_did() {
             "{printed}"
         );
         assert!(printed.contains(end), "{printed}");
-        assert_eq!(WorkflowRowState::ended(outcome).word(), word);
+        assert_eq!(WorkflowRowState::ended(outcome), row);
         if outcome != RunOutcome::Merged {
             assert!(!printed.contains("Completed in"), "{printed}");
         }
@@ -2450,8 +2558,8 @@ fn a_run_as_you_asked_says_so_then_prints_its_workflow_then_its_closing_answer()
     };
     let order = [
         at("As you asked: Codex orchestrates · Claude Code reviews"),
-        at("● Workflow(Add due dates · orchestrator workflow)\n  ⎿  Running in background"),
-        at("● Workflow(Add due dates · orchestrator workflow)\n  ⎿  ✔ Completed in"),
+        at("● Workflow(Add due dates · Orchestrator)\n  ⎿  Running in background"),
+        at("● Workflow(Add due dates · Orchestrator)\n  ⎿  ✔ Completed in"),
         at("Merged the run"),
         at("● Fixed parse()"),
     ];

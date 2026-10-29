@@ -1,6 +1,6 @@
 //! The behavior map's arithmetic, as Hodoscope (arXiv 2604.11072) works it: a Gaussian density
 //! for each group, its bandwidth by Scott's rule; a group's density minus the mean of the
-//! others' (equation 1); and the deeper map's list, the group's actions in density-weighted
+//! others' (equation 1); and Summaries' list, the group's actions in density-weighted
 //! farthest-point order (equation 2, with beta = 0.1), so it starts where the group is most its
 //! own and then spreads across the map. On the label map every action of a label sits in one
 //! cloud, so equation 2 would rank clouds by size; its list ranks labels by how much more of the

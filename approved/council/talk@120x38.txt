@@ -1,0 +1,101 @@
+The Council conversation at 120 x 38 in a terminal that takes pictures: the talk: replies quote what they answer, with each seat's stance; the bubbles are pictures under the text, so the cells hold the words alone
+screen 120x38
+at 0,0
+size 120x38
+terminal fg=#c8d3f5 bg=#222436
+text
+   ╭─ ￼￼ A token bucket per API key, in Redis
+                                                                             ￼￼✘  ￼￼✘  ￼￼✘
+     A bucket has two numbers to tune, burst and refill. A window counter is one INCR and
+￼￼   one EXPIRE, and nobody has to pick a burst size.
+
+     Opus 5.5
+   ╭─ ￼￼ A window counter is one INCR and one EXPIRE
+                                                                         ￼￼✔  ￼￼✔  ￼￼✔
+     A window counter lets a client send twice its limit across a window's edge. With
+     ￼￼ 3.8 Flash's Lua script a bucket is still one Redis call, and its burst is the
+￼￼   plan's limit, so there's nothing new to tune.
+
+            ￼￼ 5.6 Luna moved to a token bucket: "twice the limit at a window's edge" · 4 of 6 points agreed
+
+     3.8 Flash
+   ╭─ ￼￼ An in-memory bucket on each node
+                                                                               ￼￼✔  ￼￼✘
+     The balancer spreads a client over all 3 nodes, so a third each still lets bursts
+     through. Redis is already here for sessions (src/session/store.ts); keep your
+     interface for the tests. And the balancer's probe calls /health with no key, so a
+￼￼   plain 401 takes a node out.
+
+
+￼￼  • • •   Qwen3 Coder 30B is writing · 3.8 Flash replied to its message
+
+✻ Parleying… (3m 20s · ↓  61.2k of 200k tokens · 2/4 seats agree)
+  ⎿  Still open: Redis or memory · calls with no key
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ↓  to manage
+
+  ⣾  Rate limit the API                    ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  2/4 · 3m20s · ↓  61.2k tokens
+    ⎿ ✔  ￼￼ Opus 5.5                       Backs all 6 points          1m58s · ↓  19.6k tokens
+      ○  ￼￼ 5.6 Luna                       Backs 5 of 6 points         1m06s · ↓  12.4k tokens
+      ✔  ￼￼ 3.8 Flash                      Backs all 6 points          2m02s · ↓  17.1k tokens
+      ○  ￼￼ Qwen3 Coder 30B                Answering 3.8 Flash         1m52s · ↓  12.1k tokens
+paint
+...aa.bb.c.ccccc.cccccc.ccc.ccc.cccc.cc.ccccc
+.............................................................................bbd..eed..ffd
+.....g.gggggg.ggg.ggg.ggggggg.gg.ggggg.ggggg.ggg.ggggggg.g.gggggg.ggggggg.gg.ggg.gggg.ggg
+hh...ggg.ggggggg.ggg.gggggg.ggg.gg.gggg.g.ggggg.ggggg
+
+.....aaaa.aaa
+...aa.hh.c.cccccc.ccccccc.cc.ccc.cccc.ccc.ccc.cccccc
+.........................................................................hhi..eei..ffi
+.....g.gggggg.ggggggg.gggg.g.gggggg.gggg.ggggg.ggg.ggggg.gggggg.g.gggggggg.ggggg.gggg
+.....ee.jjj.jjjjjgg.ggg.gggggg.g.gggggg.gg.ggggg.ggg.ggggg.ggggg.ggg.ggg.ggggg.gg.ggg
+bb...gggggg.gggggg.gg.ggggggg.ggggggg.ggg.gg.ggggg
+
+............hh.aaa.aaaa.aaaaa.aa.a.aaaaa.aaaaaaa.cccccc.ccc.ccccc.cc.c.cccccccc.ccccc.a.a.aa.a.aaaaaa.aaaaaa
+
+.....aaa.aaaaa
+...aa.ff.cc.ccccccccc.cccccc.cc.cccc.cccc
+...............................................................................bbi..hhd
+.....ggg.gggggggg.ggggggg.g.gggggg.gggg.ggg.g.gggggg.gg.g.ggggg.gggg.ggggg.gggg.gggggg
+.....gggggggg.ggggg.gg.ggggggg.gggg.ggg.gggggggg.ggggggggggggggggggggggg.gggg.gggg
+.....ggggggggg.ggg.ggg.gggggg.ggg.ggg.gggggggggg.ggggg.ggggg.ggggggg.gggg.gg.gggg.gg.g
+ee...ggggg.ggg.ggggg.g.gggg.gggg
+
+
+ff..a.k.a...aaaaa.aaaaa.aaa.aa.aaaaaaa.a.aaa.aaaaa.aaaaaaa.aa.aaa.aaaaaaa
+
+l.lllmmlllll.aaa.aaa.a.a..aaaaa.aa.aaaa.aaaaaa.a.aaa.aaaaa.aaaaaa
+..a..aaaaa.aaaaa.aaaaa.aa.aaaaaa.a.aaaaa.aaaa.aa.aaa
+
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.ooooooo.n
+g.aaaaa.aa.aaa.aaaaaaaa.a.a.aaaaa.aa.aaaaaaa..aa.aaaa.a.aaaaaaa.aa.aaaa
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+..a.aaaaaaaaaa.aaaa.aa.aaaaaaaaaa.aa.aaaaaa.a.aaa.aa.aaaaaaaaa.a.a..aa.aaaaaa
+
+..p..aaaa.aaaaa.aaa.aaa....................ggggggggggaaaaaaaaaa..aaa.a.aaaaa.a.a..aaaaa.aaaaaa
+....a.i..bb.aaaa.aaa.......................ggggg.ggg.g.gggggg..........aaaaa.a.a..aaaaa.aaaaaa
+......a..hh.aaa.aaaa.......................ggggg.g.gg.g.gggggg.........aaaaa.a.a..aaaaa.aaaaaa
+......i..ee.aaa.aaaaa......................ggggg.ggg.g.gggggg..........aaaaa.a.a..aaaaa.aaaaaa
+......a..ff.aaaaa.aaaaa.aaa................ggggggggg.ggg.ggggg.........aaaaa.a.a..aaaaa.aaaaaa
+key
+. blank
+a fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+b logo=claudecode
+c fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment
+d fg=#ff6b80  ; Danger, ModeAutopilot
+e logo=antigravity
+f logo=ollama
+g fg=#c8d3f5  ; the terminal's own
+h logo=codex
+i fg=#4eba65  ; Success, CatAgents
+j fg=#6cd1cf bold  ; CliAgy
+k fg=#ffffff  ; Bright
+l fg=#e6a23c  ; Accent, CatBrief
+m fg=#f7d488  ; Shimmer
+n fg=#888888  ; Rule
+o fg=#af87ff  ; Label, Ultracode
+p fg=#b1b9f9  ; Code, Question, BarFill, CatMcp

@@ -1,6 +1,6 @@
-//! Esc on a question or an approval means "carry on without me". Nothing waits
-//! forever on one: an option is taken in your place at once, as `approvals.when_declined` says,
-//! and recorded as yours to review.
+//! "Carry on without me", the last row of a question or an approval that waits on you: an
+//! option is taken in your place at once, as `approvals.when_declined` says, and recorded as
+//! yours to review.
 //!
 //! - `decide`: whoever asked decides and carries on. An agent's question goes back to the agent,
 //!   which is told to say what it assumed. A goal's questions go to the main agent. A goal or a
@@ -63,8 +63,8 @@ pub(super) fn left(host: &Host, id: &ApprovalId) -> Result<(), String> {
     if draft::asks(opened) {
         return Err("only your own answer posts on GitHub".to_owned());
     }
-    let when = host.settings().approvals.when_declined;
-    let (option, text) = taken(opened, when)
+    // What the question said it would do when it opened, which its last row told you.
+    let (option, text) = taken(opened, opened.when_declined)
         .ok_or_else(|| "nothing it offers lets the work go on without you".to_owned())?;
     let task = opened.task.as_ref();
     let line = Note {
@@ -114,7 +114,8 @@ fn carry_on(opened: &ApprovalOpened) -> Option<(AnswerOption, Option<String>)> {
         )
     };
     // A goal's question goes to the main agent, with the rest of them. The go-ahead's "and
-    // let the main agent answer" is more than one Esc asks for, so that one is only approved.
+    // let the main agent answer" is more than carrying on without you asks for, so that one is
+    // only approved.
     if let Some(option) = chosen(LET_THE_MAIN_AGENT_DECIDE) {
         return Some((option.clone(), None));
     }
@@ -185,6 +186,7 @@ mod tests {
             evidence_sha256: "0".repeat(64),
             mode: ApprovalMode::Supervised,
             decide_with: DecideWith::Rules,
+            when_declined: WhenDeclined::Decide,
             options,
             free_text: FreeText::None,
             needs_you: true,
@@ -199,8 +201,8 @@ mod tests {
         taken(&standard(kind), when).map(|(option, _)| option.action)
     }
 
-    /// Esc hands a question back to the agent that asked, and it is told to say what it
-    /// assumed. Nothing waits.
+    /// Carrying on without you hands a question back to the agent that asked, and it is told
+    /// to say what it assumed. Nothing waits.
     #[test]
     fn a_question_left_goes_back_to_its_agent() {
         let question = standard(ApprovalKind::Question);

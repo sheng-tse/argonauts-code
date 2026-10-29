@@ -219,8 +219,13 @@ fn own_instructions(dirs: &PromptDirs, prompt: InputPart) -> InputPart {
     }
 }
 
-/// Who built the task the agent judges, as the screen names them.
+/// Who built the task the agent judges, as the screen names them. In a council it is never named:
+/// a frame of yours that says `{{author}}` reads "a seat of this council".
 fn author(host: &Host, agent: &Agent<'_>) -> Option<String> {
+    let council = host.read(crate::council::seats::council_sat);
+    if council && agent.task.is_some() {
+        return Some(crate::council::seats::COUNCIL_AUTHOR.to_owned());
+    }
     let worker = host.read(|state| {
         let record = state.tasks.get(agent.task?)?;
         record.worker.clone().or_else(|| record.spec.worker.clone())

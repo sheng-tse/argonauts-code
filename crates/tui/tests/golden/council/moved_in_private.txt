@@ -1,0 +1,38 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+     5.6 Luna                                                                                                           
+                                                              ▐1✘  ▐2✔  ▐▌✘                                             
+▐▌   401 for calls with no key: the docs already say every call needs one.                                              
+                                                                                                                        
+     Opus 5.5 · 1                                                                                                       
+                                                                           ▐2✘  ▐▌✘  ▐▌✔                                
+     Calls with no key should share one small bucket, 10 a second: the balancer's probe                                 
+▐1   calls /health with no key, and so do the curl examples in our docs.                                                
+                                                                                                                        
+                         You wrote to ▐▌ 5.6 Luna in private · 10:46 AM · no other seat sees it                         
+                                                                                                                        
+     5.6 Luna                                                                                                           
+   ╭─ ▐1 Calls with no key should share one small bucket  1 Reply                                                       
+                                                                            ▐1✔  ▐2✘  ▐▌✔                               
+     I now back one shared bucket for calls with no key, for now. You told me in private                                
+▐▌   why breaking them soon is costly.                                                                                  
+                                                                                                                        
+          ▐▌ 5.6 Luna moved to one shared bucket · its reason came from you, in private · 5 of 6 points agreed          
+                                                                                                                        
+▐2  • • •   Opus 5.5 · 2 is writing · point 6 would close on a reason no seat can read                                  
+                                                                                                                        
+✻ Parleying… (4m 2s · ↓  70.3k of 200k tokens · 3/4 seats agree)                                                        
+  ⎿  Still open: calls with no key                                                                                       
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task                                                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ↓  to manage                                           
+                                                                                                                        
+  ⣾  Rate limit the API                    ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱  3/4 · 4m02s · ↓  87.6k tokens                          
+    ⎿ ✔  ▐1 Opus 5.5 · 1                   Backs all 6 points          2m31s · ↓    24k tokens                          
+      ○  ▐2 Opus 5.5 · 2                   Answering GPT 5.6 Luna      2m20s · ↓  21.8k tokens                          
+      ✔  ▐▌ 5.6 Luna                       Backs all 6 points          1m52s · ↓  24.6k tokens                          
+      ✔  ▐▌ 3.8 Flash                      Backs all 6 points          1m41s · ↓  17.2k tokens                          

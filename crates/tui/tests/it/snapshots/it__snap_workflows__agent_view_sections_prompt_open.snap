@@ -1,6 +1,5 @@
 ---
 source: crates/tui/tests/it/snap_workflows.rs
-assertion_line: 783
 expression: text
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -12,7 +11,7 @@ expression: text
  │ 381.0k tok · 195 tool calls · 6m 2s                                                      │
  │                                                                                          │
  │ Prompt · 14 lines · ⏎ collapse                                                           │
- │   Build the terminal and the whole bottom region of the UI kit.                          │
+ │   Build the terminal and the whole bottom region of the todo app.                        │
  │   Read the design notes first, then the reference screenshots.                           │
  │   Step 1: build one part, test it, and report what changed.                              │
  │   Step 2: build one part, test it, and report what changed.                              │

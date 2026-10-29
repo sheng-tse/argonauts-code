@@ -2,7 +2,7 @@
 //! failed agent does:
 //!
 //! ```text
-//! ✗ review:due-dates · GPT 5.6 Luna on Codex · 2s
+//! ✘ review:due-dates · GPT 5.6 Luna on Codex · 2s
 //!   ⎿  Codex refused the answer format Argonauts Code asked for · r shows the raw error
 //! ```
 
@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::cell::{ToolCall, ToolItem, ToolState};
 use crate::format;
 
-/// The row a failed agent ends with: `✗`, its name, how long it ran, and why it failed, with
+/// The row a failed agent ends with: `✘`, its name, how long it ran, and why it failed, with
 /// the hint to its raw error when there is one.
 pub(super) fn failed_row(
     whole: &ToolCall,
@@ -58,7 +58,7 @@ mod tests {
         let lines = row.lines(&RenderCtx::new(100, &theme, Clock::still(Instant::now())));
         assert_eq!(
             plain_text(&lines),
-            "✗ review:due-dates · GPT 5.6 Luna on Codex · 2s\n  ⎿  Codex refused the answer \
+            "✘ review:due-dates · GPT 5.6 Luna on Codex · 2s\n  ⎿  Codex refused the answer \
              format Argonauts Code asked for · r shows the raw error"
         );
         assert_eq!(lines[0].spans[0].style.fg, theme.style(Role::Danger).fg);

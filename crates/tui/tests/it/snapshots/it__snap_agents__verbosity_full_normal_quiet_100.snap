@@ -17,7 +17,7 @@ expression: "sections.join(\"\\n\\n\")"
      Wired the middleware in front of the router.
 
 ● Opus on Claude Code · worker · task-003 (Middleware)
-  ⎿  Done · 4 tool uses · report ✓ · checks ✓ · 9m 40s · 61.0k tokens
+  ⎿  Done (4 tool uses · 61.0k tokens · 9m 40s) · report ✓ · checks ✓
 
 ── Normal ──
 ● Opus on Claude Code · worker · task-003 (Middleware)
@@ -29,6 +29,6 @@ expression: "sections.join(\"\\n\\n\")"
      Wired the middleware in front of the router.
 
 ● Opus on Claude Code · worker · task-003 (Middleware)
-  ⎿  Done · 4 tool uses · report ✓ · checks ✓ · 9m 40s · 61.0k tokens
+  ⎿  Done (4 tool uses · 61.0k tokens · 9m 40s) · report ✓ · checks ✓
 
 ── Quiet ──

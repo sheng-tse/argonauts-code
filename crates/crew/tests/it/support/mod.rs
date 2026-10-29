@@ -60,15 +60,19 @@ pub struct Outcome {
 }
 
 impl Crew {
-    /// The default workflow's settings with an empty crew. A run with an approval waiting waits
-    /// at once instead of after the usual grace, and a session that failed for an agent reason
-    /// goes again at once, so scenarios don't wait. The main agent doesn't
-    /// design the workflow and no final check runs, unless a scenario turns them on, so
-    /// scripted answers go to the steps they were written for. For the same reason a
-    /// built-in workflow runs its fixed phases here, and the scenarios of a workflow's own
-    /// steps ask for the script.
+    /// The default settings with an empty crew, running the crew's fixed phases: blind drafts,
+    /// the map, critique and judging, which most scenarios script, while Council's talk has
+    /// scenarios of its own. A run with an approval waiting waits at once instead of after the
+    /// usual grace, and a session that failed for an agent reason goes again at once, so
+    /// scenarios don't wait. The main agent doesn't design the workflow and no final check
+    /// runs, unless a scenario turns them on, so scripted answers go to the steps they were
+    /// written for. For the same reason a built-in workflow runs its fixed phases here, and the
+    /// scenarios of a workflow's own steps ask for the script.
     pub fn new() -> anyhow::Result<Self> {
-        let mut settings = Settings::default();
+        let mut settings = Settings {
+            workflow: argonauts_core::workflow_files::BASE.0.to_owned(),
+            ..Settings::default()
+        };
         settings.crew.clear();
         settings.workflows.adapt_with = AdaptWith::Phases;
         settings.run_host.wait_grace = Span::new("0s");
@@ -127,6 +131,15 @@ impl Crew {
             self.settings.crew.add(reference);
         }
         fake
+    }
+
+    /// A council of your own in the repo, made of steps the orchestrator writes a script for,
+    /// as a file of steps named after the built-in one replaces it. Scenarios of the script's
+    /// engine use it; the built-in Council talks instead.
+    pub fn with_council_steps(&self) -> anyhow::Result<()> {
+        self.repo
+            .write(".argonauts/workflows/council.toml", COUNCIL_STEPS)?;
+        Ok(())
     }
 
     /// The temp repo's home and git config, for the engine's git.
@@ -343,6 +356,32 @@ impl Crew {
         })
     }
 
+    /// Wakes a waiting run with `commands` queued, as [`Crew::resume`] does, but in its own task
+    /// like [`Crew::spawn`], so a test can act on it mid-run. Hold `repo.env_guard()` while it
+    /// runs.
+    pub async fn resume_spawned(
+        &self,
+        history: Vec<RunEvent>,
+        commands: Vec<EngineCommand>,
+    ) -> anyhow::Result<Spawned> {
+        let mode = mode_of(&history);
+        let (context, sink, sender) = self.context(history)?;
+        for command in commands {
+            if sender.send(command).await.is_err() {
+                bail!("the engine's inbox closed before it started");
+            }
+        }
+        let shutdown = context.shutdown.clone();
+        let engine = argonauts_crew::engine_for(&self.settings, mode);
+        let exit = tokio::spawn(engine.run(context));
+        Ok(Spawned {
+            shutdown,
+            commands: sender,
+            sink,
+            exit,
+        })
+    }
+
     async fn drive(
         &self,
         mode: RunMode,
@@ -435,6 +474,48 @@ pub fn wrote(file: &str) -> RunnerEvent {
         kind: "add".to_owned(),
     })
 }
+
+/// A council written as steps: everyone proposes, challenges and builds, and a judge decides.
+pub const COUNCIL_STEPS: &str = r#"name  = "council"
+about = "No single planner: everyone proposes and challenges, the judge decides"
+adapt = true
+
+[[step]]
+name        = "Propose"
+role        = "worker"
+count       = "all"
+independent = true
+keep        = true
+
+[[step]]
+name  = "Challenge"
+role  = "worker"
+count = "all"
+does  = "Argue against the other proposals. Their authors are hidden."
+keep  = true
+
+[[step]]
+name = "Decide"
+role = "judge"
+does = "Pick the strongest plan or join the best parts. Split it into tasks."
+keep = true
+
+[[step]]
+name     = "Build"
+role     = "worker"
+for_each = "task"
+
+[[step]]
+name           = "Cross-review"
+role           = "worker"
+for_each       = "task"
+not_the_author = true
+send_back_to   = "Build"
+
+[[step]]
+name = "Sign-off"
+role = "judge"
+"#;
 
 /// The smallest valid answer for the step's schema, or a plain end when it has none.
 pub fn smallest_answer(spec: &SessionSpec) -> FakeSession {

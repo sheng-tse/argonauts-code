@@ -1,14 +1,14 @@
-//! OpenCode's level knowing this machine's memory: each local model with the memory it takes
-//! at its window and whether that fits, the best that fits with room for a reviewer marked
-//! recommended and listed first, and up to three models not installed that would fit, from
-//! the short list kept with the catalog.
+//! OpenCode's level knowing this computer's memory: each local model with the memory it takes
+//! at its window and whether that fits, up to three models from the catalog that aren't
+//! installed and would fit, and the best of them all for this computer that fits with room for
+//! a reviewer marked recommended and listed first, ranked as the catalog's rule says.
 
 use argonauts_core::app::ModelChoice;
 use argonauts_core::limits::CostEstimate;
-use argonauts_core::model_picker::{Fit, ListedFacts, MachineMemory, ModelMemory};
+use argonauts_core::model_picker::{Fit, ListedFacts, LocalModel, MachineMemory, ModelMemory};
 use argonauts_core::names::ModelRef;
 use argonauts_core::registry::{ModelAccess, ModelEntry};
-use argonauts_registry::models::suggested::{SUGGESTED, rank};
+use argonauts_registry::models::suggested::{Placed, better, download, matching, ranked, room};
 
 use crate::host::memory::Ollama;
 
@@ -26,10 +26,15 @@ pub(crate) struct Reading {
     pub ollama: Ollama,
 }
 
-/// OpenCode's choices with what each takes of `reading`'s machine, Default with the window
+/// OpenCode's choices with what each takes of `reading`'s computer, Default with the window
 /// and host of the model it runs, the recommended model first among the local ones, and the
-/// models not installed that would fit after them.
-pub(crate) fn annotate(choices: &mut Vec<ModelChoice>, reading: &Reading, listed: &[ModelEntry]) {
+/// catalog's `local` models not installed that would fit after them.
+pub(crate) fn annotate(
+    choices: &mut Vec<ModelChoice>,
+    reading: &Reading,
+    listed: &[ModelEntry],
+    local: &[LocalModel],
+) {
     let machine = &reading.machine;
     for choice in choices.iter_mut() {
         let Some(tag) = ollama_tag(choice) else {
@@ -64,8 +69,8 @@ pub(crate) fn annotate(choices: &mut Vec<ModelChoice>, reading: &Reading, listed
         }
     }
     default_facts(choices, listed);
-    let mut suggested = suggestions(choices, reading);
-    recommend(choices, &mut suggested, machine);
+    let mut suggested = suggestions(choices, reading, local);
+    recommend(choices, &mut suggested, machine, local);
     order(choices, suggested);
 }
 
@@ -121,84 +126,102 @@ fn default_facts(choices: &mut [ModelChoice], listed: &[ModelEntry]) {
     }
 }
 
-/// The heading of the models not installed that would fit, worded for the machine they'd run on.
-fn not_installed(machine: &MachineMemory) -> &'static str {
-    if machine.mac {
-        "Not installed · fits this Mac"
-    } else {
-        "Not installed · fits this machine"
-    }
-}
+/// The heading of the models not installed that would fit, the same words on every system.
+const NOT_INSTALLED: &str = "Not installed · fits this computer";
 
-/// Up to three models from the list that aren't installed and would fit, best first.
-fn suggestions(choices: &[ModelChoice], reading: &Reading) -> Vec<ModelChoice> {
-    let installed: Vec<usize> = reading
-        .ollama
-        .tags
-        .keys()
-        .filter_map(|tag| rank(tag))
-        .collect();
+/// Up to three of the catalog's models that aren't installed and would fit beside the loaded
+/// models, though the other apps may need closing, best for this computer first, each at the
+/// window it ranks at.
+fn suggestions(
+    choices: &[ModelChoice],
+    reading: &Reading,
+    local: &[LocalModel],
+) -> Vec<ModelChoice> {
     if !choices.iter().any(|choice| choice.worker.agent == OPENCODE) {
         return Vec::new();
     }
-    SUGGESTED
-        .iter()
-        .enumerate()
-        .filter(|(at, _)| !installed.contains(at))
-        // Room beside the loaded models, though the other apps may need closing.
-        .filter(|(_, row)| matches!(reading.machine.fit(row.ram), Fit::Fits | Fit::Tight { .. }))
+    // What OpenCode lists through Ollama counts too, for when Ollama itself didn't answer.
+    let installed: Vec<&str> = reading
+        .ollama
+        .tags
+        .keys()
+        .cloned()
+        .chain(choices.iter().filter_map(ollama_tag))
+        .filter_map(|tag| matching(local, &tag))
+        .map(|model| model.tag.as_str())
+        .collect();
+    let machine = &reading.machine;
+    ranked(local, machine.limit)
+        .into_iter()
+        .filter(|placed| placed.model.tools && !installed.contains(&placed.model.tag.as_str()))
+        .filter(|placed| matches!(machine.fit(placed.ram), Fit::Fits | Fit::Tight { .. }))
         .take(SUGGESTIONS)
-        .map(|(_, row)| ModelChoice {
-            worker: ModelRef::new(OPENCODE, Some(format!("{OLLAMA}{}", row.tag))),
-            provider: String::new(),
-            access: ModelAccess::Local,
-            cost: CostEstimate::Free,
-            plan_usage: None,
-            efforts: Vec::new(),
-            strengths: Vec::new(),
-            current: false,
-            note: None,
-            older: false,
-            name: row.name.to_owned(),
-            description: None,
-            recommended: false,
-            new: false,
-            default_effort: None,
-            effort: None,
-            alias: false,
-            runs: None,
-            listed: Some(ListedFacts {
-                group: Some(not_installed(&reading.machine).to_owned()),
-                window: Some(row.window),
-                no_tools: false,
-                thinking: row.thinking,
-                hosted_by: None,
-                memory: Some(ModelMemory {
-                    ram: row.ram,
-                    fit: Fit::Fits,
-                    download: Some(row.download),
-                }),
-            }),
-        })
+        .map(|placed| suggestion(&placed, machine))
         .collect()
 }
 
-/// The best-ranked local model with tool use that fits with room for a reviewer: a third of
-/// what models may use left over.
-fn recommend(choices: &mut [ModelChoice], suggested: &mut [ModelChoice], machine: &MachineMemory) {
-    let room = machine.limit / 3 * 2;
+fn suggestion(placed: &Placed<'_>, machine: &MachineMemory) -> ModelChoice {
+    let model = placed.model;
+    ModelChoice {
+        worker: ModelRef::new(OPENCODE, Some(format!("{OLLAMA}{}", model.tag))),
+        provider: String::new(),
+        access: ModelAccess::Local,
+        cost: CostEstimate::Free,
+        plan_usage: None,
+        efforts: Vec::new(),
+        strengths: Vec::new(),
+        current: false,
+        note: None,
+        older: false,
+        name: model.name.clone(),
+        description: None,
+        recommended: false,
+        new: false,
+        default_effort: None,
+        effort: None,
+        alias: false,
+        runs: None,
+        listed: Some(ListedFacts {
+            group: Some(NOT_INSTALLED.to_owned()),
+            window: Some(placed.window),
+            no_tools: false,
+            thinking: model.thinking,
+            hosted_by: None,
+            memory: Some(ModelMemory {
+                ram: placed.ram,
+                fit: machine.fit(placed.ram),
+                download: Some(download(model)),
+            }),
+        }),
+    }
+}
+
+/// The local model with tool use that ranks best for this computer, of those that fit now with
+/// room for a reviewer: an installed one at the window it's set to, with what it was measured
+/// to take, and one not installed at the window it ranks at.
+fn recommend(
+    choices: &mut [ModelChoice],
+    suggested: &mut [ModelChoice],
+    machine: &MachineMemory,
+    local: &[LocalModel],
+) {
+    let room = room(machine.limit);
     let candidate = |choice: &ModelChoice| {
-        let tag = ollama_tag(choice)?;
+        let model = matching(local, &ollama_tag(choice)?)?;
         let facts = choice.listed.as_ref()?;
         let memory = facts.memory.as_ref()?;
         let fits = matches!(memory.fit, Fit::Fits | Fit::Loaded) && memory.ram <= room;
-        (fits && !facts.no_tools).then(|| rank(&tag)).flatten()
+        (fits && !facts.no_tools && model.tools).then(|| Placed {
+            model,
+            window: facts.window.unwrap_or(model.window),
+            ram: memory.ram,
+        })
     };
     let best = choices
         .iter()
         .chain(suggested.iter())
         .filter_map(|choice| Some((candidate(choice)?, choice.worker.clone())))
-        .min_by_key(|(rank, _)| *rank)
+        .min_by(|(a, _), (b, _)| better(a, b))
         .map(|(_, worker)| worker);
     for choice in choices.iter_mut().chain(suggested.iter_mut()) {
         if choice.worker.agent == OPENCODE && choice.worker.model.is_some() {
@@ -233,6 +256,8 @@ mod tests {
     use argonauts_core::settings::Settings;
     use argonauts_registry::models::cli_entry;
 
+    use argonauts_core::model_picker::{CodingScore, Figure};
+
     use super::*;
     use crate::host::memory::{Held, Tag};
 
@@ -266,11 +291,52 @@ mod tests {
         }
     }
 
-    /// A 16 GB Mac with nothing loaded: Qwen3 Coder 30B (64k) and Llama3.2 at 128k won't fit.
-    fn small_mac() -> Reading {
+    /// A made-up catalog: a 30B coder that wants a roomy computer, a 14B, an 8B and a 7B
+    /// ranked by their scores, and a tiny model with no score.
+    fn catalog() -> Vec<LocalModel> {
+        let model =
+            |tag: &str, weights: f64, kib: f64, window: u64, score: Option<f64>| LocalModel {
+                tag: tag.to_owned(),
+                name: format!("Sample {tag}"),
+                window,
+                weights_gb: Figure(weights),
+                download_gb: Figure(weights),
+                context_kib_per_token: Figure(kib),
+                tools: true,
+                thinking: false,
+                released: Some("2025-07".to_owned()),
+                coding: score.map(|score| CodingScore {
+                    score: Figure(score),
+                    source: "a sample leaderboard".to_owned(),
+                    checked: "2026-10-20".to_owned(),
+                }),
+                replaced_by: None,
+            };
+        vec![
+            model("sample-coder:30b", 19.0, 96.0, 65_536, Some(51.0)),
+            model("sample:14b", 9.0, 32.0, 65_536, Some(45.0)),
+            model("sample:8b", 6.0, 32.0, 32_768, Some(40.0)),
+            model("sample:7b", 5.0, 32.0, 32_768, Some(30.0)),
+            model("tiny:latest", 2.0, 64.0, 32_768, None),
+        ]
+    }
+
+    fn routes(choices: &[ModelChoice]) -> Vec<&str> {
+        choices
+            .iter()
+            .filter_map(|choice| choice.worker.model.as_deref())
+            .collect()
+    }
+
+    fn memory(choice: &ModelChoice) -> &ModelMemory {
+        choice.listed.as_ref().unwrap().memory.as_ref().unwrap()
+    }
+
+    /// A 16 GB computer with nothing loaded: the 30B coder and the tiny model at 128k won't fit.
+    fn small_computer() -> Reading {
         let tags = BTreeMap::from([
             (
-                "qwen3-coder:30b-64k".to_owned(),
+                "sample-coder:30b-64k".to_owned(),
                 Tag {
                     size: 18 * GIB,
                     per_token: Some(98_304),
@@ -278,7 +344,7 @@ mod tests {
                 },
             ),
             (
-                "llama3.2:latest".to_owned(),
+                "tiny:latest".to_owned(),
                 Tag {
                     size: 2 * GIB,
                     per_token: Some(114_688),
@@ -292,7 +358,6 @@ mod tests {
                 total: 16 * GIB,
                 in_use: 0,
                 free: 8 * GIB,
-                mac: true,
             },
             ollama: Ollama {
                 tags,
@@ -301,8 +366,27 @@ mod tests {
         }
     }
 
+    /// The 64 GB computer with the 30B coder loaded at 64k.
+    fn roomy_computer(free_gb: u64) -> Reading {
+        let mut reading = small_computer();
+        reading.machine = MachineMemory {
+            limit: 52 * GIB,
+            total: 64 * GIB,
+            in_use: 25 * GIB,
+            free: free_gb * GIB,
+        };
+        reading.ollama.loaded.insert(
+            "sample-coder:30b-64k".to_owned(),
+            Held {
+                bytes: 25 * GIB,
+                window: Some(65_536),
+            },
+        );
+        reading
+    }
+
     #[test]
-    fn a_small_mac_marks_what_wont_fit_and_recommends_one_that_does() {
+    fn a_small_computer_marks_what_wont_fit_and_recommends_the_best_that_does() {
         let default = ModelChoice {
             worker: ModelRef::new(OPENCODE, None),
             listed: None,
@@ -310,133 +394,90 @@ mod tests {
         };
         let mut choices = vec![
             default,
-            local("qwen3-coder:30b-64k", 65_536),
-            local("llama3.2:latest", 131_072),
+            local("sample-coder:30b-64k", 65_536),
+            local("tiny:latest", 131_072),
         ];
-        annotate(&mut choices, &small_mac(), &[]);
-        let fit = |at: usize| {
-            choices[at]
-                .listed
-                .as_ref()
-                .unwrap()
-                .memory
-                .as_ref()
-                .unwrap()
-                .fit
-        };
+        annotate(&mut choices, &small_computer(), &[], &catalog());
         assert_eq!(
-            fit(1),
+            memory(&choices[1]).fit,
             Fit::TooBig { at: None },
             "even at 32k it needs 21 GB"
         );
         let Fit::TooBig {
             at: Some((window, ram)),
-        } = fit(2)
+        } = memory(&choices[2]).fit
         else {
-            panic!("{:?}", fit(2));
+            panic!("{:?}", memory(&choices[2]).fit);
         };
         assert_eq!(window, 32_768);
         assert_eq!(ram, 2 * GIB + 114_688 * 32_768);
 
-        let names: Vec<String> = choices.iter().map(ModelChoice::display_name).collect();
+        // The best scores that fit two thirds of 11 GB, at 32k.
         assert_eq!(
-            names,
+            routes(&choices),
             [
-                "Default",
-                "Qwen3 Coder 30B 64K",
-                "Llama3.2",
-                "Qwen3 8B",
-                "Qwen2.5 Coder 7B"
+                "ollama/sample-coder:30b-64k",
+                "ollama/tiny:latest",
+                "ollama/sample:8b",
+                "ollama/sample:7b"
             ]
         );
-        let qwen8 = &choices[3];
-        assert!(qwen8.recommended && !choices[1].recommended);
-        let facts = qwen8.listed.as_ref().unwrap();
-        assert_eq!(
-            facts.group.as_deref(),
-            Some("Not installed · fits this Mac")
-        );
-        assert_eq!(facts.memory.as_ref().unwrap().download, Some(6 * GIB));
+        let best = &choices[3];
+        assert!(best.recommended && !choices[1].recommended);
+        let facts = best.listed.as_ref().unwrap();
+        assert_eq!(facts.group.as_deref(), Some(NOT_INSTALLED));
+        assert_eq!(facts.window, Some(32_768));
+        assert_eq!(memory(best).download, Some(6 * GIB));
+        assert_eq!(memory(best).ram, 7 * GIB);
     }
 
     #[test]
-    fn the_models_not_installed_fit_this_machine_on_a_machine_that_isnt_a_mac() {
-        let mut reading = small_mac();
-        reading.machine.mac = false;
-        let mut choices = vec![local("llama3.2:latest", 131_072)];
-        annotate(&mut choices, &reading, &[]);
-        let headings: Vec<&str> = choices
-            .iter()
-            .filter_map(|choice| choice.listed.as_ref()?.group.as_deref())
-            .filter(|group| group.starts_with("Not installed"))
-            .collect();
-        assert!(!headings.is_empty(), "{choices:?}");
-        assert!(
-            headings
-                .iter()
-                .all(|group| *group == "Not installed · fits this machine"),
-            "{headings:?}"
-        );
-    }
-
-    #[test]
-    fn the_loaded_model_that_fits_with_room_for_a_reviewer_comes_first() {
-        let mut reading = small_mac();
-        reading.machine = MachineMemory {
-            limit: 52 * GIB,
-            total: 64 * GIB,
-            in_use: 25 * GIB,
-            free: 18 * GIB,
-            mac: true,
-        };
-        reading.ollama.loaded.insert(
-            "qwen3-coder:30b-64k".to_owned(),
-            Held {
-                bytes: 25 * GIB,
-                window: Some(65_536),
-            },
-        );
+    fn the_loaded_model_that_ranks_best_comes_first() {
         let mut choices = vec![
-            local("llama3.2:latest", 131_072),
-            local("qwen3-coder:30b-64k", 65_536),
+            local("tiny:latest", 131_072),
+            local("sample-coder:30b-64k", 65_536),
         ];
         let mut entry = cli_entry(&Settings::default(), OPENCODE, None);
         entry.cli_default = false;
-        annotate(&mut choices, &reading, &[entry]);
+        annotate(&mut choices, &roomy_computer(18), &[entry], &catalog());
         assert!(choices[0].recommended, "{:?}", choices[0].worker);
+        assert_eq!(memory(&choices[0]).fit, Fit::Loaded);
+        // The tiny model at 128k takes 16 GB, under the 18 GB free.
+        assert_eq!(memory(&choices[1]).fit, Fit::Fits);
         assert_eq!(
-            choices[0]
-                .listed
-                .as_ref()
-                .unwrap()
-                .memory
-                .as_ref()
-                .unwrap()
-                .fit,
-            Fit::Loaded
+            routes(&choices[2..]),
+            ["ollama/sample:14b", "ollama/sample:8b", "ollama/sample:7b"]
         );
-        // Llama3.2 at 128k takes 16 GB, under the 18 GB free.
-        assert_eq!(
-            choices[1]
-                .listed
-                .as_ref()
-                .unwrap()
-                .memory
-                .as_ref()
-                .unwrap()
-                .fit,
-            Fit::Fits
-        );
-        let suggested: Vec<&str> = choices[2..]
+    }
+
+    /// A model not installed that needs more than is free now says so, and isn't recommended.
+    #[test]
+    fn a_suggestion_says_when_it_would_squeeze_other_apps() {
+        let mut choices = vec![local("tiny:latest", 32_768)];
+        annotate(&mut choices, &roomy_computer(10), &[], &catalog());
+        let fourteen = choices
             .iter()
-            .filter_map(|choice| choice.worker.model.as_deref())
-            .collect();
+            .find(|choice| choice.worker.model.as_deref() == Some("ollama/sample:14b"))
+            .expect("the 14B is offered");
+        assert!(matches!(memory(fourteen).fit, Fit::Tight { .. }));
+        assert!(!fourteen.recommended);
+        assert!(choices.iter().any(|choice| choice.recommended));
+    }
+
+    /// Where Ollama didn't answer, what OpenCode lists through it isn't offered again.
+    #[test]
+    fn a_model_opencode_lists_is_not_offered_when_ollama_is_quiet() {
+        let mut reading = roomy_computer(18);
+        reading.ollama = Ollama::default();
+        let mut choices = vec![local("sample:14b", 65_536)];
+        annotate(&mut choices, &reading, &[], &catalog());
         assert_eq!(
-            suggested,
+            routes(&choices),
             [
-                "ollama/qwen3.5:27b",
-                "ollama/devstral:24b",
-                "ollama/gpt-oss:20b"
+                "ollama/sample:14b",
+                "ollama/sample-coder:30b",
+                "ollama/sample:8b",
+                "ollama/sample:7b"
             ]
         );
     }

@@ -1,10 +1,13 @@
 # After every release, installs it the ways people do and checks `argonauts --version` prints the release's
 # version: the shell installer, Homebrew and npm on fresh macOS and Ubuntu machines (ARM and Intel), and the shell
-# installer in old and small Linux containers, where it has to fall back to the static musl build. Called by
-# release.yml once the release is announced, betas included.
+# installer in old and small Linux containers, where it has to fall back to the static musl build, and npm in a
+# slim Node container without xz, where it has to say how to get xz. Called by release.yml once the release is
+# announced, betas included.
 #
-# A failure opens an issue. The update manifest is drafted only after every check passes
-# (packaging/updates/draft_manifest.py), so a broken release never starts rolling out to `self-update`.
+# A failure opens an issue. The update manifest is drafted only after every check passes and crates.io serves the
+# release too (packaging/updates/draft_manifest.py), so a broken release never starts rolling out to `self-update`,
+# and nobody hears "is out" before their own way of installing has it: Homebrew and npm are checked by installing
+# from them, crates.io by its index.
 name: Installer smoke test
 
 on:
@@ -109,8 +112,80 @@ jobs:
           "$HOME/.local/bin/argonauts" --version | tee /tmp/shell.txt
           grep -F "${TAG#v}" /tmp/shell.txt
 
+  # On Linux the npm package unpacks the program with the system's tar, and GNU tar needs xz for it. A slim Node
+  # image has none, so the install has to stop with the command that gets xz, and go through once it's there.
+  npm-without-xz:
+    runs-on: ubuntu-24.04
+    container: node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+    steps:
+      - name: npm says how to get xz, then installs
+        shell: bash
+        run: |
+          set -eu
+          version="${TAG#v}"
+          if command -v xz > /dev/null; then
+            echo "This image has xz, so it can't show what npm says without it." >&2
+            exit 1
+          fi
+          # The registry can take a few minutes to serve a version it has just accepted.
+          for try in 1 2 3 4 5 6; do
+            if [ "$(npm view "argonauts-code@${version}" version)" = "$version" ]; then break; fi
+            if [ "$try" = 6 ]; then
+              echo "npm doesn't serve argonauts-code ${version}." >&2
+              exit 1
+            fi
+            sleep 30
+          done
+          if npm install --global "argonauts-code@${version}" > /tmp/no-xz.txt 2>&1; then
+            cat /tmp/no-xz.txt
+            echo "npm installed without xz instead of saying how to get it." >&2
+            exit 1
+          fi
+          cat /tmp/no-xz.txt
+          # The backticks are part of the message npm prints, not a command to run.
+          # shellcheck disable=SC2016
+          grep -F 'Install it with `apt-get update && apt-get install xz-utils`, then try again.' /tmp/no-xz.txt
+          apt-get update
+          apt-get install -y --no-install-recommends xz-utils
+          npm install --global "argonauts-code@${version}"
+          argonauts --version | tee /tmp/npm.txt
+          grep -F "$version" /tmp/npm.txt
+
+  # `cargo install argonauts-code` reads crates.io's index, which can take a few minutes to list a version just
+  # published. crates.io takes stable releases only.
+  crates-io:
+    runs-on: ubuntu-24.04
+    permissions: {}
+    env:
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+      PRERELEASE: ${{ fromJson(inputs.plan).announcement_is_prerelease }}
+    steps:
+      - name: crates.io lists the release
+        run: |
+          set -eu
+          if [ "$PRERELEASE" = "true" ]; then
+            echo "crates.io takes stable releases only."
+            exit 0
+          fi
+          version="${TAG#v}"
+          for try in 1 2 3 4 5 6 7 8 9 10; do
+            if curl --proto '=https' --tlsv1.2 -fsS "https://index.crates.io/ar/go/argonauts-code" \
+              | grep -F "\"vers\":\"${version}\"" > /dev/null; then
+              echo "crates.io lists argonauts-code ${version}."
+              exit 0
+            fi
+            echo "Try ${try}: not listed yet."
+            sleep 30
+          done
+          echo "crates.io doesn't list argonauts-code ${version}." >&2
+          exit 1
+
   draft-manifest:
-    needs: [machines, containers]
+    needs: [machines, containers, npm-without-xz, crates-io]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -152,7 +227,7 @@ jobs:
           if-no-files-found: error
 
   report:
-    needs: [machines, containers]
+    needs: [machines, containers, npm-without-xz, crates-io]
     if: ${{ failure() }}
     runs-on: ubuntu-24.04
     permissions:
@@ -166,4 +241,4 @@ jobs:
         run: |
           gh issue create --repo "$GITHUB_REPOSITORY" \
             --title "Installer smoke test failed for ${TAG}" \
-            --body "Installing ${TAG} failed on at least one machine or container: ${RUN_URL}. The update manifest wasn't drafted, so self-update won't offer ${TAG} until this is fixed."
+            --body "Installing ${TAG} failed on at least one machine or container, or crates.io doesn't list it: ${RUN_URL}. The update manifest wasn't drafted, so self-update won't offer ${TAG} until this is fixed."

@@ -8,6 +8,7 @@
 //! file has it, with the live line's own drawer ([`preview_line`]).
 
 use argonauts_core::app::UiCommand;
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::bottom_line::BottomLineSettings;
 use argonauts_core::settings::mods::bottom_line::{
@@ -29,15 +30,14 @@ use crate::theme::{AgentColor, Role, Theme};
 use crate::views::ViewOutcome;
 use crate::views::panes::Footer;
 
-/// The colors a CLI can take: Claude Code's eight for telling agents apart, less the amber
-/// and the red, which on this line mean a limit is near or reached.
-const PALETTE: [(AgentColor, &str); 6] = [
+/// The colors a CLI can take: Claude Code's eight for telling agents apart, less the green,
+/// the amber and the red, which only ever mean state.
+const PALETTE: [(AgentColor, &str); 5] = [
     (AgentColor::Blue, "blue"),
     (AgentColor::Purple, "purple"),
     (AgentColor::Cyan, "cyan"),
     (AgentColor::Orange, "orange"),
     (AgentColor::Pink, "pink"),
-    (AgentColor::Green, "green"),
 ];
 
 const FORM_ROW: usize = 0;
@@ -275,7 +275,7 @@ impl LinePage {
         ]
     }
 
-    /// `■ Claude  ■ Codex  ■ agy`, each square in the CLI's color, then what the keys do, and
+    /// `■ Claude Code  ■ Codex  ■ agy`, each square in the CLI's color, then what the keys do, and
     /// whose the colors are: the theme's, or yours once you picked one. While the row is
     /// selected the CLI the keys act on is underlined and its color is named.
     fn colour_words(&self, kit: &Kit<'_>) -> (Vec<Span<'static>>, &'static str) {
@@ -287,7 +287,7 @@ impl LinePage {
         for (index, cli) in clis.iter().enumerate() {
             words.push(Span::styled(
                 format!("{} ", glyphs.square),
-                kit.fg(cli_role(&cli.id)),
+                kit.fg(Role::for_cli(&cli.id)),
             ));
             let mut name = kit.strong(cli.label.clone());
             if on_row && index == cursor {
@@ -352,7 +352,7 @@ impl LinePage {
             Some(color) => UiCommand::SetSetting {
                 key,
                 value: format!("\"{}\"", color.role().name()),
-                scope: SettingScope::Global,
+                scope: Some(SettingScope::Global),
             },
             None => UiCommand::ResetSetting {
                 key,
@@ -593,9 +593,9 @@ fn has_numbers(numbers: &LineNumbers) -> bool {
 /// Sample numbers, for a preview before any CLI has reported.
 fn sample_clis(numbers: &LineNumbers) -> Vec<LineCli> {
     let sample = [
-        ("Claude", "claude-code", Some(0.01), Some(0.56)),
-        ("Codex", "codex", Some(0.01), Some(0.11)),
-        ("agy", "antigravity-cli", Some(0.02), Some(0.01)),
+        ("claude-code", Some(0.01), Some(0.56)),
+        ("codex", Some(0.01), Some(0.11)),
+        ("antigravity-cli", Some(0.02), Some(0.01)),
     ];
     let main = numbers
         .clis
@@ -604,8 +604,8 @@ fn sample_clis(numbers: &LineNumbers) -> Vec<LineCli> {
         .map_or("claude-code", |cli| cli.id.as_str());
     sample
         .into_iter()
-        .map(|(label, id, five_hours, seven_days)| LineCli {
-            label: label.to_owned(),
+        .map(|(id, five_hours, seven_days)| LineCli {
+            label: DisplayNames::default().cli(id),
             id: id.to_owned(),
             main: id == main,
             five_hours,
@@ -623,23 +623,10 @@ fn clis(numbers: &LineNumbers) -> Vec<LineCli> {
     }
 }
 
-/// The theme's role for a CLI's color, which `[ui.colors]` can change. The bottom line names
-/// them `cli-claude`, `cli-codex` and `cli-agy`. In a theme that doesn't have them, the agent
-/// color nearest each stands in, so the page draws and picks the same way either way.
+/// The theme's role for a CLI's hue, which `[ui.colors]` can change: `cli-claude`,
+/// `cli-codex`, `cli-agy` and `cli-opencode`. Any other CLI has none and draws in grey.
 fn own_role(id: &str) -> Option<Role> {
-    let (name, nearest) = match id {
-        "claude-code" => ("cli-claude", Role::AgentOrange),
-        "codex" => ("cli-codex", Role::AgentBlue),
-        "antigravity-cli" => ("cli-agy", Role::AgentCyan),
-        "opencode" => return Some(Role::AgentGreen),
-        _ => return None,
-    };
-    Some(Role::from_name(name).unwrap_or(nearest))
-}
-
-/// One color per CLI, the same in every mod. A CLI the theme has no color for is grey.
-fn cli_role(id: &str) -> Role {
-    own_role(id).unwrap_or(Role::CatOther)
+    Some(Role::for_cli(id)).filter(|role| *role != Role::CatOther)
 }
 
 /// The color you picked for `role` over the theme's own, with its name.
@@ -823,7 +810,7 @@ mod tests {
         UiCommand::SetSetting {
             key: format!("ui.colors.{role}"),
             value: format!("\"{color}\""),
-            scope: SettingScope::Global,
+            scope: Some(SettingScope::Global),
         }
     }
 
@@ -840,13 +827,13 @@ mod tests {
         let (words, from) = colours(&picture_page(), &theme);
         assert_eq!(
             words,
-            "■ Claude  ■ Codex  ■ agy  one per CLI, from the theme · pick…"
+            "■ Claude Code  ■ Codex  ■ agy  one per CLI, from the theme · pick…"
         );
         assert_eq!(from, "theme");
         let mut page = on_colours();
         let (words, _) = colours(&page, &theme);
         assert!(
-            words.ends_with("Claude is the theme's · space picks another"),
+            words.ends_with("Claude Code is the theme's · space picks another"),
             "{words}"
         );
         press(&mut page, key(KeyCode::Right));
@@ -854,8 +841,8 @@ mod tests {
         assert!(words.ends_with("Codex is the theme's · space picks another"));
         // Each square is its CLI's own color.
         let (spans, _) = page.colour_words(&Kit::new(&theme));
-        assert_eq!(spans[0].style, theme.style(cli_role("claude-code")));
-        assert_eq!(spans[3].style, theme.style(cli_role("codex")));
+        assert_eq!(spans[0].style, theme.style(Role::CliClaude));
+        assert_eq!(spans[3].style, theme.style(Role::CliCodex));
         assert_ne!(spans[0].style, spans[3].style);
     }
 
@@ -869,7 +856,7 @@ mod tests {
         // The screen's theme follows the setting, and the row says so.
         assert!(theme.link(claude, Role::AgentBlue));
         let (words, from) = colours(&page, &theme);
-        assert!(words.contains("Claude is blue · space"), "{words}");
+        assert!(words.contains("Claude Code is blue · space"), "{words}");
         assert_eq!(from, "yours");
         assert_eq!(
             sent(page.handle_key(key(KeyCode::Char(' ')), &theme)),
@@ -941,7 +928,7 @@ mod tests {
     #[test]
     fn a_cli_the_theme_has_no_color_for_is_grey_and_says_why() {
         let theme = Theme::dark();
-        assert_eq!(cli_role("opencode"), Role::AgentGreen);
+        assert_eq!(own_role("opencode"), Some(Role::CliOpenCode));
         let numbers = LineNumbers {
             clis: vec![LineCli {
                 label: "My CLI".to_owned(),
@@ -954,7 +941,7 @@ mod tests {
         };
         let mut page = on_colours();
         page.numbers = numbers;
-        assert_eq!(cli_role("my-cli"), Role::CatOther);
+        assert_eq!(own_role("my-cli"), None);
         let (words, from) = colours(&page, &theme);
         assert!(words.contains("My CLI has no colour of its own"), "{words}");
         assert_eq!(from, "theme");

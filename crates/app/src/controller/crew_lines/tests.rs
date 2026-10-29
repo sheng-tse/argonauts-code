@@ -1,8 +1,6 @@
 use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome};
 use argonauts_core::model_catalog::{CatalogEntry, ModelCatalog};
-use argonauts_core::names::RoleName;
 use argonauts_core::settings::crew::{CrewSettings, Orchestrator};
-use argonauts_core::settings::roles::RoleSettings;
 
 use super::*;
 
@@ -98,6 +96,8 @@ fn a_role_that_follows_says_so() {
         worker_workflows: false,
         merger: Vec::new(),
         orchestrator_context: Default::default(),
+        orchestrator_picks: Default::default(),
+        ways: Default::default(),
     };
     let words = applied(
         vec![followed(InstructionKind::Review, "astra reviews")],
@@ -135,46 +135,9 @@ fn only_your_words_show_a_crew() {
     assert!(understood(&fable(), &not_followed, None).is_none());
 }
 
-/// "Keep this crew?" writes the roles your words set under `[crew]`, or under a role's own
-/// workers where your settings set those, since they beat the crew's.
-#[test]
-fn keeping_the_crew_writes_the_roles_your_words_set() {
-    let settings = fable();
-    let lines = understood(&settings, &opus_workers_and_an_astra_reviewer(), None).unwrap();
-    assert_eq!(
-        to_keep(&settings, &lines),
-        [
-            (
-                "crew.worker".to_owned(),
-                "[\"claude-code/opus-5-5\"]".to_owned()
-            ),
-            ("crew.reviewer".to_owned(), "[\"astra\"]".to_owned()),
-            (
-                "crew.judge".to_owned(),
-                "[\"claude-code/opus-5-5\"]".to_owned()
-            ),
-        ]
-    );
-
-    let mut own_reviewers = fable();
-    own_reviewers.roles.insert(
-        RoleName::Reviewer,
-        RoleSettings {
-            models: vec!["codex".parse().unwrap()],
-            ..RoleSettings::default()
-        },
-    );
-    let lines = understood(&own_reviewers, &opus_workers_and_an_astra_reviewer(), None).unwrap();
-    let kept = to_keep(&own_reviewers, &lines);
-    assert!(
-        kept.contains(&("roles.reviewer.models".to_owned(), "[\"astra\"]".to_owned())),
-        "{kept:?}"
-    );
-}
-
 /// "Use a workflow, with Codex as the reviewer" from Captain: the checks infer workers from the
 /// crew that aren't Codex, but the run builds with the main session, so the lines show what
-/// runs. Roles the run gave the main session say so and aren't kept; only the reviewer is.
+/// runs. Roles the run gave the main session say so.
 #[test]
 fn a_crew_from_captain_shows_the_models_the_run_has() {
     let mut settings = Settings {
@@ -229,10 +192,6 @@ fn a_crew_from_captain_shows_the_models_the_run_has() {
         "the main session builds too"
     );
     assert_eq!(lines[1].models, [settings.crew.main.clone()]);
-    assert_eq!(
-        to_keep(&settings, &lines),
-        [("crew.reviewer".to_owned(), "[\"codex\"]".to_owned())]
-    );
 
     // Without the run's own layer the inferred workers would read as your words.
     let words_only = understood(&settings, &words, None).unwrap();

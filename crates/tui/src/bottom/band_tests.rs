@@ -52,9 +52,9 @@ fn pinned_mods_stack_in_order_each_with_its_fold_toggle() {
     assert!(plan < spend, "{rows:#?}");
     assert!(rows[plan - 1].ends_with("╮ [-]"), "{rows:#?}");
     assert!(rows[spend - 1].ends_with("╮ [-]"), "{rows:#?}");
-    assert!(rows.iter().any(|row| row.contains("Claude Code  Max")));
+    assert!(rows.iter().any(|row| row.contains("Claude Code    Max")));
     // A row per plan window leaves the spend card its bar, not its rows.
-    assert!(rows[spend + 1].contains("━━━━"), "{rows:#?}");
+    assert!(rows[spend + 1].contains("████"), "{rows:#?}");
     assert!(rows.len() <= 14, "{rows:#?}");
 }
 
@@ -80,7 +80,7 @@ fn a_folded_mod_is_one_line_with_its_number() {
     let line = rows.last().unwrap();
     assert!(line.starts_with(" ▸ ◆ spend  ~$1.86 today"), "{rows:#?}");
     assert!(line.ends_with("[+]"), "{rows:#?}");
-    assert!(rows.iter().any(|row| row.contains("Claude Code  Max")));
+    assert!(rows.iter().any(|row| row.contains("Claude Code    Max")));
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn short_of_rows_the_last_mod_steps_down_first_then_the_band_hides() {
     // One row short: spend loses its legend, and plan usage keeps every row.
     let stepped = rows_in(&band, 110, full - 1, false);
     assert!(stepped.len() < full, "{stepped:#?}");
-    assert!(stepped.iter().any(|row| row.contains("agy          Pro")));
+    assert!(stepped.iter().any(|row| row.contains("agy            Pro")));
     assert!(!stepped.iter().any(|row| row.contains("on Claude Code")));
 
     let lines = rows_in(&band, 110, 2, false);
@@ -322,7 +322,7 @@ fn the_runs_card_pins_without_its_goal_and_plan_and_folds_to_how_far_it_is() {
     assert!(rows[1].contains("1 of 4 merged [needs you]"), "{rows:#?}");
     assert!(rows[2].contains('█'), "{rows:#?}");
     assert!(rows[3].contains("▌ merged 1"), "{rows:#?}");
-    assert!(rows[4].contains("task-001  CSV writer"), "{rows:#?}");
+    assert!(rows[4].contains("task-001    CSV writer"), "{rows:#?}");
     assert!(
         !rows.iter().any(|row| row.contains("Goal  ")),
         "above the input rows are dear: {rows:#?}"
@@ -378,11 +378,11 @@ fn the_context_card_pins_by_category_and_folds_to_how_full_it_is() {
     assert!(rows[1].contains("of 1M"), "{rows:#?}");
     assert!(rows[1].contains("compacts at"), "{rows:#?}");
     assert!(
-        rows.iter().any(|row| row.contains("▌ system prompt")),
+        rows.iter().any(|row| row.contains("▌ System prompt")),
         "{rows:#?}"
     );
     assert!(
-        rows.iter().any(|row| row.contains("▌ messages")),
+        rows.iter().any(|row| row.contains("▌ Messages")),
         "{rows:#?}"
     );
 

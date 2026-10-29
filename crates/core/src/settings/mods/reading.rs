@@ -12,6 +12,21 @@ use serde::{Deserialize, Serialize};
 
 use super::ModBody;
 
+/// The context mod's sample before a session counts its context: Claude Code's categories with
+/// a fresh conversation's numbers in a window of a million tokens, and the free space, which
+/// leaves out the 33k held back for compacting.
+const CONTEXT_SAMPLE: [(&str, u64); 7] = [
+    ("System prompt", 4_380),
+    ("System tools", 19_380),
+    ("MCP tools", 705),
+    ("MCP server instructions", 960),
+    ("Memory files", 503),
+    ("Skills", 6_360),
+    ("Messages", 10),
+];
+const CONTEXT_SAMPLE_WINDOW: u64 = 1_000_000;
+const CONTEXT_SAMPLE_HELD: u64 = 33_000;
+
 /// The most parts one reading keeps. A card has no room for more.
 pub const MOST_PARTS: usize = 64;
 
@@ -54,6 +69,10 @@ pub struct ModPart {
     /// Dim words after the number, such as `resets 4:40pm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The CLI the part stands for, by its id such as `claude-code`: the part then draws in
+    /// the CLI's hue with its logo before its label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli: Option<String>,
 }
 
 impl ModPart {
@@ -82,6 +101,11 @@ impl ModPart {
 
     pub fn noted(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
+        self
+    }
+
+    pub fn on_cli(mut self, cli: impl Into<String>) -> Self {
+        self.cli = Some(cli.into());
         self
     }
 
@@ -261,27 +285,27 @@ impl ModReading {
             ModSource::Builtin {
                 source: BuiltinSource::Context,
             } => Self {
-                summary: "212k of 1M".to_owned(),
-                parts: vec![
-                    part("used", 212_000.0, "212k").colored(ModColor::Blue),
-                    part("free", 788_000.0, "788k").colored(ModColor::Grey),
-                ],
+                summary: "32.3k of 1M · compacts at 967k".to_owned(),
+                parts: context_sample(),
                 ..Self::default()
             },
             ModSource::Builtin {
                 source: BuiltinSource::PlanUsage,
             } => Self {
-                summary: "56% Claude 7d".to_owned(),
+                summary: "56% Claude Code 7d".to_owned(),
                 parts: vec![
-                    ModPart::new("Claude 5h", 1.0)
+                    ModPart::new("Claude Code 5h", 1.0)
                         .of(100.0)
-                        .noted("resets in 4h 40m"),
-                    ModPart::new("Claude 7d", 56.0)
+                        .noted("resets in 4h 40m")
+                        .on_cli("claude-code"),
+                    ModPart::new("Claude Code 7d", 56.0)
                         .of(100.0)
-                        .noted("resets in 3d"),
+                        .noted("resets in 3d")
+                        .on_cli("claude-code"),
                     ModPart::new("Codex 7d", 11.0)
                         .of(100.0)
-                        .noted("resets in 5d"),
+                        .noted("resets in 5d")
+                        .on_cli("codex"),
                 ],
                 ..Self::default()
             },
@@ -290,9 +314,9 @@ impl ModReading {
             } => Self {
                 summary: "~$1.86 today".to_owned(),
                 parts: vec![
-                    part("Claude", 1.31, "~$1.31"),
-                    part("Codex", 0.45, "$0.45"),
-                    part("agy", 0.10, "~$0.10"),
+                    part("Claude Code", 1.31, "~$1.31").on_cli("claude-code"),
+                    part("Codex", 0.45, "$0.45").on_cli("codex"),
+                    part("agy", 0.10, "~$0.10").on_cli("antigravity-cli"),
                 ],
                 ..Self::default()
             },
@@ -358,6 +382,21 @@ impl ModReading {
             },
         }
     }
+}
+
+/// The context mod's sample parts: each category, then the free space in grey, each measured
+/// against the window.
+fn context_sample() -> Vec<ModPart> {
+    let window = CONTEXT_SAMPLE_WINDOW as f64;
+    let used: u64 = CONTEXT_SAMPLE.iter().map(|(_, tokens)| tokens).sum();
+    let free = CONTEXT_SAMPLE_WINDOW - used - CONTEXT_SAMPLE_HELD;
+    CONTEXT_SAMPLE
+        .iter()
+        .map(|(label, tokens)| ModPart::new(label, *tokens as f64).of(window))
+        .chain([ModPart::new("Free space", free as f64)
+            .of(window)
+            .colored(ModColor::Grey)])
+        .collect()
 }
 
 /// One line, without control characters, cut to what a card can hold.
@@ -469,8 +508,13 @@ mod tests {
         let sample = |name: &str| {
             ModReading::sample_for(cards.iter().find(|card| card.name == name).unwrap())
         };
-        assert_eq!(sample("context").summary, "212k of 1M");
-        assert_eq!(sample("plan-usage").parts[1].label, "Claude 7d");
+        assert_eq!(sample("context").summary, "32.3k of 1M · compacts at 967k");
+        assert_eq!(sample("context").parts.len(), 8);
+        assert_eq!(sample("plan-usage").parts[1].label, "Claude Code 7d");
+        assert_eq!(
+            sample("spend").parts[2].cli.as_deref(),
+            Some("antigravity-cli")
+        );
         assert_eq!(sample("spend").summary, "~$1.86 today");
         assert_eq!(sample("tokens").parts.len(), 3);
         // The rest draw their body's sample.

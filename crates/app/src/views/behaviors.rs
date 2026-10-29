@@ -3,20 +3,23 @@
 //! its density difference against the rest and the behaviors it shows most.
 
 pub(crate) mod read;
+pub(crate) mod world;
 
 use std::collections::BTreeMap;
 
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::behavior_map::{
-    BehaviorMap, BehaviorRow, Comparison, Grouping, MapAction, MapGroup, MapRequest, Placing, Scope,
+    ActionOutcome, BehaviorMap, BehaviorRow, Comparison, Grouping, MapAction, MapGroup, MapRequest,
+    Placing, Scope,
 };
 use argonauts_core::deep_map::says_more_than;
-use argonauts_core::display_names::DisplayNames;
+use argonauts_core::display_names::{DisplayNames, Spellings};
 use argonauts_core::settings::behaviors::BehaviorMap as MapSetting;
-use time::{Duration, OffsetDateTime};
+use argonauts_tui::format::WallClock;
+use time::OffsetDateTime;
 
 pub(crate) use read::Recorded;
-use read::{Records, project_name, records};
+use read::{Records, every_action, project_name, records};
 
 use crate::behaviors::deep::places::{KeptPlaces, kept_places};
 use crate::behaviors::map::{self, Counted, NoOverlay, Point};
@@ -29,7 +32,7 @@ pub(crate) struct Placed {
     pub place: (f64, f64),
 }
 
-/// How many behaviors a group's list ranks, and how many dots a deeper map's row lights: the
+/// How many behaviors a group's list ranks, and how many dots Summaries' row lights: the
 /// action itself and the ones summarized most like it.
 const LISTED: usize = 8;
 const SUMMARIZED_ALIKE: usize = 14;
@@ -49,26 +52,40 @@ pub(crate) async fn view(ctx: &mut Ctx, request: MapRequest) -> anyhow::Result<V
     let here = ctx.env.state_dir.clone();
     let names = ctx.names.names();
     let wanted = request.map.unwrap_or(ctx.settings().behaviors.map);
+    let view = ctx.settings().behaviors.view;
     let map = tokio::task::spawn_blocking(move || {
         let only = match request.scope {
             Scope::Everywhere => None,
             Scope::ThisProject => Some(here.as_path()),
         };
-        let since = request
-            .period
-            .days()
-            .map(|days| OffsetDateTime::now_utc() - Duration::days(days));
-        let records = records(&paths, only, since);
+        let period = world::Period::new(
+            OffsetDateTime::now_utc(),
+            request.period.days(),
+            WallClock::local(),
+        );
+        // The world reads past the period's start: when each behavior was last used, the
+        // period before, and the months before that. A wonder is the whole crew's, so it
+        // reads every project's actions whatever the map covers.
+        let every = every_action(&paths);
+        let wonders = crate::behaviors::wonders::risen(&paths, &every, period.end);
+        let mut all = records(every, only);
+        spell_models(&mut all.actions, &names);
+        let records = all.since(period.start());
         let kept = kept_places(&paths, &names);
         let mut map = match &kept {
-            Some(kept) if wanted == MapSetting::Deeper => {
-                build_deeper(&records, request, &names, kept)
+            Some(kept) if wanted == MapSetting::Summaries => {
+                build_summaries(&records, request, &names, kept)
             }
             _ => build(&records, request, &names),
         };
         // With nothing recorded there's nothing to summarize.
-        map.offer_deeper = kept.is_none() && !map.actions.is_empty();
+        map.offer_summaries = kept.is_none() && !map.actions.is_empty();
         map.here = Some(project_name(&here));
+        map.view = view;
+        let zone = world::storm::zone();
+        let mut world = world::facts(&all.actions, &period, &names, zone.as_deref());
+        world.wonders = wonders;
+        map.world = Some(Box::new(world));
         map
     })
     .await?;
@@ -76,6 +93,19 @@ pub(crate) async fn view(ctx: &mut Ctx, request: MapRequest) -> anyhow::Result<V
         data: Box::new(ViewData::Behaviors { map: Box::new(map) }),
     });
     Ok(Vec::new())
+}
+
+/// Names each action's model the one way Stats does: the catalog's spelling of it, and for an
+/// action whose session named none, the default its CLI runs. So Codex's sessions on its
+/// default model join that model's group, hover line and star rather than reading as Codex.
+fn spell_models(actions: &mut [Recorded], names: &DisplayNames) {
+    let mut spellings = Spellings::new(names);
+    for action in actions.iter() {
+        spellings.meet(&action.cli, action.model.as_deref());
+    }
+    for action in actions {
+        action.model = spellings.of(&action.cli, action.model.as_deref());
+    }
 }
 
 /// Where an action sits and what it counts under.
@@ -102,10 +132,10 @@ pub(crate) fn build(records: &Records, request: MapRequest, names: &DisplayNames
     })
 }
 
-/// The deeper map of `records`: each action at its summary's place, counting under its
+/// Summaries of `records`: each action at its summary's place, counting under its
 /// summary, its label beside it. An action no label fits has a place too; one not summarized
 /// yet waits for the next update, and is counted for `d` to offer.
-pub(crate) fn build_deeper(
+pub(crate) fn build_summaries(
     records: &Records,
     request: MapRequest,
     names: &DisplayNames,
@@ -143,7 +173,7 @@ fn build_placed(
         placing,
         runs: records.runs,
         conversations: records.conversations,
-        offer_deeper: true,
+        offer_summaries: true,
         ..BehaviorMap::default()
     };
     let mut groups: Vec<MapGroup> = Vec::new();
@@ -188,6 +218,12 @@ fn build_placed(
             input: recorded.what.clone(),
             place: recorded.place.clone(),
             run_shows: recorded.run_shows.clone(),
+            failed: recorded.failed,
+            outcome: recorded.outcome.map(|outcome| match outcome {
+                read::Outcome::Merged => ActionOutcome::Merged,
+                read::Outcome::SentBack => ActionOutcome::SentBack,
+                read::Outcome::Dropped => ActionOutcome::Dropped,
+            }),
         });
     }
     out.groups = order_groups(groups, &mut out.actions);
@@ -288,7 +324,7 @@ fn compare_all(map: &BehaviorMap) -> Vec<Comparison> {
         .collect()
 }
 
-/// The deeper map's list for `group`: its actions in the paper's order, each row an action's
+/// Summaries' list for `group`: its actions in the paper's order, each row an action's
 /// summary, lighting that action and the ones summarized most like it, its nearest dots.
 fn summary_rows(
     map: &BehaviorMap,

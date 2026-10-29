@@ -921,7 +921,7 @@ async fn a_picked_color_is_saved_in_your_settings_and_reaches_the_screen() {
         .send(UiCommand::SetSetting {
             key: key.clone(),
             value: "\"agent-pink\"".to_owned(),
-            scope: SettingScope::Global,
+            scope: Some(SettingScope::Global),
         })
         .await;
     let colors = |event: &AppEvent| match event {

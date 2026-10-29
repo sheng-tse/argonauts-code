@@ -2,18 +2,17 @@
 # (`github-build-setup` in dist-workspace.toml). This sits outside .github/workflows so GitHub doesn't take it for
 # a workflow of its own.
 
-# The usage-report key and host are read when the program is compiled. A build without the key sends nothing, so
-# forks and dry runs without the secrets stay silent.
+# The usage reports' key and host are read when the program is compiled, and the code carries Argonauts' own project
+# key. Secrets of these names send a fork's reports to its own PostHog project instead; a missing one leaves the
+# built-in value, since an empty key would turn the reports off.
 - name: Pass the usage-report settings to the build
   shell: bash
   env:
     POSTHOG_KEY: ${{ secrets.ARGONAUTS_POSTHOG_KEY }}
     POSTHOG_HOST: ${{ secrets.ARGONAUTS_POSTHOG_HOST }}
   run: |
-    {
-      echo "ARGONAUTS_POSTHOG_KEY=${POSTHOG_KEY}"
-      echo "ARGONAUTS_POSTHOG_HOST=${POSTHOG_HOST}"
-    } >> "$GITHUB_ENV"
+    if [ -n "$POSTHOG_KEY" ]; then echo "ARGONAUTS_POSTHOG_KEY=${POSTHOG_KEY}" >> "$GITHUB_ENV"; fi
+    if [ -n "$POSTHOG_HOST" ]; then echo "ARGONAUTS_POSTHOG_HOST=${POSTHOG_HOST}" >> "$GITHUB_ENV"; fi
 
 # aws-lc builds its jitter entropy source without optimization, and zig's C compiler, which the ARM musl cross build
 # uses, adds sanitizer hooks to unoptimized code that nothing links. The operating system's entropy is used instead.

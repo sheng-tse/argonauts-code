@@ -1,12 +1,17 @@
-//! Saving: a session override, or a file through `write_setting` with trust carried forward;
-//! then re-resolving, `SettingChanged`, and applying the change at once.
+//! Saving: where a change goes, a session override or a file through `write_setting` with
+//! trust carried forward, then re-resolving, `SettingChanged`, and applying the change at once.
+//!
+//! No change asks where it goes. It saves where `save_changes_to` says, unless a layer above
+//! would hide it there: then it goes where it takes effect, never into the team's file, and
+//! the line after it says why.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use argonauts_core::KeyScheme;
 use argonauts_core::app::AppEvent;
-use argonauts_core::settings::{SettingScope, Settings};
+use argonauts_core::settings::saving::SaveChangesTo;
+use argonauts_core::settings::{GLOBAL_ONLY_KEYS, LAYERS, SettingScope, Settings, layer};
 use argonauts_registry::{remove_setting, write_setting};
 
 use super::confirm::safety_lines;
@@ -17,6 +22,9 @@ use crate::controller::{Ctx, Effect};
 pub(crate) enum Change {
     /// Keys and TOML values, written together.
     Set(Vec<(String, String)>),
+    /// Keys and TOML values your own words asked to keep, written as `Set` writes them. The
+    /// line after names each key alone: "Kept checks.run".
+    Kept(Vec<(String, String)>),
     /// Drops the key, so the layer below shows through.
     Reset(String),
 }
@@ -24,7 +32,9 @@ pub(crate) enum Change {
 impl Change {
     pub(crate) fn keys(&self) -> Vec<String> {
         match self {
-            Self::Set(pairs) => pairs.iter().map(|(key, _)| key.clone()).collect(),
+            Self::Set(pairs) | Self::Kept(pairs) => {
+                pairs.iter().map(|(key, _)| key.clone()).collect()
+            }
             Self::Reset(key) => vec![key.clone()],
         }
     }
@@ -42,17 +52,165 @@ pub(crate) enum TrustAfter {
     Declined,
 }
 
-/// The settings and values before a change, for what the change announces.
+/// The settings, values and layers before a change, for what the change announces.
 pub(crate) struct Before {
     settings: Settings,
     previous: Vec<Option<String>>,
+    /// Each key's layer under this session's own overrides, and the file that picked the
+    /// workflow when that's the layer.
+    layers: Vec<(String, Option<String>)>,
 }
 
 pub(crate) fn before(ctx: &Ctx, keys: &[String]) -> Before {
     Before {
         settings: ctx.settings().clone(),
         previous: keys.iter().map(|key| value_of(ctx, key)).collect(),
+        layers: keys
+            .iter()
+            .map(|key| layer_below_session(ctx, key))
+            .collect(),
     }
+}
+
+/// Where a change saves, and why when that isn't where `save_changes_to` says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Place {
+    pub scope: SettingScope,
+    pub why: Option<String>,
+}
+
+/// Keys that only make sense in one repository, naming its commands, files or paths. They save
+/// to this project, just for you, while your changes otherwise save everywhere.
+const ONE_REPO_KEYS: &[&str] = &[
+    "checks.run",
+    "checks.setup",
+    "checks.full_suite",
+    "checks.copy_untracked",
+    "merge.target",
+    "merge.leave_out",
+    "limits.protected_paths",
+];
+
+/// Where `save_changes_to` sends your changes. Only your global file may set it, so a
+/// repository you clone can't send your changes into its shared file: the settings refuse it
+/// from any other file.
+pub(crate) fn save_changes_to(ctx: &Ctx) -> SaveChangesTo {
+    ctx.settings().save_changes_to
+}
+
+/// Where a change to `key` saves when nothing names a place for it.
+pub(crate) fn place(ctx: &Ctx, key: &str) -> Place {
+    let (below, workflow_from) = layer_below_session(ctx, key);
+    place_over(ctx, key, &below, workflow_from.as_deref())
+}
+
+/// Where a change to `key` saves on purpose, in `asked`, as a flag or ctrl+s says. A key only
+/// your global file may hold refuses any other place.
+pub(crate) fn asked_place(key: &str, asked: SettingScope) -> anyhow::Result<SettingScope> {
+    if global_only(key) && asked != SettingScope::Global {
+        anyhow::bail!("{key} is saved only in your global file, ~/.argonauts/config.toml");
+    }
+    Ok(asked)
+}
+
+/// [`place`] over a value now from `layer`. A layer that would hide the change sends it to the
+/// first place above where it takes effect: this project just for you, else this session.
+fn place_over(ctx: &Ctx, key: &str, layer: &str, workflow_from: Option<&str>) -> Place {
+    if global_only(key) {
+        return Place {
+            scope: SettingScope::Global,
+            why: None,
+        };
+    }
+    let usual = usual_place(ctx, key);
+    if !usual.hidden_by_value(layer, workflow_from) {
+        return Place {
+            scope: usual,
+            why: None,
+        };
+    }
+    let scope = [SettingScope::ProjectLocal, SettingScope::Session]
+        .into_iter()
+        .find(|scope| above(*scope, usual) && !scope.hidden_by_value(layer, workflow_from))
+        .unwrap_or(SettingScope::Session);
+    Place {
+        scope,
+        why: since(ctx, layer, scope),
+    }
+}
+
+/// Where `save_changes_to` says, with a key for one repository kept in it.
+fn usual_place(ctx: &Ctx, key: &str) -> SettingScope {
+    usual_scope(save_changes_to(ctx), key)
+}
+
+/// Where a change to `key` saves by `save_changes_to`, before any layer above it is weighed: a
+/// key only your global file holds there, a key for one repository in this project just for
+/// you while your changes otherwise go everywhere, any other where `save_changes_to` says.
+/// `argonauts config set` saves by it too.
+pub(crate) fn usual_scope(save_changes_to: SaveChangesTo, key: &str) -> SettingScope {
+    if global_only(key) {
+        return SettingScope::Global;
+    }
+    match save_changes_to {
+        SaveChangesTo::Everywhere if ONE_REPO_KEYS.contains(&key) => SettingScope::ProjectLocal,
+        place => place.scope(),
+    }
+}
+
+/// Whether `scope` saves into a layer that wins over `under`'s.
+fn above(scope: SettingScope, under: SettingScope) -> bool {
+    let rank = |scope: SettingScope| LAYERS.iter().position(|known| *known == scope.layer());
+    rank(scope) > rank(under)
+}
+
+fn global_only(key: &str) -> bool {
+    key == "save_changes_to"
+        || GLOBAL_ONLY_KEYS
+            .iter()
+            .any(|pattern| match pattern.strip_suffix(".*") {
+                Some(section) => key
+                    .strip_prefix(section)
+                    .is_some_and(|rest| rest.starts_with('.')),
+                None => *pattern == key,
+            })
+}
+
+/// Why a change moved to `scope`: what sets it in `layer`.
+fn since(ctx: &Ctx, layer: &str, scope: SettingScope) -> Option<String> {
+    Some(match layer {
+        layer::PROJECT => "since the team's file sets it".to_owned(),
+        layer::PROJECT_LOCAL if scope == SettingScope::ProjectLocal => {
+            "since it's set there already".to_owned()
+        }
+        layer::PROJECT_LOCAL => "since your own file for this project sets it".to_owned(),
+        layer::WORKFLOW => format!("since the {} workflow sets it", ctx.settings().workflow),
+        layer::FLAG => "since a --set flag sets it".to_owned(),
+        _ => return None,
+    })
+}
+
+/// Why a change saved in `scope` doesn't show yet: what still wins over it, from `layer`.
+fn still_wins(ctx: &Ctx, layer: &str) -> Option<String> {
+    Some(match layer {
+        layer::PROJECT => "though the team's file wins here".to_owned(),
+        layer::PROJECT_LOCAL => "though your own file for this project wins here".to_owned(),
+        layer::WORKFLOW => format!("though the {} workflow wins here", ctx.settings().workflow),
+        layer::FLAG => "though a --set flag wins until you quit".to_owned(),
+        layer::SESSION => "though this session's change wins until you quit".to_owned(),
+        _ => return None,
+    })
+}
+
+/// The layer `key` would come from without this session's own overrides, which a change
+/// saved to a file replaces, and the file that picked the workflow when that's the layer.
+fn layer_below_session(ctx: &Ctx, key: &str) -> (String, Option<String>) {
+    let below = ctx
+        .settings
+        .layer_without_session(&ctx.env, key)
+        .unwrap_or_else(|_| ctx.settings.layer(key));
+    let workflow_from = ctx.settings.workflow_from(&below);
+    (below, workflow_from)
 }
 
 /// Makes `change` in `scope`, the safety confirm and trust question already answered, then
@@ -76,7 +234,7 @@ pub(crate) fn make(
     trust: TrustAfter,
 ) -> anyhow::Result<()> {
     match (scope, change) {
-        (SettingScope::Session, Change::Set(pairs)) => {
+        (SettingScope::Session, Change::Set(pairs) | Change::Kept(pairs)) => {
             let env = ctx.env.clone();
             ctx.settings.set_session_all(&env, pairs)?;
         }
@@ -88,10 +246,37 @@ pub(crate) fn make(
         }
         (scope, change) => {
             let file = file_for(ctx, scope).context("a file scope")?;
-            write_file(ctx, &file, change, scope != SettingScope::Global, trust)?;
+            let held = drop_session_overrides(ctx, change)?;
+            if let Err(err) = write_file(ctx, &file, change, scope != SettingScope::Global, trust) {
+                let env = ctx.env.clone();
+                if !held.is_empty() {
+                    let _ = ctx.settings.set_session_all(&env, &held);
+                }
+                return Err(err);
+            }
         }
     }
     Ok(())
+}
+
+/// A change saved to a file replaces this session's own override of the key, which would
+/// otherwise still win over it. Returns the overrides dropped, to put back if the write fails.
+fn drop_session_overrides(ctx: &mut Ctx, change: &Change) -> anyhow::Result<Vec<(String, String)>> {
+    let (Change::Set(pairs) | Change::Kept(pairs)) = change else {
+        return Ok(Vec::new());
+    };
+    let held: Vec<(String, String)> = ctx
+        .settings
+        .session_overrides()
+        .iter()
+        .filter(|(set, _)| pairs.iter().any(|(key, _)| key == set))
+        .cloned()
+        .collect();
+    let env = ctx.env.clone();
+    for (key, _) in &held {
+        ctx.settings.remove_session(&env, key)?;
+    }
+    Ok(held)
 }
 
 /// `SettingChanged` for each key, `UiSettings` when a `ui.` value changed, and the effects that
@@ -103,9 +288,17 @@ pub(crate) fn announce(
     scope: SettingScope,
 ) -> Vec<Effect> {
     let keys = change.keys();
-    for (key, previous) in keys.iter().zip(before.previous) {
+    for ((key, previous), (was_layer, was_from)) in
+        keys.iter().zip(before.previous).zip(before.layers)
+    {
+        let why = match change {
+            Change::Set(_) | Change::Kept(_) => {
+                why_there(ctx, key, scope, &was_layer, was_from.as_deref())
+            }
+            Change::Reset(_) => None,
+        };
         let (value, reset) = match change {
-            Change::Set(pairs) => (
+            Change::Set(pairs) | Change::Kept(pairs) => (
                 pairs
                     .iter()
                     .find(|(set, _)| set == key)
@@ -121,6 +314,8 @@ pub(crate) fn announce(
             scope,
             previous,
             reset,
+            why,
+            kept: matches!(change, Change::Kept(_)),
         });
     }
     if ctx.settings().ui != before.settings.ui {
@@ -132,6 +327,47 @@ pub(crate) fn announce(
     }
     effects.push(Effect::SettingsApplied { keys });
     effects
+}
+
+/// Why a change to `key`, the one key `before` was taken for, went to `scope`, as the line
+/// after it says: what still wins over it there, or what moved it from where `save_changes_to`
+/// says.
+pub(crate) fn why_saved(
+    ctx: &Ctx,
+    before: &Before,
+    key: &str,
+    scope: SettingScope,
+) -> Option<String> {
+    let (was_layer, was_from) = before.layers.first()?;
+    why_there(ctx, key, scope, was_layer, was_from.as_deref())
+}
+
+/// What the line after a change saved in `scope` ends with: what still wins over it there,
+/// or why it went there rather than where `save_changes_to` says, from the layer that set it
+/// before.
+fn why_there(
+    ctx: &Ctx,
+    key: &str,
+    scope: SettingScope,
+    was_layer: &str,
+    was_from: Option<&str>,
+) -> Option<String> {
+    let now = ctx.settings.layer(key);
+    let why = if scope.hidden_by_value(&now, ctx.settings.workflow_from(&now).as_deref()) {
+        still_wins(ctx, &now)
+    } else {
+        let moved = place_over(ctx, key, was_layer, was_from);
+        (moved.scope == scope).then_some(moved.why).flatten()
+    };
+    // Your own file is kept out of git, unless this repository tracks it anyway.
+    const TRACKED: &str = "though git tracks it, so your team sees it";
+    let tracked = scope == SettingScope::ProjectLocal
+        && crate::git::tracks(&ctx.env.repo_root, &ctx.env.project_local_config()).unwrap_or(false);
+    match (why, tracked) {
+        (Some(why), true) => Some(format!("{why}, {TRACKED}")),
+        (None, true) => Some(TRACKED.to_owned()),
+        (why, false) => why,
+    }
 }
 
 /// The `[ui]` section in effect, which the TUI applies at once.
@@ -269,7 +505,7 @@ fn write_and_reload(
     trust_after: bool,
 ) -> anyhow::Result<()> {
     match change {
-        Change::Set(pairs) => {
+        Change::Set(pairs) | Change::Kept(pairs) => {
             for (key, value) in pairs {
                 write_setting(file, key, value)?;
             }
@@ -300,6 +536,32 @@ mod tests {
 
     fn set(key: &str, value: &str) -> Change {
         Change::Set(vec![(key.to_owned(), value.to_owned())])
+    }
+
+    /// A setting that names one repository's commands, files or paths saves for this project,
+    /// just you, while other changes save everywhere.
+    #[test]
+    fn each_setting_of_one_repository_saves_for_this_project_just_you() {
+        let fixture = Fixture::new(false, |_| {});
+        for key in [
+            "checks.run",
+            "checks.setup",
+            "checks.full_suite",
+            "checks.copy_untracked",
+            "merge.target",
+            "merge.leave_out",
+            "limits.protected_paths",
+        ] {
+            assert_eq!(
+                place(&fixture.ctx, key).scope,
+                SettingScope::ProjectLocal,
+                "{key}"
+            );
+        }
+        assert_eq!(
+            place(&fixture.ctx, "ui.views.status.mods").scope,
+            SettingScope::Global
+        );
     }
 
     #[test]

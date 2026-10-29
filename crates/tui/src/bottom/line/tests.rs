@@ -18,16 +18,21 @@ fn color_theme() -> Theme {
     theme
 }
 
-// The bars of the two moments below, six cells each.
+// The bars of the two moments below, six cells each, in whole cells and one for any use.
 const B93: &str = "██████";
 const B56: &str = "███░░░";
 const B11: &str = "█░░░░░";
-const B01: &str = "░░░░░░";
-const B02: &str = "░░░░░░";
-const OUT: &str = "██████";
+const B01: &str = "█░░░░░";
+const B02: &str = "█░░░░░";
 
 fn cli(name: &str, windows: &[(&str, f64)]) -> CliUse {
     let mut cli = CliUse::new(name, Role::for_cli(name));
+    let id = match name {
+        "Claude Code" => "claude-code".to_owned(),
+        "agy" => "antigravity-cli".to_owned(),
+        other => other.to_lowercase(),
+    };
+    cli.logo = Some(argonauts_core::logos::logo_for(&id, None));
     cli.windows = windows
         .iter()
         .map(|(label, used)| WindowUse::new(*label, *used))
@@ -37,7 +42,7 @@ fn cli(name: &str, windows: &[(&str, f64)]) -> CliUse {
 
 /// A healthy moment: Claude in use at 1% and 56%, Codex at 11%, agy at 2%.
 fn healthy() -> Vec<CliUse> {
-    let mut claude = cli("Claude", &[("5h", 0.01), ("7d", 0.56)]);
+    let mut claude = cli("Claude Code", &[("5h", 0.01), ("7d", 0.56)]);
     claude.main = true;
     vec![
         claude,
@@ -150,66 +155,74 @@ fn the_line_gives_things_up_in_the_fixed_order() {
     let expected = [
         // Everything, as a terminal wider than 150 columns shows it.
         format!(
-            "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts · ←  2 agents · ↓  to manage · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm  ~$1.86"
+            "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts · ←  2 agents · ↓  to manage · main | ● Claude Code 5h {B93}  93% resets 4:40pm  7d {B56}  56%   ○ Codex 7d {B11}  11%   ○ agy out until Tue 3:45pm  ~$1.86"
         ),
         // 1. The hints: the footer's, the cycle hint, then the panel's.
         format!(
-            "⏵⏵ auto mode on (shift+tab to cycle) · ←  2 agents · ↓  to manage · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm  ~$1.86"
+            "⏵⏵ auto mode on (shift+tab to cycle) · ←  2 agents · ↓  to manage · main | ● Claude Code 5h {B93}  93% resets 4:40pm  7d {B56}  56%   ○ Codex 7d {B11}  11%   ○ agy out until Tue 3:45pm  ~$1.86"
         ),
         format!(
-            "⏵⏵ auto mode on · ←  2 agents · ↓  to manage · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm  ~$1.86"
+            "⏵⏵ auto mode on · ←  2 agents · ↓  to manage · main | ● Claude Code 5h {B93}  93% resets 4:40pm  7d {B56}  56%   ○ Codex 7d {B11}  11%   ○ agy out until Tue 3:45pm  ~$1.86"
         ),
         format!(
-            "⏵⏵ auto mode on · ←  2 agents · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm  ~$1.86"
+            "⏵⏵ auto mode on · ←  2 agents · main | ● Claude Code 5h {B93}  93% resets 4:40pm  7d {B56}  56%   ○ Codex 7d {B11}  11%   ○ agy out until Tue 3:45pm  ~$1.86"
         ),
         // 2. The parts you added, in your own drop order.
         format!(
-            "⏵⏵ auto mode on · ←  2 agents · main | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm"
+            "⏵⏵ auto mode on · ←  2 agents · main | ● Claude Code 5h {B93}  93% resets 4:40pm  7d {B56}  56%   ○ Codex 7d {B11}  11%   ○ agy out until Tue 3:45pm"
         ),
         format!(
-            "⏵⏵ auto mode on · ←  2 agents | ● Claude 5h {B93} 93% resets 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out until Tue 3:45pm"
+            "⏵⏵ auto mode on · ←  2 agents | ● Claude Code 5h {B93}  93% resets 4:40pm  7d {B56}  56%   ○ Codex 7d {B11}  11%   ○ agy out until Tue 3:45pm"
         ),
-        // 3. Words shorten.
+        // Then a picked message's or task's keys shorten. Nothing is picked here.
         format!(
-            "⏵⏵ auto mode on · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out · Tue 3:45pm"
+            "⏵⏵ auto mode on · ←  2 agents | ● Claude Code 5h {B93}  93% resets 4:40pm  7d {B56}  56%   ○ Codex 7d {B11}  11%   ○ agy out until Tue 3:45pm"
         ),
-        // 4. A CLI that is fine: its bar becomes one cell.
+        // 3. The main CLI's second window becomes one cell.
         format!(
-            "⏵⏵ auto mode on · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex ▁ 11%  ○ agy {OUT} out · Tue 3:45pm"
+            "⏵⏵ auto mode on · ←  2 agents | ● Claude Code 5h {B93}  93% resets 4:40pm  7d █  56%   ○ Codex 7d {B11}  11%   ○ agy out until Tue 3:45pm"
         ),
-        // 5. A CLI that is out: its bar goes, its words stay.
+        // 4. Words shorten.
         format!(
-            "⏵⏵ auto mode on · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex ▁ 11%  ○ agy out · Tue 3:45pm"
+            "⏵⏵ auto mode on · ←  2 agents | ● Claude Code 5h {B93}  93% 4:40pm  7d █  56%   ○ Codex 7d {B11}  11%   ○ agy out · Tue 3:45pm"
+        ),
+        // 5. The main CLI's second window goes.
+        format!(
+            "⏵⏵ auto mode on · ←  2 agents | ● Claude Code 5h {B93}  93% 4:40pm   ○ Codex 7d {B11}  11%   ○ agy out · Tue 3:45pm"
         ),
         // 6. The mode: "auto mode on" to "auto".
         format!(
-            "⏵⏵ auto · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex ▁ 11%  ○ agy out · Tue 3:45pm"
+            "⏵⏵ auto · ←  2 agents | ● Claude Code 5h {B93}  93% 4:40pm   ○ Codex 7d {B11}  11%   ○ agy out · Tue 3:45pm"
         ),
-        // 7. The main CLI's second window becomes one cell.
+        // 7. "out · Tue 3:45pm" becomes "out".
         format!(
-            "⏵⏵ auto · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d ▅ 56%  ○ Codex ▁ 11%  ○ agy out · Tue 3:45pm"
+            "⏵⏵ auto · ←  2 agents | ● Claude Code 5h {B93}  93% 4:40pm   ○ Codex 7d {B11}  11%   ○ agy out"
         ),
-        // 8. "out · Tue 3:45pm" becomes "out".
+        // 8. A CLI at 90% that isn't in use: its bar goes. None is, here.
         format!(
-            "⏵⏵ auto · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d ▅ 56%  ○ Codex ▁ 11%  ○ agy out"
+            "⏵⏵ auto · ←  2 agents | ● Claude Code 5h {B93}  93% 4:40pm   ○ Codex 7d {B11}  11%   ○ agy out"
         ),
-        // 9. A CLI that is fine keeps only its name.
+        // 9. A CLI that is fine: its bar becomes one cell, filled for any use.
         format!(
-            "⏵⏵ auto · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm 7d ▅ 56%  ○ Codex  ○ agy out"
+            "⏵⏵ auto · ←  2 agents | ● Claude Code 5h {B93}  93% 4:40pm   ○ Codex █  11%   ○ agy out"
         ),
-        // 10. The main CLI's second window goes.
-        format!("⏵⏵ auto · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm  ○ Codex  ○ agy out"),
-        // 11. A CLI that is fine becomes a dot in its color.
-        format!("⏵⏵ auto · ←  2 agents | ● Claude 5h {B93} 93% 4:40pm  ○  ○ agy out"),
+        // 10. A CLI that is fine keeps only its name.
+        format!("⏵⏵ auto · ←  2 agents | ● Claude Code 5h {B93}  93% 4:40pm   ○ Codex   ○ agy out"),
+        // 11. A CLI that is fine becomes its dot and two letters.
+        format!("⏵⏵ auto · ←  2 agents | ● Claude Code 5h {B93}  93% 4:40pm   ○ CX   ○ agy out"),
         // 12. The main CLI's bar goes, its number stays.
-        "⏵⏵ auto · ←  2 agents | ● Claude 93% 4:40pm  ○  ○ agy out".to_owned(),
+        "⏵⏵ auto · ←  2 agents | ● Claude Code 93% 4:40pm   ○ CX   ○ agy out".to_owned(),
         // 13. The mode becomes its sign alone.
-        "⏵⏵ · ←  2 agents | ● Claude 93% 4:40pm  ○  ○ agy out".to_owned(),
+        "⏵⏵ · ←  2 agents | ● Claude Code 93% 4:40pm   ○ CX   ○ agy out".to_owned(),
         // Past the thirteen, so that no CLI is cut off on a terminal narrower still: the
-        // arrow's count shortens, then the reset time, the names and the gaps go.
-        "⏵⏵ · ←  2 | ● Claude 93% 4:40pm  ○  ○ agy out".to_owned(),
-        "⏵⏵ · ←  2 | ● Claude 93%  ○  ○ agy out".to_owned(),
-        "⏵⏵ · ←  2 | ● 93%  ○  ○ out".to_owned(),
+        // arrow's count shortens, the reset time goes, every name becomes its two letters,
+        // never nothing, and the gaps go.
+        "⏵⏵ · ←  2 | ● Claude Code 93% 4:40pm   ○ CX   ○ agy out".to_owned(),
+        "⏵⏵ · ←  2 | ● Claude Code 93%   ○ CX   ○ agy out".to_owned(),
+        "⏵⏵ · ←  2 | ● CC 93%   ○ CX   ○ AG out".to_owned(),
+        "⏵⏵ · ←  2 | ● CC 93% ○ CX ○ AG out".to_owned(),
+        // Only then do the letters go, a fine CLI's first, so no state's word is lost.
+        "⏵⏵ · ←  2 | ● CC 93% ○ ○ AG out".to_owned(),
         "⏵⏵ · ←  2 | ● 93% ○ ○ out".to_owned(),
     ];
     assert_eq!(steps.len(), expected.len());
@@ -226,32 +239,32 @@ fn the_pressed_moment_at_five_widths() {
     assert_eq!(
         sides(&line, 120),
         format!(
-            "⏵⏵ auto mode on | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy {OUT} out · Tue 3:45pm"
+            "⏵⏵ auto mode on | ● Claude Code 5h {B93}  93% 4:40pm  7d █  56%   ○ Codex 7d {B11}  11%   ○ agy out · Tue 3:45pm"
         )
     );
     assert_eq!(
         sides(&line, 100),
         format!(
-            "⏵⏵ auto mode on | ● Claude 5h {B93} 93% 4:40pm 7d {B56} 56%  ○ Codex ▁ 11%  ○ agy out · Tue 3:45pm"
+            "⏵⏵ auto | ● Claude Code 5h {B93}  93% 4:40pm   ○ Codex 7d {B11}  11%   ○ agy out · Tue 3:45pm"
         )
     );
     assert_eq!(str_width(&row(&line, 100)), 100);
     assert_eq!(
         sides(&line, 80),
-        format!("⏵⏵ auto | ● Claude 5h {B93} 93% 4:40pm 7d ▅ 56%  ○ Codex ▁ 11%  ○ agy out")
+        format!("⏵⏵ auto | ● Claude Code 5h {B93}  93% 4:40pm   ○ Codex █  11%   ○ agy out")
     );
     assert_eq!(
         sides(&line, 60),
-        format!("⏵⏵ auto | ● Claude 5h {B93} 93% 4:40pm  ○ Codex  ○ agy out")
+        "⏵⏵ auto | ● Claude Code 93% 4:40pm   ○ CX   ○ agy out"
     );
-    assert_eq!(sides(&line, 40), "⏵⏵ | ● Claude 93% 4:40pm  ○  ○ agy out");
+    assert_eq!(sides(&line, 40), "⏵⏵ | ● CC 93%   ○ CX   ○ AG out");
 }
 
-/// Wider than 150 columns the line shows everything, the hint included, and a little wider
+/// Wider than 155 columns the line shows everything, the hint included, and a little wider
 /// the mode's other hint too.
 #[test]
 fn a_wide_terminal_shows_everything() {
-    let wide = row(&line_with(pressed()), 151);
+    let wide = row(&line_with(pressed()), 156);
     assert!(
         wide.starts_with("  ⏵⏵ auto mode on (shift+tab to cycle)  "),
         "{wide:?}"
@@ -260,10 +273,10 @@ fn a_wide_terminal_shows_everything() {
     assert!(wide.ends_with("out until Tue 3:45pm"), "{wide:?}");
     assert_eq!(
         str_width(&wide),
-        151,
+        156,
         "the chips end at the terminal's edge"
     );
-    let wider = row(&line_with(pressed()), 170);
+    let wider = row(&line_with(pressed()), 175);
     assert!(
         wider.starts_with("  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts  "),
         "{wider:?}"
@@ -308,7 +321,9 @@ fn no_cli_ever_leaves_the_line() {
                     "{form:?} {width}: {row:?}"
                 );
                 assert!(present(form, &row), "{form:?} at {width}: {row:?}");
-                assert!(!row.contains('…'), "{form:?} at {width} was cut: {row:?}");
+                // Past every step the left side is cut, never the chips.
+                let chips = row.find('●').map_or(row.as_str(), |at| &row[at..]);
+                assert!(!chips.contains('…'), "{form:?} at {width} was cut: {row:?}");
                 for word in &kept {
                     assert!(
                         row.contains(word),
@@ -374,40 +389,41 @@ fn each_form_draws_as_the_proposal_has_it() {
     assert_eq!(
         at(LineForm::Bars, healthy()),
         format!(
-            "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts | ● Claude 5h {B01} 1% 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy 5h {B02} 2%"
+            "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts | ● Claude Code 5h {B01}   1%  7d {B56}  56%   ○ Codex 7d {B11}  11%   ○ agy 5h {B02}   2%"
         )
     );
     assert_eq!(
         at(LineForm::Compact, healthy()),
         format!(
-            "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts | ● Claude {B56} 56%  ○ Codex {B11} 11%  ○ agy {B02} 2%"
+            "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts | ● Claude Code {B56}  56%   ○ Codex {B11}  11%   ○ agy {B02}   2%"
         )
     );
     assert_eq!(
         at(LineForm::Gauges, healthy()),
-        "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts | ● Claude ▁▅  ○ Codex ▁  ○ agy ▁"
+        "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts | ● Claude Code ▁▅   ○ Codex ▁   ○ agy ▁"
     );
     assert_eq!(
         at(LineForm::Text, healthy()),
-        "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts | ● Claude 5h 1% · 7d 56% used  Codex 7d 11% used  agy 5h 2% used"
+        "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts | ● Claude Code 5h 1% · 7d 56% used   Codex 7d 11% used   agy 5h 2% used"
     );
     assert_eq!(
         at(LineForm::Text, pressed()),
-        "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts | ● Claude 5h 93% · 7d 56% used · resets 4:40pm  Codex 7d 11% used  agy out until Tue 3:45pm"
+        "⏵⏵ auto mode on (shift+tab to cycle) | ● Claude Code 5h 93% · 7d 56% used · resets 4:40pm   Codex 7d 11% used   agy out until Tue 3:45pm"
     );
     assert_eq!(
         at(LineForm::Gauges, pressed()),
-        "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts | ● Claude █▅ 93% resets 4:40pm  ○ Codex ▁  ○ agy out until Tue 3:45pm"
+        "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts | ● Claude Code █▅ 93% resets 4:40pm   ○ Codex ▁   ○ agy out until Tue 3:45pm"
     );
 }
 
 /// One color per CLI, the CLI in use bold with a filled dot, amber from 90% and red when out.
+/// A CLI that is out says when it's back in place of a bar.
 #[test]
 fn the_chips_carry_their_colors() {
     let theme = color_theme();
     let kit = Kit::new(&theme);
     let line = line_with(pressed());
-    let ctx = RenderCtx::new(120, &theme, Clock::still(Instant::now()));
+    let ctx = RenderCtx::new(125, &theme, Clock::still(Instant::now()));
     let state = ModeState {
         line: Some(&line),
         ..ModeState::default()
@@ -419,13 +435,13 @@ fn the_chips_carry_their_colors() {
             .style
     };
     assert_eq!(style("●"), kit.fg(Role::CliClaude));
-    assert_eq!(style("Claude"), kit.bold(Role::Bright));
+    assert_eq!(style("Claude Code"), kit.bold(Role::Bright));
     assert_eq!(style("Codex"), theme.style(Role::Dim));
     assert_eq!(style("93%"), kit.bold(Role::Warn));
-    assert_eq!(style("4:40pm"), theme.style(Role::Warn));
+    assert_eq!(style("resets 4:40pm"), theme.style(Role::Warn));
     assert_eq!(style("56%"), kit.bold(Role::Bright));
     assert_eq!(style("11%"), theme.style(Role::Dim));
-    assert_eq!(style("out · Tue 3:45pm"), theme.style(Role::Danger));
+    assert_eq!(style("out until Tue 3:45pm"), theme.style(Role::Danger));
     let dots: Vec<_> = drawn
         .spans
         .iter()
@@ -433,7 +449,7 @@ fn the_chips_carry_their_colors() {
         .map(|span| span.style)
         .collect();
     assert_eq!(dots, [kit.fg(Role::CliCodex), kit.fg(Role::CliAgy)]);
-    // The near window's bar is amber, the other is Claude's own color, agy's is red.
+    // The near window's bar is amber, the other is Claude's own color, and agy has none.
     let fills: Vec<_> = drawn
         .spans
         .iter()
@@ -443,7 +459,7 @@ fn the_chips_carry_their_colors() {
     let color = |role| theme.color(role).unwrap();
     assert!(fills.contains(&color(Role::Warn)), "{fills:?}");
     assert!(fills.contains(&color(Role::CliClaude)), "{fills:?}");
-    assert!(fills.contains(&color(Role::Danger)), "{fills:?}");
+    assert!(!fills.contains(&color(Role::Danger)), "{fills:?}");
 }
 
 #[test]
@@ -483,8 +499,9 @@ fn added_parts_sit_on_their_side_and_leave_in_your_order() {
         },
     }));
     line.drop_first = vec!["spend".into(), "branch".into()];
-    let chips =
-        format!("● Claude 5h {B01} 1% 7d {B56} 56%  ○ Codex 7d {B11} 11%  ○ agy 5h {B02} 2%");
+    let chips = format!(
+        "● Claude Code 5h {B01}   1%  7d {B56}  56%   ○ Codex 7d {B11}  11%   ○ agy 5h {B02}   2%"
+    );
     assert_eq!(
         sides(&line, 230),
         format!(
@@ -494,20 +511,20 @@ fn added_parts_sit_on_their_side_and_leave_in_your_order() {
     // Spend first, then the branch, then the rest from the last on the line back.
     let narrower = |width| sides(&line, width);
     assert_eq!(
-        narrower(154),
+        narrower(168),
         format!(
             "⏵⏵ auto mode on · ⧉ weekly-usage-chart +2 more · main | context █░░░░░ 21%  {chips}"
         )
     );
     assert_eq!(
-        narrower(147),
+        narrower(161),
         format!("⏵⏵ auto mode on · ⧉ weekly-usage-chart +2 more | context █░░░░░ 21%  {chips}")
     );
     assert_eq!(
-        narrower(127),
+        narrower(141),
         format!("⏵⏵ auto mode on · ⧉ weekly-usage-chart +2 more | {chips}")
     );
-    assert_eq!(narrower(97), format!("⏵⏵ auto mode on | {chips}"));
+    assert_eq!(narrower(111), format!("⏵⏵ auto mode on | {chips}"));
 }
 
 fn artifact_part(name: &str, others: u32) -> BottomLine {
@@ -567,24 +584,28 @@ fn an_artifact_reads_as_its_name_and_how_many_more() {
     );
 }
 
-/// In color a bar is the lower half of its six cells, its edge to half a cell, on the
-/// track's color. Without color or block glyphs it is the kit's meter.
+/// In color a bar is the lower half of its six cells, its edge to half a cell and at least
+/// half a cell for anything used, over a thin faint track. Without color or block glyphs it is
+/// the kit's block meter.
 #[test]
-fn a_bar_is_half_a_cell_tall_with_its_edge_to_half_a_cell() {
+fn a_bar_is_half_a_cell_tall_and_fills_whole_cells() {
     let theme = color_theme();
     let kit = Kit::new(&theme);
     let text = |spans: &[Span<'static>]| -> String {
         spans.iter().map(|span| span.content.as_ref()).collect()
     };
     let bar = |share| chip::small_bar(&kit, share, Role::CliClaude);
-    let (fill, track) = (kit.fg(Role::CliClaude), kit.fg(Role::BarTrack));
+    let (fill, track) = (kit.fg(Role::CliClaude), kit.fg(Role::Faint));
 
     let half = bar(0.56);
-    assert_eq!(text(&half), "▄▄▄▖▄▄");
+    assert_eq!(text(&half), "▄▄▄▁▁▁");
     assert_eq!(half[0].style, fill);
-    assert_eq!((half[1].content.as_ref(), half[1].style), ("▄▄", track));
-    assert_eq!(text(&bar(0.93)), "▄▄▄▄▄▖");
-    assert_eq!(bar(0.01), [Span::styled("▄▄▄▄▄▄", track)]);
+    assert_eq!((half[1].content.as_ref(), half[1].style), ("▁▁▁", track));
+    // 44% of six cells ends in a whole one, with no half cell before the track.
+    assert_eq!(text(&bar(0.44)), "▄▄▄▁▁▁");
+    assert_eq!(text(&bar(0.93)), "▄▄▄▄▄▄");
+    assert_eq!(text(&bar(0.01)), "▄▁▁▁▁▁");
+    assert_eq!(bar(0.0), [Span::styled("▁▁▁▁▁▁", track)]);
     assert_eq!(bar(1.0), [Span::styled("▄▄▄▄▄▄", fill)]);
     for share in [0.0, 0.11, 0.5, 0.93, 1.0] {
         assert_eq!(spans_width(&bar(share)), 6, "{share}");
@@ -632,7 +653,7 @@ fn a_named_meter_and_a_part_drawn_elsewhere() {
     let drawn = auto().line(&ctx, state);
     assert!(
         plain_text(std::slice::from_ref(&drawn))
-            .ends_with("add-due-dates-to-every-… ▄▄▄▖▄▄ 3/5  checks 7 of 9 passed"),
+            .ends_with("add-due-dates-to-every-… ▄▄▄▄▁▁ 3/5  checks 7 of 9 passed"),
         "{drawn:?}"
     );
     let name = drawn
@@ -658,7 +679,7 @@ fn a_named_meter_and_a_part_drawn_elsewhere() {
 /// their words at any width.
 #[test]
 fn unread_down_and_wrapping_up_clis_stay_in_words() {
-    let mut claude = cli("Claude", &[]);
+    let mut claude = cli("Claude Code", &[]);
     claude.main = true;
     let mut codex = cli("Codex", &[]);
     codex.state = CliState::Down;
@@ -668,13 +689,14 @@ fn unread_down_and_wrapping_up_clis_stay_in_words() {
     openrouter.note = Some("$0.06".into());
     let line = line_with(vec![claude, codex, agy, openrouter]);
     assert!(
-        row(&line, 120).ends_with("● Claude  ○ Codex down  ○ agy wrapping up  ○ OpenRouter $0.06"),
+        row(&line, 120)
+            .ends_with("● Claude Code   ○ Codex down   ○ agy wrapping up   ○ OpenRouter $0.06"),
         "{}",
         row(&line, 120)
     );
     assert_eq!(
         sides(&line, 56),
-        "⏵⏵ auto | ● Claude  ○ Codex down  ○ agy wrapping up  ○"
+        "⏵⏵ | ● CC   ○ CX down   ○ AG wrapping up   ○ OR"
     );
 }
 
@@ -688,7 +710,7 @@ fn numbers_can_say_what_is_left() {
     };
     assert!(
         row(&line, 140)
-            .ends_with("● Claude 5h 99% · 7d 44% left  Codex 7d 89% left  agy 5h 98% left"),
+            .ends_with("● Claude Code 5h 99% · 7d 44% left   Codex 7d 89% left   agy 5h 98% left"),
         "{}",
         row(&line, 140)
     );
@@ -698,7 +720,7 @@ fn numbers_can_say_what_is_left() {
     };
     assert!(
         row(&bars, 140).ends_with(
-            "● Claude 5h ██████ 99% left 7d ███░░░ 44% left  ○ Codex 7d █████░ 89% left  ○ agy 5h ██████ 98% left"
+            "● Claude Code 5h ██████  99% left  7d ███░░░  44% left   ○ Codex 7d █████░  89% left   ○ agy 5h ██████  98% left"
         ),
         "{}",
         row(&bars, 140)

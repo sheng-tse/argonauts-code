@@ -37,8 +37,9 @@ pub struct ApprovalSettings {
     /// Topics that come to you even when the main agent answers, such as `security`. Autopilot
     /// answers them too, since nothing waits for you there.
     pub ask_you_about: Vec<String>,
-    /// What Esc on a question or an approval does: `decide` hands it to the agent that asked,
-    /// the main agent, or your rules and the judge, and `stop` ends that part of the work.
+    /// What "Carry on without me" on a question or an approval does: `decide` hands it to the
+    /// agent that asked, the main agent, or your rules and the judge, and `stop` ends that part
+    /// of the work.
     pub when_declined: WhenDeclined,
     /// How many times an agent that ends its turn with a question is told to decide and carry
     /// on. After that many it is told to take the option it recommended, so 0 tells it that

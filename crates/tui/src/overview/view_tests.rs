@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use argonauts_core::api::UsageSummary;
+use argonauts_core::input::ViewAction;
 use argonauts_core::names::TurnId;
+use argonauts_core::settings::stats::StatsGroup;
 
 use super::*;
 use crate::overview::sample;
@@ -319,7 +321,7 @@ fn on_status_the_arrows_pick_a_task_and_enter_opens_its_agent() {
         row.cloned().unwrap_or_default()
     };
     assert!(
-        picked(&shown).contains("task-001  CSV writer"),
+        picked(&shown).contains("task-001    CSV writer"),
         "{shown:#?}"
     );
 
@@ -330,7 +332,7 @@ fn on_status_the_arrows_pick_a_task_and_enter_opens_its_agent() {
     ));
     key(&mut status, &state, KeyCode::Down);
     let shown = rows(&mut status, &state, 110, 60);
-    assert!(picked(&shown).contains("task-002  Report endpoint"));
+    assert!(picked(&shown).contains("task-002    Report endpoint"));
     match key(&mut status, &state, KeyCode::Enter) {
         ViewOutcome::Request(ViewRequest::Agent { run, session }) => {
             assert_eq!(run.to_string(), "run-03");
@@ -342,7 +344,7 @@ fn on_status_the_arrows_pick_a_task_and_enter_opens_its_agent() {
         key(&mut status, &state, KeyCode::Down);
     }
     let shown = rows(&mut status, &state, 110, 60);
-    assert!(picked(&shown).contains("task-004  Review"), "{shown:#?}");
+    assert!(picked(&shown).contains("task-004    Review"), "{shown:#?}");
 
     // Past the last task ↓ goes to the next card, where no task is picked, the rows stay
     // where they were, and Enter opens the workflow.
@@ -354,7 +356,7 @@ fn on_status_the_arrows_pick_a_task_and_enter_opens_its_agent() {
     let shown = rows(&mut status, &state, 110, 60);
     assert_eq!(picked(&shown), "");
     assert!(
-        shown[before].contains("│   ◐ task-002  Report endpoint"),
+        shown[before].contains("│   ◐ task-002    Report endpoint"),
         "{shown:#?}"
     );
     assert!(
@@ -668,10 +670,10 @@ fn the_limits_tab_lists_the_limits_and_enter_opens_the_picked_one_to_change() {
             .position(|row| row.contains(what))
             .unwrap_or_else(|| panic!("{what}: {rows:#?}"))
     };
-    // What counts toward the limits, then the limits themselves.
+    // What counts toward the limits, then the limits themselves, then the plans.
     let list = at(&shown, " Limits · none set, so nothing stops a run");
-    assert!(at(&shown, "◆ spend") < at(&shown, "◆ plan usage"));
-    assert!(at(&shown, "◆ plan usage") < list, "{shown:#?}");
+    assert!(at(&shown, "◆ spend") < list);
+    assert!(list < at(&shown, "◆ plan usage"), "{shown:#?}");
     assert!(
         shown[list + 1].starts_with(" ❯ Spend for a run"),
         "{shown:#?}"
@@ -787,8 +789,9 @@ fn the_limits_tab_shows_what_each_task_of_the_followed_run_spent() {
         shown[at("◆ spend · run-03")].contains("$1.20 of $3.00"),
         "{shown:#?}"
     );
-    assert!(at("◆ spend · run-03") < at("◆ plan usage"), "{shown:#?}");
-    assert!(at("◆ plan usage") < at("◆ tasks"), "{shown:#?}");
+    assert!(at("◆ spend · run-03") < at("◆ spend  today"), "{shown:#?}");
+    assert!(at("◆ spend  today") < at("◆ tasks"), "{shown:#?}");
+    assert!(at("◆ tasks") < at(" Limits · "), "{shown:#?}");
 
     // With no run followed there is no run's spend and there are no tasks to show.
     let idle = self::state(sample::usage());
@@ -878,12 +881,18 @@ fn stats_asks_for_the_overviews_numbers_until_it_has_every_days() {
 
 #[test]
 fn every_tab_holds_at_every_width_and_drawing_usage_keeps_it_coming() {
+    use argonauts_testkit::screen::REAL_SIZES;
     let state = state(sample::usage());
-    for width in stability::WIDTHS {
+    let real = REAL_SIZES.map(|size| (size.cols, size.rows));
+    let narrow = stability::WIDTHS.map(|width| (width, 24));
+    for (width, height) in real.into_iter().chain(narrow) {
         for tab in Tab::ALL {
             let mut overview = view(tab);
-            let shown = rows(&mut overview, &state, width, 40);
-            assert!(shown.len() >= 5, "{tab:?} at {width}: {shown:#?}");
+            let shown = rows(&mut overview, &state, width, height);
+            assert!(
+                shown.len() >= 5,
+                "{tab:?} at {width} × {height}: {shown:#?}"
+            );
         }
     }
     let watch = UsageWatch::default();
@@ -981,7 +990,7 @@ fn down_goes_to_the_sub_tabs_then_into_the_cards_and_up_comes_back() {
     assert!(shown[2].contains("[By CLI]"), "{shown:#?}");
     assert!(
         shown.last().unwrap().starts_with(
-            " r to cycle dates · tab By CLI, By model, By role · ↓  into the cards · ↑  tabs"
+            " r to cycle dates · tab By CLI, By model, By role · ↓  into the table · ↑  tabs"
         ),
         "{shown:#?}"
     );

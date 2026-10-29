@@ -266,6 +266,7 @@ mod tests {
     use argonauts_core::events::{RunEvent, RunEventKind};
     use argonauts_core::names::{ApprovalId, ModelRef};
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+    use argonauts_core::settings::asking::WhenDeclined;
     use argonauts_core::{RunId, TaskId};
     use time::OffsetDateTime;
 
@@ -304,6 +305,7 @@ mod tests {
             evidence_sha256: String::new(),
             mode: ApprovalMode::Autopilot,
             decide_with: DecideWith::Model,
+            when_declined: WhenDeclined::Decide,
             options: Vec::new(),
             free_text: FreeText::Answer,
             needs_you: false,

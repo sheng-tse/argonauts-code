@@ -95,6 +95,7 @@ mod tests {
             catalog: Some(FetchedCatalog {
                 fetched: time::macros::datetime!(2026-10-01 09:00 UTC),
                 sha256: "0".repeat(64),
+                signature: String::new(),
                 text: "version = 1\n".to_owned(),
             }),
             sources: Vec::new(),

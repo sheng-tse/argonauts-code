@@ -15,8 +15,11 @@ use regex::{Regex, RegexBuilder};
 
 use self::emulator::Emulator;
 use crate::deadline;
+pub use crate::screen::Placeholder;
+use crate::screen::{Grid, Rgb};
 
 mod emulator;
+mod pictures;
 
 /// Where `dump` writes screens, when set.
 pub const SHOTS_ENV: &str = "ARGONAUTS_SHOTS_DIR";
@@ -51,6 +54,8 @@ const OUTER_TERMINAL: &[&str] = &[
     "TMUX",
     "TMUX_PANE",
     "STY",
+    "ZELLIJ",
+    "ZELLIJ_SESSION_NAME",
 ];
 
 /// Pixels a cell, width then height, unless a test sets its own. A real terminal reports its
@@ -81,6 +86,8 @@ pub struct PtyCommand {
     cols: u16,
     cell: (u16, u16),
     answers: bool,
+    pictures: bool,
+    colours: OwnColours,
 }
 
 impl PtyCommand {
@@ -95,6 +102,8 @@ impl PtyCommand {
             cols: 100,
             cell: CELL_PIXELS,
             answers: true,
+            pictures: false,
+            colours: OwnColours::default(),
         }
     }
 
@@ -102,6 +111,14 @@ impl PtyCommand {
     /// its own timeouts at start.
     pub fn unanswered(mut self) -> Self {
         self.answers = false;
+        self
+    }
+
+    /// A terminal that takes the kitty protocol's pictures, as Ghostty and kitty do: it answers
+    /// a graphics query with OK, and keeps what it is sent in one store for each screen, so
+    /// [`Pty::check_pictures`] can say whether a placeholder shows its picture.
+    pub fn takes_pictures(mut self) -> Self {
+        self.pictures = true;
         self
     }
 
@@ -146,6 +163,14 @@ impl PtyCommand {
     /// Pixels a cell, width then height, as a terminal's font size sets them.
     pub fn cell_pixels(mut self, width: u16, height: u16) -> Self {
         self.cell = (width, height);
+        self
+    }
+
+    /// A terminal whose own text colour and background are `text` and `background`, as it
+    /// tells an app that asks (OSC 10 and 11), so an app that follows the background draws its
+    /// light or dark theme as it would there. Unset, they are a dark xterm's.
+    pub fn own_colours(mut self, text: Rgb, background: Rgb) -> Self {
+        self.colours = OwnColours { text, background };
         self
     }
 }
@@ -315,18 +340,27 @@ impl Pty {
                 .take_writer()
                 .map_err(|err| anyhow!("writing the pty: {err}"))?,
         ));
+        let mut emulator = Emulator::new(command.rows, command.cols, SCROLLBACK);
+        if command.pictures {
+            emulator = emulator.takes_pictures();
+        }
         let terminal = Arc::new(Mutex::new(Terminal {
-            emulator: Emulator::new(command.rows, command.cols, SCROLLBACK),
+            emulator,
             raw: Vec::new(),
             closed: false,
         }));
         let answers = command.answers;
+        let responder = Responder {
+            pictures: command.pictures,
+            colours: command.colours,
+            ..Responder::default()
+        };
         let reader = {
             let terminal = terminal.clone();
             let writer = writer.clone();
             thread::Builder::new()
                 .name("argonauts-pty-reader".to_owned())
-                .spawn(move || read_output(reader, &terminal, &writer, answers))
+                .spawn(move || read_output(reader, &terminal, &writer, answers, responder))
                 .context("starting the pty reader")?
         };
         Ok(Self {
@@ -444,6 +478,46 @@ impl Pty {
         Screen {
             scrollback: terminal.emulator.scrollback().map(str::to_owned).collect(),
             visible: visible_rows(&terminal),
+        }
+    }
+
+    /// The screen a person would see, cell by cell, with the colours the program set and which
+    /// placeholders show their picture. A frame drawn as one synchronized update shows only
+    /// once it is whole.
+    pub fn cells(&self) -> Grid {
+        lock(&self.terminal).emulator.cells()
+    }
+
+    /// Fails when a picture the program meant to show doesn't: a placeholder on the screen a
+    /// person sees names a picture that screen doesn't hold, or a placement was sent for a
+    /// picture its screen didn't hold. kitty and Ghostty keep one store for each screen, and
+    /// empty the alternate one each time the program enters it with `CSI ? 1049 h`.
+    pub fn check_pictures(&self) -> anyhow::Result<()> {
+        let terminal = lock(&self.terminal);
+        let problems = terminal.emulator.picture_problems();
+        if problems.is_empty() {
+            return Ok(());
+        }
+        drop(terminal);
+        bail!(
+            "pictures don't show: {}; the screen was:\n{}",
+            problems.join("; "),
+            self.screen().visible_text()
+        )
+    }
+
+    /// Waits until every placeholder on the screen shows its picture, as after a switch of
+    /// screens the program sends its pictures again. A placement that found no picture fails
+    /// at once, since no later output makes it right.
+    pub fn wait_for_pictures(&self, timeout: Duration) -> anyhow::Result<()> {
+        let deadline = deadline::after(timeout);
+        loop {
+            let misplaced = lock(&self.terminal).emulator.misplaced_a_picture();
+            let checked = self.check_pictures();
+            if checked.is_ok() || misplaced || Instant::now() >= deadline {
+                return checked;
+            }
+            thread::sleep(POLL);
         }
     }
 
@@ -647,9 +721,9 @@ fn read_output(
     terminal: &Mutex<Terminal>,
     writer: &SharedWriter,
     answers: bool,
+    mut responder: Responder,
 ) {
     let mut buffer = [0u8; 8192];
-    let mut responder = Responder::default();
     loop {
         match reader.read(&mut buffer) {
             Ok(0) | Err(_) => break,
@@ -675,6 +749,15 @@ fn read_output(
     terminal.closed = true;
 }
 
+/// The screen a terminal `cols` × `rows` that takes pictures, as Ghostty does, shows once it has
+/// read `bytes`.
+pub(crate) fn read_bytes(cols: u16, rows: u16, bytes: &[u8]) -> Grid {
+    let mut emulator = Emulator::new(rows, cols, 0).takes_pictures();
+    emulator.process(bytes);
+    emulator.release();
+    emulator.cells()
+}
+
 /// The rows the terminal shows, top to bottom, trailing spaces trimmed.
 fn visible_rows(terminal: &Terminal) -> Vec<String> {
     let screen = terminal.emulator.shown();
@@ -691,19 +774,47 @@ fn visible_rows(terminal: &Terminal) -> Vec<String> {
 struct Responder {
     /// The start of a query cut off by the end of the last read.
     tail: Vec<u8>,
+    /// Graphics queries are answered with OK.
+    pictures: bool,
+    colours: OwnColours,
 }
+
+/// A terminal's own text colour and background, which it tells an app that asks.
+#[derive(Debug, Clone, Copy)]
+struct OwnColours {
+    text: Rgb,
+    background: Rgb,
+}
+
+impl Default for OwnColours {
+    /// A dark xterm's.
+    fn default() -> Self {
+        Self {
+            text: Rgb(0xc8, 0xcd, 0xd8),
+            background: Rgb(0x1e, 0x21, 0x30),
+        }
+    }
+}
+
+/// The start of a kitty graphics command, which a graphics query is.
+const GRAPHICS: &[u8] = b"\x1b_G";
 
 /// Cursor position report request; the reply depends on where the cursor is.
 const CURSOR_QUERY: &[u8] = b"\x1b[6n";
 
-/// Queries with fixed replies, as a dark xterm gives them.
-const QUERIES: [(&[u8], &[u8]); 6] = [
+/// Queries with fixed replies, as xterm gives them.
+const QUERIES: [(&[u8], &[u8]); 3] = [
     (b"\x1b[c", b"\x1b[?1;2c"),
     (b"\x1b[0c", b"\x1b[?1;2c"),
     (b"\x1b[?u", b"\x1b[?0u"),
-    (b"\x1b]10;?\x07", b"\x1b]10;rgb:c8c8/cdcd/d8d8\x07"),
-    (b"\x1b]11;?\x07", b"\x1b]11;rgb:1e1e/2121/3030\x07"),
-    (b"\x1b]11;?\x1b\\", b"\x1b]11;rgb:1e1e/2121/3030\x1b\\"),
+];
+
+/// Queries for the terminal's own colours, OSC 10 for its text colour and OSC 11 for its
+/// background: the query, its number, and the ending its answer takes.
+const COLOUR_QUERIES: [(&[u8], u8, &[u8]); 3] = [
+    (b"\x1b]10;?\x07", 10, b"\x07"),
+    (b"\x1b]11;?\x07", 11, b"\x07"),
+    (b"\x1b]11;?\x1b\\", 11, b"\x1b\\"),
 ];
 
 impl Responder {
@@ -721,7 +832,19 @@ impl Responder {
             } else if let Some((query, reply)) = QUERIES.iter().find(|(q, _)| rest.starts_with(q)) {
                 replies.extend_from_slice(reply);
                 at += query.len();
-            } else if is_cut_query(rest) {
+            } else if let Some(&(query, number, end)) =
+                COLOUR_QUERIES.iter().find(|(q, ..)| rest.starts_with(q))
+            {
+                replies.extend(self.colour_answer(number, end));
+                at += query.len();
+            } else if self.pictures && rest.starts_with(GRAPHICS) {
+                let Some(end) = rest.windows(2).position(|pair| pair == b"\x1b\\") else {
+                    self.tail = rest.to_vec();
+                    break;
+                };
+                replies.extend(graphics_answer(&rest[..end]));
+                at += end + 2;
+            } else if is_cut_query(rest) || (self.pictures && GRAPHICS.starts_with(rest)) {
                 self.tail = rest.to_vec();
                 break;
             } else {
@@ -730,12 +853,42 @@ impl Responder {
         }
         replies
     }
+
+    /// The answer to OSC `number`'s question, in xterm's sixteen bits a channel.
+    fn colour_answer(&self, number: u8, end: &[u8]) -> Vec<u8> {
+        let Rgb(red, green, blue) = match number {
+            10 => self.colours.text,
+            _ => self.colours.background,
+        };
+        let mut answer = format!(
+            "\x1b]{number};rgb:{red:02x}{red:02x}/{green:02x}{green:02x}/{blue:02x}{blue:02x}"
+        )
+        .into_bytes();
+        answer.extend_from_slice(end);
+        answer
+    }
+}
+
+/// OK to a graphics query, `a=q`, under the id it asked with. Other graphics commands, which
+/// send pictures quietly, have no answer.
+fn graphics_answer(command: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(&command[GRAPHICS.len()..]);
+    let keys = text.split(';').next().unwrap_or_default();
+    let mut keys = keys.split(',');
+    if !keys.clone().any(|key| key == "a=q") {
+        return Vec::new();
+    }
+    match keys.find_map(|key| key.strip_prefix("i=")) {
+        Some(id) => format!("\x1b_Gi={id};OK\x1b\\").into_bytes(),
+        None => Vec::new(),
+    }
 }
 
 fn is_cut_query(rest: &[u8]) -> bool {
     rest.first() == Some(&0x1b)
         && std::iter::once(CURSOR_QUERY)
             .chain(QUERIES.iter().map(|(query, _)| *query))
+            .chain(COLOUR_QUERIES.iter().map(|(query, ..)| *query))
             .any(|query| query.len() > rest.len() && query.starts_with(rest))
 }
 
@@ -751,6 +904,26 @@ mod tests {
     }
 
     #[test]
+    fn a_terminal_that_takes_pictures_answers_the_graphics_query() {
+        let query = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
+        let mut responder = Responder {
+            pictures: true,
+            ..Responder::default()
+        };
+        let (first, rest) = query.split_at(2);
+        assert_eq!(responder.replies(first, (0, 0)), b"");
+        assert_eq!(
+            responder.replies(rest, (0, 0)),
+            b"\x1b_Gi=31;OK\x1b\\\x1b[?1;2c"
+        );
+        // A picture sent quietly has no answer.
+        let quiet = b"\x1b_Ga=t,f=100,q=2,i=5,m=0;iVBORw==\x1b\\";
+        assert_eq!(responder.replies(quiet, (0, 0)), b"");
+        // Nor does the query, in a terminal that takes no pictures.
+        assert_eq!(Responder::default().replies(query, (0, 0)), b"\x1b[?1;2c");
+    }
+
+    #[test]
     fn the_responder_answers_queries_split_across_reads() {
         let mut responder = Responder::default();
         assert!(responder.replies(b"hello \x1b[", (0, 0)).is_empty());
@@ -760,6 +933,27 @@ mod tests {
         assert!(
             responder.replies(b"x", (0, 0)).is_empty(),
             "no second answer from the tail"
+        );
+    }
+
+    #[test]
+    fn a_terminal_tells_its_own_colours_in_the_ending_it_was_asked_in() {
+        let dark = Responder::default();
+        assert_eq!(
+            dark.colour_answer(11, b"\x1b\\"),
+            b"\x1b]11;rgb:1e1e/2121/3030\x1b\\"
+        );
+        let mut white = Responder {
+            colours: OwnColours {
+                text: Rgb(0, 0, 0),
+                background: Rgb(0xff, 0xff, 0xff),
+            },
+            ..Responder::default()
+        };
+        assert!(white.replies(b"\x1b]11;", (0, 0)).is_empty());
+        assert_eq!(
+            white.replies(b"?\x1b\\\x1b]10;?\x07", (0, 0)),
+            b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b]10;rgb:0000/0000/0000\x07"
         );
     }
 }

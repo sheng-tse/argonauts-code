@@ -1,7 +1,7 @@
 //! The live region's own rows as the status sync builds them from the app state.
 
 use crate::common;
-use argonauts_core::app::{AppEvent, AppMode, HeaderAndBottomLine, PlanUsageChip};
+use argonauts_core::app::{AppEvent, AppMode, HeaderAndBottomLine, LineFacts, PlanUsageChip};
 use argonauts_core::events::agent_status::RunSpend;
 use argonauts_core::events::approval::{
     ApprovalKind, ApprovalOpened, ApprovalPacket, FreeText, QuestionPacket,
@@ -12,7 +12,8 @@ use argonauts_core::limits::{HealthState, PlanUsageReading, PlanUsageSource, Pla
 use argonauts_core::names::{AgentId, ApprovalId, ModelRef, RoleName, SessionKey, TurnId};
 use argonauts_core::policy::{NarratorLine, NarratorLineKind, NarratorStatus};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
-use argonauts_core::settings::bottom_line::BottomLineSettings;
+use argonauts_core::settings::asking::WhenDeclined;
+use argonauts_core::settings::bottom_line::{BottomLineSettings, PlanUsageShow};
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::ui::{NarratorMode, Theme as ThemeChoice, UiSettings};
 use argonauts_core::views::ContextUse;
@@ -63,7 +64,10 @@ fn bottom_line_with(plan_chips: Vec<PlanUsageChip>) -> HeaderAndBottomLine {
         run: None,
         main_agent: worker("claude-code", "opus"),
         plan_chips,
-        line: Default::default(),
+        line: Box::new(LineFacts {
+            most_used: vec!["claude-code".into(), "codex".into()],
+            ..LineFacts::default()
+        }),
         spent: None,
         limit: None,
         narrator: NarratorMode::OnDemand,
@@ -363,7 +367,8 @@ fn working_line_states() {
     }
     let crew_text = text(&[line(&crew, NOW, 120)]);
     assert!(
-        crew_text.ends_with("(4m 12s · ↓  48.2k tokens · Build · 2/5 tasks · 3 agents · $0.21)"),
+        // Counted in tasks, its agents are left to the rows under it.
+        crew_text.ends_with("(4m 12s · ↓  48.2k tokens · Build · 2/5 tasks · $0.21)"),
         "{crew_text}"
     );
     assert_eq!(
@@ -475,7 +480,7 @@ fn bottom_row_states() {
         "{idle_row:?}"
     );
     // The rule names the model, so the line only marks its CLI.
-    assert!(idle_row.ends_with("  ● Claude"), "{idle_row:?}");
+    assert!(idle_row.ends_with("  ● Claude Code"), "{idle_row:?}");
     assert!(text(&[row(&insert, 120)]).contains("-- INSERT -- ǁ auto preview mode on"));
     assert!(text(&[row(&insert, 120)]).contains("←  3 agents"));
     let normal_row = row(&normal, 120);
@@ -518,7 +523,7 @@ fn the_bottom_line_marks_the_main_cli_and_never_names_the_model() {
     state.apply(&AppEvent::Status {
         status: status.clone(),
     });
-    assert_eq!(chips(&state), "● Claude");
+    assert_eq!(chips(&state), "● Claude Code");
 
     let plan_chips = vec![chip(
         "Claude",
@@ -540,7 +545,7 @@ fn the_bottom_line_marks_the_main_cli_and_never_names_the_model() {
     changed.workflow = "captain".into();
     state.apply(&AppEvent::Status { status: changed });
     let moved = chips(&state);
-    assert!(moved.starts_with("● Codex  ○ Claude 5h "), "{moved}");
+    assert!(moved.starts_with("● Codex   ○ Claude 5h "), "{moved}");
     assert!(!moved.contains("GPT"), "{moved}");
 }
 
@@ -566,6 +571,7 @@ fn bottom_line_chips() {
         chip("Local", None),
     ];
     let mut status = with_right_parts(bottom_line_with(plan_chips), &["plan-usage", "spend"]);
+    status.line.settings.plan_usage.show = PlanUsageShow::All;
     status.spent = Some(Spend {
         cost_usd: 0.46,
         ..Spend::default()
@@ -591,10 +597,10 @@ fn bottom_line_chips() {
     }
     let wide = text(&render(200));
     assert!(wide.contains("● Claude 5h "), "{wide}");
-    assert!(wide.contains(" 92%  ○ agy "), "{wide}");
+    assert!(wide.contains(" 92%   ○ agy "), "{wide}");
     assert!(
         wide.ends_with(
-            "out until Tue 3:45pm  ○ OpenCode  ○ OpenRouter down  ○ Local  $0.46  \
+            "out until Tue 3:45pm   ○ OpenCode   ○ OpenRouter down   ○ Local  $0.46  \
              narrator $0.06/$0.50"
         ),
         "{wide}"
@@ -668,6 +674,7 @@ fn question() -> ApprovalOpened {
         evidence_sha256: String::new(),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options: Vec::new(),
         free_text: FreeText::Answer,
         needs_you: true,
@@ -766,7 +773,7 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
     let mut model = synced(&state, &ui, NOW);
     let bottom = &model.bottom;
     assert_eq!(model.title, "Fix the export race");
-    assert_eq!(bottom.composer.label.as_deref(), Some("Council · Opus"));
+    assert_eq!(bottom.composer.label.as_deref(), Some("council"));
     assert_eq!(bottom.queued, vec!["check the retry path", "and the docs"]);
     assert_eq!(
         bottom.queued_where,
@@ -798,10 +805,7 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
     run.mode = Some(RunMode::Captain);
     run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
     sync(&mut model, &state, &ui, NOW + 3.0);
-    assert_eq!(
-        model.bottom.composer.label.as_deref(),
-        Some("Council · Opus")
-    );
+    assert_eq!(model.bottom.composer.label.as_deref(), Some("council"));
     assert!(model.bottom.working.is_none());
     assert_eq!(model.bottom.exit_note, None);
 }

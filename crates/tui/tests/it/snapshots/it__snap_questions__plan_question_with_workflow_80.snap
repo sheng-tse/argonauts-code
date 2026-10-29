@@ -1,6 +1,5 @@
 ---
 source: crates/tui/tests/it/snap_questions.rs
-assertion_line: 850
 expression: text(&lines)
 ---
 ● The plan
@@ -55,5 +54,7 @@ expression: text(&lines)
     4. Run it as Captain
     5. Abandon
     6. Show the plan
+    7. Carry on without me
+       The plan goes ahead as written; the merge still asks you
 
-  Enter to choose · Tab to add a note · Esc to carry on without me
+  Enter to choose · Tab to add a note · Esc back to the list

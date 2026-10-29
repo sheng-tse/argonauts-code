@@ -19,6 +19,7 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
         ViewData::ResumeList {
             conversations,
             sessions,
+            ..
         } => {
             let mut lines = Vec::new();
             if !conversations.is_empty() {
@@ -237,6 +238,7 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             }
             lines
         }
+        ViewData::SetupSheet { sheet } => crate::views::setup_sheet::reader_lines(sheet),
         ViewData::Workflow { view } => {
             let mut lines = vec![format!(
                 "workflow: {}, {} of {} agents done, {}, {}",
@@ -321,8 +323,10 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
         ViewData::Usage { summary } => crate::overview::cards::spoken(summary, names),
         ViewData::StatusTab { view } => crate::overview::status_tab::spoken(view, names),
         ViewData::Overview { overview } => crate::overview::spoken_overview(overview, names),
-        ViewData::Behaviors { map } => crate::overview::spoken_behaviors(map),
+        ViewData::Behaviors { map } => crate::overview::spoken_behaviors(map, names),
         ViewData::DeepOffer { offer } => crate::questions::deep_map::spoken(offer),
+        // A seat's view says its key with its head, where the seats' names are known.
+        ViewData::SeatKey { .. } => Vec::new(),
         ViewData::Context { view } | ViewData::ContextPrint { view } => view
             .rows
             .iter()
@@ -688,6 +692,7 @@ mod tests {
     fn the_resume_list_reads_cli_sessions_by_the_id_resume_takes() {
         let data = ViewData::ResumeList {
             conversations: Vec::new(),
+            in_cli: Vec::new(),
             sessions: vec![CliSession {
                 agent_id: AgentId("codex".into()),
                 id: "019a5770-e3f9".into(),

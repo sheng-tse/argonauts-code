@@ -1,0 +1,8 @@
+Claude Code  ██▚▚⣿⣿  ██▚▚⣿⣿
+Codex        ██▚▚⣿⣿  ██▚▚⣿⣿
+agy          ██▚▚⣿⣿  ██▚▚⣿⣿
+OpenCode     ██▚▚⣿⣿  ██▚▚⣿⣿
++N more      ████    ████
+success      ████    ████
+warning      ████    ████
+error        ████    ████

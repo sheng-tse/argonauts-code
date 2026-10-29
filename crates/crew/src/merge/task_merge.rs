@@ -300,6 +300,7 @@ async fn resolve_with(
     let git = worktree::tree_git(host, &tree.path).await?;
     let record = record_of(host, task)?;
     let mut plan = SessionPlan {
+        without_status: false,
         at: None,
         role: RoleName::Worker,
         worker: worker.clone(),

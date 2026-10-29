@@ -540,6 +540,7 @@ fn spec_for(
         limit: TaskLimit::default(),
         predictions: None,
         item: Some(labels::slug(name, 3)),
+        way: None,
     }
 }
 
@@ -850,6 +851,7 @@ impl Asks<'_> {
             builders.push(self.crew.worker.clone());
         }
         let plan = SessionPlan {
+            without_status: false,
             at: Some(self.at.clone()),
             role: role.fine_role(),
             worker: model.clone(),
@@ -873,11 +875,14 @@ impl Asks<'_> {
             .await?;
         let answer = ran.end.structured.clone().unwrap_or(Value::Null);
         let review = review_of(&answer);
+        let picked_by =
+            crate::review::picked_for(host, role.fine_role(), model, &ran.worker, false);
         let event = ReviewEvent::Reviewed {
             reviewer: ran.worker.clone(),
             blind: false,
             round: asked.round,
             review: review.clone(),
+            picked_by: Some(picked_by),
         };
         host.record(Some(self.task), Some(&ran.key), RunEventKind::Review(event))?;
         let who = host.read(|state| in_place_of(state, &ran.key, model, &ran.worker));
@@ -1406,6 +1411,7 @@ mod tests {
                 blind: false,
                 round: 1,
                 review: review(verdict, &format!("finding {n}")),
+                picked_by: None,
             };
             events.push(envelope(
                 seq + 1,

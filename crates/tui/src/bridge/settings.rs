@@ -2,8 +2,8 @@
 
 use argonauts_core::KeyScheme;
 use argonauts_core::app::{AppEvent, NOT_CHANGED};
+use argonauts_core::settings::ui::ColorChoice;
 use argonauts_core::settings::ui::UiSettings;
-use argonauts_core::settings::ui::{ColorChoice, Motion};
 
 use crate::model::{ScreenHabits, ViewModel};
 use crate::text::set_ambiguous_width;
@@ -43,7 +43,15 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>) {
         .clone()
         .unwrap_or_else(ColorEnv::from_process);
     set_ambiguous_width(ui.ambiguous_width);
-    cx.out.theme = Some(theme_for(ui, &env, terminal.background_is_light));
+    let mut theme = theme_for(ui, &env, terminal.background_is_light);
+    // Logos turned on in a terminal that can take them, which was sent none while they were
+    // off: they go out before the next frame, and that frame draws them.
+    if crate::kit::logo::draws_once_sent(ui.logos, &theme, ui.ambiguous_width)
+        && crate::kit::logo::send_held()
+    {
+        theme.logo_pictures = true;
+    }
+    cx.out.theme = Some(theme);
     cx.model.verbs = verb_style(ui.verbs);
     let bottom = &mut cx.model.bottom;
     apply_keys(&mut bottom.mode, ui.keys);
@@ -86,9 +94,11 @@ pub fn theme_for(ui: &UiSettings, env: &ColorEnv, background_is_light: Option<bo
             .iter()
             .map(|(role, color)| (role.as_str(), color.as_str())),
     );
-    theme.reduced_motion = ui.motion == Motion::Reduced;
+    theme.reduced_motion = ui.motion.is_reduced();
+    theme.skips_frames = ui.motion.skips_frames();
     theme.glyphs = Glyphs::for_settings(ui.glyphs, ui.ambiguous_width);
     theme.mascot = ui.mascot;
+    theme.logo_pictures = crate::kit::logo::draws_pictures(ui.logos, &theme, ui.ambiguous_width);
     theme
 }
 
@@ -127,6 +137,7 @@ mod tests {
 
     use argonauts_core::Verbosity;
     use argonauts_core::settings::ui::Glyphs as GlyphSet;
+    use argonauts_core::settings::ui::Motion;
     use argonauts_core::settings::ui::Theme as ThemeChoice;
     use ratatui::style::Color;
 
@@ -144,6 +155,26 @@ mod tests {
             term: Some(term.into()),
             colorfgbg: None,
         }
+    }
+
+    #[test]
+    fn logos_draw_as_pictures_once_they_went_out_unless_ui_logos_is_off() {
+        use argonauts_core::settings::ui::Logos;
+        let terminal = env("xterm-ghostty");
+        assert!(!theme_for(&UiSettings::default(), &terminal, Some(false)).logo_pictures);
+        crate::kit::logo::set_takes_logos(true);
+        assert!(theme_for(&UiSettings::default(), &terminal, Some(false)).logo_pictures);
+        let off = UiSettings {
+            logos: Logos::Off,
+            ..UiSettings::default()
+        };
+        assert!(!theme_for(&off, &terminal, Some(false)).logo_pictures);
+        let wide = UiSettings {
+            ambiguous_width: 2,
+            ..UiSettings::default()
+        };
+        assert!(!theme_for(&wide, &terminal, Some(false)).logo_pictures);
+        crate::kit::logo::set_takes_logos(false);
     }
 
     #[test]
@@ -256,6 +287,19 @@ mod tests {
             Some(Color::Rgb(0xd4, 0xa0, 0x17))
         );
         assert!(theme.reduced_motion);
+        for (motion, reduced, skips) in [
+            (Motion::Full, false, false),
+            (Motion::Reduced, true, false),
+            (Motion::Off, true, true),
+        ] {
+            let ui = UiSettings {
+                motion,
+                ..UiSettings::default()
+            };
+            let theme = theme_for(&ui, &env("xterm-256color"), Some(false));
+            assert_eq!(theme.reduced_motion, reduced, "{motion:?}");
+            assert_eq!(theme.skips_frames, skips, "{motion:?}");
+        }
         assert_eq!(theme.glyphs, Glyphs::ASCII);
         let bad = UiSettings {
             accent: Some("gold".into()),
@@ -266,6 +310,37 @@ mod tests {
             theme_for(&bad, &env("xterm-256color"), Some(false)).style(Role::Accent),
             default.style(Role::Accent)
         );
+    }
+
+    /// Logos turned on in a terminal that was sent none while they were off draw from the next
+    /// frame, which sends them first; turned on in a terminal that can't take them, they stay
+    /// dots.
+    #[test]
+    fn logos_turned_on_later_draw_once_held_pictures_go_out() {
+        use argonauts_core::settings::ui::Logos;
+
+        let turn = |logos: Logos| {
+            let mut bridge = Bridge::new(&UiOptions::default());
+            bridge.state.terminal.color_env = Some(env("xterm-ghostty"));
+            let mut model = ViewModel::default();
+            let event = AppEvent::UiSettings {
+                vim: false,
+                verbosity: Verbosity::Full,
+                ui: Some(Box::new(UiSettings {
+                    logos,
+                    ..UiSettings::default()
+                })),
+            };
+            let out = bridge.on_event(&mut model, &event, Instant::now());
+            out.theme.expect("the settings give a theme").logo_pictures
+        };
+        crate::kit::logo::set_takes_logos(false);
+        assert!(!turn(Logos::Auto), "nothing held, nothing to send");
+        crate::kit::logo::hold_for_later();
+        assert!(!turn(Logos::Off), "still off");
+        assert!(turn(Logos::Auto));
+        assert!(crate::kit::logo::held_pictures(None).is_some());
+        crate::kit::logo::set_takes_logos(false);
     }
 
     #[test]

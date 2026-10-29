@@ -35,6 +35,9 @@ use crate::kit::{Drawn, Frame, Kit};
 use crate::text::truncate_spans;
 use crate::theme::Role;
 
+/// Behaviors' key down to its map, the only way there from the sub-tabs.
+pub(crate) const DOWN_TO_THE_MAP: &str = "↓  groupings, then the map";
+
 /// The Overview tab's own tabs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SubTab {
@@ -82,7 +85,7 @@ pub enum HomeKey {
     Moved,
     Ask(ViewRequest),
     Copy(String),
-    /// A command for the app, such as the deeper map's update starting.
+    /// A command for the app, such as Summaries' update starting.
     Send(argonauts_core::app::UiCommand),
     /// Enter on the models: Stats opens the first one shown, for the same span of days.
     OpenModel {
@@ -118,7 +121,7 @@ impl HomeTab {
         }
     }
 
-    /// Every model's tokens in all, as the numbers at hand carry them for any period.
+    /// The ranking every tab colours by, as the numbers at hand carry it for any period.
     pub fn all_time_models(&self) -> Option<&[ModelTokens]> {
         self.data
             .as_ref()
@@ -172,7 +175,7 @@ impl HomeTab {
         self.sub == SubTab::Behaviors
     }
 
-    /// The deeper map's questions show on Behaviors.
+    /// Summaries' questions show on Behaviors.
     pub fn behaviors_asking(&self) -> bool {
         self.on_behaviors() && self.behaviors.deep.asking()
     }
@@ -194,10 +197,15 @@ impl HomeTab {
         }
     }
 
-    /// Behaviors answers this key before the panel does.
+    /// Behaviors answers this key before the panel does: its world's letters and digits from any
+    /// row, and every key while its own rows have them.
     pub fn claims(&self, code: KeyCode) -> bool {
+        let anywhere = matches!(
+            code,
+            KeyCode::Char('s' | 'd' | 'x' | '1' | '2' | '3' | '+' | '=' | '-' | 't' | 'n' | 'm')
+        );
         self.sub == SubTab::Behaviors
-            && (matches!(code, KeyCode::Char('g' | 's' | 'd' | 'x')) || self.level != Level::Tabs)
+            && (anywhere || self.level != Level::Tabs)
             && self.behaviors.claims(code, self.level == Level::Cards)
     }
 
@@ -210,10 +218,21 @@ impl HomeTab {
         self.room.set(rows);
     }
 
+    /// The rows the panel last said it has for the tab's blocks.
+    pub fn room(&self) -> usize {
+        self.room.get()
+    }
+
     /// ` Overview    Models `, the one shown filled while Tab moves them.
     pub fn about(&self, kit: &Kit<'_>, _names: &DisplayNames, width: usize) -> Vec<Span<'static>> {
         let titles = SubTab::ALL.map(SubTab::title);
-        let row = subtabs::row(kit, &titles, self.sub_index(), self.level.moves_sub_tabs());
+        // On Behaviors the row filled is the one with the keys: the sub-tabs only while they
+        // have them, since below them Tab steps the groupings.
+        let filled = match self.sub {
+            SubTab::Behaviors => self.level == Level::SubTabs,
+            _ => self.level.moves_sub_tabs(),
+        };
+        let row = subtabs::row(kit, &titles, self.sub_index(), filled);
         truncate_spans(&row, width)
     }
 
@@ -221,7 +240,9 @@ impl HomeTab {
     pub fn blocks(&self, kit: &Kit<'_>, names: &DisplayNames, width: usize) -> (Vec<Drawn>, usize) {
         if self.sub == SubTab::Behaviors {
             let colours = self.behavior_colours(kit, names);
-            let blocks = self.behaviors.blocks(kit, &colours, width, self.room.get());
+            let blocks = self
+                .behaviors
+                .blocks(kit, &colours, names, width, self.room.get());
             return (blocks, 0);
         }
         let Some(data) = &self.data else {
@@ -387,6 +408,11 @@ impl HomeTab {
             if self.sub == SubTab::Models && !self.page.is_empty() {
                 keys.push(self.page.clone());
             }
+            // ↓ reaches Behaviors' groupings first and its map after them, which nothing on
+            // the screen shows.
+            if self.sub == SubTab::Behaviors && self.behaviors.map().is_some() {
+                keys.push(DOWN_TO_THE_MAP.to_owned());
+            }
             keys.push("↑  tabs".to_owned());
             if self.sub == SubTab::Overview {
                 keys.push("tab Overview, Models, Behaviors".to_owned());
@@ -496,9 +522,9 @@ impl HomeTab {
     /// Ctrl+S: what the sub-tab shows, as plain lines, with each bar as its shares in words.
     pub fn summary_text(&self, names: &DisplayNames) -> Option<String> {
         if self.sub == SubTab::Behaviors {
-            let map = self.behaviors.map()?;
+            self.behaviors.map()?;
             let mut lines = vec!["Argonauts Code · Behaviors".to_owned(), String::new()];
-            lines.extend(super::stats::behaviors::spoken(map));
+            lines.extend(self.behaviors.spoken_here(names));
             return Some(lines.join("\n"));
         }
         let data = self.data.as_ref()?;

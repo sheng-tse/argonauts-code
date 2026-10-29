@@ -14,8 +14,8 @@ pub enum Control {
     Choice(&'static [Choice]),
     /// `value ›`: Enter opens the command's own picker, as `/theme` and `/model` do.
     Opens(&'static str),
-    /// `value ›`: Enter opens a picker over the rows of the models the deeper Behaviors map may
-    /// use, from the offer `d` asks with.
+    /// `value ›`: Enter opens a picker over the rows of the models Summaries may use, from the
+    /// offer `d` asks with.
     Picks(Pick),
     /// A value you type, edited as All settings edits a key.
     Typed,
@@ -118,8 +118,8 @@ pub const ROWS: &[Row] = &[
         "ui.motion",
         Control::Toggle(Flip {
             on: "\"reduced\"",
-            off: "\"normal\"",
-            others_on: false,
+            off: "\"full\"",
+            others_on: true,
         }),
     ),
     row("Session recap", "ui.recaps", BOOL),
@@ -237,13 +237,22 @@ pub const ROWS: &[Row] = &[
     row("Newer CLI notice", "ui.newer_cli_notice", BOOL),
     row("Mods", "", Control::Opens("mods")),
     row("Bottom line", "", Control::Opens("mods bottom-line")),
-    row("Keep the Mac awake", "awake.while_working", BOOL),
+    row(
+        "Keep the computer awake while agents work",
+        "awake.while_working",
+        BOOL,
+    ),
+    row(
+        "Keep the screen on while agents work",
+        "awake.screen_while_working",
+        BOOL,
+    ),
     row(
         "Behaviors map",
         "behaviors.map",
         Control::Choice(&[
             choice("\"labels\"", "labels"),
-            choice("\"deeper\"", "deeper"),
+            choice("\"summaries\"", "summaries"),
         ]),
     ),
     row(

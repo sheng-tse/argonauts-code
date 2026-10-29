@@ -16,15 +16,33 @@ reviews:
     drafts: false
     # Every push gets a review, however many came before it.
     auto_pause_after_reviewed_commits: 0
-  # Recordings, snapshots and pictures are compared by tests; reviewing them line by line adds noise.
+  # Recordings and the lock file are checked by tests and tools; reviewing them line by line adds
+  # noise. Screens are reviewed: the drawings in approved/ set the look, and a changed snapshot or
+  # golden grid is a changed screen. Only the goldens' colour pages stay out, as they are large and
+  # compared colour for colour by tests.
   path_filters:
     - "!**/fixtures/**"
     - "!**/tests/data/**"
-    - "!**/*.snap"
-    - "!**/golden/**"
+    - "!**/golden/**/*.html"
     - "!assets/**"
     - "!Cargo.lock"
   path_instructions:
+    - path: "approved/**"
+      instructions: >-
+        These drawings are the approved look of each screen, and tests compare the app with them, so a change
+        here changes what counts as right. Flag a changed or added drawing whose row in approved/MANIFEST.toml
+        isn't updated with its new hash and the approval it cites, and a drawing changed alongside the code it
+        checks when the description doesn't say the new look was approved in an issue.
+    - path: "**/*.snap"
+      instructions: >-
+        A snapshot records what the code drew, so a change here is a change on screen. Check that the description
+        says it was meant, and that the new screen matches its drawing in approved/ where there is one. Flag a
+        snapshot updated only to make a test pass.
+    - path: "**/golden/**"
+      instructions: >-
+        A golden picture records what the code drew, so a change here is a change on screen. Check that the
+        description says it was meant, and that it matches the screen's drawing in approved/ where there is one.
+        Flag a picture updated only to make a test pass.
     - path: "crates/**/*.rs"
       instructions: >-
         Look for correctness, safety (the sandbox, approvals, the never-list and writes outside the project) and

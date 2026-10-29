@@ -1,0 +1,90 @@
+Behaviors, Summaries with Opus 5.5 compared, ↓ pressed 9 times from the map, then ↑ 7 times: the panel
+screen 120x38
+at ?,0
+size 120x32
+terminal fg=#c8d3f5 bg=#222436
+text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
+
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  Comparing ￼￼ Opus 5.5
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  With the rest, on the land:
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  Red where it does more, blue where less
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Much more 2x as often or more
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     More      1.25x to 2x
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Less      0.5x to 0.8x
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Much less 0.5x or less
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Untinted  About the same, or too few
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ↑  6 more above
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ●  ￼￼ Opus 5.5                  9
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ↓  2 more below
+
+  Lit: Broad search for cache invalidation and the 13 actions summarized most like it
+
+  Summaries · 650 of 823 summarized by Qwen3 Coder 30B (64k) · 173 newer not yet
+  Distinctive to Opus 5.5 · 8 of its 9 actions, in the model's words ·  new  says more than its label
+  ❯       Broad search for cache invalidation
+     new  No change made
+          Listing project files to understand structure
+          Checking repository status and local environment setup
+     new  Responded with a greeting
+  ↓  3 more below
+
+   r to cycle dates · s this project · d labels or update · ↑  ↓  behavior · enter actions · h  l  model · esc back
+paint
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+.bbbbbbbb..cddddddddc...eeeeee....eeeeee....eeeee....eeeeeee....eeeeee....eeeee.....fff.ffff..gggg.g.gggg..gggg.gg.gggg
+
+..gggggggg....gggggg...cdddddddddc...........cddcdddddc...gg.ggg....gg.gggg....gg.gggggggg....gg.ggggggg....gg.ggggggg
+
+..f.fff.g.g.gggggg.g.g.gggggggg.....................................................................gggggg.g.fffffffff
+
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..ggggggggg.ii.eeee.eee
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..gggg.ggg.ggggg.gg.ggg.ggggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..ggg.ggggg.gg.gggg.ggggg.gggg.ggggg.gggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..jj.eeee.eeee.gg.gg.ggggg.gg.gggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..kk.eeee......ggggg.gg.gg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..ll.eeee......gggg.gg.gggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..mm.eeee.eeee.gggg.gg.gggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..nn.eeeeeeee..ggggg.ggg.ggggg.gg.ggg.ggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..g..g.gggg.ggggg
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..o..ii.eeee.eee..................g
+..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..g..g.gggg.ggggg
+
+..gggg.bbbbb.bbbbbb.bbb.bbbbb.bbbbbbbbbbbb.ggg.ggg.gg.ggggggg.gggggggggg.gggg.gggg.gg
+
+..ggggggggg.g.ggg.gg.ggg.gggggggggg.gg.ggggg.ggggg.ggg.ggggg.g.ggg.ggggg.ggg.ggg
+..bbbbbbbbbbb.bb.bbbb.bbb.g.g.gg.ggg.g.gggggggg.gg.ggg.ggggggg.ggggg.g.pqqqp.gggg.gggg.gggg.ggg.ggggg
+..a.......aaaaa.aaaaaa.aaa.aaaaa.aaaaaaaaaaaa
+....pqqqp.ee.eeeeee.eeee
+..........eeeeeee.eeeeeee.eeeee.ee.eeeeeeeeee.eeeeeeeee
+..........eeeeeeee.eeeeeeeeee.eeeeee.eee.eeeee.eeeeeeeeeee.eeeee
+....pqqqp.eeeeeeeee.eeee.e.eeeeeeee
+..g..g.gggg.ggggg
+
+...g.gg.ggggg.ggggg.g.g.gggg.ggggggg.g.g.gggggg.gg.gggggg.g.g..g..gggggggg.g.ggggg.ggggggg.g.g..g..ggggg.g.ggg.gggg
+key
+. blank
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+b fg=#c8d3f5 bold  ; the terminal's own
+c bg=#373737  ; UserBand
+d fg=#c8d3f5 bg=#373737 bold  ; the terminal's own, on UserBand
+e fg=#c8d3f5  ; the terminal's own
+f fg=#b1b9f9 bold  ; Code, Question, BarFill, CatMcp
+g fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+h picture=deeper-map
+i logo=claudecode
+j bg=#b44a4e
+k bg=#8c5a4c
+l bg=#4a627c
+m bg=#3e5a9a
+n bg=#4e5e48
+o fg=#f7a07f  ; CliClaude
+p bg=#ffc107  ; Warn, ModeAuto, Tick
+q fg=#1f202f bg=#ffc107 bold  ; on Warn, on ModeAuto, on Tick

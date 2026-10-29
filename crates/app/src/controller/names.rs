@@ -24,15 +24,6 @@ impl NamesSent {
         }
     }
 
-    /// The worker with the model it runs when it names none: your setting for its CLI, else
-    /// the CLI's own default.
-    pub(crate) fn running(&self, worker: &ModelRef) -> ModelRef {
-        match &self.0 {
-            Some(names) => names.running(worker),
-            None => worker.clone(),
-        }
-    }
-
     /// `Claude Code`.
     pub(crate) fn cli(&self, id: &str) -> String {
         match &self.0 {
@@ -163,12 +154,12 @@ mod tests {
             panic!("{:#?}", driver.seen());
         };
         assert_eq!(
-            names.worker(&names.running(&worker("claude-code"))),
+            names.worker(&worker("claude-code")),
             "Opus 5.5 on Claude Code"
         );
         // A model the session names is its own.
         assert_eq!(
-            names.worker(&names.running(&worker("claude-code/claude-haiku-4-5"))),
+            names.worker(&worker("claude-code/claude-haiku-4-5")),
             "Haiku 4.5 on Claude Code"
         );
         driver.exit().await;

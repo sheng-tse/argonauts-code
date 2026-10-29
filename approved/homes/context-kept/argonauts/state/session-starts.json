@@ -1,0 +1,86 @@
+{
+  "claude-code": {
+    "agent": "claude-code",
+    "model": "claude-opus-5-5",
+    "window": 1000000,
+    "buffer": 33000,
+    "parts": [
+      {
+        "name": "System prompt",
+        "tokens": 4380,
+        "color": "promptBorder"
+      },
+      {
+        "name": "System tools",
+        "tokens": 19380,
+        "color": "inactive"
+      },
+      {
+        "name": "MCP tools",
+        "tokens": 705,
+        "color": "cyan_FOR_SUBAGENTS_ONLY"
+      },
+      {
+        "name": "MCP server instructions",
+        "tokens": 960,
+        "color": "green_FOR_SUBAGENTS_ONLY"
+      },
+      {
+        "name": "Memory files",
+        "tokens": 503,
+        "color": "claude"
+      },
+      {
+        "name": "Skills",
+        "tokens": 6360,
+        "color": "warning"
+      }
+    ],
+    "from": {
+      "from": "last_session"
+    },
+    "first_count": "answer"
+  },
+  "claude-code claude-opus-5-5": {
+    "agent": "claude-code",
+    "model": "claude-opus-5-5",
+    "window": 1000000,
+    "buffer": 33000,
+    "parts": [
+      {
+        "name": "System prompt",
+        "tokens": 4380,
+        "color": "promptBorder"
+      },
+      {
+        "name": "System tools",
+        "tokens": 19380,
+        "color": "inactive"
+      },
+      {
+        "name": "MCP tools",
+        "tokens": 705,
+        "color": "cyan_FOR_SUBAGENTS_ONLY"
+      },
+      {
+        "name": "MCP server instructions",
+        "tokens": 960,
+        "color": "green_FOR_SUBAGENTS_ONLY"
+      },
+      {
+        "name": "Memory files",
+        "tokens": 503,
+        "color": "claude"
+      },
+      {
+        "name": "Skills",
+        "tokens": 6360,
+        "color": "warning"
+      }
+    ],
+    "from": {
+      "from": "last_session"
+    },
+    "first_count": "answer"
+  }
+}

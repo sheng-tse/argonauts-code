@@ -153,6 +153,7 @@ mod tests {
             limit: TaskLimit::default(),
             predictions: None,
             item: None,
+            way: None,
         };
         assert_eq!(time_cap_min(&task, &settings), TIME_YARDSTICK_MIN);
         settings.watchdogs.wall_clock_min = Some(45.0);

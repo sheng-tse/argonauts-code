@@ -147,9 +147,33 @@ fn fit_ansi256(role: Role, style: Style) -> Style {
         _ => style.bg.map(to_ansi256),
     };
     Style {
-        fg: style.fg.map(to_ansi256),
+        fg: style
+            .fg
+            .map(|color| hue_ansi256(role, color).unwrap_or_else(|| to_ansi256(color))),
         bg,
         ..style
+    }
+}
+
+/// Each CLI's hue and the grey of the rest take a fixed index on a dark screen and another on a
+/// light one. Claude Code's and OpenCode's on a light screen aren't the nearest, which lean
+/// toward the red errors keep. A color you picked yourself takes the nearest.
+fn hue_ansi256(role: Role, color: Color) -> Option<Color> {
+    let (on_dark, on_light) = match role {
+        Role::CliClaude => (216, 130),
+        Role::CliCodex => (75, 26),
+        Role::CliAgy => (80, 30),
+        Role::CliOpenCode => (139, 96),
+        Role::CatOther => (103, 242),
+        _ => return None,
+    };
+    let own = |style: Style| style.fg == Some(color);
+    if own(super::dark_style(role)) {
+        Some(Color::Indexed(on_dark))
+    } else if own(super::light_style(role)) {
+        Some(Color::Indexed(on_light))
+    } else {
+        None
     }
 }
 
@@ -180,14 +204,25 @@ fn fit_ansi16(role: Role, style: Style) -> Style {
     if let Some(named) = mod_ansi16(role) {
         style.fg = Some(named);
     }
+    // Every CLI but one takes the named color of its hue on either background. Claude Code
+    // takes none: the terminal's own text color is its color here, apart from the named ones
+    // the others take, and a name or two letters beside its dot say which it is, since logos
+    // draw only in true color.
+    match role {
+        Role::CliClaude => style.fg = None,
+        Role::CliCodex => style.fg = Some(Color::Blue),
+        Role::CliAgy => style.fg = Some(Color::Cyan),
+        Role::CliOpenCode => style.fg = Some(Color::Magenta),
+        _ => {}
+    }
     // Bright text is the brightest the palette has, bright white on a dark theme, as Claude
     // Code's sixteen color theme draws titles and numbers.
     if role == Role::Bright {
         style.fg = original_fg.map(to_ansi16);
     }
     // The nearest named color would give purple and pink, or orange and red, the same one, so
-    // agents get a fixed set of eight.
-    if let Some(color) = agent_ansi16(role, original_fg) {
+    // agents get a fixed set of eight, and the states one each.
+    if let Some(color) = named_ansi16(role, original_fg) {
         style.fg = Some(color);
     }
     style
@@ -207,15 +242,16 @@ fn mod_ansi16(role: Role) -> Option<Color> {
         Role::CatMemory | Role::CatBrief => Color::Yellow,
         Role::CatSkills => Color::Magenta,
         Role::CatMessages | Role::TokensOutput => Color::Red,
-        Role::CatOther | Role::TokensCached => Color::Gray,
+        Role::TokensCached => Color::Gray,
+        Role::CatOther => Color::DarkGray,
         _ => return None,
     };
     Some(color)
 }
 
-/// The sixteen color form of an agent name color: the bright variants on a dark background,
-/// where the name is drawn light, and the plain ones on a light background.
-fn agent_ansi16(role: Role, fg: Option<Color>) -> Option<Color> {
+/// The sixteen color form of an agent's or a state's color: mostly the bright variants on a
+/// dark background, where the name is drawn light, and the plain ones on a light background.
+fn named_ansi16(role: Role, fg: Option<Color>) -> Option<Color> {
     let Some(Color::Rgb(r, g, b)) = fg else {
         return None;
     };
@@ -231,9 +267,10 @@ fn agent_ansi16(role: Role, fg: Option<Color>) -> Option<Color> {
         Role::AgentCyan => (Color::LightCyan, Color::Cyan),
         // Claude Code's own sixteen color picks for `ultracode`, bright magenta and magenta.
         Role::Ultracode => (Color::LightMagenta, Color::Magenta),
-        Role::CliClaude => (Color::Yellow, Color::LightRed),
-        Role::CliCodex => (Color::LightBlue, Color::Blue),
-        Role::CliAgy => (Color::LightCyan, Color::Cyan),
+        // Green stays plain, and amber and red go bright on a dark screen.
+        Role::Success => (Color::Green, Color::Green),
+        Role::Warn => (Color::LightYellow, Color::Yellow),
+        Role::Danger => (Color::LightRed, Color::Red),
         _ => return None,
     };
     Some(if on_dark { dark } else { light })
@@ -521,6 +558,29 @@ mod tests {
         assert_eq!(nearest_ansi16((250, 250, 250)), Color::White);
     }
 
+    /// In sixteen colors each CLI's color is its own: Claude Code the terminal's text color,
+    /// the others each a named color, on either background.
+    #[test]
+    fn in_sixteen_colors_each_cli_keeps_a_color_of_its_own() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let fg = |role| downgrade(role, theme.style(role), ColorLevel::Ansi16).fg;
+            let colors = [
+                fg(Role::CliClaude),
+                fg(Role::CliCodex),
+                fg(Role::CliAgy),
+                fg(Role::CliOpenCode),
+            ];
+            assert_eq!(colors[0], None);
+            for (at, color) in colors.iter().enumerate() {
+                assert!(
+                    !colors[at + 1..].contains(color),
+                    "{colors:?} on {:?}",
+                    theme.brightness
+                );
+            }
+        }
+    }
+
     #[test]
     fn downgrade_is_idempotent_for_every_role_and_level() {
         for theme in [Theme::dark(), Theme::light()] {
@@ -626,5 +686,61 @@ mod tests {
             .with_accent((0x40, 0x90, 0xff));
         assert_eq!(theme.style(Role::Accent).fg, Some(Color::LightBlue));
         assert_eq!(theme.style(Role::BarFill).bg, Some(Color::Yellow));
+    }
+
+    /// Each CLI's hue and the grey of the rest, with their 256 color indexes on a dark and on
+    /// a light background and their sixteen color names.
+    const HUES: [(Role, u8, u8, Option<Color>); 5] = [
+        (Role::CliClaude, 216, 130, None),
+        (Role::CliCodex, 75, 26, Some(Color::Blue)),
+        (Role::CliAgy, 80, 30, Some(Color::Cyan)),
+        (Role::CliOpenCode, 139, 96, Some(Color::Magenta)),
+        (Role::CatOther, 103, 242, Some(Color::DarkGray)),
+    ];
+
+    #[test]
+    fn cli_hues_keep_their_own_indexes_in_256_colors() {
+        let dark = Theme::dark().with_level(ColorLevel::Ansi256);
+        let light = Theme::light().with_level(ColorLevel::Ansi256);
+        for (role, on_dark, on_light, _) in HUES {
+            assert_eq!(
+                dark.style(role).fg,
+                Some(Color::Indexed(on_dark)),
+                "{role:?}"
+            );
+            assert_eq!(
+                light.style(role).fg,
+                Some(Color::Indexed(on_light)),
+                "{role:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cli_hue_you_pick_takes_the_nearest_index() {
+        let picked = Style::new().fg(Color::Rgb(0x30, 0xc0, 0x30));
+        let fitted = fit_override(Role::CliClaude, picked, ColorLevel::Ansi256);
+        assert_eq!(
+            fitted.fg,
+            Some(Color::Indexed(nearest_ansi256((0x30, 0xc0, 0x30))))
+        );
+    }
+
+    #[test]
+    fn cli_hues_take_one_named_color_and_claude_code_none() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_level(ColorLevel::Ansi16);
+            for (role, _, _, named) in HUES {
+                assert_eq!(theme.style(role).fg, named, "{role:?}");
+            }
+        }
+        let dark = Theme::dark().with_level(ColorLevel::Ansi16);
+        assert_eq!(dark.style(Role::Success).fg, Some(Color::Green));
+        assert_eq!(dark.style(Role::Warn).fg, Some(Color::LightYellow));
+        assert_eq!(dark.style(Role::Danger).fg, Some(Color::LightRed));
+        let light = Theme::light().with_level(ColorLevel::Ansi16);
+        assert_eq!(light.style(Role::Success).fg, Some(Color::Green));
+        assert_eq!(light.style(Role::Warn).fg, Some(Color::Yellow));
+        assert_eq!(light.style(Role::Danger).fg, Some(Color::Red));
     }
 }

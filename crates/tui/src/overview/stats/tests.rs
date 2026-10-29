@@ -14,7 +14,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Rect, Size};
 
 use super::Level;
-use super::cli::{millions, millions_short, took};
+use super::cli::{millions, millions_fixed, millions_short, took};
 use super::pinned::StatsCard;
 use crate::kit::{Form, Frame, Kit};
 use crate::overview::{OverviewView, Tab, UsageWatch, sample};
@@ -45,16 +45,21 @@ fn stats_tab() -> OverviewView {
 
 /// The panel's rows on a screen `width` wide.
 fn rows(view: &mut OverviewView, state: &AppState, width: u16) -> Vec<String> {
+    rows_in(view, state, Size::new(width, 80))
+}
+
+/// The panel's rows on a screen of `screen`'s size.
+fn rows_in(view: &mut OverviewView, state: &AppState, screen: Size) -> Vec<String> {
     let theme = plain();
     let ctx = ViewCtx {
         theme: &theme,
         state,
         now: Instant::now(),
     };
-    let screen = Size::new(width, 80);
     let height = view
         .dock_height(screen, &ctx)
-        .unwrap_or_else(|| crate::views::dock::height(80));
+        .unwrap_or_else(|| crate::views::dock::height(screen.height));
+    let width = screen.width;
     let area = Rect::new(0, 0, width, height);
     let mut buf = Buffer::empty(area);
     view.render(area, &mut buf, &ctx);
@@ -84,6 +89,12 @@ fn at(rows: &[String], text: &str) -> usize {
 
 fn has(rows: &[String], text: &str) -> bool {
     rows.iter().any(|row| row.contains(text))
+}
+
+/// A row reads `text` with any run of blanks taken as one, as a table's columns space it.
+fn has_words(rows: &[String], text: &str) -> bool {
+    let squeezed = |row: &str| row.split_whitespace().collect::<Vec<_>>().join(" ");
+    rows.iter().any(|row| squeezed(row).contains(text))
 }
 
 /// Along the sub-tabs to By role, as Tab or the arrows get there, and into its cards.
@@ -132,18 +143,18 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
     );
     for text in [
         "tokens by CLI · 5.0M",
-        "Claude Code 2.9M 58%",
+        "Claude Code 2.90M 58%",
         "Codex 1.55M 31%",
         "agy 0.55M 11%",
-        "from cache 3.4M 68%",
-        "new input 1.4M 28%",
-        "output 0.2M 4%",
+        "from cache 3.40M 68%",
+        "new input 1.40M 28%",
+        "output 0.20M 4%",
         "how the 63 tasks fared in review",
-        "passed first time 58",
-        "sent back once 4",
-        "sent back twice 1",
+        "passed first time 58 92%",
+        "sent back once 4 6%",
+        "sent back twice 1 2%",
     ] {
-        assert!(has(&rows, text), "{text}: {rows:#?}");
+        assert!(has_words(&rows, text), "{text}: {rows:#?}");
     }
     // The days of this week, from Sunday.
     assert!(
@@ -189,16 +200,22 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
     assert!(rows[plans].contains(" out "), "{rows:#?}");
     assert!(!rows[plans].contains('…'), "the windows fit: {rows:#?}");
 
-    // Who did what: each role, every model in it, the CLI that did the most first.
+    // Who did what: each role, every model in it, the CLI that did the most first, each
+    // with what it did and its share, under the role what the shares are of.
     let who = at(&rows, "◆ who did what");
     assert!(cards < who && together < cards, "{rows:#?}");
+    let who = &rows[who..];
     for text in [
-        "Opus 5.5 14 workflows",
-        "Opus 5.5 24   ■ Sonnet 5.5 11   ■ GPT 5.6 21   ■ GPT 5.6 Luna 7   of 63 tasks",
-        "Gemini 3.6 Pro 49   ■ GPT 5.6 14   of 63 reviews",
-        "Gemini 3.6 Flash 14 sign-offs",
+        "14 workflows ● ██ Opus 5.5 14 100%",
+        "63 tasks ● ██ Opus 5.5 24 38%",
+        "● ▚▚ Sonnet 5.5 11 17%",
+        "● ██ GPT 5.6 21 33%",
+        "● ▚▚ GPT 5.6 Luna 7 11%",
+        "63 reviews ● ██ Gemini 3.6 Pro 49 78%",
+        "● ██ GPT 5.6 14 22%",
+        "14 sign-offs ● ▚▚ Gemini 3.6 Flash 14 100%",
     ] {
-        assert!(has(&rows, text), "{text}: {rows:#?}");
+        assert!(has_words(who, text), "{text}: {rows:#?}");
     }
     let keys = rows.iter().rev().find(|row| !row.is_empty()).unwrap();
     assert_eq!(
@@ -229,24 +246,30 @@ fn m_shows_every_model_as_a_card_and_enter_opens_one_a_level_deeper() {
     // Built as By CLI is: all together, a card each, then the same job side by side.
     let parts = [
         at(&rows, "◆ all models  this week"),
-        at(&rows, "│ ■ Opus 5.5"),
+        at(&rows, "│ █ Opus 5.5"),
         at(&rows, "◆ the same job, side by side"),
     ];
     assert!(parts.is_sorted(), "{parts:?}: {rows:#?}");
-    for bar in ["tokens by model", "spend by model", "agent time by model"] {
+    // A bar each of tokens, spend and time over one table of every model.
+    for bar in ["tokens █", "spend  █", "time   █"] {
         assert!(has(&rows, bar), "{bar}: {rows:#?}");
     }
+    let table = at(&rows, "model  ");
+    for title in ["tokens", "spend", "time"] {
+        assert!(rows[table].contains(title), "{title}: {rows:#?}");
+    }
+    assert!(at(&rows, "Opus 5.5    ") > table, "{rows:#?}");
     // A card for each model, each CLI's models together, three to a row.
-    let cards = at(&rows, "│ ■ Opus 5.5");
-    let order = ["■ Opus 5.5", "■ Sonnet 5.5", "■ GPT 5.6 "].map(|name| {
+    let cards = at(&rows, "│ █ Opus 5.5");
+    let order = ["█ Opus 5.5", "▚ Sonnet 5.5", "█ GPT 5.6 "].map(|name| {
         rows[cards]
             .find(name)
             .unwrap_or_else(|| panic!("{name}: {rows:#?}"))
     });
     assert!(order.is_sorted(), "{order:?}: {rows:#?}");
     for text in [
-        "■ orchestrator",
-        "■ workers",
+        "■  orchestrator",
+        "■  workers",
         "96% first pass",
         "this week · 4m 40s a task",
         "cache hit",
@@ -268,14 +291,17 @@ fn m_shows_every_model_as_a_card_and_enter_opens_one_a_level_deeper() {
         );
     }
 
-    // Nothing stands opened until Enter opens the card the keys are on, and Enter again
-    // closes it.
+    // Nothing stands opened until Enter opens the model the keys are on in the table, and
+    // Enter again closes it.
     assert!(!has(&rows, "Opus 5.5 on Claude Code"), "{rows:#?}");
     key(&mut tab, &state, KeyCode::Enter);
     let rows = self::rows(&mut tab, &state, 120);
-    let opened = at(&rows, "■ Opus 5.5 on Claude Code · as orchestrator, worker");
+    let opened = at(
+        &rows,
+        "██  Opus 5.5 on Claude Code · as orchestrator, worker",
+    );
     assert!(
-        at(&rows, "│ ■ GPT 5.6 Luna") < opened,
+        at(&rows, "│ ▚ GPT 5.6 Luna") < opened,
         "under the cards: {rows:#?}"
     );
     key(&mut tab, &state, KeyCode::Enter);
@@ -284,13 +310,13 @@ fn m_shows_every_model_as_a_card_and_enter_opens_one_a_level_deeper() {
         "Opus 5.5 on Claude Code"
     ));
 
-    // ↓ moves to the next card, which Enter opens in the first one's place.
+    // ↓ moves to the table's next row, which Enter opens in the first one's place.
     key(&mut tab, &state, KeyCode::Down);
     key(&mut tab, &state, KeyCode::Down);
     key(&mut tab, &state, KeyCode::Enter);
     let rows = self::rows(&mut tab, &state, 120);
     assert!(!has(&rows, "Opus 5.5 on Claude Code"), "{rows:#?}");
-    let opened = at(&rows, "■ GPT 5.6 on Codex · as worker, reviewer");
+    let opened = at(&rows, "██  GPT 5.6 on Codex · as worker, reviewer");
     assert!(rows[opened].ends_with("1.2M tokens · $2.30 │"), "{rows:#?}");
     // At the left its work, at the right what it used and how it stands beside the others.
     for text in [
@@ -300,25 +326,30 @@ fn m_shows_every_model_as_a_card_and_enter_opens_one_a_level_deeper() {
         "a task · 52s a review",
         "│ cost ",
         "tokens a task",
-        "■ cache 0.8M",
+        "cache 0.82M 68%",
         "cache hit",
         "a day, this week",
         "beside the other models",
         "as a reviewer: 52s each vs",
         "fallbacks 2 tasks fell back from Opus 5.5",
-        "when Claude's 5-hour window ran out",
+        "when Claude Code's 5-hour window ran out",
     ] {
-        assert!(has(&rows[opened..], text), "{text}: {rows:#?}");
+        assert!(has_words(&rows[opened..], text), "{text}: {rows:#?}");
     }
     assert!(
         has(
             &rows,
-            "r to cycle dates · ↓  more · ↑↓  model · enter opens or closes it · tab By CLI, By model, By role"
+            "r to cycle dates · ↓  more · ↑↓  model · ←  →  sort: bar order · / search · enter opens it · esc leaves the table"
         ),
         "{rows:#?}"
     );
 
-    // Esc closes the panel at once, with a card open too.
+    // Esc leaves the table, with a card open too, and from the sub-tabs closes the panel.
+    assert!(matches!(
+        key(&mut tab, &state, KeyCode::Esc),
+        ViewOutcome::Consumed
+    ));
+    assert_eq!(tab.level(), Level::SubTabs);
     assert!(matches!(
         key(&mut tab, &state, KeyCode::Esc),
         ViewOutcome::Close
@@ -332,7 +363,7 @@ fn enter_on_a_clis_card_opens_it_and_enter_again_closes_it() {
     into_the_cards(&mut tab, &state);
     key(&mut tab, &state, KeyCode::Down);
     key(&mut tab, &state, KeyCode::Enter);
-    let rows = rows(&mut tab, &state, 120);
+    let rows = rows_in(&mut tab, &state, Size::new(120, 120));
     let opened = at(&rows, "● Codex · opened with enter");
     assert!(
         rows[opened].contains("28 tasks · 14 reviews · 1.6M tokens · $2.75"),
@@ -358,46 +389,56 @@ fn by_role_shows_every_role_as_a_card_with_the_models_that_filled_it() {
     );
     let parts = [
         at(&rows, "◆ all roles  this week"),
-        at(&rows, "│ ■ orchestrator"),
+        at(&rows, "│ ■  orchestrator"),
         at(&rows, "◆ what each role caught or changed"),
     ];
     assert!(parts.is_sorted(), "{parts:?}: {rows:#?}");
-    for bar in ["tokens by role", "spend by role", "agent time by role"] {
+    for bar in ["tokens █", "spend  █", "time   █"] {
         assert!(has(&rows, bar), "{bar}: {rows:#?}");
     }
+    assert!(has(&rows, "role       "), "the table's titles: {rows:#?}");
     // A card for each role, in the order the work goes round the crew.
-    let cards = at(&rows, "│ ■ orchestrator");
-    let order = ["■ orchestrator", "■ workers", "■ reviewers"].map(|name| {
+    let cards = at(&rows, "│ ■  orchestrator");
+    let order = ["■  orchestrator", "■  workers", "■  reviewers"].map(|name| {
         rows[cards]
             .find(name)
             .unwrap_or_else(|| panic!("{name}: {rows:#?}"))
     });
     assert!(order.is_sorted(), "{order:?}: {rows:#?}");
-    assert!(has(&rows, "│ ■ judge"), "{rows:#?}");
+    assert!(has(&rows, "│ ■  judge"), "{rows:#?}");
     // Under a role's name what it did and who filled it, then a bar for each model.
     for text in [
         "63 tasks · 4 models",
         "63 reviews · 2 models",
-        "■ GPT 5.6 Luna",
+        "▚ GPT 5.6 Luna",
         "92% first pass",
         "best first pass: Opus 5.5, 96%",
     ] {
         assert!(has(&rows, text), "{text}: {rows:#?}");
     }
-    // What the roles beside the workers settled, a bar and a legend each.
+    // What the roles beside the workers settled, a bar and a table each, then what its
+    // parts are of.
     let caught = at(&rows, "◆ what each role caught or changed");
-    assert!(
-        rows[caught..]
-            .iter()
-            .any(|row| row.contains("■ ran as planned 13   ■ replanned 1   of 14 runs")),
-        "{rows:#?}"
-    );
+    let planned = at(&rows[caught..], "ran as planned") + caught;
+    for (row, words) in [
+        "━━ ran as planned 13 93%",
+        "══ replanned 1 7%",
+        "of 14 runs",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(
+            has_words(&rows[planned + row..=planned + row], words),
+            "{words}: {rows:#?}"
+        );
+    }
     // Enter opens the role the keys are on, under the cards.
     key(&mut tab, &state, KeyCode::Down);
     key(&mut tab, &state, KeyCode::Enter);
     let rows = self::rows(&mut tab, &state, 120);
     let opened = at(&rows, "workers · opened with enter");
-    assert!(at(&rows, "│ ■ judge") < opened, "{rows:#?}");
+    assert!(at(&rows, "│ ■  judge") < opened, "{rows:#?}");
 }
 
 #[test]
@@ -414,8 +455,13 @@ fn runs_filed_before_their_endings_were_kept_say_nothing_of_how_they_ended() {
         assert!(!has(&rows, unknown), "{unknown}: {rows:#?}");
     }
     // The reviewers' send-backs came with no reasons, which the row says for all six.
+    let kept = at(&rows, "no reason kept");
     assert!(
-        has(&rows, "■ no reason kept 6   of 6 sent back"),
+        has_words(&rows[kept..=kept], "no reason kept 6 100%"),
+        "{rows:#?}"
+    );
+    assert!(
+        has_words(&rows[kept + 1..=kept + 1], "of 6 sent back"),
         "{rows:#?}"
     );
 }
@@ -619,7 +665,7 @@ fn a_task_sent_back_and_never_merged_still_counts_in_how_tasks_fared() {
     let mut tab = stats_tab();
     let rows = rows(&mut tab, &state(usage), 120);
     assert!(has(&rows, "how the 64 tasks fared in review"), "{rows:#?}");
-    assert!(has(&rows, "sent back once 5"), "{rows:#?}");
+    assert!(has_words(&rows, "sent back once 5"), "{rows:#?}");
     assert!(has(&rows, "63 tasks merged"), "{rows:#?}");
 }
 
@@ -648,16 +694,16 @@ fn the_main_agents_conversations_are_a_roles_work_like_any_other() {
     let mut tab = stats_tab();
     key(&mut tab, &state, KeyCode::Char('m'));
     let rows = rows(&mut tab, &state, 120);
-    let haiku = at(&rows, "■ Haiku 4.5");
+    let haiku = at(&rows, "▚ Haiku 4.5");
     assert!(
-        rows[haiku..].iter().any(|row| row.contains("■ main")),
+        rows[haiku..].iter().any(|row| row.contains("■  main")),
         "{rows:#?}"
     );
     let mut tab = stats_tab();
     by_role(&mut tab, &state);
     let rows = self::rows(&mut tab, &state, 120);
     for text in [
-        "│ ■ main",
+        "│ ■  main",
         "3 conversations · 1 model",
         "turns    12 in 3 · 4 each",
     ] {
@@ -810,6 +856,10 @@ fn the_tab_writes_numbers_on_one_scale() {
     assert_eq!(millions_short(2_060_000), "2.1M");
     assert_eq!(millions_short(40_000), "<0.1M");
     assert_eq!(millions_short(1_200_000_000), "1.2b");
+    assert_eq!(millions_fixed(2_600_000), "2.60M");
+    assert_eq!(millions_fixed(70_000), "0.07M");
+    assert_eq!(millions_fixed(4_200), "<0.01M");
+    assert_eq!(millions_fixed(1_200_000_000), "1.20b");
     assert_eq!(took(185), "3m 05s");
     assert_eq!(took(41), "41s");
     assert_eq!(took(12 * 3600 + 40 * 60), "12h 40m");
@@ -1201,8 +1251,9 @@ fn who_did_what_names_only_the_models_that_did_the_work() {
     let state = state(usage);
     let shown = rows(&mut stats_tab(), &state, 120);
     let who = &shown[at(&shown, "who did what")..];
-    let judge = at(who, "■ Gemini 3.6 Flash 14 sign-offs");
-    assert!(!who[judge].contains("Sonnet 5.5"), "{who:#?}");
+    let judge = at(who, " judge ");
+    assert!(who[judge + 1].contains("Gemini 3.6 Flash"), "{who:#?}");
+    assert!(!who[judge + 2].contains("Sonnet 5.5"), "{who:#?}");
     let merger = at(who, " merger ");
     assert!(who[merger + 1].contains("no merges recorded"), "{who:#?}");
     assert!(!who.iter().any(|row| row.contains(" 0 ")), "{who:#?}");
@@ -1332,4 +1383,39 @@ fn a_role_lists_only_the_models_that_did_its_work() {
     };
     let (_, without) = reviewers(once);
     assert_ne!(tokens(opened), tokens(&without), "{opened:#?}");
+}
+
+/// From By model's table the tab keeps in view what the last key was about: the table as ↑↓
+/// move on it, and the card Enter opened as it opens.
+#[test]
+fn the_table_stays_in_view_as_its_keys_move_and_a_card_as_enter_opens_it() {
+    let usage = sample::usage_with_stats();
+    let names = DisplayNames::default();
+    let now = sample::now();
+    let theme = plain();
+    let kit = Kit::new(&theme);
+    let mut stats = super::StatsState::default();
+    stats.key(KeyCode::Char('m'), Some(&usage), &names, now);
+    let words = |stats: &super::StatsState| {
+        let (blocks, focus) = stats.blocks(&kit, &usage, (&names, now), 120, None);
+        let rows: Vec<String> = blocks[focus]
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        rows.join("\n")
+    };
+    stats.key(KeyCode::Enter, Some(&usage), &names, now);
+    assert!(
+        words(&stats).contains("Opus 5.5 on Claude Code"),
+        "{}",
+        words(&stats)
+    );
+    stats.key(KeyCode::Down, Some(&usage), &names, now);
+    assert!(words(&stats).contains("◆ all models"), "{}", words(&stats));
 }

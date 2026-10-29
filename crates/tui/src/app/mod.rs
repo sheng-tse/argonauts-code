@@ -3,10 +3,12 @@
 //! region if anything in it changed, at most about 60 times a second and not at all while the
 //! screen is still.
 
+mod council;
 mod frames;
 mod fullscreen;
 mod input;
 mod live;
+mod logos;
 mod map_picture;
 mod mascot;
 mod overlay;
@@ -148,6 +150,9 @@ pub enum UiAction {
     Copy(String),
     /// Edit the draft in `$EDITOR` through [`Ui::with_restored`].
     EditDraft,
+    /// A key for the council talking on this screen: shift+↑ picks its newest message or
+    /// task, and while one is picked every key is the picker's.
+    CouncilKey(crossterm::event::KeyEvent),
     Focus(bool),
     Quit,
 }
@@ -199,8 +204,12 @@ pub struct Ui<W: Write> {
     next_animation: Option<Instant>,
     /// The header's mascot as a picture, and its frames.
     mascot: mascot::HeaderMascot,
+    logos: logos::KeptLogos,
     /// A docked view's map as a picture, and the mouse over it.
     map: map_picture::DockedMap,
+    /// The council's bubbles as pictures under the words, where the terminal draws them.
+    council_pictures: crate::council::place::Pictures,
+    pictures_under_text: bool,
     keymap: Keymap,
     /// Keys come with the time they arrived, so a paste a terminal types out key by key reads
     /// as one paste. Tests that hand keys over at one made-up time leave it off.
@@ -224,6 +233,7 @@ impl<W: Write> Ui<W> {
         let keymap = Keymap::default();
         model.bottom.menus.shortcuts = keymap.shortcut_hints();
         model.bottom.band.keys = mod_keys(&keymap);
+        model.bottom.save_for_session_key = save_for_session_key(&keymap);
         Self {
             terminal,
             model,
@@ -245,7 +255,10 @@ impl<W: Write> Ui<W> {
             modes: None,
             next_animation: None,
             mascot: mascot::HeaderMascot::default(),
-            map: map_picture::DockedMap::default(),
+            logos: logos::KeptLogos::default(),
+            map: map_picture::DockedMap::new(now),
+            council_pictures: Default::default(),
+            pictures_under_text: false,
             keymap,
             key_times: false,
         }
@@ -268,6 +281,7 @@ impl<W: Write> Ui<W> {
     pub fn set_keymap(&mut self, keymap: Keymap) {
         self.model.bottom.menus.shortcuts = keymap.shortcut_hints();
         self.model.bottom.band.keys = mod_keys(&keymap);
+        self.model.bottom.save_for_session_key = save_for_session_key(&keymap);
         self.keymap = keymap;
     }
 
@@ -407,12 +421,22 @@ impl<W: Write> Ui<W> {
     /// Everything a frame writes, title and screen switches included, reaches the terminal as
     /// one synchronized update.
     fn frame_with(&mut self, now: Instant, state: Option<&AppState>) -> io::Result<bool> {
+        let before = self.terminal.frame_bytes();
         self.terminal.begin_frame();
+        // The logos go to the screen this frame draws on before its cells, and to every screen
+        // after.
+        self.keep_logos();
         let drawn = self.draw_frame(now, state);
+        // A numbered logo the frame drew for the first time goes out in the same update, and
+        // to every screen after.
+        let numbered = crate::kit::logo::send_numbered(self.picture_cell());
+        self.terminal.keep_pictures(&numbered);
+        let pictures = self.terminal.send_kept_pictures();
         let sent = self.terminal.end_frame();
         let wrote = drawn?;
+        pictures?;
         sent?;
-        Ok(wrote)
+        Ok(wrote || self.terminal.frame_bytes() != before)
     }
 
     fn draw_frame(&mut self, now: Instant, state: Option<&AppState>) -> io::Result<bool> {
@@ -473,7 +497,7 @@ impl<W: Write> Ui<W> {
                 } else {
                     None
                 };
-                let map = self.place_map();
+                let map = self.place_map(now);
                 self.draw_alternate(now, state)?;
                 self.send_placing(placing)?;
                 self.send_map_placing(map)?;
@@ -694,6 +718,7 @@ impl<W: Write> Ui<W> {
     pub fn suspend(&mut self) -> io::Result<()> {
         self.dirty = true;
         self.let_go_of_map()?;
+        self.let_go_of_council_pictures()?;
         // The child gets the main screen. An open view comes back on the next frame.
         if self.on_alternate {
             if self.scrollback.is_some() {
@@ -728,6 +753,8 @@ impl<W: Write> Ui<W> {
             }
         }
         self.terminal.invalidate();
+        // The program may have cleared the pictures the rows draw, the logos among them.
+        self.terminal.forget_kept_pictures();
         self.mascot_given_back();
         Ok(())
     }
@@ -742,6 +769,7 @@ impl<W: Write> Ui<W> {
     pub fn finish_with(&mut self, exit_lines: Vec<String>) -> io::Result<()> {
         self.terminal.set_progress(false)?;
         self.let_go_of_map()?;
+        self.let_go_of_council_pictures()?;
         if self.scrollback.is_some() {
             return self.finish_fullscreen(exit_lines);
         }
@@ -808,7 +836,10 @@ impl<W: Write> Ui<W> {
         // History prints with a still clock, so its printed form never depends on frame timing.
         let ctx =
             RenderCtx::new(screen.width, &self.theme, Clock::still(now)).with_rows(screen.height);
+        let under_text = self.under_text_cell();
+        self.model.history.draw_pictures_under(under_text);
         let mut rows = self.model.history.drain_printable(&ctx);
+        let mut pictures = self.model.history.take_picture_rows();
         let mut header = self.model.history.take_header_rows();
         let redrawn = self.model.history.take_header_redrawn();
         let mut prompts = self.model.history.take_prompt_rows();
@@ -820,9 +851,14 @@ impl<W: Write> Ui<W> {
             for (rows, _) in &mut prompts {
                 *rows = rows.start - at..rows.end - at;
             }
+            pictures.retain(|(rows, _)| rows.start >= at);
+            for (rows, _) in &mut pictures {
+                *rows = rows.start - at..rows.end - at;
+            }
         } else if rows.is_empty() && redrawn.is_none() {
             return false;
         }
+        self.print_council_pictures(pictures);
         if let Some(scrollback) = self.scrollback.as_mut() {
             let printed_header = header.is_some();
             let changed = redrawn.is_some();
@@ -860,6 +896,7 @@ impl<W: Write> Ui<W> {
             let holds_still = scrollback.holds_still;
             *scrollback = Scrollback::new();
             scrollback.holds_still = holds_still;
+            self.council_pictures.forget_all();
             return;
         }
         if !last.is_empty() {
@@ -896,7 +933,7 @@ impl<W: Write> Ui<W> {
         };
         let (trailing, pinned) = view.lines.split_at(view.trailing.min(view.lines.len()));
         let rows = |lines: &[Line<'_>]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
-        let map = self.place_map();
+        let map = self.place_map(now);
         self.terminal
             .draw_live(rows(trailing), rows(pinned), |frame| {
                 frame.paint_trailing(trailing);
@@ -949,6 +986,9 @@ impl<W: Write> Ui<W> {
         if let Some(frame) = self.next_mascot_frame(now) {
             next = Some(next.map_or(frame, |at| at.min(frame)));
         }
+        if let Some(wake) = self.next_map_wake(now) {
+            next = Some(next.map_or(wake, |at| at.min(wake)));
+        }
         if self.model.history.is_animating() {
             // A running call's bullet blinks on this beat; held still, only seconds tick.
             let period = if self.theme.reduced_motion {
@@ -964,6 +1004,18 @@ impl<W: Write> Ui<W> {
 }
 
 /// Each mod's first key, as written, for the line it folds to above the input.
+/// The first key `save_for_session` binds, which a settings picker's footer names, or empty
+/// when nothing binds it.
+fn save_for_session_key(keymap: &Keymap) -> Option<String> {
+    Some(
+        keymap
+            .keys(Action::SaveForSession)
+            .into_iter()
+            .next()
+            .unwrap_or_default(),
+    )
+}
+
 fn mod_keys(keymap: &Keymap) -> Vec<(argonauts_core::settings::ui::ModName, String)> {
     argonauts_core::settings::ui::ModName::ALL
         .into_iter()

@@ -1028,7 +1028,8 @@ pub fn examples(host: &Host) -> Vec<WorkflowExample> {
             }
         }
     }
-    for name in builtin::names() {
+    // The crew's fixed phases too, which an ablation or a file of steps runs and may size.
+    for name in builtin::names().chain([workflow_files::BASE.0]) {
         if let (Ok(text), Ok(workflow)) = (builtin::example(name), builtin::load(name)) {
             offer(name, text, workflow);
         }

@@ -72,10 +72,11 @@ The pictures are drawn without colour. On screen each part takes its own.
 
 ```
 ╭────────────────────────────────────────────────────────────╮
-│ ◆ stack                           7 of 9 passed [1 failed] │
+│ ◆ stack                                      7 of 9 passed │
 │ ██████████████████████████████████████████████████████████ │
-│ ▌ passed      7  78%   ▌ running     1  11%                │
-│ ▌ failed      1  11%                                       │
+│                                                            │
+│ ▌ passed   7   78%      ▌ running   1   11%                │
+│ ▌ failed   1   11%                                         │
 ╰────────────────────────────────────────────────────────────╯
 ```
 
@@ -84,8 +85,8 @@ The pictures are drawn without colour. On screen each part takes its own.
 ```
 ╭────────────────────────────────────────────────────────────╮
 │ ◆ meters                                   56% of the week │
-│ 5h ╸────────────────────────────────── 1%    resets 4:40pm │
-│ 7d ━━━━━━━━━━━━━━━━━━━╸─────────────── 56%   resets Tue    │
+│ 5h   ╸──────────────────────────────── 1%    resets 4:40pm │
+│ 7d   ━━━━━━━━━━━━━━━━━━╸────────────── 56%   resets Tue    │
 ╰────────────────────────────────────────────────────────────╯
 ```
 
@@ -124,10 +125,11 @@ The pictures are drawn without colour. On screen each part takes its own.
 
 ```
 ╭────────────────────────────────────────────────────────────╮
-│ ◆ marks                           7 of 9 passed [1 failed] │
+│ ◆ marks                                      7 of 9 passed │
 │ # # # # # # # # #                                          │
-│ ▌ passed      7  78%   ▌ running     1  11%                │
-│ ▌ failed      1  11%                                       │
+│                                                            │
+│ ▌ passed   7   78%      ▌ running   1   11%                │
+│ ▌ failed   1   11%                                         │
 ╰────────────────────────────────────────────────────────────╯
 ```
 

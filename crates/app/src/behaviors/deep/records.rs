@@ -1,4 +1,4 @@
-//! Every action Argonauts Code recorded, read for the deeper map: each run session's tool calls
+//! Every action Argonauts Code recorded, read for Summaries: each run session's tool calls
 //! (`state/<project>/runs/<run>/events.jsonl`) and the main agent's own in your conversations
 //! (`state/<project>/conversation/<id>.jsonl`). Reading writes nothing.
 

@@ -1,4 +1,9 @@
-//! One day's usage, for the tests of what shows it.
+//! One day's usage, and a crew shaped like a real machine's, for the tests of what shows them.
+
+mod crew_like;
+mod crew_like_tests;
+
+pub use crew_like::{CrewLike, crew_like};
 
 use argonauts_core::api::{
     DaySpend, PlanUsage, RunProgress, RunState, RunSummary, StatusSummary, TaskBrief, UsagePeriod,
@@ -171,6 +176,7 @@ pub fn usage() -> UsageSummary {
         spent: spent(cost, estimated),
         pays_per_token: false,
         local: false,
+        billing: None,
         this_week: Vec::new(),
     };
     let day_costs = [

@@ -12,6 +12,7 @@ pub mod narrate;
 pub mod plan;
 pub mod pursue;
 mod runner;
+pub mod talk;
 pub mod task;
 pub mod understand;
 
@@ -74,6 +75,9 @@ pub enum StepName {
     Direct,
     /// A model you named writes another agent's instructions.
     WriteInstructions,
+    /// A seat's turn in a council's talk: its first answer, a message, a tapback, the notes,
+    /// or its answer to you in private.
+    Talk,
 }
 
 pub trait Step {
@@ -205,7 +209,7 @@ pub fn output_schema<S: Step>() -> Value {
 
 impl StepName {
     /// Every step, so a check can hold each one's answer format to the same rules.
-    pub const ALL: [StepName; 33] = [
+    pub const ALL: [StepName; 34] = [
         Self::Estimate,
         Self::ConversationAnswer,
         Self::Read,
@@ -239,6 +243,7 @@ impl StepName {
         Self::CliCommand,
         Self::Direct,
         Self::WriteInstructions,
+        Self::Talk,
     ];
 
     /// The answer format a CLI is asked for in this step, or `None` where the answer is plain
@@ -281,6 +286,7 @@ impl StepName {
             Self::PlanTry => output_schema::<pursue::PlanTry>(),
             Self::CheckGoal => output_schema::<pursue::CheckGoal>(),
             Self::WriteInstructions => output_schema::<instructions::WriteInstructions>(),
+            Self::Talk => output_schema::<talk::Talk>(),
             Self::CliCommand | Self::Direct => return None,
         };
         Some(schema)

@@ -9,9 +9,11 @@ use globset::{Glob, GlobSetBuilder};
 use argonauts_core::events::approval::{MergePacket, MergeRow};
 use argonauts_core::events::run::ChangedFile;
 use argonauts_core::events::session::EndReason;
-use argonauts_core::events::task::{CheckKind, CheckOutcome, ReviewEvent, TaskKind, TaskState};
+use argonauts_core::events::task::{
+    CheckKind, CheckOutcome, PickedBy, ReviewEvent, TaskKind, TaskState,
+};
 use argonauts_core::names::ModelRef;
-use argonauts_core::policy::{EvidenceDocument, EvidenceFacts, EvidenceSubject};
+use argonauts_core::policy::{EvidenceDocument, EvidenceFacts, EvidenceSubject, WithinProvider};
 use argonauts_core::registry::provider::is_known;
 use argonauts_core::steps::judgment::ReviewVerdict;
 
@@ -20,6 +22,7 @@ use crate::error::{EngineError, EngineResult};
 use crate::fallback::{merge_rule, notes};
 use crate::merge::final_check::{self, FinalCheck};
 use crate::merge::{branch, conductor, deliver, unborn};
+use crate::review::reviewers;
 use crate::roles;
 use crate::state::RunState;
 use crate::state::tasks::TaskEntry;
@@ -183,11 +186,28 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
     });
     let mut rows = Vec::new();
     let mut reviewed_by_other_provider = true;
+    let mut approved_within_provider = Vec::new();
+    let mut unreviewed = Vec::new();
     for record in &tasks {
         // Every commit that lands names its author in a note.
         notes::catch_up(host, &record.spec.id).await?;
         let row = row(host, record).await?;
-        reviewed_by_other_provider &= approved_elsewhere(host, record, row.worker.as_ref());
+        match approval_of(host, record, row.worker.as_ref()) {
+            Approval::Counts => {}
+            Approval::Neither => reviewed_by_other_provider = false,
+            Approval::Unreviewed => {
+                reviewed_by_other_provider = false;
+                unreviewed.push(why_unreviewed(host, record));
+            }
+            Approval::WithinProvider { reviewer, fallback } => {
+                reviewed_by_other_provider = false;
+                approved_within_provider.push(WithinProvider {
+                    task: host.read(|state| crate::labels::task_label(state, &record.spec.id)),
+                    reviewer: roles::display_name(&reviewer),
+                    fallback,
+                });
+            }
+        }
         rows.push(row);
     }
 
@@ -248,6 +268,8 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
         checks_passed: Some(check.passed && tasks_passed),
         reviews_approved: Some(reviews_approved),
         reviewed_by_other_provider: Some(reviewed_by_other_provider),
+        approved_within_provider,
+        unreviewed,
         combined_diff_lines: Some(combined.insertions.saturating_add(combined.deletions)),
         suite_on_latest_main: Some(suite_on_latest_main),
         unreviewed_debt: Some(unreviewed_debt),
@@ -372,44 +394,112 @@ pub fn checks_passed(checks: &[CheckOutcome]) -> bool {
     latest.iter().all(|check| check.passed)
 }
 
-/// Whether the task's approval came from another provider than its worker's: the verdict
-/// that stands did, or it approves and a review of the newest round from another provider
-/// approved too, with nobody in that round asking for more. A provider nobody knows can't
-/// be shown to be different, so it isn't.
-fn approved_elsewhere(host: &Host, record: &TaskEntry, worker: Option<&ModelRef>) -> bool {
+/// How a task's approval stands to the merge rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Approval {
+    /// It came from a reviewer of another provider than the worker's, or from one you chose.
+    Counts,
+    /// It came only from reviewers code picked from the worker's own provider: who gave the
+    /// verdict that stands, and whether that was a fallback in another's place.
+    WithinProvider { reviewer: ModelRef, fallback: bool },
+    /// The work isn't approved, or nothing says which provider made it.
+    Neither,
+    /// Nobody reviewed the work, though it's a task to review.
+    Unreviewed,
+}
+
+/// Why a task to review came to the merge without one, naming it: nobody but its builder, or
+/// its builder's provider, may review it.
+fn why_unreviewed(host: &Host, record: &TaskEntry) -> String {
+    crate::review::nobody_to_review(host, &record.spec.id).unwrap_or_else(|| {
+        let label = host.read(|state| crate::labels::task_label(state, &record.spec.id));
+        format!("Nobody reviewed {label}")
+    })
+}
+
+/// The task's approval as the run's records hold it, with providers from the registry.
+fn approval_of(host: &Host, record: &TaskEntry, worker: Option<&ModelRef>) -> Approval {
+    if last_verdict(&record.reviews).is_none() && crate::review::needed(host, record) {
+        return Approval::Unreviewed;
+    }
     let provider = |model: &ModelRef| Some(roles::provider(host, model)).filter(|p| is_known(p));
-    let Some(worker) = worker.and_then(provider) else {
-        return false;
-    };
-    let elsewhere = |model: &ModelRef| provider(model).is_some_and(|theirs| theirs != worker);
-    let reviews = &record.reviews;
-    let judge = reviews.iter().rev().find_map(|event| match event {
-        ReviewEvent::Reviewed { reviewer, .. } => Some(reviewer),
-        ReviewEvent::Settled { judge, .. } => Some(judge),
-        ReviewEvent::TestsWritten { .. } => None,
+    let sessions = host.read(|state| {
+        let keys = &state.tasks.progress(&record.spec.id).review_sessions;
+        keys.iter()
+            .map(|key| {
+                let session = key.as_ref().and_then(|key| state.sessions.get(key));
+                session.is_some_and(|session| session.asked_worker() != &session.started.worker)
+            })
+            .collect::<Vec<bool>>()
     });
-    if judge.is_some_and(elsewhere) {
-        return true;
+    let fallback = |index: usize| sessions.get(index).copied().unwrap_or(false);
+    approval(&record.reviews, worker, &provider, &fallback)
+}
+
+/// Whether the task's approval counts: the verdict that stands came from another provider
+/// than its worker's or from a reviewer you chose, or it approves and a review of the newest
+/// round that did approved too, with nobody in that round asking for more. A provider nobody
+/// knows can't be shown to be different, so it isn't. `fallback` says whether the review at an
+/// index of `reviews` came from a fallback in another's place.
+fn approval(
+    reviews: &[ReviewEvent],
+    worker: Option<&ModelRef>,
+    provider: &dyn Fn(&ModelRef) -> Option<String>,
+    fallback: &dyn Fn(usize) -> bool,
+) -> Approval {
+    let worker = worker.and_then(provider);
+    let counts = |by: &ModelRef, picked_by: Option<PickedBy>| {
+        reviewers::counts(picked_by, provider(by).as_deref(), worker.as_deref())
+    };
+    let standing = reviews
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, event)| verdict_of(event).map(|read| (index, read)));
+    let Some((index, (by, _, picked_by))) = standing else {
+        return Approval::Neither;
+    };
+    if counts(by, picked_by) {
+        return Approval::Counts;
     }
-    if last_verdict(reviews) != Some(ReviewVerdict::Approve) {
-        return false;
+    if worker.is_none() || last_verdict(reviews) != Some(ReviewVerdict::Approve) {
+        return Approval::Neither;
     }
-    let newest = newest_round(reviews);
     let mut cross_approved = false;
-    for event in newest {
-        let (by, verdict) = match event {
-            ReviewEvent::Reviewed {
-                reviewer, review, ..
-            } => (reviewer, review.verdict),
-            ReviewEvent::Settled { judge, ruling } => (judge, ruling.verdict),
-            ReviewEvent::TestsWritten { .. } => continue,
+    for event in newest_round(reviews) {
+        let Some((by, verdict, picked_by)) = verdict_of(event) else {
+            continue;
         };
         if verdict != ReviewVerdict::Approve {
-            return false;
+            return Approval::Neither;
         }
-        cross_approved |= elsewhere(by);
+        cross_approved |= counts(by, picked_by);
     }
-    cross_approved
+    if cross_approved {
+        return Approval::Counts;
+    }
+    Approval::WithinProvider {
+        reviewer: by.clone(),
+        fallback: fallback(index),
+    }
+}
+
+/// Who gave a review or a ruling, its verdict, and who chose them.
+fn verdict_of(event: &ReviewEvent) -> Option<(&ModelRef, ReviewVerdict, Option<PickedBy>)> {
+    match event {
+        ReviewEvent::Reviewed {
+            reviewer,
+            review,
+            picked_by,
+            ..
+        } => Some((reviewer, review.verdict, *picked_by)),
+        ReviewEvent::Settled {
+            judge,
+            ruling,
+            picked_by,
+        } => Some((judge, ruling.verdict, *picked_by)),
+        ReviewEvent::TestsWritten { .. } => None,
+    }
 }
 
 /// The reviews of the work as it stands: from the first review of the highest round on, so a
@@ -525,6 +615,102 @@ mod tests {
             sandboxed: true,
             skipped: false,
         }
+    }
+
+    /// An approval counts from another provider than the worker's, or from a reviewer or a
+    /// judge you chose whatever its provider; one code picked from the worker's own provider
+    /// keeps the merge back, saying who gave it and whether as a fallback.
+    #[test]
+    fn an_approval_counts_from_another_provider_or_from_one_you_chose() {
+        use argonauts_core::steps::judgment::{ReviewOutput, SettleOutput};
+
+        let provider = |model: &ModelRef| {
+            let maker = match model.agent.as_str() {
+                "claude-code" => "anthropic",
+                "codex" => "openai",
+                _ => "google",
+            };
+            Some(maker.to_owned())
+        };
+        let worker: ModelRef = "claude-code/haiku-5.5".parse().unwrap();
+        let sonnet: ModelRef = "claude-code/sonnet-5".parse().unwrap();
+        let reviewed = |by: &ModelRef, verdict, picked_by| ReviewEvent::Reviewed {
+            reviewer: by.clone(),
+            blind: false,
+            round: 1,
+            review: ReviewOutput {
+                verdict,
+                summary: String::new(),
+                comments: Vec::new(),
+                tamper_suspected: false,
+            },
+            picked_by,
+        };
+        let approves = |by: &ModelRef, picked_by| reviewed(by, ReviewVerdict::Approve, picked_by);
+        let none = |_| false;
+        let of = |reviews: &[ReviewEvent], fallback: &dyn Fn(usize) -> bool| {
+            approval(reviews, Some(&worker), &provider, fallback)
+        };
+        let codex: ModelRef = "codex".parse().unwrap();
+        assert_eq!(
+            of(&[approves(&codex, Some(PickedBy::Code))], &none),
+            Approval::Counts
+        );
+        let haiku_4: ModelRef = "claude-code/haiku-4.5".parse().unwrap();
+        assert_eq!(
+            of(&[approves(&haiku_4, Some(PickedBy::You))], &none),
+            Approval::Counts
+        );
+        assert_eq!(
+            of(&[approves(&sonnet, Some(PickedBy::Code))], &|_| true),
+            Approval::WithinProvider {
+                reviewer: sonnet.clone(),
+                fallback: true,
+            }
+        );
+        // Older records say nobody chose, so only another provider counts.
+        assert_eq!(
+            of(&[approves(&sonnet, None)], &none),
+            Approval::WithinProvider {
+                reviewer: sonnet.clone(),
+                fallback: false,
+            }
+        );
+        // A judge you named settles it as a reviewer you chose would.
+        let opus: ModelRef = "claude-code/opus-5.5".parse().unwrap();
+        let settled = ReviewEvent::Settled {
+            judge: opus,
+            ruling: SettleOutput {
+                verdict: ReviewVerdict::Approve,
+                reasons: Vec::new(),
+                required_changes: Vec::new(),
+            },
+            picked_by: Some(PickedBy::You),
+        };
+        let disagreed = [
+            approves(&sonnet, Some(PickedBy::Code)),
+            reviewed(
+                &haiku_4,
+                ReviewVerdict::RequestChanges,
+                Some(PickedBy::Code),
+            ),
+            settled,
+        ];
+        assert_eq!(of(&disagreed, &none), Approval::Counts);
+        // Work its own provider didn't approve, or by a worker of no known provider, is
+        // neither: whether it was approved is the reviews' own fact.
+        let asked = [reviewed(
+            &sonnet,
+            ReviewVerdict::RequestChanges,
+            Some(PickedBy::Code),
+        )];
+        assert_eq!(of(&asked, &none), Approval::Neither);
+        let unknown = |_: &ModelRef| None;
+        let reviews = [approves(&codex, Some(PickedBy::Code))];
+        assert_eq!(
+            approval(&reviews, Some(&worker), &unknown, &none),
+            Approval::Neither
+        );
     }
 
     #[test]

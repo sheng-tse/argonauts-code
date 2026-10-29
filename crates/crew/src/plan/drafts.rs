@@ -5,6 +5,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use argonauts_core::RunId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::plan::PlanEvent;
 use argonauts_core::names::{DraftId, ModelRef, PlanLabel, SessionKey};
@@ -81,6 +82,29 @@ pub fn labeled(drafts: &[&SealedDraft]) -> EngineResult<Vec<LabeledPlan>> {
             })
         })
         .collect()
+}
+
+/// The sealed plans as agents read them, the mapping agent, critics, judges and a merger: under
+/// their labels, with who wrote each hidden, so a plan's "As Claude" or its signature never
+/// reaches a judge. You read them as written.
+pub fn labeled_for_agents(host: &Host, drafts: &[&SealedDraft]) -> EngineResult<Vec<LabeledPlan>> {
+    let lexicon = crate::council::lexicon::of_run(host);
+    Ok(labeled(drafts)?
+        .into_iter()
+        .map(|plan| LabeledPlan {
+            text: crate::council::relay::hide_who_wrote(&lexicon, &plan.text),
+            ..plan
+        })
+        .collect())
+}
+
+/// The plans in the order `reader` reads them, drawn for it from the run, so no plan always
+/// reads first and no two readers need read them alike. The labels stay the run's own, drawn
+/// at random when the plans were sealed, and a resumed run draws the same order.
+pub fn read_by(run: &RunId, reader: &str, plans: &[LabeledPlan]) -> Vec<LabeledPlan> {
+    crate::council::letters::drawn_order(&format!("{run}\n{reader}"), plans, |plan| {
+        plan.label.to_string()
+    })
 }
 
 /// The sealed text as the mapping agent and judges see it. It never names the author.
@@ -209,5 +233,38 @@ pub(crate) mod tests {
         assert_eq!(read_text(&sealed).unwrap(), "the plan\n");
         std::fs::write(&path, "the plan, edited\n").unwrap();
         assert!(matches!(read_text(&sealed), Err(EngineError::Refused(_))));
+    }
+
+    /// The same model reads the plans in its own order in each part it plays, under the run's
+    /// labels, and in the same order again on resume.
+    #[test]
+    fn each_reader_reads_the_plans_in_an_order_of_its_own() {
+        let run = RunId::new("run-01").unwrap();
+        let plans: Vec<LabeledPlan> = (1..=4)
+            .map(|label| LabeledPlan {
+                label,
+                text: format!("Plan {label}'s approach."),
+            })
+            .collect();
+        let readers = [
+            "map codex/gpt-5.6",
+            "critic codex/gpt-5.6",
+            "critic claude-code/opus",
+            "merger codex/gpt-5.6",
+            "judge codex/gpt-5.6",
+        ];
+        let orders: std::collections::BTreeSet<Vec<PlanLabel>> = readers
+            .iter()
+            .map(|reader| {
+                let read = read_by(&run, reader, &plans);
+                assert_eq!(read, read_by(&run, reader, &plans), "{reader} again");
+                let mut labels: Vec<PlanLabel> = read.iter().map(|plan| plan.label).collect();
+                let order = labels.clone();
+                labels.sort_unstable();
+                assert_eq!(labels, [1, 2, 3, 4], "{reader} reads every plan once");
+                order
+            })
+            .collect();
+        assert!(orders.len() > 1, "readers read the plans in other orders");
     }
 }

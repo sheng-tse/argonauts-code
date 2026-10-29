@@ -11,7 +11,7 @@ use argonauts_core::events::{RunEvent, RunEventKind};
 use ratatui::text::Line;
 
 use super::Bridge;
-use super::transcript::picture_check::{Unlike, assert_rows_match};
+use super::transcript::picture_check::assert_rows_match;
 use crate::bottom::ApprovalMode;
 use crate::model::ViewModel;
 use crate::options::UiOptions;
@@ -175,49 +175,11 @@ fn writing(start: &RunEvent, after: &RunEvent, at: Duration) -> Vec<RunEvent> {
         .collect()
 }
 
-/// The picture's working line goes on to offer Esc. Esc leaves a run's agents going, so the
-/// line closes after its tokens and the line under the input offers `? for shortcuts`.
-const NO_ESC: Unlike = Unlike {
-    row: 0,
-    cols: (42, WIDTH as usize - 1),
-    why: "Esc leaves a run's agents going, so the line offers no Esc and closes after its tokens",
-};
-
-/// The picture ends the line under the input with `↓ to manage`, which only a row under the
-/// input has to offer, and the picture has no row.
-const NOTHING_TO_MANAGE: Unlike = Unlike {
-    row: 5,
-    cols: (56, WIDTH as usize - 1),
-    why: "with no row under the input there is nothing to manage, so ↓  to manage is left out",
-};
-
-/// `⏵⏵ autopilot on` on the line under the input.
-const AUTOPILOT: Unlike = Unlike {
-    row: 5,
-    cols: (2, 16),
-    why: "autopilot keeps its own colour, where the picture paints it amber",
-};
-
-/// The input's rules, rows 5 and 7 of the picture.
-/// While the turn works, the input's `❯` is grey.
-const BUSY_PROMPT: Unlike = Unlike {
-    row: 3,
-    cols: (0, 0),
-    why: "the input's ❯ turns grey while the turn works",
-};
-
-fn rule(row: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (0, WIDTH as usize - 1),
-        why: "the input's rules keep their own grey, a step brighter than the picture's",
-    }
-}
-
 /// Nothing of the run is drawn before its workflow has started, nor while Claude Code writes
 /// the workflow's script: the working line alone says so, with no phase, tasks or agents of the
 /// plan the script replaces, and the list under the input holds no row until the first report
-/// names the phases.
+/// names the phases. Esc leaves a run's agents going, so the line under the input offers
+/// `? for shortcuts` rather than Esc, and with no row there it offers nothing to manage.
 #[test]
 fn a_run_draws_no_row_until_its_workflow_has_its_phases() {
     let events = record();
@@ -254,14 +216,7 @@ fn a_run_draws_no_row_until_its_workflow_has_its_phases() {
         (&picture(), COLOURS),
         3..9,
         &theme(),
-        &[
-            NO_ESC,
-            rule(2),
-            BUSY_PROMPT,
-            rule(4),
-            AUTOPILOT,
-            NOTHING_TO_MANAGE,
-        ],
+        &[],
     );
 
     // The crew's reviewers Claude Code's workflow asks for come and go before it reports its

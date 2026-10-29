@@ -1,28 +1,28 @@
- The draft pull request #57's check failed: the run follows it in a Pull request phase after its own                  
+ The draft pull request #57's check failed: the run follows it in a Pull request phase after its own
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Per key limiter                                                                                                      
- Council · issue #42 · Give each X-Api-Key its own token bucket, and one shared bucket for re…  11/13 agents · 14m06s 
- ◐ #57 · test_rate_limit failed on Ubuntu · back to its builder, round 1 of 3 · the fix is pushed once reviewed       
-                                                                                                                      
- ╭ Phases ──────────────┬ Pull request · 2 agents ──────────────────────────────────────────────────────────────────╮ 
- │   ✔ Propose      3/3 │  ⏺ fix:ci-round-1     Haiku 5.5 · 6.3k tok · the builder, resumed, with the log       38s │ 
- │   ✔ Challenge    3/3 │  ◌ review:ci-round-1  GPT 6 Luna · queued                                                 │ 
- │   ✔ Decide       1/1 │                                                                                           │ 
- │   ✔ Build        1/1 │                                                                                           │ 
- │   ✔ Cross-review 1/1 │                                                                                           │ 
- │   ✔ Sign-off     1/1 │                                                                                           │ 
- │ ❯ 7 Pull request 0/2 │                                                                                           │ 
- ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save                                  
-                                                                                                                      
-  its row in the bottom list                                                                                          
-  ◐ Per key limiter       ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱  11/13 · 14m06s · ↓  309k tokens · #57 · fixing CI, round 1 of 3       
-                                                                                                                      
-  and as it goes on                                                                                                   
-  ◐ Per key limiter       ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  13/13 · 15m40s · ↓  331k tokens · #57 · CI running                    
-  ◐ Per key limiter       ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  13/13 · 1h02m · ↓  331k tokens · #57 · 2 comments to answer           
-  ◐ Per key limiter       ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  15/15 · 2h10m · ↓  377k tokens · needs you · #57 · reviewers disagree 
-  ✔ Per key limiter       ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  15/15 · 2h10m · ↓  377k tokens · #57 merged on GitHub                 
-                                                                                                                      
- (only agents are rows: the failed check is on the header's third line and in the fixer's details,                    
-  and the push after review shows there too; the run ended as a draft, so it has no Merge phase)                      
+ Per key limiter
+ Council · issue #42 · Give each X-Api-Key its own token bucket, and one shared bucket for…     11/13 agents · 14m06s
+ ◐ #57 · test_rate_limit failed on Ubuntu · back to its builder, round 1 of 3 · the fix is pushed once reviewed
+
+ ╭ Phases ──────────────┬ Pull request · 2 agents ──────────────────────────────────────────────────────────────────╮
+ │   ✔ Propose      3/3 │  ⣾ fix:ci-round-1     ◧◨ Haiku 5.5                                       6.3k tok     38s │
+ │   ✔ Challenge    3/3 │  · review:ci-round-1  ◧◨ 6 Luna                                                           │
+ │   ✔ Decide       1/1 │                                                                                           │
+ │   ✔ Build        1/1 │                                                                                           │
+ │   ✔ Cross-review 1/1 │                                                                                           │
+ │   ✔ Sign-off     1/1 │                                                                                           │
+ │ ❯ ⣾ Pull request 0/2 │                                                                                           │
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save
+
+  its row in the bottom list
+  ◐ Per key limiter       ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱  11/13 · 14m06s · ↓  309k tokens · #57 · fixing CI, round 1 of 3
+
+  and as it goes on
+  ◐ Per key limiter       ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  13/13 · 15m40s · ↓  331k tokens · #57 · CI running
+  ◐ Per key limiter       ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  13/13 · 1h02m · ↓  331k tokens · #57 · 2 comments to answer
+  ◐ Per key limiter       ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  15/15 · 2h10m · ↓  377k tokens · needs you · #57 · reviewers disagree
+  ✔ Per key limiter       ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  15/15 · 2h10m · ↓  377k tokens · #57 merged on GitHub
+
+ (only agents are rows: the failed check is on the header's third line and in the fixer's details,
+  and the push after review shows there too; the run ended as a draft, so it has no Merge phase)

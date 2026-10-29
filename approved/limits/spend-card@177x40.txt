@@ -1,0 +1,69 @@
+Limits, all time: the tab's head and the spend card, nothing spent this week
+screen 177x40
+at ?,0
+size 177x21
+terminal fg=#c8d3f5 bg=#222436
+text
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                                                          Today  Week  Month  All
+ What counts toward the limits you set                                                                                                             ~$7.93 in all · 12.69M tokens
+
+ ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ◆ spend  in all                                                                                                                         ~$7.93 · no limit set · $0.00 today │
+ │                                                                                                                                                                             │
+ │ ▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿████████▚▚▚▚▚▚▚▚██████ │
+ │                                                                                                                                                                             │
+ │     model                        on             spend         tokens    S   M   T   W   T   F   S                                                                           │
+ │ ▚▚  Opus 5.5                  ￼￼ Claude Code    $5.35   68%    1.97M   nothing spent this week                                                                              │
+ │ ⣿⣿  GPT 6 Astra               ￼￼ Codex         ~$1.55   20%    0.39M                                                                                                        │
+ │ ██  Haiku 5.5                 ￼￼ Claude Code   ~$0.38    5%    6.50M                                                                                                        │
+ │ ▚▚  GPT 6.1 Sol               ￼￼ Codex         ~$0.37    5%    0.63M                                                                                                        │
+ │ ██  Gemini 3.8 Flash (Low)    ￼￼ agy           ~$0.20    2%    0.20M                                                                                                        │
+ │ ██  GPT 6 Luna                ￼￼ Codex         ~$0.07    1%    1.47M                                                                                                        │
+ │ ▚▚  Gemma4 E2B                ￼￼ OpenCode       local    0%    0.09M                                                                                                        │
+ │ ██  Qwen3 Coder 30B (64k)     ￼￼ OpenCode       local    0%    1.43M                                                                                                        │
+ │                                                                                                                                                                             │
+ │ on plans ~$7.93 (inside your plans, not charged) · on API keys $0.00 · local $0.00 · ~ estimated at list prices                                                             │
+ ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+paint
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+.bbbbbbbb...cccccccc....cccccc....cccccc....ccccc....ccccccc...deeeeeed...ccccc..........................................................................fffff..ffff..fffff..ggg
+.ffff.ffffff.ffffff.fff.ffffff.fff.fff.............................................................................................................ffffff.ff.fff.f.ffffff.ffffff
+
+.hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
+.h.a.iiiii..ff.fff.........................................................................................................................iiiiii.f.ff.fffff.fff.f.iiiii.fffff.h
+.h.............................................................................................................................................................................h
+.h.jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkjjjjjjjjkkkkkkkkllllkk.h
+.h.............................................................................................................................................................................h
+.h.....fffff........................ff.............fffff.........ffffff....f...f...m...f...f...f...f...........................................................................h
+.h.jj..cccc.ccc..................nn.ffffff.ffff....iiiii...fff....ccccc...fffffff.fffff.ffff.ffff..............................................................................h
+.h.kk..ccc.c.ccccc...............oo.fffff.........iiiiii...fff....ccccc........................................................................................................h
+.h.jj..ccccc.ccc.................nn.ffffff.ffff...iiiiii....ff....ccccc........................................................................................................h
+.h.kk..ccc.ccc.ccc...............oo.fffff.........iiiiii....ff....ccccc........................................................................................................h
+.h.ll..cccccc.ccc.ccccc.ccccc....pp.fff...........iiiiii....ff....ccccc........................................................................................................h
+.h.kk..ccc.c.cccc................oo.fffff.........iiiiii....ff....ccccc........................................................................................................h
+.h.qq..cccccc.ccc................rr.ffffffff.......fffff....ff....ccccc........................................................................................................h
+.h.qq..ccccc.ccccc.ccc.ccccc.....rr.ffffffff.......fffff....ff....ccccc........................................................................................................h
+.h.............................................................................................................................................................................h
+.h.ff.fffff.iiiiii.fffffff.ffff.ffffff.fff.ffffffff.f.ff.fff.ffff.iiiii.f.fffff.iiiii.f.f.fffffffff.ff.ffff.ffffff.............................................................h
+.hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
+key
+. blank
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+b fg=#c8d3f5 bold  ; the terminal's own
+c fg=#c8d3f5  ; the terminal's own
+d bg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+e fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp
+f fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+g fg=#b1b9f9 bold  ; Code, Question, BarFill, CatMcp
+h fg=#4f5468  ; ModBorder
+i fg=#ffffff bold  ; Bright
+j fg=#f7a07f  ; CliClaude
+k fg=#6a9ee6  ; CliCodex
+l fg=#6cd1cf  ; CliAgy
+m fg=#e6a23c bold  ; Accent, CatBrief
+n logo=claudecode
+o logo=codex
+p logo=antigravity
+q fg=#c27cb4  ; CliOpenCode
+r logo=opencode

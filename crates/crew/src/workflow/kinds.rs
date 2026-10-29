@@ -51,7 +51,17 @@ pub fn execute<'a>(host: &'a Host, call: &'a StepCall) -> BoxFuture<'a, EngineRe
             StepKind::Synthesize => plan::synthesize_step(host, call).await,
             StepKind::Judge => plan::judge_step(host, call).await,
             StepKind::Review => review::review_step(host, call).await,
-            StepKind::Build => task::build_step(host, call).await,
+            StepKind::Build => {
+                if !matches!(
+                    call.step.input.as_deref(),
+                    Some(task::EXPERIMENTS | task::GOAL)
+                ) {
+                    // Before any task opens a worktree, so the task a council's seat builds
+                    // opens in the folder the seat talked in.
+                    crate::council::talk::folder::hand_to_builders(host).await?;
+                }
+                task::build_step(host, call).await
+            }
             StepKind::Merge => merge::step::merge_step(host, call).await,
             StepKind::Approval => approval(host, call).await,
             StepKind::FanOut => fan_out(host, call).await,
@@ -61,6 +71,7 @@ pub fn execute<'a>(host: &'a Host, call: &'a StepCall) -> BoxFuture<'a, EngineRe
             StepKind::Workflow => nested(host, call).await,
             StepKind::GoalCheck => goal::pursue::check_step(host, call).await,
             StepKind::Script => crate::script::script_step(host, call).await,
+            StepKind::Talk => crate::council::talk::step(host, call).await,
         }
     })
 }

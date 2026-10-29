@@ -251,6 +251,7 @@ fn task_events(crew: &Crew, started: &RunEvent, worker: &str) -> anyhow::Result<
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     };
     let of_task = |seq: u64, event: TaskEvent| RunEvent {
         seq,

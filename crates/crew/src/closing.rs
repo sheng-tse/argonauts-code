@@ -1666,6 +1666,7 @@ diff --git a/my notes.md b/my notes.md
         };
         use argonauts_core::names::ApprovalId;
         use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+        use argonauts_core::settings::asking::WhenDeclined;
 
         let id = ApprovalId::numbered(1);
         let opened = ApprovalOpened {
@@ -1677,6 +1678,7 @@ diff --git a/my notes.md b/my notes.md
             evidence_sha256: String::new(),
             mode: ApprovalMode::Autopilot,
             decide_with: DecideWith::Rules,
+            when_declined: WhenDeclined::Decide,
             options: Vec::new(),
             free_text: FreeText::None,
             needs_you: false,

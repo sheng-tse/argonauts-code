@@ -11,27 +11,6 @@ use time::{OffsetDateTime, UtcOffset};
 use crate::format::setting_value;
 use crate::views::resume::ago;
 
-/// The four answers to "where to save it", in order, with their files. They answer to their
-/// numbers, as every question's options do.
-pub const SCOPES: [(SettingScope, &str, &str); 4] = [
-    (SettingScope::Session, "Just this session", "until you quit"),
-    (
-        SettingScope::ProjectLocal,
-        "This project, just me",
-        ".argonauts/config.local.toml",
-    ),
-    (
-        SettingScope::Project,
-        "This project, shared",
-        ".argonauts/config.toml",
-    ),
-    (
-        SettingScope::Global,
-        "Everywhere",
-        "~/.argonauts/config.toml",
-    ),
-];
-
 /// The layer a value came from, as `/config` names it. The file layers keep their own name
 /// beside the words, so it's clear which file to open.
 pub fn layer_words(layer: &str) -> String {
@@ -67,39 +46,6 @@ pub fn reset_note(scope: SettingScope) -> &'static str {
         SettingScope::Project => "remove it from this project's file",
         SettingScope::Global => "remove it from your global file",
     }
-}
-
-/// The scopes that save to a file.
-const FILE_SCOPES: [SettingScope; 3] = [
-    SettingScope::ProjectLocal,
-    SettingScope::Project,
-    SettingScope::Global,
-];
-
-/// Said once over the scopes when `layer` wins over every file, so no row repeats it: a
-/// workflow, a `--set` flag, or this session's own value. A workflow picked in a file
-/// (`workflow_from`) gives way to that file, so it never wins over every one.
-pub fn hidden_from_files(layer: &str, workflow_from: Option<&str>) -> Option<String> {
-    if !FILE_SCOPES
-        .iter()
-        .all(|scope| scope.hidden_by_value(layer, workflow_from))
-    {
-        return None;
-    }
-    Some(match layer {
-        "workflow" => {
-            "The workflow sets this, so saving it in a file won't change it. Use /workflow \
-                     copy to edit the workflow, or save it for this session."
-                .to_owned()
-        }
-        "flag" => "A --set flag sets this until you quit, so saving it in a file won't show \
-                   before then."
-            .to_owned(),
-        "session" => "This session's value wins until you quit, so saving it in a file won't \
-                      show before then."
-            .to_owned(),
-        other => format!("The {other} layer sets this, so saving it in a file won't change it."),
-    })
 }
 
 /// How fresh the model lists are, for the line under the model picker's title.
@@ -179,43 +125,6 @@ pub fn source_state(source: &ModelSource, offset: UtcOffset) -> Option<String> {
 fn clock_24(at: OffsetDateTime, offset: UtcOffset) -> String {
     let at = at.to_offset(offset);
     format!("{:02}:{:02}", at.hour(), at.minute())
-}
-
-/// Why saving in `scope` won't show while `layer` sets the key, and what to do instead.
-pub fn hidden_note(layer: &str, workflow_from: Option<&str>, scope: SettingScope) -> String {
-    let saving = match scope {
-        SettingScope::Session => "for this session",
-        SettingScope::ProjectLocal => "for you in this project",
-        SettingScope::Project => "for this project",
-        SettingScope::Global => "everywhere",
-    };
-    match layer {
-        "project" => format!(
-            "This project's file sets this, so saving it {saving} won't change this repo. \
-             Save it for this project instead."
-        ),
-        "project-local" => format!(
-            "Your own project file sets this, so saving it {saving} won't change this repo. \
-             Pick This project, just me instead."
-        ),
-        "workflow" if workflow_from.is_some() => format!(
-            "The workflow sets this, and it's picked in a later file, so saving it {saving} won't \
-             change it. Save it where you picked the workflow, or later."
-        ),
-        "workflow" => format!(
-            "The workflow sets this, so saving it {saving} won't change it. \
-             Use /workflow copy to edit the workflow, or save it for this session."
-        ),
-        "flag" => format!(
-            "A --set flag sets this until you quit, so saving it {saving} won't show before \
-             then. Save it for this session instead."
-        ),
-        "session" => format!(
-            "This session's value wins until you quit, so saving it {saving} won't show before \
-             then. Save it for this session instead."
-        ),
-        other => format!("The {other} layer sets this, so saving it {saving} won't change it."),
-    }
 }
 
 /// A value as it reads in a row: plain strings lose their quotes, lists of names their
@@ -379,7 +288,6 @@ pub fn parse_role(name: &str) -> Option<RoleName> {
 pub fn value_note(key: &str, value: &str) -> &'static str {
     let segments: Vec<&str> = key.split('.').collect();
     match segments.as_slice() {
-        ["workflow"] => workflow_note(value),
         ["goal", "default"] => match value {
             "off" => "A request has a goal only when you set one",
             "from-request" => {
@@ -444,20 +352,6 @@ fn context_note(value: &str) -> &'static str {
         "note" => "The fallback note: why it stopped and what's left",
         "note+transcript" => "The note, and the old session's transcript as a file",
         "note+summary" => "The note, with a summary of the old session",
-        _ => "",
-    }
-}
-
-/// One line on what a built-in workflow does, for `/workflow`.
-pub fn workflow_note(name: &str) -> &'static str {
-    match name {
-        "council" => "Everyone proposes and challenges, the judge decides, then they build",
-        "orchestrator" => "The orchestrator plans and delegates, workers build",
-        "captain" => "The CLI you talk to does the work itself",
-        "maker-checker" => "A worker builds, a reviewer sends it back until it holds",
-        "best-of-n" => "Several workers try the same task and the judge picks one",
-        "draft-and-vote" => "Agents draft plans and vote on one",
-        name if name.starts_with("ablate-") => "Turns one part of the crew off, for research",
         _ => "",
     }
 }
@@ -531,20 +425,6 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_over_every_file_is_named_once() {
-        assert!(hidden_from_files("session", None).is_some());
-        assert!(hidden_from_files("flag", None).is_some());
-        assert!(hidden_from_files("workflow", None).is_some());
-        for layer in ["built-in", "global", "project", "project-local"] {
-            assert_eq!(hidden_from_files(layer, None), None, "{layer}");
-        }
-        // Picked in a file, the workflow gives way to that file and the later ones.
-        assert_eq!(hidden_from_files("workflow", Some("global")), None);
-        let note = hidden_note("workflow", Some("project"), SettingScope::Global);
-        assert!(note.contains("picked in a later file"), "{note}");
-    }
-
-    #[test]
     fn values_read_without_quotes() {
         assert_eq!(value_words("\"dark\""), "dark");
         assert_eq!(value_words(""), "unset");
@@ -605,10 +485,6 @@ mod tests {
         }
         assert_eq!(value_note("narrator.context", "fresh"), "");
         assert_eq!(value_note("fallback.strategy", "first"), "");
-        assert_eq!(
-            value_note("workflow", "captain"),
-            "The CLI you talk to does the work itself"
-        );
     }
 
     #[test]

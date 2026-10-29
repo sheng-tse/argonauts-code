@@ -1,8 +1,10 @@
 //! The CLIs' own sessions: `/resume` lists every installed CLI's beside conversations and runs,
 //! for this folder or for every folder, and picking one carries it on in the conversation
 //! through the CLI's own resume, such as `claude -p --resume <id>`, after reprinting its last
-//! turns.
+//! turns. A session a conversation carries is listed as that conversation, never again on its
+//! own.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use anyhow::Context as _;
@@ -11,8 +13,7 @@ use argonauts_core::app::{ReplayTurn, TurnReply};
 use argonauts_core::cli_sessions::{
     CliScan, CliSession, CliSessionRef, CliTurn, ResumeLaunch, Speaker,
 };
-use argonauts_core::events::run::Party;
-use argonauts_core::names::{ModelRef, SessionKey};
+use argonauts_core::names::ModelRef;
 
 use super::excerpt::Exchange;
 use crate::commands::adapters_here;
@@ -47,20 +48,7 @@ impl Picked {
 
     /// The turns as a resumed conversation reprints them, oldest first.
     pub(super) fn replay(&self, worker: &ModelRef) -> Vec<ReplayTurn> {
-        self.turns
-            .iter()
-            .map(|turn| ReplayTurn {
-                from: match turn.from {
-                    Speaker::User => Party::User,
-                    Speaker::Agent => Party::Agent {
-                        session: SessionKey::numbered(0),
-                        worker: worker.clone(),
-                    },
-                },
-                text: turn.text.clone(),
-                steps: turn.steps.clone(),
-            })
-            .collect()
+        super::in_cli::replayed(&self.turns, worker)
     }
 
     /// Each request and its answer, to prime a fresh session on a fallback.
@@ -86,7 +74,7 @@ fn scan(ctx: &Ctx) -> Option<CliScan> {
     Some(CliScan::new(ctx.env.repo_root.clone(), home))
 }
 
-fn adapter(ctx: &Ctx, agent_id: &str) -> Option<Arc<dyn Adapter>> {
+pub(super) fn adapter(ctx: &Ctx, agent_id: &str) -> Option<Arc<dyn Adapter>> {
     adapters_here(Some(&ctx.env), ctx.settings.resolved())
         .ok()?
         .into_iter()
@@ -110,8 +98,9 @@ pub(super) fn binary(ctx: &Ctx, agent_id: &str) -> String {
     )
 }
 
-/// Every CLI's own sessions, newest first: this folder's, or every folder's. A store that can't
-/// be read lists none, since the rest of `/resume` still works.
+/// Every CLI's own sessions, newest first: this folder's, or every folder's, each once. One a
+/// conversation carries is that conversation's row. A store that can't be read lists none,
+/// since the rest of `/resume` still works.
 pub(crate) async fn list(ctx: &Ctx, every_folder: bool) -> Vec<CliSession> {
     let Some(mut scan) = scan(ctx) else {
         return Vec::new();
@@ -120,15 +109,24 @@ pub(crate) async fn list(ctx: &Ctx, every_folder: bool) -> Vec<CliSession> {
         scan = scan.everywhere();
     }
     let adapters = adapters_here(Some(&ctx.env), ctx.settings.resolved()).unwrap_or_default();
+    let conversation_dir = ctx.env.conversation_dir();
     let listed = tokio::task::spawn_blocking(move || {
+        let carried = super::crew_cli_sessions(&conversation_dir);
+        let mut seen = BTreeSet::new();
         let mut sessions = Vec::new();
         for adapter in adapters {
+            // A CLI can be both built in and set up again as a CLI.
+            if !seen.insert(adapter.id().to_owned()) {
+                continue;
+            }
             match adapter.cli_sessions(&scan, LISTED) {
                 Ok(own) => sessions.extend(own),
                 Err(err) => tracing::warn!("listing {}'s own sessions: {err:#}", adapter.id()),
             }
         }
+        sessions.retain(|session| !carried.contains(&session.id));
         newest_first(&mut sessions);
+        sessions.dedup_by(|a, b| a.agent_id == b.agent_id && a.id == b.id);
         sessions
     })
     .await;
@@ -161,10 +159,16 @@ pub(super) async fn pick(ctx: &Ctx, reference: &CliSessionRef) -> anyhow::Result
     })?;
     let reference = reference.clone();
     tokio::task::spawn_blocking(move || {
-        // This folder's first, so a short id typed here means a session listed here.
-        let session = find(adapter.as_ref(), &scan, &reference).or_else(|here| {
-            find(adapter.as_ref(), &scan.clone().everywhere(), &reference).map_err(|_| here)
-        })?;
+        // This folder's first, so a short id typed here means a session listed here. A CLI
+        // that keeps no list takes the id as you gave it, to carry on here.
+        let session = find(adapter.as_ref(), &scan, &reference)
+            .or_else(|here| {
+                find(adapter.as_ref(), &scan.clone().everywhere(), &reference).map_err(|_| here)
+            })
+            .or_else(|missing| match adapter.lists_sessions() {
+                true => Err(missing),
+                false => unlisted(adapter.as_ref(), &scan, &reference),
+            })?;
         let scan = CliScan::new(session.folder.clone(), scan.home.clone());
         let launch = adapter
             .resume_launch(&session)
@@ -182,9 +186,54 @@ pub(super) async fn pick(ctx: &Ctx, reference: &CliSessionRef) -> anyhow::Result
     .context("reading the session")?
 }
 
+/// The session `reference` names, by its whole id or the start of one, this folder's first.
+pub(super) async fn locate(ctx: &Ctx, reference: &CliSessionRef) -> anyhow::Result<CliSession> {
+    let agent_id = reference.agent_id.0.clone();
+    let adapter = adapter(ctx, &agent_id)
+        .with_context(|| format!("There's no agent CLI {agent_id}. /agents lists them."))?;
+    let scan = scan(ctx).context("Can't find your home folder, where the CLIs keep sessions.")?;
+    let reference = reference.clone();
+    tokio::task::spawn_blocking(move || {
+        find(adapter.as_ref(), &scan, &reference).or_else(|here| {
+            find(adapter.as_ref(), &scan.clone().everywhere(), &reference).map_err(|_| here)
+        })
+    })
+    .await
+    .context("reading the session")?
+}
+
+/// A session of a CLI that keeps no list, by the id you gave, carried on in this folder.
+fn unlisted(
+    adapter: &dyn Adapter,
+    scan: &CliScan,
+    reference: &CliSessionRef,
+) -> anyhow::Result<CliSession> {
+    anyhow::ensure!(
+        argonauts_core::cli_sessions::is_session_id(&reference.id),
+        "{reference} isn't a session id {} takes.",
+        adapter.display_name()
+    );
+    Ok(CliSession {
+        agent_id: reference.agent_id.clone(),
+        id: reference.id.clone(),
+        title: format!(
+            "{} conversation {}",
+            adapter.display_name(),
+            short_id(&reference.id)
+        ),
+        prompt: None,
+        folder: scan.folder.clone(),
+        updated: time::OffsetDateTime::now_utc(),
+        model: None,
+        branch: None,
+        last_message: None,
+        turns: 0,
+    })
+}
+
 /// The newest sessions first, then all of them, so a short id typed from the list is found
 /// without reading every transcript.
-fn find(
+pub(super) fn find(
     adapter: &dyn Adapter,
     scan: &CliScan,
     reference: &CliSessionRef,

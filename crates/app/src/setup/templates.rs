@@ -175,7 +175,7 @@ pub(crate) fn write(env: &AppEnv, in_project: bool) -> Written {
 /// Where a repo keeps whether you want the guide pages written into its `.argonauts/`.
 const GUIDES_ANSWER: &str = "guide-pages";
 
-/// Your answer about the guide pages in this repo, once you gave one.
+/// Your answer about the guide pages in this repo, from when the setup asked it.
 pub(crate) fn guides_answer(env: &AppEnv) -> Option<bool> {
     let text = std::fs::read_to_string(env.state_dir.join(GUIDES_ANSWER)).ok()?;
     match text.trim() {
@@ -183,12 +183,6 @@ pub(crate) fn guides_answer(env: &AppEnv) -> Option<bool> {
         "no" => Some(false),
         _ => None,
     }
-}
-
-pub(crate) fn keep_guides_answer(env: &AppEnv, yes: bool) -> std::io::Result<()> {
-    create_private_dir_all(&env.state_dir)?;
-    let answer = if yes { "yes\n" } else { "no\n" };
-    write_private_file(&env.state_dir.join(GUIDES_ANSWER), answer.as_bytes())
 }
 
 #[cfg(test)]
@@ -296,7 +290,8 @@ mod tests {
         assert!(write(&env, true).in_project.is_empty());
 
         assert_eq!(guides_answer(&env), None);
-        keep_guides_answer(&env, true).unwrap();
+        std::fs::create_dir_all(&env.state_dir).unwrap();
+        std::fs::write(env.state_dir.join(GUIDES_ANSWER), "yes\n").unwrap();
         assert_eq!(guides_answer(&env), Some(true));
     }
 

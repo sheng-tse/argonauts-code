@@ -23,7 +23,7 @@
 ### Tests
 
 - [ ] New or changed behavior has a test
-- [ ] Changed `.snap` files were reviewed with `cargo insta review`, and a changed golden picture under `crates/*/tests/golden/` was redrawn with `ARGONAUTS_PICTURE_DUMP` and updated here
+- [ ] A changed `.snap` file or golden picture under `crates/*/tests/golden/` changed only to match a drawing in `approved/`, never just to make a test pass
 - [ ] No test calls a model or touches your own `~/.argonauts`
 
 ### Recordings and privacy (skip if no recording changed)

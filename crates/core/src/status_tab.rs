@@ -20,6 +20,9 @@ pub struct StatusTabView {
     /// The session you talk to. `None` before the app knows its CLI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main: Option<MainSession>,
+    /// How that session carries on in its CLI's own screen, once the CLI has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_cli: Option<crate::cli_sessions::InItsCli>,
     pub workflow: WorkflowSetup,
     /// The approval mode in effect, such as `supervised`.
     pub mode: String,

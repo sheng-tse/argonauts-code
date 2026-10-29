@@ -24,7 +24,7 @@ use serde_json::json;
 use time::macros::datetime;
 
 use super::Transcript;
-use super::picture_check::{Unlike, assert_matches};
+use super::picture_check::assert_matches;
 use crate::bridge::agents::AgentBlocks;
 use crate::bridge::{Cx, Effects};
 use crate::format::WallClock;
@@ -43,17 +43,6 @@ const WORKER: &str = "claude-code/claude-haiku-5-5";
 const SESSION: &str = "s-0001";
 const ASSUMED: &str = "negative amounts round half toward +∞, as apply_discount already does";
 const ANSWER: &str = "Merged into main (1 task, 4 files, +45 -5). 14 tests pass.";
-
-/// The picture with the two things every agent's row on screen has and the picture leaves
-/// out: the second cell after `⎿`, as Claude Code draws it, and `report ✓` for a session that
-/// ended with its report. Put in, the rest of the row is compared in place.
-fn as_every_row_reads(picture: &str) -> String {
-    picture.replacen("  ⎿ ", "  ⎿  ", 1).replacen(
-        "tool uses · decided",
-        "tool uses · report ✓ · decided",
-        1,
-    )
-}
 
 struct Screen {
     model: ViewModel,
@@ -177,6 +166,8 @@ fn session_started() -> RunEventKind {
         asked_by: None,
         asked_why: None,
         forked: false,
+        seat: None,
+        billing: None,
     })))
 }
 
@@ -218,7 +209,9 @@ fn closing_answer() -> RunEventKind {
     })))
 }
 
-/// The worker's row and the run's closing answer, as the run on autopilot leaves them.
+/// The worker's row and the run's closing answer, as the run on autopilot leaves them. Its
+/// calls are Argonauts Code's own, which print nothing in the conversation, so its row is its
+/// header and its Done line.
 fn autopilot_run() -> Screen {
     let mut screen = Screen::new();
     screen.send(false, run_started());
@@ -236,8 +229,8 @@ fn autopilot_run() -> Screen {
             true,
             RunEventKind::Agent(AgentEvent::ToolStarted {
                 id: id.clone(),
-                name: "Read".to_owned(),
-                input: json!({"file_path": format!("/work/captain-crew/invoice/f{n}.py")}),
+                name: "mcp__argonauts__status".to_owned(),
+                input: json!({}),
                 parent: None,
             }),
         );
@@ -246,7 +239,7 @@ fn autopilot_run() -> Screen {
             RunEventKind::Agent(AgentEvent::ToolFinished {
                 id,
                 ok: true,
-                output: Some("ok".to_owned()),
+                output: None,
                 parent: None,
             }),
         );
@@ -256,8 +249,7 @@ fn autopilot_run() -> Screen {
 }
 
 /// The picture is the two blocks the run leaves for you to review: the worker's finished row
-/// and the closing answer. The worker's calls in its row, between its header and its Done
-/// line, and the run's own finish line between the two blocks are the screen's other rows,
+/// and the closing answer. The run's own finish line between them is the screen's other row,
 /// which the picture leaves out.
 #[test]
 fn autopilot_the_workers_row_counts_its_decisions_and_the_answer_lists_them() {
@@ -269,7 +261,7 @@ fn autopilot_the_workers_row_counts_its_decisions_and_the_answer_lists_them() {
         .iter()
         .position(|line| line.to_string().starts_with("● build:due-dates"))
         .expect("the worker's row");
-    let mut lines = vec![worked[header].clone(), worked[worked.len() - 1].clone()];
+    let mut lines = worked[header..].to_vec();
     screen.send(false, closing_answer());
     screen.send(
         false,
@@ -285,33 +277,7 @@ fn autopilot_the_workers_row_counts_its_decisions_and_the_answer_lists_them() {
         .expect("the closing answer");
     lines.push(Line::default());
     lines.extend_from_slice(&ended[answer..]);
-    assert_matches(
-        "autopilot",
-        &lines,
-        &as_every_row_reads(PICTURE),
-        &as_every_row_reads(COLOURS),
-        &theme,
-        &[
-            Unlike {
-                row: 0,
-                cols: (2, 16),
-                why: "an agent's label reads in the text's colour on every row, as the \
-                      council's rows draw it; the picture draws this one purple",
-            },
-            Unlike {
-                row: 0,
-                cols: (20, 28),
-                why: "an agent's model reads in its shade, as the council's rows draw it, \
-                      where the picture draws it dim",
-            },
-            Unlike {
-                row: 1,
-                cols: (2, 2),
-                why: "the worker's calls print in its row above its Done line, which so \
-                      continues the row with no ⎿ of its own",
-            },
-        ],
-    );
+    assert_matches("autopilot", &lines, PICTURE, COLOURS, &theme, &[]);
     let screen: String = ended.iter().map(|line| format!("{line}\n")).collect();
     assert!(!screen.contains('?'), "nothing is asked: {screen}");
 }
@@ -328,7 +294,7 @@ fn off_autopilot_the_row_counts_what_was_assumed() {
     let rows: Vec<String> = screen.printed(&theme).iter().map(Line::to_string).collect();
     assert_eq!(
         rows.last().map(String::as_str),
-        Some("  ⎿  Done · 0 tool uses · report ✓ · assumed 1 thing · 14s"),
+        Some("  ⎿  Done (0 tool uses · 14s) · report ✓ · assumed 1 thing"),
         "{rows:?}"
     );
 }

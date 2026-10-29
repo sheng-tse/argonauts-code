@@ -77,6 +77,10 @@ pub enum SessionLifetime {
     Run,
     /// A long-lived main session per role, reused across runs.
     Project,
+    /// One session per council seat, from its first answer to its last task. A council gives
+    /// it to its seats, and settings don't offer it.
+    #[schemars(skip)]
+    Seat,
 }
 
 /// Compaction per launched session. Your CLI settings files are never edited.

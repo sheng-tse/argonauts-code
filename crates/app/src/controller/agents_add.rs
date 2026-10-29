@@ -8,9 +8,10 @@ use std::path::Path;
 
 use argonauts_core::NoteLevel;
 use argonauts_core::app::AppEvent;
+use argonauts_core::settings::SettingScope;
 
 use super::doctor;
-use super::{Ctx, Effect, ScopeRequest};
+use super::{Ctx, Effect};
 use crate::setup::probe;
 
 type Handled = anyhow::Result<Vec<Effect>>;
@@ -18,7 +19,8 @@ type Handled = anyhow::Result<Vec<Effect>>;
 /// Where Ollama listens when `endpoints.ollama.base_url` names nowhere else.
 const OLLAMA_URL: &str = "http://localhost:11434/v1";
 
-pub(crate) async fn add(ctx: &mut Ctx, name: &str) -> Handled {
+/// `asked` is the place a flag named for turning it on.
+pub(crate) async fn add(ctx: &mut Ctx, name: &str, asked: Option<SettingScope>) -> Handled {
     let name = name.trim().to_ascii_lowercase();
     if name.is_empty()
         || !name
@@ -28,9 +30,9 @@ pub(crate) async fn add(ctx: &mut Ctx, name: &str) -> Handled {
         anyhow::bail!("{name:?} isn't an agent name: use letters, digits, and dashes.");
     }
     match name.as_str() {
-        "ollama" => ollama(ctx).await,
+        "ollama" => ollama(ctx, asked).await,
         "openclaw" => Ok(openclaw(ctx)),
-        _ => cli(ctx, profile_id(&name)),
+        _ => cli(ctx, profile_id(&name), asked),
     }
 }
 
@@ -43,9 +45,9 @@ fn profile_id(name: &str) -> &str {
     }
 }
 
-/// Checks the CLI off the loop, since a login check can take seconds, and asks where to turn
-/// it on when it's off.
-fn cli(ctx: &mut Ctx, id: &str) -> Handled {
+/// Checks the CLI off the loop, since a login check can take seconds, and turns it on where
+/// your changes save when it's off.
+fn cli(ctx: &mut Ctx, id: &str, asked: Option<SettingScope>) -> Handled {
     let env = Some(ctx.env.as_ref());
     let resolved = ctx.settings.resolved();
     let adapters = crate::commands::adapters_turning_on(env, resolved, &[id.to_owned()])?;
@@ -84,11 +86,7 @@ fn cli(ctx: &mut Ctx, id: &str) -> Handled {
     if on {
         return Ok(Vec::new());
     }
-    Ok(vec![Effect::AskScope(Box::new(ScopeRequest {
-        key: format!("agents.{id}.enabled"),
-        value: "true".to_owned(),
-        command: "agents".to_owned(),
-    }))])
+    Ok(vec![turn_on(format!("agents.{id}.enabled"), asked)])
 }
 
 fn cli_lines(agent: &probe::FoundAgent, on: bool) -> Vec<String> {
@@ -114,7 +112,7 @@ fn cli_lines(agent: &probe::FoundAgent, on: bool) -> Vec<String> {
 
 /// Looks for Ollama where your settings say, or at its usual address, and turns it on as a local
 /// endpoint. Nothing leaves your machine.
-async fn ollama(ctx: &mut Ctx) -> Handled {
+async fn ollama(ctx: &mut Ctx, asked: Option<SettingScope>) -> Handled {
     let endpoint = ctx.settings().endpoints.get("ollama");
     let set_up = endpoint.is_some_and(|endpoint| endpoint.local);
     let url = endpoint
@@ -154,11 +152,16 @@ async fn ollama(ctx: &mut Ctx) -> Handled {
     if set_up {
         return Ok(Vec::new());
     }
-    Ok(vec![Effect::AskScope(Box::new(ScopeRequest {
-        key: "endpoints.ollama.local".to_owned(),
-        value: "true".to_owned(),
-        command: "agents".to_owned(),
-    }))])
+    Ok(vec![turn_on("endpoints.ollama.local".to_owned(), asked)])
+}
+
+/// `key = true`, saved where your changes go, or in `asked`.
+fn turn_on(key: String, asked: Option<SettingScope>) -> Effect {
+    let pairs = vec![(key, "true".to_owned())];
+    match asked {
+        Some(scope) => Effect::SaveSettings { pairs, scope },
+        None => Effect::SaveChanges { pairs },
+    }
 }
 
 /// OpenClaw's ACP bridge runs its tools outside the task's sandbox, so it drives Argonauts Code
@@ -250,6 +253,7 @@ mod tests {
     use argonauts_core::app::{AppEvent, UiCommand};
     use argonauts_core::input::{AgentsAction, SlashCommand};
     use argonauts_core::registry::RegistryFile;
+    use argonauts_core::settings::SettingScope;
 
     use super::cli_entry;
     use crate::controller::test_support::{CliOptions, TestDriver};
@@ -274,26 +278,33 @@ mod tests {
         }
     }
 
-    async fn scope_question(driver: &mut TestDriver) -> String {
+    /// The key saved and where, with nothing asked first.
+    async fn saved(driver: &mut TestDriver) -> (String, SettingScope) {
         let event = driver
-            .until(|event| matches!(event, AppEvent::Choice { .. }))
+            .until(|event| {
+                matches!(
+                    event,
+                    AppEvent::SettingChanged { .. } | AppEvent::Choice { .. }
+                )
+            })
             .await;
         match event {
-            AppEvent::Choice { choice } => format!("{} {}", choice.title, choice.body.join(" ")),
-            _ => unreachable!(),
+            AppEvent::SettingChanged { key, scope, .. } => (key, scope),
+            other => panic!("asked instead of saving: {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn a_missing_hermes_says_how_to_install_it_and_turns_it_on() {
+    async fn a_missing_hermes_says_how_to_install_it_and_turns_it_on_everywhere() {
         let mut driver = TestDriver::start_with(CliOptions {
             flags: vec![r#"agents.hermes.binary="/nowhere/hermes""#.to_owned()],
             ..CliOptions::default()
         })
         .await;
         driver.send(add("Hermes")).await;
-        let asked = scope_question(&mut driver).await;
-        assert!(asked.contains("agents.hermes.enabled"), "{asked}");
+        let saved = saved(&mut driver).await;
+        let enabled = "agents.hermes.enabled".to_owned();
+        assert_eq!(saved, (enabled, SettingScope::Global));
         let lines = report(&mut driver, "Adding Hermes").await;
         assert!(
             lines[0].starts_with("Hermes Agent · not installed"),
@@ -337,8 +348,9 @@ mod tests {
         let lines = report(&mut driver, "Adding Ollama").await;
         assert_eq!(lines[0], "Ollama isn't answering at http://127.0.0.1:9/v1.");
         assert!(lines[1].contains("ollama serve"), "{lines:?}");
-        let asked = scope_question(&mut driver).await;
-        assert!(asked.contains("endpoints.ollama.local"), "{asked}");
+        let saved = saved(&mut driver).await;
+        let local = "endpoints.ollama.local".to_owned();
+        assert_eq!(saved, (local, SettingScope::Global));
         driver.exit().await;
     }
 

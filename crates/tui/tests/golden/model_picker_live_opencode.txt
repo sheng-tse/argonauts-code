@@ -4,49 +4,50 @@
 ❯ /model                                                                                                              
                                                                                                                       
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  OpenCode                                                                                                            
-  The model the main agent runs on OpenCode. Model list refreshed 3m ago; asking OpenCode…                            
+  ◧◨ OpenCode                                                                                                         
+  The model the main agent runs on OpenCode. Every model here is free. Model list refreshed 3m ago; asking OpenCode…  
                                                                                                                       
-    1. Default                 Nemotron 3.5 Super VL Free                                                             
-       Ollama                                                                                                         
-    2. Gemma4 E2b              128k context · on this machine                                                         
-    3. Llama3.2                128k context · on this machine                                                         
-    4. Qwen3 Coder 30B         256k context · on this machine                                                         
-  ❯ 5. Qwen3 Coder 30B (64k)   64k context · on this machine                                                          
-    6. Gemma2 9B               no tool use · 8k context · on this machine                                             
-    7. Gemma3 12B              no tool use · 128k context · on this machine                                           
-  ↓ 8. Gemma3 12B 32K          no tool use · 32k context · on this machine                                            
+     1. Default                      Nemotron 3.5 Super VL Free                                                       
+                                                                                                                      
+    Installed through Ollama         context  abilities                                                               
+     2. Gemma4 E2B                      128k  tools                                                                   
+     3. Llama3.2                        128k  tools                                                                   
+     4. Qwen3 Coder 30B                 256k  tools                                                                   
+  ❯  5. Qwen3 Coder 30B (64k)            64k  tools                                                                   
+     6. Gemma2 9B                         8k  no tools                                                                
+     7. Gemma3 12B                      128k  no tools                                                                
+  ↓  8. Gemma3 12B 32K                   32k  no tools                                                                
     … +11 more                                                                                                        
                                                                                                                       
   ○ Effort not supported for Qwen3 Coder 30B (64k)                                                                    
                                                                                                                       
-  Enter to choose · j/k to move · / to filter · Esc to go back                                                        
+  Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back                           
                                                                                                                       
  About 6 s after /model, OpenCode has answered: Devstral 24B, pulled since 21:40, takes its place in the Ollama group 
  as new. The pointer stays on Qwen3 Coder 30B (64k), now row 6, and so does its effort line; the window doesn't move. 
                                                                                                                       
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  OpenCode                                                                                                            
-  The model the main agent runs on OpenCode. Model list refreshed just now.                                           
+  ◧◨ OpenCode                                                                                                         
+  The model the main agent runs on OpenCode. Every model here is free. Model list refreshed just now.                 
                                                                                                                       
-    1. Default                 Nemotron 3.5 Super VL Free                                                             
-       Ollama                                                                                                         
-    2. Devstral 24B            new · 128k context · on this machine                                                   
-    3. Gemma4 E2b              128k context · on this machine                                                         
-    4. Llama3.2                128k context · on this machine                                                         
-    5. Qwen3 Coder 30B         256k context · on this machine                                                         
-  ❯ 6. Qwen3 Coder 30B (64k)   64k context · on this machine                                                          
-    7. Gemma2 9B               no tool use · 8k context · on this machine                                             
-  ↓ 8. Gemma3 12B              no tool use · 128k context · on this machine                                           
+     1. Default                      Nemotron 3.5 Super VL Free                                                       
+                                                                                                                      
+    Installed through Ollama         context  abilities                                                               
+     2. Devstral 24B                    128k  tools · new                                                             
+     3. Gemma4 E2B                      128k  tools                                                                   
+     4. Llama3.2                        128k  tools                                                                   
+     5. Qwen3 Coder 30B                 256k  tools                                                                   
+  ❯  6. Qwen3 Coder 30B (64k)            64k  tools                                                                   
+     7. Gemma2 9B                         8k  no tools                                                                
+  ↓  8. Gemma3 12B                      128k  no tools                                                                
     … +12 more                                                                                                        
                                                                                                                       
   ○ Effort not supported for Qwen3 Coder 30B (64k)                                                                    
                                                                                                                       
-  Enter to choose · j/k to move · / to filter · Esc to go back                                                        
+  Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back                           
                                                                                                                       
  Had the server still listed nothing after 15 s, the rows would stay as they were, under this line:                   
                                                                                                                       
-  The model the main agent runs on OpenCode. OpenCode's list couldn't be read; showing the one from 21:40.            
+  The model the main agent runs on OpenCode. Every model here is free. OpenCode's list couldn't be read; showing the  
                                                                                                                       
- (cropped to the /model echo and the picker; the times and Devstral 24B are illustrative; "Gemma4 E2b" is still       
- today's name rule)                                                                                                   
+ (cropped to the /model echo and the picker; the times and Devstral 24B are illustrative)                             

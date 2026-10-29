@@ -7,11 +7,11 @@ use std::time::Instant;
 
 use argonauts_core::settings::bottom_line::{
     ARTIFACT, BRANCH, BottomLineSettings, CONTEXT, LineForm, MODE, PLAN_USAGE, PlanUsageAs,
-    PlanUsageLine, SPEND, STATS, TOKENS,
+    PlanUsageLine, PlanUsageShow, PlanUsageWindows, SPEND, STATS, TOKENS,
 };
 use ratatui::text::Span;
 
-use super::{shown_windows, shows, with_mode};
+use super::{shown_windows, with_mode};
 use crate::bottom::{
     AddedPart, ApprovalMode, BottomLine, BottomRow, CliState, CliUse, LinePart, ModeState,
     PartBody, WindowUse,
@@ -80,11 +80,16 @@ fn sample_line(settings: &BottomLineSettings, sample: &Sample) -> BottomLine {
     let set = &settings.plan_usage;
     // Gauges are one cell a window, so every CLI has room for both of its own.
     let both = settings.form == LineForm::Gauges;
-    let clis: Vec<CliUse> = sample
-        .clis
-        .iter()
-        .map(|cli| chip(cli, both, set))
-        .filter(|cli| shows(cli, set.show))
+    let clis: Vec<CliUse> = picked(sample, set)
+        .into_iter()
+        .map(|(cli, windows)| {
+            let own = PlanUsageLine {
+                windows: windows.unwrap_or(set.windows),
+                ..set.clone()
+            };
+            chip(cli, both || windows == Some(PlanUsageWindows::Both), &own)
+        })
+        .filter(|cli| set.clis.is_some() || set.show != PlanUsageShow::NearLimit || cli.needs_you())
         .collect();
     let words = |text: &str| PartBody::Words {
         text: text.to_owned(),
@@ -127,10 +132,35 @@ fn sample_line(settings: &BottomLineSettings, sample: &Sample) -> BottomLine {
     })
 }
 
+/// The sample's CLIs the settings pick, each with its own windows where the list gives them.
+/// A sample knows nothing of use, so the first CLI after the one in use stands for the one
+/// used most.
+fn picked<'s>(
+    sample: &'s Sample,
+    set: &PlanUsageLine,
+) -> Vec<(&'s SampleCli, Option<PlanUsageWindows>)> {
+    let main = sample.clis.iter().filter(|cli| cli.main);
+    let others = || sample.clis.iter().filter(|cli| !cli.main);
+    if let Some(listed) = &set.clis {
+        let listed = listed.iter().filter_map(|line_cli| {
+            let cli = others().find(|cli| cli.id == line_cli.cli)?;
+            Some((cli, line_cli.windows))
+        });
+        return main.map(|cli| (cli, None)).chain(listed).collect();
+    }
+    let shown: Vec<&SampleCli> = match set.show {
+        PlanUsageShow::All | PlanUsageShow::NearLimit => sample.clis.iter().collect(),
+        PlanUsageShow::Main => main.collect(),
+        PlanUsageShow::MainAndMostUsed => main.chain(others().take(1)).collect(),
+    };
+    shown.into_iter().map(|cli| (cli, None)).collect()
+}
+
 /// A CLI's chip from the share of each window it has used. A window that is used up puts
 /// the CLI out, as a reading the plan turned down does on the live line.
 fn chip(cli: &SampleCli, both: bool, set: &PlanUsageLine) -> CliUse {
     let mut chip = CliUse::new(sanitize_line(&cli.label).trim(), Role::for_cli(&cli.id));
+    chip.logo = Some(argonauts_core::logos::logo_for(&cli.id, None));
     chip.main = cli.main;
     let windows: Vec<WindowUse> = [("5h", cli.five_hours), ("7d", cli.seven_days)]
         .into_iter()
@@ -162,7 +192,7 @@ mod tests {
 
     /// Sample numbers: Claude in use at 1% and 56%, Codex at 11%, agy at 2%.
     fn crew() -> Sample {
-        let mut claude = cli("Claude", "claude-code", 0.01, 0.56);
+        let mut claude = cli("Claude Code", "claude-code", 0.01, 0.56);
         claude.main = true;
         Sample {
             clis: vec![
@@ -186,17 +216,16 @@ mod tests {
         text
     }
 
-    /// The line as it ships, at 120 columns: the mode at the left, a chip per
-    /// CLI against the right edge, the one in use with both windows.
+    /// The line as it ships, at 120 columns: the mode at the left, and against the right edge
+    /// the CLI in use with both windows, then the one after it standing for the most used.
     #[test]
     fn the_preview_is_the_line_as_it_ships() {
         let shown = text(&BottomLineSettings::default(), &crew(), 120);
         assert_eq!(crate::text::str_width(&shown), 120);
         assert!(shown.starts_with("  ⏵⏵ auto mode on"), "{shown}");
         assert!(
-            shown.ends_with(
-                "● Claude 5h ░░░░░░ 1% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy 5h ░░░░░░ 2%"
-            ),
+            shown
+                .ends_with("● Claude Code 5h █░░░░░   1%  7d ███░░░  56%   ○ Codex 7d █░░░░░  11%"),
             "{shown}"
         );
         // No artifact is published in a preview, so its part says nothing.
@@ -219,7 +248,7 @@ mod tests {
         let shown = text(&picture, &crew(), 150);
         assert!(shown.contains("auto mode on"), "{shown}");
         assert!(shown.contains(" · main"), "{shown}");
-        assert!(shown.ends_with("○ agy 5h ░░░░░░ 2%  ~$1.86"), "{shown}");
+        assert!(shown.ends_with("○ Codex 7d █░░░░░  11%  ~$1.86"), "{shown}");
 
         let known = Sample {
             branch: Some("r1-line".to_owned()),
@@ -248,8 +277,10 @@ mod tests {
     /// then the chips step down, and every CLI stays.
     #[test]
     fn the_preview_gives_things_up_as_the_line_does() {
-        let picture =
-            settings("left = [\"mode\", \"branch\"]\nright = [\"plan-usage\", \"spend\"]");
+        let picture = settings(
+            "left = [\"mode\", \"branch\"]\nright = [\"plan-usage\", \"spend\"]\n\
+             [plan-usage]\nshow = \"all\"",
+        );
         let widths = [200, 120, 100, 80, 60, 40];
         let rows: Vec<String> = widths
             .iter()
@@ -260,10 +291,10 @@ mod tests {
         assert!(!rows[2].contains("$1.86"), "{}", rows[2]);
         assert!(!rows[3].contains("main"), "{}", rows[3]);
         for row in &rows {
-            for cli in ["Claude", "Codex", "agy"] {
+            for cli in ["Claude Code", "Codex", "agy"] {
                 // A CLI that is fine ends as a dot in its color, and the one in use by name.
                 assert!(
-                    row.contains(cli) || (cli != "Claude" && row.contains('○')),
+                    row.contains(cli) || (cli != "Claude Code" && row.contains('○')),
                     "{cli} in {row}"
                 );
             }
@@ -285,22 +316,31 @@ mod tests {
         let left = settings("[plan-usage]\nas = \"left\"\nwindows = \"7d\"");
         let shown = text(&left, &crew(), 150);
         assert!(
-            shown.contains("● Claude 7d ███░░░ 44% left  ○ Codex 7d █████░ 89% left"),
+            shown.contains("● Claude Code 7d ███░░░  44% left   ○ Codex 7d █████░  89% left"),
             "{shown}"
         );
 
-        let gauges = settings("form = \"gauges\"");
+        let gauges = settings("form = \"gauges\"\n[plan-usage]\nshow = \"all\"");
         let shown = text(&gauges, &crew(), 120);
         assert!(
-            shown.ends_with("● Claude ▁▅  ○ Codex ▁▁  ○ agy ▁▁"),
+            shown.ends_with("● Claude Code ▁▅   ○ Codex ▁▁   ○ agy ▁▁"),
             "{shown}"
+        );
+
+        let listed = settings("[plan-usage]\nclis = [{ cli = \"antigravity-cli\" }]");
+        let shown = text(&listed, &crew(), 120);
+        assert!(
+            shown.ends_with("● Claude Code 5h █░░░░░   1%  7d ███░░░  56%   ○ agy 5h █░░░░░   2%")
         );
 
         let mut pressed = crew();
         pressed.clis[0].five_hours = Some(0.93);
         pressed.clis[2].five_hours = Some(1.0);
-        let shown = text(&BottomLineSettings::default(), &pressed, 150);
-        assert!(shown.contains("● Claude 5h ██████ 93% 7d"), "{shown}");
-        assert!(shown.ends_with("○ agy ██████ out"), "{shown}");
+        let shown = text(&settings("[plan-usage]\nshow = \"all\""), &pressed, 150);
+        assert!(
+            shown.contains("● Claude Code 5h ██████  93%  7d"),
+            "{shown}"
+        );
+        assert!(shown.ends_with("○ agy out"), "{shown}");
     }
 }

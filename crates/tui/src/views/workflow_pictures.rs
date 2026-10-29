@@ -1,6 +1,7 @@
 //! The pictures the workflow view is drawn to, and what a test needs to put a drawing beside
 //! one: every cell's character, its colour, and whether it is bold. A picture is two files in
-//! `tests/golden`, the cells as text and the same cells with their colours as spans.
+//! `tests/golden`, the cells as text and the same cells with their colours as spans. The view
+//! is drawn in a terminal that draws logos as pictures, whose cells a picture writes as `◧◨`.
 
 use std::ops::Range;
 
@@ -10,6 +11,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 use ratatui::text::Line;
 
+use crate::kit::logo::golden::{lines_with_stand_ins, pictured, with_stand_ins};
 use crate::theme::{Role, Theme};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,13 +63,6 @@ impl Picture {
         Self { name, rows }
     }
 
-    /// The same picture under `name`, for a screen with no picture of its own that a test
-    /// draws from this one, changed: what it draws is then written apart from this one's.
-    pub(crate) fn named(mut self, name: &'static str) -> Self {
-        self.name = name;
-        self
-    }
-
     /// The picture's rows as text, without the blanks at their ends.
     pub(crate) fn text(&self, rows: Range<usize>) -> Vec<String> {
         self.rows[rows].iter().map(|row| line_text(row)).collect()
@@ -112,60 +107,6 @@ impl Picture {
             let more = std::iter::repeat_n(blank, grew.unsigned_abs());
             cells.splice(gap..gap, more);
         }
-    }
-
-    /// Says a fallback the way its row reads now: `in place of GPT 5.6 Luna` where the picture
-    /// says `for GPT 5.6 Luna`, and on a row that answered, `verdict` first, in its own colour.
-    pub(crate) fn in_place_of(&mut self, row: usize, model: &str, verdict: Option<&str>) {
-        let Some(verdict) = verdict else {
-            self.reword(
-                row,
-                &format!("for {model}"),
-                &format!("in place of {model}"),
-            );
-            return;
-        };
-        let from = format!("for {model} · {verdict}");
-        let text: Vec<char> = self.rows[row].iter().map(|cell| cell.ch).collect();
-        let wanted: Vec<char> = from.chars().collect();
-        let at = text
-            .windows(wanted.len())
-            .position(|window| window == wanted.as_slice())
-            .unwrap_or_else(|| panic!("{}: row {row} doesn't say {from:?}", self.name));
-        let looks = |offset: usize| self.rows[row][at + offset].clone();
-        let (cells, verdict_cells) = (wanted.len(), verdict.chars().count());
-        let (amber, dim, said) = (looks(0), looks(cells - verdict_cells - 2), looks(cells - 1));
-        self.reword(row, &from, &format!("{verdict} · in place of {model}"));
-        for (i, cell) in self.rows[row][at..].iter_mut().enumerate() {
-            let look = if i < verdict_cells {
-                &said
-            } else if i < verdict_cells + 3 {
-                &dim
-            } else if i < verdict_cells + 3 + "in place of ".len() + model.chars().count() {
-                &amber
-            } else {
-                break;
-            };
-            cell.colour = look.colour;
-            cell.bold = look.bold;
-        }
-    }
-
-    /// Gives `label` on row `row` a column `width` cells wide, the label and the blanks after
-    /// it, for a picture that lays every phase out by the widest label of the whole workflow
-    /// where the view lays each phase out by its own. The row keeps its width as
-    /// [`Self::reword`] keeps it.
-    pub(crate) fn label_column(&mut self, row: usize, label: &str, width: usize) {
-        let text: String = self.rows[row].iter().map(|cell| cell.ch).collect();
-        let at = text
-            .find(label)
-            .unwrap_or_else(|| panic!("{}: row {row} doesn't say {label:?}", self.name));
-        let blanks = text[at + label.len()..]
-            .chars()
-            .take_while(|ch| *ch == ' ')
-            .count();
-        let from = format!("{label}{}", " ".repeat(blanks));
-        self.reword(row, &from, &format!("{label:<width$}"));
     }
 
     /// Puts a blank line before each of `titles`, the sections of an open agent's view, which
@@ -229,23 +170,6 @@ impl Picture {
         }
     }
 
-    /// Puts `blanks` blank cells after `text` on row `row`, the rest of the row moving right.
-    pub(crate) fn widen(&mut self, row: usize, text: &str, blanks: usize) {
-        let wanted: Vec<char> = text.chars().collect();
-        let cells = &mut self.rows[row];
-        let at = cells
-            .windows(wanted.len())
-            .position(|window| window.iter().map(|cell| cell.ch).eq(wanted.iter().copied()))
-            .unwrap_or_else(|| panic!("{}: row {row} doesn't say {text:?}", self.name))
-            + wanted.len();
-        let blank = Cell {
-            ch: ' ',
-            colour: None,
-            bold: false,
-        };
-        cells.splice(at..at, std::iter::repeat_n(blank, blanks));
-    }
-
     /// Draws every `from` in the picture as `to`, in the same colour: a glyph the view draws as
     /// Claude Code does where the picture drew another.
     pub(crate) fn respell(&mut self, from: char, to: char) {
@@ -256,38 +180,71 @@ impl Picture {
         }
     }
 
-    /// Writes `text` over the picture's cells from `column` of `row`, in `colour`.
-    pub(crate) fn write(&mut self, row: usize, column: usize, text: &str, colour: Option<Color>) {
-        let cells = &mut self.rows[row];
-        for (at, ch) in text.chars().enumerate() {
-            cells[column + at] = Cell {
-                ch,
-                colour,
-                bold: false,
-            };
+    /// Draws the logo before `model` on row `row` where the picture's image of it stands: the
+    /// two cells and the blank before the model's name.
+    pub(crate) fn logo(&mut self, row: usize, model: &str, logo: &argonauts_core::logos::Logo) {
+        let at = self.find(row, model);
+        let theme = dark();
+        let drawn = Line::from(crate::kit::logo::logo_spans(logo, &theme));
+        let cells: Vec<Cell> = lines_with_stand_ins(&[drawn])[0]
+            .spans
+            .iter()
+            .flat_map(|span| {
+                let colour = span.style.fg.filter(|fg| *fg != Color::Reset);
+                span.content.chars().map(move |ch| Cell {
+                    ch,
+                    colour,
+                    bold: false,
+                })
+            })
+            .collect();
+        let start = at - 1 - cells.len();
+        for (offset, cell) in cells.into_iter().enumerate() {
+            self.rows[row][start + offset] = cell;
         }
     }
 
-    /// Gives each of `names` in row `row` the colour the picture draws it in on another row,
-    /// as a status line colours the models its rows name.
-    pub(crate) fn colour_as_its_row(&mut self, row: usize, names: &[&str]) {
-        for name in names {
-            let name: Vec<char> = name.chars().collect();
-            let at = |cells: &[Cell]| {
-                cells
-                    .windows(name.len())
-                    .position(|window| window.iter().map(|cell| cell.ch).eq(name.iter().copied()))
-            };
-            let colour = (0..self.rows.len())
-                .filter(|other| *other != row)
-                .find_map(|other| at(&self.rows[other]).map(|x| self.rows[other][x].colour))
-                .unwrap_or_else(|| panic!("{}: no other row names {name:?}", self.name));
-            let x = at(&self.rows[row])
-                .unwrap_or_else(|| panic!("{}: row {row} doesn't name {name:?}", self.name));
-            for cell in &mut self.rows[row][x..x + name.len()] {
-                cell.colour = colour;
-            }
+    /// Gives `text` on row `row` another colour, and makes it bold or not.
+    pub(crate) fn restyle(&mut self, row: usize, text: &str, colour: Option<Color>, bold: bool) {
+        let at = self.find(row, text);
+        for cell in &mut self.rows[row][at..at + text.chars().count()] {
+            cell.colour = colour;
+            cell.bold = bold;
         }
+    }
+
+    /// Takes one cell out of each of `rows` of a box the picture drew a cell wider than its
+    /// screen leaves it: a `─` of its edge, or a blank where the row has its widest run of them.
+    pub(crate) fn narrow_box(&mut self, rows: Range<usize>) {
+        for row in rows {
+            let cells = &self.rows[row];
+            let edge = cells.iter().any(|cell| matches!(cell.ch, '╭' | '╰'));
+            let wanted = if edge { '─' } else { ' ' };
+            let mut widest: Option<(usize, usize)> = None;
+            let mut at = 0;
+            while at < cells.len() {
+                let run = cells[at..]
+                    .iter()
+                    .take_while(|cell| cell.ch == wanted)
+                    .count();
+                if run > 0 && widest.is_none_or(|(_, longest)| run >= longest) {
+                    widest = Some((at, run));
+                }
+                at += run.max(1);
+            }
+            let (at, _) =
+                widest.unwrap_or_else(|| panic!("{}: row {row} has no {wanted:?}", self.name));
+            self.rows[row].remove(at);
+        }
+    }
+
+    /// Where `text` starts on row `row`.
+    fn find(&self, row: usize, text: &str) -> usize {
+        let wanted: Vec<char> = text.chars().collect();
+        self.rows[row]
+            .windows(wanted.len())
+            .position(|window| window.iter().map(|cell| cell.ch).eq(wanted.iter().copied()))
+            .unwrap_or_else(|| panic!("{}: row {row} doesn't say {text:?}", self.name))
     }
 
     /// Gives one cell of the picture another colour.
@@ -295,19 +252,11 @@ impl Picture {
         self.rows[row][column].colour = colour;
     }
 
-    /// Blanks one cell of the picture.
-    pub(crate) fn blank(&mut self, row: usize, column: usize) {
-        self.rows[row][column] = Cell {
-            ch: ' ',
-            colour: None,
-            bold: false,
-        };
-    }
-
     /// Fails unless `buf` from its row `top` down draws the picture's `rows`: the same
     /// characters, and under each one the same colour and weight.
     pub(crate) fn assert_drawn(&self, rows: Range<usize>, buf: &Buffer, top: u16) {
         let theme = dark();
+        let buf = &with_stand_ins(buf);
         let drawn: Vec<String> = (0..rows.len())
             .map(|row| buffer_row(buf, top + row as u16))
             .collect();
@@ -318,6 +267,9 @@ impl Picture {
         let width = usize::from(buf.area.width);
         let at = (0, usize::from(top));
         crate::picture_dump::buffer_page(&part, buf, at, (width, rows.len()), &theme);
+        if record(&part, buf, top, rows.len(), &theme) {
+            return;
+        }
         let wanted = self.text(rows.clone());
         assert_eq!(
             drawn,
@@ -336,6 +288,7 @@ impl Picture {
     /// characters, and under each one the same colour and weight. For a row the screen
     /// draws only the start of.
     pub(crate) fn assert_cells(&self, row: usize, columns: Range<usize>, buf: &Buffer, y: u16) {
+        let buf = &with_stand_ins(buf);
         let drawn: String = columns
             .clone()
             .map(|x| buf[(x as u16, y)].symbol())
@@ -373,11 +326,60 @@ impl Picture {
     }
 }
 
-/// The theme the pictures are drawn in.
+/// Writes `count` rows of `buf` from row `top`, as the picture's own two files would hold them,
+/// into the folder `ARGONAUTS_PICTURE_RECORD` names, for a picture the view is drawn to anew.
+/// Whether it wrote them: nothing is written when the variable isn't set, and a test that
+/// records compares nothing.
+fn record(part: &str, buf: &Buffer, top: u16, count: usize, theme: &Theme) -> bool {
+    let Some(dir) = std::env::var_os("ARGONAUTS_PICTURE_RECORD").map(std::path::PathBuf::from)
+    else {
+        return false;
+    };
+    let plain = [Role::Text, Role::Bright].map(|role| theme.style(role).fg);
+    let grid: Vec<Vec<page::Cell>> = (0..count)
+        .map(|row| {
+            let y = top + row as u16;
+            // A wide character's second cell is empty, and the picture has one cell for it.
+            let mut cells: Vec<page::Cell> = (buf.area.x..buf.area.right())
+                .filter(|x| !buf[(*x, y)].symbol().is_empty())
+                .map(|x| {
+                    let cell = &buf[(x, y)];
+                    let fg = Some(cell.fg);
+                    let color = match fg {
+                        Some(Color::Reset) => None,
+                        fg if plain.contains(&fg) => None,
+                        Some(Color::Rgb(r, g, b)) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
+                        Some(other) => Some(format!("{other}")),
+                        None => None,
+                    };
+                    let mut out = page::Cell::plain(cell.symbol().chars().next().unwrap_or(' '));
+                    out.color = color;
+                    out.bold = cell.modifier.contains(Modifier::BOLD);
+                    out
+                })
+                .collect();
+            while cells.last().is_some_and(|cell| cell.ch == ' ') {
+                cells.pop();
+            }
+            cells
+        })
+        .collect();
+    let text: String = grid
+        .iter()
+        .map(|row| format!("{}\n", page::text(row).trim_end()))
+        .collect();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join(format!("{part}.txt")), text);
+    let html = format!("<div class=\"scroll\">{}</div>\n", page::page(&grid));
+    let _ = std::fs::write(dir.join(format!("{part}.html")), html);
+    true
+}
+
+/// The theme the pictures are drawn in, with logos as pictures.
 pub(crate) fn dark() -> Theme {
     let mut theme = Theme::dark();
     theme.glyphs = crate::theme::Glyphs::UNICODE;
-    theme
+    pictured(&theme)
 }
 
 /// `lines` drawn from the top of a buffer `width` cells wide.

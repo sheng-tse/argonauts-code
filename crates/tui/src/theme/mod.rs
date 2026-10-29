@@ -98,7 +98,8 @@ pub enum Role {
     CatFree,
     /// What Argonauts Code sent a CLI that reports no breakdown of its context.
     CatBrief,
-    /// The rest of a conversation, and parts folded together.
+    /// The rest of a conversation, parts folded together, and the models past a CLI's third,
+    /// drawn solid, which a bar draws as one run.
     CatOther,
     TokensCached,
     TokensInput,
@@ -113,14 +114,17 @@ pub enum Role {
     StateStopped,
     /// Claude Code's purple for `ultracode`: the tag on the input's rule and the typed word.
     Ultracode,
-    // One color per CLI, the same in every mod that draws it.
+    // One hue per CLI, the same wherever it's drawn. Its first three models share it and are
+    // told apart by shape (overview/shades.rs). None of them is green, amber or red, which only
+    // ever mean state.
     CliClaude,
     CliCodex,
     CliAgy,
+    CliOpenCode,
 }
 
 impl Role {
-    pub const COUNT: usize = 73;
+    pub const COUNT: usize = 74;
 
     pub const ALL: [Role; Role::COUNT] = [
         Role::Text,
@@ -196,6 +200,7 @@ impl Role {
         Role::CliClaude,
         Role::CliCodex,
         Role::CliAgy,
+        Role::CliOpenCode,
     ];
 
     /// The name a config file uses for this role, such as `accent` or `removed-row`.
@@ -274,6 +279,7 @@ impl Role {
             Role::CliClaude => "cli-claude",
             Role::CliCodex => "cli-codex",
             Role::CliAgy => "cli-agy",
+            Role::CliOpenCode => "cli-opencode",
         }
     }
 
@@ -297,14 +303,14 @@ impl Role {
         self as usize
     }
 
-    /// The color a CLI keeps in every mod, by its adapter id or the short name its chip shows.
-    /// A CLI without one of its own draws in the grey of whatever is left over.
+    /// The hue a CLI keeps everywhere, by its adapter id or the short name its chip shows.
+    /// Anything else, a model server or a CLI of your own, draws in the grey of the rest.
     pub fn for_cli(cli: &str) -> Role {
         match cli.trim() {
             "claude-code" | "Claude" | "Claude Code" => Role::CliClaude,
             "codex" | "Codex" => Role::CliCodex,
             "antigravity-cli" | "agy" => Role::CliAgy,
-            "opencode" | "OpenCode" => Role::AgentGreen,
+            "opencode" | "OpenCode" => Role::CliOpenCode,
             _ => Role::CatOther,
         }
     }
@@ -392,11 +398,16 @@ pub struct Theme {
     pub brightness: Brightness,
     /// Hold animations still: no spinner, shimmer, blinking, or turning glyphs.
     pub reduced_motion: bool,
+    /// Motion is off: a change such as a zoom jumps to its end instead of moving there. Reduced
+    /// motion still plays such a change, every motion in it held still.
+    pub skips_frames: bool,
     /// How the welcome header draws its mascot, as `ui.mascot` says.
     pub mascot: MascotDrawing,
     /// The mascot goes out as a picture, which the screen sends once it knows the terminal
     /// draws one, so the header leaves its cells blank.
     pub mascot_pictures: bool,
+    /// Logos draw as pictures in their cells: the terminal holds them, as `ui.logos` allows.
+    pub logo_pictures: bool,
 }
 
 impl Theme {
@@ -505,8 +516,10 @@ impl Theme {
             level: ColorLevel::TrueColor,
             brightness,
             reduced_motion: false,
+            skips_frames: false,
             mascot: MascotDrawing::Auto,
             mascot_pictures: false,
+            logo_pictures: false,
         }
     }
 }
@@ -595,7 +608,7 @@ fn dark_style(role: Role) -> Style {
         Role::CatMessages => fg(0xd97757),
         Role::CatFree => fg(0x3a3f55),
         Role::CatBrief => fg(0xe6a23c),
-        Role::CatOther => fg(0x8b90a8),
+        Role::CatOther => fg(0x8a8fa8),
         Role::TokensCached => fg(0x6f7590),
         Role::TokensInput => fg(0x7088c8),
         Role::TokensOutput => fg(0xd97757),
@@ -607,9 +620,11 @@ fn dark_style(role: Role) -> Style {
         | Role::StateFailed
         | Role::StateStopped => dark_style(role.default_link().unwrap_or(Role::Text)),
         Role::Ultracode => fg(0xaf87ff),
-        Role::CliClaude => fg(0xe08a66),
-        Role::CliCodex => fg(0x6aa6ff),
-        Role::CliAgy => fg(0x36cfe6),
+        // Each CLI's hue, at 4.7:1 or more on #222436, a dark blue-black background.
+        Role::CliClaude => fg(0xf7a07f),
+        Role::CliCodex => fg(0x6a9ee6),
+        Role::CliAgy => fg(0x6cd1cf),
+        Role::CliOpenCode => fg(0xc27cb4),
     }
 }
 
@@ -677,7 +692,7 @@ fn light_style(role: Role) -> Style {
         Role::CatMessages => fg(0xc4583a),
         Role::CatFree => fg(0xe1e4ea),
         Role::CatBrief => fg(0xb7791f),
-        Role::CatOther => fg(0x8a8fa3),
+        Role::CatOther => fg(0x6b6f80),
         Role::TokensCached => fg(0x9aa0b4),
         Role::TokensInput => fg(0x4f63a8),
         Role::TokensOutput => fg(0xc4583a),
@@ -689,11 +704,16 @@ fn light_style(role: Role) -> Style {
         | Role::StateFailed
         | Role::StateStopped => light_style(role.default_link().unwrap_or(Role::Text)),
         Role::Ultracode => fg(0x8700ff),
-        Role::CliClaude => fg(0xc4583a),
-        Role::CliCodex => fg(0x2563eb),
-        Role::CliAgy => fg(0x0891b2),
+        // The same hues darkened to 4.7:1 or more on white.
+        Role::CliClaude => fg(0x9e320c),
+        Role::CliCodex => fg(0x375cc0),
+        Role::CliAgy => fg(0x1f7f85),
+        Role::CliOpenCode => fg(0x7f3e76),
     }
 }
+
+#[cfg(test)]
+mod colour_set_tests;
 
 #[cfg(test)]
 mod tests {
@@ -746,6 +766,74 @@ mod tests {
                 let style = theme.style(role);
                 let colored = style.fg.is_some() || style.bg.is_some();
                 assert!(colored || role == Role::Text, "{role:?} has no color");
+            }
+        }
+    }
+
+    /// WCAG's contrast of `color` on `paper`.
+    fn contrast(color: Option<Color>, paper: (u8, u8, u8)) -> f64 {
+        let Some(Color::Rgb(r, g, b)) = color else {
+            panic!("{color:?} isn't a full color");
+        };
+        let luminance = |(r, g, b): (u8, u8, u8)| {
+            let linear = |c: u8| {
+                let c = f64::from(c) / 255.0;
+                if c <= 0.039_28 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        };
+        let (a, b) = (luminance((r, g, b)), luminance(paper));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn every_hue_a_cli_or_a_state_takes_reads_on_both_backgrounds() {
+        // #222436, a dark blue-black background, and white.
+        let screens = [
+            (Theme::dark(), (0x22, 0x24, 0x36)),
+            (Theme::light(), (0xff, 0xff, 0xff)),
+        ];
+        let roles = [
+            Role::CliClaude,
+            Role::CliCodex,
+            Role::CliAgy,
+            Role::CliOpenCode,
+            Role::CatOther,
+            Role::Success,
+            Role::Warn,
+            Role::Danger,
+        ];
+        for (theme, paper) in screens {
+            for role in roles {
+                let ratio = contrast(theme.style(role).fg, paper);
+                assert!(ratio >= 4.7, "{role:?} reads at {ratio:.2}:1");
+            }
+        }
+    }
+
+    #[test]
+    fn each_cli_has_its_own_hue_and_none_is_a_state() {
+        let clis = ["claude-code", "codex", "antigravity-cli", "opencode"];
+        let roles: Vec<Role> = clis.into_iter().map(Role::for_cli).collect();
+        assert_eq!(
+            roles,
+            [
+                Role::CliClaude,
+                Role::CliCodex,
+                Role::CliAgy,
+                Role::CliOpenCode
+            ]
+        );
+        assert_eq!(Role::for_cli("OpenCode"), Role::CliOpenCode);
+        assert_eq!(Role::for_cli("ollama"), Role::CatOther);
+        for theme in [Theme::dark(), Theme::light()] {
+            let states = [Role::Success, Role::Warn, Role::Danger].map(|role| theme.style(role));
+            for role in &roles {
+                assert!(!states.contains(&theme.style(*role)), "{role:?}");
             }
         }
     }

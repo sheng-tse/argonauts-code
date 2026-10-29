@@ -181,18 +181,27 @@ async fn telemetry(command: TelemetryCommand, set: &[String]) -> anyhow::Result<
     Ok(ExitCode::SUCCESS)
 }
 
-/// `argonauts resume`: a conversation, a run, a run's agent's session, or the main agent CLI's
-/// own session by id, or the list to pick from.
+/// `argonauts resume`: a conversation, a run, a run's agent's session, or any CLI's own session
+/// by id, or the list to pick from.
 async fn resume(options: InteractiveOptions, id: Option<&str>) -> anyhow::Result<ExitCode> {
     argonauts_app::refuse_inside_agent()?;
-    let first = resume_view(id)?;
+    let first = match (resume_view(id)?, id) {
+        (Some(first), _) => first,
+        (None, Some(id)) => {
+            let found = argonauts_app::find_session(&options, id)?;
+            let mut terminal = Terminal::stdio();
+            session_view(id, found, &mut terminal)?
+        }
+        (None, None) => FirstView::ResumePicker,
+    };
     argonauts_app::run_interactive_with(options, first).await?;
     Ok(ExitCode::SUCCESS)
 }
 
-/// `conversation-002`, `run-03`, `run-03/s-002`, or `claude-code:0a1b2c3d`.
-fn resume_view(id: Option<&str>) -> anyhow::Result<FirstView> {
-    Ok(match id {
+/// `conversation-002`, `run-03`, `run-03/s-002`, or `claude-code:0a1b2c3d`. `None` for a
+/// session's id alone, which is looked for in every CLI.
+fn resume_view(id: Option<&str>) -> anyhow::Result<Option<FirstView>> {
+    Ok(Some(match id {
         Some(id) if id.contains('/') => {
             FirstView::Agent(AgentSessionRef::parse(id).ok_or_else(|| {
                 usage(anyhow::anyhow!(
@@ -211,9 +220,88 @@ fn resume_view(id: Option<&str>) -> anyhow::Result<FirstView> {
                 ))
             })?)
         }
-        Some(run) => FirstView::Resume(RunId::new(run).map_err(usage)?),
+        Some(run) if run.starts_with("run-") => FirstView::Resume(RunId::new(run).map_err(usage)?),
+        Some(_) => return Ok(None),
         None => FirstView::ResumePicker,
-    })
+    }))
+}
+
+/// Where the session `id` carries on. A CLI that keeps no list of its sessions is asked about
+/// by name, since nothing else can tell its ids apart.
+fn session_view(
+    id: &str,
+    found: argonauts_app::FoundSession,
+    terminal: &mut Terminal<'_>,
+) -> anyhow::Result<FirstView> {
+    use argonauts_app::FoundSession;
+
+    let unlisted = match found {
+        FoundSession::Conversation(conversation) => {
+            return Ok(FirstView::PastConversation(conversation));
+        }
+        FoundSession::CliSession(session) => return Ok(FirstView::CliSession(session)),
+        FoundSession::Unlisted(unlisted) => unlisted,
+    };
+    let nowhere = format!("No conversation or CLI here has a session {id}.");
+    if unlisted.is_empty() {
+        anyhow::bail!("{nowhere} argonauts resume lists them.");
+    }
+    if !terminal.asks {
+        let (name, session) = &unlisted[0];
+        anyhow::bail!("{nowhere} If it's {name}'s, run argonauts resume {session}.");
+    }
+    let names: Vec<&str> = unlisted.iter().map(|(name, _)| name.as_str()).collect();
+    let question = match names.as_slice() {
+        [name] => format!("{nowhere} {name} keeps no list of its own. Is it {name}'s? [y/N] "),
+        _ => format!("{nowhere} Which CLI is it from: {}? ", names.join(", ")),
+    };
+    let answer = terminal.ask(&question)?;
+    let answer = answer.trim();
+    let picked = match unlisted.as_slice() {
+        [(_, session)]
+            if answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes") =>
+        {
+            Some(session)
+        }
+        [_] => None,
+        many => many
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(answer))
+            .map(|(_, session)| session),
+    };
+    match picked {
+        Some(session) => Ok(FirstView::CliSession(session.clone())),
+        None => anyhow::bail!("Nothing opened."),
+    }
+}
+
+/// Where `argonauts resume` asks, while both ends are a terminal.
+struct Terminal<'a> {
+    asks: bool,
+    out: Box<dyn std::io::Write + 'a>,
+    read: Box<dyn FnMut() -> std::io::Result<String> + 'a>,
+}
+
+impl Terminal<'_> {
+    fn stdio() -> Self {
+        use std::io::{BufRead as _, IsTerminal as _};
+
+        Self {
+            asks: std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+            out: Box::new(std::io::stdout()),
+            read: Box::new(|| {
+                let mut answer = String::new();
+                std::io::stdin().lock().read_line(&mut answer)?;
+                Ok(answer)
+            }),
+        }
+    }
+
+    fn ask(&mut self, question: &str) -> anyhow::Result<String> {
+        write!(self.out, "{}", sanitize_for_terminal(question))?;
+        self.out.flush()?;
+        Ok((self.read)()?)
+    }
 }
 
 /// The run host checks its own ancestry: only Argonauts Code's own agents may not host a run.
@@ -243,26 +331,29 @@ mod tests {
 
     #[test]
     fn resume_takes_a_conversation_a_run_or_a_cli_session() {
+        let view = |id| resume_view(id).unwrap().unwrap();
         assert_eq!(
-            resume_view(Some("conversation-002")).unwrap(),
+            view(Some("conversation-002")),
             FirstView::PastConversation(ConversationId::numbered(2))
         );
         assert_eq!(
-            resume_view(Some("run-03")).unwrap(),
+            view(Some("run-03")),
             FirstView::Resume(RunId::new("run-03").unwrap())
         );
         assert_eq!(
-            resume_view(Some("codex:019a2f")).unwrap(),
+            view(Some("codex:019a2f")),
             FirstView::CliSession(CliSessionRef {
                 agent_id: AgentId("codex".into()),
                 id: "019a2f".into(),
             })
         );
         assert_eq!(
-            resume_view(Some("run-03/s-002")).unwrap(),
+            view(Some("run-03/s-002")),
             FirstView::Agent(AgentSessionRef::parse("run-03/s-002").unwrap())
         );
-        assert_eq!(resume_view(None).unwrap(), FirstView::ResumePicker);
+        assert_eq!(view(None), FirstView::ResumePicker);
+        // A session's id alone is looked for in every CLI.
+        assert_eq!(resume_view(Some("4a5b6c7d")).unwrap(), None);
         let bad = resume_view(Some("run-03/-p")).unwrap_err();
         assert!(
             bad.to_string().contains("isn't an agent's session"),
@@ -270,5 +361,71 @@ mod tests {
         );
         let bad = resume_view(Some("codex:-p")).unwrap_err();
         assert!(bad.to_string().contains("isn't a session"), "{bad}");
+    }
+
+    fn agy(id: &str) -> CliSessionRef {
+        CliSessionRef {
+            agent_id: AgentId("antigravity-cli".into()),
+            id: id.into(),
+        }
+    }
+
+    /// A terminal that answers `answer` and keeps what was asked.
+    fn answering<'a>(answer: &'a str, asked: &'a mut Vec<u8>) -> Terminal<'a> {
+        Terminal {
+            asks: true,
+            out: Box::new(asked),
+            read: Box::new(move || Ok(format!("{answer}\n"))),
+        }
+    }
+
+    #[test]
+    fn a_session_id_alone_opens_where_it_was_found_and_asks_only_about_agy() {
+        use argonauts_app::FoundSession;
+
+        let mut asked = Vec::new();
+        let found = FoundSession::Conversation(ConversationId::numbered(4));
+        assert_eq!(
+            session_view("4a5b6c7d", found, &mut answering("", &mut asked)).unwrap(),
+            FirstView::PastConversation(ConversationId::numbered(4))
+        );
+        let codex = CliSessionRef {
+            agent_id: AgentId("codex".into()),
+            id: "019a5770".into(),
+        };
+        let found = FoundSession::CliSession(codex.clone());
+        assert_eq!(
+            session_view("019a5770", found, &mut answering("", &mut asked)).unwrap(),
+            FirstView::CliSession(codex)
+        );
+        assert!(asked.is_empty(), "nothing is asked of an id a list has");
+
+        let unlisted = || FoundSession::Unlisted(vec![("agy".to_owned(), agy("055a398f"))]);
+        assert_eq!(
+            session_view("055a398f", unlisted(), &mut answering("y", &mut asked)).unwrap(),
+            FirstView::CliSession(agy("055a398f"))
+        );
+        assert_eq!(
+            String::from_utf8(asked.clone()).unwrap(),
+            "No conversation or CLI here has a session 055a398f. agy keeps no list of its own. \
+             Is it agy's? [y/N] "
+        );
+        let no = session_view("055a398f", unlisted(), &mut answering("n", &mut asked));
+        assert_eq!(no.unwrap_err().to_string(), "Nothing opened.");
+
+        // Away from a terminal it says how to name agy instead.
+        let mut away = answering("y", &mut asked);
+        away.asks = false;
+        let said = session_view("055a398f", unlisted(), &mut away).unwrap_err();
+        assert_eq!(
+            said.to_string(),
+            "No conversation or CLI here has a session 055a398f. If it's agy's, run argonauts \
+             resume antigravity-cli:055a398f."
+        );
+        let nowhere = session_view("055a398f", FoundSession::Unlisted(Vec::new()), &mut away);
+        assert_eq!(
+            nowhere.unwrap_err().to_string(),
+            "No conversation or CLI here has a session 055a398f. argonauts resume lists them."
+        );
     }
 }

@@ -194,6 +194,7 @@ fn task(id: &str, kind: TaskKind, worker: &str, reviewers: &[&str], owned: &[&st
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 

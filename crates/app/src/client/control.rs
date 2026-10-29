@@ -131,7 +131,8 @@ fn offline(request: &ControlRequest) -> Offline {
         | ControlRequest::ApprovalMode { .. }
         | ControlRequest::TakeOverEnded { .. }
         | ControlRequest::SpotCheck { .. }
-        | ControlRequest::Goal { .. } => Offline::Defer,
+        | ControlRequest::Goal { .. }
+        | ControlRequest::Council { .. } => Offline::Defer,
         ControlRequest::TakeOver { .. }
         | ControlRequest::TakeBack { .. }
         | ControlRequest::Rewind { .. } => Offline::StartThenAsk,
@@ -249,6 +250,7 @@ fn kept_for_resume(request: &ControlRequest) -> bool {
             | ControlRequest::Reassign { .. }
             | ControlRequest::Goal { .. }
             | ControlRequest::SpotCheck { .. }
+            | ControlRequest::Council { .. }
     )
 }
 

@@ -1,0 +1,147 @@
+R tsunami 1 191.942 97.876 22.000 23.650 0 | Tsunami · 7 agents did ‘read a test file’ within the same 5 minutes, 8 days ago at 2:00 PM
+R hurricane 19 581.717 476.289 39.000 16.000 0 | Hurricane, category 1 · 27 ‘tried an edit that didn't apply’ actions within one hour, 8 days ago at 2:01 PM
+R tsunami 19 458.790 386.316 22.000 25.300 0 | Tsunami · 8 agents did ‘tried an edit that didn't apply’ within the same 5 minutes, 8 days ago at 2:06 PM
+R hurricane 30 831.685 299.940 57.000 16.000 0 | Hurricane, category 3 · 65 ‘returned its structured answer’ actions within one hour, 8 days ago at 2:01 PM
+R tsunami 30 1009.030 358.566 22.000 25.300 0 | Tsunami · 8 agents did ‘returned its structured answer’ within the same 5 minutes, 8 days ago at 2:01 PM
+R volcano 9 592.979 183.748 18.431 21.431 0 | Volcano, smoking · ‘ran the test suite, which failed’ · 27 of its 27 actions failed, the last today
+R flood 10 474.924 170.584 0.000 0.000 0 | Flood · 21 of its 64 ‘built the project’ actions were in work a review sent back
+R fault 10 526.369 209.985 18.900 12.000 0 | Fault line · 1 session ended on ‘built the project’ because the CLI failed, the last 21 days ago
+R storm 14 908.635 216.276 14.243 16.243 0 | Thunderstorm · 2 sessions stopped on ‘changed git state’, by you, a limit or a full context
+R volcano 19 632.590 360.237 20.000 23.000 0 | Volcano, smoking · ‘tried an edit that didn't apply’ · 105 of its 105 actions failed, the last today
+R storm 24 758.082 361.581 14.243 16.243 0 | Thunderstorm · 2 sessions stopped on ‘wrote a doc’, by you, a limit or a full context
+R tornado 30 861.813 402.185 12.000 14.000 0 | Tornado · 2 times one agent did ‘returned its structured answer’ 5 or more times in a row (the longest 6)
+R fault 30 918.324 332.698 21.882 12.000 0 | Fault line · 2 sessions ended on ‘returned its structured answer’ because the CLI failed, the last 2 days ago
+R volcano 31 896.403 441.864 17.082 20.082 0 | Volcano, smoking · ‘gave a structured answer that didn't fit’ · 21 of its 21 actions failed, the last 3 days ago
+R fire 37 628.284 424.702 0.000 0.000 0 | Wildfire, burning · 5 of its 17 ‘used an MCP tool’ actions were in work that never merged, the last 4 days ago
+R lake 30 848.125 419.037 13.314 16.314 0 | Lake · 27 sessions ended on ‘returned its structured answer’
+R swamp 15 537.872 165.418 17.821 19.821 0 | Swamp · 7 of its 10 ‘ran a shell command’ actions came after a wait of 10 minutes or more in the same session
+R basin 30 940.286 293.794 17.000 19.000 0 | Basin · agents came to ‘returned its structured answer’ from 6 other behaviors, 81 times
+R basin 19 583.567 280.938 17.000 19.000 0 | Basin · agents came to ‘tried an edit that didn't apply’ from 3 other behaviors, 44 times
+R river 30 799.368 322.257 0.000 0.000 168 | River · 27 times an agent went from ‘returned its structured answer’ to ‘wrote a doc’
+R river 19 538.442 262.183 0.000 0.000 336 | River · 20 times an agent went from ‘tried an edit that didn't apply’ to ‘built the project’
+R river 8 642.368 318.570 0.000 0.000 664 | River · 19 times an agent went from ‘ran the test suite’ to ‘returned its structured answer’
+R river 30 711.134 368.116 0.000 0.000 464 | River · 18 times an agent went from ‘returned its structured answer’ to ‘tried an edit that didn't apply’
+R river 9 590.097 263.216 0.000 0.000 376 | River · 17 times an agent went from ‘ran the test suite, which failed’ to ‘tried an edit that didn't apply’
+R current 24 795.693 352.072 0.000 0.000 32 | Ocean current · 15 times an agent went from ‘wrote a doc’ to ‘returned its structured answer’
+R river 10 527.436 162.002 0.000 0.000 152 | River · 14 times an agent went from ‘built the project’ to ‘ran the test suite’
+R current 19 709.857 340.955 0.000 0.000 73 | Ocean current · 14 times an agent went from ‘tried an edit that didn't apply’ to ‘returned its structured answer’
+R current 14 848.556 266.404 0.000 0.000 47 | Ocean current · 13 times an agent went from ‘changed git state’ to ‘returned its structured answer’
+R current 38 541.471 286.495 0.000 0.000 160 | Ocean current · 11 times an agent went from ‘read Argonauts' own run records’ to ‘returned its structured answer’
+R atoll 2 205.171 164.069 12.000 14.000 0 | Atoll · ‘read a config file’ was used last period, not in this one
+R atoll 20 411.187 333.100 12.000 14.000 0 | Atoll · ‘edited a test file’ was used last period, not in this one
+S hurricane 8 485.558 75.409 39.000 16.000 0 | Hurricane, category 1 · 36 ‘ran the test suite’ actions within one hour, 2 days ago at 2:01 PM
+S tsunami 8 402.228 98.794 22.000 23.650 0 | Tsunami · 7 agents did ‘ran the test suite’ within the same 5 minutes, 2 days ago at 2:01 PM
+S hurricane 9 628.258 191.076 39.000 16.000 0 | Hurricane, category 1 · 38 ‘ran the test suite, which failed’ actions within one hour, 2 days ago at 2:02 PM
+S tsunami 9 693.958 115.067 22.000 23.650 0 | Tsunami · 7 agents did ‘ran the test suite, which failed’ within the same 5 minutes, 2 days ago at 2:02 PM
+S flood 0 247.495 138.024 0.000 0.000 0 | Flood · 14 of its 55 ‘read a source file’ actions were in work a review sent back
+S flood 1 303.908 117.813 0.000 0.000 0 | Flood · 10 of its 40 ‘read a test file’ actions were in work a review sent back
+S fault 1 340.397 122.583 18.900 12.000 0 | Fault line · 1 session ended on ‘read a test file’ because the CLI failed, the last 23 days ago
+S tornado 8 557.119 70.236 14.000 16.000 0 | Tornado · 5 times one agent did ‘ran the test suite’ 5 or more times in a row (the longest 8)
+S volcano 9 723.463 152.491 20.000 23.000 0 | Volcano, smoking · ‘ran the test suite, which failed’ · 95 of its 95 actions failed, the last today
+S tornado 9 590.348 90.714 12.000 14.000 0 | Tornado · 2 times one agent did ‘ran the test suite, which failed’ 5 or more times in a row (the longest 6)
+S fault 9 552.263 212.716 18.900 12.000 0 | Fault line · 1 session ended on ‘ran the test suite, which failed’ because the CLI failed, the last 16 days ago
+S volcano 10 471.954 137.652 15.521 18.521 0 | Volcano, smoking · ‘built the project’ · 15 of its 60 actions failed, the last today
+S volcano 15 630.318 257.317 14.621 17.621 0 | Volcano, smoking · ‘ran a shell command’ · 12 of its 45 actions failed, the last today
+S fault 15 584.217 351.979 18.900 12.000 0 | Fault line · 1 session ended on ‘ran a shell command’ because the CLI failed, the last 7 days ago
+S tornado 18 531.800 308.729 13.000 15.000 0 | Tornado · 2 times one agent did ‘edited a source file’ 5 or more times in a row (the longest 7)
+S volcano 19 513.957 392.873 20.000 23.000 0 | Volcano, smoking · ‘tried an edit that didn't apply’ · 55 of its 55 actions failed, the last today
+S fault 20 410.286 368.489 18.900 12.000 0 | Fault line · 1 session ended on ‘edited a test file’ because the CLI failed, the last 28 days ago
+S flood 21 370.829 354.349 0.000 0.000 0 | Flood · 16 of its 45 ‘edited a test file: added tests’ actions were in work a review sent back
+S fault 21 459.310 422.116 21.882 12.000 0 | Fault line · 2 sessions ended on ‘edited a test file: added tests’ because the CLI failed, the last 4 days ago
+S fault 30 824.197 400.659 21.882 12.000 0 | Fault line · 2 sessions ended on ‘returned its structured answer’ because the CLI failed, the last 2 days ago
+S storm 32 794.166 446.253 14.243 16.243 0 | Thunderstorm · 2 sessions stopped on ‘asked another agent to review or judge’, by you, a limit or a full context
+S quake 32 815.423 349.968 21.882 12.000 0 | Earthquake · Claude Code crashed 12 hours ago, ending a session on ‘asked another agent to review or judge’ · 2 sessions ended here because the CLI crashed
+S flood 35 470.376 431.231 0.000 0.000 0 | Flood · 7 of its 20 ‘updated its to-do list’ actions were in work a review sent back
+S lake 30 778.604 370.003 11.400 14.400 0 | Lake · 16 sessions ended on ‘returned its structured answer’
+S lake 32 757.550 416.565 11.197 14.197 0 | Lake · 15 sessions ended on ‘asked another agent to review or judge’
+S lake 15 562.723 290.576 10.060 13.060 0 | Lake · 10 sessions ended on ‘ran a shell command’
+S swamp 10 447.339 211.099 20.800 22.800 0 | Swamp · 16 of its 60 ‘built the project’ actions came after a wait of 10 minutes or more in the same session
+S plateau 19 565.506 386.039 0.000 0.000 0 | Plateau · ‘tried an edit that didn't apply’ · 55 actions, 11 to 17 in every week of the period: a steady habit
+S basin 18 473.311 349.771 17.000 19.000 0 | Basin · agents came to ‘edited a source file’ from 6 other behaviors, 76 times
+S basin 8 456.580 111.242 17.000 19.000 0 | Basin · agents came to ‘ran the test suite’ from 5 other behaviors, 80 times
+S river 8 552.431 131.382 0.000 0.000 88 | River · 39 times an agent went from ‘ran the test suite’ to ‘ran the test suite, which failed’
+S current 20 439.995 211.458 0.000 0.000 62 | Ocean current · 27 times an agent went from ‘edited a test file’ to ‘ran the test suite’
+S current 18 524.253 248.737 0.000 0.000 46 | Ocean current · 25 times an agent went from ‘edited a source file’ to ‘built the project’
+S current 8 713.890 202.668 0.000 0.000 105 | Ocean current · 24 times an agent went from ‘ran the test suite’ to ‘returned its structured answer’
+S current 8 644.938 107.376 0.000 0.000 63 | Ocean current · 21 times an agent went from ‘ran the test suite’ to ‘checked git status or diff’
+S river 18 568.172 217.828 0.000 0.000 352 | River · 20 times an agent went from ‘edited a source file’ to ‘ran the test suite’
+S river 18 575.623 255.002 0.000 0.000 256 | River · 15 times an agent went from ‘edited a source file’ to ‘ran a linter or formatter’
+S river 10 498.505 146.120 0.000 0.000 80 | River · 14 times an agent went from ‘built the project’ to ‘ran the test suite’
+S river 18 562.278 235.347 0.000 0.000 312 | River · 13 times an agent went from ‘edited a source file’ to ‘ran the test suite, which failed’
+T hurricane 6 199.405 294.371 48.000 16.000 0 | Hurricane, category 2 · 43 ‘searched code by pattern’ actions within one hour, 13 days ago at 2:05 PM
+T hurricane 29 947.581 345.769 48.000 16.000 0 | Hurricane, category 2 · 42 ‘searched the web’ actions within one hour, 13 days ago at 2:00 PM
+T tsunami 29 1026.528 318.898 22.000 22.000 0 | Tsunami · 6 agents did ‘searched the web’ within the same 5 minutes, 13 days ago at 2:00 PM
+T fire 3 264.612 183.322 0.000 0.000 0 | Wildfire, burnt out · 26 of its 90 ‘read a doc’ actions were in work that never merged, the last 9 days ago
+T fire 4 339.126 147.607 0.000 0.000 0 | Wildfire, burnt out · 21 of its 55 ‘printed files’ actions were in work that never merged, the last 9 days ago
+T tornado 6 285.485 282.434 11.000 13.000 0 | Tornado · 1 time one agent did ‘searched code by pattern’ 5 or more times in a row (the longest 5)
+T fault 6 345.534 182.032 18.900 12.000 0 | Fault line · 1 session ended on ‘searched code by pattern’ because the CLI failed, the last 13 days ago
+T fire 7 337.860 275.605 0.000 0.000 0 | Wildfire, burnt out · 12 of its 40 ‘listed files’ actions were in work that never merged, the last 9 days ago
+T fire 24 742.155 320.488 0.000 0.000 0 | Wildfire, burnt out · 15 of its 55 ‘wrote a doc’ actions were in work that never merged, the last 10 days ago
+T fault 26 791.796 368.585 18.900 12.000 0 | Fault line · 1 session ended on ‘edited a doc’ because the CLI failed, the last 10 days ago
+T fire 28 926.523 269.918 0.000 0.000 0 | Wildfire, burnt out · 39 of its 75 ‘fetched from the web’ actions were in work that never merged, the last 13 days ago
+T fire 29 911.305 298.581 0.000 0.000 0 | Wildfire, burnt out · 23 of its 85 ‘searched the web’ actions were in work that never merged, the last 13 days ago
+T fault 29 872.616 328.324 18.900 12.000 0 | Fault line · 1 session ended on ‘searched the web’ because the CLI failed, the last 13 days ago
+T storm 30 884.487 397.139 14.243 16.243 0 | Thunderstorm · 2 sessions stopped on ‘returned its structured answer’, by you, a limit or a full context
+T fault 30 837.669 405.580 18.900 12.000 0 | Fault line · 1 session ended on ‘returned its structured answer’ because the CLI failed, the last 10 days ago
+T fault 32 702.749 344.511 18.900 12.000 0 | Fault line · 1 session ended on ‘asked another agent to review or judge’ because the CLI failed, the last 22 days ago
+T fire 38 221.132 354.031 0.000 0.000 0 | Wildfire, burnt out · 8 of its 20 ‘read Argonauts' own run records’ actions were in work that never merged, the last 9 days ago
+T lake 30 784.106 330.649 12.155 15.155 0 | Lake · 20 sessions ended on ‘returned its structured answer’
+T lake 32 806.869 424.256 9.800 12.800 0 | Lake · 9 sessions ended on ‘asked another agent to review or judge’
+T swamp 28 976.486 263.294 24.000 26.000 0 | Swamp · 31 of its 75 ‘fetched from the web’ actions came after a wait of 10 minutes or more in the same session
+T basin 3 314.925 221.857 17.000 19.000 0 | Basin · agents came to ‘read a doc’ from 4 other behaviors, 61 times
+T basin 6 208.767 182.639 17.000 19.000 0 | Basin · agents came to ‘searched code by pattern’ from 4 other behaviors, 62 times
+T river 29 921.080 284.920 0.000 0.000 48 | River · 43 times an agent went from ‘searched the web’ to ‘fetched from the web’
+T river 28 916.923 286.452 0.000 0.000 48 | River · 38 times an agent went from ‘fetched from the web’ to ‘searched the web’
+T river 0 277.346 197.029 0.000 0.000 168 | River · 37 times an agent went from ‘read a source file’ to ‘searched code by pattern’
+T current 6 240.896 194.118 0.000 0.000 29 | Ocean current · 36 times an agent went from ‘searched code by pattern’ to ‘read a source file’
+T river 24 729.997 349.815 0.000 0.000 88 | River · 27 times an agent went from ‘wrote a doc’ to ‘edited a doc’
+T river 0 247.223 162.089 0.000 0.000 72 | River · 26 times an agent went from ‘read a source file’ to ‘read a doc’
+T river 26 730.376 343.624 0.000 0.000 96 | River · 24 times an agent went from ‘edited a doc’ to ‘wrote a doc’
+T current 4 294.194 132.258 0.000 0.000 25 | Ocean current · 18 times an agent went from ‘printed files’ to ‘read a source file’
+T current 4 296.175 158.137 0.000 0.000 22 | Ocean current · 17 times an agent went from ‘printed files’ to ‘read a doc’
+T current 3 490.207 304.980 0.000 0.000 126 | Ocean current · 14 times an agent went from ‘read a doc’ to ‘wrote a doc’
+T atoll 8 518.316 118.994 12.000 14.000 0 | Atoll · ‘ran the test suite’ was used last period, not in this one
+T atoll 9 584.241 134.019 12.000 14.000 0 | Atoll · ‘ran the test suite, which failed’ was used last period, not in this one
+T atoll 10 477.112 171.582 12.000 14.000 0 | Atoll · ‘built the project’ was used last period, not in this one
+T atoll 18 534.797 340.612 12.000 14.000 0 | Atoll · ‘edited a source file’ was used last period, not in this one
+U tsunami 1 191.942 97.876 22.000 22.000 0 | Tsunami · 6 agents did ‘read a test file’ within the same 5 minutes, 8 days ago at 2:01 PM
+U hurricane 19 581.717 476.289 39.000 16.000 0 | Hurricane, category 1 · 25 ‘tried an edit that didn't apply’ actions within one hour, 8 days ago at 2:03 PM
+U tsunami 19 458.790 386.316 22.000 23.650 0 | Tsunami · 7 agents did ‘tried an edit that didn't apply’ within the same 5 minutes, 8 days ago at 2:03 PM
+U hurricane 30 831.685 299.940 57.000 16.000 0 | Hurricane, category 3 · 67 ‘returned its structured answer’ actions within one hour, 8 days ago at 2:00 PM
+U tsunami 30 1009.030 358.566 22.000 26.950 0 | Tsunami · 9 agents did ‘returned its structured answer’ within the same 5 minutes, 8 days ago at 2:00 PM
+U fire 4 332.689 148.620 0.000 0.000 0 | Wildfire, burning · 7 of its 26 ‘printed files’ actions were in work that never merged, the last 4 days ago
+U volcano 9 592.979 183.748 18.431 21.431 0 | Volcano, smoking · ‘ran the test suite, which failed’ · 27 of its 27 actions failed, the last today
+U flood 10 474.924 170.584 0.000 0.000 0 | Flood · 16 of its 64 ‘built the project’ actions were in work a review sent back
+U volcano 19 632.590 360.237 20.000 23.000 0 | Volcano, smoking · ‘tried an edit that didn't apply’ · 105 of its 105 actions failed, the last today
+U tornado 19 514.378 409.327 12.000 14.000 0 | Tornado · 1 time one agent did ‘tried an edit that didn't apply’ 5 or more times in a row (the longest 6)
+U quake 19 583.894 278.434 18.900 12.000 0 | Earthquake · Claude Code crashed 10 hours ago, ending a session on ‘tried an edit that didn't apply’ · 1 session ended here because the CLI crashed
+U tornado 24 756.838 358.586 11.000 13.000 0 | Tornado · 1 time one agent did ‘wrote a doc’ 5 or more times in a row (the longest 5)
+U storm 24 734.270 273.033 14.243 16.243 0 | Thunderstorm · 2 sessions stopped on ‘wrote a doc’, by you, a limit or a full context
+U tornado 30 861.681 401.193 11.000 13.000 0 | Tornado · 3 times one agent did ‘returned its structured answer’ 5 or more times in a row (the longest 5)
+U storm 30 870.478 467.550 17.937 19.937 0 | Thunderstorm · 7 sessions stopped on ‘returned its structured answer’, by you, a limit or a full context
+U fault 30 918.324 332.698 21.882 12.000 0 | Fault line · 2 sessions ended on ‘returned its structured answer’ because the CLI failed, the last 8 days ago
+U volcano 31 958.023 386.521 17.082 20.082 0 | Volcano, smoking · ‘gave a structured answer that didn't fit’ · 21 of its 21 actions failed, the last today
+U fault 32 826.547 438.310 18.900 12.000 0 | Fault line · 1 session ended on ‘asked another agent to review or judge’ because the CLI failed, the last 4 days ago
+U flood 38 221.896 353.899 0.000 0.000 0 | Flood · 6 of its 23 ‘read Argonauts' own run records’ actions were in work a review sent back
+U fault 39 250.247 408.134 18.900 12.000 0 | Fault line · 1 session ended on ‘checked the run's status’ because the CLI failed, the last 18 days ago
+U fault 40 835.484 136.814 18.900 12.000 0 | Fault line · 1 session ended on ‘checked git status or diff, then read git history’ because the CLI failed, the last 14 days ago
+U lake 30 864.075 419.248 13.616 16.616 0 | Lake · 29 sessions ended on ‘returned its structured answer’
+U lake 19 645.671 376.257 10.060 13.060 0 | Lake · 10 sessions ended on ‘tried an edit that didn't apply’
+U lake 24 694.181 379.151 9.233 12.233 0 | Lake · 7 sessions ended on ‘wrote a doc’
+U swamp 6 254.360 185.437 17.389 19.389 0 | Swamp · 6 of its 16 ‘searched code by pattern’ actions came after a wait of 10 minutes or more in the same session
+U basin 30 940.286 293.794 17.000 19.000 0 | Basin · agents came to ‘returned its structured answer’ from 7 other behaviors, 87 times
+U basin 24 677.507 310.659 17.000 19.000 0 | Basin · agents came to ‘wrote a doc’ from 4 other behaviors, 50 times
+U oasis 28 950.433 262.767 16.000 18.000 0 | Oasis · ‘fetched from the web’ was used 4 days ago, in dry land: the behaviors round it were last used 14 or more days ago
+U river 30 799.368 322.257 0.000 0.000 168 | River · 24 times an agent went from ‘returned its structured answer’ to ‘wrote a doc’
+U river 30 711.134 368.116 0.000 0.000 464 | River · 23 times an agent went from ‘returned its structured answer’ to ‘tried an edit that didn't apply’
+U river 19 538.442 262.183 0.000 0.000 336 | River · 20 times an agent went from ‘tried an edit that didn't apply’ to ‘built the project’
+U river 8 642.368 318.570 0.000 0.000 664 | River · 18 times an agent went from ‘ran the test suite’ to ‘returned its structured answer’
+U river 18 565.278 220.910 0.000 0.000 328 | River · 16 times an agent went from ‘edited a source file’ to ‘built the project’
+U current 24 647.650 333.834 0.000 0.000 47 | Ocean current · 16 times an agent went from ‘wrote a doc’ to ‘tried an edit that didn't apply’
+U river 9 590.097 263.216 0.000 0.000 376 | River · 16 times an agent went from ‘ran the test suite, which failed’ to ‘tried an edit that didn't apply’
+U current 43 804.251 266.639 0.000 0.000 54 | Ocean current · 14 times an agent went from ‘checked git status or diff, then changed git state’ to ‘returned its structured answer’
+U current 19 709.857 340.955 0.000 0.000 73 | Ocean current · 13 times an agent went from ‘tried an edit that didn't apply’ to ‘returned its structured answer’
+U current 38 541.471 286.495 0.000 0.000 160 | Ocean current · 13 times an agent went from ‘read Argonauts' own run records’ to ‘returned its structured answer’
+U atoll 2 205.171 164.069 12.000 14.000 0 | Atoll · ‘read a config file’ was used last period, not in this one
+U atoll 14 880.904 179.094 12.000 14.000 0 | Atoll · ‘changed git state’ was used last period, not in this one
+U atoll 20 411.187 333.100 12.000 14.000 0 | Atoll · ‘edited a test file’ was used last period, not in this one

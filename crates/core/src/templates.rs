@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn the_macro_reads_a_template_by_its_path() {
         assert_eq!(template!("roles/README.md"), ROLES_README);
-        assert!(template!("workflows/council.toml").contains("[[step]]"));
+        assert!(template!("workflows/council.toml").contains("kind  = \"talk\""));
         assert_eq!(text("README.md"), README);
     }
 

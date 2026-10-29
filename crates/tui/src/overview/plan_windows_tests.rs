@@ -36,7 +36,7 @@ mod picture {
 
     use crate::kit::{Form, Frame, Kit};
     use crate::overview::cards::{UsageCard, UsageCards};
-    use crate::overview::golden::{Picture, Region, assert_matches, differences, theme};
+    use crate::overview::golden::{Picture, Region, assert_matches, theme};
 
     /// The picture's clock: Thursday evening, as its 5-hour and Codex and agy weeks read.
     const NOW: OffsetDateTime = datetime!(2026-10-08 20:12 UTC);
@@ -120,6 +120,35 @@ mod picture {
     /// The Limits tab's plan usage card at the picture's width, in its colours. The picture's
     /// Claude Code weeks say `resets in 4d 1h` where its other rows put the clock a day
     /// earlier: on that clock the same reset reads `5d 2h`, the only cells that are different.
+    /// The same card where the terminal draws logos: each CLI's logo before its name, and the
+    /// names' column two cells wider to hold it.
+    #[test]
+    fn the_limits_card_puts_each_clis_logo_before_its_name() {
+        use crate::kit::logo::golden::{count, pictured, with_stand_ins};
+        use crate::overview::golden::keep;
+
+        let theme = pictured(&theme());
+        let kit = Kit::new(&theme);
+        let usage = usage();
+        let names = argonauts_core::display_names::DisplayNames::default();
+        let cards = UsageCards {
+            usage: &usage,
+            names: &names,
+            now: NOW,
+            left: false,
+        };
+        let drawn = cards.draw(&kit, UsageCard::PlanUsage, Form::Full, Frame::view(120));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, drawn.lines.len() as u16));
+        for (y, line) in drawn.lines.iter().enumerate() {
+            buf.set_line(0, y as u16, line, 120);
+        }
+        assert_eq!(count(&buf), 3);
+        let shown = with_stand_ins(&buf);
+        keep("limits_logos", &shown);
+        let picture = Picture::load("limits_logos");
+        assert_matches(&picture, &shown, &Region::whole(&picture, (0, 0)), &theme);
+    }
+
     #[test]
     fn the_limits_card_matches_its_picture() {
         let picture = Picture::load("limits_after");
@@ -139,25 +168,6 @@ mod picture {
             buf.set_line(0, y as u16, line, 120);
         }
         let whole = Region::whole(&picture, (1, 0));
-        let found = differences(&picture, &buf, &whole, &theme);
-        assert_eq!(
-            found,
-            [
-                "row 4 column 81: '5' where the picture has '4'",
-                "row 4 column 84: '2' where the picture has '1'",
-                "row 5 column 81: '5' where the picture has '4'",
-                "row 5 column 84: '2' where the picture has '1'",
-            ],
-            "{found:#?}"
-        );
-        // Every other row and column, colours included, as drawn.
-        for rows in [0..4, 6..picture.rows.len()] {
-            let region = Region {
-                rows: rows.clone(),
-                columns: 0..118,
-                at: (1, rows.start as u16),
-            };
-            assert_matches(&picture, &buf, &region, &theme);
-        }
+        assert_matches(&picture, &buf, &whole, &theme);
     }
 }

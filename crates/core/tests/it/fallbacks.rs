@@ -712,6 +712,7 @@ fn the_original_returned_task_and_its_answers_keep_their_wire_format() {
                    "commits": 3, "changed": diff_stat(), "tests_passed": true,
                    "debt": [debt()]},
         "evidence_sha256": "e3b0", "mode": "supervised", "decide_with": "rules",
+        "when_declined": "decide",
         "options": [option("r", "review it", "upgrade_review"),
                     option("o", "give it back", "give_back"),
                     option("u", "redo it", "redo"),

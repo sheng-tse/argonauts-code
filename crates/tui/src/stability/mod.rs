@@ -12,6 +12,9 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::kit::Drawn;
 use crate::text::{ambiguous_width, spans_width, width_with};
 
+#[cfg(test)]
+pub(crate) mod grid;
+
 /// Every view and question is checked at these widths.
 pub const WIDTHS: [u16; 6] = [40, 60, 80, 100, 120, 200];
 

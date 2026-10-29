@@ -60,7 +60,12 @@ fn limits_sandbox_blocks_write_outside_worktree() -> anyhow::Result<()> {
         targets.len() * sessions
     );
     for target in &targets {
-        assert!(!target.exists(), "{} was written", target.display());
+        assert!(
+            !target.exists(),
+            "{} was written; the probe ran with:\n{}",
+            target.display(),
+            probe_runs(&probe)
+        );
     }
     Ok(())
 }

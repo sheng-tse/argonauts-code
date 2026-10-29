@@ -5,9 +5,14 @@
 //! "Other model…" to type any name. Under the list, ←/→ set the highlighted model's effort, and
 //! Enter saves both. Esc goes back a level, and closes from the first.
 
+use std::time::Instant;
+
+use time::OffsetDateTime;
+
 use argonauts_core::app::{ModelChoice, UiCommand};
 use argonauts_core::input::SlashCommand;
-use argonauts_core::limits::{CostEstimate, PlanUsageStatus};
+use argonauts_core::limits::{CostEstimate, PlanUsageReading, PlanUsageStatus};
+use argonauts_core::logos::{Logo, logo_for};
 use argonauts_core::model_catalog::display_name_from_id;
 use argonauts_core::model_picker::{EffortLine, ListedFacts, ModelsLevel};
 use argonauts_core::names::{ModelRef, RoleName};
@@ -18,8 +23,10 @@ use argonauts_core::window_size::window_words;
 use super::flow::{self, Flow, Kept, RowAction, Stage, Step};
 use super::memory_rows;
 use super::words::{level_freshness, model_role, source_state, value_words, word_for_a_model};
-use crate::bottom::{Picker, PickerRow};
+use crate::bottom::{Picker, PickerCell, PickerColumn, PickerRow, RowPart};
 use crate::format::{self, setting_value};
+use crate::format::{ClockStyle, reset_time};
+use crate::theme::Role;
 
 const DEFAULT_LABEL: &str = "Default";
 const RECOMMENDED_LABEL: &str = "Default (recommended)";
@@ -58,9 +65,11 @@ pub fn fill(picker: &mut Picker, role: Option<RoleName>, choices: &[ModelChoice]
 /// listed when the picker opened reads "new" until it closes.
 pub fn refresh(picker: &mut Picker, choices: &[ModelChoice]) {
     let mut choices = choices.to_vec();
+    // A model offered for download comes with the memory reading, after the picker opened,
+    // so only one the CLI can run now reads "new".
     if let Some(opened_with) = &picker.flow.opened_with {
         for choice in &mut choices {
-            if choice.worker.model.is_some() && !opened_with.contains(&choice.worker) {
+            if runnable(choice) && !opened_with.contains(&choice.worker) {
                 choice.new = true;
             }
         }
@@ -71,6 +80,7 @@ pub fn refresh(picker: &mut Picker, choices: &[ModelChoice]) {
         .map(|index| row_key(&picker.flow, &picker.rows, index));
     let shown = Picker {
         flow: picker.flow.clone(),
+        session_key: picker.session_key.clone(),
         ..Picker::default()
     };
     let mut fresh = shown;
@@ -87,6 +97,7 @@ pub fn refresh(picker: &mut Picker, choices: &[ModelChoice]) {
     picker.about = fresh.about;
     // The machine's memory is read again with each list, so its line follows the newest.
     picker.banner = fresh.banner;
+    picker.columns = fresh.columns;
     picker.placeholder = fresh.placeholder;
     picker.enter_hint = fresh.enter_hint;
     picker.esc_hint = fresh.esc_hint;
@@ -137,6 +148,7 @@ fn cli_list(picker: &mut Picker, role: Option<RoleName>) {
     picker.note = None;
     // Opened for a setting, the picker keeps that setting's name.
     let for_setting = picker.flow.model_for.is_some();
+    picker.title_logo = None;
     if !for_setting {
         picker.title = match role {
             None => "Main agent".to_owned(),
@@ -163,10 +175,10 @@ fn cli_list(picker: &mut Picker, role: Option<RoleName>) {
     let choices = picker.flow.models.clone();
     let groups = groups(&choices);
     let offset = picker.flow.told_at.map(|(_, offset)| offset);
+    let told = picker.flow.told_at.map(|(now, _)| now);
     let mut rows: Vec<PickerRow> = groups
         .iter()
         .map(|(cli, models)| {
-            let mut note = cli_note(models);
             let state = picker
                 .flow
                 .sources
@@ -174,12 +186,12 @@ fn cli_list(picker: &mut Picker, role: Option<RoleName>) {
                 .find(|source| source.cli == *cli)
                 .zip(offset)
                 .and_then(|(source, offset)| source_state(source, offset));
-            if let Some(state) = state {
-                note = format!("{note} · {state}");
-            }
+            let logo = logo_for(cli, None);
             PickerRow {
                 current: models.iter().any(|choice| choice.current),
-                ..PickerRow::new(format::agent_label(cli), note)
+                cells: cli_cells(models, state, told, &logo),
+                logo: Some(logo),
+                ..PickerRow::new(format::agent_label(cli), "")
             }
         })
         .collect();
@@ -191,10 +203,15 @@ fn cli_list(picker: &mut Picker, role: Option<RoleName>) {
         })
         .collect();
     if role.is_none() && has_roles(picker) {
-        rows.push(PickerRow::new(ROLES_LABEL, "each role's own model"));
+        rows.push(PickerRow {
+            cells: vec![PickerCell::new("each role's own model")],
+            ..PickerRow::new(ROLES_LABEL, "")
+        });
         actions.push(RowAction::OpenRoles);
     }
-    picker.set_rows(rows);
+    let mut columns = vec![PickerColumn::words(""); CLI_COLUMNS];
+    columns[PERCENT] = PickerColumn::numbers("");
+    picker.set_table(columns, rows);
     picker.flow.actions = actions;
     if let Some(at) = groups
         .iter()
@@ -219,16 +236,26 @@ fn model_list(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
     };
     let label = format::agent_label(cli);
     picker.title = label.clone();
-    let about = if picker.flow.model_for.is_some() {
+    picker.title_logo = Some(logo_for(cli, None));
+    let level = ModelsLevel::new(cli, &picker.flow.models);
+    // A CLI that lists its models by provider gets one table, its groups' headings naming
+    // their columns.
+    let table = level.rows().any(|choice| choice.listed.is_some());
+    let same_cost = table
+        .then(|| memory_rows::same_cost(level.rows()))
+        .flatten();
+    let mut about = if picker.flow.model_for.is_some() {
         format!("The models {label} runs")
     } else {
         format!("The model {} runs on {label}", who(role))
     };
+    if let Some(same) = &same_cost {
+        about = format!("{about}. {same}");
+    }
     picker.about = with_freshness(picker, &about);
     picker.placeholder = "No models listed".to_owned();
-    picker.enter_hint.clear();
+    picker.enter_hint = flow::save_hint(picker);
     picker.esc_hint = "Esc to go back".to_owned();
-    let level = ModelsLevel::new(cli, &picker.flow.models);
     // Older models come last with no heading of their own, as Claude Code lists them. A CLI
     // that lists its models by provider heads each provider's group.
     let mut group: Option<&str> = None;
@@ -237,11 +264,20 @@ fn model_list(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
         .map(|choice| {
             let starts = listed_group(choice).filter(|heading| group != Some(*heading));
             group = listed_group(choice);
+            let heading = starts
+                .zip(choice.listed.as_ref())
+                .map(|(group, listed)| memory_rows::heading(group, listed));
+            // A model's row is named by its model, and a default's by the model it runs.
+            let model_in = match choice.worker.model {
+                Some(_) => RowPart::Label,
+                None => RowPart::Description,
+            };
             PickerRow {
                 current: choice.current,
-                heading: starts.map(str::to_owned),
+                heading,
                 warning: no_tools_warning(choice),
                 also_matches: choice.worker.model.clone(),
+                model_in: Some(model_in),
                 ..PickerRow::new(model_label(choice), model_description(choice))
             }
         })
@@ -255,16 +291,15 @@ fn model_list(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
         })
     });
     picker.banner = memory.as_ref().map(memory_rows::banner);
-    if let Some(machine) = &memory {
-        let width = memory_rows::context_width(level.rows().filter_map(|c| c.listed.as_ref()));
-        for (row, choice) in rows.iter_mut().zip(level.rows()) {
-            if let Some(listed) = &choice.listed {
-                let described = memory_rows::description(choice, listed, width, machine);
-                row.description = described.description;
-                row.tail = described.tail;
-                row.danger = described.danger;
-            }
+    for (row, choice) in rows.iter_mut().zip(level.rows()).filter(|_| table) {
+        let Some(listed) = &choice.listed else {
+            continue;
+        };
+        if choice.worker.model.is_none() {
+            row.description = memory_rows::default_description(choice, listed);
+            continue;
         }
+        row.cells = memory_rows::cells(choice, listed, memory.as_ref(), same_cost.is_some());
     }
     let other = if ROUTED_CLIS.contains(&cli) {
         OTHER_ROUTE
@@ -281,7 +316,12 @@ fn model_list(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
         };
         rows[under].under = Some(aliases);
     }
-    picker.set_rows(rows);
+    let columns = if table {
+        memory_rows::columns()
+    } else {
+        Vec::new()
+    };
+    picker.set_table(columns, rows);
     picker.flow.actions = level
         .rows()
         .map(|choice| RowAction::Worker {
@@ -303,6 +343,7 @@ const ROUTE_EXAMPLES: &str = "ollama/qwen3-coder:30b or opencode/deepseek-v4.1-f
 pub fn other_model(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
     let label = format::agent_label(cli);
     picker.title = format!("Other model on {label}");
+    picker.title_logo = None;
     picker.about = if ROUTED_CLIS.contains(&cli) {
         format!(
             "Type the model as {label} takes it, provider/model or provider/model#variant, such \
@@ -315,7 +356,7 @@ pub fn other_model(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
     picker.set_rows(Vec::new());
     picker.flow.actions.clear();
     picker.input = Some(held);
-    picker.enter_hint = "Enter to use it".to_owned();
+    picker.enter_hint = flow::save_hint(picker);
     picker.esc_hint = "Esc to go back".to_owned();
     picker.flow.stage = Stage::OtherModel {
         role,
@@ -473,6 +514,14 @@ pub fn follow_pointer(picker: &mut Picker) {
     }
     picker.flow.effort = line;
     picker.note = memory_note(picker);
+    let gauge = match (&picker.flow.stage, &picker.banner, picker.flow.memory) {
+        (Stage::ModelsOf { .. }, Some(_), Some(machine)) => {
+            Some(memory_rows::gauge(pointed_choice(picker), &machine))
+        }
+        _ => None,
+    };
+    picker.gauge =
+        gauge.map(|gauge| memory_rows::gauge_after(gauge, picker.gauge.as_ref(), Instant::now()));
 }
 
 /// The listed choice under the pointer on a models level.
@@ -691,35 +740,90 @@ fn groups(choices: &[ModelChoice]) -> Vec<(String, Vec<&ModelChoice>)> {
     groups
 }
 
-/// What the role runs here now, else how many models there are, then access and plan usage.
-fn cli_note(models: &[&ModelChoice]) -> String {
-    let mut parts = Vec::new();
-    match models.iter().find(|choice| choice.current) {
-        Some(current) => parts.push(match current.worker.model.as_deref() {
-            Some(alias) if current.alias => alias.to_owned(),
-            Some(_) => current.display_name(),
+/// The CLI level's columns: what runs, how it's reached, the plan window's meter, its
+/// percentage, when it resets, and whether its list is being asked for, a column of its own so
+/// nothing moves when an answer lands.
+const CLI_COLUMNS: usize = 6;
+const PERCENT: usize = 3;
+/// From here a plan window reads amber and says when it resets, as the bottom line does.
+const NEAR_LIMIT: f64 = 0.9;
+
+/// A CLI's row: what the role runs here now, else how many models there are, then how they're
+/// reached, its plan usage, and the state of its list.
+fn cli_cells(
+    models: &[&ModelChoice],
+    state: Option<String>,
+    now: Option<OffsetDateTime>,
+    logo: &Logo,
+) -> Vec<PickerCell> {
+    // The model in effect is named beside the row's logo, as a model's own row names it.
+    let model = |name: String| PickerCell::model_beside(name, logo.clone());
+    let runs = match models.iter().find(|choice| choice.current) {
+        Some(current) => match current.worker.model.as_deref() {
+            Some(alias) if current.alias => PickerCell::new(alias),
+            Some(_) => model(current.display_name()),
             None => match (current.runs.as_deref(), current.note.as_deref()) {
-                (Some(runs), _) => format!("default, {runs}"),
-                (None, Some(note)) => format!("default, {note}"),
-                (None, None) => "default".to_owned(),
+                (Some(runs), _) => model(format!("{runs} · default")),
+                (None, Some(note)) => PickerCell::new(format!("{note} · default")),
+                (None, None) => PickerCell::new("default"),
             },
+        },
+        None => PickerCell::new(match models.iter().filter(|c| runnable(c)).count() {
+            0 => String::new(),
+            1 => "1 model".to_owned(),
+            n => format!("{n} models"),
         }),
-        None => {
-            let count = models.iter().filter(|c| runnable(c)).count();
-            match count {
-                0 => {}
-                1 => parts.push("1 model".to_owned()),
-                n => parts.push(format!("{n} models")),
-            }
-        }
-    }
+    };
+    let mut cells = vec![PickerCell::default(); CLI_COLUMNS];
+    cells[0] = runs;
     if let Some(first) = models.first() {
-        parts.push(reach_words(models).unwrap_or_else(|| access_words(first.access).to_owned()));
-        if let Some(plan_usage) = plan_usage_words(first) {
-            parts.push(plan_usage);
+        cells[1] = PickerCell::new(
+            reach_words(models).unwrap_or_else(|| access_words(first.access).to_owned()),
+        );
+        if let Some(plan) = first.plan_usage.as_ref() {
+            plan_cells(&mut cells, plan, now.unwrap_or(plan.observed_at));
         }
     }
-    parts.join(" · ")
+    cells[CLI_COLUMNS - 1] = PickerCell::new(state.unwrap_or_default());
+    cells
+}
+
+/// A plan window's meter, `5h ▄▄▄▄▄▖`, its percentage, amber near the limit, and then when it
+/// resets.
+fn plan_cells(cells: &mut [PickerCell], plan: &PlanUsageReading, now: OffsetDateTime) {
+    let out = plan.status == PlanUsageStatus::Rejected;
+    let Some(used) = plan.used.or(out.then_some(1.0)) else {
+        return;
+    };
+    let window = plan.window.as_deref().map(window_name).unwrap_or_default();
+    cells[2] = PickerCell::meter(window, used);
+    cells[PERCENT] = if out {
+        PickerCell::in_role("out", Role::Danger)
+    } else if used >= NEAR_LIMIT {
+        PickerCell::in_role(whole_percent(used), Role::Warn)
+    } else {
+        PickerCell::new(whole_percent(used))
+    };
+    if out || used >= NEAR_LIMIT {
+        cells[4] = plan
+            .resets_at
+            .map(|at| PickerCell::new(format!("resets {}", reset_time(at, now, ClockStyle::now()))))
+            .unwrap_or_default();
+    }
+}
+
+fn whole_percent(share: f64) -> String {
+    format!("{:.0}%", (share * 100.0).clamp(0.0, 100.0))
+}
+
+/// `five_hour` reads `5h` and `seven_day` `7d`, as the bottom line names its windows.
+fn window_name(window: &str) -> String {
+    match window.trim() {
+        "five_hour" | "5h" => "5h".to_owned(),
+        "seven_day" | "weekly" | "7d" => "7d".to_owned(),
+        "daily" | "one_day" => "1d".to_owned(),
+        other => other.replace('_', " "),
+    }
 }
 
 /// A model the CLI can run now: one it names, and not one offered for download.
@@ -732,8 +836,8 @@ fn runnable(choice: &ModelChoice) -> bool {
     choice.worker.model.is_some() && download.is_none()
 }
 
-/// How a CLI's models are reached, counted when they're reached more than one way: `7 local,
-/// 10 free`. All of them on this machine read `local`, and all free read `free`; `None` when
+/// How a CLI's models are reached, counted when they're reached more than one way: `7 local ·
+/// 10 free`. All of them on this computer read `local`, and all free read `free`; `None` when
 /// they're all reached another one way, which its access word says.
 fn reach_words(models: &[&ModelChoice]) -> Option<String> {
     let reach = |choice: &ModelChoice| match (choice.access, &choice.cost) {
@@ -759,7 +863,7 @@ fn reach_words(models: &[&ModelChoice]) -> Option<String> {
     if counts.len() < 2 {
         return None;
     }
-    // On this machine first, then free, then the rest as they come.
+    // On this computer first, then free, then the rest as they come.
     counts.sort_by_key(|(word, _)| match *word {
         "local" => 0,
         "free" => 1,
@@ -769,7 +873,7 @@ fn reach_words(models: &[&ModelChoice]) -> Option<String> {
         .iter()
         .map(|(word, count)| format!("{count} {word}"))
         .collect();
-    Some(words.join(", "))
+    Some(words.join(" · "))
 }
 
 /// "Default (recommended)", or the model's display name, such as "Opus 5.5".
@@ -806,7 +910,7 @@ fn no_tools_warning(choice: &ModelChoice) -> Option<String> {
 }
 
 /// A listed model in its fields: "no tool use" for one that has none, its window, then where
-/// it runs, "on this machine", or what it costs.
+/// it runs, "on this computer", or what it costs.
 fn listed_description(choice: &ModelChoice, listed: &ListedFacts) -> String {
     let mut parts: Vec<String> = Vec::new();
     if choice.new {
@@ -819,7 +923,7 @@ fn listed_description(choice: &ModelChoice, listed: &ListedFacts) -> String {
         parts.push(format!("{} context", window_words(window)));
     }
     if choice.access == ModelAccess::Local {
-        parts.push("on this machine".to_owned());
+        parts.push("on this computer".to_owned());
     } else {
         let cost = model_note(&ModelChoice {
             note: None,
@@ -885,7 +989,7 @@ fn kind_of_model(choice: &ModelChoice) -> String {
     let how = match choice.access {
         ModelAccess::Subscription => "on your subscription",
         ModelAccess::ApiKey => "on your API key",
-        ModelAccess::Local => "on this machine",
+        ModelAccess::Local => "on this computer",
     };
     format!("{what} {how}")
 }
@@ -928,20 +1032,6 @@ fn access_words(access: ModelAccess) -> &'static str {
         ModelAccess::Subscription => "subscription",
         ModelAccess::ApiKey => "API key",
         ModelAccess::Local => "local",
-    }
-}
-
-fn plan_usage_words(choice: &ModelChoice) -> Option<String> {
-    let plan_usage = choice.plan_usage.as_ref()?;
-    match (plan_usage.status, plan_usage.used) {
-        (PlanUsageStatus::Rejected, _) => Some("out of plan usage".to_owned()),
-        // Plan usage in the one wording every view has: `71% used`.
-        (_, Some(used)) => Some(format::plan_usage(
-            used,
-            format::PlanUsageWords::Used,
-            false,
-        )),
-        _ => None,
     }
 }
 

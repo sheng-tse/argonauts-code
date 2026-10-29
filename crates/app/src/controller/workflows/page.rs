@@ -107,10 +107,7 @@ fn open_in_editor(ctx: &Ctx, name: &str, path: &Path, editor: Option<Vec<String>
     match editor {
         Some(mut argv) => {
             argv.push(path.display().to_string());
-            ctx.send(AppEvent::RunInTerminal {
-                argv,
-                cwd: ctx.env.repo_root.clone(),
-            });
+            ctx.send(AppEvent::run_in_terminal(argv, ctx.env.repo_root.clone()));
         }
         None => {
             let said = "Set $VISUAL or $EDITOR and e opens the file from here. A save from \

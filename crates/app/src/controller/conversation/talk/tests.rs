@@ -1,5 +1,5 @@
-//! The setup tool from the form to the files: the question, each place, Not now, and a place your
-//! own words named.
+//! The setup tool from the form to the files: the question, where yes keeps it, Not now, and a
+//! place your own words named.
 
 use argonauts_core::app::{AppChoice, AppEvent, ChoiceKind};
 use argonauts_core::asking::AskReply;
@@ -24,6 +24,17 @@ struct Rig {
 impl Rig {
     fn new() -> Self {
         Self::with(CliOptions::default())
+    }
+
+    /// With your changes saving to `place`, as `save_changes_to` names it.
+    fn saving_to(place: &'static str) -> Self {
+        Self::with(CliOptions {
+            prepare: Some(Box::new(move |repo: &argonauts_testkit::TempRepo| {
+                let config = format!("save_changes_to = \"{place}\"\n");
+                std::fs::write(repo.global_config(), config).unwrap();
+            })),
+            ..CliOptions::default()
+        })
     }
 
     /// With `config` as your own settings file.
@@ -72,6 +83,16 @@ impl Rig {
             .expect("the setup's question")
     }
 
+    /// Says yes on the question, as its first row does.
+    fn yes(&mut self, question: &AppChoice) -> Vec<Effect> {
+        let yes = &question.options[0];
+        assert_eq!(yes.label, "Use it");
+        let AnswerAction::Choose { value } = &yes.action else {
+            panic!("yes picks: {:?}", yes.action);
+        };
+        self.pick(question, value)
+    }
+
     fn pick(&mut self, question: &AppChoice, value: &str) -> Vec<Effect> {
         let action = AnswerAction::Choose {
             value: value.to_owned(),
@@ -103,7 +124,8 @@ fn saved(effects: &[Effect]) -> Vec<(Vec<(String, String)>, SettingScope)> {
         .iter()
         .filter_map(|effect| match effect {
             Effect::SaveSettings { pairs, scope }
-            | Effect::SaveConfirmedSettings { pairs, scope } => Some((pairs.clone(), *scope)),
+            | Effect::SaveConfirmedSettings { pairs, scope }
+            | Effect::KeepSettings { pairs, scope } => Some((pairs.clone(), *scope)),
             _ => None,
         })
         .collect()
@@ -132,27 +154,33 @@ fn a_valid_setup_is_one_question_and_nothing_is_written_yet() {
         ]
     );
     let labels: Vec<&str> = question.options.iter().map(|o| o.label.as_str()).collect();
-    assert_eq!(
-        labels,
-        [
-            "This conversation",
-            "Save for this repository",
-            "Save for all my repositories",
-            "Not now",
-            "Show what would be written",
-        ]
+    assert_eq!(labels, ["Use it", "Not now", "Show what would be written"]);
+    assert!(
+        !question.options[0].recommended,
+        "there is nothing else to pick"
     );
-    assert!(question.options[0].recommended);
+    let env = &rig.test.env;
+    let home = env.paths.home().to_path_buf();
     assert_eq!(
-        question.options[1].detail.as_deref(),
-        Some("writes 2 files in .argonauts/ · d shows the diff")
+        question.options[0].detail.as_deref(),
+        Some(format!("writes 2 files in {}/", env.display(&home)).as_str()),
+        "your changes save everywhere"
     );
-    assert_eq!(question.options[4].action, AnswerAction::ShowDiff);
+    assert_eq!(question.options[2].action, AnswerAction::ShowDiff);
     let shown = question.body.join("\n");
     assert!(shown.contains("You asked: Reviewers treat"), "{shown}");
-    assert!(shown.contains(".argonauts/config.toml"), "{shown}");
-    assert!(shown.contains(".argonauts/roles/reviewer.md"), "{shown}");
-    assert!(!rig.test.env.project_config().exists());
+    assert!(shown.contains("\nEverywhere\n"), "{shown}");
+    assert!(shown.contains(&env.shown(&env.global_config())), "{shown}");
+    assert!(
+        shown.contains(&env.shown(&home.join("roles/reviewer.md"))),
+        "{shown}"
+    );
+    assert!(
+        !shown.contains("This session"),
+        "only where yes saves it: {shown}"
+    );
+    assert!(!home.join("roles/reviewer.md").exists());
+    assert!(!env.project_config().exists());
 }
 
 #[test]
@@ -231,8 +259,8 @@ fn a_crew_said_in_words_reads_with_who_follows_whom_and_how_each_task_is_kept() 
 }
 
 #[test]
-fn saving_for_the_repository_writes_its_files() {
-    let mut rig = Rig::new();
+fn yes_saves_in_this_project_when_your_changes_go_there() {
+    let mut rig = Rig::saving_to("this_project");
     let roles = rig.test.repo.root().join(".argonauts/roles");
     std::fs::create_dir_all(&roles).unwrap();
     std::fs::write(
@@ -248,10 +276,10 @@ fn saving_for_the_repository_writes_its_files() {
     let (_, mut answered) = rig.call(setup, SAID);
     let question = rig.question();
     assert_eq!(
-        question.options[1].detail.as_deref(),
+        question.options[0].detail.as_deref(),
         Some("writes 4 files in .argonauts/ · d shows the diff")
     );
-    let effects = rig.pick(&question, "repository");
+    let effects = rig.yes(&question);
     assert_eq!(
         saved(&effects),
         [(
@@ -282,18 +310,18 @@ fn saving_for_the_repository_writes_its_files() {
     let reply = said(&mut answered);
     assert!(!reply.is_error);
     assert!(reply.text.starts_with("The user saved it for this repository: .argonauts/config.toml, .argonauts/roles/reviewer.md"), "{}", reply.text);
-    let closed = rig.events().into_iter().any(|event| {
-        matches!(event, AppEvent::ChoiceClosed { outcome, .. } if outcome == "Save for this repository")
-    });
+    let closed = rig.events().into_iter().any(
+        |event| matches!(event, AppEvent::ChoiceClosed { outcome, .. } if outcome == "Use it"),
+    );
     assert!(closed);
 }
 
 #[test]
-fn saving_for_all_repositories_writes_in_your_home_folder() {
+fn yes_saves_in_your_home_folder_when_your_changes_go_everywhere() {
     let mut rig = Rig::new();
     let (_, mut answered) = rig.call(the_setup(), SAID);
     let question = rig.question();
-    let effects = rig.pick(&question, "all_repositories");
+    let effects = rig.yes(&question);
     assert_eq!(saved(&effects)[0].1, SettingScope::Global);
     let home = rig.test.env.paths.home().to_path_buf();
     let reviewers = std::fs::read_to_string(home.join("roles/reviewer.md")).unwrap();
@@ -302,18 +330,72 @@ fn saving_for_all_repositories_writes_in_your_home_folder() {
     assert!(said(&mut answered).text.contains("all their repositories"));
 }
 
+/// Just you keeps the settings in your own file for this project, and the role's file goes in
+/// the project's folder.
 #[test]
-fn this_conversation_keeps_it_as_session_settings() {
-    let mut rig = Rig::new();
+fn just_you_saves_the_settings_in_your_own_file_for_this_project() {
+    let mut rig = Rig::saving_to("just_you");
+    let (_, mut answered) = rig.call(the_setup(), SAID);
+    let question = rig.question();
+    assert_eq!(
+        question.options[0].detail.as_deref(),
+        Some("writes 2 files in .argonauts/ · d shows the diff")
+    );
+    assert!(
+        question
+            .body
+            .contains(&"  .argonauts/config.local.toml".to_owned()),
+        "{:#?}",
+        question.body
+    );
+    let effects = rig.yes(&question);
+    assert_eq!(saved(&effects)[0].1, SettingScope::ProjectLocal);
+    let roles = rig.test.repo.root().join(".argonauts/roles/reviewer.md");
+    assert!(roles.exists());
+    let reply = said(&mut answered).text;
+    assert!(reply.contains(".argonauts/config.local.toml"), "{reply}");
+}
+
+/// A setting the team's file sets saves where it takes effect, as any change does, so the
+/// files are in two folders and neither is named.
+#[test]
+fn a_setting_the_teams_file_sets_saves_where_it_takes_effect() {
+    let mut rig = Rig::with(CliOptions {
+        prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
+            let dir = repo.root().join(".argonauts");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("config.toml"),
+                "[agents.codex]\neffort = \"low\"\n",
+            )
+            .unwrap();
+        })),
+        ..CliOptions::default()
+    });
+    let (_, _answered) = rig.call(the_setup(), SAID);
+    let question = rig.question();
+    assert_eq!(
+        question.options[0].detail.as_deref(),
+        Some("writes 2 files")
+    );
+    let effects = rig.yes(&question);
+    assert_eq!(saved(&effects)[0].1, SettingScope::ProjectLocal);
+    let home = rig.test.env.paths.home().to_path_buf();
+    assert!(home.join("roles/reviewer.md").exists());
+}
+
+#[test]
+fn this_session_keeps_it_as_session_settings() {
+    let mut rig = Rig::saving_to("this_session");
     let mut setup = the_setup();
     setup["prompts"] = json!([{"prompt": "review/review", "text": "Review it."}]);
     let (_, mut answered) = rig.call(setup, SAID);
     let question = rig.question();
     assert_eq!(
         question.options[0].detail.as_deref(),
-        Some("prompts and mods are kept only by a save")
+        Some("this session · prompts and mods are kept only by a save")
     );
-    let effects = rig.pick(&question, "conversation");
+    let effects = rig.yes(&question);
     let [(pairs, scope)] = saved(&effects).try_into().expect("one save");
     assert_eq!(scope, SettingScope::Session);
     assert!(pairs.contains(&(
@@ -481,17 +563,20 @@ fn this_request_holds_for_the_workflow_it_starts_and_no_other() {
     let mut rig = Rig::new();
     let mut setup = the_setup();
     setup["request_too"] = json!(true);
-    let (_, mut answered) = rig.call(setup, SAID);
+    let (_, mut answered) = rig.call(setup.clone(), SAID);
     let question = rig.question();
-    assert_eq!(question.options[0].label, "This request");
-    assert!(question.options[0].recommended);
-    let effects = rig.pick(&question, "request");
+    assert_eq!(
+        question.options[0].detail.as_deref(),
+        Some("this request alone")
+    );
+    assert!(question.body.contains(&"This request alone".to_owned()));
+    let effects = rig.yes(&question);
     assert!(saved(&effects).is_empty(), "no setting changes");
     assert!(said(&mut answered).text.contains("Start that workflow now"));
     assert!(super::request_settings(&mut rig.conversation, &TurnId::numbered(2)).is_empty());
-    let (_, _answered) = rig.call(the_setup(), SAID);
+    let (_, _answered) = rig.call(setup, SAID);
     let question = rig.question();
-    rig.pick(&question, "request");
+    rig.yes(&question);
     let held = super::request_settings(&mut rig.conversation, &TurnId::numbered(1));
     assert!(held.contains(&"ui.theme=\"light\"".to_owned()), "{held:?}");
     assert!(
@@ -581,7 +666,7 @@ fn a_required_step() -> Value {
 
 #[test]
 fn a_required_step_is_a_row_and_a_save_writes_always_toml() {
-    let mut rig = Rig::new();
+    let mut rig = Rig::saving_to("this_project");
     let (_, mut answered) = rig.call(a_required_step(), SAID);
     let question = rig.question();
     assert_eq!(
@@ -590,10 +675,10 @@ fn a_required_step_is_a_row_and_a_save_writes_always_toml() {
          workers"
     );
     assert_eq!(
-        question.options[1].detail.as_deref(),
+        question.options[0].detail.as_deref(),
         Some("writes 1 file in .argonauts/ · d shows the diff")
     );
-    let effects = rig.pick(&question, "repository");
+    let effects = rig.yes(&question);
     assert!(saved(&effects).is_empty(), "no setting changes");
     let path = rig
         .test
@@ -609,7 +694,7 @@ fn a_required_step_is_a_row_and_a_save_writes_always_toml() {
 
 #[test]
 fn a_required_step_kept_for_the_conversation_holds_for_every_workflow() {
-    let mut rig = Rig::new();
+    let mut rig = Rig::saving_to("this_session");
     let (_, _answered) = rig.call(a_required_step(), SAID);
     let question = rig.question();
     let shown = question.body.join("\n");
@@ -617,7 +702,7 @@ fn a_required_step_kept_for_the_conversation_holds_for_every_workflow() {
         shown.contains("every workflow has \"Benchmark\" before sign-off"),
         "{shown}"
     );
-    rig.pick(&question, "conversation");
+    rig.yes(&question);
     assert!(!rig.test.repo.root().join(".argonauts").exists());
     for turn in [2, 3] {
         let steps = super::required_steps(&mut rig.conversation, &TurnId::numbered(turn));
@@ -633,7 +718,7 @@ fn a_required_step_kept_for_a_request_holds_for_that_one() {
     setup["request_too"] = json!(true);
     let (_, _answered) = rig.call(setup, SAID);
     let question = rig.question();
-    rig.pick(&question, "request");
+    rig.yes(&question);
     let steps = super::required_steps(&mut rig.conversation, &TurnId::numbered(1));
     assert_eq!(steps.len(), 1);
     assert!(super::required_steps(&mut rig.conversation, &TurnId::numbered(1)).is_empty());
@@ -664,10 +749,10 @@ fn a_wrong_step_goes_back_and_you_see_nothing() {
     );
 }
 
-/// Picking where a setup applies is the confirmation: a limit saved from the question asks no
-/// second "change a safety setting?" question. A place only your words named still asks.
+/// Yes on the question is the confirmation: a limit saved from it asks no second "change a
+/// safety setting?" question. A place only your words named still asks.
 #[test]
-fn the_questions_pick_confirms_a_limit_and_a_named_place_still_asks() {
+fn yes_confirms_a_limit_and_a_named_place_still_asks() {
     let with_limit = || {
         let mut setup = the_setup();
         setup["settings"] = json!({"limits.spend_per_day": 5.0});
@@ -676,7 +761,7 @@ fn the_questions_pick_confirms_a_limit_and_a_named_place_still_asks() {
     let mut rig = Rig::new();
     let (_, _answered) = rig.call(with_limit(), SAID);
     let question = rig.question();
-    let effects = rig.pick(&question, "conversation");
+    let effects = rig.yes(&question);
     assert!(
         matches!(effects.as_slice(), [Effect::SaveConfirmedSettings { pairs, .. }]
             if pairs[0].0 == "limits.spend_per_day"),
@@ -713,4 +798,128 @@ fn a_confirmed_limit_is_written_with_no_safety_question() {
             AppEvent::Choice { choice } if choice.kind == ChoiceKind::ConfirmSafetySetting)),
         "no second question"
     );
+}
+
+fn unit_tests() -> argonauts_core::settings::protocol::CheckCommand {
+    argonauts_core::settings::protocol::CheckCommand {
+        name: "tests".to_owned(),
+        command: ["python3", "-m", "unittest", "-q"]
+            .map(str::to_owned)
+            .to_vec(),
+    }
+}
+
+/// The setup the session sends back to keep a run's checks.
+fn keeping(checks: Value) -> Value {
+    json!({"asked": "keep these checks", "settings": {"checks.run": checks}})
+}
+
+fn the_run_checks() -> Value {
+    json!([{"name": "tests", "command": ["python3", "-m", "unittest", "-q"]}])
+}
+
+/// A run's own checks you ask to keep save where a change to them goes, this project just for
+/// you, confirmed by your words, so there's no question, not even on autopilot.
+#[test]
+fn checks_a_run_had_are_kept_when_you_say_so() {
+    use argonauts_core::settings::approvals::ApprovalMode;
+
+    use crate::controller::conversation::direct::set_approval;
+
+    for approval in [ApprovalMode::Supervised, ApprovalMode::Autopilot] {
+        let mut rig = Rig::new();
+        set_approval(&mut rig.conversation, approval);
+        super::run_checks::ran_with(&mut rig.conversation, &[unit_tests()]);
+        let (effects, mut answered) = rig.call(keeping(the_run_checks()), "keep these checks");
+        let [Effect::KeepSettings { pairs, scope }] = effects.as_slice() else {
+            panic!("one confirmed save: {effects:?}");
+        };
+        assert_eq!(
+            *scope,
+            SettingScope::ProjectLocal,
+            "checks are for one repository"
+        );
+        assert_eq!(pairs[0].0, "checks.run");
+        assert!(pairs[0].1.contains("unittest"), "{pairs:?}");
+        assert!(
+            !rig.events()
+                .iter()
+                .any(|event| matches!(event, AppEvent::Choice { .. })),
+            "no question"
+        );
+        let reply = said(&mut answered).text;
+        assert!(reply.contains("just for them ("), "{reply}");
+        assert!(reply.contains("config.local.toml)"), "{reply}");
+    }
+}
+
+/// Kept checks are written with no question, and their line names the key alone.
+#[test]
+fn kept_checks_are_written_and_their_line_says_kept() {
+    let mut rig = Rig::new();
+    let ctx = &mut rig.test.ctx;
+    let mut settings = crate::controller::settings::SettingsState::new(ctx);
+    let scope = crate::controller::settings::place(ctx, "checks.run").scope;
+    assert_eq!(scope, SettingScope::ProjectLocal);
+    let checks = r#"[{ name = "tests", command = ["python3", "-m", "unittest", "-q"] }]"#;
+    crate::controller::settings::keep_confirmed(
+        ctx,
+        &mut settings,
+        vec![("checks.run".to_owned(), checks.to_owned())],
+        scope,
+    )
+    .unwrap();
+    let local = std::fs::read_to_string(rig.test.ctx.env.project_local_config()).unwrap();
+    assert!(local.contains("unittest"), "{local}");
+    let events = rig.events();
+    assert!(
+        events.iter().any(|event| matches!(event,
+            AppEvent::SettingChanged { key, kept: true, scope: SettingScope::ProjectLocal, .. }
+                if key == "checks.run")),
+        "{events:#?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AppEvent::Choice { .. })),
+        "no question"
+    );
+}
+
+/// A place your words named stands, and the save is still yours to need no question.
+#[test]
+fn checks_you_keep_for_this_repository_save_there() {
+    let mut rig = Rig::new();
+    super::run_checks::ran_with(&mut rig.conversation, &[unit_tests()]);
+    let mut setup = keeping(the_run_checks());
+    setup["keep"] = json!("repository");
+    setup["keep_says"] = json!("for this repository");
+    let (effects, _) = rig.call(setup, "keep these checks for this repository");
+    assert!(
+        matches!(effects.as_slice(), [Effect::KeepSettings { scope, .. }]
+            if *scope == SettingScope::Project),
+        "{effects:?}"
+    );
+}
+
+/// Checks other than the run's, or with no run's checks to keep, or words that don't ask to
+/// keep them, take the usual way: the question.
+#[test]
+fn only_the_run_checks_your_words_keep_skip_the_question() {
+    let other = json!([{"name": "lint", "command": ["ruff", "check"]}]);
+    let cases = [
+        (true, other, "keep these checks"),
+        (false, the_run_checks(), "keep these checks"),
+        (true, the_run_checks(), "the checks look right"),
+        (true, the_run_checks(), "don't keep these checks"),
+    ];
+    for (ran, checks, message) in cases {
+        let mut rig = Rig::new();
+        if ran {
+            super::run_checks::ran_with(&mut rig.conversation, &[unit_tests()]);
+        }
+        let (effects, _) = rig.call(keeping(checks), message);
+        assert!(effects.is_empty(), "{message}: {effects:?}");
+        assert_eq!(rig.question().title, "Your setup", "{message}");
+    }
 }

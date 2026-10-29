@@ -59,6 +59,7 @@ fn spec(id: &str, who: &str, owned: &[&str], reads: &[&str], depends_on: &[&str]
         limit: Default::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 
@@ -341,6 +342,8 @@ fn run_session(
             asked_by: None,
             asked_why: None,
             forked: false,
+            seat: None,
+            billing: None,
         }))),
     )?;
     let (control, controls) = mpsc::channel(8);

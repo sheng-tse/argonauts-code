@@ -2,4 +2,4 @@
 source: crates/tui/tests/it/snap_live.rs
 expression: styled(&render(width))
 ---
-  [fg=#999999]ǁ[/]    [fg=#e08a66]●[/] [fg=#ffffff b]71%[/]  [fg=#6aa6ff]○[/] [fg=#ffc107]92%[/]  [fg=#36cfe6]○[/] [fg=#ff6b80]out[/]  [fg=#4ade80]○[/]  [fg=#8b90a8]○[/] [fg=#ff6b80]down[/]  [fg=#8b90a8]○[/]
+  [fg=#999999]ǁ[/]         [fg=#f7a07f]●[/] [fg=#ffffff b]71%[/] [fg=#6a9ee6]○[/] [fg=#ffc107]92%[/] [fg=#6cd1cf]○[/] [fg=#ff6b80]out[/] [fg=#c27cb4]○[/] [fg=#8a8fa8]○[/] [fg=#ff6b80]down[/] [fg=#8a8fa8]○[/]

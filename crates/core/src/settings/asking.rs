@@ -9,8 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::names::ModelRef;
 
-/// What Esc on a question or an approval does. Esc means "carry on without me", so nothing
-/// waits either way.
+/// What "Carry on without me" on a question or an approval does. Nothing waits either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WhenDeclined {

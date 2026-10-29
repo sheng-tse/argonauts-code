@@ -1,11 +1,10 @@
 ---
 source: crates/tui/tests/it/snap_settings.rs
-assertion_line: 55
 expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   Permissions
-  For every agent, unless its role sets its own. Pick one, then where to save it
+  For every agent, unless its role sets its own. Pick one; it saves where your changes go
 
   ❯ 1. Whose rules guard the agents        Argonauts Code's (OS sandbox) · built-in
     2. Internet for agents' commands       on · built-in

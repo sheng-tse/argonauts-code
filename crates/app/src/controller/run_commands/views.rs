@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use argonauts_core::app::{AppEvent, RepoRuns, SessionCounted, ViewData, ViewRequest};
 use argonauts_core::display_names::builtin_cli_name;
-use argonauts_core::events::context::ContextDetail;
+use argonauts_core::events::context::{ContextDetail, StartingCount};
 use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::ids::RepoId;
@@ -78,7 +78,7 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
         ViewRequest::ResumeList => runs::show_runs(ctx, false).await?,
         ViewRequest::SessionsEverywhere => runs::show_runs(ctx, true).await?,
         ViewRequest::Status => return status(ctx, runs).await,
-        ViewRequest::Context => return context(ctx, runs, None).await,
+        ViewRequest::Context => anyhow::bail!("the Context tab is the conversation's view"),
         ViewRequest::SessionContext { run, session } => {
             let path =
                 layout::session_dir(&ctx.env.run_dir(&run), &session).join(session_files::CONTEXT);
@@ -176,7 +176,8 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
         ViewRequest::RepoFiles => anyhow::bail!("the repo's files aren't a run's"),
         ViewRequest::Learning { .. } => anyhow::bail!("the Learning pickers aren't run views"),
         ViewRequest::Issues => anyhow::bail!("the issue list isn't a run's"),
-        ViewRequest::DeepOffer => anyhow::bail!("the deeper map's questions aren't a run's"),
+        ViewRequest::DeepOffer => anyhow::bail!("the questions of Summaries aren't a run's"),
+        ViewRequest::SeatKey { .. } => anyhow::bail!("a seat's key isn't a run's view"),
     }
     Ok(Vec::new())
 }
@@ -272,8 +273,9 @@ pub(crate) async fn context(
     ctx: &mut Ctx,
     runs: &mut RunsState,
     conversation: Option<ContextRow>,
+    start: Option<StartingCount>,
 ) -> Handled {
-    let (view, _) = context_view(ctx, runs, conversation).await;
+    let (view, _) = context_view(ctx, runs, conversation, start).await;
     show(ctx, ViewData::Context { view });
     Ok(Vec::new())
 }
@@ -284,8 +286,9 @@ pub(crate) async fn context_report(
     ctx: &mut Ctx,
     runs: &mut RunsState,
     conversation: Option<ContextRow>,
+    start: Option<StartingCount>,
 ) -> Handled {
-    let (view, left_out) = context_view(ctx, runs, conversation).await;
+    let (view, left_out) = context_view(ctx, runs, conversation, start).await;
     if let Some(err) = left_out {
         ctx.notice(
             NoteLevel::Warn,
@@ -296,15 +299,14 @@ pub(crate) async fn context_report(
     Ok(Vec::new())
 }
 
-/// The sessions with where they run: the servers on this machine they use, and what holds the
-/// main session's window to its size.
-fn where_they_run(ctx: &Ctx, mut view: ContextView) -> ContextView {
-    view.main_window = view
-        .rows
-        .iter()
-        .find(|row| row.run.is_none())
+/// The sessions with where they run: the servers on this machine they use, what holds the
+/// main session's window to its size, and what that session holds at its start.
+fn where_they_run(ctx: &Ctx, mut view: ContextView, start: Option<StartingCount>) -> ContextView {
+    let main = view.rows.iter().find(|row| row.run.is_none());
+    view.main_window = main
         .map(|row| window_figures(ctx.services.registry.as_ref(), &row.worker))
         .filter(|figures| *figures != WindowFigures::default());
+    view.main_start = start;
     view.local = local_servers(ctx.settings(), &view.rows);
     view
 }
@@ -333,7 +335,7 @@ fn local_servers(settings: &Settings, rows: &[ContextRow]) -> Vec<String> {
 /// What holds `worker`'s window to its size, from the registry. A CLI's model routed to a
 /// server, as OpenCode's `ollama/qwen3-coder:30b-64k`, has the most the model takes and the
 /// server's cap from the server's own entry for it, and the CLI's figure from the CLI's.
-fn window_figures(registry: &dyn ModelRegistry, worker: &ModelRef) -> WindowFigures {
+pub(crate) fn window_figures(registry: &dyn ModelRegistry, worker: &ModelRef) -> WindowFigures {
     let own = registry.get(worker);
     let routed = worker
         .model
@@ -369,6 +371,7 @@ async fn context_view(
     ctx: &mut Ctx,
     runs: &mut RunsState,
     conversation: Option<ContextRow>,
+    start: Option<StartingCount>,
 ) -> (ContextView, Option<anyhow::Error>) {
     let rotate_at = ctx.settings().sessions.rotate_at.clone();
     let clis = ContextClis::here(ctx);
@@ -392,7 +395,7 @@ async fn context_view(
     }
     let list = match ctx.services.conductor.list().await {
         Ok(list) => list,
-        Err(err) => return (where_they_run(ctx, view), Some(err.into())),
+        Err(err) => return (where_they_run(ctx, view, start), Some(err.into())),
     };
     for other in list
         .iter()
@@ -404,7 +407,7 @@ async fn context_view(
             .filter(|row| row.ended.is_none());
         view.rows.extend(live);
     }
-    (where_they_run(ctx, view), None)
+    (where_they_run(ctx, view, start), None)
 }
 
 /// A session's last whole count as its folder keeps it, counted when the file was written.

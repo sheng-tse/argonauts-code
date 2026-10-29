@@ -4,14 +4,17 @@
 use argonauts_core::api::{UsagePeriod, UsageSummary};
 use argonauts_core::crew_stats::StatsRole;
 use argonauts_core::limits::{PlanUsageReading, PlanUsageStatus};
+use argonauts_core::logos::logo_for;
 use argonauts_core::settings::stats::StatsMeasure;
-use ratatui::style::Style;
 use ratatui::text::Span;
 
 use super::data::{Cli, Crew, DayPart, Model};
-use super::draw::{self, Entry, Fared};
+use super::draw::{self, Fared, Fill, Legend, Lit};
+pub(super) use super::fills::{model_fill, model_style};
 use super::grid::{self, Body};
 use crate::format;
+use crate::kit::legend::BEFORE_NUMBERS;
+use crate::kit::logo::{ModelLabel, NoPicture};
 use crate::kit::{Drawn, Frame, Header, Kit, Level, fit, spread};
 use crate::overview::cards::{used_of, window_label};
 use crate::text::{spans_width, str_width, truncate_spans};
@@ -34,10 +37,12 @@ const LEAST_MODEL_BAR: usize = 8;
 const LEAST_BARE_BAR: usize = 4;
 /// Blank cells a card keeps after its model rows' words when they say what they count.
 const SPARE: usize = 1;
-/// Cells a card's row of how work fared gives its label: nine, where the row just fits the
-/// narrowest card, and a cell more on a card with room for it.
-pub(super) const OUTCOME_LABEL: usize = 9;
-const ROOMY_CARD: usize = 36;
+/// Cells the labels of a card's rows of how work fared take: the longest, `reviews`, and the
+/// blanks a meter or a count stands after its words.
+const OUTCOME_LABEL: usize = "reviews".len() + BEFORE_NUMBERS;
+/// The narrowest card inside that keeps `tasks` and its row whole with those labels, at
+/// `100% first pass`. Narrower cards give their labels a blank less.
+const ROOMY_CARD: usize = OUTCOME_LABEL + SQUARES + " 100% first pass".len();
 /// The widest a plan window's bar is drawn on a card, and the cells of a row of two windows
 /// beside their bars and the gap between them: `5h `, `week ` and a share after each.
 const MOST_PLAN_BAR: usize = 12;
@@ -85,25 +90,25 @@ fn in_millions(count: u64, decimals: usize) -> String {
     format!("{text}M")
 }
 
+/// Tokens in millions with both decimals kept, as a table's column writes them, so its
+/// numbers line up: `2.60M`, `0.07M`, `<0.01M`. From a thousand million on they're billions
+/// with both decimals too, the `b` lower case as everywhere billions are written: `1.20b`.
+pub(super) fn millions_fixed(count: u64) -> String {
+    if count >= 1_000_000_000 {
+        return format!("{:.2}b", count as f64 / 1_000_000_000.0);
+    }
+    let text = format!("{:.2}M", count as f64 / 1_000_000.0);
+    if count > 0 && text == "0.00M" {
+        return "<0.01M".to_owned();
+    }
+    text
+}
+
 /// `1 task`, `24 tasks`, `14 sign-offs`.
 pub(super) fn count(n: u32, unit: &str) -> String {
     match n {
         1 => format!("1 {unit}"),
         n => format!("{n} {unit}s"),
-    }
-}
-
-/// A share, as `58%`.
-pub(super) fn share(part: u64, whole: u64) -> String {
-    format::percent(part as f64 / whole.max(1) as f64)
-}
-
-/// A share in whole percents, as the legends of By model and By role write it, or nothing
-/// when it rounds to none.
-pub(super) fn whole_share(part: u64, whole: u64) -> String {
-    match (part as f64 / whole.max(1) as f64 * 100.0).round() as u64 {
-        0 => String::new(),
-        percent => format!("{percent}%"),
     }
 }
 
@@ -138,9 +143,9 @@ pub(super) fn cost_each(cost_usd: f64, n: u32) -> String {
     }
 }
 
-/// One stack of the chart's columns: its colour, and which of the period's parts are its own.
+/// One stack of the chart's columns: its fill, and which of the period's parts are its own.
 pub(super) struct Stack<'a> {
-    pub style: Style,
+    pub fill: Fill,
     pub holds: &'a dyn Fn(&DayPart) -> bool,
 }
 
@@ -165,6 +170,28 @@ pub(super) fn numbers(kit: &Kit<'_>, pieces: &[(String, &str)], room: usize) -> 
     Vec::new()
 }
 
+/// [`numbers`] giving up pieces from the start instead, so the last ones stay.
+fn last_numbers(kit: &Kit<'_>, pieces: &[(String, &str)], room: usize) -> Vec<Span<'static>> {
+    for skip in 0..pieces.len() {
+        let spans = numbers(kit, &pieces[skip..], usize::MAX);
+        if spans_width(&spans) <= room {
+            return spans;
+        }
+    }
+    Vec::new()
+}
+
+/// [`header_row`] whose numbers give up their first pieces where the row is too narrow.
+pub(super) fn header_row_keeping_last(
+    kit: &Kit<'_>,
+    left: Vec<Span<'static>>,
+    pieces: &[(String, &str)],
+    width: usize,
+) -> Vec<Span<'static>> {
+    let room = width.saturating_sub(spans_width(&left) + 2);
+    spread(left, last_numbers(kit, pieces, room), width)
+}
+
 /// A card's first row: its mark and title at the left, the numbers at the right.
 pub(super) fn header_row(
     kit: &Kit<'_>,
@@ -176,11 +203,6 @@ pub(super) fn header_row(
     spread(left, numbers(kit, pieces, room), width)
 }
 
-/// The model's color: its shade of its CLI's.
-pub(super) fn model_style(kit: &Kit<'_>, cli: &Cli, model: &Model) -> Style {
-    draw::shade(kit, cli.role(), model.shade)
-}
-
 impl Stats<'_> {
     /// Tokens as the tab writes them. From a crew total of a million on, every count is in
     /// millions, so the numbers side by side read on one scale: `5.0M`, `1.55M`, `0.55M`.
@@ -189,6 +211,15 @@ impl Stats<'_> {
             return format::tokens(count);
         }
         millions(count)
+    }
+
+    /// Tokens as a table's column writes them: from a crew total of a million on, in
+    /// [`millions_fixed`], so the column reads on one scale.
+    pub fn table_tokens(&self, count: u64) -> String {
+        if self.crew.total.total_tokens() < 1_000_000 {
+            return format::tokens(count);
+        }
+        millions_fixed(count)
     }
 
     /// [`Stats::tokens`] with one decimal in millions, as the opened cards and the tables
@@ -210,8 +241,11 @@ impl Stats<'_> {
     }
 
     /// Every CLI together: what the bars measure by CLI, what the tokens were, and how the
-    /// tasks fared in review, a blank row between each, beside a chart of the period.
-    pub fn all_together(&self, kit: &Kit<'_>, frame: Frame) -> Drawn {
+    /// tasks fared in review, a blank row between each, beside a chart of the period. A blank
+    /// row under each bar, then a table of its parts, all three in the same columns: each part's swatch,
+    /// name, amount and share, a CLI's logo first. `pointed` is the CLI the keys are on: its
+    /// part stays lit in every bar and the chart, and the rest turns grey.
+    pub fn all_together(&self, kit: &Kit<'_>, frame: Frame, pointed: Option<usize>) -> Drawn {
         let inner = frame.inner();
         let crew = self.crew;
         let mut drawn = Drawn::new();
@@ -219,106 +253,111 @@ impl Stats<'_> {
         drawn.push(Vec::new());
 
         let right = self.beside_chart(inner);
-        let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+        let lit = move |at: usize| pointed.is_none_or(|pointed| pointed == at);
+        let pointed_cli = pointed.and_then(|at| crew.clis.get(at));
+        let mut bars = Vec::new();
+
         let measured = crew.measured(self.measure);
-        rows.push(vec![kit.dim(format!(
-            "{} by CLI · {}",
-            self.measure.word(),
-            self.amount(measured)
-        ))]);
-        let parts: Vec<(u64, Style)> = crew
-            .clis
-            .iter()
-            .map(|cli| (cli.measured(self.measure), kit.fg(cli.role())))
-            .collect();
-        rows.push(draw::stacked(kit, &parts, right));
-        let entries: Vec<Entry> = crew
-            .clis
-            .iter()
-            .map(|cli| {
-                let value = cli.measured(self.measure);
-                Entry {
-                    style: kit.fg(cli.role()),
-                    name: cli.name.clone(),
-                    amount: self.amount(value),
-                    note: share(value, measured),
-                }
-            })
-            .collect();
-        rows.extend(draw::legend(kit, &entries, None, right));
+        let clis = crew.clis.iter().enumerate().map(|(at, cli)| {
+            let value = cli.measured(self.measure);
+            let shown = if lit(at) { value } else { 0 };
+            let fill = kit.fg(cli.role());
+            Legend {
+                logo: Some(logo_for(&cli.agent, None)),
+                pointed: pointed == Some(at),
+                ..Legend::of(
+                    fill,
+                    &cli.name,
+                    (value, shown, measured),
+                    self.table_amount(cli),
+                )
+            }
+        });
+        bars.push(Labelled {
+            label: format!("{} by CLI · {}", self.measure.word(), self.amount(measured)),
+            rows: clis.collect(),
+            apart: true,
+        });
 
-        rows.push(Vec::new());
-        let total = &crew.total;
-        let tokens = total.total_tokens();
-        let cached = total.cached_tokens;
-        let new = total.input_tokens.saturating_sub(cached);
-        let output = total.output_tokens;
-        rows.push(vec![kit.dim("what those tokens were")]);
-        let kinds = [
-            (cached, Role::TokensCached, "from cache"),
-            (new, Role::TokensInput, "new input"),
-            (output, Role::TokensOutput, "output"),
-        ];
-        let parts: Vec<(u64, Style)> = kinds
-            .iter()
-            .map(|(n, role, _)| (*n, kit.fg(*role)))
-            .collect();
-        rows.push(draw::stacked(kit, &parts, right));
-        let entries: Vec<Entry> = kinds
-            .iter()
-            .map(|(n, role, name)| Entry {
-                style: kit.fg(*role),
-                name: (*name).to_owned(),
-                amount: self.tokens(*n),
-                note: share(*n, tokens),
-            })
-            .collect();
-        rows.extend(draw::legend(kit, &entries, None, right));
+        // The kinds of every CLI's tokens, of which the pointed CLI's stay lit.
+        let names = ["from cache", "new input", "output"];
+        let mut kinds = self.kinds(kit, &crew.total, names);
+        if let Some(cli) = pointed_cli {
+            let its = self.kinds(kit, &cli.spent(), names);
+            for (kind, its) in kinds.iter_mut().zip(its) {
+                kind.part.lit = its.part.value;
+            }
+        }
+        bars.push(Labelled {
+            label: "what those tokens were".to_owned(),
+            rows: kinds,
+            apart: false,
+        });
 
-        rows.push(Vec::new());
         let fared = crew.fared;
         if fared.total() > 0 {
-            rows.push(vec![kit.dim(format!(
-                "how the {} fared in review",
-                count(fared.total(), "task")
-            ))]);
-            rows.push(fared_bar(kit, fared, right));
-            let entries = [
-                (fared.first, Role::Success, "passed first time"),
-                (fared.once, Role::Warn, "sent back once"),
-                (fared.more, Role::Danger, "sent back twice"),
-            ]
-            .into_iter()
-            .map(|(n, role, name)| Entry {
-                style: kit.fg(role),
-                name: name.to_owned(),
-                amount: n.to_string(),
-                note: String::new(),
-            })
-            .collect::<Vec<_>>();
-            rows.extend(draw::legend(kit, &entries, None, right));
-        } else {
+            let counts = |fared: Fared| [fared.first, fared.once, fared.more].map(u64::from);
+            let all = counts(fared);
+            let shown = pointed_cli.map_or(all, |cli| counts(cli.fared()));
+            let whole = u64::from(fared.total());
+            let named = [
+                (Role::Success, "passed first time"),
+                (Role::Warn, "sent back once"),
+                (Role::Danger, "sent back twice"),
+            ];
+            let rows = (named.iter().enumerate()).map(|(k, (role, name))| {
+                Legend::of(
+                    kit.fg(*role),
+                    name,
+                    (all[k], shown[k], whole),
+                    all[k].to_string(),
+                )
+            });
+            bars.push(Labelled {
+                label: format!("how the {} fared in review", count(fared.total(), "task")),
+                rows: rows.collect(),
+                apart: false,
+            });
+        }
+
+        let mut rows = legends(kit, &bars, right);
+        if fared.total() == 0 {
+            rows.push(Vec::new());
             rows.push(vec![kit.dim("no task reviewed yet")]);
         }
 
-        let own: Vec<_> = crew
-            .clis
-            .iter()
-            .map(|cli| move |part: &DayPart| part.agent == cli.agent)
+        let own: Vec<_> = (crew.clis.iter().enumerate())
+            .map(|(at, cli)| move |part: &DayPart| lit(at) && part.agent == cli.agent)
             .collect();
-        let stacks: Vec<Stack<'_>> = crew
-            .clis
-            .iter()
-            .zip(&own)
+        let others = move |part: &DayPart| {
+            (crew.clis.iter().enumerate()).any(|(at, cli)| !lit(at) && part.agent == cli.agent)
+        };
+        let mut stacks: Vec<Stack<'_>> = (crew.clis.iter().zip(&own))
             .map(|(cli, holds)| Stack {
-                style: kit.fg(cli.role()),
+                fill: kit.fg(cli.role()).into(),
                 holds,
             })
             .collect();
+        if pointed.is_some() {
+            stacks.push(Stack {
+                fill: kit.fg(Role::Faint).into(),
+                holds: &others,
+            });
+        }
         for row in self.with_chart(kit, inner, rows, &stacks) {
             drawn.push(row);
         }
         frame.draw(kit, drawn)
+    }
+
+    /// A CLI's amount of what the bars measure, as its table row writes it: tokens with two
+    /// decimals, its tasks, or its spend with `~` for an estimate.
+    fn table_amount(&self, cli: &Cli) -> String {
+        match self.measure {
+            StatsMeasure::Tokens => self.table_tokens(cli.tokens()),
+            StatsMeasure::Tasks => cli.work().to_string(),
+            StatsMeasure::Spend => format::spend(&cli.spent()),
+        }
     }
 
     /// The all-together card's first row. Over every day so far it says whose work Stats
@@ -373,6 +412,11 @@ impl Stats<'_> {
         }
     }
 
+    /// Whether a card `inner` wide draws the period's chart with `least` cells beside it.
+    pub(super) fn chart_fits(&self, inner: usize, least: usize) -> bool {
+        inner >= self.chart_width() + CHART_GAP + least
+    }
+
     /// `rows`, made for the width [`Stats::beside_chart`] gives, with the period's chart at
     /// their left: it sits at the bottom, its labels on the last row.
     pub(super) fn with_chart(
@@ -385,6 +429,16 @@ impl Stats<'_> {
         if inner < CHART_FROM {
             return rows;
         }
+        self.chart_beside(kit, rows, stacks)
+    }
+
+    /// [`Stats::with_chart`] at any width.
+    pub(super) fn chart_beside(
+        &self,
+        kit: &Kit<'_>,
+        rows: Vec<Vec<Span<'static>>>,
+        stacks: &[Stack<'_>],
+    ) -> Vec<Vec<Span<'static>>> {
         let columns = self.chart(kit, rows.len().saturating_sub(1).min(CHART_ROWS), stacks);
         let pad = rows.len().saturating_sub(columns.len());
         let mut left: Vec<Vec<Span<'static>>> = vec![Vec::new(); pad];
@@ -415,6 +469,16 @@ impl Stats<'_> {
 
     /// `14 workflows · 63 tasks merged · 5.0M tokens · ~$11.20 · 12h 40m`.
     pub fn totals(&self) -> Vec<(String, &'static str)> {
+        self.totals_taking(self.crew.took_secs, took)
+    }
+
+    /// [`Stats::totals`] with `took_secs` for the time, written by `write`, as a table whose
+    /// time column adds up to something other than the runs' time gives its own sum.
+    pub fn totals_taking(
+        &self,
+        took_secs: u64,
+        write: fn(u64) -> String,
+    ) -> Vec<(String, &'static str)> {
         let crew = self.crew;
         let workflows = if crew.workflows == 1 {
             "workflow"
@@ -432,8 +496,8 @@ impl Stats<'_> {
         if crew.total.cost_usd > 0.0 {
             pieces.push((format::spend(&crew.total), ""));
         }
-        if crew.took_secs > 0 {
-            pieces.push((took(crew.took_secs), ""));
+        if took_secs > 0 {
+            pieces.push((write(took_secs), ""));
         }
         pieces
     }
@@ -446,7 +510,7 @@ impl Stats<'_> {
         let crew = self.crew;
         let slots = crew.slots();
         let width = slot_width(slots.len());
-        let columns: Vec<Vec<(u64, Style)>> = slots
+        let columns: Vec<Vec<(u64, Fill)>> = slots
             .iter()
             .map(|slot| {
                 if slot.ahead {
@@ -461,7 +525,7 @@ impl Stats<'_> {
                             .filter(|part| slot.holds(part.day) && (stack.holds)(part))
                             .map(|part| part.measured(self.measure))
                             .sum();
-                        (value, stack.style)
+                        (value, stack.fill)
                     })
                     .collect()
             })
@@ -469,8 +533,17 @@ impl Stats<'_> {
         let mut out = draw::columns(kit, &columns, rows, width);
         let mut labels: Vec<Span<'static>> = Vec::new();
         let mut used = 0;
+        let days_so_far = crew.period == UsagePeriod::All && crew.slots_are_days();
         for (k, slot) in slots.iter().enumerate() {
             let label = match crew.period {
+                // Days so far are dated: the first by its month and day, then the first of a
+                // month by its month, and every week's first day by its date.
+                UsagePeriod::All if days_so_far => match (k, slot.first.day()) {
+                    (0, day) => Some(format!("{} {day}", short_month(slot.first.month()))),
+                    (_, 1) => Some(short_month(slot.first.month()).to_owned()),
+                    (_, day) if k % 7 == 0 => Some(day.to_string()),
+                    _ => None,
+                },
                 UsagePeriod::All => {
                     let last = slot.first + time::Duration::days(slot.days - 1);
                     let begins = slot.first.day() == 1 || last.month() != slot.first.month();
@@ -544,6 +617,7 @@ impl Stats<'_> {
                 names,
                 bar: with_units,
                 units: true,
+                labels: outcome_label(inner),
             };
         }
         ModelLayout {
@@ -552,6 +626,7 @@ impl Stats<'_> {
                 .saturating_sub(names + widest(false))
                 .max(LEAST_BARE_BAR),
             units: false,
+            labels: outcome_label(inner),
         }
     }
 
@@ -599,12 +674,13 @@ impl Stats<'_> {
     /// reviews fared, its pace over the period, and its plan's windows, a blank row between
     /// each part.
     fn cli_body(&self, kit: &Kit<'_>, cli: &Cli, inner: usize, layout: &ModelLayout) -> Body {
-        let dot = if cli.main { "●" } else { "○" };
-        let left = vec![
-            kit.span(dot, cli.role()),
-            Span::raw(" "),
-            kit.strong(cli.name.clone()),
-        ];
+        // The CLI's logo where the terminal draws it, else the dot that says whether the main
+        // agent runs on it.
+        let dot = if cli.main { "● " } else { "○ " };
+        let mark = NoPicture::Mark(kit.span(dot, cli.role()));
+        let label = ModelLabel::cli_named(&cli.agent, &cli.name, kit.theme, mark);
+        let mut left = label.logo;
+        left.push(kit.strong(label.name));
         let tokens = self.tokens(cli.tokens());
         let title = spread(left, vec![kit.strong(tokens), kit.dim(" tok")], inner);
 
@@ -638,7 +714,7 @@ impl Stats<'_> {
             .iter()
             .map(|model| {
                 let style = model_style(kit, cli, model);
-                let mut row = draw::swatch(kit, style);
+                let mut row = draw::swatch(kit, model_fill(kit, cli, model));
                 row.push(Span::raw(model.name.clone()));
                 // A name cut to its column keeps a blank before the bar.
                 let row = truncate_spans(&row, layout.names - 1);
@@ -661,16 +737,11 @@ impl Stats<'_> {
             once: back.min(reviews),
             more: 0,
         };
-        let label = if inner >= ROOMY_CARD {
-            OUTCOME_LABEL + 1
-        } else {
-            OUTCOME_LABEL
-        };
         let mut rest = vec![
             Vec::new(),
-            outcome_row_in(kit, ("tasks", label), cli.fared(), "first pass"),
+            outcome_row(kit, ("tasks", layout.labels), cli.fared(), "first pass"),
             Vec::new(),
-            outcome_row_in(kit, ("reviews", label), accepted, "accepted"),
+            outcome_row(kit, ("reviews", layout.labels), accepted, "accepted"),
             Vec::new(),
         ];
         rest.extend(self.pace_rows(kit, cli, inner));
@@ -742,6 +813,7 @@ impl Stats<'_> {
             UsagePeriod::Today => "today",
             UsagePeriod::Week => "this week",
             UsagePeriod::Month => "this month",
+            UsagePeriod::All if self.crew.slots_are_days() => "days",
             UsagePeriod::All => "weeks",
         }
     }
@@ -786,8 +858,9 @@ impl Stats<'_> {
         filled
     }
 
-    /// Each role with every model that filled it, a bar of what each did in it, and a
-    /// legend of each, a blank row between roles. `picked` is the role the keys are on.
+    /// Each role with every model that filled it, a bar of what each did in it, and a table
+    /// of them under it, every role's in the same columns, a blank row between roles. Under
+    /// the role's name, what the models' shares are of. `picked` is the role the keys are on.
     pub fn who_did_what(&self, kit: &Kit<'_>, frame: Frame, picked: Option<StatsRole>) -> Drawn {
         let inner = frame.inner();
         let mut drawn = Drawn::new();
@@ -796,14 +869,12 @@ impl Stats<'_> {
         let room = inner.saturating_sub(spans_width(&left) + 2);
         drawn.push(spread(left, truncate_spans(&note, room), inner));
         let bar_cells = inner.saturating_sub(ROLE_COLUMN);
-        for role in self.crew.roles() {
+        let roles = self.crew.roles();
+        let tables: Vec<Vec<Legend>> = roles.iter().map(|role| self.did(kit, *role)).collect();
+        let columns = draw::table_columns(tables.iter().flatten(), bar_cells, false);
+        for (role, table) in roles.iter().zip(&tables) {
             drawn.push(Vec::new());
-            let filled = self.filled_by(role);
-            let parts: Vec<(u64, Style)> = filled
-                .iter()
-                .map(|(cli, model)| (u64::from(model.did(role)), model_style(kit, cli, model)))
-                .collect();
-            let label = if picked == Some(role) {
+            let label = if picked == Some(*role) {
                 vec![Span::styled(
                     format!("❯ {}", role.plural()),
                     kit.bold(Role::Question),
@@ -812,40 +883,82 @@ impl Stats<'_> {
                 vec![Span::raw(role.plural())]
             };
             let mut row = fit(label, ROLE_COLUMN);
+            let parts: Vec<(u64, Fill)> = (table.iter())
+                .map(|row| (row.part.value, row.part.fill))
+                .collect();
             row.extend(draw::stacked(kit, &parts, bar_cells));
             drawn.push(row);
 
-            let did = self.crew.did(role);
-            let single = filled.len() == 1;
-            let entries: Vec<Entry> = filled
-                .iter()
-                .map(|(cli, model)| Entry {
-                    style: model_style(kit, cli, model),
-                    name: draw::model_name(&model.name),
-                    amount: model.did(role).to_string(),
-                    note: if single {
-                        units(model.did(role), role.unit())
-                    } else {
-                        String::new()
-                    },
-                })
-                .collect();
-            let tail = (!single && did > 0).then(|| format!("of {}", count(did, role.unit())));
-            for line in draw::legend(kit, &entries, tail, bar_cells) {
-                let mut row = vec![Span::raw(" ".repeat(ROLE_COLUMN))];
+            let whole = count(self.crew.did(*role), role.unit());
+            for (k, line) in draw::table(kit, table, columns, true)
+                .into_iter()
+                .enumerate()
+            {
+                let left = if k == 0 {
+                    kit.dim(whole.clone())
+                } else {
+                    Span::raw("")
+                };
+                let mut row = fit(vec![left], ROLE_COLUMN);
                 row.extend(line);
                 drawn.push(row);
             }
-            if filled.is_empty() {
+            if table.is_empty() {
                 let none = format!("no {}s recorded", role.unit());
                 drawn.push(vec![Span::raw(" ".repeat(ROLE_COLUMN)), kit.dim(none)]);
             }
         }
-        if self.crew.roles().is_empty() {
+        if roles.is_empty() {
             drawn.push(vec![kit.dim("No work recorded in this period yet.")]);
         }
         frame.draw(kit, drawn)
     }
+
+    /// The models that did `role`'s work, as the rows of who did what: the logo of whoever
+    /// serves each, its texture, and what it did of the role's whole.
+    fn did(&self, kit: &Kit<'_>, role: StatsRole) -> Vec<Legend> {
+        let whole = u64::from(self.crew.did(role));
+        (self.filled_by(role).into_iter())
+            .map(|(cli, model)| {
+                let did = u64::from(model.did(role));
+                let fill = model_fill(kit, cli, model);
+                let logo = logo_for(&cli.agent, model.model.as_deref());
+                let label = ModelLabel::named(&logo, &model.name, kit.theme, NoPicture::Dot);
+                let name = draw::model_name(&label.name);
+                Legend {
+                    logo: Some(logo),
+                    ..Legend::of(fill, &name, (did, did, whole), did.to_string())
+                }
+            })
+            .collect()
+    }
+}
+
+/// One of the all-together card's bars: its label over it, its parts, and whether they sit a
+/// blank cell apart, as CLIs do.
+struct Labelled {
+    label: String,
+    rows: Vec<Legend>,
+    apart: bool,
+}
+
+/// Each bar's label, the bar and its table, a blank row between bars, every table in the
+/// same columns: the names as wide as the longest and the amounts as the widest.
+fn legends(kit: &Kit<'_>, bars: &[Labelled], width: usize) -> Vec<Vec<Span<'static>>> {
+    let every = bars.iter().flat_map(|bar| &bar.rows);
+    let columns = draw::table_columns(every, width, true);
+    let mut rows = Vec::new();
+    for (at, bar) in bars.iter().enumerate() {
+        if at > 0 {
+            rows.push(Vec::new());
+        }
+        rows.push(vec![kit.dim(bar.label.clone())]);
+        let parts: Vec<Lit> = bar.rows.iter().map(|row| row.part).collect();
+        rows.push(draw::stacked_lit(kit, &parts, bar.apart, width));
+        rows.push(Vec::new());
+        rows.extend(draw::table(kit, &bar.rows, columns, true));
+    }
+    rows
 }
 
 /// Cells a column of the chart takes with the blank after it: two and one while the
@@ -854,17 +967,8 @@ fn slot_width(slots: usize) -> usize {
     if slots * 3 <= CHART + 1 { 3 } else { 1 }
 }
 
-/// `workflows` after `14`, `task` after `1`.
-fn units(n: u32, unit: &str) -> String {
-    if n == 1 {
-        unit.to_owned()
-    } else {
-        format!("{unit}s")
-    }
-}
-
 /// The weekday's letter: `S M T W T F S`.
-fn letter(day: time::Weekday) -> char {
+pub(in crate::overview) fn letter(day: time::Weekday) -> char {
     match day {
         time::Weekday::Monday => 'M',
         time::Weekday::Tuesday | time::Weekday::Thursday => 'T',
@@ -970,21 +1074,24 @@ struct ModelLayout {
     bar: usize,
     /// Each count says what it counts.
     units: bool,
+    /// Cells of the labels of the rows of how work fared.
+    labels: usize,
 }
 
-/// `tasks    ▪▪▪▪▪▪▪▪▪▪ 94% first pass`, the same row on every card: ten small squares, the
-/// share that went the first way, and what that share is. With none of the work it says so.
+/// How wide the labels of the rows of how work fared are on cards whose narrowest is
+/// `least_inner` cells inside, alike on every card so the rows line up across them.
+pub(super) fn outcome_label(least_inner: usize) -> usize {
+    if least_inner >= ROOMY_CARD {
+        OUTCOME_LABEL
+    } else {
+        OUTCOME_LABEL - 1
+    }
+}
+
+/// `tasks     ▪▪▪▪▪▪▪▪▪▪ 94% first pass`, the same row on every card, its label in a column
+/// `width` wide: ten small squares, the share that went the first way, and what that share
+/// is. With none of the work it says so.
 pub(super) fn outcome_row(
-    kit: &Kit<'_>,
-    label: &str,
-    fared: Fared,
-    words: &str,
-) -> Vec<Span<'static>> {
-    outcome_row_in(kit, (label, OUTCOME_LABEL), fared, words)
-}
-
-/// [`outcome_row`] with its label in a column `width` wide.
-fn outcome_row_in(
     kit: &Kit<'_>,
     (label, width): (&str, usize),
     fared: Fared,
@@ -1000,14 +1107,4 @@ fn outcome_row_in(
     row.push(kit.strong(format::percent(fared.first_pass())));
     row.push(kit.dim(format!(" {words}")));
     row
-}
-
-/// How tasks fared in review, as one bar: green, amber, red.
-pub(super) fn fared_bar(kit: &Kit<'_>, fared: Fared, cells: usize) -> Vec<Span<'static>> {
-    let parts = [
-        (u64::from(fared.first), kit.fg(Role::Success)),
-        (u64::from(fared.once), kit.fg(Role::Warn)),
-        (u64::from(fared.more), kit.fg(Role::Danger)),
-    ];
-    draw::stacked(kit, &parts, cells)
 }

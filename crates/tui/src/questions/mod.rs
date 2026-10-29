@@ -38,6 +38,7 @@ use crate::app::UiAction;
 use crate::bottom::{AnsweredPick, QuestionPrompt};
 use crate::bridge::Cx;
 use crate::cell::Cell;
+use crate::council::edits::InQuestion;
 use crate::state::DecisionRecord;
 use crate::text::sanitize_line;
 use crate::views::ViewOutcome;
@@ -59,6 +60,10 @@ pub(crate) use words::joined;
 /// Auto decisions kept for a spot check that may follow them.
 const RECENT_DECISIONS: usize = 32;
 
+/// What a council's plan question says under its title: what approving with edits and sending
+/// it back do.
+pub const COUNCIL_PLAN: &str = "Approve with edits: change how any task is done, or who does it. Send back: the seats talk on.";
+
 #[derive(Debug, Default)]
 pub struct Questions {
     /// Every question on screen, waiting behind it, or passed on, by the kit's question id.
@@ -70,9 +75,12 @@ pub struct Questions {
     approvals: BTreeMap<(RunId, ApprovalId), Box<ApprovalOpened>>,
     /// Recent decisions, newest last, for the spot checks that follow auto decisions.
     decisions: VecDeque<Decision>,
-    /// Approvals Esc passed on from this screen, whose line printed then, so the decision that
-    /// follows prints no second one.
+    /// Approvals carried on without you from this screen, whose line printed then, so the
+    /// decision that follows prints no second one.
     passed_on: BTreeSet<(RunId, ApprovalId)>,
+    /// The question Enter on its run's row brought up, and where the list's selection was:
+    /// answering it, or Esc, goes back to that row.
+    from_row: Option<(u64, Option<usize>)>,
 }
 
 /// What an answer to a question needs to become a `UiCommand`.
@@ -84,6 +92,8 @@ pub struct OpenQuestion {
     pub evidence_sha256: Option<String>,
     /// The fallback question's Remember this pick toggle.
     pub remember: bool,
+    /// Where a run's question offers Carry on without me, its last row.
+    pub carry_on: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -202,6 +212,11 @@ impl Questions {
             } => self.answer(*question, *option, note.clone(), checked, cx),
             UiAction::OpenView { question, option } => self.open_view(*question, *option, cx),
             UiAction::Dismiss { question } => self.dismiss(*question, cx),
+            // The run's view opens all the same, on what the question is about.
+            UiAction::OpenWorkflow(key) => {
+                self.bring_up_for_row(key, cx);
+                false
+            }
             UiAction::AnswerQuestion(target) => {
                 let wanted = QuestionTarget::Controller(target.clone());
                 let Some(id) = self.find(&wanted) else {
@@ -236,6 +251,75 @@ impl Questions {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Enter on a run's row while the run waits on you: its oldest question that does comes up
+    /// with the keys, under the run's view. A row under it, a task's or a seat's, brings up the
+    /// question the row waits on, and only that.
+    fn bring_up_for_row(&mut self, key: &str, cx: &mut Cx<'_>) {
+        let (run, under) = key.split_once('#').unwrap_or((key, ""));
+        let Some(run) = RunId::new(run).ok() else {
+            return;
+        };
+        let answers = cx
+            .model
+            .bottom
+            .workflows
+            .rows
+            .iter()
+            .find(|row| row.key == key)
+            .and_then(|row| row.answers.clone());
+        if !under.is_empty() && answers.is_none() {
+            return;
+        }
+        let oldest = {
+            let shown = cx.model.bottom.question.as_ref();
+            let waits = |id: u64| match shown.filter(|question| question.id == id) {
+                Some(question) => question.needs_you,
+                None => self
+                    .held
+                    .get(&id)
+                    .and_then(|held| held.stashed.as_ref())
+                    .is_some_and(|question| question.needs_you),
+            };
+            let asks = |wanted: Option<&ApprovalId>| {
+                self.open
+                    .iter()
+                    .find(|(id, open)| {
+                        matches!(&open.target, QuestionTarget::Controller(AnswerTarget::Approval {
+                            run: asked, id: approval,
+                        }) if *asked == run && wanted.is_none_or(|wanted| wanted == approval))
+                            && waits(**id)
+                    })
+                    .map(|(id, _)| *id)
+            };
+            match &answers {
+                Some(wanted) if under.is_empty() => asks(Some(wanted)).or_else(|| asks(None)),
+                Some(wanted) => asks(Some(wanted)),
+                None => asks(None),
+            }
+        };
+        let Some(id) = oldest else {
+            return;
+        };
+        let selected = cx.model.bottom.workflows.selected;
+        self.display(id, true, cx);
+        self.from_row = Some((id, selected));
+    }
+
+    /// Once the question its run's row brought up is answered or set back, the keys go back to
+    /// that row, and the view opened over it closes.
+    fn back_to_row(&mut self, question: u64, cx: &mut Cx<'_>) {
+        let Some((_, selected)) = self.from_row.filter(|(asked, _)| *asked == question) else {
+            return;
+        };
+        self.from_row = None;
+        cx.out.close_views = true;
+        let list = &mut cx.model.bottom.workflows;
+        match selected.filter(|at| *at < list.rows.len()) {
+            Some(at) => list.selected = Some(at),
+            None => list.focus(),
         }
     }
 
@@ -292,6 +376,26 @@ impl Questions {
             let wall = OffsetDateTime::now_utc();
             cli_down::count_down(&mut prompt, down, &opened.options, cx.now, wall);
         }
+        // A council's plan sets its edits on a sheet in the question's place, not in a note.
+        let edits = &cx.model.bottom.council.edits;
+        if let Some(edits) = edits.as_ref().filter(|edits| edits.approval == opened.id)
+            && let Some(option) = opened
+                .options
+                .iter()
+                .position(|option| option.action == AnswerAction::ApproveWithEdits)
+        {
+            prompt.sheet = Some(Box::new(InQuestion {
+                option,
+                open: false,
+                sheet: edits.sheet.clone(),
+                faces: cx.model.bottom.council.faces.clone(),
+            }));
+            // In the summary's place: the plan printed above says what the tasks are.
+            match prompt.detail.first_mut() {
+                Some(summary) => COUNCIL_PLAN.clone_into(summary),
+                None => prompt.detail.push(COUNCIL_PLAN.to_owned()),
+            }
+        }
         self.open.insert(
             id,
             OpenQuestion {
@@ -299,6 +403,7 @@ impl Questions {
                 options: opened.options.clone(),
                 evidence_sha256: Some(opened.evidence_sha256.clone()),
                 remember: false,
+                carry_on: approval::carries_on(opened).then(|| prompt.options.len() - 1),
             },
         );
         self.held.insert(
@@ -452,6 +557,7 @@ impl Questions {
                 options: spot::spot_check_options(),
                 evidence_sha256: Some(decision.opened.evidence_sha256.clone()),
                 remember: false,
+                carry_on: None,
             },
         );
         self.held.insert(
@@ -479,6 +585,7 @@ impl Questions {
                 options: choice.options.clone(),
                 evidence_sha256: None,
                 remember: false,
+                carry_on: None,
             },
         );
         self.held.insert(
@@ -493,12 +600,9 @@ impl Questions {
         if choice.bell {
             cx.out.ring();
         }
-        // A change you made in a view, such as /approvals, asks here; the view would hide it,
-        // unless it stays up over the question, as Config does for the change it sent.
-        if matches!(
-            choice.kind,
-            ChoiceKind::ConfirmSafetySetting | ChoiceKind::SettingScope
-        ) {
+        // A safety change you made in a view, such as /approvals, asks here; the view would
+        // hide it, unless it stays up over the question, as Config does for the change it sent.
+        if choice.kind == ChoiceKind::ConfirmSafetySetting {
             cx.out.views_make_way = true;
         }
         self.show(cx);
@@ -519,6 +623,7 @@ impl Questions {
                 options,
                 evidence_sha256: None,
                 remember: false,
+                carry_on: None,
             },
         );
         self.held.insert(
@@ -559,6 +664,7 @@ impl Questions {
         else {
             return false;
         };
+        self.back_to_row(question, cx);
         if cx
             .model
             .bottom
@@ -568,10 +674,28 @@ impl Questions {
         {
             cx.model.bottom.question = None;
         }
-        let picked = open
-            .options
-            .get(option)
-            .filter(|_| held.toggle != Some(option));
+        let carry_on = approval::carry_on_answer();
+        let picked = match open.carry_on {
+            Some(row) if row == option => Some(&carry_on),
+            _ => open
+                .options
+                .get(option)
+                .filter(|_| held.toggle != Some(option)),
+        };
+        // Carrying on says at once who decides now, and the decision's own record then
+        // doesn't say it again.
+        if let (QuestionTarget::Controller(AnswerTarget::Approval { run, id }), Some(picked)) =
+            (&open.target, picked)
+            && picked.action == AnswerAction::CarryOn
+            && let Source::Approval(opened) = &held.source
+            && !cx.replaying()
+        {
+            let at = OffsetDateTime::now_utc();
+            let cell =
+                records::passed_on_cell(opened.kind, opened.when_declined, at, clock_offset(cx));
+            cx.model.history.push(cell);
+            self.passed_on.insert((run.clone(), id.clone()));
+        }
         cx.model.bottom.answered_pick = picked
             .filter(|_| !open.remember)
             .and_then(|picked| answered_pick(&open.target, &held.source, picked, &cx.state.names));
@@ -702,9 +826,8 @@ impl Questions {
 
     /// Esc took the question off the screen with nothing picked. A choice closes as the controller
     /// says for its kind, and a confirm of this screen's own just closes. A run's question or
-    /// approval is passed on: the engine has whoever asked decide and go on, and until it
-    /// settles the question waits out of sight, where the list of what needs you still opens it.
-    /// Nothing waits on a spot check, so it closes and stays in `/approvals`.
+    /// approval waits out of sight, unanswered, where its run's row and the list of what needs
+    /// you still open it. Nothing waits on a spot check, so it closes and stays in `/approvals`.
     fn dismiss(&mut self, question: u64, cx: &mut Cx<'_>) -> bool {
         let Some(open) = self.open.get(&question) else {
             return false;
@@ -713,28 +836,11 @@ impl Questions {
             QuestionTarget::Controller(to @ AnswerTarget::Choice { .. }) => {
                 cx.out.send(UiCommand::SetAside { to: to.clone() });
             }
-            // Esc on a run's question or approval means "carry on without me":
-            // the engine takes an option in your place and its decision closes this, so
-            // nothing sits under "needs you". An issue's question is only set aside, since what
-            // it posts on GitHub waits for your own answer.
-            QuestionTarget::Controller(to @ AnswerTarget::Approval { .. }) => {
-                let opened = match self.held.get(&question).map(|held| &held.source) {
-                    Some(Source::Approval(opened)) => Some(opened.as_ref()),
-                    _ => None,
-                };
-                if !opened.is_some_and(crate::views::issues::waits_for_you) {
-                    cx.out.send(UiCommand::SetAside { to: to.clone() });
-                    if let Some(opened) = opened
-                        && !cx.replaying()
-                    {
-                        let at = OffsetDateTime::now_utc();
-                        let cell = records::passed_on_cell(opened.kind, at, clock_offset(cx));
-                        cx.model.history.push(cell);
-                        if let AnswerTarget::Approval { run, id } = to {
-                            self.passed_on.insert((run.clone(), id.clone()));
-                        }
-                    }
-                }
+            // Esc on a run's question or approval goes back to the list unanswered: it waits
+            // out of sight, its row still marked, and nothing is sent. Carry on without me is
+            // its last option.
+            QuestionTarget::Controller(AnswerTarget::Approval { .. }) => {
+                self.back_to_row(question, cx)
             }
             QuestionTarget::SpotCheck { .. } | QuestionTarget::Local(_) => {
                 self.close(question, cx);

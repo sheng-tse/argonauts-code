@@ -1,6 +1,6 @@
 //! `/mods`' changes, `/pin`, `/unpin`, and `pin` on `/status`, `/usage`, `/context`, and
 //! `/limits`. A change is one setting, saved in the layer its value came from unless the
-//! command's `--global`, `--project`, or `--local` picked one. `/mods` itself and a mod's page
+//! command's `--session`, `--local`, `--project`, or `--global` picked one. `/mods` itself and a mod's page
 //! are the mod files' ([`crate::mods`]).
 
 use argonauts_core::NoteLevel;
@@ -96,5 +96,33 @@ pub(crate) fn mod_name(the_mod: ModName) -> &'static str {
     match the_mod {
         ModName::PlanUsage => "plan-usage",
         other => other.name(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::controller::test_support::{CliOptions, TestCtx};
+
+    /// `/pin context --session` shows it above the input until you quit, and writes no file.
+    #[test]
+    fn a_pin_for_this_session_writes_no_file() {
+        let (mut test, _) = TestCtx::new(CliOptions::default());
+        let before = std::fs::read_to_string(test.repo.global_config()).ok();
+        let change = ModPlaceChange::Show {
+            place: Place::AboveInput,
+        };
+        let action = ModsAction::Change {
+            the_mod: ModName::Context,
+            change,
+        };
+        command(&mut test.ctx, action, Some(SettingScope::Session)).unwrap();
+        let shown = &test.ctx.settings().ui.above_input.mods;
+        assert!(shown.contains(&ModName::Context), "{shown:?}");
+        assert_eq!(test.ctx.settings.layer("ui.above_input.mods"), "session");
+        assert_eq!(
+            std::fs::read_to_string(test.repo.global_config()).ok(),
+            before
+        );
     }
 }

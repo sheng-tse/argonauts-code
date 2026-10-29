@@ -1,33 +1,33 @@
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
-   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
-  What your agents did, from 562 actions in 19 runs · last 30 days                                                    
-                                                                                                                      
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
 
-[picture]
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
 
-Comparing Haiku 5.5                                                                                                   
-with the other models                                                                                                 
-red: Haiku does this more                                                                                             
-blue: Haiku does this less                                                                                            
-                                                                                                                      
-● Haiku 5.5         406                                                                                               
-○ GPT 6 Luna         66                                                                                               
-○ GPT 5.6 Luna       49                                                                                               
-○ Haiku 4.5          22                                                                                               
-○ Gemini 3.8 Flash   19                                                                                               
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
 
-[picture]
+                                                                    Comparing ◧◨ Haiku 5.5
+                                                                    With the rest, on the land:
+                                                                    Red where it does more, blue where less
+                                                                       Much more 2x as often or more
+                                                                       More      1.25x to 2x
+                                                                       Less      0.5x to 0.8x
+                                                                       Much less 0.5x or less
+                                                                       Untinted  About the same, or too few
 
-                                                                                                                      
-  lit: wrote a workflow script · 13 actions, 13 of them Haiku 5.5's                                                   
-                                                                                                                      
-  Distinctive to Haiku 5.5 · 406 actions; the others 156                                                              
-  ❯ wrote a workflow script                                13 (3.2%)   others   0 (0.0%)                              
-    gave a structured answer that didn't fit               20 (4.9%)   others   1 (0.6%)                              
-    asked another agent to review or judge                  8 (2.0%)   others   0 (0.0%)                              
-    edited a test file                                     13 (3.2%)   others   1 (0.6%)                              
-    searched code by pattern                               25 (6.2%)   others   3 (1.9%)                              
-    read a source file                                     53 (13.1%)   others   9 (5.8%)                             
-                                                                                                                      
-  r to cycle dates · g group · s this project · d deeper map · ↑  ↓  behavior · enter actions · esc back              
+                                                                    ●  ◧◨ Haiku 5.5   406
+                                                                    ○  ◧◨ 6 Luna       66
+                                                                    ○  ◧◨ 5.6 Luna     49
+                                                                    ↓  2 more below
+
+  Lit: wrote a workflow script · 13 actions, 13 of them Haiku 5.5's
+
+  Label map · 562 actions in 19 runs across 6 projects · last 30 days
+  Distinctive to Haiku 5.5 · 406 actions; the others 156
+  ❯ Wrote a workflow script                                13   (3.2%)   others   0   (0.0%)
+    Gave a structured answer that didn't fit               20   (4.9%)   others   1   (0.6%)
+    Asked another agent to review or judge                  8   (2.0%)   others   0   (0.0%)
+    Edited a test file                                     13   (3.2%)   others   1   (0.6%)
+    Searched code by pattern                               25   (6.2%)   others   3   (1.9%)
+    Read a source file                                     53  (13.1%)   others   9   (5.8%)
+
+   r to cycle dates · s this project · d summaries · ↑  ↓  behavior · enter actions · ←  →  model · esc back

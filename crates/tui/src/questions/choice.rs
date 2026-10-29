@@ -20,7 +20,7 @@ const MAX_SETUP_ROWS: usize = 16;
 const NEEDED_UPDATE_GAP: usize = 4;
 
 /// The cells between the longest name `/templates` lists and what kind of thing it is.
-const TEMPLATES_GAP: usize = 3;
+const TEMPLATES_GAP: usize = 4;
 
 /// The cells between a setup step's longest answer and what each answer means.
 const SETUP_GAP: usize = 4;
@@ -112,7 +112,7 @@ pub fn choice_question(id: u64, choice: &AppChoice) -> QuestionPrompt {
         }
         ChoiceKind::Setup => {
             question.noted_rows = setup_rows(&choice.body);
-            // Its four choices are listed, and `d` shows what would be written.
+            // Yes and Not now are listed, and `d` shows what would be written.
             if let Some(last) = choice.options.last()
                 && last.action == AnswerAction::ShowDiff
             {
@@ -125,8 +125,8 @@ pub fn choice_question(id: u64, choice: &AppChoice) -> QuestionPrompt {
     question
 }
 
-/// A setup's question shows the setup, which ends at the first blank line. What each place would
-/// write follows it, for Show what would be written.
+/// A setup's question shows the setup, which ends at the first blank line. What yes would write
+/// follows it, for Show what would be written.
 fn setup_rows(body: &[String]) -> Vec<String> {
     let mut rows: Vec<String> = body
         .iter()
@@ -369,9 +369,12 @@ mod tests {
         assert_eq!(rows.len(), 15, "{rows:#?}");
         assert_eq!(rows[1], "◆ Copy which one?");
         assert_eq!(rows[2], "");
-        assert_eq!(rows[3], "  ❯ 1.  Council                 workflow · in use");
-        assert_eq!(rows[4], "    2.  Orchestrator            workflow");
-        assert_eq!(rows[12], "    10. Ablate-fixed-roles      workflow");
+        assert_eq!(
+            rows[3],
+            "  ❯ 1.  Council                  workflow · in use"
+        );
+        assert_eq!(rows[4], "    2.  Orchestrator             workflow");
+        assert_eq!(rows[12], "    10. Ablate-fixed-roles       workflow");
         assert_eq!(rows[13], "");
         let keys = "  Enter to choose · Esc to cancel";
         assert_eq!(rows[14], format!("{keys:<64}  1–10 of 17 ↓"));
@@ -385,18 +388,21 @@ mod tests {
         };
         down(&mut question, 5);
         let rows = rows_within(&question, 80, usize::MAX);
-        assert_eq!(rows[3], "    1.  Council                 workflow · in use");
-        assert_eq!(rows[8], "  ❯ 6.  Draft-and-vote          workflow");
+        assert_eq!(
+            rows[3],
+            "    1.  Council                  workflow · in use"
+        );
+        assert_eq!(rows[8], "  ❯ 6.  Draft-and-vote           workflow");
         down(&mut question, 5);
         let rows = rows_within(&question, 80, usize::MAX);
-        assert_eq!(rows[3], "    6.  Draft-and-vote          workflow");
-        assert_eq!(rows[8], "  ❯ 11. Ablate-same-provider    workflow");
-        assert_eq!(rows[12], "    15. workers                 prompts");
+        assert_eq!(rows[3], "    6.  Draft-and-vote           workflow");
+        assert_eq!(rows[8], "  ❯ 11. Ablate-same-provider     workflow");
+        assert_eq!(rows[12], "    15. workers                  prompts");
         assert_eq!(rows[14], format!("{keys:<63}↑  6–15 of 17 ↓"));
         down(&mut question, 6);
         let rows = rows_within(&question, 80, usize::MAX);
-        assert_eq!(rows[3], "    8.  Ablate-no-anonymize     workflow");
-        assert_eq!(rows[12], "  ❯ 17. judge                   prompts");
+        assert_eq!(rows[3], "    8.  Ablate-no-anonymize      workflow");
+        assert_eq!(rows[12], "  ❯ 17. judge                    prompts");
         assert_eq!(rows[14], format!("{keys:<63}↑  8–17 of 17"));
     }
 
@@ -413,13 +419,13 @@ mod tests {
         let rows = rows_within(&question, 80, 14);
         assert_eq!(rows.len(), 14, "{rows:#?}");
         assert_eq!(rows[1], "◆ Copy which one?");
-        assert_eq!(rows[2], "    4.  Maker-checker           workflow");
+        assert_eq!(rows[2], "    4.  Maker-checker            workflow");
         assert_eq!(rows[12], "");
         assert_eq!(rows[13], format!("{keys:<63}↑  4–13 of 17 ↓"));
         // Then the one over the keys.
         let rows = rows_within(&question, 80, 13);
         assert_eq!(rows.len(), 13, "{rows:#?}");
-        assert_eq!(rows[11], "    13. main                    prompts");
+        assert_eq!(rows[11], "    13. main                     prompts");
         assert_eq!(rows[12], format!("{keys:<63}↑  4–13 of 17 ↓"));
         // Then the window takes fewer names, the pointer still among them.
         let rows = rows_within(&question, 80, 8);
@@ -428,11 +434,11 @@ mod tests {
             [
                 "─".repeat(80).as_str(),
                 "◆ Copy which one?",
-                "    7.  Ablate-no-blind         workflow",
-                "    8.  Ablate-no-anonymize     workflow",
-                "  ❯ 9.  Ablate-no-critique      workflow",
-                "    10. Ablate-fixed-roles      workflow",
-                "    11. Ablate-same-provider    workflow",
+                "    7.  Ablate-no-blind          workflow",
+                "    8.  Ablate-no-anonymize      workflow",
+                "  ❯ 9.  Ablate-no-critique       workflow",
+                "    10. Ablate-fixed-roles       workflow",
+                "    11. Ablate-same-provider     workflow",
                 format!("{keys:<63}↑  7–11 of 17 ↓").as_str(),
             ],
         );
@@ -442,33 +448,8 @@ mod tests {
             rows[1..],
             [
                 "◆ Copy which one?",
-                "  ❯ 9.  Ablate-no-critique      workflow",
+                "  ❯ 9.  Ablate-no-critique       workflow",
                 format!("{keys:<64}↑  9–9 of 17 ↓").as_str(),
-            ],
-        );
-    }
-
-    /// Where it goes has two answers, each on one row with its folder beside it.
-    #[test]
-    fn the_templates_question_about_where_shows_each_folder_beside_its_answer() {
-        let mut choice = which_template();
-        choice.title = "Copy Orchestrator into".to_owned();
-        choice.options = vec![
-            AnswerOption {
-                recommended: true,
-                ..answer('t', "This folder", "this", ".argonauts/workflows/")
-            },
-            answer('e', "Every folder", "every", "~/.argonauts/workflows/"),
-        ];
-        let question = choice_question(1, &choice);
-        let rows = rows_within(&question, 80, usize::MAX);
-        assert_eq!(
-            rows[3..],
-            [
-                "  ❯ 1. This folder (recommended)   .argonauts/workflows/",
-                "    2. Every folder                ~/.argonauts/workflows/",
-                "",
-                "  Enter to choose · Esc to cancel",
             ],
         );
     }

@@ -1,6 +1,10 @@
 //! The terminals that draw pictures, and the escapes that put one in the cells at the cursor.
 //! Ghostty, Kitty and WezTerm take the kitty graphics protocol; iTerm2 takes its own. tmux and
 //! screen pass neither through, so under them the header draws its block cells.
+//!
+//! The kitty protocol also keeps pictures by id and shows each through placements of its own,
+//! which can start part way into a cell, show part of the picture, stack in depth, sit under the
+//! text, and move or go one at a time.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -25,7 +29,12 @@ impl Graphics {
     pub fn detect(var: impl Fn(&str) -> Option<String>) -> Option<Self> {
         let set = |name: &str| var(name).is_some_and(|value| !value.is_empty());
         let term = var("TERM").unwrap_or_default();
-        if set("TMUX") || set("STY") || term.starts_with("screen") || term.starts_with("tmux") {
+        // Zellij before 0.45 drops kitty pictures, and its panes inherit the outer terminal's
+        // names, so it counts as a multiplexer whatever they say.
+        let multiplexed = ["TMUX", "STY", "ZELLIJ", "ZELLIJ_SESSION_NAME"]
+            .iter()
+            .any(|name| set(name));
+        if multiplexed || term.starts_with("screen") || term.starts_with("tmux") {
             return None;
         }
         let program = var("TERM_PROGRAM").unwrap_or_default();
@@ -44,6 +53,27 @@ impl Graphics {
     /// From the app's own environment.
     pub fn from_process() -> Option<Self> {
         Self::detect(|name| std::env::var(name).ok())
+    }
+
+    /// [`Self::detect`], and where no variable names the terminal and pictures are asked for
+    /// anyway, the kitty protocol when `answers` says the terminal took its question. A
+    /// multiplexer is never asked: it would answer for the terminal outside it.
+    pub fn detect_or_ask(
+        var: impl Fn(&str) -> Option<String>,
+        ask: bool,
+        answers: impl FnOnce() -> bool,
+    ) -> Option<Self> {
+        if let Some(found) = Self::detect(&var) {
+            return Some(found);
+        }
+        let set = |name: &str| var(name).is_some_and(|value| !value.is_empty());
+        let term = var("TERM").unwrap_or_default();
+        let multiplexed = ["TMUX", "STY", "ZELLIJ", "ZELLIJ_SESSION_NAME"]
+            .iter()
+            .any(|name| set(name))
+            || term.starts_with("screen")
+            || term.starts_with("tmux");
+        (ask && !multiplexed && answers()).then_some(Self::Kitty)
     }
 }
 
@@ -98,6 +128,97 @@ pub fn forget(ids: impl IntoIterator<Item = u32>) -> Vec<u8> {
         .into_bytes()
 }
 
+/// A depth that puts a picture under the text and under every cell with a background colour
+/// too, so selected text still shows over it. The kitty protocol draws a picture there when its
+/// depth is below half the lowest 32-bit number.
+pub const UNDER_BACKGROUNDS: i32 = i32::MIN / 2 - 1;
+
+/// One placement of a picture the kitty protocol keeps: which picture, which of its placements,
+/// how far into its first cell it starts, which part of it shows, the cells it is scaled to and
+/// how deep it sits. Placing a picture again under the same placement moves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placement {
+    /// The picture, as [`store`] kept it.
+    pub image: u32,
+    /// Which of the picture's placements; never 0, which would add one each time.
+    pub placement: u32,
+    /// Pixels right and down from the first cell's top left, each less than a cell.
+    pub offset: (u16, u16),
+    /// The part of the picture that shows; all of it when `None`.
+    pub crop: Option<Crop>,
+    /// The cells, columns by rows, it is scaled to fill; at its own pixels when `None`.
+    pub cells: Option<(u16, u16)>,
+    /// Higher sits over lower. Below zero is under the text, and [`UNDER_BACKGROUNDS`] under
+    /// coloured cells too.
+    pub z: i32,
+}
+
+/// A part of a picture, in its pixels from the top left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Crop {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Placement {
+    /// All of `image` at its own pixels from the top left of the cell at the cursor, over the
+    /// text.
+    pub fn new(image: u32, placement: u32) -> Self {
+        Self {
+            image,
+            placement,
+            offset: (0, 0),
+            crop: None,
+            cells: None,
+            z: 0,
+        }
+    }
+}
+
+/// The escape that shows a picture kept by [`store`] as `placement` says, from the cell at the
+/// cursor, which stays where it is. Sent again with other keys, it moves the placement.
+pub fn place(placement: &Placement) -> Vec<u8> {
+    let Placement {
+        image,
+        placement: id,
+        offset,
+        crop,
+        cells,
+        z,
+    } = *placement;
+    let mut keys = format!("a=p,q=2,C=1,i={image},p={id}");
+    if offset.0 > 0 {
+        keys.push_str(&format!(",X={}", offset.0));
+    }
+    if offset.1 > 0 {
+        keys.push_str(&format!(",Y={}", offset.1));
+    }
+    if let Some(Crop {
+        x,
+        y,
+        width,
+        height,
+    }) = crop
+    {
+        keys.push_str(&format!(",x={x},y={y},w={width},h={height}"));
+    }
+    if let Some((columns, rows)) = cells {
+        keys.push_str(&format!(",c={columns},r={rows}"));
+    }
+    if z != 0 {
+        keys.push_str(&format!(",z={z}"));
+    }
+    format!("\x1b_G{keys}\x1b\\").into_bytes()
+}
+
+/// Takes one placement of the picture under `image` off the screen, keeping the picture and
+/// its other placements.
+pub fn remove(image: u32, placement: u32) -> Vec<u8> {
+    format!("\x1b_Ga=d,d=i,q=2,i={image},p={placement}\x1b\\").into_bytes()
+}
+
 /// The kitty protocol's escapes for `png` with `keys`, its payload in chunks.
 fn kitty_send(png: &[u8], keys: &str) -> Vec<u8> {
     let data = STANDARD.encode(png);
@@ -136,10 +257,11 @@ pub(crate) fn pictures_in(escapes: &[u8]) -> Vec<Vec<u8>> {
     let mut pictures = Vec::new();
     let mut data = String::new();
     for part in text.split("\x1b_G").skip(1) {
-        let Some((keys, rest)) = part.split_once(';') else {
+        // Escapes without a payload, such as a placement, end before any `;` after them.
+        let escape = part.split("\x1b\\").next().unwrap_or_default();
+        let Some((keys, payload)) = escape.split_once(';') else {
             continue;
         };
-        let payload = rest.split("\x1b\\").next().unwrap_or_default();
         data.push_str(payload);
         if keys.split(',').any(|key| key == "m=0") {
             pictures.push(STANDARD.decode(&data).unwrap_or_default());
@@ -202,6 +324,31 @@ mod tests {
         assert_eq!(Graphics::detect(env(&tmux)), None);
         let screen = [("TERM", "screen-256color"), ("KITTY_WINDOW_ID", "1")];
         assert_eq!(Graphics::detect(env(&screen)), None);
+        // Asked for pictures, a terminal no variable names gets them if it answers.
+        let unnamed = [("TERM", "xterm-256color")];
+        assert_eq!(
+            Graphics::detect_or_ask(env(&unnamed), true, || true),
+            Some(Graphics::Kitty)
+        );
+        assert_eq!(Graphics::detect_or_ask(env(&unnamed), true, || false), None);
+        assert_eq!(Graphics::detect_or_ask(env(&unnamed), false, || true), None);
+        let inside = [
+            ("TERM", "xterm-256color"),
+            ("TMUX", "/tmp/tmux-501/default,1,0"),
+        ];
+        assert_eq!(Graphics::detect_or_ask(env(&inside), true, || true), None);
+        // Zellij's panes keep the outer terminal's names, Ghostty's here.
+        for zellij in ["ZELLIJ", "ZELLIJ_SESSION_NAME"] {
+            let inside = [
+                ("TERM_PROGRAM", "ghostty"),
+                (
+                    "GHOSTTY_RESOURCES_DIR",
+                    "/Applications/Ghostty.app/Contents/Resources",
+                ),
+                (zellij, "0"),
+            ];
+            assert_eq!(Graphics::detect(env(&inside)), None, "{zellij}");
+        }
     }
 
     #[test]
@@ -241,6 +388,60 @@ mod tests {
         assert_eq!(
             String::from_utf8(forget([3, 4])).unwrap(),
             "\x1b_Ga=d,d=I,q=2,i=3\x1b\\\x1b_Ga=d,d=I,q=2,i=4\x1b\\"
+        );
+    }
+
+    #[test]
+    fn a_placement_names_only_the_keys_it_changes() {
+        let whole = Placement::new(7, 2);
+        assert_eq!(
+            String::from_utf8(place(&whole)).unwrap(),
+            "\x1b_Ga=p,q=2,C=1,i=7,p=2\x1b\\"
+        );
+        let sprite = Placement {
+            offset: (3, 17),
+            crop: Some(Crop {
+                x: 4,
+                y: 0,
+                width: 20,
+                height: 12,
+            }),
+            z: 40,
+            ..whole
+        };
+        assert_eq!(
+            String::from_utf8(place(&sprite)).unwrap(),
+            "\x1b_Ga=p,q=2,C=1,i=7,p=2,X=3,Y=17,x=4,y=0,w=20,h=12,z=40\x1b\\"
+        );
+        let layer = Placement {
+            cells: Some((64, 13)),
+            z: -5,
+            ..whole
+        };
+        assert_eq!(
+            String::from_utf8(place(&layer)).unwrap(),
+            "\x1b_Ga=p,q=2,C=1,i=7,p=2,c=64,r=13,z=-5\x1b\\"
+        );
+    }
+
+    #[test]
+    fn a_picture_under_coloured_cells_sits_below_half_the_lowest_depth() {
+        assert!(i64::from(UNDER_BACKGROUNDS) < i64::from(i32::MIN) / 2);
+        let bubble = Placement {
+            z: UNDER_BACKGROUNDS,
+            ..Placement::new(9, 1)
+        };
+        assert_eq!(
+            String::from_utf8(place(&bubble)).unwrap(),
+            "\x1b_Ga=p,q=2,C=1,i=9,p=1,z=-1073741825\x1b\\"
+        );
+    }
+
+    #[test]
+    fn one_placement_goes_and_the_picture_stays() {
+        assert_eq!(
+            String::from_utf8(remove(7, 2)).unwrap(),
+            "\x1b_Ga=d,d=i,q=2,i=7,p=2\x1b\\"
         );
     }
 }

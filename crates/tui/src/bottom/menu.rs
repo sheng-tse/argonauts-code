@@ -5,12 +5,16 @@
 //! repo's files and folders as `+ src/main.rs`, as Claude Code does, then the run's agents
 //! under their own heading. Every entry is one row.
 
-use argonauts_core::input::{at_word, at_words};
+use std::collections::BTreeMap;
+
+use argonauts_core::input::{CommandCategory, at_word, at_words};
+use argonauts_core::setup_sheet::WorkflowStatus;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::files::RepoFiles;
+use crate::commands::YOUR_WORKFLOWS;
 use crate::render::RenderCtx;
 use crate::text::{sanitize_line, spans_width, str_width, truncate_line, truncate_spans};
 use crate::theme::Role;
@@ -93,6 +97,8 @@ pub struct Menus {
     pub mentions: Vec<MenuItem>,
     /// Hints for the `?` panel, such as `ctrl + o for the transcript`.
     pub shortcuts: Vec<String>,
+    /// Each workflow's status by its name, said at the right of its command.
+    pub workflow_statuses: BTreeMap<String, WorkflowStatus>,
     pub shortcuts_open: bool,
     /// The repo's files and folders for the `@` list.
     files: RepoFiles,
@@ -294,7 +300,7 @@ impl Menus {
         let entries: Vec<Line<'static>> = matches
             .iter()
             .enumerate()
-            .map(|(i, m)| entry_row(m, kind, i == selected, ctx))
+            .map(|(i, m)| entry_row(m, kind, self.status_of(m), i == selected, ctx))
             .collect();
         // A group's header tops its first entry, and the window's first entry, so the group
         // in view is always named.
@@ -330,6 +336,19 @@ impl Menus {
         }
         rows.truncate(limit);
         Some(rows)
+    }
+
+    /// A workflow command's status: one under Work or your workflows, so a command of the
+    /// main agent's that shares a workflow's name never shows one.
+    fn status_of(&self, m: &Match<'_>) -> Option<WorkflowStatus> {
+        let Entry::Item(item) = m.entry else {
+            return None;
+        };
+        let group = item.group.as_deref()?;
+        let workflows = group == CommandCategory::Work.title() || group == YOUR_WORKFLOWS;
+        workflows
+            .then(|| self.workflow_statuses.get(&item.name).copied())
+            .flatten()
     }
 
     /// Entries whose name starts with `query`, ignoring case, then those with a word inside
@@ -422,9 +441,16 @@ fn header_style(ctx: &RenderCtx<'_>) -> Style {
         .add_modifier(Modifier::DIM | Modifier::BOLD)
 }
 
-/// One row: the name padded to its column, then the description, cut with `…` to fit. Like the
-/// bottom line, a row leaves the last column empty.
-fn entry_row(m: &Match<'_>, kind: MenuKind, selected: bool, ctx: &RenderCtx<'_>) -> Line<'static> {
+/// One row: the name padded to its column, then the description, cut with `…` to fit, and at
+/// the right an `@` entry's kind or a workflow's status. Like the bottom line, a row leaves the
+/// last column empty.
+fn entry_row(
+    m: &Match<'_>,
+    kind: MenuKind,
+    status: Option<WorkflowStatus>,
+    selected: bool,
+    ctx: &RenderCtx<'_>,
+) -> Line<'static> {
     let theme = ctx.theme;
     let width = usize::from(ctx.width).saturating_sub(1);
     let indent = ENTRY_INDENT;
@@ -452,25 +478,39 @@ fn entry_row(m: &Match<'_>, kind: MenuKind, selected: bool, ctx: &RenderCtx<'_>)
     let name_width = str_width(sigil) + str_width(&item.name);
     let pad = NAME_COLUMNS.saturating_sub(name_width).max(2);
     spans.push(Span::raw(" ".repeat(pad)));
-    let kind_word = item
-        .kind
-        .as_deref()
-        .map(|kind| sanitize_line(kind).trim().to_owned())
-        .filter(|kind| !kind.is_empty());
-    let kind_width = kind_word.as_deref().map_or(0, |kind| str_width(kind) + 1);
+    // Green while the command switches at once, amber when it opens a setup sheet first.
+    let kind_word = match status {
+        Some(status) => Some((status.words().to_owned(), status_style(status, ctx))),
+        None => item
+            .kind
+            .as_deref()
+            .map(|kind| sanitize_line(kind).trim().to_owned())
+            .filter(|kind| !kind.is_empty())
+            .map(|kind| (kind, theme.style(Role::Dim))),
+    };
+    let kind_width = kind_word
+        .as_ref()
+        .map_or(0, |(kind, _)| str_width(kind) + 1);
     let text_col = indent + name_width + pad;
     let room = width.saturating_sub(text_col + kind_width);
     let description = sanitize_line(&item.description).trim().to_owned();
     let description = truncate_spans(&[Span::styled(description, detail_style)], room);
     let used = text_col + spans_width(&description);
     spans.extend(description);
-    if let Some(kind) = kind_word
+    if let Some((kind, style)) = kind_word
         && used + kind_width <= width
     {
         spans.push(Span::raw(" ".repeat(width + 1 - used - kind_width)));
-        spans.push(Span::styled(kind, theme.style(Role::Dim)));
+        spans.push(Span::styled(kind, style));
     }
     truncate_line(&Line::from(spans), width)
+}
+
+fn status_style(status: WorkflowStatus, ctx: &RenderCtx<'_>) -> Style {
+    match status {
+        WorkflowStatus::InUse | WorkflowStatus::Ready => ctx.theme.style(Role::Success),
+        WorkflowStatus::SetUpFirst => ctx.theme.style(Role::Warn),
+    }
 }
 
 /// `+ src/main.rs`. A path too long for the row keeps its end, where the file's name is, and

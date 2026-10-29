@@ -28,6 +28,7 @@ use argonauts_core::limits::{CheckRequest, CheckRunner};
 use argonauts_core::names::{ApprovalId, ModelRef, WorkflowId};
 use argonauts_core::session_runner::SessionSpec;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::protocol::CheckCommand;
 use argonauts_core::steps::StepName;
@@ -795,10 +796,14 @@ fn history(crew: &Crew, base: &str, tasks: &[TaskSpec]) -> anyhow::Result<Vec<Ru
             new_dependencies: Vec::new(),
             flags: Vec::new(),
             workflow: None,
+            seats: Vec::new(),
+            objections: Vec::new(),
+            offer: None,
         })),
         evidence_sha256: evidence.clone(),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options: Vec::new(),
         free_text: FreeText::None,
         needs_you: true,
@@ -880,6 +885,7 @@ fn spec(id: &str, kind: TaskKind, deps: &[&str], who: &str) -> TaskSpec {
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 

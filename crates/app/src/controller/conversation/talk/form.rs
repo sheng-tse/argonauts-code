@@ -517,6 +517,23 @@ mod tests {
         assert!(!proposal.request_too);
     }
 
+    /// Checks a run had for itself alone are kept when you say so, as `checks.run` with the
+    /// same commands.
+    #[test]
+    fn checks_kept_from_a_run_are_one_setting() {
+        let test = ctx();
+        let form = json!({
+            "asked": "keep these checks",
+            "settings": {
+                "checks.run": [{"name": "tests", "command": ["python3", "-m", "unittest", "-q"]}]
+            }
+        });
+        let proposal = check(&test.ctx, &form, "keep these checks").expect("a valid setup");
+        let (key, value) = &proposal.settings[0];
+        assert_eq!(key, "checks.run");
+        assert!(value.contains("unittest"), "{value}");
+    }
+
     #[test]
     fn every_problem_goes_back_to_the_model_at_once() {
         let test = ctx();

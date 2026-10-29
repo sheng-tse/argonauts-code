@@ -1,41 +1,41 @@
- In the conversation, Claude Code's second Workflow call prints as Claude Code prints every one                       
-⏺ Workflow(Fix the money rounding · Captain)                                                                          
-  ⎿  Running in background · /workflows to monitor and save                                                           
-                                                                                                                      
-⏺ Workflow(final-signoff-money · in Fix the money rounding)                                                           
-  ⎿  Running in background · /workflows to monitor and save                                                           
-                                                                                                                      
-✻ Waiting for 1 workflow to finish                                                                                    
-                                                                                                                      
+ In the conversation, Claude Code's second Workflow call prints as Claude Code prints every one
+⏺ Workflow(Fix the money rounding · Captain)
+  ⎿  Running in background · /workflows to monitor and save
+
+⏺ Workflow(final-signoff-money · in Fix the money rounding)
+  ⎿  Running in background · /workflows to monitor and save
+
+✻ Waiting for 1 workflow to finish
+
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯                                                                                                                     
+❯
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ auto mode on (shift+tab to cycle) · ↓  to manage                                                                 
-                                                                                                                      
-  ◯ Fix the money rounding  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱  6/7 · 1m40s · ↓  201k tokens                                        
-    ⎿ ◯ final-signoff-money ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 15s · ↓  48.3k tokens                                         
-                                                                                                                      
-                                                                                                                      
- /workflows, or Enter on either row, opens the run's view on Final, where the second workflow is a row                
+  ⏵⏵ auto mode on (shift+tab to cycle) · ↓  to manage
+
+  ◯ Fix the money rounding  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱  6/7 · 1m40s · ↓  201k tokens
+    ⎿ ◯ final-signoff-money ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 15s · ↓  48.3k tokens
+
+
+ /workflows, or Enter on either row, opens the run's view on Final, where the second workflow is a row
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Fix the money rounding                                                                                               
- Captain · Claude Code's workflow fix-money-rounding · Codex reviews, as you asked                 6/7 agents · 1m40s 
- › final: Gemini 3.8 Flash sent it back over "1.234" · Haiku 5.5 fixed it and asks again in final-signoff-money       
-                                                                                                                      
- ╭ Phases ──────────┬ Final · 4 agents ─────────────────────────────────────────────────────────────────────────────╮ 
- │   ✔ Build    1/1 │  ✔ review:final          GPT 6 Luna on Codex · 16.8k tok · approved · 1 note               4s │ 
- │   ✔ Review   2/2 │  ✔ sign-off:money        Gemini 3.8 Flash on agy · 17.7k tok · sent it back                6s │ 
- │ ❯ 3 Final    3/4 │  ▾ final-signoff-money   Claude Code's workflow · 1/2 agents                              15s │ 
- │   4 Merge        │    ✔ Review  1/1                                                                              │ 
- │                  │      ✔ review:final-2    GPT 6 Luna on Codex · 17.1k tok · approved                        4s │ 
- │                  │    2 Judge   0/1                                                                              │ 
- │                  │      ⏺ sign-off:money-2  Gemini 3.8 Flash on agy · 9.0k tok                                5s │ 
- │                  │                                                                                               │ 
- │                  │   Merge waits for final-signoff-money, then merges the change                                 │ 
- ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save                                  
-                                                                                                                      
- Final's row in Phases as it went, done once and then at work again while the second workflow runs                    
-   1m09s, the first workflow ends        ✔ Final    2/2   5/5 agents · 1m09s                                          
-   1m25s, final-signoff-money starts     3 Final    2/3   5/6 agents · 1m25s                                          
-   1m40s, now                            3 Final    3/4   6/7 agents · 1m40s                                          
+ Fix the money rounding
+ Captain · Claude Code's workflow fix-money-rounding · Codex reviews, as you asked                 6/7 agents · 1m40s
+ › final: Gemini 3.8 Flash sent it back over "1.234" · Haiku 5.5 fixed it and asks again in final-signoff-money
+
+ ╭ Phases ──────────┬ Final · 4 agents ─────────────────────────────────────────────────────────────────────────────╮
+ │   ✔ Build    1/1 │  ✔ review:final          ◧◨ 6 Luna on Codex                                 16.8k tok      4s │
+ │   ✔ Review   2/2 │  « sign-off:money        ◧◨ 3.8 Flash on agy                                17.7k tok      6s │
+ │ ❯ ⣾ Final    3/4 │  ▾ final-signoff-money   Claude Code's workflow · 1/2 agents                              15s │
+ │   4 Merge        │    ✔ Review  1/1                                                                              │
+ │                  │      ✔ review:final-2    ◧◨ 6 Luna on Codex                                 17.1k tok      4s │
+ │                  │    2 Judge   0/1                                                                              │
+ │                  │      ⣾ sign-off:money-2  ◧◨ 3.8 Flash on agy                                 9.0k tok      5s │
+ │                  │                                                                                               │
+ │                  │                                                                                               │
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save
+
+ Final's row in Phases as it went, done once and then at work again while the second workflow runs
+   1m09s, the first workflow ends        ✔ Final    2/2   5/5 agents · 1m09s
+   1m25s, final-signoff-money starts     3 Final    2/3   5/6 agents · 1m25s
+   1m40s, now                            3 Final    3/4   6/7 agents · 1m40s

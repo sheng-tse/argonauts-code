@@ -19,6 +19,7 @@ use super::workflow::WorkflowView;
 use super::workflow_pictures::dark;
 use super::workflow_tests::agent as session_row;
 use super::{View, ViewCtx, ViewOutcome};
+use crate::kit::logo::golden::with_stand_ins;
 use crate::state::AppState;
 
 const SCREEN: u16 = 124;
@@ -155,6 +156,7 @@ fn rows(view: &mut WorkflowView) -> Vec<String> {
     let area = Rect::new(0, 0, SCREEN, 20);
     let mut buf = Buffer::empty(area);
     view.render(area, &mut buf, &ctx);
+    let buf = with_stand_ins(&buf);
     (0..area.height)
         .map(|y| {
             let row: String = (0..SCREEN).map(|x| buf[(x, y)].symbol()).collect();
@@ -235,7 +237,7 @@ fn each_of_claude_codes_own_agents_opens_as_itself() {
     let drawn = rows(&mut view);
     let pane = right_pane(&drawn);
     assert_eq!(
-        pane[0], "⏺ Running · Haiku 4.5 on Claude Code",
+        pane[0], "⣾ Running · Haiku 4.5 on Claude Code",
         "{drawn:#?}"
     );
     assert_eq!(pane[4], "Cover --due with tests.", "{drawn:#?}");
@@ -347,12 +349,15 @@ fn claude_codes_own_agents_say_how_each_ended() {
         pane,
         [
             read(
-                "↷ review:store  Sonnet 5.5 · 21.4k tok · in place of Opus 5.5",
+                &format!("≈ review:store  ◧◨ Sonnet 5.5{}21.4k tok", " ".repeat(46)),
                 "1m02s"
             ),
-            read("✘ review:cli    Haiku 4.5 · 9.3k tok · failed", "3m00s"),
-            read("✘ review:list   Haiku 4.5 · skipped", "0s"),
-            read("✘ review:docs   Haiku 4.5 · blocked", "0s"),
+            read(
+                &format!("× review:cli    ◧◨ Haiku 4.5{}9.3k tok", " ".repeat(48)),
+                "3m00s"
+            ),
+            read("– review:list   ◧◨ Haiku 4.5", "0s"),
+            read("× review:docs   ◧◨ Haiku 4.5", "0s"),
         ],
         "{drawn:#?}"
     );
@@ -373,7 +378,7 @@ fn claude_codes_own_agents_open_with_their_last_tool_and_why_they_ended() {
     assert_eq!(
         right_pane(&drawn),
         [
-            "↷ Running · Sonnet 5.5 on Claude Code · Explore · worktree · in place of Opus 5.5",
+            "≈ Running · Sonnet 5.5 on Claude Code · Explore · worktree · in place of Opus 5.5",
             "21.4k tok · 14 tool calls · 1m 2s",
             "",
             "Prompt",
@@ -391,7 +396,7 @@ fn claude_codes_own_agents_open_with_their_last_tool_and_why_they_ended() {
     assert!(view.accept(&answer(&opened[1])));
     let drawn = rows(&mut view);
     let pane = right_pane(&drawn);
-    assert_eq!(pane[0], "✘ Failed · Haiku 4.5 on Claude Code", "{drawn:#?}");
+    assert_eq!(pane[0], "× Failed · Haiku 4.5 on Claude Code", "{drawn:#?}");
     assert_eq!(
         pane[4..],
         [
@@ -411,7 +416,7 @@ fn claude_codes_own_agents_open_with_their_last_tool_and_why_they_ended() {
     let drawn = rows(&mut view);
     let pane = right_pane(&drawn);
     assert_eq!(
-        pane[0], "✘ Skipped · Haiku 4.5 on Claude Code",
+        pane[0], "– Skipped · Haiku 4.5 on Claude Code",
         "{drawn:#?}"
     );
     assert_eq!(
@@ -425,7 +430,7 @@ fn claude_codes_own_agents_open_with_their_last_tool_and_why_they_ended() {
     let drawn = rows(&mut view);
     let pane = right_pane(&drawn);
     assert_eq!(
-        pane[0], "✘ Failed · Haiku 4.5 on Claude Code · blocked",
+        pane[0], "× Failed · Haiku 4.5 on Claude Code · blocked",
         "{drawn:#?}"
     );
     assert_eq!(
@@ -463,7 +468,7 @@ fn an_agent_still_going_when_its_workflow_ended_reads_as_stopped() {
     let drawn = rows(&mut view);
     let pane = right_pane(&drawn);
     assert!(
-        pane[1].starts_with("✘ build:due-tests  Haiku 4.5 · 30.3k tok · stopped"),
+        pane[1].starts_with("– build:due-tests  ◧◨ Haiku 4.5 ") && pane[1].contains(" 30.3k tok "),
         "{drawn:#?}"
     );
     assert!(pane[1].ends_with("1m02s"), "{drawn:#?}");
@@ -475,7 +480,7 @@ fn an_agent_still_going_when_its_workflow_ended_reads_as_stopped() {
     let drawn = rows(&mut view);
     let pane = right_pane(&drawn);
     assert_eq!(
-        pane[0], "✘ Skipped · Haiku 4.5 on Claude Code",
+        pane[0], "– Skipped · Haiku 4.5 on Claude Code",
         "{drawn:#?}"
     );
     assert_eq!(

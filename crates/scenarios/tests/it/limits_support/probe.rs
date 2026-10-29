@@ -18,25 +18,44 @@ pub const LEAKED: &str = "probe leaked:";
 /// A line the probe prints for an action the sandbox refused.
 pub const BLOCKED: &str = "probe blocked:";
 
+/// The calls the app makes outside any sandbox, as `case` patterns on `" $* "`: doctor's
+/// `--version` and `--help`, and the plan usage readings, which start no session. Claude Code's
+/// reading is its one call that loads no setting sources, and that empty value leaves two
+/// blanks in `$*`. Codex's reading is `app-server`.
+const UNSANDBOXED_CALLS: &str =
+    "*\" --version \"*|*\" --help \"*|*\" --setting-sources  \"*|\" app-server \"*";
+
 /// Writes an executable probe to `path` that runs `checks` and then `exec`s `program`, the
-/// fake agent on `PATH`. A `--version` or `--help` call skips the checks, since doctor runs
-/// those outside any sandbox.
+/// fake agent on `PATH`. The calls in [`UNSANDBOXED_CALLS`] skip the checks. Each time it runs,
+/// the probe adds its arguments to [`probe_runs`] where it may write there, so a check that
+/// fails can say which run did it.
 pub fn write_probe(path: &Path, program: &str, checks: &[String]) -> anyhow::Result<PathBuf> {
     let script = format!(
         "#!/bin/sh\n\
+         echo \"$*\" 2>/dev/null >> {runs}\n\
          case \" $* \" in\n\
-         *\" --version \"*|*\" --help \"*) ;;\n\
+         {UNSANDBOXED_CALLS}) ;;\n\
          *)\n\
          {}\n\
          ;;\n\
          esac\n\
          exec {program} \"$@\"\n",
-        checks.join("\n")
+        checks.join("\n"),
+        runs = quoted(&runs_of(path)),
     );
     write_file(path, &script)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))
         .with_context(|| format!("making {} executable", path.display()))?;
     Ok(path.to_path_buf())
+}
+
+/// The arguments the probe at `probe` ran with, one run a line, where it could write them down.
+pub fn probe_runs(probe: &Path) -> String {
+    fs::read_to_string(runs_of(probe)).unwrap_or_default()
+}
+
+fn runs_of(probe: &Path) -> PathBuf {
+    probe.with_extension("runs")
 }
 
 /// Tries to write `target`.

@@ -1,4 +1,4 @@
-//! The deeper map from inside the app: what `d` on the Behaviors tab asks, the update its
+//! Summaries from inside the app: what `d` on the Behaviors tab asks, the update its
 //! answers start, in the background with its progress on screen, `x` stopping it, and the
 //! update after each run. One update runs at a time.
 
@@ -17,11 +17,11 @@ use crate::controller::{Ctx, Effect, Internal, Outbox};
 use crate::host::clis::RepoModels;
 
 const ALREADY_RUNNING: &str =
-    "The deeper map is already being made. x on the Behaviors tab stops it.";
+    "Summaries are already being made. x on the Behaviors tab stops them.";
 
 /// Said once, after the first run that would have added to a map waiting to be made again.
-const REDO_WAITS: &str = "The deeper map takes no new actions until it's made again with the \
-    summarizer and prompt it now asks for. d on the Behaviors tab asks.";
+const REDO_WAITS: &str = "Summaries take no new actions until they're made again with the \
+    summarizer and prompt now asked for. d on the Behaviors tab asks.";
 
 /// The update that's running, if one is, by what stops it, and the map the tab last asked for.
 #[derive(Debug, Clone, Default)]
@@ -82,7 +82,7 @@ impl DeepWork {
     }
 }
 
-/// The deeper map as the app's settings, servers and sessions make it.
+/// Summaries as the app's settings, servers and sessions make them.
 fn maps(ctx: &Ctx) -> DeepMaps {
     let env = &ctx.env;
     DeepMaps::new(
@@ -120,7 +120,7 @@ pub(crate) fn start(ctx: &Ctx, start: DeepStart) -> anyhow::Result<Vec<Effect>> 
     let (out, work, internal) = (ctx.out.clone(), ctx.deep.clone(), ctx.internal.clone());
     tokio::spawn(async move {
         let mut progress = progress_to(out.clone());
-        // The first dots placed bring the tab to the deeper map; later ones fill it in.
+        // The first dots placed bring the tab to Summaries; later ones fill them in.
         let mut first = true;
         let mut placed = {
             let internal = internal.clone();
@@ -195,14 +195,14 @@ pub(crate) fn after_run(ctx: &Ctx) {
     });
 }
 
-/// An update ended: the map the tab last asked for goes to it again, the deeper one when the
+/// An update ended: the map the tab last asked for goes to it again, Summaries when the
 /// tab's own `d` made it.
-pub(crate) async fn made(ctx: &mut Ctx, deeper: bool) -> anyhow::Result<Vec<Effect>> {
+pub(crate) async fn made(ctx: &mut Ctx, summaries: bool) -> anyhow::Result<Vec<Effect>> {
     let Some(mut request) = ctx.deep.shown() else {
         return Ok(Vec::new());
     };
-    if deeper {
-        request.map = Some(BehaviorMap::Deeper);
+    if summaries {
+        request.map = Some(BehaviorMap::Summaries);
         ctx.deep.showing(request);
     }
     crate::views::behaviors::view(ctx, request).await

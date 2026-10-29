@@ -1,27 +1,13 @@
 //! The Context tab's wording: Claude Code's own names for where things come from, its
 //! shares of the window, and how each of its colours draws.
 
-use ratatui::style::{Color, Style};
 use time::OffsetDateTime;
 
 use crate::format::ClockTime;
-use crate::kit::Kit;
-use crate::theme::Role;
-use crate::theme::{Brightness, downgrade};
 
-/// A share of the window in tenths of a percent, as Claude Code's legend writes it, and
-/// `<0.1%` where the tenths would read `0.0%` for something that does take room.
-pub(super) fn share(tokens: u64, of: u64) -> String {
-    if of == 0 {
-        return String::new();
-    }
-    let tenths = format!("{:.1}%", tokens as f64 / of as f64 * 100.0);
-    if tenths == "0.0%" && tokens > 0 {
-        "<0.1%".to_owned()
-    } else {
-        tenths
-    }
-}
+/// How one of Claude Code's colours draws, by the name its reply gives a category, and a share
+/// of the window in tenths, as its /context writes them.
+pub(super) use crate::kit::context::{claude_code_paint as cc_style, share_of_window as share};
 
 /// `3 files`, `1 file`.
 pub(super) fn count(n: usize, noun: &str) -> String {
@@ -136,37 +122,10 @@ pub(super) fn grouped<T>(
     ordered
 }
 
-/// How one of Claude Code's colours draws, by the name its reply gives a category: as its
-/// `/context` draws it in a dark terminal, the system's two greys as one, and the theme's own
-/// colours in a light one. A name this version doesn't know draws dim.
-pub(super) fn cc_style(kit: &Kit<'_>, color: &str) -> Style {
-    let (dark, light, role) = match color {
-        "promptBorder" | "inactive" => (0x8e8e8e, 0x707070, Role::Dim),
-        "green_FOR_SUBAGENTS_ONLY" | "success" => (0x5fd7af, 0x2f9e7a, Role::Success),
-        "warning" => (0xd7af5f, 0x9a6f12, Role::Warn),
-        "purple_FOR_SUBAGENTS_ONLY" | "permission" | "suggestion" => {
-            (0xb1b9f9, 0x5769f7, Role::Question)
-        }
-        "cyan_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentCyan),
-        "claude" => return kit.fg(Role::CliClaude),
-        "blue_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentBlue),
-        "red_FOR_SUBAGENTS_ONLY" | "error" => return kit.fg(Role::Danger),
-        "yellow_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentYellow),
-        "orange_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentOrange),
-        "pink_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentPink),
-        _ => return kit.fg(Role::Dim),
-    };
-    let hex: u32 = match kit.theme.brightness {
-        Brightness::Dark => dark,
-        Brightness::Light => light,
-    };
-    let rgb = Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
-    downgrade(role, Style::new().fg(rgb), kit.theme.level)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kit::Kit;
 
     #[test]
     fn a_share_reads_in_tenths_and_never_as_nothing() {
@@ -241,25 +200,27 @@ mod tests {
         );
     }
 
-    /// Claude Code's category colours draw as its `/context` draws them, and fit a terminal
-    /// with fewer colours.
+    /// Claude Code's category colours draw as its `/context` paints them in a dark terminal,
+    /// and fit a terminal with fewer colours.
     #[test]
-    fn claude_codes_colours_draw_as_its_context_draws_them() {
-        use crate::theme::{ColorLevel, Theme};
+    fn claude_codes_colours_draw_as_its_context_paints_them() {
+        use crate::theme::{ColorLevel, Role, Theme};
+        use ratatui::style::Color;
         let theme = Theme::dark().with_level(ColorLevel::TrueColor);
         let kit = Kit::new(&theme);
         let fg = |name| cc_style(&kit, name).fg;
-        assert_eq!(fg("inactive"), Some(Color::Rgb(0x8e, 0x8e, 0x8e)));
-        assert_eq!(fg("promptBorder"), fg("inactive"));
-        assert_eq!(
-            fg("green_FOR_SUBAGENTS_ONLY"),
-            Some(Color::Rgb(0x5f, 0xd7, 0xaf))
-        );
-        assert_eq!(fg("warning"), Some(Color::Rgb(0xd7, 0xaf, 0x5f)));
-        assert_eq!(
-            fg("purple_FOR_SUBAGENTS_ONLY"),
-            Some(Color::Rgb(0xb1, 0xb9, 0xf9))
-        );
+        let rgb = |hex: u32| Some(Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8));
+        for (name, hex) in [
+            ("promptBorder", 0x888888),
+            ("inactive", 0x999999),
+            ("cyan_FOR_SUBAGENTS_ONLY", 0x0a91b3),
+            ("green_FOR_SUBAGENTS_ONLY", 0x17a34a),
+            ("claude", 0xd77757),
+            ("warning", 0xffc109),
+            ("purple_FOR_SUBAGENTS_ONLY", 0x827dbd),
+        ] {
+            assert_eq!(fg(name), rgb(hex), "{name}");
+        }
         assert_eq!(cc_style(&kit, "a-colour-from-later"), kit.fg(Role::Dim));
         let fewer = Theme::dark().with_level(ColorLevel::Ansi256);
         let kit = Kit::new(&fewer);
@@ -267,5 +228,8 @@ mod tests {
             cc_style(&kit, "warning").fg,
             Some(Color::Indexed(_))
         ));
+        let light = Theme::light().with_level(ColorLevel::TrueColor);
+        let kit = Kit::new(&light);
+        assert_eq!(cc_style(&kit, "warning").fg, rgb(0x9a6f12));
     }
 }

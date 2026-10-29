@@ -1,11 +1,11 @@
 //! Merge: checks pass, every reviewer approved and a reviewer of another provider than each
-//! task's worker gave the approval that stands, no protected path is touched, the diff is small
-//! enough, and the suite passed on the latest main. Acceptance tests, test tampering, and
-//! changed-line coverage count when they were measured, since not every repo can measure them.
-//! Quality debt no strong enough model reviewed comes to you unless `allow_debt` is set, since
-//! merging it anyway is yours.
+//! task's worker, or one you chose, gave the approval that stands, no protected path is touched,
+//! the diff is small enough, and the suite passed on the latest main. Acceptance tests, test
+//! tampering, and changed-line coverage count when they were measured, since not every repo can
+//! measure them. Quality debt no strong enough model reviewed comes to you unless `allow_debt`
+//! is set, since merging it anyway is yours.
 
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::policy::{EvidenceFacts, WithinProvider};
 use argonauts_core::settings::approvals::MergeRules;
 
 use super::{Conditions, RuleVerdict, percent};
@@ -18,18 +18,33 @@ pub fn check(facts: &EvidenceFacts, rules: &MergeRules) -> RuleVerdict {
         "a check failed or didn't run",
         "no check results",
     );
+    // A task nobody could review fails here, named, rather than as a reviewer who didn't
+    // approve.
+    let unreviewed = (!facts.unreviewed.is_empty()).then(|| facts.unreviewed.join("; "));
     c.flag(
         facts.reviews_approved,
         "every reviewer approved",
-        "a reviewer didn't approve",
+        unreviewed.as_deref().unwrap_or("a reviewer didn't approve"),
         "no review results",
     );
-    c.flag(
-        facts.reviewed_by_other_provider,
-        "each task's approval came from a reviewer of another provider than its worker",
-        "a task's approval came from a reviewer of its worker's own provider",
-        "no fact says which provider each task's reviewer comes from",
-    );
+    let within = within_provider(&facts.approved_within_provider);
+    // With no approval to name, the unreviewed tasks are the reason, which failed above.
+    let said_above = unreviewed.is_some()
+        && within.is_none()
+        && facts.reviews_approved == Some(false)
+        && facts.reviewed_by_other_provider == Some(false);
+    if !said_above {
+        c.flag(
+            facts.reviewed_by_other_provider,
+            "each task's approval came from a reviewer of another provider than its worker, or \
+             one you chose",
+            within.as_deref().unwrap_or(
+                "a task's approval came from a reviewer of its worker's own provider that you \
+                 didn't choose",
+            ),
+            "no fact says which provider each task's reviewer comes from",
+        );
+    }
     c.measure_if_known(facts.acceptance_tests_valid, |valid| {
         if valid {
             Ok("every acceptance test fails on the stubs and passes on the run branch".to_owned())
@@ -100,6 +115,23 @@ pub fn check(facts: &EvidenceFacts, rules: &MergeRules) -> RuleVerdict {
     c.verdict()
 }
 
+/// Who reviewed which task from its builder's own provider, as a reason that names each:
+/// "Sonnet 5 on Claude Code, a fallback from its builder's own provider, reviewed task-001".
+fn within_provider(tasks: &[WithinProvider]) -> Option<String> {
+    let each: Vec<String> = tasks
+        .iter()
+        .map(|task| {
+            let how = if task.fallback {
+                "a fallback from its builder's own provider"
+            } else {
+                "picked from its builder's own provider"
+            };
+            format!("{}, {how}, reviewed {}", task.reviewer, task.task)
+        })
+        .collect();
+    (!each.is_empty()).then(|| each.join("; "))
+}
+
 /// Why quality debt keeps auto from merging, given the tasks whose debt no strong enough model
 /// reviewed. `None` when auto may merge: no debt, or `allow_debt` is set.
 pub fn debt_blocks(unreviewed_debt: Option<&[String]>, rules: &MergeRules) -> Option<String> {
@@ -151,6 +183,72 @@ mod tests {
     #[test]
     fn every_condition_holding_approves() {
         assert_eq!(verdict(&passing()), Verdict::Approve);
+    }
+
+    /// An approval code picked from the builder's own provider keeps the merge back, and the
+    /// reason names who reviewed which task, and whether it was a fallback.
+    #[test]
+    fn an_approval_from_the_builders_own_provider_names_its_task() {
+        let facts = EvidenceFacts {
+            reviewed_by_other_provider: Some(false),
+            approved_within_provider: vec![
+                WithinProvider {
+                    task: "task-001".to_owned(),
+                    reviewer: "Sonnet 5 on Claude Code".to_owned(),
+                    fallback: true,
+                },
+                WithinProvider {
+                    task: "task-002".to_owned(),
+                    reviewer: "Haiku 5.5 on Claude Code".to_owned(),
+                    fallback: false,
+                },
+            ],
+            ..passing()
+        };
+        let ruled = check(&facts, &MergeRules::default());
+        assert_eq!(ruled.verdict, Verdict::Reject);
+        assert_eq!(
+            ruled.reasons,
+            [
+                "Sonnet 5 on Claude Code, a fallback from its builder's own provider, reviewed \
+              task-001; Haiku 5.5 on Claude Code, picked from its builder's own provider, \
+              reviewed task-002"
+            ]
+        );
+        let held = check(&passing(), &MergeRules::default()).reasons;
+        assert!(
+            held.iter()
+                .any(|reason| reason.ends_with("or one you chose")),
+            "{held:?}"
+        );
+    }
+
+    /// A task nobody but its builder could review keeps the merge back with one reason that
+    /// names it, not as a reviewer who didn't approve.
+    #[test]
+    fn a_task_nobody_could_review_names_it_once() {
+        let facts = EvidenceFacts {
+            reviews_approved: Some(false),
+            reviewed_by_other_provider: Some(false),
+            unreviewed: vec!["Nobody but its builder is left to review task-001".to_owned()],
+            ..passing()
+        };
+        let ruled = check(&facts, &MergeRules::default());
+        assert_eq!(ruled.verdict, Verdict::Reject);
+        assert_eq!(
+            ruled.reasons,
+            ["Nobody but its builder is left to review task-001"]
+        );
+        // Beside another task's approval from its builder's own provider, each says its own.
+        let both = EvidenceFacts {
+            approved_within_provider: vec![WithinProvider {
+                task: "task-002".to_owned(),
+                reviewer: "Haiku 5.5 on Claude Code".to_owned(),
+                fallback: false,
+            }],
+            ..facts
+        };
+        assert_eq!(check(&both, &MergeRules::default()).reasons.len(), 2);
     }
 
     #[test]

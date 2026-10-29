@@ -1,5 +1,5 @@
 ---
-source: crates/tui/tests/snap_questions.rs
+source: crates/tui/tests/it/snap_questions.rs
 expression: text(&lines)
 ---
 ● Goal · version 1
@@ -29,5 +29,7 @@ expression: text(&lines)
     3. Send back for another round
     4. Abandon
     5. Show the details
+    6. Carry on without me
+       The main agent decides and goes on; kept as an assumption to review
 
-  Enter to choose · Tab to add a note · Esc to carry on without me · shift+tab to cycle modes
+  Enter to choose · Tab to add a note · Esc back to the list · shift+tab to cycle modes

@@ -5,6 +5,7 @@
 
 use crate::pty_support;
 use argonauts_core::app::AppEvent;
+use argonauts_testkit::screen::{Grid, Look, REAL_SIZES, laws};
 use pty_support::*;
 use regex::Regex;
 
@@ -230,7 +231,8 @@ fn the_frame_holds_at_every_width() {
 fn a_resize_keeps_the_input_at_the_bottom() {
     let mut driver = TestDriver::start(Script::idle().all(0, notes(1..=3)));
     driver.wait_visible("note 03");
-    for (rows, cols) in [(40, 100), (24, 80), (30, 120)] {
+    for size in REAL_SIZES {
+        let (rows, cols) = (size.rows, size.cols);
         driver.resize(rows, cols);
         let screen = driver.wait_until("the live region redrawn at the bottom", |screen| {
             screen.visible.len() == usize::from(rows)
@@ -257,6 +259,8 @@ fn a_resize_keeps_the_input_at_the_bottom() {
             "{}",
             screen.visible_text()
         );
+        let grid = Grid::from_text(cols, &screen.visible);
+        laws::assert_kept(&grid, &Look::new(), &format!("the idle screen at {size}"));
     }
 }
 

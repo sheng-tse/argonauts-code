@@ -8,6 +8,7 @@ mod blocks;
 mod frames;
 pub mod graphics;
 mod pictures;
+pub mod placeholder;
 pub(crate) mod png;
 mod send;
 #[cfg(test)]

@@ -136,9 +136,24 @@ impl Screen {
     }
 
     fn press(&mut self, code: KeyCode) -> Effects {
+        self.press_key(KeyEvent::from(code))
+    }
+
+    /// The key `save_for_session` binds, ctrl+s unless rebound.
+    fn pick_for_session(&mut self) -> Effects {
         let mut out = Effects::default();
         let picker = self.model.bottom.picker.as_mut().expect("a picker is open");
-        let event = picker.handle_key(KeyEvent::from(code));
+        let event = picker.pick_for_session();
+        if event != PickerEvent::Unhandled {
+            on_picker(&event, &mut self.cx(&mut out));
+        }
+        self.sent(out)
+    }
+
+    fn press_key(&mut self, key: KeyEvent) -> Effects {
+        let mut out = Effects::default();
+        let picker = self.model.bottom.picker.as_mut().expect("a picker is open");
+        let event = picker.handle_key(key);
         if event != PickerEvent::Unhandled {
             on_picker(&event, &mut self.cx(&mut out));
         }
@@ -376,27 +391,15 @@ fn reset_row_only_for_file_and_session_layers() {
     }
 }
 
+/// Esc on the values sends nothing, and the palette the pointer showed goes back.
 #[test]
-fn esc_on_scope_question_sends_nothing() {
+fn esc_on_the_values_sends_nothing() {
     let mut screen = Screen::new();
     screen.answer(settings("theme", vec![theme_row("project")]));
     let moved = screen.press(KeyCode::Down);
     assert!(
         moved.theme.is_some(),
         "/theme shows the value under the pointer"
-    );
-    screen.press(KeyCode::Enter);
-    assert_eq!(screen.title(), "Where to save it");
-    let picker = screen.model.bottom.picker.as_ref().unwrap();
-    let pointed = picker.pointed().unwrap();
-    assert_eq!(picker.rows[pointed].label, "Everywhere");
-    assert!(
-        picker.rows[pointed]
-            .warning
-            .as_deref()
-            .is_some_and(|warning| warning.contains("This project's file sets this")),
-        "{:?}",
-        picker.rows[pointed]
     );
 
     let out = screen.press(KeyCode::Esc);
@@ -419,22 +422,64 @@ fn esc_on_scope_question_sends_nothing() {
     );
 }
 
+/// A value's number saves it at once, where your changes go, with no question of where; ctrl+s
+/// on a value keeps it for this session only.
 #[test]
-fn a_scope_number_saves_the_pick() {
+fn a_value_saves_at_once_and_ctrl_s_keeps_it_for_this_session() {
     let mut screen = Screen::new();
     screen.answer(settings("theme", vec![theme_row("project")]));
-    screen.press(KeyCode::Char('3'));
-    assert_eq!(screen.title(), "Where to save it");
-    let out = screen.press(KeyCode::Char('2'));
+    let out = screen.press(KeyCode::Char('3'));
     assert_eq!(
         out.commands,
         [UiCommand::SetSetting {
             key: "ui.theme".into(),
             value: "\"light\"".into(),
-            scope: SettingScope::ProjectLocal
+            scope: None
         }]
     );
     assert!(screen.model.bottom.picker.is_none());
+
+    screen.answer(settings("theme", vec![theme_row("project")]));
+    screen.press(KeyCode::Down);
+    let picker = screen
+        .model
+        .bottom
+        .picker
+        .as_ref()
+        .expect("a picker is open");
+    assert_eq!(
+        picker.enter_hint,
+        "Enter to save · ctrl+s for this session only"
+    );
+    let out = screen.pick_for_session();
+    let [UiCommand::SetSetting { key, scope, .. }] = out.commands.as_slice() else {
+        panic!("{:?}", out.commands);
+    };
+    assert_eq!(
+        (key.as_str(), *scope),
+        ("ui.theme", Some(SettingScope::Session))
+    );
+}
+
+/// The footer names the key `save_for_session` binds, and only Enter once nothing binds it.
+#[test]
+fn the_footer_names_the_key_that_keeps_a_pick_for_this_session() {
+    for (bound, hint) in [
+        ("ctrl+l", "Enter to save · ctrl+l for this session only"),
+        ("", "Enter to save"),
+    ] {
+        let mut screen = Screen::new();
+        screen.model.bottom.save_for_session_key = Some(bound.to_owned());
+        screen.answer(settings("theme", vec![theme_row("project")]));
+        screen.press(KeyCode::Down);
+        let picker = screen
+            .model
+            .bottom
+            .picker
+            .as_ref()
+            .expect("a picker is open");
+        assert_eq!(picker.enter_hint, hint);
+    }
 }
 
 #[test]
@@ -461,15 +506,13 @@ fn keys_without_values_take_a_typed_line() {
     }
     screen.press(KeyCode::Char('4'));
     screen.press(KeyCode::Char('5'));
-    screen.press(KeyCode::Enter);
-    assert_eq!(screen.title(), "Where to save it");
-    let out = screen.press(KeyCode::Char('3'));
+    let out = screen.press(KeyCode::Enter);
     assert_eq!(
         out.commands,
         [UiCommand::SetSetting {
             key: "limits.spend_per_run".into(),
             value: "45".into(),
-            scope: SettingScope::Project
+            scope: None
         }]
     );
 }
@@ -542,14 +585,13 @@ fn agents_lists_each_cli_then_add_an_endpoint() {
     for ch in "lab http://10.0.0.2:8000/v1 LAB_KEY".chars() {
         screen.press(KeyCode::Char(ch));
     }
-    screen.press(KeyCode::Enter);
     let out = screen.press(KeyCode::Enter);
     assert_eq!(
         out.commands,
         [UiCommand::SetSetting {
             key: "endpoints.lab".into(),
             value: "{ base_url = \"http://10.0.0.2:8000/v1\", api_key_env = \"LAB_KEY\" }".into(),
-            scope: SettingScope::Global
+            scope: None
         }]
     );
 }
@@ -698,24 +740,6 @@ fn a_bad_endpoint_line_says_why_and_stays() {
     assert!(picker.input.is_some());
 }
 
-#[test]
-fn a_session_value_is_named_once_over_the_scopes() {
-    let mut screen = Screen::new();
-    screen.answer(settings("theme", vec![theme_row("session")]));
-    screen.press(KeyCode::Char('3'));
-    assert_eq!(screen.title(), "Where to save it");
-    let picker = screen.model.bottom.picker.as_ref().unwrap();
-    assert!(
-        picker
-            .warning
-            .as_deref()
-            .is_some_and(|warning| warning.starts_with("This session's value wins")),
-        "{:?}",
-        picker.warning
-    );
-    assert!(picker.rows.iter().all(|row| row.warning.is_none()));
-}
-
 fn model_update(
     role: Option<RoleName>,
     choices: Vec<ModelChoice>,
@@ -775,7 +799,7 @@ fn a_refreshed_list_reaches_only_the_open_model_list() {
     assert_eq!(screen.labels(), ["Claude Code", "Codex"]);
     let picker = screen.model.bottom.picker.as_ref().unwrap();
     assert_eq!(picker.rows[picker.pointed().unwrap()].label, "Codex");
-    assert_eq!(picker.rows[1].description, "1 model · subscription");
+    assert_eq!(cells_said(&picker.rows[1]), "1 model · subscription");
     assert!(
         about(&screen).ends_with(". Model lists refreshed 5m ago."),
         "{}",
@@ -937,7 +961,7 @@ fn a_model_without_a_description_says_what_kind_it_is() {
         access: ModelAccess::Local,
         ..choice("ollama/olmo2", false)
     };
-    assert_eq!(model_description(&local), "An Olmo model on this machine");
+    assert_eq!(model_description(&local), "An Olmo model on this computer");
     let unknown = ModelChoice {
         provider: "unknown".into(),
         access: ModelAccess::ApiKey,
@@ -1062,6 +1086,17 @@ fn pointed_label(screen: &Screen) -> String {
         .clone()
 }
 
+/// A row's cells in their order, as one line.
+fn cells_said(row: &crate::bottom::PickerRow) -> String {
+    let said: Vec<&str> = row
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .filter(|text| !text.is_empty())
+        .collect();
+    said.join(" · ")
+}
+
 #[test]
 fn model_lists_the_clis_then_enter_opens_one() {
     let mut screen = Screen::new();
@@ -1069,8 +1104,8 @@ fn model_lists_the_clis_then_enter_opens_one() {
     assert_eq!(screen.labels(), ["Claude Code", "Codex"]);
     let picker = screen.model.bottom.picker.as_ref().unwrap();
     assert!(picker.rows[0].current);
-    assert_eq!(picker.rows[0].description, "opus · subscription");
-    assert_eq!(picker.rows[1].description, "1 model · subscription");
+    assert_eq!(cells_said(&picker.rows[0]), "opus · subscription");
+    assert_eq!(cells_said(&picker.rows[1]), "1 model · subscription");
     assert_eq!(pointed_label(&screen), "Claude Code");
 
     let out = screen.press(KeyCode::Enter);
@@ -1207,6 +1242,59 @@ fn other_model_takes_any_name_the_cli_runs() {
     );
 }
 
+/// A model picked from a CLI's list or typed saves like any other pick, so both levels name the
+/// key that keeps it for this session, and a refreshed list keeps naming the rebound key.
+#[test]
+fn the_model_levels_name_the_key_that_keeps_a_pick_for_this_session() {
+    let hint = |screen: &Screen| {
+        screen
+            .model
+            .bottom
+            .picker
+            .as_ref()
+            .unwrap()
+            .enter_hint
+            .clone()
+    };
+    let mut screen = Screen::new();
+    screen.model.bottom.save_for_session_key = Some("ctrl+l".to_owned());
+    screen.answer(models(None, claude_and_codex()));
+    screen.press(KeyCode::Enter);
+    assert_eq!(screen.title(), "Claude Code");
+    assert_eq!(
+        hint(&screen),
+        "Enter to save · ctrl+l for this session only"
+    );
+
+    let just_now = time::OffsetDateTime::now_utc();
+    screen.answer(model_update(None, claude_and_codex(), Some(just_now)));
+    assert_eq!(
+        hint(&screen),
+        "Enter to save · ctrl+l for this session only"
+    );
+
+    screen.press(KeyCode::End);
+    screen.press(KeyCode::Enter);
+    assert_eq!(screen.title(), "Other model on Claude Code");
+    assert_eq!(
+        hint(&screen),
+        "Enter to save · ctrl+l for this session only"
+    );
+    for ch in "claude-opus-4-1".chars() {
+        screen.press(KeyCode::Char(ch));
+    }
+    let out = screen.pick_for_session();
+    let [
+        UiCommand::Slash {
+            command: SlashCommand::SavedIn { scope, .. },
+        },
+    ] = out.commands.as_slice()
+    else {
+        panic!("{:?}", out.commands);
+    };
+    assert_eq!(*scope, SettingScope::Session);
+}
+
 #[test]
 fn esc_through_both_levels_keeps_the_model() {
     let mut screen = Screen::new();
@@ -1282,3 +1370,53 @@ fn verbosity_is_one_picker_of_its_levels() {
 }
 
 mod effort;
+
+/// Where the terminal draws logos, `/agents` has each CLI's logo before its name, and an
+/// endpoint with no logo file keeps its name alone.
+#[test]
+fn agents_puts_each_clis_logo_before_its_name() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    use crate::kit::logo::golden::{count, pictured, with_stand_ins};
+    use crate::overview::golden::{Picture, Region, assert_matches, keep, theme};
+    use crate::render::{Clock, RenderCtx};
+
+    let mut screen = Screen::new();
+    screen.answer(settings(
+        "agents",
+        vec![
+            row(
+                "agents.claude-code.enabled",
+                "true",
+                "built-in",
+                &["true", "false"],
+            ),
+            row(
+                "agents.codex.enabled",
+                "true",
+                "built-in",
+                &["true", "false"],
+            ),
+            row("agents.codex.model", "\"gpt-5.6\"", "global", &[]),
+            row(
+                "endpoints.local.base_url",
+                "\"http://localhost:8080/v1\"",
+                "global",
+                &[],
+            ),
+        ],
+    ));
+    let theme = pictured(&theme());
+    let picker = screen.model.bottom.picker.as_ref().unwrap();
+    let lines = picker.lines(&RenderCtx::new(100, &theme, Clock::still(Instant::now())));
+    let mut buf = Buffer::empty(Rect::new(0, 0, 100, lines.len() as u16));
+    for (y, line) in lines.iter().enumerate() {
+        buf.set_line(0, y as u16, line, 100);
+    }
+    assert_eq!(count(&buf), 2);
+    let shown = with_stand_ins(&buf);
+    keep("agents_logos", &shown);
+    let picture = Picture::screen("settings", "agents_logos");
+    assert_matches(&picture, &shown, &Region::whole(&picture, (0, 0)), &theme);
+}

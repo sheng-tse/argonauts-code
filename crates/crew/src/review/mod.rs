@@ -8,11 +8,12 @@ use futures::future::join_all;
 
 use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::task::{ReviewEvent, TaskKind};
+use argonauts_core::events::task::{PickedBy, ReviewEvent, TaskKind};
 use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::session_runner::{Access, RunnerKind};
 use argonauts_core::steps::Step;
 use argonauts_core::steps::judgment::{Review, ReviewInput, ReviewOutput, ReviewVerdict};
+use argonauts_core::workflow::StepModels;
 
 use crate::engine::host::{Ask, Host};
 use crate::engine::job_fallback::{self, Job};
@@ -27,6 +28,7 @@ use crate::workflow::{StepCall, StepDone, authors, runner};
 
 pub mod diff_cut;
 pub mod endpoint_tests;
+mod ladder_check;
 pub mod reviewers;
 pub mod settle;
 mod together;
@@ -147,18 +149,60 @@ async fn review_task_among(
     round: u32,
     excluded: &[String],
 ) -> EngineResult<Verdict> {
-    let provider = providers(host);
-    let other_provider = host.settings().review.other_provider;
-    let crew = crate::roles::candidates(host.settings(), RoleName::Reviewer);
-    if host.read(|state| reviewers::none_set(state, task, &crew)) {
+    if let Some(checker) = ladder_check::checker(host, task)? {
+        return ladder_check::take(host, task, round, &checker, None).await;
+    }
+    let Some(reviewers) = reviewers_among(host, task, excluded) else {
         return Ok(Verdict::NeedsYou {
             reasons: vec![reviewers::NONE_SET.to_owned()],
         });
+    };
+    review_by(host, task, round, &reviewers).await
+}
+
+/// The task's reviewers by the roles the run settled on, so a rule the run eased, such as
+/// review by another provider in a crew of one, is eased here too. Without the `excluded`
+/// providers, besides the worker's. `None` when no reviewer is set at all.
+fn reviewers_among(host: &Host, task: &TaskId, excluded: &[String]) -> Option<Vec<ModelRef>> {
+    let provider = providers(host);
+    let settled = crate::roles::tasks::settled(host);
+    let other_provider = settled.review.other_provider;
+    let crew = crate::roles::candidates(&settled, RoleName::Reviewer);
+    if host.read(|state| reviewers::none_set(state, task, &crew)) {
+        return None;
     }
     let mut reviewers =
         host.read(|state| reviewers::for_task(state, task, &provider, other_provider, &crew));
     reviewers.retain(|reviewer| !excluded.contains(&provider(reviewer)));
-    review_by(host, task, round, &reviewers).await
+    Some(reviewers)
+}
+
+/// Why nobody may review the task: each reviewer set is its builder or, while review by
+/// another provider holds, of its builder's provider. `None` when someone may, or when no
+/// reviewer is set at all.
+pub(crate) fn nobody_to_review(host: &Host, task: &TaskId) -> Option<String> {
+    // A council's ladder always ends at a fresh session of the task's own model.
+    if ladder_check::checker(host, task).ok().flatten().is_some() {
+        return None;
+    }
+    let reviewers = reviewers_among(host, task, &[])?;
+    reviewers.is_empty().then(|| nobody_left_line(host, task))
+}
+
+/// Whether the task's work is reviewed: plain Captain runs have no reviewer, and every other
+/// task is reviewed by someone besides its builder.
+pub(crate) fn needed(host: &Host, record: &TaskEntry) -> bool {
+    !(record.spec.kind == TaskKind::Captain
+        && record.spec.reviewers.is_empty()
+        && !host.settings().captain.review)
+}
+
+/// Why the task has no reviewer once its builder, and under the run's review rule its
+/// builder's provider, are left out, naming it.
+pub(crate) fn nobody_left_line(host: &Host, task: &TaskId) -> String {
+    let label = host.read(|state| crate::labels::task_label(state, task));
+    let other_provider = crate::roles::tasks::settled(host).review.other_provider;
+    reviewers::nobody_left(&label, other_provider)
 }
 
 /// Reviews the task's work with exactly these reviewers, even one that owns the task: the
@@ -169,7 +213,7 @@ pub async fn review_by(
     round: u32,
     reviewers: &[ModelRef],
 ) -> EngineResult<Verdict> {
-    review_in(host, task, round, reviewers, None).await
+    review_in(host, task, round, reviewers, None, Reader::Reviewer).await
 }
 
 /// Reviews a race try's work in `tree` before it becomes the task's. A try is never
@@ -181,7 +225,18 @@ pub async fn review_try(
     reviewers: &[ModelRef],
     tree: &Path,
 ) -> EngineResult<Verdict> {
-    review_in(host, task, round, reviewers, Some(tree)).await
+    review_in(host, task, round, reviewers, Some(tree), Reader::Reviewer).await
+}
+
+pub(crate) use ladder_check::take as checked_by;
+
+/// Who reads a task's change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reader {
+    /// The task's reviewers, by the run's review rules.
+    Reviewer,
+    /// A council's check, which code picked by the ladder and which reads the council's frame.
+    CouncilCheck,
 }
 
 /// The task's work in `tree`, or in its own worktree when `tree` is `None`.
@@ -191,6 +246,7 @@ async fn review_in(
     round: u32,
     reviewers: &[ModelRef],
     tree: Option<&Path>,
+    reader: Reader,
 ) -> EngineResult<Verdict> {
     let (record, goal, decisions, tests) = host.read(|state| {
         (
@@ -207,7 +263,7 @@ async fn review_in(
     };
     if reviewers.is_empty() {
         return Ok(Verdict::NeedsYou {
-            reasons: vec!["No reviewer from another provider than the worker".to_owned()],
+            reasons: vec![nobody_left_line(host, task)],
         });
     }
     let workdir = tree
@@ -257,6 +313,10 @@ async fn review_in(
         ask.blind = blind;
         ask.slot = round;
         ask.independent_of = worker.iter().cloned().collect();
+        if reader == Reader::CouncilCheck {
+            ask.parts.push(ladder_check::council_frame());
+            ask.without_status = true;
+        }
         if is_endpoint(host, reviewer) {
             ask.access = Access::NoTools;
         } else {
@@ -329,6 +389,8 @@ async fn review_in(
                 Ok((None, review)) => reviews.push((reviewer.clone(), by.clone(), review)),
                 Ok((Some(answered), review)) => {
                     // Under the name of whoever reviewed, a fallback included.
+                    let picked_by =
+                        picked_for(host, RoleName::Reviewer, reviewer, &answered.worker, false);
                     host.record(
                         Some(task),
                         Some(&answered.session),
@@ -337,6 +399,7 @@ async fn review_in(
                             blind,
                             round,
                             review: answered.output,
+                            picked_by: Some(picked_by),
                         }),
                     )?;
                     // A fallback took the reviewer's own place midway, so the rest of its
@@ -378,6 +441,32 @@ async fn review_in(
         return settle::settle(host, task).await;
     }
     Ok(combine(&outputs))
+}
+
+/// Who chose `model` for `role` in this run, by its settings.
+pub(crate) fn picked(
+    host: &Host,
+    role: RoleName,
+    model: &ModelRef,
+    named_by_step: bool,
+) -> PickedBy {
+    reviewers::picked_by(host.settings(), role, model, named_by_step)
+}
+
+/// Who chose the model that answered a `role` call asked of `asked`: [`picked`] when the model
+/// asked answered, and code when a fallback answered in its place.
+pub(crate) fn picked_for(
+    host: &Host,
+    role: RoleName,
+    asked: &ModelRef,
+    answered: &ModelRef,
+    named_by_step: bool,
+) -> PickedBy {
+    if reviewers::answered_as_asked(asked, answered) {
+        picked(host, role, asked, named_by_step)
+    } else {
+        PickedBy::Code
+    }
 }
 
 /// Reviews these reviewers already recorded for this round, so a re-entered review asks only
@@ -585,6 +674,17 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     for (reviewer, answer) in join_all(asks).await {
         match answer {
             Ok(answered) => {
+                let named_by_step = matches!(
+                    &call.step.models,
+                    StepModels::Named(models) if models.contains(reviewer)
+                );
+                let picked_by = picked_for(
+                    host,
+                    RoleName::Reviewer,
+                    reviewer,
+                    &answered.worker,
+                    named_by_step,
+                );
                 host.record(
                     None,
                     Some(&answered.session),
@@ -593,6 +693,7 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
                         blind,
                         round: call.at.round,
                         review: answered.output.clone(),
+                        picked_by: Some(picked_by),
                     }),
                 )?;
                 outputs.push(answered.output);

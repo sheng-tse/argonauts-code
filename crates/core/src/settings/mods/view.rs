@@ -108,7 +108,7 @@ pub struct LineNumbers {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LineCli {
-    /// Such as `Claude`, `Codex`, `agy`.
+    /// The CLI's name, such as `Claude Code`, `Codex`, `agy`.
     pub label: String,
     /// The adapter's id, which picks its color.
     pub id: String,

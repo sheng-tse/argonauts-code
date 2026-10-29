@@ -103,6 +103,7 @@ pub async fn write(host: &Host, writing: &Writing) -> EngineResult<()> {
         return Ok(());
     }
     let plan = SessionPlan {
+        without_status: false,
         at: host.read(merger::merge_step),
         role: RoleName::Worker,
         worker: merger::model(host.settings()),

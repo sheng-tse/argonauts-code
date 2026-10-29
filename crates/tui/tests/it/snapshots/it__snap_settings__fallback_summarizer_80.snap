@@ -1,5 +1,5 @@
 ---
-source: crates/tui/tests/snap_settings.rs
+source: crates/tui/tests/it/snap_settings.rs
 expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────
@@ -10,4 +10,4 @@ expression: "picker_lines(picker, width)"
 
   ❯
 
-  Enter to continue · Esc to cancel
+  Enter to save · ctrl+s for this session only · Esc to cancel

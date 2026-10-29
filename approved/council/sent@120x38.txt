@@ -1,0 +1,93 @@
+The Council conversation at 120 x 38 in a terminal that takes pictures: your request sent: the Council heading, your message with Read by, and every seat writing its first answer alone; from the first row under the app's header; the bubbles are pictures under the text, so the cells hold the words alone
+screen 120x38
+at 4,0
+size 120x34
+terminal fg=#c8d3f5 bg=#222436
+text
+
+❯ /council
+  ⎿  Switched to Council
+
+                                                      ￼￼ ￼￼ ￼￼ ￼￼
+                                                        Council
+                            4 seats · each one is its own session · Opus 5.5 keeps the notes
+
+                                                     Today 10:41 AM
+
+                                 Add rate limiting to the public API, so one noisy client can't slow down everyone
+                                 else. Build the limiter with Maker-checker, split the route tests across agents, and
+                                 let Luna do the plan limits in its own session.
+
+                                                                                                   Read by ￼￼ ￼￼ ￼￼ ￼￼
+
+                                Each seat answers alone first, without seeing the others
+
+
+￼￼  • • •    ￼￼  • • •    ￼￼  • • •    ￼￼  • • •
+
+✻ Parleying… (14s · ↓  3.2k of 200k tokens · 0/4 seats agree)
+  ⎿  Tip: write to every seat, @ one, or shift+↑  to pick a message or a task
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ↓  to manage
+
+  ⣾  Rate limit the API                    ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/4 · 14s · ↓  3.2k tokens
+    ⎿ ○  ￼￼ Opus 5.5                       Writing its first answer    14s · ↓  1.1k tokens
+      ○  ￼￼ 5.6 Luna                       Writing its first answer    14s · ↓   840 tokens
+      ○  ￼￼ 3.8 Flash                      Writing its first answer    14s · ↓   760 tokens
+      ○  ￼￼ Qwen3 Coder 30B                Writing its first answer    14s · ↓   510 tokens
+paint
+
+abccccccccb
+..d..eeeeeeee.ee.fffffff
+
+......................................................gg.hh.ii.jj
+........................................................kkkkkkk
+............................d.ddddd.d.dddd.ddd.dd.ddd.ddd.ddddddd.d.dddd.ddd.ddddd.ddd.ddddd
+
+.....................................................ddddd.ddddd.dd
+
+.................................lll.llll.llllllll.ll.lll.llllll.llll.ll.lll.lllll.llllll.lllll.llll.llll.llllllll
+.................................lllll.lllll.lll.lllllll.llll.llllllllllllll.lllll.lll.lllll.lllll.llllll.lllllll.lll
+.................................lll.llll.ll.lll.llll.llllll.ll.lll.lll.llllllll
+
+...................................................................................................dddd.dd.gg.hh.ii.jj
+
+................................dddd.dddd.ddddddd.ddddd.dddddd.ddddddd.dddddd.ddd.dddddd
+
+
+gg..d.l.d....hh..d.l.d....ii..d.l.d....jj..d.l.d
+
+f.fffmmfffff.dddd.d.d..dddd.dd.dddd.dddddd.d.ddd.ddddd.dddddd
+..d..dddd.ddddd.dd.ddddd.ddddd.d.dddd.dd.ddddddd..dd.dddd.d.ddddddd.dd.d.dddd
+
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.ooooooo.n
+e.ddddd.dd.ddd.dddddddd.d.d.ddddd.dd.ddddddd..dd.dddd.d.ddddddd.dd.dddd
+nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+..d.dddddddddd.dddd.dd.dddddddddd.dd.dddddd.d.ddd.dd.ddddddddd.d.d..dd.dddddd
+
+..p..dddd.ddddd.ddd.ddd....................dddddddddddddddddddd..ddd.d.ddd.d.d..dddd.dddddd
+....d.d..gg.dddd.ddd.......................eeeeeee.eee.eeeee.eeeeee....ddd.d.d..dddd.dddddd
+......d..hh.ddd.dddd.......................eeeeeee.eee.eeeee.eeeeee....ddd.d.d...ddd.dddddd
+......d..ii.ddd.ddddd......................eeeeeee.eee.eeeee.eeeeee....ddd.d.d...ddd.dddddd
+......d..jj.ddddd.ddddd.ddd................eeeeeee.eee.eeeee.eeeeee....ddd.d.d...ddd.dddddd
+key
+. blank
+a fg=#505050 bg=#373737  ; Faint, on UserBand
+b bg=#373737  ; UserBand
+c fg=#ffffff bg=#373737  ; Bright, on UserBand
+d fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+e fg=#c8d3f5  ; the terminal's own
+f fg=#e6a23c  ; Accent, CatBrief
+g logo=claudecode
+h logo=codex
+i logo=antigravity
+j logo=ollama
+k fg=#c8d3f5 bold  ; the terminal's own
+l fg=#ffffff  ; Bright
+m fg=#f7d488  ; Shimmer
+n fg=#888888  ; Rule
+o fg=#af87ff  ; Label, Ultracode
+p fg=#b1b9f9  ; Code, Question, BarFill, CatMcp

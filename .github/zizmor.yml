@@ -4,11 +4,24 @@
 #
 # installer-smoke.yml installs the release it checks, and publish-npm.yml the exact npm that
 # publishing needs, so neither install has a lockfile to come from.
+#
+# bot.yml answers /bot comments, which anyone can write, so it runs on issue_comment. It checks
+# out only the default branch, hands the comment to its script through an environment variable,
+# leaves the deciding of who may do what to that script, and acts through an app token that can
+# rerun or stop runs and comment, nothing else.
+#
+# labels.yml labels pull requests from forks too, which needs pull_request_target. It checks out
+# the base branch, reads the changed paths from GitHub's list of them, never runs the pull
+# request's code, and its app token can only label pull requests.
 rules:
   adhoc-packages:
     ignore:
       - installer-smoke.yml
       - publish-npm.yml
+  dangerous-triggers:
+    ignore:
+      - bot.yml
+      - labels.yml
   unpinned-uses:
     config:
       policies:

@@ -125,7 +125,64 @@ pub enum Fit {
     },
 }
 
-/// What this machine gives models, in bytes: the most they may use, its memory, what loaded
+/// A model a local server can download and run, as the model catalog lists it: facts rather
+/// than verdicts, which each computer ranks for itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalModel {
+    /// Its tag on Ollama, such as `qwen3-coder:30b`.
+    pub tag: String,
+    pub name: String,
+    /// The largest window it's run at, in tokens: its own, or less where more would only take
+    /// memory.
+    pub window: u64,
+    /// What its weights take once loaded, in gigabytes.
+    pub weights_gb: Figure,
+    pub download_gb: Figure,
+    /// What each token of its context takes, in kibibytes.
+    pub context_kib_per_token: Figure,
+    #[serde(default = "uses_tools")]
+    pub tools: bool,
+    #[serde(default)]
+    pub thinking: bool,
+    /// The month it came out, such as `2025-07`, which sorts as it reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coding: Option<CodingScore>,
+    /// The tag of the model that takes its place, which is offered instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_by: Option<String>,
+}
+
+fn uses_tools() -> bool {
+    true
+}
+
+/// A coding score from a public leaderboard, with where and when it was read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodingScore {
+    /// Out of 100.
+    pub score: Figure,
+    /// The leaderboard, by name or address.
+    pub source: String,
+    /// When it was read, such as `2026-10-20`.
+    pub checked: String,
+}
+
+/// A number from the catalog, compared exactly, so a catalog read twice compares equal.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Figure(pub f64);
+
+impl PartialEq for Figure {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for Figure {}
+
+/// What this computer gives models, in bytes: the most they may use, its memory, what loaded
 /// models hold now, and what is free beside the other apps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachineMemory {
@@ -133,9 +190,6 @@ pub struct MachineMemory {
     pub total: u64,
     pub in_use: u64,
     pub free: u64,
-    /// A Mac, as the line names it.
-    #[serde(default)]
-    pub mac: bool,
 }
 
 impl MachineMemory {

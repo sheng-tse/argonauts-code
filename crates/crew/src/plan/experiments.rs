@@ -289,6 +289,7 @@ async fn prepare(
             predictions: None,
             item: Some(argonauts_core::labels::slug(&option.label, 3))
                 .filter(|item| !item.is_empty()),
+            way: None,
         };
         host.record(
             Some(task),
@@ -318,6 +319,7 @@ async fn experiment(
     workdir: PathBuf,
 ) -> EngineResult<()> {
     let plan = SessionPlan {
+        without_status: false,
         at: Some(call.at.clone()),
         role: RoleName::Experiment,
         worker,

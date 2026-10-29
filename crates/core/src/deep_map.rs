@@ -1,4 +1,4 @@
-//! What the deeper Behaviors map's questions offer and its lines show, as the app counted them:
+//! What Summaries' questions offer and its lines show, as the app counted them:
 //! what to summarize, with how long each would take, who may summarize, with what each costs,
 //! the embedder, and how far an update is.
 
@@ -13,7 +13,7 @@ const GROUPING: [Label; 2] = [Label::Answer, Label::Shell];
 
 /// Whether an action's summary says more than its label, given as the map shows it: the label
 /// only groups what was done, as any structured answer or shell command does, or no rule
-/// labelled it. The deeper map's list marks such a row new.
+/// labelled it. Summaries' list marks such a row new.
 pub fn says_more_than(label: &str) -> bool {
     let label = label.trim();
     label.is_empty()
@@ -36,7 +36,7 @@ pub enum DeepScope {
     Days {
         days: u32,
     },
-    /// The actions since `at`, as `argonauts behaviors --deep --since` names it.
+    /// The actions since `at`, as `argonauts behaviors --summaries --since` names it.
     Since {
         #[serde(with = "time::serde::rfc3339")]
         at: time::OffsetDateTime,
@@ -119,7 +119,7 @@ pub enum EmbedderNote {
     Words,
 }
 
-/// Everything the deeper map's questions offer, the recommended answers first.
+/// Everything Summaries' questions offer, the recommended answers first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeepOffer {
     pub scopes: Vec<ScopeOffer>,
@@ -172,7 +172,7 @@ impl MadeBy {
     }
 }
 
-/// The answers to the deeper map's questions.
+/// The answers to Summaries' questions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeepStart {
     pub scope: DeepScope,

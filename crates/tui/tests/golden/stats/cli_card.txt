@@ -2,7 +2,7 @@
 │ ● Claude Code                              3.43M tok │
 │ 3 tasks · 13 reviews                     Max · $0.19 │
 │                                                      │
-│ ■ Haiku 5.5     ━━━━━━━━━━━━━━━━━━  3.43M · 3 tasks  │
+│ █ Haiku 5.5     ━━━━━━━━━━━━━━━━━━  3.43M · 3 tasks  │
 │                                                      │
 │ tasks     ▪▪▪▪▪▪▪▪▪▪ 0% first pass                   │
 │                                                      │

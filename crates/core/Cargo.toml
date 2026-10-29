@@ -18,13 +18,11 @@ base64.workspace = true
 anyhow.workspace = true
 dirs.workspace = true
 jsonschema.workspace = true
-nix = { workspace = true, features = ["user"] }
+nix.workspace = true
 regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
-# Objects keep the order their keys were written in, so an answer format lists a type's fields
-# as it declares them, whichever crates are built with it.
-serde_json = { workspace = true, features = ["preserve_order"] }
+serde_json.workspace = true
 sha2.workspace = true
 shell-words.workspace = true
 thiserror.workspace = true

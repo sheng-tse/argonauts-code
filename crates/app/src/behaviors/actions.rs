@@ -61,9 +61,23 @@ pub(crate) struct Action {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
     pub behavior: Behavior,
-    /// How its session ended, once the log says.
+    /// How its session ended, once the log says, and when.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<SessionEnded>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub ended_at: Option<OffsetDateTime>,
+    /// When its work came to its outcome: the review that sent it back, the merge, or the
+    /// rewind or the run's end that dropped it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub settled_at: Option<OffsetDateTime>,
     /// The call's input as the CLI gave it, for an export. Never kept with the labels.
     #[serde(skip)]
     pub input: Value,
@@ -114,8 +128,10 @@ pub(crate) enum SessionEnded {
     Completed,
     /// You or a limit stopped it, or its context filled and the next session carried on.
     Stopped,
-    /// Its CLI failed, crashed, got stuck or couldn't go on.
+    /// Its CLI failed, got stuck or couldn't go on.
     Failed,
+    /// Its CLI crashed or exited without a result.
+    Crashed,
 }
 
 impl SessionEnded {
@@ -127,8 +143,14 @@ impl SessionEnded {
             | EndReason::ContextFull
             | EndReason::LimitHit { .. }
             | EndReason::UsageLimit { .. } => SessionEnded::Stopped,
+            EndReason::Crashed { .. } => SessionEnded::Crashed,
             _ => SessionEnded::Failed,
         }
+    }
+
+    /// It ended because its CLI failed, a crash among the ways.
+    pub fn cli_failed(self) -> bool {
+        matches!(self, SessionEnded::Failed | SessionEnded::Crashed)
     }
 
     pub fn name(self) -> &'static str {
@@ -136,6 +158,7 @@ impl SessionEnded {
             SessionEnded::Completed => "completed",
             SessionEnded::Stopped => "stopped",
             SessionEnded::Failed => "failed",
+            SessionEnded::Crashed => "crashed",
         }
     }
 }
@@ -278,9 +301,10 @@ pub(crate) fn of_run(
         }
         _ => None,
     });
-    let ended = events
-        .iter()
-        .any(|event| matches!(event.kind, RunEventKind::Run(RunLifecycle::Finished { .. })));
+    let ended = events.iter().find_map(|event| match event.kind {
+        RunEventKind::Run(RunLifecycle::Finished { .. }) => Some(event.ts),
+        _ => None,
+    });
 
     let mut latest = BTreeMap::new();
     let mut started_sessions = 0usize;
@@ -293,7 +317,7 @@ pub(crate) fn of_run(
     let mut checkpoints: BTreeMap<&TaskId, Vec<(usize, u32)>> = BTreeMap::new();
     let mut rewinds: BTreeMap<&TaskId, Vec<(usize, u32)>> = BTreeMap::new();
     let mut diffs: Vec<Diffed<'_>> = Vec::new();
-    let mut ends: BTreeMap<Whose<'_>, SessionEnded> = BTreeMap::new();
+    let mut ends: BTreeMap<Whose<'_>, (SessionEnded, OffsetDateTime)> = BTreeMap::new();
     for (at_event, event) in events.iter().enumerate() {
         let session = event
             .session
@@ -368,7 +392,7 @@ pub(crate) fn of_run(
             }
             RunEventKind::Session(SessionEvent::Ended(end)) => {
                 if let Some(session) = session {
-                    ends.insert(session, SessionEnded::of(&end.reason));
+                    ends.insert(session, (SessionEnded::of(&end.reason), event.ts));
                 }
             }
             RunEventKind::Task(TaskEvent::CheckpointTagged { n, .. }) => {
@@ -420,8 +444,8 @@ pub(crate) fn of_run(
     // that sends it back, or the merge. With none, the task ended without merging, once the
     // run has ended. A session that failed leaves its work in the task's worktree, where the
     // next try carries it on, so its actions share that end; only a branch sent back to a
-    // checkpoint from before them drops their work.
-    let outcome = |task: Option<&TaskId>, at_event: usize| -> Option<Outcome> {
+    // checkpoint from before them drops their work. Its time is the event that settled it.
+    let outcome = |task: Option<&TaskId>, at_event: usize| -> Option<(Outcome, OffsetDateTime)> {
         let task = task?;
         let next = verdicts
             .get(task)
@@ -433,15 +457,16 @@ pub(crate) fn of_run(
                         .any(|(tagged, number)| *number == n && *tagged < at_event)
                 })
         };
-        let set_aside = rewinds.get(task).is_some_and(|rewinds| {
-            rewinds.iter().any(|(at, to)| {
+        let set_aside = rewinds.get(task).and_then(|rewinds| {
+            rewinds.iter().find(|(at, to)| {
                 *at > at_event && next.is_none_or(|(verdict, _)| at < verdict) && tagged_before(*to)
             })
         });
-        match next {
-            _ if set_aside => Some(Outcome::Dropped),
-            Some((_, outcome)) => Some(*outcome),
-            None => ended.then_some(Outcome::Dropped),
+        let at = |event: usize| events[event].ts;
+        match (set_aside, next) {
+            (Some((rewound, _)), _) => Some((Outcome::Dropped, at(*rewound))),
+            (None, Some((verdict, outcome))) => Some((*outcome, at(*verdict))),
+            (None, None) => ended.map(|finished| (Outcome::Dropped, finished)),
         }
     };
 
@@ -513,7 +538,9 @@ pub(crate) fn of_run(
             what: what_of(seen.input),
             ok: seen.ok,
             behavior: labeller::label(&call),
-            ended: ends.get(&seen.session).copied(),
+            ended: ends.get(&seen.session).map(|(how, _)| *how),
+            ended_at: ends.get(&seen.session).map(|(_, at)| *at),
+            settled_at: None,
             input: seen.input.clone(),
             conversation: false,
             note: None,
@@ -529,6 +556,8 @@ pub(crate) fn of_run(
             };
             let session = facts.sessions.get(at)?;
             let model = filed_as(catalog, &reported.ran(at, session));
+            let settled = outcome(session.task.as_ref(), seen.at_event);
+            let end = ends.get(&seen.session);
             let call = ToolCall {
                 name: seen.name,
                 input: seen.input,
@@ -547,7 +576,7 @@ pub(crate) fn of_run(
                 role: StatsRole::counted_as(role_of(&session.started)),
                 workflow: workflow.clone(),
                 task: session.task.as_ref().map(ToString::to_string),
-                outcome: outcome(session.task.as_ref(), seen.at_event),
+                outcome: settled.map(|(outcome, _)| outcome),
                 at: events
                     .get(seen.at_event)
                     .map_or(session.started_at, |event| event.ts),
@@ -555,7 +584,9 @@ pub(crate) fn of_run(
                 what: what_of(seen.input),
                 ok: seen.ok,
                 behavior: labeller::label(&call),
-                ended: ends.get(&seen.session).copied(),
+                ended: end.map(|(how, _)| *how),
+                ended_at: end.map(|(_, at)| *at),
+                settled_at: settled.map(|(_, at)| at),
                 input: seen.input.clone(),
                 conversation: false,
                 note: note(session.task.as_ref(), seen.at_event),
@@ -624,6 +655,8 @@ pub(crate) fn of_conversation(
                     ok: None,
                     behavior: Behavior::Unlabelled,
                     ended: None,
+                    ended_at: None,
+                    settled_at: None,
                     input: input.clone(),
                     conversation: true,
                     note: None,
@@ -705,6 +738,8 @@ impl Action {
             ok: Some(true),
             behavior: Behavior::One(argonauts_core::behaviors::Label::GitHistory),
             ended: None,
+            ended_at: None,
+            settled_at: None,
             input: Value::Null,
             conversation: false,
             note: None,

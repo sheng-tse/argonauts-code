@@ -5,6 +5,7 @@
 
 use std::time::{Duration, Instant};
 
+use argonauts_core::logos::logo_for;
 use argonauts_core::settings::ui::CliInternals;
 use argonauts_core::views::ContextUse;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -12,6 +13,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::format;
+use crate::kit::logo::logo_before;
 use crate::render::{Clock, RenderCtx};
 use crate::text::{sanitize_line, spans_width, str_width, truncate_line};
 use crate::theme::{AgentColor, Role, Theme};
@@ -82,6 +84,9 @@ pub struct AgentRow {
     pub run: Option<String>,
     pub markers: RowMarkers,
     pub kind: RowKind,
+    /// Its place among a council's seats of the same model, from 1, when that model sits more
+    /// than once: the row reads "Opus 5.5 · 2".
+    pub seat_number: Option<u8>,
 }
 
 /// Whose row it is, which decides what the keys do on it.
@@ -141,6 +146,7 @@ impl AgentRow {
             run: None,
             markers: RowMarkers::default(),
             kind: RowKind::Agent,
+            seat_number: None,
         }
     }
 
@@ -152,7 +158,7 @@ impl AgentRow {
         }
     }
 
-    /// What the input offers while this row is selected: `Message @build:scan-checks…`.
+    /// What the input offers while this row is selected: `Message @build:date-checks…`.
     pub fn placeholder(&self) -> Option<String> {
         if self.kind == RowKind::Main {
             return None;
@@ -182,7 +188,17 @@ impl AgentRow {
             (None, Some(model)) if !model.is_empty() => format!("{}/{model}", self.name.trim()),
             (None, _) => self.name.clone(),
         };
-        sanitize_line(&name).trim().to_owned()
+        let name = sanitize_line(&name).trim().to_owned();
+        match self.seat_number {
+            Some(number) => format!("{name} · {number}"),
+            None => name,
+        }
+    }
+
+    /// A council seat whose model sits more than once, numbered among those seats.
+    pub fn with_seat_number(mut self, number: u8) -> Self {
+        self.seat_number = Some(number);
+        self
     }
 
     pub fn with_label(mut self, full: impl Into<String>, cli: impl Into<String>) -> Self {
@@ -402,9 +418,20 @@ impl AgentPanel {
         ctx: &RenderCtx<'_>,
     ) -> Vec<Line<'static>> {
         let width = usize::from(ctx.width);
+        // Where logos draw as pictures, each agent's name has its model's logo before it.
+        let logos: Vec<Vec<Span<'static>>> = rows
+            .iter()
+            .map(|row| {
+                let agent = &self.rows[row.index];
+                logo_before(&logo_for(&agent.name, agent.model.as_deref()), ctx.theme)
+            })
+            .collect();
         let name_wants = rows
             .iter()
-            .map(|row| row.indent + str_width(&self.rows[row.index].display_name()))
+            .zip(&logos)
+            .map(|(row, logo)| {
+                row.indent + spans_width(logo) + str_width(&self.rows[row.index].display_name())
+            })
             .max()
             .unwrap_or(0)
             .min(MAX_NAME);
@@ -448,7 +475,8 @@ impl AgentPanel {
         };
         rows.iter()
             .zip(cells)
-            .map(|(row, cells)| {
+            .zip(logos)
+            .map(|((row, cells), logo)| {
                 let agent = &self.rows[row.index];
                 let chosen = match selected {
                     Some(selected) => selected == row.index,
@@ -468,7 +496,9 @@ impl AgentPanel {
                 ];
                 let name_cells = name_width.saturating_sub(row.indent);
                 let mut used = margin(row) + name_cells;
-                spans.push(Span::styled(left(&cells.name, name_cells), name_style));
+                let name_room = name_cells.saturating_sub(spans_width(&logo));
+                spans.extend(logo);
+                spans.push(Span::styled(left(&cells.name, name_room), name_style));
                 if doing_shows {
                     let doing_width = width
                         .saturating_sub(used + GAP + stats_room)
@@ -793,6 +823,17 @@ mod tests {
         theme
     }
 
+    #[test]
+    fn a_seat_whose_model_sits_twice_reads_with_its_number() {
+        let row = AgentRow::new("claude-code", "Backs all 6 points", AgentState::Done)
+            .with_label("Opus 5.5", "Claude Code")
+            .with_seat_number(2);
+        assert_eq!(row.display_name(), "Opus 5.5 · 2");
+        let row = AgentRow::new("codex", "Answering", AgentState::Working)
+            .with_label("5.6 Luna", "Codex");
+        assert_eq!(row.display_name(), "5.6 Luna");
+    }
+
     fn agent(label: &str, doing: &str, state: AgentState) -> AgentRow {
         AgentRow::new("claude-code", doing, state).with_label(label, label)
     }
@@ -800,29 +841,29 @@ mod tests {
     /// A sample list, as it stood `now` after `t0`.
     fn panel(now: Instant) -> AgentPanel {
         let ago = |minutes: u64| now.checked_sub(Duration::from_secs(minutes * 60));
-        let mut scan = agent(
-            "build:scan-checks",
-            "Splitting input checks in scan_triton.py",
+        let mut checks = agent(
+            "build:date-checks",
+            "Splitting input checks in parse_dates.py",
             AgentState::Working,
         );
-        scan.started_at = ago(67);
-        scan.tokens_down = 490_900;
+        checks.started_at = ago(67);
+        checks.tokens_down = 490_900;
         let mut readme = agent(
             "read:readme",
-            "Reading README.md for rescreen mentions",
+            "Reading README.md for due date mentions",
             AgentState::Working,
         );
         readme.started_at = ago(29);
         readme.tokens_down = 285_100;
-        let mut quantize = agent(
-            "test:quantize",
-            "Testing quantize_int in test_quant_integer.py",
+        let mut due = agent(
+            "test:due-date",
+            "Testing parse_due_dates in test_due_parser.py",
             AgentState::Working,
         );
-        quantize.started_at = ago(21);
-        quantize.tokens_down = 521_600;
+        due.started_at = ago(21);
+        due.tokens_down = 521_600;
         AgentPanel {
-            rows: vec![AgentRow::main(), scan, readme, quantize],
+            rows: vec![AgentRow::main(), checks, readme, due],
             ..AgentPanel::default()
         }
     }
@@ -847,9 +888,9 @@ mod tests {
         assert_eq!(
             plain_text(&lines),
             "  ○ main\n\
-             \x20 ● build:scan-checks  Splitting input checks in scan_triton.py        1h 7m · ↓  491k tokens\n\
-             \x20 ○ read:readme        Reading README.md for rescreen mentions         29m · ↓  285k tokens\n\
-             \x20 ○ test:quantize      Testing quantize_int in test_quant_integer.py   21m · ↓  522k tokens"
+             \x20 ● build:date-checks  Splitting input checks in parse_dates.py        1h 7m · ↓  491k tokens\n\
+             \x20 ○ read:readme        Reading README.md for due date mentions         29m · ↓  285k tokens\n\
+             \x20 ○ test:due-date      Testing parse_due_dates in test_due_parser.py   21m · ↓  522k tokens"
         );
         // The selected agent's dot and name take the chosen option's color, lavender, what
         // each agent does reads as text, and the stats are dim.
@@ -861,6 +902,34 @@ mod tests {
         assert_eq!(lines[2].spans[5].style, theme.style(Role::Text));
         let stats = lines[2].spans.last().unwrap();
         assert_eq!(stats.style, theme.style(Role::Dim));
+    }
+
+    /// Where the terminal draws logos, each agent's name has its model's logo before it, and
+    /// the names' column widens to hold it. `main` names no CLI, so it has none.
+    #[test]
+    fn each_agent_has_its_models_logo_before_its_name() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        use crate::kit::logo::golden::{count, pictured, with_stand_ins};
+        use crate::overview::golden::{Picture, Region, assert_matches, keep};
+
+        let theme = pictured(&crate::overview::golden::theme());
+        let (now, clock) = clock();
+        let ctx = RenderCtx::new(94, &theme, clock);
+        let mut panel = panel(now);
+        panel.rows[2].name = "codex".to_owned();
+        panel.selected = Some(1);
+        let lines = panel.lines(&ctx);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 94, lines.len() as u16));
+        for (y, line) in lines.iter().enumerate() {
+            buf.set_line(0, y as u16, line, 94);
+        }
+        assert_eq!(count(&buf), 3);
+        let shown = with_stand_ins(&buf);
+        keep("agent_panel_logos", &shown);
+        let picture = Picture::screen("bottom", "agent_panel_logos");
+        assert_matches(&picture, &shown, &Region::whole(&picture, (0, 0)), &theme);
     }
 
     /// With nothing selected your typing goes to the main agent, so its dot is the filled one,
@@ -934,13 +1003,13 @@ mod tests {
         };
         assert_eq!(
             row(62),
-            "  ○ build:scan-checks  Splitting inp…  1h 7m · ↓  491k tokens"
+            "  ○ build:date-checks  Splitting inp…  1h 7m · ↓  491k tokens"
         );
         assert_eq!(
             row(58),
-            "  ○ build:scan-checks              1h 7m · ↓  491k tokens"
+            "  ○ build:date-checks              1h 7m · ↓  491k tokens"
         );
-        assert_eq!(row(38), "  ○ build:sc…  1h 7m · ↓  491k tokens");
+        assert_eq!(row(38), "  ○ build:da…  1h 7m · ↓  491k tokens");
     }
 
     #[test]
@@ -1033,7 +1102,7 @@ mod tests {
             panel.handle_key(key(KeyCode::Char('x'))),
             PanelEvent::Stop {
                 agent: scan,
-                name: "build:scan-checks".into()
+                name: "build:date-checks".into()
             }
         );
         assert_eq!(panel.handle_key(key(KeyCode::Down)), PanelEvent::Moved);
@@ -1070,7 +1139,7 @@ mod tests {
         assert_eq!(panel.rows[0].placeholder(), None);
         assert_eq!(
             panel.rows[1].placeholder().as_deref(),
-            Some("Message @build:scan-checks…")
+            Some("Message @build:date-checks…")
         );
         // Claude Code cuts a long name at twenty cells.
         let long = agent("review:the-whole-export-path", "", AgentState::Working);
@@ -1081,7 +1150,7 @@ mod tests {
         let theme = theme();
         let ctx = RenderCtx::new(40, &theme, Clock::new(now, now));
         let rule = plain_text(&[message_rule(&panel.rows[1], &ctx)]);
-        assert_eq!(rule, format!("{} build:scan-checks ─", "─".repeat(20)));
+        assert_eq!(rule, format!("{} build:date-checks ─", "─".repeat(20)));
     }
 
     #[test]

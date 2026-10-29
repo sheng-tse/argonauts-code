@@ -897,13 +897,13 @@ fn the_hint_line_says_what_esc_does() {
 fn a_question_you_set_off_holds_the_keys_until_answered() {
     let mut question = QuestionPrompt::new(
         1,
-        "Where should this be saved?",
-        "Save where?",
+        "Codex is out until 4:10 PM. Who carries on?",
+        "Who carries on?",
         vec![
-            QuestionOption::new("Just this session"),
-            QuestionOption::new("This project, just me").recommended(),
-            QuestionOption::new("This project, shared"),
-            QuestionOption::new("Everywhere"),
+            QuestionOption::new("Claude Code").recommended(),
+            QuestionOption::new("agy"),
+            QuestionOption::new("OpenCode"),
+            QuestionOption::new("Wait for Codex"),
         ],
     )
     .yours();

@@ -80,17 +80,18 @@ fn builtin_protocols_run_as_workflow_files() {
             Some(StandardPhase::Decide)
         );
     }
-    let council = load("council");
-    let standards: Vec<StandardPhase> = council.phases.iter().map(|phase| phase.standard).collect();
-    assert_eq!(
-        standards,
-        [
-            StandardPhase::Understand,
-            StandardPhase::Plan,
-            StandardPhase::Do,
-            StandardPhase::Decide
-        ]
-    );
+    let standards = |workflow: &Workflow| -> Vec<StandardPhase> {
+        workflow.phases.iter().map(|phase| phase.standard).collect()
+    };
+    let four = [
+        StandardPhase::Understand,
+        StandardPhase::Plan,
+        StandardPhase::Do,
+        StandardPhase::Decide,
+    ];
+    // The crew's fixed phases, which a workflow without its own runs, keep every planning step.
+    let base = load("base");
+    assert_eq!(standards(&base), four);
     for kind in [
         StepKind::Read,
         StepKind::Compare,
@@ -104,7 +105,19 @@ fn builtin_protocols_run_as_workflow_files() {
         StepKind::Build,
         StepKind::Merge,
     ] {
-        assert!(kinds(&council).contains(&kind), "{kind:?}");
+        assert!(kinds(&base).contains(&kind), "{kind:?}");
+    }
+    // Council plans by its talk, with no drafts to judge.
+    let council = load("council");
+    assert_eq!(standards(&council), four);
+    assert!(kinds(&council).contains(&StepKind::Talk));
+    for kind in [
+        StepKind::Draft,
+        StepKind::Map,
+        StepKind::Critique,
+        StepKind::Judge,
+    ] {
+        assert!(!kinds(&council).contains(&kind), "{kind:?}");
     }
 }
 
@@ -134,10 +147,10 @@ fn workflow_behaviors() {
     captain.captain.understand_first = true;
     assert!(holds(&captain, "understand_first", 1));
 
-    // council: blind drafts, a critique loop capped by `critique.rounds`, judging only where
-    // drafts disagree.
-    let council = load("council");
-    let steps = all_steps(&council);
+    // The fixed phases: blind drafts, a critique loop capped by `critique.rounds`, judging only
+    // where drafts disagree.
+    let base = load("base");
+    let steps = all_steps(&base);
     assert!(
         steps
             .iter()

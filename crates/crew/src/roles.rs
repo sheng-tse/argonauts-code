@@ -3,7 +3,8 @@
 //! blocked here.
 
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::events::council::Seating;
+use argonauts_core::names::{ModelRef, RoleName, SeatId};
 use argonauts_core::session_runner::model_run;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewRole;
@@ -69,6 +70,13 @@ pub fn display_name(worker: &ModelRef) -> String {
 /// The model alone where it runs on its own CLI, such as `Opus 5.5`, for a narrow place.
 pub fn short_name(worker: &ModelRef) -> String {
     DisplayNames::default().short(worker)
+}
+
+/// What you read a council seat by: its model, numbered when it sits more than once, as
+/// `Opus 5.5 · 2`. `None` for a seat that doesn't sit.
+pub fn seat_name(seat: &SeatId, seating: &Seating) -> Option<String> {
+    let seat = crate::council::seats::find(seating, seat)?;
+    Some(crate::council::seats::name(seat, &DisplayNames::default()))
 }
 
 /// Why `model` can't take `role` for this task, if it can't. `worker` is whoever made the work

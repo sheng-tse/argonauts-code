@@ -209,5 +209,6 @@ pub fn task(id: &str) -> TaskSpec {
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }

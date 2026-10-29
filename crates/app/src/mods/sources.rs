@@ -4,6 +4,8 @@
 use argonauts_core::Spend;
 use argonauts_core::api::{RunState, RunSummary};
 use argonauts_core::app::PlanUsageChip;
+use argonauts_core::display_names::DisplayNames;
+use argonauts_core::events::context::ContextKind;
 use argonauts_core::limits::PlanUsageStatus;
 use argonauts_core::settings::mods::reading::plain_number;
 use argonauts_core::settings::mods::{BuiltinSource, ModColor, ModLevel, ModPart, ModReading};
@@ -21,8 +23,10 @@ pub(crate) struct Numbers {
     pub context: Option<ContextRow>,
     /// One per CLI in the crew.
     pub plan_chips: Vec<PlanUsageChip>,
-    /// Today's spend, by CLI, in the crew's order.
+    /// Today's spend, by the CLI's id, in the crew's order.
     pub today: Vec<(String, Spend)>,
+    /// The CLIs' names, which name the spend card's parts.
+    pub names: DisplayNames,
     /// Newest first.
     pub runs: Vec<RunSummary>,
     pub now: Option<OffsetDateTime>,
@@ -40,6 +44,9 @@ pub(crate) fn reading(source: BuiltinSource, numbers: &Numbers) -> Result<ModRea
     }
 }
 
+/// The main session's context by its CLI's categories, each measured against the window, and
+/// the free space in grey, which leaves out the room held back for compacting. A CLI that says
+/// only how full the session is has one part for all of it.
 fn context(numbers: &Numbers) -> Result<ModReading, String> {
     let row = numbers
         .context
@@ -48,22 +55,42 @@ fn context(numbers: &Numbers) -> Result<ModReading, String> {
     let window = row
         .window
         .ok_or("the main session's CLI doesn't say how large its context is")?;
-    let free = window.saturating_sub(row.used);
-    let part = |label: &str, tokens: u64, color| {
+    let part = |label: &str, tokens: u64| {
         ModPart::new(label, tokens as f64)
-            .colored(color)
+            .of(window as f64)
             .reading(window_size::tokens_beside(tokens, window))
     };
+    let of_kind = |kind: ContextKind| {
+        row.categories
+            .iter()
+            .filter(move |category| category.kind == kind && category.tokens > 0)
+    };
+    let mut parts: Vec<ModPart> = of_kind(ContextKind::Used)
+        .map(|category| part(&category.name, category.tokens))
+        .collect();
+    if parts.is_empty() {
+        parts.push(part("in context", row.used));
+    }
+    let used: u64 = parts.iter().map(|part| part.value as u64).sum();
+    let held: u64 = of_kind(ContextKind::Buffer)
+        .map(|category| category.tokens)
+        .sum();
+    let free = window.saturating_sub(used).saturating_sub(held);
+    parts.push(part("Free space", free).colored(ModColor::Grey));
+    let mut summary = format!(
+        "{} of {}",
+        window_size::tokens_beside(used, window),
+        window_size::window_words(window)
+    );
+    if held > 0 && held < window {
+        summary.push_str(&format!(
+            " · compacts at {}",
+            window_size::tokens_beside(window - held, window)
+        ));
+    }
     Ok(ModReading {
-        summary: format!(
-            "{} of {}",
-            window_size::tokens_beside(row.used, window),
-            window_size::window_words(window)
-        ),
-        parts: vec![
-            part("used", row.used, ModColor::Blue),
-            part("free", free, ModColor::Grey),
-        ],
+        summary,
+        parts,
         ..ModReading::default()
     })
 }
@@ -111,7 +138,9 @@ fn plan_usage(numbers: &Numbers) -> Result<ModReading, String> {
         if fullest.as_ref().is_none_or(|(most, _)| used > *most) {
             fullest = Some((used, label.clone()));
         }
-        let mut part = ModPart::new(&label, (used * 100.0).round()).of(100.0);
+        let mut part = ModPart::new(&label, (used * 100.0).round())
+            .of(100.0)
+            .on_cli(reading.agent_id.0.clone());
         if let Some(words) = resets_words(reading.resets_at, numbers.now) {
             part = part.noted(words);
         }
@@ -148,7 +177,11 @@ fn spend(numbers: &Numbers) -> Result<ModReading, String> {
         parts: numbers
             .today
             .iter()
-            .map(|(cli, spent)| ModPart::new(cli, spent.cost_usd).reading(usd(spent)))
+            .map(|(cli, spent)| {
+                ModPart::new(&numbers.names.cli(cli), spent.cost_usd)
+                    .reading(usd(spent))
+                    .on_cli(cli)
+            })
             .collect(),
         ..ModReading::default()
     })
@@ -266,6 +299,7 @@ fn waiting(numbers: &Numbers) -> ModReading {
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
+    use argonauts_core::events::context::ContextCategory;
     use argonauts_core::events::run::RunMode;
     use argonauts_core::limits::{HealthState, PlanUsageReading, PlanUsageSource};
     use argonauts_core::names::{AgentId, ApprovalId, ModelRef, SessionKey};
@@ -277,11 +311,11 @@ mod tests {
         OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()
     }
 
-    fn chip(label: &str, used: f64, window: &str, status: PlanUsageStatus) -> PlanUsageChip {
+    fn chip(cli: &str, used: f64, window: &str, status: PlanUsageStatus) -> PlanUsageChip {
         PlanUsageChip {
-            label: label.to_owned(),
+            label: DisplayNames::default().cli(cli),
             reading: Some(PlanUsageReading {
-                agent_id: AgentId(label.to_lowercase()),
+                agent_id: AgentId(cli.to_owned()),
                 status,
                 used: Some(used),
                 resets_at: Some(now() + Duration::minutes(130)),
@@ -332,8 +366,8 @@ mod tests {
     fn plan_usage_is_a_meter_a_window_and_names_the_fullest() {
         let numbers = Numbers {
             plan_chips: vec![
-                chip("Claude", 0.56, "weekly", PlanUsageStatus::Allowed),
-                chip("Codex", 0.11, "five_hour", PlanUsageStatus::Warning),
+                chip("claude-code", 0.56, "weekly", PlanUsageStatus::Allowed),
+                chip("codex", 0.11, "five_hour", PlanUsageStatus::Warning),
                 PlanUsageChip {
                     label: "agy".to_owned(),
                     reading: None,
@@ -345,10 +379,11 @@ mod tests {
             ..Numbers::default()
         };
         let reading = reading(BuiltinSource::PlanUsage, &numbers).unwrap();
-        assert_eq!(reading.summary, "56% Claude 7d");
+        assert_eq!(reading.summary, "56% Claude Code 7d");
         assert_eq!(reading.level, ModLevel::Warn);
         assert_eq!(reading.parts.len(), 2);
-        assert_eq!(reading.parts[0].label, "Claude 7d");
+        assert_eq!(reading.parts[0].label, "Claude Code 7d");
+        assert_eq!(reading.parts[0].cli.as_deref(), Some("claude-code"));
         assert_eq!(reading.parts[0].value, 56.0);
         assert_eq!(reading.parts[0].max, Some(100.0));
         assert_eq!(reading.parts[0].note.as_deref(), Some("resets in 2h 10m"));
@@ -385,15 +420,20 @@ mod tests {
     fn spend_and_tokens_sum_today_by_cli() {
         let numbers = Numbers {
             today: vec![
-                ("Claude".to_owned(), spent(1.5, 1_000_000, 800_000, 20_000)),
-                ("Codex".to_owned(), spent(0.36, 300_000, 100_000, 80_000)),
+                (
+                    "claude-code".to_owned(),
+                    spent(1.5, 1_000_000, 800_000, 20_000),
+                ),
+                ("codex".to_owned(), spent(0.36, 300_000, 100_000, 80_000)),
             ],
             ..Numbers::default()
         };
         let spend = reading(BuiltinSource::Spend, &numbers).unwrap();
         assert_eq!(spend.summary, "~$1.86 today");
         assert_eq!(spend.parts[0].amount(), "~$1.50");
+        assert_eq!(spend.parts[0].label, "Claude Code");
         assert_eq!(spend.parts[1].label, "Codex");
+        assert_eq!(spend.parts[1].cli.as_deref(), Some("codex"));
         let tokens = reading(BuiltinSource::Tokens, &numbers).unwrap();
         assert_eq!(tokens.summary, "1.4M tokens today");
         let amounts: Vec<String> = tokens.parts.iter().map(ModPart::amount).collect();
@@ -424,11 +464,42 @@ mod tests {
         }
     }
 
+    /// A CLI that says only how full the session is has one part for all of it, then the
+    /// free space.
     #[test]
-    fn context_is_used_and_free() {
+    fn context_says_how_full_where_its_cli_gives_no_categories() {
         let read = reading(BuiltinSource::Context, &main_session(212_000, 1_000_000)).unwrap();
         assert_eq!(read.summary, "212k of 1M");
+        assert_eq!(read.parts[0].label, "in context");
         assert_eq!(read.parts[1].value, 788_000.0);
+        assert_eq!(read.parts[1].color, Some(ModColor::Grey));
+    }
+
+    /// A CLI that counts by category gives a part for each, in its order and by its names,
+    /// and the free space leaves out the room held back for compacting.
+    #[test]
+    fn context_reads_by_the_clis_categories() {
+        let category = |name: &str, tokens: u64, kind| ContextCategory {
+            name: name.to_owned(),
+            tokens,
+            color: "promptBorder".to_owned(),
+            kind,
+        };
+        let mut numbers = main_session(32_298, 1_000_000);
+        if let Some(row) = numbers.context.as_mut() {
+            row.categories = vec![
+                category("System prompt", 4_380, ContextKind::Used),
+                category("System tools", 27_918, ContextKind::Used),
+                category("Autocompact buffer", 33_000, ContextKind::Buffer),
+                category("Free space", 934_702, ContextKind::Free),
+            ];
+        }
+        let read = reading(BuiltinSource::Context, &numbers).unwrap();
+        assert_eq!(read.summary, "32.3k of 1M · compacts at 967k");
+        let labels: Vec<&str> = read.parts.iter().map(|part| part.label.as_str()).collect();
+        assert_eq!(labels, ["System prompt", "System tools", "Free space"]);
+        assert_eq!(read.parts[2].value, 934_702.0);
+        assert!(read.parts.iter().all(|part| part.max == Some(1_000_000.0)));
     }
 
     /// A 64k window reads 64k, and what is used and free of it reads in the same divisor, so
@@ -439,6 +510,7 @@ mod tests {
         assert_eq!(read.summary, "9.3k of 64k");
         let amounts: Vec<String> = read.parts.iter().map(ModPart::amount).collect();
         assert_eq!(amounts, ["9.3k", "54.7k"]);
+        assert_eq!(read.parts[0].label, "in context");
         let full = reading(BuiltinSource::Context, &main_session(65_536, 65_536)).unwrap();
         assert_eq!(full.summary, "64k of 64k");
     }

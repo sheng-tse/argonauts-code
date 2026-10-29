@@ -327,7 +327,6 @@ fn app_safety_setting_confirms() -> anyhow::Result<()> {
     for answer in ['n', 'y'] {
         let before = read(&global)?;
         submit(&mut pty, &format!("/config {key} auto"))?;
-        answer_scope(&scenario, &mut pty, 'e', None)?;
         let confirm = wait_open_choice(&scenario, ChoiceKind::ConfirmSafetySetting)?;
         let keys: Vec<char> = confirm.options.iter().map(|o| o.key).collect();
         assert_eq!(keys, ['y', 'n'], "{confirm:?}");
@@ -351,18 +350,20 @@ fn app_safety_setting_confirms() -> anyhow::Result<()> {
         WAIT,
     )?;
 
-    // A `/permissions` pick: the TUI asks the scope, the app asks the confirm.
+    // A `/permissions` pick saves at once, where your changes go; the app asks the confirm.
     let before_pick = commands(&scenario)?.len();
     submit(&mut pty, "/permissions")?;
     wait_event(&scenario, "the permissions picker", |event| {
         matches!(event, AppEvent::View { data }
             if matches!(data.as_ref(), ViewData::Settings { command: Some(c), .. } if c == "permissions"))
     })?;
+    // The trace has the view before the screen draws it, and an Enter that comes first lands
+    // in the empty input, so the Down and Enter after it pick another setting.
+    pty.wait_for_visible(r"(?ms)^  Permissions$.*Enter to choose · ", WAIT)?;
     pty.press(Key::Enter)?;
+    pty.wait_for_visible(r"Enter to save · ", WAIT)?;
     pty.press(Key::Down)?;
     pty.press(Key::Enter)?;
-    // Everywhere, the fourth place to save it.
-    pty.press(Key::Char('4'))?;
     let confirm = wait_open_choice(&scenario, ChoiceKind::ConfirmSafetySetting)?;
     let picked = commands(&scenario)?
         .into_iter()
@@ -386,7 +387,6 @@ fn app_safety_setting_confirms() -> anyhow::Result<()> {
         &mut pty,
         "/config endpoints.localproxy.base_url http://127.0.0.1:9/v1",
     )?;
-    answer_scope(&scenario, &mut pty, 'e', None)?;
     let confirm = wait_open_choice(&scenario, ChoiceKind::ConfirmSafetySetting)?;
     assert!(
         confirm

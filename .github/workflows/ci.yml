@@ -181,6 +181,31 @@ jobs:
         run: |
           read -ra packages <<< "$PACKAGES"
           cargo test --locked --doc "${packages[@]}"
+      # The world must cost under a percent of a core while it moves, on every level alike and
+      # with a row lit: each test times the panel's whole work, drawing and packing included, by
+      # its thread's own CPU. Drawn on threads as the app draws it, the world must draw a frame
+      # only when something arrived, and a key must reach the screen in time. So they run one
+      # at a time on an optimized build, once, on the shard that holds the screen's crate, and
+      # the step fails unless all eight ran. GitHub's macOS runners are virtual machines about
+      # half as fast as the Macs these limits were set on, so here a failure shows on the step
+      # without failing the job; run on a Mac, the limits hold.
+      - name: The world's motion cost
+        if: matrix.os == 'macos-15' && matrix.shard == 'rest'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo test --locked --release -p argonauts-tui --lib -- --ignored --test-threads=1 \
+            --exact \
+            app::map_picture::world_cost_tests::the_world_costs_under_a_percent_of_a_core_on_the_map \
+            app::map_picture::world_cost_tests::the_world_costs_under_a_percent_of_a_core_with_a_row_lit_and_the_pointer_moving \
+            app::map_picture::world_cost_tests::the_world_costs_under_a_percent_of_a_core_on_the_planet \
+            app::map_picture::world_cost_tests::the_world_costs_under_a_percent_of_a_core_in_the_universe \
+            app::map_picture::world_cost_tests::the_world_costs_under_a_percent_of_a_core_in_a_galaxy \
+            app::map_picture::world_cost_tests::the_world_costs_under_a_percent_of_a_core_in_a_system \
+            app::map_picture::world_cost_tests::the_world_on_threads_draws_a_frame_only_when_something_arrived \
+            app::map_picture::world_cost_tests::a_key_reaches_the_screen_in_time \
+            | tee "$RUNNER_TEMP/motion.log"
+          grep -q 'test result: ok. 8 passed' "$RUNNER_TEMP/motion.log"
 
   # One check for every shard, so the branch rules can require the tests: a matrix that was
   # skipped reports under its unexpanded name, which a required check would wait on forever.
@@ -273,9 +298,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The curl install script, the update manifest's drafting script, the crash watch, the
-      # test report CI writes, and the time the test job gives a test that hangs, against a fake
-      # curl, a release folder, query rows and JUnit reports the tests make.
+      # The curl install script, the update manifest's drafting script, the npm package's xz
+      # check, the crash watch, the test report CI writes, the bot's commands, workflows and
+      # crate labels, and the time the test job gives a test that hangs, against a fake curl,
+      # release folders, query rows, JUnit reports and a GitHub the tests make up.
       - run: python3 -m unittest discover -s packaging/tests
 
   workflows:

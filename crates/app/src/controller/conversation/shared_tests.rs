@@ -3,12 +3,14 @@
 
 use argonauts_core::NoteLevel;
 use argonauts_core::app::{
-    AppEvent, AppMode, ChoiceKind, ConversationEvent, TurnReply, UiCommand, ViewData,
+    AnswerTarget, AppEvent, AppMode, ChoiceKind, ConversationEvent, TurnReply, UiCommand, ViewData,
 };
+use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::events::goal::GoalAction;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::input::SlashCommand;
 use argonauts_core::names::ConversationId;
+use argonauts_core::settings::SettingScope;
 use argonauts_testkit::{FakeRunner, FakeSession};
 use serde_json::json;
 
@@ -422,7 +424,7 @@ async fn a_saved_output_style_takes_over_at_once() {
         .send(UiCommand::SetSetting {
             key: "ui.output_style".to_owned(),
             value: "\"learning\"".to_owned(),
-            scope: argonauts_core::settings::SettingScope::Session,
+            scope: Some(argonauts_core::settings::SettingScope::Session),
         })
         .await;
     one_turn(&mut driver).await;
@@ -548,7 +550,7 @@ async fn a_goal_is_a_condition_the_work_that_follows_carries() {
     slash(
         &driver,
         SlashCommand::Crew {
-            task: "fix slugify".into(),
+            task: Some("fix slugify".into()),
         },
     )
     .await;
@@ -774,7 +776,7 @@ async fn diff_shows_the_working_tree_in_the_diff_view() {
 }
 
 #[tokio::test]
-async fn add_dir_asks_where_to_save_one_more_writable_folder() {
+async fn add_dir_lets_the_agents_write_one_more_folder_for_this_session() {
     let mut driver = TestDriver::start().await;
     let shared = driver.repo.scratch().join("shared");
     std::fs::create_dir_all(&shared).unwrap();
@@ -785,17 +787,39 @@ async fn add_dir_asks_where_to_save_one_more_writable_folder() {
         },
     )
     .await;
+    // Where it saves isn't asked; that it's a safety setting is.
     let choice = driver
         .until(|event| matches!(event, AppEvent::Choice { .. }))
         .await;
     let AppEvent::Choice { choice } = choice else {
         unreachable!()
     };
-    assert_eq!(choice.kind, ChoiceKind::SettingScope);
-    let body = choice.body.join("\n");
+    assert_eq!(choice.kind, ChoiceKind::ConfirmSafetySetting);
     assert!(
-        body.contains("sandbox.extra_writable") || choice.title.contains("extra_writable"),
+        choice.body.join("\n").contains("sandbox.extra_writable"),
         "{choice:?}"
+    );
+    driver
+        .send(UiCommand::Answer {
+            to: AnswerTarget::Choice {
+                id: choice.id.clone(),
+            },
+            action: AnswerAction::Approve,
+            text: None,
+            evidence_sha256: None,
+            tasks: Vec::new(),
+            remember: false,
+        })
+        .await;
+    let changed = driver
+        .until(|event| matches!(event, AppEvent::SettingChanged { .. }))
+        .await;
+    let AppEvent::SettingChanged { key, scope, .. } = changed else {
+        unreachable!()
+    };
+    assert_eq!(
+        (key.as_str(), scope),
+        ("sandbox.extra_writable", SettingScope::Session)
     );
     slash(
         &driver,
@@ -924,7 +948,7 @@ async fn usage_opens_its_tab_for_the_period_and_print_still_prints() {
     slash(&driver, usage(None, ViewAction::Print)).await;
     let lines = report(&mut driver, "Usage, all time").await;
     assert!(
-        lines.iter().any(|line| line.starts_with("Claude · ")),
+        lines.iter().any(|line| line.starts_with("Claude Code · ")),
         "{lines:?}"
     );
     assert!(
@@ -975,7 +999,7 @@ async fn context_and_limits_print_in_the_conversation() {
     .await;
     let lines = report(&mut driver, "Limits").await;
     assert!(
-        lines.iter().any(|line| line.starts_with("Claude · ")),
+        lines.iter().any(|line| line.starts_with("Claude Code · ")),
         "{lines:?}"
     );
     assert!(
@@ -1035,7 +1059,7 @@ async fn login_and_logout_hand_the_terminal_to_the_agents_own_command() {
     let event = driver
         .until(|event| matches!(event, AppEvent::RunInTerminal { .. }))
         .await;
-    let AppEvent::RunInTerminal { argv, cwd } = event else {
+    let AppEvent::RunInTerminal { argv, cwd, .. } = event else {
         unreachable!()
     };
     assert_eq!(argv, ["claude", "auth", "login"]);

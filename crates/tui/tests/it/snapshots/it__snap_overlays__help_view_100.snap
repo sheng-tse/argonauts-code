@@ -1,10 +1,9 @@
 ---
 source: crates/tui/tests/it/snap_overlays.rs
-assertion_line: 1243
 expression: "screen(&mut view, width, height, &state)"
 ---
 Help
-The keys in effect, and every command by category                                        69 commands
+The keys in effect, and every command by category                                        73 commands
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Keys                                                                                             │
@@ -30,8 +29,8 @@ The keys in effect, and every command by category                               
 │ ctrl+]                        open the most recent artifact in the browser                       │
 │ ctrl+x tab                    move to the mods and the notice above the input                    │
 │ ctrl+x ctrl+a                 hide or show everything above the input                            │
+│ ctrl+s                        in a settings picker, keep the pick for this session only          │
 │ ctrl+x c                      show or hide context above the input                               │
 │ ctrl+x q                      show or hide plan usage above the input                            │
-│ ctrl+x b                      show or hide run limits above the input                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-↑↓  scroll · esc back                                                                  1-26 of 139 ↓
+↑↓  scroll · esc back                                                                  1-26 of 150 ↓

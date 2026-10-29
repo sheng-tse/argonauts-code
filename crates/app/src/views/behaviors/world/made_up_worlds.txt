@@ -1,0 +1,282 @@
+== R: 961 actions, ending 2026-09-30 19:05:31.538 +00:00:00
+mark atoll | edited a test file | 1
+mark atoll | read a config file | 1
+mark aurora | - | 64
+mark basin | returned its structured answer | 6
+mark basin | tried an edit that didn't apply | 3
+mark fault line | built the project | 1
+mark fault line | returned its structured answer | 2
+mark flood | built the project | 21
+mark hurricane 1 | tried an edit that didn't apply | 27
+mark hurricane 3 | returned its structured answer | 65
+mark iceberg | - | 2
+mark iceberg | - | 2
+mark iceberg | - | 2
+mark iceberg | - | 2
+mark lake | returned its structured answer | 27
+mark south ice | - | 8
+mark swamp | ran a shell command | 7
+mark thunderstorm | changed git state | 2
+mark thunderstorm | wrote a doc | 2
+mark tornado | returned its structured answer | 2
+mark tsunami | read a test file | 7
+mark tsunami | returned its structured answer | 8
+mark tsunami | tried an edit that didn't apply | 8
+mark volcano smoking | gave a structured answer that didn't fit | 21
+mark volcano smoking | ran the test suite, which failed | 27
+mark volcano smoking | tried an edit that didn't apply | 105
+mark wildfire burning | used an MCP tool | 5
+move returned its structured answer -> wrote a doc | 27
+move tried an edit that didn't apply -> built the project | 20
+move ran the test suite -> returned its structured answer | 19
+move returned its structured answer -> tried an edit that didn't apply | 18
+move ran the test suite, which failed -> tried an edit that didn't apply | 17
+move wrote a doc -> returned its structured answer | 15
+move built the project -> ran the test suite | 14
+move tried an edit that didn't apply -> returned its structured answer | 14
+move changed git state -> returned its structured answer | 13
+move edited a source file -> built the project | 11
+model claude-haiku-5-5 | anthropic | 636 actions, 199 in 7 days, 67 in 24 hours, 18 in the hour, 7 in 10 minutes | first 29 days back | 350 merged | 3 CLI failures, 1 on one day
+model gpt-6-luna | openai | 64 actions, 18 in 7 days, 5 in 24 hours, 1 in the hour, 0 in 10 minutes | first 28 days back | 25 merged | 0 CLI failures, 0 on one day
+model claude-opus-5-5 | anthropic | 53 actions, 19 in 7 days, 5 in 24 hours, 3 in the hour, 0 in 10 minutes | first 29 days back | 24 merged | 0 CLI failures, 0 on one day
+model ollama/qwen3-coder:30b | alibaba | 45 actions, 12 in 7 days, 5 in 24 hours, 1 in the hour, 0 in 10 minutes | first 29 days back | 16 merged | 0 CLI failures, 0 on one day
+model gpt-6-codex | openai | 43 actions, 9 in 7 days, 2 in 24 hours, 1 in the hour, 1 in 10 minutes | first 28 days back | 27 merged | 0 CLI failures, 0 on one day
+model gpt-6-astra | openai | 36 actions, 15 in 7 days, 5 in 24 hours, 1 in the hour, 0 in 10 minutes | first 25 days back | 19 merged | 0 CLI failures, 0 on one day
+model gpt-6.1-sol | openai | 31 actions, 17 in 7 days, 6 in 24 hours, 3 in the hour, 0 in 10 minutes | first 28 days back | 17 merged | 0 CLI failures, 0 on one day
+model gemini-3.8-flash | google | 18 actions, 7 in 7 days, 2 in 24 hours, 0 in the hour, 0 in 10 minutes | first 21 days back | 3 merged | 0 CLI failures, 0 on one day
+model claude-sonnet-5-5 | anthropic | 11 actions, 4 in 7 days, 0 in 24 hours, 0 in the hour, 0 in 10 minutes | first 23 days back | 4 merged | 0 CLI failures, 0 on one day
+model moonshotai/kimi-k2.6 | moonshot | 10 actions, 5 in 7 days, 1 in 24 hours, 0 in the hour, 0 in 10 minutes | first 25 days back | 5 merged | 0 CLI failures, 0 on one day
+model zai/glm-5 | zhipu | 8 actions, 3 in 7 days, 1 in 24 hours, 1 in the hour, 0 in 10 minutes | first 14 days back | 2 merged | 0 CLI failures, 0 on one day
+model ollama/gemma3:12b | google | 6 actions, 0 in 7 days, 0 in 24 hours, 0 in the hour, 0 in 10 minutes | first 28 days back | 4 merged | 0 CLI failures, 0 on one day
+pair gpt-6-luna ~ zai/glm-5 | 6 runs | 1.82
+pair gpt-6-astra ~ gemini-3.8-flash | 7 runs | 1.59
+pair gpt-6-luna ~ gpt-6-astra | 18 runs | 1.53
+pair claude-opus-5-5 ~ zai/glm-5 | 5 runs | 1.52
+pair claude-opus-5-5 ~ ollama/qwen3-coder:30b | 20 runs | 1.47
+pair gpt-6-luna ~ gemini-3.8-flash | 8 runs | 1.42
+pair gpt-6-astra ~ gpt-6.1-sol | 11 runs | 1.36
+pair gpt-6-luna ~ gpt-6.1-sol | 14 runs | 1.35
+pair claude-opus-5-5 ~ gpt-6.1-sol | 14 runs | 1.35
+pair gpt-6.1-sol ~ gemini-3.8-flash | 5 runs | 1.29
+pair ollama/qwen3-coder:30b ~ gpt-6.1-sol | 12 runs | 1.28
+pair gpt-6-luna ~ claude-opus-5-5 | 19 runs | 1.26
+mixed run-065 | 21 actions | anthropic, openai, alibaba
+mixed run-064 | 8 actions | anthropic, openai, zhipu
+mixed run-067 | 7 actions | openai, anthropic
+mixed conversation-062 | 9 actions | anthropic, openai
+mixed conversation-063 | 8 actions | openai, anthropic, moonshot
+mixed conversation-066 | 22 actions | alibaba, anthropic, openai
+month 2026-08 | 934
+month 2026-07 | 724
+month 2026-06 | 601
+month 2026-05 | 962
+month 2026-04 | 959
+== S: 990 actions, ending 2026-09-30 23:09:19.541 +00:00:00
+mark aurora | - | 223
+mark basin | edited a source file | 6
+mark basin | edited a test file | 3
+mark basin | ran the test suite | 5
+mark earthquake | asked another agent to review or judge | 2
+mark fault line | edited a test file | 1
+mark fault line | edited a test file: added tests | 2
+mark fault line | ran a shell command | 1
+mark fault line | ran the test suite, which failed | 1
+mark fault line | read a test file | 1
+mark fault line | returned its structured answer | 2
+mark flood | edited a test file: added tests | 16
+mark flood | read a source file | 14
+mark flood | read a test file | 10
+mark flood | updated its to-do list | 7
+mark hurricane 1 | ran the test suite | 36
+mark hurricane 1 | ran the test suite, which failed | 38
+mark lake | asked another agent to review or judge | 15
+mark lake | ran a shell command | 10
+mark lake | returned its structured answer | 16
+mark swamp | built the project | 16
+mark thunderstorm | asked another agent to review or judge | 2
+mark tornado | edited a source file | 2
+mark tornado | ran the test suite | 5
+mark tornado | ran the test suite, which failed | 2
+mark tsunami | ran the test suite | 7
+mark tsunami | ran the test suite, which failed | 7
+mark volcano smoking | built the project | 15
+mark volcano smoking | ran a shell command | 12
+mark volcano smoking | ran the test suite, which failed | 95
+mark volcano smoking | tried an edit that didn't apply | 55
+move ran the test suite -> ran the test suite, which failed | 39
+move edited a test file -> ran the test suite | 27
+move edited a source file -> built the project | 25
+move ran the test suite -> returned its structured answer | 24
+move ran the test suite -> checked git status or diff | 21
+move edited a source file -> ran the test suite | 20
+move ran the test suite, which failed -> edited a source file | 20
+move checked git status or diff -> returned its structured answer | 18
+move edited a source file -> ran a linter or formatter | 15
+move built the project -> edited a source file | 14
+model claude-opus-5-5 | anthropic | 405 actions, 198 in 7 days, 46 in 24 hours, 13 in the hour, 7 in 10 minutes | first 29 days back | 278 merged | 3 CLI failures, 1 on one day
+model gpt-6.1-sol | openai | 310 actions, 136 in 7 days, 27 in 24 hours, 5 in the hour, 4 in 10 minutes | first 29 days back | 196 merged | 5 CLI failures, 1 on one day
+model gpt-6-codex | openai | 130 actions, 68 in 7 days, 9 in 24 hours, 2 in the hour, 2 in 10 minutes | first 29 days back | 88 merged | 0 CLI failures, 0 on one day
+model ollama/qwen3-coder:30b | alibaba | 125 actions, 64 in 7 days, 14 in 24 hours, 6 in the hour, 3 in 10 minutes | first 29 days back | 74 merged | 2 CLI failures, 1 on one day
+model claude-haiku-5-5 | anthropic | 20 actions, 9 in 7 days, 3 in 24 hours, 0 in the hour, 0 in 10 minutes | first 29 days back | 14 merged | 0 CLI failures, 0 on one day
+mixed run-075 | 20 actions | alibaba, openai, anthropic
+mixed run-077 | 11 actions | anthropic, openai, alibaba
+mixed run-074 | 15 actions | anthropic, openai, alibaba
+mixed run-076 | 16 actions | anthropic, alibaba, openai
+mixed run-071 | 23 actions | openai, anthropic
+mixed run-072 | 8 actions | anthropic, alibaba, openai
+month 2026-08 | 941
+month 2026-07 | 960
+month 2026-06 | 782
+month 2026-05 | 1037
+== T: 775 actions, ending 2026-09-30 19:30:00.0 +00:00:00
+mark atoll | built the project | 1
+mark atoll | edited a source file | 1
+mark atoll | ran the test suite | 1
+mark atoll | ran the test suite, which failed | 1
+mark basin | read a doc | 4
+mark basin | read a source file | 4
+mark basin | searched code by pattern | 4
+mark burn scar | fetched from the web | 39
+mark burn scar | listed files | 12
+mark burn scar | printed files | 21
+mark burn scar | read Argonauts' own run records | 8
+mark burn scar | read a doc | 26
+mark burn scar | searched the web | 23
+mark burn scar | wrote a doc | 15
+mark clouds | - | 90
+mark fault line | asked another agent to review or judge | 1
+mark fault line | edited a doc | 1
+mark fault line | returned its structured answer | 1
+mark fault line | searched code by pattern | 1
+mark fault line | searched the web | 1
+mark hurricane 2 | searched code by pattern | 43
+mark hurricane 2 | searched the web | 42
+mark ice cap | - | 9
+mark iceberg | - | 2
+mark iceberg | - | 3
+mark lake | asked another agent to review or judge | 9
+mark lake | returned its structured answer | 20
+mark south ice | - | 7
+mark swamp | fetched from the web | 31
+mark thunderstorm | returned its structured answer | 2
+mark tornado | searched code by pattern | 1
+mark tsunami | searched the web | 6
+move searched the web -> fetched from the web | 43
+move fetched from the web -> searched the web | 38
+move read a source file -> searched code by pattern | 37
+move searched code by pattern -> read a source file | 36
+move wrote a doc -> edited a doc | 27
+move read a source file -> read a doc | 26
+move edited a doc -> wrote a doc | 24
+move searched code by pattern -> printed files | 21
+move printed files -> read a source file | 18
+move printed files -> read a doc | 17
+model gemini-3.8-flash | google | 320 actions, 0 in 7 days, 0 in 24 hours, 0 in the hour, 0 in 10 minutes | first 29 days back | 159 merged | 3 CLI failures, 2 on one day
+model claude-sonnet-5-5 | anthropic | 180 actions, 0 in 7 days, 0 in 24 hours, 0 in the hour, 0 in 10 minutes | first 29 days back | 79 merged | 1 CLI failures, 1 on one day
+model moonshotai/kimi-k2.6 | moonshot | 150 actions, 0 in 7 days, 0 in 24 hours, 0 in the hour, 0 in 10 minutes | first 29 days back | 85 merged | 0 CLI failures, 0 on one day
+model zai/glm-5 | zhipu | 90 actions, 0 in 7 days, 0 in 24 hours, 0 in the hour, 0 in 10 minutes | first 29 days back | 38 merged | 0 CLI failures, 0 on one day
+model claude-haiku-5-5 | anthropic | 35 actions, 0 in 7 days, 0 in 24 hours, 0 in the hour, 0 in 10 minutes | first 29 days back | 15 merged | 1 CLI failures, 1 on one day
+month 2026-08 | 763
+month 2026-07 | 60
+month 2026-06 | 67
+month 2026-05 | 71
+month 2026-04 | 69
+month 2026-03 | 79
+month 2026-02 | 51
+month 2026-01 | 55
+month 2025-12 | 59
+month 2025-11 | 67
+month 2025-10 | 69
+month 2025-09 | 50
+== U: 911 actions, ending 2026-09-30 16:03:31.465 +00:00:00
+mark atoll | changed git state | 1
+mark atoll | edited a test file | 1
+mark atoll | read a config file | 1
+mark aurora | - | 34
+mark basin | built the project | 3
+mark basin | returned its structured answer | 7
+mark basin | tried an edit that didn't apply | 3
+mark basin | wrote a doc | 4
+mark earthquake | tried an edit that didn't apply | 1
+mark fault line | asked another agent to review or judge | 1
+mark fault line | checked git status or diff and read git history | 1
+mark fault line | checked the run's status | 1
+mark fault line | returned its structured answer | 2
+mark flood | built the project | 16
+mark flood | read Argonauts' own run records | 6
+mark hurricane 1 | tried an edit that didn't apply | 25
+mark hurricane 3 | returned its structured answer | 67
+mark iceberg | - | 2
+mark iceberg | - | 2
+mark iceberg | - | 2
+mark iceberg | - | 2
+mark lake | returned its structured answer | 29
+mark lake | tried an edit that didn't apply | 10
+mark lake | wrote a doc | 7
+mark south ice | - | 8
+mark swamp | searched code by pattern | 6
+mark thunderstorm | returned its structured answer | 7
+mark thunderstorm | wrote a doc | 2
+mark tornado | returned its structured answer | 3
+mark tornado | tried an edit that didn't apply | 1
+mark tornado | wrote a doc | 1
+mark tsunami | read a test file | 6
+mark tsunami | returned its structured answer | 9
+mark tsunami | tried an edit that didn't apply | 7
+mark volcano smoking | gave a structured answer that didn't fit | 21
+mark volcano smoking | ran the test suite, which failed | 27
+mark volcano smoking | tried an edit that didn't apply | 105
+mark wildfire burning | printed files | 7
+move returned its structured answer -> wrote a doc | 24
+move returned its structured answer -> tried an edit that didn't apply | 23
+move tried an edit that didn't apply -> built the project | 20
+move ran the test suite -> returned its structured answer | 18
+move edited a source file -> built the project | 16
+move ran the test suite, which failed -> tried an edit that didn't apply | 16
+move wrote a doc -> tried an edit that didn't apply | 16
+move checked git status or diff and changed git state -> returned its structured answer | 14
+move read Argonauts' own run records -> returned its structured answer | 13
+move tried an edit that didn't apply -> returned its structured answer | 13
+model claude-haiku-5-5 | anthropic | 607 actions, 182 in 7 days, 59 in 24 hours, 2 in the hour, 2 in 10 minutes | first 29 days back | 272 merged | 4 CLI failures, 1 on one day
+model gpt-6-luna | openai | 63 actions, 18 in 7 days, 4 in 24 hours, 4 in the hour, 4 in 10 minutes | first 29 days back | 30 merged | 1 CLI failures, 1 on one day
+model claude-opus-5-5 | anthropic | 47 actions, 13 in 7 days, 4 in 24 hours, 1 in the hour, 1 in 10 minutes | first 29 days back | 25 merged | 1 CLI failures, 1 on one day
+model ollama/qwen3-coder:30b | alibaba | 43 actions, 14 in 7 days, 5 in 24 hours, 0 in the hour, 0 in 10 minutes | first 29 days back | 23 merged | 0 CLI failures, 0 on one day
+model gpt-6-codex | openai | 39 actions, 11 in 7 days, 5 in 24 hours, 0 in the hour, 0 in 10 minutes | first 29 days back | 15 merged | 0 CLI failures, 0 on one day
+model gpt-6-astra | openai | 35 actions, 8 in 7 days, 2 in 24 hours, 0 in the hour, 0 in 10 minutes | first 29 days back | 17 merged | 0 CLI failures, 0 on one day
+model gpt-6.1-sol | openai | 28 actions, 8 in 7 days, 4 in 24 hours, 0 in the hour, 0 in 10 minutes | first 25 days back | 16 merged | 0 CLI failures, 0 on one day
+model gemini-3.8-flash | google | 18 actions, 7 in 7 days, 2 in 24 hours, 0 in the hour, 0 in 10 minutes | first 29 days back | 7 merged | 0 CLI failures, 0 on one day
+model moonshotai/kimi-k2.6 | moonshot | 10 actions, 6 in 7 days, 4 in 24 hours, 2 in the hour, 1 in 10 minutes | first 16 days back | 5 merged | 0 CLI failures, 0 on one day
+model claude-sonnet-5-5 | anthropic | 8 actions, 5 in 7 days, 1 in 24 hours, 1 in the hour, 1 in 10 minutes | first 24 days back | 5 merged | 0 CLI failures, 0 on one day
+model zai/glm-5 | zhipu | 8 actions, 4 in 7 days, 2 in 24 hours, 1 in the hour, 1 in 10 minutes | first 17 days back | 4 merged | 0 CLI failures, 0 on one day
+model ollama/gemma3:12b | google | 5 actions, 4 in 7 days, 0 in 24 hours, 0 in the hour, 0 in 10 minutes | first 21 days back | 2 merged | 0 CLI failures, 0 on one day
+pair gemini-3.8-flash ~ zai/glm-5 | 5 runs | 2.92
+pair gpt-6-luna ~ moonshotai/kimi-k2.6 | 7 runs | 2.27
+pair gpt-6-luna ~ claude-sonnet-5-5 | 5 runs | 1.85
+pair ollama/qwen3-coder:30b ~ gpt-6.1-sol | 15 runs | 1.64
+pair ollama/qwen3-coder:30b ~ moonshotai/kimi-k2.6 | 6 runs | 1.64
+pair gpt-6.1-sol ~ gemini-3.8-flash | 7 runs | 1.63
+pair gpt-6-luna ~ zai/glm-5 | 5 runs | 1.62
+pair gpt-6-astra ~ zai/glm-5 | 5 runs | 1.62
+pair ollama/qwen3-coder:30b ~ gemini-3.8-flash | 11 runs | 1.60
+pair claude-opus-5-5 ~ zai/glm-5 | 6 runs | 1.59
+pair gpt-6-astra ~ gpt-6.1-sol | 12 runs | 1.56
+pair gpt-6-luna ~ ollama/qwen3-coder:30b | 19 runs | 1.54
+pair gpt-6-codex ~ gpt-6.1-sol | 10 runs | 1.46
+pair gpt-6-luna ~ gpt-6.1-sol | 11 runs | 1.43
+pair gpt-6-astra ~ gemini-3.8-flash | 8 runs | 1.38
+pair ollama/qwen3-coder:30b ~ zai/glm-5 | 5 runs | 1.37
+pair gpt-6-luna ~ gpt-6-codex | 12 runs | 1.30
+pair ollama/qwen3-coder:30b ~ gpt-6-astra | 16 runs | 1.30
+pair claude-opus-5-5 ~ ollama/qwen3-coder:30b | 19 runs | 1.26
+pair gpt-6-luna ~ claude-opus-5-5 | 16 runs | 1.26
+mixed run-065 | 11 actions | moonshot, anthropic, zhipu, openai
+mixed run-068 | 13 actions | alibaba, anthropic, openai
+mixed conversation-067 | 16 actions | anthropic, google, openai, alibaba
+mixed run-069 | 10 actions | anthropic, openai
+mixed conversation-066 | 24 actions | openai, anthropic, alibaba, google, moonshot, zhipu
+mixed run-063 | 18 actions | openai, anthropic
+month 2026-08 | 1017
+month 2026-07 | 705
+month 2026-06 | 586
+month 2026-05 | 937
+month 2026-04 | 935

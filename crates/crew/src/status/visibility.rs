@@ -197,6 +197,7 @@ mod tests {
             limit: Default::default(),
             predictions: None,
             item: None,
+            way: None,
         }
     }
 
@@ -214,6 +215,7 @@ mod tests {
                     comments: Vec::new(),
                     tamper_suspected: false,
                 },
+                picked_by: None,
             }),
         )
     }
@@ -320,6 +322,7 @@ mod tests {
                     reasons: vec!["both fine".to_owned()],
                     required_changes: Vec::new(),
                 },
+                picked_by: None,
             }),
         ));
         assert!(mentions(&folder.summary(&reviewer("task-002")), "reviewed"));

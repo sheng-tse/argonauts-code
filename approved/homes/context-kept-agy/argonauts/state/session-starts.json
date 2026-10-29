@@ -1,0 +1,66 @@
+{
+  "antigravity-cli": {
+    "agent": "antigravity-cli",
+    "model": "gemini-3.8-flash-low",
+    "window": 1000000,
+    "buffer": 0,
+    "parts": [
+      {
+        "holds": "own_prompt_and_tools",
+        "tokens": 4226,
+        "color": "promptBorder"
+      },
+      {
+        "holds": "instruction_files",
+        "tokens": 1200,
+        "color": "claude"
+      }
+    ],
+    "files": [
+      {
+        "name": "AGENTS.md",
+        "tokens": 1200
+      }
+    ],
+    "tools": {
+      "named": 60,
+      "read_only": 5
+    },
+    "from": {
+      "from": "last_session"
+    },
+    "first_count": "step"
+  },
+  "antigravity-cli gemini-3.8-flash-low": {
+    "agent": "antigravity-cli",
+    "model": "gemini-3.8-flash-low",
+    "window": 1000000,
+    "buffer": 0,
+    "parts": [
+      {
+        "holds": "own_prompt_and_tools",
+        "tokens": 4226,
+        "color": "promptBorder"
+      },
+      {
+        "holds": "instruction_files",
+        "tokens": 1200,
+        "color": "claude"
+      }
+    ],
+    "files": [
+      {
+        "name": "AGENTS.md",
+        "tokens": 1200
+      }
+    ],
+    "tools": {
+      "named": 60,
+      "read_only": 5
+    },
+    "from": {
+      "from": "last_session"
+    },
+    "first_count": "step"
+  }
+}

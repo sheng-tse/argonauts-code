@@ -1,10 +1,12 @@
 //! The line under the input, drawn as a mod.
 //!
-//! Each CLI in the crew gets a chip in its own color: a small bar per plan window, the CLI
-//! the main session is on with a filled dot, bold and both windows, the others with a hollow
-//! dot and their fuller window. A window turns amber from 90% with its reset time, and a CLI
-//! that is out is red. The line reads the terminal's width and lays itself out again on every
-//! draw, giving things up in the fixed order of [`fit`], so no CLI ever leaves it.
+//! Each CLI on the line gets a chip in its own color: its logo, or a dot and its name where
+//! the terminal draws no logos, then each window's label, a six-cell bar and the percentage
+//! right-aligned in four cells. The CLI the main session is on shows both windows, with a
+//! filled dot and bold numbers, the others their fuller window. A window turns amber from 90%
+//! with its reset time, and a CLI that is out says in red when it's back. The line reads the
+//! terminal's width and lays itself out again on every draw, giving things up in the fixed
+//! order of [`fit`], so no CLI ever leaves it.
 
 mod chip;
 mod fit;
@@ -18,6 +20,7 @@ use crate::kit::{Kit, Level};
 use crate::render::RenderCtx;
 use crate::text::{sanitize_line, spans_width, truncate_line, truncate_spans};
 use crate::theme::Role;
+use argonauts_core::logos::Logo;
 
 pub(super) use fit::Give;
 use fit::Shape;
@@ -131,7 +134,7 @@ impl AddedPart {
 pub enum PartBody {
     /// `main`, or `$0.21/$5.00`.
     Words { text: String, tone: Tone },
-    /// `context ▄▖     21%`, or a running workflow's `add-due-dates ▄▄▄▖   3/5`: a name in
+    /// `context ▄▁▁▁▁▁ 21%`, or a running workflow's `add-due-dates ▄▄▄▄▁▁ 3/5`: a name in
     /// `label_role`, a small bar and its number.
     Meter {
         label: String,
@@ -170,13 +173,27 @@ pub enum PartBody {
 /// The longest a name shows on the line, where Claude Code cuts an artifact's.
 const NAME_CELLS: usize = 24;
 
+/// What a chip shows after its logo or name, with all the room it wants, as a list of CLIs
+/// beside their names draws it: `5h ▄▄▄▄▁▁  71%  7d ▄▄▄▄▁▁  59%`, or `out until Tue 3:45pm`.
+pub fn chip_meters(cli: &CliUse, theme: &crate::theme::Theme) -> Vec<Span<'static>> {
+    let kit = Kit::new(theme);
+    let look = chip::Look {
+        kit: &kit,
+        form: LineForm::Fit,
+        as_left: false,
+    };
+    chip::meters(cli, &look)
+}
+
 /// One CLI's plan usage.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CliUse {
-    /// The short name its chip shows, such as `Claude`.
+    /// The name its chip shows, such as `Claude Code`.
     pub name: String,
     /// Its own color, the same in every mod.
     pub color: Role,
+    /// Its logo, which stands for its dot and name where the terminal draws logos.
+    pub logo: Option<Logo>,
     /// The main session runs on it.
     pub main: bool,
     pub state: CliState,
@@ -191,6 +208,7 @@ impl CliUse {
         Self {
             name: name.into(),
             color,
+            logo: None,
             main: false,
             state: CliState::Fine,
             windows: Vec::new(),
@@ -274,12 +292,13 @@ pub(super) enum ModePiece {
         style: Style,
     },
     /// A hint or a label beside it. `gives` says when a narrow terminal drops it; without
-    /// one it stays, in its `short` form once the line runs out of room.
+    /// one it stays, in its `short` form once the line has given up `short_when`.
     Words {
         joiner: Joiner,
         span: Span<'static>,
         gives: Option<Give>,
         short: Option<Span<'static>>,
+        short_when: Give,
     },
 }
 
@@ -395,7 +414,7 @@ impl Drawer<'_> {
                 continue;
             }
             if !right.is_empty() {
-                right.push(Span::raw(chip_gap(shape)));
+                right.push(Span::raw(part_gap(shape)));
             }
             right.extend(spans);
         }
@@ -437,6 +456,7 @@ impl Drawer<'_> {
                     joiner,
                     span,
                     short,
+                    short_when,
                     ..
                 } => {
                     if !spans.is_empty() {
@@ -446,7 +466,7 @@ impl Drawer<'_> {
                         });
                     }
                     let shown = match short {
-                        Some(short) if shape.gave(Give::ShortPieces) => short,
+                        Some(short) if shape.gave(*short_when) => short,
                         _ => span,
                     };
                     spans.push(shown.clone());
@@ -547,11 +567,19 @@ impl Drawer<'_> {
     }
 }
 
-/// Chips sit two columns apart, as the parts on the right do, and one on a terminal too narrow
-/// for anything else to give.
-fn chip_gap(shape: &Shape) -> &'static str {
+/// Parts on the right sit two columns apart, and one on a terminal too narrow for anything
+/// else to give.
+fn part_gap(shape: &Shape) -> &'static str {
     if shape.tight { " " } else { "  " }
 }
 
+/// Chips sit three columns apart, one more than a chip's own windows, so each CLI's numbers
+/// read as its own.
+fn chip_gap(shape: &Shape) -> &'static str {
+    if shape.tight { " " } else { "   " }
+}
+
+#[cfg(test)]
+mod golden_tests;
 #[cfg(test)]
 mod tests;

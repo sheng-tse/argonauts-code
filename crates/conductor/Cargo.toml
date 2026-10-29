@@ -24,7 +24,7 @@ argonauts-core.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 globset.workspace = true
-nix = { workspace = true, features = ["event", "fs", "mount", "process", "sched", "signal", "socket", "uio", "user"] }
+nix.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

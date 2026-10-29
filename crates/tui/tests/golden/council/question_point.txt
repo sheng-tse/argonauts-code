@@ -1,0 +1,14 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Calls with no key: which way?
+
+  The seats agree on everything else. Pick a side, let them talk on, or write your own.
+  ❯ 1. One shared bucket, 10 a second   ▐▌ Opus 5.5  ▐▌ 3.8 Flash
+       The balancer's probe can't send a key, and a 401 breaks the curl examples in our docs
+    2. 401                              ▐▌ 5.6 Luna  ▐▌ Qwen3 Coder 30B
+       One shared bucket is still a bucket that one script can use up
+    3. Talk on, up to 100k more tokens
+    4. Type my own answer
+    5. Carry on without me
+       The point goes the side most of the seats back
+
+  Enter to choose · Tab to add a note · Esc back to the list · shift+tab to cycle modes

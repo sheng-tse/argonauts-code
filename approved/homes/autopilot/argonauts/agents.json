@@ -1,0 +1,43 @@
+{
+  "agent_ids": {
+    "antigravity-cli": {
+      "live": [
+        {
+          "agent_id": "antigravity-cli",
+          "windows": [
+            { "key": "five_hour", "label": "Gemini 5h", "title": "Gemini · 5-hour limit", "used": 0.0, "resets_at": "2100-01-01T05:00:00Z" },
+            { "key": "weekly", "label": "Gemini week", "title": "Gemini · weekly limit", "used": 0.0, "resets_at": "2100-01-08T00:00:00Z" }
+          ],
+          "source": "usage_probe",
+          "read_at": "2100-01-01T00:00:00Z"
+        }
+      ]
+    },
+    "claude-code": {
+      "live": [
+        {
+          "agent_id": "claude-code",
+          "windows": [
+            { "key": "five_hour", "label": "session", "title": "Current session", "used": 0.15, "resets_at": "2100-01-01T05:00:00Z" },
+            { "key": "seven_day", "label": "week", "title": "Current week (all models)", "used": 0.44, "resets_at": "2100-01-08T00:00:00Z" }
+          ],
+          "source": "get_usage",
+          "read_at": "2100-01-01T00:00:00Z"
+        }
+      ]
+    },
+    "codex": {
+      "live": [
+        {
+          "agent_id": "codex",
+          "windows": [
+            { "key": "five_hour", "label": "5-hour", "title": "5h limit", "used": 0.0, "resets_at": "2100-01-01T05:00:00Z" },
+            { "key": "weekly", "label": "weekly", "title": "Weekly limit", "used": 0.0, "resets_at": "2100-01-08T00:00:00Z" }
+          ],
+          "source": "app_server",
+          "read_at": "2100-01-01T00:00:00Z"
+        }
+      ]
+    }
+  }
+}

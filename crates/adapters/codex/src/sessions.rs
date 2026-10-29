@@ -223,7 +223,8 @@ impl Rollout {
             let Ok(head) = serde_json::from_str::<Head>(&line) else {
                 continue;
             };
-            if let Some(at) = head.timestamp.as_deref().and_then(parse_time) {
+            let at = head.timestamp.as_deref().and_then(parse_time);
+            if let Some(at) = at {
                 rollout.updated = Some(rollout.updated.map_or(at, |seen| seen.max(at)));
             }
             match head.kind.as_str() {
@@ -234,7 +235,7 @@ impl Rollout {
                 }
                 "response_item" => {
                     if let Some(item) = payload::<Item>(&line) {
-                        rollout.item(item);
+                        rollout.item(item, at);
                     }
                 }
                 _ => {}
@@ -243,9 +244,10 @@ impl Rollout {
         Ok(rollout)
     }
 
-    fn item(&mut self, item: Item) {
+    /// One record, written at `at`.
+    fn item(&mut self, item: Item, at: Option<OffsetDateTime>) {
         match item.kind.as_str() {
-            "message" => self.message(&item),
+            "message" => self.message(&item, at),
             "reasoning" => {
                 let text = calls::summary_text(&item.summary);
                 let steps = &mut self.agent_turn().steps;
@@ -283,7 +285,7 @@ impl Rollout {
         }
     }
 
-    fn message(&mut self, item: &Item) {
+    fn message(&mut self, item: &Item, at: Option<OffsetDateTime>) {
         let (from, text_kind) = match item.role.as_deref() {
             Some("user") => (Speaker::User, "input_text"),
             Some("assistant") => (Speaker::Agent, "output_text"),
@@ -304,7 +306,7 @@ impl Rollout {
             return;
         }
         match from {
-            Speaker::User => self.turns.push(CliTurn::prompt(text)),
+            Speaker::User => self.turns.push(CliTurn::prompt(text).sent_at(at)),
             Speaker::Agent => self.agent_turn().wrote(text),
         }
     }

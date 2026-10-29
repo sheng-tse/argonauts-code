@@ -1,0 +1,9 @@
+# Set up with Council, and Codex on gpt-6-luna to talk to, on a very first run: the
+# project holds an AGENTS.md of 4,800 characters.
+workflow = "council"
+
+[crew]
+main = "codex/gpt-6-luna"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]

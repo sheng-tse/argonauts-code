@@ -78,6 +78,8 @@ fn started(worker: &str, role: RoleName, step: StepName, access: Access) -> RunE
         asked_by: None,
         asked_why: None,
         forked: false,
+        seat: None,
+        billing: None,
     })))
 }
 
@@ -785,7 +787,7 @@ async fn cli_commands_and_a_new_main_agent_keep_the_carried_on_session() {
         .send(UiCommand::SetSetting {
             key: "crew.main".to_owned(),
             value: "\"codex\"".to_owned(),
-            scope: SettingScope::Session,
+            scope: Some(SettingScope::Session),
         })
         .await;
     let said = notice(&mut driver, "stays with that agent").await;

@@ -198,6 +198,9 @@ pub enum StepKind {
     /// The workflow in use, run by its own steps: a file of `[[step]]` entries or a script, in
     /// the sandboxed runner.
     Script,
+    /// A council's talk: each seat answers alone, then they talk until every seat agrees on
+    /// every point.
+    Talk,
 }
 
 /// A number, or a `{{name}}` placeholder.

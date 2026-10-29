@@ -405,6 +405,7 @@ fn your_checkout() -> TaskSpec {
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 
@@ -763,7 +764,13 @@ fn start(
     });
     let root = conversation.folder(ctx).to_path_buf();
     let watched = conversation.direct.watched.clone();
-    // A folder with no git keeps nothing to go back to until `/git` turns its history on.
+    // A folder with no git turns its hidden history on as Captain may first write there.
+    if rewind.is_some()
+        && let Some(said) = crate::controller::folder_git::keep_history_for_captain(ctx, &root)
+    {
+        ctx.notice(NoteLevel::Info, said);
+    }
+    // Without it, nothing is kept to go back to.
     let rewind = rewind.filter(|_| ctx.env.git().has_history() || root != ctx.env.repo_root);
     let before = rewind.and_then(|max| match rewind::take(&root, max, &watched) {
         Ok(snapshot) => Some(snapshot),
@@ -1275,7 +1282,7 @@ fn keep_setup_files(
                 NoteLevel::Warn,
                 format!(
                     "This turn edited {}, which only a setup changes, so it's put back. Ask for \
-                     the change in words and a question asks where to keep it.",
+                     the change in words, and it saves where your changes go.",
                     restored.put_back.join(", ")
                 ),
             ),

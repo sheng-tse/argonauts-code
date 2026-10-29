@@ -379,7 +379,7 @@ fn open_conversation_workflow(workflow: WorkflowId, cx: &mut Cx<'_>) {
 
 /// Enter on a panel row: a run's workflow, or a workflow an agent's own CLI runs, whose key
 /// names its run and its id after a `#`.
-fn open_row(key: &str, cx: &mut Cx<'_>) {
+pub(crate) fn open_row(key: &str, cx: &mut Cx<'_>) {
     let (run, agent_id) = match key.split_once('#') {
         Some((run, workflow)) => (run, WorkflowId::parse(workflow)),
         None => (key, None),
@@ -388,14 +388,15 @@ fn open_row(key: &str, cx: &mut Cx<'_>) {
         notice(&format!("No run named {}.", sanitize_line(key)), cx);
         return;
     };
-    // A workflow inside a run opens in the run's view, open and with the cursor on it.
+    // A workflow inside a run opens in the run's view, open and with the cursor on it: one a
+    // row is, or one a task's row names as where its work runs.
     let inside = cx
         .model
         .bottom
         .workflows
         .rows
         .iter()
-        .any(|row| row.key == key && row.depth > 0);
+        .any(|row| (row.key == key || row.opens.as_deref() == Some(key)) && row.depth > 0);
     if inside {
         cx.model.bottom.workflows.opening = Some(key.to_owned());
         cx.out.send(UiCommand::Request {
@@ -528,6 +529,19 @@ fn is_live(session: &SessionState) -> bool {
     )
 }
 
+/// `/overview`: the usage panel on its Overview tab, which asks for its numbers as it opens, as
+/// moving to the tab does.
+pub(super) fn open_overview(cx: &mut Cx<'_>) {
+    let watch = cx.model.bottom.band.watch.clone();
+    cx.out.open(OverviewView::new(Tab::Overview, watch));
+    cx.out.send(UiCommand::Request {
+        view: ViewRequest::Overview {
+            period: argonauts_core::overview::OverviewPeriod::default(),
+            import: None,
+        },
+    });
+}
+
 /// The one line a fullscreen exit leaves on the main screen, and only while runs keep going:
 /// which, and how to watch them.
 pub fn watch_line(state: &AppState) -> Option<String> {
@@ -556,8 +570,24 @@ pub fn watch_line(state: &AppState) -> Option<String> {
     }
 }
 
-/// Dim lines left in scrollback on exit: what keeps going, and how to come back.
+/// Dim lines left in scrollback on exit: what keeps going, and how to come back, to the runs
+/// and to the conversation, here or in its CLI's own screen.
 pub fn exit_lines(state: &AppState) -> Vec<String> {
+    let mut lines = run_lines(state);
+    let line = state.status.as_ref().map(|status| &status.line);
+    if let Some(conversation) = line.and_then(|line| line.conversation.as_ref()) {
+        lines.push(format!(
+            "Resume this conversation with: argonauts resume {conversation}"
+        ));
+        if let Some(cli) = line.and_then(|line| line.in_cli.as_ref()) {
+            lines.push(format!("Or in {}: {}", cli.cli, cli.command));
+        }
+    }
+    lines
+}
+
+/// What keeps going after you quit, and how to reattach.
+fn run_lines(state: &AppState) -> Vec<String> {
     let going: Vec<&RunState> = state
         .runs
         .values()
@@ -1188,6 +1218,56 @@ mod tests {
                 "Reattach with: argonauts resume run-01"
             ]
         );
+    }
+
+    #[test]
+    fn quit_says_how_to_resume_the_conversation_here_or_in_its_cli() {
+        use argonauts_core::app::{HeaderAndBottomLine, LineFacts};
+        use argonauts_core::cli_sessions::{CliSessionRef, InItsCli};
+        use argonauts_core::names::{AgentId, ConversationId};
+
+        let id = "00000000-0000-4000-8000-000000000001";
+        let line = LineFacts {
+            conversation: Some(ConversationId::numbered(4)),
+            in_cli: Some(InItsCli {
+                session: CliSessionRef {
+                    agent_id: AgentId("claude-code".into()),
+                    id: id.into(),
+                },
+                conversation: Some(ConversationId::numbered(4)),
+                cli: "Claude Code".to_owned(),
+                command: format!("claude --resume {id}"),
+                local_model: false,
+                also: None,
+                made_there: 0,
+            }),
+            ..LineFacts::default()
+        };
+        let status: HeaderAndBottomLine = serde_json::from_value(serde_json::json!({
+            "title": "", "repo": "~/github/tasks-cli", "workflow": "captain",
+            "ultracode": false, "ultra": null, "run": null, "main_agent": "claude-code",
+            "plan_chips": [], "spent": null, "limit": null, "narrator": "off",
+            "approval_mode": "supervised",
+        }))
+        .unwrap();
+        let mut state = AppState::default();
+        state.status = Some(HeaderAndBottomLine {
+            line: Box::new(line),
+            ..status
+        });
+        assert_eq!(
+            exit_lines(&state),
+            [
+                "Resume this conversation with: argonauts resume conversation-004".to_owned(),
+                format!("Or in Claude Code: claude --resume {id}"),
+            ]
+        );
+        state.runs.insert(run_id(), RunState::new(run_id()));
+        assert_eq!(
+            exit_lines(&state)[1],
+            "Reattach with: argonauts resume run-01"
+        );
+        assert_eq!(exit_lines(&state).len(), 4);
     }
 
     #[test]

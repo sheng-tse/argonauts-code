@@ -1,0 +1,58 @@
+The conversation: your prompt, then an Orchestrator run whose two builders run on Codex's second and third models; every row ends inside 72 cells, the prompt's band runs on to the screen's edge
+screen 120x38
+at ?,0
+size 72x19
+terminal fg=#c8d3f5 bg=#222436
+text
+❯ Add --due to the todo CLI with an orchestrator, Codex reviewing.
+
+● Workflow(Add due dates · Orchestrator)
+  ⎿  Running in background · /workflows to monitor and save
+
+● plan:orchestrator(plan the work) · ￼￼ Opus 5.5 on Claude Code
+  ⎿  Done (2 tool uses · 54.6k tokens · 21s) · report ✓
+
+● build:due-tests(test --due) · ￼￼ 6.1 Sol on Codex
+  ⎿  Done (6 tool uses · 30.3k tokens · 1m 2s) · report ✓ · checks ✓
+
+● build:due-flag(add the --due flag) · ￼￼ 6 Astra on Codex
+  ⎿  Done (9 tool uses · 22.4k tokens · 2m 40s) · report ✓ · checks ✓
+
+● review:due-tests(review the tests) · ￼￼ 6 Luna on Codex
+  ⎿  Accepted · used the checks' result: 14 passed
+
+● review:due-flag(review the flag) · ￼￼ 6 Luna on Codex
+  ⎿  Accepted · used the checks' result: 14 passed
+paint
+abcccbcccccbccbcccbccccbcccbccccbccbcccccccccccccbcccccbccccccccccbbbbbb
+
+d.eeeeeeeeffff.fff.fffff.f.fffffffffffff
+..g..ggggggg.gg.gggggggggg.g.ffffffffff.gg.ggggggg.ggg.gggg
+
+d.eeeeeeeeeeeeeeeeefffff.fff.fffff.g.hh.iiii.iii.gg.gggggg.gggg
+..g..gggg.gg.gggg.gggg.g.ggggg.gggggg.g.gggg.g.gggggg.g
+
+d.eeeeeeeeeeeeeeefffff.ffffff.g.jj.kkk.kkk.gg.ggggg
+..g..gggg.gg.gggg.gggg.g.ggggg.gggggg.g.gg.ggg.g.gggggg.g.g.gggggg.g
+
+d.eeeeeeeeeeeeeeffff.fff.fffff.fffff.g.jj.k.kkkkk.gg.ggggg
+..g..gggg.gg.gggg.gggg.g.ggggg.gggggg.g.gg.gggg.g.gggggg.g.g.gggggg.g
+
+d.eeeeeeeeeeeeeeeefffffff.fff.ffffff.g.jj.k.kkkk.gg.ggggg
+..g..gggggggg.g.gggg.ggg.ggggggg.ggggggg.gg.gggggg
+
+d.eeeeeeeeeeeeeeefffffff.fff.fffff.g.jj.k.kkkk.gg.ggggg
+..g..gggggggg.g.gggg.ggg.ggggggg.ggggggg.gg.gggggg
+key
+. blank
+a fg=#505050 bg=#373737  ; Faint, on UserBand
+b bg=#373737  ; UserBand
+c fg=#ffffff bg=#373737  ; Bright, on UserBand
+d fg=#4eba65  ; Success, CatAgents
+e fg=#c8d3f5 bold  ; the terminal's own
+f fg=#c8d3f5  ; the terminal's own
+g fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+h logo=claudecode
+i fg=#f7a07f  ; CliClaude
+j logo=codex
+k fg=#6a9ee6  ; CliCodex

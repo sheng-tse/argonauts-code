@@ -179,6 +179,24 @@ pub fn numbers() -> OverviewData {
     data
 }
 
+/// The numbers picture's example where some of the period's tokens were free or paid: most on
+/// plans, some on a model on this computer and a sliver on a key, at list prices.
+pub fn numbers_who_paid() -> OverviewData {
+    let mut data = numbers();
+    let total = data.total.total();
+    let free = total * 7 / 100;
+    let paid = total * 2 / 100;
+    data.who_paid = Some(argonauts_core::meter::WhoPaid {
+        plan: total - free - paid,
+        free,
+        paid,
+        paid_usd: 41.20,
+        cost_partial: false,
+        cost_estimated: true,
+    });
+    data
+}
+
 /// The Models picture's numbers: the same, with the chart's 52 days up to the day before.
 pub fn models() -> OverviewData {
     let mut data = overview();

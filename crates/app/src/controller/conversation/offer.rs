@@ -133,7 +133,7 @@ fn start(
     let mut request = run_request(ctx, request, mode, offer.estimate, Some(offer.turn));
     if let Some(applied) = &applied {
         applied.apply_to(&mut request);
-        keep::offer(ctx, conversation, applied);
+        keep::offer(ctx, applied);
     }
     Ok(vec![handover::start(request)])
 }

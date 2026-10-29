@@ -8,7 +8,7 @@ use time::macros::datetime;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::card;
+use super::{GAP, card};
 use crate::format::WallClock;
 use crate::kit::{Drawn, Frame, Kit};
 use crate::overview::golden::{Picture, Region, differences, theme};
@@ -364,17 +364,15 @@ fn rows_with<'a>(drawn: &'a [String], word: &str) -> Vec<&'a str> {
     holding.map(String::as_str).collect()
 }
 
-/// A card a few cells narrower than its picture keeps every word: the state and the reason
-/// give up the blank cell each has to spare, so when a model is checked next still fits, and
-/// every row's columns still start under their headings.
+/// A card with room for every word cuts nothing. One a few cells narrower gives up the blank
+/// cells its names and states have to spare, then cuts the reasons only, so when a model is
+/// checked next still fits, and every row's columns still start under their headings.
 #[test]
-fn a_card_a_little_narrower_than_its_picture_cuts_nothing() {
-    for screen in [SCREEN - 1, SCREEN - 2, SCREEN - 3] {
+fn a_narrower_card_cuts_only_the_reasons() {
+    let whole = rows(&draw(&picture_rows(), SCREEN + 1));
+    assert!(!whole.iter().any(|row| row.contains('…')), "{whole:#?}");
+    for screen in [SCREEN, SCREEN - 1, SCREEN - 2, SCREEN - 3] {
         let drawn = rows(&draw(&picture_rows(), screen));
-        assert!(
-            !drawn.iter().any(|row| row.contains('…')),
-            "{screen}: {drawn:#?}"
-        );
         for said in [
             "2:03 PM, a test task",
             "2:01 PM, if quiet",
@@ -385,6 +383,13 @@ fn a_card_a_little_narrower_than_its_picture_cuts_nothing() {
         }
         let column = |row: &str, word: &str| row.find(word).map(|at| row[..at].chars().count());
         let heads = rows_with(&drawn, "next check")[0];
+        for row in rows_with(&drawn, "…") {
+            let cut = column(row, "…");
+            assert!(
+                cut > column(heads, "why") && cut < column(heads, "next check"),
+                "{screen}: {row}"
+            );
+        }
         for (head, word, held_by) in [
             ("state", "▪ overloaded", "Opus 5.5"),
             ("why", "2 overload errors", "Opus 5.5"),
@@ -399,27 +404,28 @@ fn a_card_a_little_narrower_than_its_picture_cuts_nothing() {
     }
 }
 
-/// The models' column gives up its spare cells too, once the others have none: with shorter
-/// names than the picture's, a card several cells narrower still keeps every word.
+/// The models' column gives up its spare cells too: with shorter names than the picture's, a
+/// narrower card still keeps every word.
 #[test]
 fn shorter_model_names_leave_a_narrower_card_whole() {
     let mut health = picture_rows();
     health.clis.truncate(2);
-    let drawn = rows(&draw(&health, SCREEN - 7));
+    let drawn = rows(&draw(&health, SCREEN - 3));
     assert!(!drawn.iter().any(|row| row.contains('…')), "{drawn:#?}");
     assert_eq!(rows_with(&drawn, "out if silent an hour").len(), 1);
-    // "GPT 5.6 Luna" and the two blank cells after it are the column now.
+    // "GPT 5.6 Luna" and the blank cells after it are the column now.
     let heads = rows_with(&drawn, "next check")[0];
     let at = |word: &str| heads.find(word).unwrap();
     assert_eq!(
         at("state") - at("model"),
-        "GPT 5.6 Luna".len() + 2,
+        "GPT 5.6 Luna".len() + GAP,
         "{heads}"
     );
-    // The sentence under the legend is a cell longer than the card, so it ends on a row of
-    // its own.
-    assert_eq!(rows_with(&drawn, "take the CLI").len(), 1, "{drawn:#?}");
-    assert_eq!(rows_with(&drawn, " │ down.  ").len(), 1, "{drawn:#?}");
+    assert_eq!(
+        rows_with(&drawn, "take the CLI down.").len(),
+        1,
+        "{drawn:#?}"
+    );
 }
 
 #[test]

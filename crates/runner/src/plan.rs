@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn a_council_counts_every_worker() {
-        let file = WorkflowFile::parse(crate::built_in("council").expect("built in"))
+        let file = WorkflowFile::parse(crate::COUNCIL_STEPS)
             .expect("reads")
             .expect("has steps");
         let dry = dry_run(&file, &models);

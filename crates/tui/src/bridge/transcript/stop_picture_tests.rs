@@ -116,6 +116,8 @@ fn paused_session(n: u32, label: &str) -> [AppEvent; 2] {
         asked_by: None,
         asked_why: None,
         forked: false,
+        seat: None,
+        billing: None,
     };
     let end = SessionEnd {
         cli_session: None,

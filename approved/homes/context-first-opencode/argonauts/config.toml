@@ -1,0 +1,9 @@
+# Set up with Council, and OpenCode on ollama/qwen3-coder:30b-64k to talk to, on a very first run: the
+# project holds an AGENTS.md of 4,800 characters.
+workflow = "council"
+
+[crew]
+main = "opencode/ollama/qwen3-coder:30b-64k"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]

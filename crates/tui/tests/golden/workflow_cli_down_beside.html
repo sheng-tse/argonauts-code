@@ -1,0 +1,25 @@
+<div class="scroll"><pre class="term grid"><span style="color:var(--term-faint)">──────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+ <span style="font-weight:700">Cache exchange rates</span>
+<span style="color:var(--term-dim)"> orchestrator workflow · cache the rates for an hour, each part reviewed on another CLI        0/3 agents · 1m02s</span>
+ <span style="color:var(--term-amb)">◆</span> Claude Code is down · 2 tasks wait for it · tried again in 4m48s
+
+<span style="color:var(--term-faint)"> ╭ Phases ──────────┬ Build · 3 agents ──────────────────────────────────────────────────────────────────────────╮</span>
+ <span style="color:var(--term-faint)">│</span>   <span style="color:#b1b9f9">⣾</span> Build    0/3 <span style="color:var(--term-faint)">│</span> <span style="color:#b1b9f9">❯</span>‖ build:rate-cache          Opus 5.5                                    18.4k tok     41s <span style="color:var(--term-faint)">│</span>
+ <span style="color:var(--term-faint)">│</span>   2 Review       <span style="color:var(--term-faint)">│</span>  ‖ build:cache-expiry        Sonnet 5.5                                   7.0k tok     22s <span style="color:var(--term-faint)">│</span>
+ <span style="color:var(--term-faint)">│</span>   3 Merge        <span style="color:var(--term-faint)">│</span>  <span style="color:#b1b9f9">⣾</span> build:cache-tests         5.6 Luna                                     6.0k tok   1m02s <span style="color:var(--term-faint)">│</span>
+<span style="color:var(--term-faint)"> ╰──────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯</span>
+<span style="color:var(--term-faint)">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+<span style="color:var(--term-amb)">◆</span> Claude Code is down
+<span style="color:var(--term-dim)">  overload errors on 3 sessions in 2 min</span>
+  Two tasks wait for it, their work so far kept.
+
+  <span style="color:#b1b9f9">❯ 1. One agent for every paused task</span>
+    2. Choose per task
+<span style="color:var(--term-dim)">       an agent for each, from every installed CLI</span>
+    3. Wait for Claude Code
+<span style="color:var(--term-dim)">       tried again at 2:40 PM</span>
+    4. Carry on without me
+<span style="color:var(--term-dim)">       The main agent picks for each task and goes on; kept as an assumption to review</span>
+
+  <span style="color:#b1b9f9">⣾</span>  Add due dates           <span style="color:#b1b9f9">━━━━━━━━━━</span><span style="color:var(--term-faint)">──────────</span>   2/4    4m12s   128k
+  <span style="color:var(--term-amb)">◆</span>  Cache exchange rates    <span style="color:#b1b9f9"></span><span style="color:var(--term-faint)">────────────────────</span>   0/3    1m02s  31.4k</pre></div>

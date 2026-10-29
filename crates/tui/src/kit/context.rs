@@ -1,41 +1,116 @@
-//! The context mod: how full a session's context window is, by category, with the point
-//! where it compacts or rotates marked on the bar.
+//! The context mod: how full a session's context window is, by the CLI's categories in
+//! Claude Code's names and colours, with the point where it compacts or rotates marked on the
+//! bar. A blank row parts the bar from its legend, and the legend is a table: each name, three
+//! blanks or more, its amount, two blanks, its share, the entries six blanks apart, so the
+//! columns line up row to row.
 //!
 //! ```text
-//! ╭──────────────────────────────────────────────────────────────────╮ [-]
-//! │ ◆ context                  212k of 1M · compacts at 950k  [21%] │
-//! │ ███████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│░░░ │
-//! │ ▌ system prompt  3.4k 0.3%     ▌ tools           12k   1%     │
+//! ╭──────────────────────────────────────────────────────────────────────────────────╮
+//! │ ◆ context                                 32.3k of 1M · compacts at 967k    3%  │
+//! │ ██████▋                                                                  ▏█████ │
+//! │                                                                                 │
+//! │ ▌ System prompt             4.4k   0.4%      ▌ System tools   19.4k   1.9%      │
+//! │ ▌ Messages                    10  <0.1%      ▌ Free space      935k  93.5%      │
 //! ```
 
+use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 
 use super::bars::{self, Stack};
-use super::bodies;
-use super::legend::Entry;
+use super::legend::{self, Counted, Entry};
 use super::words::spoken;
 use super::{Badge, Drawn, Form, Frame, Header, Kit, Level, Levels, Toggle, spread};
-use crate::format::{self, UNKNOWN, percent, tokens, tokens_beside};
+use crate::format::{self, UNKNOWN, tokens, tokens_beside};
 use crate::text::{spans_width, truncate_spans};
-use crate::theme::Role;
+use crate::theme::{Brightness, Role, Theme, downgrade};
 
-/// Claude Code's /context categories, in its order. Anything it adds later goes to `other`.
-pub const CLAUDE_CODE_PARTS: [(&str, Role); 7] = [
-    ("system prompt", Role::CatSystem),
-    ("tools", Role::CatTools),
-    ("mcp tools", Role::CatMcp),
-    ("agents", Role::CatAgents),
-    ("memory files", Role::CatMemory),
-    ("skills", Role::CatSkills),
-    ("messages", Role::CatMessages),
+/// Claude Code's /context categories in its order, each with the colour name its reply gives
+/// it. A category it adds later keeps the name and colour its reply gives.
+pub const CLAUDE_CODE_PARTS: [(&str, &str); 7] = [
+    ("System prompt", "promptBorder"),
+    ("System tools", "inactive"),
+    ("MCP tools", "cyan_FOR_SUBAGENTS_ONLY"),
+    ("MCP server instructions", "green_FOR_SUBAGENTS_ONLY"),
+    ("Memory files", "claude"),
+    ("Skills", "warning"),
+    ("Messages", "purple_FOR_SUBAGENTS_ONLY"),
 ];
 
-/// Legend columns at most, the example's three to a row.
+/// Legend entries a row at most.
 const LEGEND_COLUMNS: usize = 3;
+/// Blanks a legend row keeps from the frame's border beyond the frame's own, as a column of
+/// numbers keeps from its neighbour.
+const LEGEND_EDGE: usize = legend::BEFORE_NUMBERS - 1;
 /// Items in each line a screen reader hears.
 const SPOKEN_ITEMS: usize = 4;
 /// Pills in the folded line.
 const LINE_PILLS: usize = 5;
+/// The roles a card lends to the parts that draw in their CLI's own colours, in order, so the
+/// shared bar paints each part as its CLI does.
+const PART_SLOTS: [Role; 10] = [
+    Role::CatSystem,
+    Role::CatTools,
+    Role::CatMcp,
+    Role::CatAgents,
+    Role::CatMemory,
+    Role::CatSkills,
+    Role::CatMessages,
+    Role::CatBrief,
+    Role::CatOther,
+    Role::TokensCached,
+];
+
+/// How one of Claude Code's colours draws, by the name its reply gives a category: in a dark
+/// terminal as Claude Code's own /context paints it, and in a light one the theme's own shade.
+/// A name this version doesn't know draws dim.
+pub fn claude_code_paint(kit: &Kit<'_>, color: &str) -> Style {
+    let (dark, light, role): (u32, Option<u32>, Role) = match color {
+        "promptBorder" => (0x888888, Some(0x707070), Role::Rule),
+        "inactive" => (0x999999, Some(0x707070), Role::Dim),
+        "green_FOR_SUBAGENTS_ONLY" | "success" => (0x17a34a, Some(0x2f9e7a), Role::Success),
+        "warning" => (0xffc109, Some(0x9a6f12), Role::Warn),
+        "purple_FOR_SUBAGENTS_ONLY" => (0x827dbd, Some(0x5769f7), Role::Question),
+        "permission" | "suggestion" => (0xb1b9f9, Some(0x5769f7), Role::Question),
+        "cyan_FOR_SUBAGENTS_ONLY" => (0x0a91b3, None, Role::AgentCyan),
+        "claude" => (0xd77757, None, Role::CliClaude),
+        "blue_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentBlue),
+        "red_FOR_SUBAGENTS_ONLY" | "error" => return kit.fg(Role::Danger),
+        "yellow_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentYellow),
+        "orange_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentOrange),
+        "pink_FOR_SUBAGENTS_ONLY" => return kit.fg(Role::AgentPink),
+        _ => return kit.fg(Role::Dim),
+    };
+    let hex = match (kit.theme.brightness, light) {
+        (Brightness::Dark, _) => dark,
+        (Brightness::Light, Some(light)) => light,
+        (Brightness::Light, None) => return kit.fg(role),
+    };
+    painted(kit.theme, role, hex)
+}
+
+/// How Claude Code's /context paints its free cells and the room it holds back for compacting:
+/// grey in a dark terminal, and the theme's faint and dim in a light one.
+pub fn claude_code_free(kit: &Kit<'_>, held: bool) -> Style {
+    let role = if held { Role::Dim } else { Role::Faint };
+    match kit.theme.brightness {
+        Brightness::Dark => painted(kit.theme, role, 0x999999),
+        Brightness::Light => kit.fg(role),
+    }
+}
+
+fn painted(theme: &Theme, role: Role, hex: u32) -> Style {
+    let rgb = Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
+    downgrade(role, Style::new().fg(rgb), theme.level)
+}
+
+/// A share of the window as Claude Code's /context writes it, in tenths of a percent, and
+/// nothing where there is no window.
+pub fn share_of_window(tokens: u64, window: u64) -> String {
+    if window == 0 {
+        return String::new();
+    }
+    format::Figures::ClaudeCode.share(tokens, window)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LimitKind {
@@ -52,10 +127,18 @@ pub struct Limit {
     pub kind: LimitKind,
 }
 
+/// How a part draws: in a role of the theme, or in its CLI's own colour by the name the CLI
+/// gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Paint {
+    Role(Role),
+    Named(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextPart {
     pub name: String,
-    pub role: Role,
+    pub paint: Paint,
     /// None before the first reading.
     pub tokens: Option<u64>,
 }
@@ -64,24 +147,56 @@ impl ContextPart {
     pub fn new(name: impl Into<String>, role: Role, tokens: Option<u64>) -> Self {
         Self {
             name: name.into(),
-            role,
+            paint: Paint::Role(role),
             tokens,
         }
     }
+
+    /// A part in its CLI's own colour, such as Claude Code's `promptBorder`.
+    pub fn named(name: impl Into<String>, color: impl Into<String>, tokens: Option<u64>) -> Self {
+        Self {
+            name: name.into(),
+            paint: Paint::Named(color.into()),
+            tokens,
+        }
+    }
+}
+
+/// Where the numbers come from before the session's CLI has counted it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Estimate {
+    /// What the last fresh session on the same CLI and model held at its start.
+    LastSession,
+    /// The CLI's own prompt and tools as recorded for its version, and what this machine
+    /// adds to them.
+    Recorded,
+}
+
+/// Before the CLI's own count: where the numbers come from, and whether the CLI is starting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BeforeCount {
+    pub from: Estimate,
+    /// The CLI is starting, from your first message until its count comes.
+    pub loading: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextCard {
     /// Whose context, when it isn't the conversation's own: `main · Opus 5.5 on Claude Code`.
     pub subject: Option<String>,
-    /// Tokens in use, by the CLI's own count. None before the first reading.
+    /// Tokens in use. None before the first reading.
     pub used: Option<u64>,
     pub window: Option<u64>,
     pub limit: Option<Limit>,
     /// The categories in bar order. Free is what's left of the window.
     pub parts: Vec<ContextPart>,
-    /// The parts are Argonauts Code's estimate, for a CLI that reports no breakdown.
+    /// The parts are Argonauts Code's own count, for a CLI that reports no breakdown.
     pub estimated: bool,
+    /// How full it is is worked out from the session's totals, so it and the free space are
+    /// marked as estimates too.
+    pub used_estimated: bool,
+    /// Every number is an estimate until the CLI's own count.
+    pub before: Option<BeforeCount>,
     /// The CLI is compacting now; the bar keeps its last reading.
     pub compacting: bool,
     /// The reading is old.
@@ -100,7 +215,7 @@ impl ContextCard {
         let parts = CLAUDE_CODE_PARTS
             .iter()
             .enumerate()
-            .map(|(k, &(name, role))| ContextPart::new(name, role, tokens.map(|t| t[k])))
+            .map(|(k, &(name, color))| ContextPart::named(name, color, tokens.map(|t| t[k])))
             .collect();
         Self::with_parts(parts, false)
     }
@@ -115,7 +230,8 @@ impl ContextCard {
         Self::with_parts(parts, true)
     }
 
-    fn with_parts(parts: Vec<ContextPart>, estimated: bool) -> Self {
+    /// A card with `parts`, before any reading.
+    pub fn with_parts(parts: Vec<ContextPart>, estimated: bool) -> Self {
         Self {
             subject: None,
             used: None,
@@ -123,6 +239,8 @@ impl ContextCard {
             limit: None,
             parts,
             estimated,
+            used_estimated: false,
+            before: None,
             compacting: false,
             stale: false,
             key: None,
@@ -145,16 +263,32 @@ impl ContextCard {
         self.levels.level(used as f64 / against as f64 * 100.0)
     }
 
+    /// What's left of the window, the room held back for compacting left out.
     fn free(&self) -> Option<u64> {
+        let held = |window: u64| match self.limit {
+            Some(Limit {
+                at,
+                kind: LimitKind::Compacts,
+            }) => window.saturating_sub(at),
+            _ => 0,
+        };
         self.reading()
-            .map(|(used, window)| window.saturating_sub(used))
+            .map(|(used, window)| window.saturating_sub(used).saturating_sub(held(window)))
     }
 
-    fn amount(&self, tokens_count: Option<u64>) -> String {
+    /// `~` where every number is an estimate.
+    fn mark(&self, estimate: bool) -> &'static str {
+        if estimate || self.before.is_some() {
+            "~"
+        } else {
+            ""
+        }
+    }
+
+    fn amount(&self, tokens_count: Option<u64>, estimate: bool) -> String {
         match tokens_count {
             None => String::from(UNKNOWN),
-            Some(n) if self.estimated => format!("~{}", self.sized(n)),
-            Some(n) => self.sized(n),
+            Some(n) => format!("{}{}", self.mark(estimate), self.sized(n)),
         }
     }
 
@@ -169,10 +303,14 @@ impl ContextCard {
     fn badge(&self) -> Badge {
         match self.reading() {
             None => Badge::pending(),
+            Some(_) if self.before.is_some_and(|before| before.loading) => Badge {
+                pending: true,
+                ..Badge::words("loading", Level::Ok)
+            },
             Some(_) if self.compacting => Badge::words("compacting", Level::Warn),
             Some((used, window)) => {
                 let mut badge = Badge::percent(used as f64 / window as f64, self.level());
-                if self.stale {
+                if self.stale || self.before.is_some() {
                     badge.text = format!("~{}", badge.text);
                 }
                 badge
@@ -180,7 +318,7 @@ impl ContextCard {
         }
     }
 
-    /// ` of 1M · compacts at 950k`.
+    /// ` of 1M · compacts at 967k`, and before the CLI's count where the numbers come from.
     fn tail(&self) -> String {
         let window = self
             .window
@@ -191,17 +329,21 @@ impl ContextCard {
                 LimitKind::Compacts => "compacts",
                 LimitKind::Rotates => "rotates",
             };
-            tail.push_str(&format!(" · {verb} at {}", self.sized(limit.at)));
+            let mark = self.mark(false);
+            tail.push_str(&format!(" · {verb} at {mark}{}", self.sized(limit.at)));
+        }
+        match self.before.map(|before| before.from) {
+            Some(Estimate::LastSession) => tail.push_str(" · from your last session"),
+            Some(Estimate::Recorded) => tail.push_str(" · estimated"),
+            None => {}
         }
         tail
     }
 
     pub fn header(&self, kit: &Kit<'_>) -> Header {
-        // The amount is the CLI's own count, never an estimate.
         let amount = match self.reading() {
             None => String::from(UNKNOWN),
-            Some((used, _)) if self.stale => format!("~{}", self.sized(used)),
-            Some((used, _)) => self.sized(used),
+            Some((used, _)) => self.amount(Some(used), self.stale || self.used_estimated),
         };
         Header {
             subject: self.subject.clone(),
@@ -212,18 +354,39 @@ impl ContextCard {
         }
     }
 
-    /// The parts and free, as the bar draws them. Before a reading the bar is all track, with
-    /// the tick already where it will be.
-    pub fn stack(&self) -> Stack {
+    /// The theme the bar and legend draw with: the kit's, with each part that draws in its
+    /// CLI's own colour lent a role of its own. Each part's role, in order.
+    fn palette(&self, kit: &Kit<'_>) -> (Theme, Vec<Role>) {
+        let mut theme = kit.theme.clone();
+        let mut slots = PART_SLOTS.iter();
+        let roles = self
+            .parts
+            .iter()
+            .map(|part| match (&part.paint, slots.next()) {
+                (Paint::Role(role), _) => *role,
+                (Paint::Named(color), Some(&slot)) => {
+                    theme.set(slot, claude_code_paint(kit, color));
+                    slot
+                }
+                (Paint::Named(_), None) => Role::CatOther,
+            })
+            .collect();
+        (theme, roles)
+    }
+
+    /// The parts and free, as the bar draws them, each part in `roles`. Before a reading the
+    /// bar is all track, with the tick already where it will be.
+    fn stack_in(&self, roles: &[Role]) -> Stack {
         let window = self.window.filter(|&window| window > 0);
         let mut parts: Vec<(u64, Role)> = self
             .parts
             .iter()
-            .filter_map(|part| Some((part.tokens?, part.role)))
+            .zip(roles)
+            .filter_map(|(part, role)| Some((part.tokens?, *role)))
             .filter(|_| self.reading().is_some())
             .collect();
-        if let Some(free) = self.free() {
-            parts.push((free, Role::CatFree));
+        if let Some((used, window)) = self.reading() {
+            parts.push((window.saturating_sub(used), Role::CatFree));
         }
         let limit = self
             .limit
@@ -239,50 +402,75 @@ impl ContextCard {
         }
     }
 
-    pub fn legend_entries(&self) -> Vec<Entry> {
+    /// Each part's role where it draws in one of the theme's, and `other` where it draws in
+    /// its CLI's own colour, for words that need no colour.
+    fn own_roles(&self) -> Vec<Role> {
+        self.parts
+            .iter()
+            .map(|part| match &part.paint {
+                Paint::Role(role) => *role,
+                Paint::Named(_) => Role::CatOther,
+            })
+            .collect()
+    }
+
+    /// The legend's entries in `roles`: each part, then the free space.
+    fn entries_in(&self, roles: &[Role]) -> Vec<Entry> {
         let window = self.reading().map(|(_, window)| window);
         let share = |n: Option<u64>| match (n, window) {
-            (Some(n), Some(w)) => percent(n as f64 / w as f64),
+            (Some(n), Some(w)) => share_of_window(n, w),
             _ => String::new(),
         };
         let mut entries: Vec<Entry> = self
             .parts
             .iter()
-            .map(|part| {
+            .zip(roles)
+            .map(|(part, role)| {
                 let tokens_count = part.tokens.filter(|_| window.is_some());
-                Entry {
-                    role: part.role,
-                    name: part.name.clone(),
-                    amount: self.amount(tokens_count),
-                    share: share(tokens_count),
-                }
+                Entry::new(
+                    *role,
+                    part.name.clone(),
+                    self.amount(tokens_count, self.estimated),
+                )
+                .shared(share(tokens_count))
             })
             .collect();
-        entries.push(Entry {
-            role: Role::CatFree,
-            name: String::from("free"),
-            amount: self.free().map_or_else(|| String::from(UNKNOWN), tokens),
-            share: String::new(),
-        });
+        let free = self.free();
+        entries.push(
+            Entry::new(
+                Role::CatFree,
+                "Free space",
+                self.amount(free, self.used_estimated),
+            )
+            .shared(share(free)),
+        );
         entries
     }
 
-    /// The rows inside the frame: the header, the bar, and in the full form the legend.
+    /// The legend's entries: each part, then the free space.
+    pub fn legend_entries(&self) -> Vec<Entry> {
+        self.entries_in(&self.own_roles())
+    }
+
+    /// The rows inside the frame: the header, the bar, and in the full form a blank row and
+    /// the legend.
     pub fn body(&self, kit: &Kit<'_>, inner: usize, form: Form) -> Drawn {
+        let (theme, roles) = self.palette(kit);
+        let painted = Kit::new(&theme);
         let mut body = Drawn::new();
         body.push(self.header(kit).draw(kit, inner));
-        let entries = match form {
-            Form::Full => self.legend_entries(),
-            _ => Vec::new(),
-        };
-        body.append(bodies::stack(
-            kit,
-            &self.stack(),
-            &entries,
-            inner,
-            self.bar_rows,
-            LEGEND_COLUMNS,
-        ));
+        let bar = bars::stacked(&painted, &self.stack_in(&roles), inner);
+        body.push_meter(bar, 0, inner, self.bar_rows.max(1));
+        if form == Form::Full {
+            body.push(Vec::new());
+            let entries = self.entries_in(&roles);
+            let width = inner.saturating_sub(LEGEND_EDGE);
+            for row in
+                legend::legend_counted(&painted, &entries, width, LEGEND_COLUMNS, Counted::WIDEST)
+            {
+                body.push(row);
+            }
+        }
         body
     }
 

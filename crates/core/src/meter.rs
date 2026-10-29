@@ -7,6 +7,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::event::AgentEvent;
+use crate::events::session::Billing;
+use crate::session::AuthMode;
+use crate::settings::Settings;
+use crate::settings::endpoints::endpoint_settings;
 
 /// Share of the limit at which the meter asks the agent to wrap up.
 pub const DEFAULT_SOFT_RATIO: f64 = 0.85;
@@ -126,6 +130,124 @@ impl Spend {
             cost_usd: self.cost_usd + other.cost_usd,
             cost_partial: self.cost_partial || other.cost_partial,
             cost_estimated: self.cost_estimated || other.cost_estimated,
+        }
+    }
+}
+
+/// A model id's mark for a no-cost variant of a model, as OpenRouter names them.
+const FREE_VARIANT: &str = ":free";
+
+/// The route OpenCode's own hosted models, Zen's, run on: `opencode/…`. Zen bills each token,
+/// and the models it gives away end in [`ZEN_FREE`].
+const ZEN: &str = "opencode";
+const ZEN_FREE: &str = "-free";
+
+/// Who pays for the tokens the agent `agent_id` spends running `model`, as your settings have
+/// it: nobody for a model on a server on this computer or a free variant, OpenCode Zen's free
+/// models included; your key for an endpoint, a CLI's route through one, a CLI signed in with
+/// an API key or Zen's priced models; and your plan for any other CLI.
+pub fn who_pays(settings: &Settings, agent_id: &str, model: Option<&str>) -> Billing {
+    let free_variant = model.is_some_and(|model| model.ends_with(FREE_VARIANT));
+    if free_variant || runs_here(settings, agent_id, model) {
+        return Billing::Free;
+    }
+    if let Some(model) = model.filter(|_| route(model) == Some(ZEN)) {
+        return if model.ends_with(ZEN_FREE) {
+            Billing::Free
+        } else {
+            Billing::Paid
+        };
+    }
+    let endpoint = |id: &str| endpoint_settings(settings, id).is_some();
+    let api_key = settings
+        .agents
+        .get(agent_id)
+        .is_some_and(|agent| agent.auth == AuthMode::ApiKey);
+    if endpoint(agent_id) || route(model).is_some_and(endpoint) || api_key {
+        Billing::Paid
+    } else {
+        Billing::Plan
+    }
+}
+
+/// The agent `agent_id` runs `model` on a server on this computer: it is an endpoint marked
+/// local, or a CLI whose model's route names one.
+pub fn runs_here(settings: &Settings, agent_id: &str, model: Option<&str>) -> bool {
+    let local = |id: &str| endpoint_settings(settings, id).is_some_and(|endpoint| endpoint.local);
+    local(agent_id) || route(model).is_some_and(local)
+}
+
+/// The server a CLI reaches through the route its model names, as OpenCode's
+/// `ollama/qwen3-coder:30b` names `ollama`.
+fn route(model: Option<&str>) -> Option<&str> {
+    model
+        .and_then(|model| model.split_once('/'))
+        .map(|(server, _)| server)
+}
+
+/// Tokens by who paid for them, as a run's end line and the Overview's Tokens split them.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct WhoPaid {
+    pub plan: u64,
+    pub free: u64,
+    pub paid: u64,
+    /// What the paid tokens cost: a lower bound when `cost_partial` is set.
+    pub paid_usd: f64,
+    /// Some paid tokens came with no cost.
+    pub cost_partial: bool,
+    /// Some of the cost is an estimate at list prices.
+    pub cost_estimated: bool,
+}
+
+impl WhoPaid {
+    /// Counts `tokens` that `billing` paid for. For paid ones, `cost` is what they cost, `None`
+    /// when nothing said, and `estimated` says it was worked out at list prices.
+    pub fn count(&mut self, billing: Billing, tokens: u64, cost: Option<f64>, estimated: bool) {
+        match billing {
+            Billing::Plan => self.plan = self.plan.saturating_add(tokens),
+            Billing::Free => self.free = self.free.saturating_add(tokens),
+            Billing::Paid => {
+                self.paid = self.paid.saturating_add(tokens);
+                match cost.filter(|usd| usd.is_finite() && *usd >= 0.0) {
+                    Some(usd) => {
+                        self.paid_usd += usd;
+                        self.cost_estimated |= estimated && usd > 0.0;
+                    }
+                    None => self.cost_partial |= tokens > 0,
+                }
+            }
+        }
+    }
+
+    pub fn total(&self) -> u64 {
+        self.plan
+            .saturating_add(self.free)
+            .saturating_add(self.paid)
+    }
+
+    pub fn tokens(&self, billing: Billing) -> u64 {
+        match billing {
+            Billing::Plan => self.plan,
+            Billing::Free => self.free,
+            Billing::Paid => self.paid,
+        }
+    }
+
+    /// Who paid for every token, when one did them all. `None` with none counted.
+    pub fn all_by(&self) -> Option<Billing> {
+        let total = self.total();
+        [Billing::Plan, Billing::Free, Billing::Paid]
+            .into_iter()
+            .find(|billing| total > 0 && self.tokens(*billing) == total)
+    }
+
+    /// What the paid tokens cost, marked as [`Spend`] marks a cost.
+    pub fn paid_cost(&self) -> Spend {
+        Spend {
+            cost_usd: self.paid_usd,
+            cost_partial: self.cost_partial,
+            cost_estimated: self.cost_estimated,
+            ..Spend::default()
         }
     }
 }
@@ -842,5 +964,139 @@ mod tests {
             MeterLimit::from_unit(LimitUnit::None, 9.0),
             MeterLimit::None
         );
+    }
+
+    fn read(toml: &str) -> Settings {
+        toml::from_str(toml).unwrap()
+    }
+
+    #[test]
+    fn a_cli_on_its_own_login_pays_with_its_plan() {
+        let settings = Settings::default();
+        assert_eq!(who_pays(&settings, "claude-code", None), Billing::Plan);
+        assert_eq!(
+            who_pays(&settings, "codex", Some("gpt-5.6-luna")),
+            Billing::Plan
+        );
+    }
+
+    #[test]
+    fn a_key_or_an_endpoint_is_charged_by_use() {
+        let keyed = read("[agents.codex]\nauth = \"api-key\"\n");
+        assert_eq!(who_pays(&keyed, "codex", None), Billing::Paid);
+        assert_eq!(who_pays(&keyed, "claude-code", None), Billing::Plan);
+        let hosted = read("[endpoints.example]\nbase_url = \"https://api.example.com/v1\"\n");
+        assert_eq!(
+            who_pays(&hosted, "example", Some("big-model")),
+            Billing::Paid
+        );
+        assert_eq!(
+            who_pays(&Settings::default(), "openrouter", Some("kimi-k3")),
+            Billing::Paid
+        );
+        // A CLI that reaches a hosted endpoint pays it, whatever it signed in with.
+        assert_eq!(
+            who_pays(&Settings::default(), "opencode", Some("openrouter/kimi-k3")),
+            Billing::Paid
+        );
+        assert_eq!(
+            who_pays(&Settings::default(), "opencode", Some("anthropic/opus")),
+            Billing::Plan
+        );
+    }
+
+    #[test]
+    fn a_model_on_this_computer_or_a_free_variant_costs_nothing() {
+        let settings = Settings::default();
+        assert_eq!(
+            who_pays(&settings, "ollama", Some("qwen3-coder:30b")),
+            Billing::Free
+        );
+        assert_eq!(
+            who_pays(&settings, "opencode", Some("ollama/qwen3-coder:30b")),
+            Billing::Free
+        );
+        assert_eq!(
+            who_pays(&settings, "openrouter", Some("example/model-a:free")),
+            Billing::Free
+        );
+        let keyed = read("[agents.opencode]\nauth = \"api-key\"\n");
+        assert_eq!(
+            who_pays(&keyed, "opencode", Some("lmstudio/glm-5")),
+            Billing::Free
+        );
+    }
+
+    /// OpenCode Zen gives some models away, `-free` at the end of their ids, and bills the
+    /// rest by the token.
+    #[test]
+    fn opencode_zens_free_models_cost_nothing_and_the_rest_are_paid() {
+        let settings = Settings::default();
+        assert_eq!(
+            who_pays(
+                &settings,
+                "opencode",
+                Some("opencode/nemotron-3.5-super-vl-free")
+            ),
+            Billing::Free
+        );
+        assert_eq!(
+            who_pays(&settings, "opencode", Some("opencode/glm-5.3-flash")),
+            Billing::Paid
+        );
+    }
+
+    #[test]
+    fn only_a_server_on_this_computer_runs_here() {
+        let settings = Settings::default();
+        assert!(runs_here(&settings, "ollama", Some("qwen3-coder:30b")));
+        assert!(runs_here(
+            &settings,
+            "opencode",
+            Some("ollama/qwen3-coder:30b")
+        ));
+        // Free, but on someone else's server.
+        assert!(!runs_here(
+            &settings,
+            "openrouter",
+            Some("example/model-a:free")
+        ));
+        assert!(!runs_here(
+            &settings,
+            "opencode",
+            Some("openrouter/kimi-k3")
+        ));
+        assert!(!runs_here(&settings, "codex", Some("gpt-6-luna")));
+        let moved = read("[endpoints.ollama]\nbase_url = \"http://gpu.example.com:11434/v1\"\n");
+        assert!(!runs_here(&moved, "ollama", Some("qwen3-coder:30b")));
+    }
+
+    #[test]
+    fn who_paid_counts_each_part_and_what_the_paid_part_cost() {
+        let mut paid = WhoPaid::default();
+        assert_eq!(paid.all_by(), None);
+        paid.count(Billing::Plan, 1_020_000, Some(4.0), false);
+        paid.count(Billing::Free, 232_000, None, false);
+        paid.count(Billing::Paid, 58_000, Some(0.31), false);
+        assert_eq!(
+            (paid.plan, paid.free, paid.paid),
+            (1_020_000, 232_000, 58_000)
+        );
+        assert_eq!(paid.total(), 1_310_000);
+        assert_eq!(paid.all_by(), None);
+        // A plan's spend is no one's charge.
+        assert!((paid.paid_usd - 0.31).abs() < 1e-9);
+        assert!(!paid.cost_partial && !paid.cost_estimated);
+
+        let mut free = WhoPaid::default();
+        free.count(Billing::Free, 112_000, None, false);
+        assert_eq!(free.all_by(), Some(Billing::Free));
+
+        let mut unpriced = WhoPaid::default();
+        unpriced.count(Billing::Paid, 900, None, false);
+        unpriced.count(Billing::Paid, 100, Some(0.02), true);
+        let cost = unpriced.paid_cost();
+        assert!(cost.cost_partial && cost.cost_estimated);
+        assert_eq!(unpriced.all_by(), Some(Billing::Paid));
     }
 }

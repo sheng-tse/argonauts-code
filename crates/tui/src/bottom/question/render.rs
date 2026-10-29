@@ -42,12 +42,8 @@ pub struct QuestionView {
 /// Where a question draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Place {
-    /// By itself, where the input was.
+    /// By itself, where the input was, or under a docked view that stays up over it.
     Alone,
-    /// Under a docked view that stays up, in the view's own columns: one cell in, with no mark
-    /// before the title, since the view above already says what waits. What the title is about
-    /// sits beside it, and each option's explanation beside its label.
-    UnderView,
     /// Between two faint rules, one cell in, its title alone on its row, as the guided setup's
     /// steps and the start's own questions draw.
     Framed,
@@ -58,7 +54,7 @@ impl Place {
     fn margin(self) -> usize {
         match self {
             Place::Alone => 2,
-            Place::UnderView | Place::Framed => 1,
+            Place::Framed => 1,
         }
     }
 
@@ -83,10 +79,10 @@ impl QuestionPrompt {
         self.layout_in(ctx, Place::Alone, rows)
     }
 
-    /// The question under a docked view that stays up while it holds the keys. `ctx` is as
-    /// wide as the view's rule.
+    /// The question under a docked view that stays up while it holds the keys: drawn as it is
+    /// alone, across the screen, under the view's box.
     pub fn layout_under_view(&self, ctx: &RenderCtx<'_>) -> QuestionView {
-        self.layout_in(ctx, Place::UnderView, usize::MAX)
+        self.layout_in(ctx, Place::Alone, usize::MAX)
     }
 
     fn layout_in(&self, ctx: &RenderCtx<'_>, place: Place, rows: usize) -> QuestionView {
@@ -103,6 +99,15 @@ impl QuestionPrompt {
         if self.keys_only {
             return self.letters_layout(ctx);
         }
+        // An option's sheet stands where the question was, under the question's rule.
+        if let Some(sheet) = self.sheet.as_ref().filter(|sheet| sheet.open) {
+            let mut lines = vec![Line::from(decorative(glyphs.rule.repeat(width), question))];
+            lines.extend(sheet.lines(width, theme));
+            return QuestionView {
+                lines,
+                ..QuestionView::default()
+            };
+        }
         let place = if self.framed && place == Place::Alone {
             Place::Framed
         } else {
@@ -110,7 +115,7 @@ impl QuestionPrompt {
         };
 
         let indent = [place.indent()];
-        let mut details = self.detail.as_slice();
+        let details = self.detail.as_slice();
         let mut lines = Vec::new();
         match place {
             Place::Alone => {
@@ -144,30 +149,6 @@ impl QuestionPrompt {
                     &indent,
                     &indent,
                 ));
-            }
-            Place::UnderView => {
-                let faint = theme.style(Role::Faint);
-                lines.push(Line::from(decorative(glyphs.rule.repeat(width), faint)));
-                let bold = theme.style(Role::Text).add_modifier(Modifier::BOLD);
-                let title = sanitize_line(&self.title).trim().to_owned();
-                let beside = details
-                    .first()
-                    .map(|detail| sanitize_line(detail).trim().to_owned())
-                    .filter(|detail| {
-                        place.margin() + str_width(&title) + 2 + str_width(detail) <= width
-                    });
-                match beside {
-                    Some(detail) => {
-                        details = &details[1..];
-                        lines.push(Line::from(vec![
-                            place.indent(),
-                            Span::styled(title, bold),
-                            Span::raw("  "),
-                            Span::styled(detail, dim),
-                        ]));
-                    }
-                    None => lines.extend(wrap_text(&title, bold, width, &indent, &indent)),
-                }
             }
         }
 
@@ -457,14 +438,17 @@ impl QuestionPrompt {
             .iter()
             .map(|option| explanation(option, ctx))
             .collect();
-        // Under a view every explanation sits beside its label, when all of them fit.
-        let under_view = match place {
-            Place::Alone | Place::Framed => None,
-            Place::UnderView => column_beside(&labels, &explained, prefix_width, width),
-        };
         let pointed = self.selected.min(self.options.len().saturating_sub(1));
         // A question that asks for it has each description beside its option wherever it draws.
         let described = self.description_column(&labels, width.saturating_sub(prefix_width));
+        // The seats that back an option line up after the longest label of those that have some.
+        let seated = self
+            .options
+            .iter()
+            .zip(&labels)
+            .filter(|(option, _)| !option.seats.is_empty())
+            .map(|(_, label)| spans_width(label) + SEATS_GAP)
+            .max();
         let mut cursor = None;
         let mut starts = Vec::with_capacity(self.options.len());
         for (index, option) in self.options.iter().enumerate() {
@@ -489,16 +473,8 @@ impl QuestionPrompt {
             ];
             let rest = [Span::raw(" ".repeat(prefix_width))];
             let noted = self.note.as_ref().filter(|note| note.option == index);
-            let beside = under_view.filter(|_| noted.is_none() && !explained[index].is_empty());
 
-            if let Some(column) = beside {
-                let mut spans = first.to_vec();
-                spans.extend(labels[index].iter().cloned());
-                let used = spans_width(&spans);
-                spans.push(Span::raw(" ".repeat(column.saturating_sub(used))));
-                spans.extend(explained[index].iter().cloned());
-                lines.push(Line::from(spans));
-            } else if let Some(note) = noted {
+            if let Some(note) = noted {
                 let label = sanitize_line(&option.label).trim().to_owned();
                 let (rows, at) = if option.kind == OptionKind::FreeText {
                     editor_rows(&note.editor, &label, self.focused, &first, &rest, ctx)
@@ -518,10 +494,23 @@ impl QuestionPrompt {
                 let hang = [Span::raw(" ".repeat(prefix_width + column))];
                 lines.extend(wrap_text(&one_row(description), dim, width, &row, &hang));
                 continue;
+            } else if let Some(column) = seated.filter(|_| !option.seats.is_empty()) {
+                let mut row = first.to_vec();
+                row.extend(labels[index].iter().cloned());
+                row.push(Span::raw(" ".repeat(column - spans_width(&labels[index]))));
+                for (n, face) in option.seats.iter().enumerate() {
+                    if n > 0 {
+                        row.push(Span::raw(" ".repeat(SEATS_GAP - 1)));
+                    }
+                    row.extend(face.badge(theme));
+                    row.push(Span::raw(" "));
+                    row.push(Span::styled(face.beside(theme), dim));
+                }
+                lines.push(truncate_line(&Line::from(row), width));
             } else {
                 lines.extend(wrap_spans(&labels[index], width, &first, &rest));
             }
-            if beside.is_none() && !explained[index].is_empty() {
+            if !explained[index].is_empty() {
                 lines.extend(wrap_spans(&explained[index], width, &rest, &rest));
             }
             if let Some(list) = self.checklist.as_ref().filter(|list| list.option == index) {
@@ -796,24 +785,6 @@ fn explanation(option: &QuestionOption, ctx: &RenderCtx<'_>) -> Vec<Span<'static
     spans
 }
 
-/// The column every explanation starts in when each sits beside its label: three cells past
-/// the widest label. `None` when one of them wouldn't fit on its row, so all go under.
-fn column_beside(
-    labels: &[Vec<Span<'static>>],
-    explained: &[Vec<Span<'static>>],
-    prefix_width: usize,
-    width: usize,
-) -> Option<usize> {
-    let widest = labels.iter().map(|label| spans_width(label)).max()?;
-    let column = prefix_width + widest + 3;
-    let fits = |spans: &Vec<Span<'static>>| {
-        column + spans_width(spans) <= width
-            && !spans.iter().any(|span| span.content.contains('\n'))
-    };
-    (explained.iter().any(|spans| !spans.is_empty()) && explained.iter().all(fits))
-        .then_some(column)
-}
-
 fn lowercase_first(text: &str) -> String {
     let mut chars = text.chars();
     match chars.next() {
@@ -824,6 +795,9 @@ fn lowercase_first(text: &str) -> String {
 
 /// Columns the editor draws its own prompt in, which the question's prefix takes the place of.
 const EDITOR_PROMPT: usize = 2;
+
+/// Cells between an option's label and the seats that back it.
+const SEATS_GAP: usize = 3;
 
 /// An answer in the input's own editor, drawn as the input draws it without its rules, after
 /// `first` on its first row and `rest` on the others. Empty, it shows `placeholder`. The cursor

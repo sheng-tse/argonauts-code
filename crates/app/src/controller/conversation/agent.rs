@@ -562,6 +562,8 @@ mod tests {
                 asked_by: None,
                 asked_why: None,
                 forked: false,
+                seat: None,
+                billing: None,
             };
             event(
                 u64::from(session),

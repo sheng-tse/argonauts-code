@@ -138,6 +138,74 @@ pub fn rank(candidates: &[Candidate]) -> Vec<ModelRef> {
         .collect()
 }
 
+/// The orchestrator's order for one task when it picks the model itself: the models up with
+/// plan left first, then by past results on that kind of task, then by plan left, then the
+/// cheaper, then as listed. The same every time, so the model a task gets, and the one that
+/// takes over when it runs out mid-task, can be said before it happens.
+pub fn pick_order(candidates: &[Candidate]) -> Vec<ModelRef> {
+    let up = eligible(candidates);
+    let mut ranked: Vec<(usize, &Candidate)> = candidates.iter().enumerate().collect();
+    ranked.sort_by(|(a_at, a), (b_at, b)| {
+        let a_up = up.iter().any(|candidate| std::ptr::eq(*candidate, *a));
+        let b_up = up.iter().any(|candidate| std::ptr::eq(*candidate, *b));
+        b_up.cmp(&a_up)
+            .then(expected_pass(b).total_cmp(&expected_pass(a)))
+            .then(plan_left(b).total_cmp(&plan_left(a)))
+            .then(cost_order(a.cost, b.cost))
+            .then(a_at.cmp(b_at))
+    });
+    ranked
+        .into_iter()
+        .map(|(_, candidate)| candidate.worker.clone())
+        .collect()
+}
+
+/// The orchestrator's pick for one task: the first by [`pick_order`] that may take new work.
+/// `None` when none may.
+pub fn pick(candidates: &[Candidate]) -> Option<Choice> {
+    let up = eligible(candidates);
+    let first = pick_order(candidates).into_iter().next()?;
+    let chosen = up.into_iter().find(|candidate| candidate.worker == first)?;
+    Some(Choice {
+        worker: chosen.worker.clone(),
+        explored: false,
+        reason: format!(
+            "the orchestrator's pick by past results, plan left, then cost: {}",
+            record_line(chosen)
+        ),
+    })
+}
+
+/// Who takes over a task whose model ran out of its limit mid-task: the next after `out` in
+/// `order` that may still take work. No turn is spent asking.
+pub fn next_after(
+    order: &[ModelRef],
+    out: &ModelRef,
+    candidates: &[Candidate],
+) -> Option<ModelRef> {
+    let up = eligible(candidates);
+    let from = order
+        .iter()
+        .position(|worker| worker == out)
+        .map_or(0, |at| at + 1);
+    order[from..]
+        .iter()
+        .find(|worker| *worker != out && up.iter().any(|candidate| candidate.worker == **worker))
+        .cloned()
+}
+
+/// The share of past tasks of this kind it passed, with one pass and one failure assumed, so a
+/// model with no record sits in the middle.
+fn expected_pass(candidate: &Candidate) -> f64 {
+    let (passed, failed) = passes_and_failures(candidate.record);
+    (f64::from(passed) + 1.0) / (f64::from(passed + failed) + 2.0)
+}
+
+/// The share of its plan window left, whole when nothing says otherwise.
+fn plan_left(candidate: &Candidate) -> f64 {
+    1.0 - candidate.plan_usage_used.unwrap_or(0.0).clamp(0.0, 1.0)
+}
+
 /// The algorithm that routes a task under `algorithm`. The orchestrator's own picks are taken
 /// from its assignments before routing, so any task it left without a worker goes to `bandit`.
 pub fn effective(algorithm: RoutingAlgorithm) -> RoutingAlgorithm {
@@ -490,6 +558,88 @@ mod tests {
     use rand::SeedableRng;
 
     use super::*;
+
+    fn worker(name: &str) -> ModelRef {
+        name.parse().unwrap()
+    }
+
+    fn named(order: &[ModelRef]) -> Vec<String> {
+        order.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn the_orchestrator_picks_by_past_results_then_plan_left_then_cost() {
+        let mut proven = candidate("codex/gpt-6-luna", 9, 10);
+        proven.cost = CostEstimate::Usd(2.0);
+        let mut unproven = candidate("claude-code/claude-opus-5-5", 0, 0);
+        unproven.cost = CostEstimate::Free;
+        let mut half_spent = candidate("antigravity-cli/gemini-3.8-flash", 9, 10);
+        half_spent.plan_usage_used = Some(0.5);
+        let mut cheaper = candidate("opencode/qwen3-coder-30b", 9, 10);
+        cheaper.cost = CostEstimate::Free;
+        let candidates = [unproven, proven, half_spent, cheaper];
+        assert_eq!(
+            named(&pick_order(&candidates)),
+            [
+                "opencode/qwen3-coder-30b",
+                "codex/gpt-6-luna",
+                "antigravity-cli/gemini-3.8-flash",
+                "claude-code/claude-opus-5-5",
+            ]
+        );
+        let choice = pick(&candidates).unwrap();
+        assert_eq!(choice.worker, worker("opencode/qwen3-coder-30b"));
+        assert!(!choice.explored);
+        assert!(
+            choice.reason.starts_with("the orchestrator's pick"),
+            "{}",
+            choice.reason
+        );
+    }
+
+    #[test]
+    fn a_model_out_of_plan_or_down_is_never_picked() {
+        let mut out = candidate("codex/gpt-6-luna", 10, 10);
+        out.plan_usage_used = Some(1.0);
+        let mut down = candidate("antigravity-cli/gemini-3.8-flash", 10, 10);
+        down.health = HealthState::Down;
+        let weaker = candidate("claude-code/claude-opus-5-5", 1, 10);
+        let candidates = [out, down, weaker];
+        assert_eq!(
+            pick(&candidates).map(|choice| choice.worker),
+            Some(worker("claude-code/claude-opus-5-5"))
+        );
+        let order = pick_order(&candidates);
+        assert_eq!(order[0], worker("claude-code/claude-opus-5-5"));
+        assert_eq!(pick(&candidates[..2]), None);
+    }
+
+    #[test]
+    fn a_pick_that_runs_out_mid_task_hands_it_to_the_next_by_rank() {
+        let first = candidate("codex/gpt-6-luna", 9, 10);
+        let second = candidate("claude-code/claude-opus-5-5", 5, 10);
+        let third = candidate("opencode/qwen3-coder-30b", 1, 10);
+        let order = pick_order(&[first.clone(), second.clone(), third.clone()]);
+        let mut spent = first.clone();
+        spent.plan_usage_used = Some(1.0);
+        let now = [spent, second.clone(), third.clone()];
+        assert_eq!(
+            next_after(&order, &worker("codex/gpt-6-luna"), &now),
+            Some(worker("claude-code/claude-opus-5-5"))
+        );
+        // The next one down too: the one after it.
+        let mut second_down = second;
+        second_down.health = HealthState::Down;
+        let now = [first, second_down, third];
+        assert_eq!(
+            next_after(&order, &worker("codex/gpt-6-luna"), &now),
+            Some(worker("opencode/qwen3-coder-30b"))
+        );
+        assert_eq!(
+            next_after(&order, &worker("opencode/qwen3-coder-30b"), &now),
+            None
+        );
+    }
 
     fn candidate(worker: &str, passed: u32, of: u32) -> Candidate {
         Candidate {

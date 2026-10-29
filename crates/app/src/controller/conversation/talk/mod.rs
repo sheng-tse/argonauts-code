@@ -12,6 +12,7 @@ pub(crate) mod guide;
 pub(crate) mod lookup;
 mod question;
 mod records;
+pub(crate) mod run_checks;
 pub(crate) mod setup;
 #[cfg(test)]
 mod tests;
@@ -22,6 +23,7 @@ use argonauts_core::asking::AskReply;
 use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::names::{ChoiceId, TurnId};
 use argonauts_core::required::{RequiredStep, same_name};
+use argonauts_core::settings::protocol::CheckCommand;
 
 use super::ConversationState;
 use crate::controller::{Ctx, Effect};
@@ -46,6 +48,8 @@ pub(crate) struct TalkState {
     steps_for_request: Option<(TurnId, Vec<RequiredStep>)>,
     /// Steps every workflow must contain, kept for this conversation.
     steps_for_conversation: Vec<RequiredStep>,
+    /// The checks the latest run here held for itself alone, which your words may keep.
+    run_checks: Vec<CheckCommand>,
 }
 
 pub(crate) fn owns(conversation: &ConversationState, id: &ChoiceId) -> bool {

@@ -39,6 +39,7 @@ use argonauts_core::names::{ApprovalId, ModelRef, RoleName, SessionKey, Workflow
 use argonauts_core::session_runner::{Access, RunnerEvent, RunnerKind};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::fallback::{
     AgentFallbacks, FallbackEntry, FallbackMode, FallbackSettings, FallbackStrategy, FallbackTable,
@@ -290,6 +291,8 @@ impl Bench {
             asked_by: None,
             asked_why: None,
             forked: false,
+            seat: None,
+            billing: None,
         };
         let session = |event| RunEventKind::Session(event);
         self.host.record(
@@ -527,6 +530,7 @@ fn spec(n: u32) -> TaskSpec {
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 
@@ -1156,6 +1160,7 @@ async fn fallback_precedence_every_level_set() -> anyhow::Result<()> {
             evidence_sha256: "e".repeat(64),
             mode: ApprovalMode::Supervised,
             decide_with: DecideWith::Rules,
+            when_declined: WhenDeclined::Decide,
             options: Vec::new(),
             free_text: FreeText::None,
             needs_you: true,
@@ -1452,6 +1457,7 @@ fn open_merge_approval(bench: &Bench) -> anyhow::Result<ApprovalId> {
             evidence_sha256: "m".repeat(64),
             mode: ApprovalMode::Supervised,
             decide_with: DecideWith::Rules,
+            when_declined: WhenDeclined::Decide,
             options: Vec::new(),
             free_text: FreeText::None,
             needs_you: true,

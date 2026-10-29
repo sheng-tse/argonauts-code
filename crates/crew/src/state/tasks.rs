@@ -105,6 +105,9 @@ pub struct TaskProgress {
     /// outlive a relaunch are counted again from the log.
     #[serde(default)]
     pub review_sessions: Vec<Option<SessionKey>>,
+    /// Its own session's to-do list, done of total, as last recorded.
+    #[serde(default)]
+    pub todos: Option<(u32, u32)>,
 }
 
 /// Progress of a task nothing has happened to yet.
@@ -128,6 +131,7 @@ static NO_PROGRESS: TaskProgress = TaskProgress {
     changes: 0,
     why: String::new(),
     review_sessions: Vec::new(),
+    todos: None,
 };
 
 impl TaskEntry {
@@ -183,6 +187,7 @@ impl Tasks {
         progress.changes += 1;
         match event {
             TaskEvent::Created(_) => {}
+            TaskEvent::Todos { done, total } => progress.todos = Some((*done, *total)),
             TaskEvent::State { from, to, reason } => {
                 record.state = *to;
                 reason.clone_into(&mut progress.why);

@@ -1,23 +1,22 @@
 ---
 source: crates/tui/tests/it/snap_workflows.rs
-assertion_line: 664
 expression: "screen(&mut view, width, height, &state)"
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- argonauts-ui-kit
- Build a standalone Rust UI kit prototype that matches Claude Code: inline conversation, hi…  8/12 agents · 2h44m
+ todo-tui
+ Build a terminal todo app: an inline task list, a history of what changed, the bottom…       8/12 agents · 2h44m
 
  ╭ Build · 7 agents ───────────┬ build:a-terminal-bottom ───────────────────────────────────────────────────────╮
  │ ❯ ✔ build:a-terminal-bottom │ ✔ Done · Opus on Claude Code                                                   │
  │   ✔ build:b-history-cells   │ 381.0k tok · 195 tool calls · 6m 2s                                            │
  │   ▾ build:c-demo-tests      │                                                                                │
  │     ✔ Draft   2/2           │ Prompt · 14 lines · ⏎ expand                                                   │
- │       ✔ draft:scenes        │   Build the terminal and the whole bottom region of the UI kit.                │
+ │       ✔ draft:scenes        │   Build the terminal and the whole bottom region of the todo app.              │
  │       ✔ draft:snapshots     │   … 13 more lines                                                              │
  │     2 Test    0/2           │                                                                                │
- │       ⏺ test:scenes         │ Activity · last 3 of 195 tool calls · ⏎ expand                                 │
- │       ⏺ test:snapshots      │   ⏺ Bash(cargo test -p argonauts-tui composer) · error                         │
- │   ✘ build:d-plain-mode      │   ⏺ Bash(cargo clippy -p argonauts-tui --all-targets -- -D warnings)           │
+ │       ⣾ test:scenes         │ Activity · last 3 of 195 tool calls · ⏎ expand                                 │
+ │       ⣾ test:snapshots      │   ⏺ Bash(cargo test -p argonauts-tui composer) · error                         │
+ │   × build:d-plain-mode      │   ⏺ Bash(cargo clippy -p argonauts-tui --all-targets -- -D warnings)           │
  │                             │   ◌ Bash(cargo test -p argonauts-tui) · no result                              │
  │                             │                                                                                │
  │                             │ Diff · 4 files · +120 -18 · d open                                             │

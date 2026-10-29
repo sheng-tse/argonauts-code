@@ -22,6 +22,7 @@ impl<W: Write> Ui<W> {
         state: &AppState,
     ) -> Vec<UiAction> {
         self.settle_question_keys(now);
+        self.notice_for_map(&event, now);
         if let Some(actions) = self.selection_key(&event) {
             return actions;
         }

@@ -1,0 +1,8 @@
+# Set up with Orchestrator, and Claude Code to talk to.
+workflow = "orchestrator"
+
+[crew]
+main = "claude-code"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]

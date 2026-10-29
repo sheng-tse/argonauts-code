@@ -186,7 +186,7 @@ fn documents(host: &Host, record: &TaskEntry, why: &str) -> Vec<EvidenceDocument
                 }
                 Some(text)
             }
-            ReviewEvent::Settled { judge, ruling } => Some(format!(
+            ReviewEvent::Settled { judge, ruling, .. } => Some(format!(
                 "{} settled the reviewers with {:?}: {}",
                 roles::display_name(judge),
                 ruling.verdict,

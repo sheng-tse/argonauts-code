@@ -84,8 +84,21 @@ pub fn of_task(host: &Host, agent: &Agent<'_>) -> Option<InputPart> {
         return Some(parts::from_workflow(brief(host, agent)?, step));
     }
     let written = from_orchestrator(host, agent)?;
+    if host.read(crate::council::seats::council_sat) {
+        return Some(from_the_council(written.text));
+    }
     let model = roles::short_name(&written.by);
     Some(parts::from_orchestrator(written.text, Some(model)))
+}
+
+/// A council's task brief, which names no seat or model: the council agreed it.
+fn from_the_council(text: String) -> InputPart {
+    crate::task::support::part(
+        argonauts_core::events::session::InputPartKind::Instructions,
+        "From the council",
+        text,
+        Some("the plan it agreed".to_owned()),
+    )
 }
 
 fn builds_a_task(agent: &Agent<'_>) -> bool {
@@ -257,6 +270,21 @@ mod tests {
             vec![call],
         );
         prompt.iter().filter_map(heading).collect()
+    }
+
+    /// A council's brief reads as the plan the council agreed, naming no seat and no model.
+    #[test]
+    fn a_councils_brief_names_no_seat_or_model() {
+        let brief = from_the_council("Add a token bucket per API key.".to_owned());
+        assert!(parts::written_for_the_agent(&brief));
+        assert_eq!(
+            assembled(brief),
+            [
+                "Frame · built in".to_owned(),
+                "From the council · the plan it agreed".to_owned(),
+                "From your request".to_owned(),
+            ]
+        );
     }
 
     /// A call's words are the agent's instructions as they are: the frame goes before them

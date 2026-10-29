@@ -203,7 +203,7 @@ pub(crate) async fn commit_in(
         Some(sha) if record_of(host, task)?.has_commit(&sha) => None,
         Some(sha) => Some(sha),
         None => {
-            let message = commit_message(host.run_id(), task, session, by.as_ref());
+            let message = commit_message(host.run_id(), task, session, by.is_some());
             // An agent's commit takes the new files it meant to create. What you left in the
             // worktree yourself, with no agent named, is all yours and all committed.
             let claims = by
@@ -550,25 +550,22 @@ pub(crate) async fn tree_git(host: &Host, tree: &Path) -> EngineResult<Git> {
 }
 
 /// An agent's session commit names the session, and its start after the first, so a resumed
-/// session commits again. Work with no session carries its author, and only your own
-/// changes after a take-over carry Argonauts Code's trailer.
+/// session commits again. It never names the agent or its CLI: a check that reads the history
+/// must not learn who made the change. Only your own changes after a take-over carry Argonauts
+/// Code's trailer.
 fn commit_message(
     run: &RunId,
     task: &TaskId,
     session: Option<(&SessionKey, u32)>,
-    by: Option<&ModelRef>,
+    an_agents: bool,
 ) -> String {
-    match (session, by) {
-        (Some((session, start)), Some(by)) => format!(
-            "{task}: work from {session} ({by})\n\n{}",
-            idempotency::session_lines(session, start)
-        ),
-        (Some((session, start)), None) => format!(
+    match (session, an_agents) {
+        (Some((session, start)), _) => format!(
             "{task}: work from {session}\n\n{}",
             idempotency::session_lines(session, start)
         ),
-        (None, Some(by)) => format!("{task}: work left by {by}"),
-        (None, None) => conductor::message(run, &format!("{task}: your changes")),
+        (None, true) => format!("{task}: work an agent left"),
+        (None, false) => conductor::message(run, &format!("{task}: your changes")),
     }
 }
 
@@ -700,21 +697,21 @@ mod tests {
     }
 
     #[test]
-    fn commit_messages_carry_the_session_key() {
+    fn commit_messages_carry_the_session_key_and_never_who_made_it() {
         let run = RunId::new("run-01").unwrap();
         let task = TaskId::new("task-002").unwrap();
         let key = SessionKey::numbered(4);
-        let by: ModelRef = "codex".parse().unwrap();
-        let text = commit_message(&run, &task, Some((&key, 1)), Some(&by));
+        let text = commit_message(&run, &task, Some((&key, 1)), true);
         assert_eq!(
             text,
-            "task-002: work from s-004 (codex)\n\nArgonauts-Session: s-004"
+            "task-002: work from s-004\n\nArgonauts-Session: s-004"
         );
-        let resumed = commit_message(&run, &task, Some((&key, 2)), Some(&by));
+        let resumed = commit_message(&run, &task, Some((&key, 2)), true);
         assert!(resumed.ends_with("Argonauts-Session: s-004\nArgonauts-Start: 2"));
-        let yours = commit_message(&run, &task, None, None);
+        let yours = commit_message(&run, &task, None, false);
         assert!(conductor::is_conductor_message(&run, &yours), "{yours}");
-        let left = commit_message(&run, &task, None, Some(&by));
+        let left = commit_message(&run, &task, None, true);
+        assert_eq!(left, "task-002: work an agent left");
         assert!(!conductor::is_conductor_message(&run, &left), "{left}");
     }
 }

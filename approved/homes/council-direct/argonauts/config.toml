@@ -1,0 +1,16 @@
+# Set up on the built-in default workflow, which nobody chose, so a small change stays with the
+# main agent, which makes it itself, unchecked.
+
+[crew]
+main = "claude-code"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]
+
+[captain_or_crew]
+captain_kind = "direct"
+
+# The main session ends its reply with its verdict alone, which the fake CLIs' rules for these
+# drawings give; with its tools on it would answer through them instead.
+[main_session]
+tools = false

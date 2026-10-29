@@ -1,0 +1,97 @@
+The Council conversation at 120 x 38 in a terminal that takes pictures: the seats' first answers, each with its logo; the bubbles are pictures under the text, so the cells hold the words alone
+screen 120x38
+at 0,0
+size 120x38
+terminal fg=#c8d3f5 bg=#222436
+text
+     A token bucket per API key, in Redis: we run 3 API nodes, so a per-node limit lets a
+     client in 3 times over.
+     - 100 at once, refilled at 10 a second; an empty bucket answers 429 with Retry-After
+     - Calls with no key share one small bucket, so /health and the status page keep
+       working
+￼￼   … +9 lines (ctrl+o to expand)
+
+     3.8 Flash                                      Read 6 files · ran 3 shell commands
+
+     A token bucket per key in Redis, checked and taken in one Lua script, so two nodes
+     can't both take the last token.
+     - The importer key sends about 2,000 a minute at night (logs/importer.log)
+     - Send X-RateLimit-Remaining on every answer, so clients slow down before a 429
+￼￼   … +5 lines (ctrl+o to expand)
+
+     Qwen3 Coder 30B                                                          Read 4 files
+
+     An in-memory bucket on each node, behind a RateStore interface; Redis can come later.
+     - No new dependency, and the tests need no Redis
+     - Give each node a third of the limit, since there are 3 nodes
+￼￼   … +4 lines (ctrl+o to expand)
+
+                          Everyone answered · Opus 5.5 keeps the notes and gathers the points
+
+￼￼  • • •
+
+✻ Parleying… (1m 48s · ↓  34.5k of 200k tokens · 0/4 seats agree)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ↓  to manage
+
+  ⣾  Rate limit the API                    ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/4 · 1m48s · ↓  34.5k tokens
+    ⎿ ○  ￼￼ Opus 5.5                       Gathering the points        1m17s · ↓   9.8k tokens
+      ○  ￼￼ 5.6 Luna                       Answered                      52s · ↓   6.1k tokens
+      ○  ￼￼ 3.8 Flash                      Answered                    1m30s · ↓  11.2k tokens
+      ○  ￼￼ Qwen3 Coder 30B                Answered                    1m36s · ↓   7.4k tokens
+paint
+.....a.aaaaa.aaaaaa.aaa.aaa.aaaa.aa.aaaaaa.aa.aaa.a.aaa.aaaaaa.aa.a.aaaaaaaa.aaaaa.aaaa.a
+.....aaaaaa.aa.a.aaaaa.aaaaa
+.....a.aaa.aa.aaaaa.aaaaaaaa.aa.aa.a.aaaaaaa.aa.aaaaa.aaaaaa.aaaaaaa.aaa.aaaa.aaaaaaaaaaa
+.....a.aaaaa.aaaa.aa.aaa.aaaaa.aaa.aaaaa.aaaaaaa.aa.aaaaaaa.aaa.aaa.aaaaaa.aaaa.aaaa
+.......aaaaaaa
+bb...c.cc.ccccc.ccccccc.cc.ccccccc
+
+.....ccc.ccccc......................................cccc.c.ccccc.c.ccc.c.ccccc.cccccccc
+
+.....a.aaaaa.aaaaaa.aaa.aaa.aa.aaaaaa.aaaaaaa.aaa.aaaaa.aa.aaa.aaa.aaaaaaa.aa.aaa.aaaaa
+.....aaaaa.aaaa.aaaa.aaa.aaaa.aaaaaa
+.....a.aaa.aaaaaaaa.aaa.aaaaa.aaaaa.aaaaa.a.aaaaaa.aa.aaaaa.aaaaaaaaaaaaaaaaaaa
+.....a.aaaa.aaaaaaaaaaaaaaaaaaaaa.aa.aaaaa.aaaaaaa.aa.aaaaaaa.aaaa.aaaa.aaaaaa.a.aaa
+dd...c.cc.ccccc.ccccccc.cc.ccccccc
+
+.....ccccc.ccccc.ccc..........................................................cccc.c.ccccc
+
+.....aa.aaaaaaaaa.aaaaaa.aa.aaaa.aaaaa.aaaaaa.a.aaaaaaaaa.aaaaaaaaaa.aaaaa.aaa.aaaa.aaaaaa
+.....a.aa.aaa.aaaaaaaaaaa.aaa.aaa.aaaaa.aaaa.aa.aaaaa
+.....a.aaaa.aaaa.aaaa.a.aaaaa.aa.aaa.aaaaaa.aaaaa.aaaaa.aaa.a.aaaaa
+ee...c.cc.ccccc.ccccccc.cc.ccccccc
+
+..........................cccccccc.cccccccc.c.cccc.ccc.ccccc.ccc.ccccc.ccc.ccccccc.ccc.cccccc
+
+bb..c.f.c
+
+g.ggghhggggg.ccc.ccc.c.c..ccccc.cc.cccc.cccccc.c.ccc.ccccc.cccccc
+
+iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii.jjjjjjj.i
+a.ccccc.cc.ccc.cccccccc.c.c.ccccc.cc.ccccccc..cc.cccc.c.ccccccc.cc.cccc
+iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii
+..c.cccccccccc.cccc.cc.cccccccccc.cc.cccccc.c.ccc.cc.ccccccccc.c.c..cc.cccccc
+
+..k..cccc.ccccc.ccc.ccc....................cccccccccccccccccccc..ccc.c.ccccc.c.c..ccccc.cccccc
+....c.c..bb.cccc.ccc.......................aaaaaaaaa.aaa.aaaaaa........ccccc.c.c...cccc.cccccc
+......c..ll.ccc.cccc.......................aaaaaaaa......................ccc.c.c...cccc.cccccc
+......c..dd.ccc.ccccc......................aaaaaaaa....................ccccc.c.c..ccccc.cccccc
+......c..ee.ccccc.ccccc.ccc................aaaaaaaa....................ccccc.c.c...cccc.cccccc
+key
+. blank
+a fg=#c8d3f5  ; the terminal's own
+b logo=claudecode
+c fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+d logo=antigravity
+e logo=ollama
+f fg=#ffffff  ; Bright
+g fg=#e6a23c  ; Accent, CatBrief
+h fg=#f7d488  ; Shimmer
+i fg=#888888  ; Rule
+j fg=#af87ff  ; Label, Ultracode
+k fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+l logo=codex

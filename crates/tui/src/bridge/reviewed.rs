@@ -125,8 +125,8 @@ pub(super) fn row(
 }
 
 /// Verdicts given so far under each label by each agent, so a later round of the same review
-/// reads as `review:per-key · round 2`, while two reviewers of one round, who share the label,
-/// each read as themselves.
+/// reads as `review:per-key · round 2`, the round after the label, while two reviewers of one
+/// round, who share the label, each read as themselves.
 #[derive(Debug, Default)]
 pub(super) struct Rounds {
     seen: BTreeMap<(RunId, String, String), u32>,
@@ -136,7 +136,10 @@ impl Rounds {
     /// Counts this verdict's round and names it on its row from the second on. A label the run
     /// made unique with `-2` for a later round counts under the first.
     pub fn count(&mut self, run: &RunId, row: &mut ToolCall) {
-        let ToolTitle::Agent { name, role, .. } = &mut row.title else {
+        let ToolTitle::Agent {
+            name, role, round, ..
+        } = &mut row.title
+        else {
             return;
         };
         let key = |label: &str| (run.clone(), label.to_owned(), role.clone());
@@ -146,10 +149,11 @@ impl Rounds {
             }
             _ => name.clone(),
         };
-        let round = self.seen.entry(key(&base)).or_default();
-        *round += 1;
-        if *round > 1 {
-            *name = format!("{base} · round {round}");
+        let seen = self.seen.entry(key(&base)).or_default();
+        *seen += 1;
+        if *seen > 1 {
+            *name = base;
+            *round = u16::try_from(*seen).unwrap_or(u16::MAX);
         }
     }
 }
@@ -265,31 +269,77 @@ mod tests {
     #[test]
     fn a_second_round_reads_as_one() {
         let run = RunId::new("run-01").unwrap();
-        let row = |label: &str| ToolCall::agent(label, None, "Haiku 4.5 on Claude Code", "");
-        let name = |row: &ToolCall| match &row.title {
-            ToolTitle::Agent { name, .. } => name.clone(),
-            _ => String::new(),
-        };
+        let row = |label: &str| ToolCall::agent(label, None, "", "");
         let mut rounds = Rounds::default();
-        let mut first = row("review:per-key");
-        rounds.count(&run, &mut first);
-        assert_eq!(name(&first), "review:per-key");
-        let mut again = row("review:per-key");
-        rounds.count(&run, &mut again);
-        assert_eq!(name(&again), "review:per-key · round 2");
-        let mut unique = row("review:per-key-2");
-        rounds.count(&run, &mut unique);
-        assert_eq!(name(&unique), "review:per-key · round 3");
-        let mut other = row("review:fix-2");
-        rounds.count(&run, &mut other);
-        assert_eq!(name(&other), "review:fix-2", "a name of its own");
-        let mut beside = ToolCall::agent("review:per-key", None, "GPT 5.6 Luna on Codex", "");
-        rounds.count(&run, &mut beside);
+        let mut counted = |mut row: ToolCall| {
+            rounds.count(&run, &mut row);
+            row.title.plain()
+        };
+        assert_eq!(counted(row("review:per-key")), "review:per-key");
+        assert_eq!(counted(row("review:per-key")), "review:per-key · round 2");
+        assert_eq!(counted(row("review:per-key-2")), "review:per-key · round 3");
         assert_eq!(
-            name(&beside),
-            "review:per-key",
+            counted(row("review:fix-2")),
+            "review:fix-2",
+            "a name of its own"
+        );
+        let beside = ToolCall::agent("review:per-key", None, "GPT 5.6 Luna on Codex", "");
+        assert_eq!(
+            counted(beside),
+            "review:per-key · GPT 5.6 Luna on Codex",
             "a second reviewer of the same task reads as its own first round"
         );
+    }
+
+    /// The round reads after the label and its task, outside the bold label.
+    #[test]
+    fn the_round_reads_after_the_label() {
+        use crate::cell::{HistoryCell as _, ModelShade};
+        use crate::render::{Clock, RenderCtx};
+        use crate::theme::{Glyphs, Role, Theme};
+        use ratatui::style::Modifier;
+
+        let run = RunId::new("run-01").unwrap();
+        let shade = ModelShade {
+            cli: Role::CliCodex,
+            place: 0,
+            logo: argonauts_core::logos::logo_for("codex", Some("gpt-6-luna")),
+            model: Some("GPT 6 Luna".to_owned()),
+            on: "Codex".to_owned(),
+        };
+        let mut rounds = Rounds::default();
+        let mut rows = Vec::new();
+        for _ in 0..2 {
+            let mut row = ToolCall::agent("review:due-flag", None, "", "review the flag")
+                .with_model(shade.clone());
+            row.state = ToolState::Done;
+            rounds.count(&run, &mut row);
+            rows.push(row);
+        }
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(100, &theme, Clock::still(std::time::Instant::now()));
+        let header = rows[1].lines(&ctx).remove(0);
+        assert_eq!(
+            header.to_string(),
+            "● review:due-flag(review the flag) · round 2 · GPT 6 Luna on Codex"
+        );
+        let span = |text: &str| {
+            header
+                .spans
+                .iter()
+                .find(|span| span.content == text)
+                .unwrap_or_else(|| panic!("no {text:?} in {header:?}"))
+        };
+        assert!(
+            span("review:due-flag")
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        let round = span(" · round 2");
+        assert!(!round.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(round.style.fg, theme.style(Role::Dim).fg);
     }
 
     #[test]

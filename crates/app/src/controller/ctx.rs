@@ -97,6 +97,13 @@ pub(crate) enum Internal {
     DeepMapMade {
         deeper: bool,
     },
+    /// The logins a workflow switch read came back.
+    WorkflowSwitch(super::workflow_switch::Probed),
+    /// Settings worked out while handling something else, such as what a request said to keep
+    /// "from now on": saved once that's done, as `Effect::SaveChanges` saves them.
+    SaveChanges {
+        pairs: Vec<(String, String)>,
+    },
 }
 
 /// What one part of the controller asks of another. The loop applies them in order.
@@ -113,10 +120,11 @@ pub(crate) enum Effect {
     /// Settings in effect changed: the narrator hears of it, and a new header and bottom line
     /// go out.
     SettingsApplied { keys: Vec<String> },
-    /// Ask where to save a setting, as an argument like `/effort high` does.
-    AskScope(Box<ScopeRequest>),
-    /// Save these `(key, TOML value)` settings where you picked, through the same confirming
-    /// and trust steps as `/config`.
+    /// Save these `(key, TOML value)` settings where `save_changes_to` says, as every change
+    /// made in the app is, through the same confirming and trust steps as `/config`, with one
+    /// line saying where they went.
+    SaveChanges { pairs: Vec<(String, String)> },
+    /// Save these settings in `scope`, a place named on purpose, as a flag names one.
     SaveSettings {
         pairs: Vec<(String, String)>,
         scope: SettingScope,
@@ -124,6 +132,13 @@ pub(crate) enum Effect {
     /// Save these settings where you picked on a setup's question. The pick confirmed them, so a
     /// safety key among them asks nothing more.
     SaveConfirmedSettings {
+        pairs: Vec<(String, String)>,
+        scope: SettingScope,
+    },
+    /// Save these settings in `scope` because your own words asked to keep them, as "keep these
+    /// checks" does. Your words confirmed them, so nothing more asks, and the line after names
+    /// each key alone.
+    KeepSettings {
         pairs: Vec<(String, String)>,
         scope: SettingScope,
     },
@@ -143,15 +158,6 @@ pub(crate) enum Effect {
     },
     /// Close the screen. Runs keep going.
     Exit,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ScopeRequest {
-    pub key: String,
-    /// TOML text.
-    pub value: String,
-    /// The settings command whose default scope applies, such as `fallback`.
-    pub command: String,
 }
 
 pub(crate) struct Ctx {

@@ -6,6 +6,7 @@
 //! back with it, and when the log has no outage on it. Keeping the fallback's work from the
 //! "original is back" question leaves the debt to the merge question.
 
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
 use argonauts_core::events::run::Party;
@@ -16,7 +17,7 @@ use argonauts_core::{Note, NoteLevel, TaskId};
 use crate::approvals;
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
-use crate::fallback::on_return::{self, Choice, Returning, agent_label};
+use crate::fallback::on_return::{self, Choice, Returning};
 use crate::fallback::{merge_rule, rewind, rules, upgrade};
 use crate::review::Verdict;
 use crate::state::tasks::TaskEntry;
@@ -122,7 +123,10 @@ async fn ask(
             .map(|record| record.opened.id.clone())
     });
     if let Some(id) = merge_approval {
-        let reason = format!("{} is back", agent_label(&back.original.agent_id()));
+        let reason = format!(
+            "{} is back",
+            DisplayNames::default().cli(&back.original.agent_id().0)
+        );
         approvals::withdraw(host, &id, &reason)?;
     }
     let request = on_return::request(host, record, &back, debt, Some(at.clone())).await?;

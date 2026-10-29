@@ -185,7 +185,10 @@ impl Sessions {
                     record.workdir = Some(input.launch.cwd.clone());
                 }
             }
-            SessionEvent::Queued(_) | SessionEvent::Delivered { .. } | SessionEvent::Limit(_) => {}
+            SessionEvent::CarryOn(_)
+            | SessionEvent::Queued(_)
+            | SessionEvent::Delivered { .. }
+            | SessionEvent::Limit(_) => {}
         }
     }
 

@@ -1,0 +1,38 @@
+▐1   takes a token. The burst is the plan's limit, so nothing new needs tuning.                                         
+                                                                                                                        
+                                3 of 6 points agreed · they talk until every seat agrees                                
+                                                                                                                        
+          ▐2 Opus 5.5 · 2 is the skeptic: it argues the other side on purpose · its tapbacks are its own view           
+                                                                                                                        
+     Opus 5.5 · 2 · a CLI's name hidden from the seats                                                                  
+   ╭─ ▐1 A token bucket per API key, in Redis                                                                           
+                                                                              ▐1✘  ▐▌✘  ▐▌✘                             
+     A bucket needs a burst size, and nobody here has picked one. A window counter is one                               
+     INCR and one EXPIRE. I ran both with Claude Code's Bash tool: the bucket's Lua script                              
+▐2   takes 0.4 ms a call, the counter 0.2 ms.                                                                           
+                                                                                                                        
+     Opus 5.5 · 1                                                                                                       
+   ╭─ ▐2 A bucket needs a burst size, and nobody here has picked one                                                    
+                                                                             ▐2✔  ▐▌✔  ▐▌✔                              
+     The burst is the key's plan limit, so there is nothing new to pick. And 0.2 ms saved                               
+     doesn't pay for a client sending twice its limit at a window's edge:                                               
+     test/edge.test.ts fails with the counter and passes with the bucket. ▐▌ 5.6 Luna,                                  
+▐1   does your script take the burst from the plan?                                                                     
+                                                                                                                        
+               ✔  Token bucket agreed: "test/edge.test.ts fails with the counter" · 4 of 6 points agreed                
+                                                                                                                        
+▐▌  • • •   5.6 Luna is writing · Opus 5.5 · 1 asked it                                                                 
+                                                                                                                        
+✻ Parleying… (2m 50s · ↓  52.4k of 200k tokens · 2/4 seats agree)                                                       
+  ⎿  Still open: Redis or memory · calls with no key                                                                     
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task                                                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ↓  to manage                                           
+                                                                                                                        
+  ⣾  Rate limit the API                    ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  2/4 · 2m50s · ↓  65.4k tokens                          
+    ⎿ ✔  ▐1 Opus 5.5 · 1                   Backs all 6 points          1m58s · ↓  18.9k tokens                          
+      ○  ▐2 Opus 5.5 · 2                   Backs 5 of 6 points         1m40s · ↓  16.2k tokens                          
+      ○  ▐▌ 5.6 Luna                       Answering Opus 5.5 · 1      1m12s · ↓  17.3k tokens                          
+      ✔  ▐▌ 3.8 Flash                      Backs all 6 points          1m30s · ↓    13k tokens                          

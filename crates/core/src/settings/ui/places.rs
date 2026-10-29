@@ -169,14 +169,16 @@ impl UsagePeriod {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+/// A place free and paid tokens show beside the plan's, `ui.paid_by`. The run's end line and
+/// Overview's Tokens card each look for their own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum PanelBar {
-    #[default]
-    Agents,
-    Tasks,
-    Spend,
-    Time,
+pub enum PaidByPlace {
+    /// A dim second line under a run's end line, such as `1.02M plan · 232k free · 58k paid
+    /// $0.31`, or `all free`.
+    EndLine,
+    /// A who-paid bar on Overview's Tokens card.
+    Usage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]

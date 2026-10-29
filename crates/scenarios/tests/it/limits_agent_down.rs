@@ -75,7 +75,7 @@ fn limits_agent_down_pauses_tasks() -> anyhow::Result<()> {
     // Waiting comes first: a task that waits loses nothing.
     assert_eq!(option_keys(&question), ['w', 'a', 'e']);
     assert!(limits.calls_with("codex", "exec")?.is_empty());
-    pty.wait_for("Claude down", WAIT)?;
+    pty.wait_for("Claude Code down", WAIT)?;
     limits.shot(&pty, "limits_agent_down_pauses_tasks")
 }
 
