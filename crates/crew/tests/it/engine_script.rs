@@ -27,6 +27,7 @@ use argonauts_core::settings::workflows::AdaptWith;
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::judgment::ReviewVerdict;
 use argonauts_crew::engine::shared::with_git_env;
+use argonauts_testkit::deadline;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 
 use support::{Crew, Outcome, answer};
@@ -424,7 +425,11 @@ async fn a_run_stopped_inside_its_workflow_answers_the_finished_calls_from_what_
     }
     assert!(signing_off, "{:?}", started(&run.sink.events()));
     run.commands.send(EngineCommand::Stop).await?;
-    let exit = tokio::time::timeout(std::time::Duration::from_secs(30), run.exit).await??;
+    let exit = tokio::time::timeout(
+        deadline::scaled(std::time::Duration::from_secs(30)),
+        run.exit,
+    )
+    .await??;
     assert_eq!(exit, EngineExit::Finished(RunOutcome::Stopped));
     let stopped = run.sink.events();
     let built = worker.specs().len();
@@ -520,7 +525,11 @@ async fn an_agent_a_script_called_starts_over_and_the_script_takes_its_new_answe
     run.commands.send(restart(first.clone())).await?;
 
     // The script went on to the merge, which waits for you, with the second answer.
-    let exit = tokio::time::timeout(std::time::Duration::from_secs(30), run.exit).await??;
+    let exit = tokio::time::timeout(
+        deadline::scaled(std::time::Duration::from_secs(30)),
+        run.exit,
+    )
+    .await??;
     assert!(matches!(exit, EngineExit::Waiting(_)), "{exit:?}");
     let events = run.sink.events();
     assert!(opened(&events, ApprovalKind::Merge));

@@ -143,6 +143,12 @@ pub enum FakeStep {
     /// file's folder.
     EmitFile(String),
     SleepMs(u64),
+    /// Waits until a signal of this name is given with [`FakeClis::signal`], so a test can
+    /// hold an agent at work until it has seen what it needs on screen, however long that takes
+    /// on a busy machine.
+    ///
+    /// [`FakeClis::signal`]: crate::FakeClis::signal
+    AwaitSignal(String),
     /// Writes a file under the working directory, as an agent editing code would.
     Write {
         /// Relative path; `..` and absolute paths are refused.
@@ -277,13 +283,19 @@ emit_file = "fixtures/conversation.stdout.jsonl"
 [[rule.step]]
 sleep_ms = 20
 [[rule.step]]
+await_signal = "screen-seen"
+[[rule.step]]
 write = { path = "a.txt", content = "a" }
 [[rule.step]]
 exit = 0
 "#,
         )
         .unwrap();
-        assert_eq!(scenario.rules[0].steps.len(), 4);
+        assert_eq!(scenario.rules[0].steps.len(), 5);
         assert_eq!(scenario.rules[0].steps[1], FakeStep::SleepMs(20));
+        assert_eq!(
+            scenario.rules[0].steps[2],
+            FakeStep::AwaitSignal("screen-seen".to_owned())
+        );
     }
 }

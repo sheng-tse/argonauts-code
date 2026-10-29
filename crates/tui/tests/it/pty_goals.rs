@@ -213,8 +213,9 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
     let mut driver = TestDriver::start(script());
     driver.resize(64, 120);
     driver.wait_visible("↓  to manage");
-    // The run's row, then its workflow.
+    // The run's row, then its workflow, which the screen asks for and is given from here on.
     driver.press(Key::Down);
+    let asked = std::time::Instant::now();
     driver.press(Key::Enter);
     let view = driver.wait_visible("Phases");
     let text = text_of(&view);
@@ -241,13 +242,21 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
         &view,
         "build:store +GPT 5\\.6 · ▪▪ goal met in 2 tries +4m10s",
     );
+    // A running row counts on from the time it was given, by however long the test took to
+    // get here.
     expect_row(
         &view,
-        "build:cli +GPT 5\\.6 · ▪▪▪ try 3 · 2 of 3 lines met +6m02s",
+        &format!(
+            "build:cli +GPT 5\\.6 · ▪▪▪ try 3 · 2 of 3 lines met +{}",
+            counted_on(362_000, asked)
+        ),
     );
     expect_row(
         &view,
-        "build:docs +GPT 5\\.6 · ▪▪ try 1 · 0 of 2 lines met +1m30s",
+        &format!(
+            "build:docs +GPT 5\\.6 · ▪▪ try 1 · 0 of 2 lines met +{}",
+            counted_on(90_000, asked)
+        ),
     );
     expect_row(
         &view,
@@ -280,7 +289,10 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
     );
     expect_row(
         &goal,
-        "3 +handling tasks with no due date +\\+14 -2 in 2 files .* 1 failing +2m17s · running",
+        &format!(
+            "3 +handling tasks with no due date +\\+14 -2 in 2 files .* 1 failing +{} · running",
+            counted_on(137_000, asked)
+        ),
     );
     expect_row(
         &goal,

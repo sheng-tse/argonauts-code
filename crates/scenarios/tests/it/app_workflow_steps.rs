@@ -576,7 +576,12 @@ fn app_your_own_workflow_runs_one_request_by_its_steps_as_written() -> anyhow::R
         .repo
         .write(".argonauts/workflows/limiter-first.toml", LIMITER_FIRST)?;
     let mut pty = start(&scenario)?;
-    submit(&mut pty, &format!("/limiter-first {}", requests::CREW_TASK))?;
+    // The app learns your workflows' commands after it says hello, and Enter on a command it
+    // doesn't know yet leaves the draft for you to fix, so Enter waits for the app to know it.
+    check_bottom_row(&pty)?;
+    pty.send(&format!("/limiter-first {}", requests::CREW_TASK))?;
+    pty.wait_for_visible("enter runs /limiter-first", WAIT)?;
+    pty.press(Key::Enter)?;
 
     let run_dir = wait_run_dir(&scenario)?;
     wait_merged(&run_dir)?;

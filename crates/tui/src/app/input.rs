@@ -447,7 +447,7 @@ impl<W: Write> Ui<W> {
     }
 
     fn arm_clear(&mut self, now: Instant) {
-        let until = now + QUIT_WINDOW;
+        let until = now + self.double_press;
         self.clear_armed = Some(until);
         self.model.bottom.hint = Some(Hint {
             text: CLEAR_HINT.to_owned(),
@@ -1034,7 +1034,7 @@ impl<W: Write> Ui<W> {
             actions.push(UiAction::Quit);
             return;
         }
-        let until = now + QUIT_WINDOW;
+        let until = now + self.double_press;
         self.quit = Some(QuitArm { action, until });
         let mut text = format!("Press {} again to exit", hint_name(key));
         if let Some(note) = self
@@ -1071,7 +1071,7 @@ impl<W: Write> Ui<W> {
             actions.push(UiAction::StopAllAgents);
             return;
         }
-        let until = now + QUIT_WINDOW;
+        let until = now + self.double_press;
         self.stop_all_armed = Some(until);
         let chord = self
             .keymap

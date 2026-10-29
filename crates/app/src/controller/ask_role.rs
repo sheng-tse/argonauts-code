@@ -233,7 +233,7 @@ mod tests {
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::controller::test_support::{CliOptions, TestDriver, WAIT};
+    use crate::controller::test_support::{CliOptions, TestDriver, max_wait};
 
     /// The main session's change in your checkout: Codex reviews, and its answer comes back to
     /// the main session as the tool's result, read-only and on Codex's own model.
@@ -273,7 +273,7 @@ mod tests {
         driver
             .submit("Fix the sign, then have the reviewers look")
             .await;
-        let deadline = tokio::time::Instant::now() + WAIT;
+        let deadline = tokio::time::Instant::now() + max_wait();
         let spec = loop {
             if let Some(spec) = driver.agent.specs().into_iter().next() {
                 break spec;

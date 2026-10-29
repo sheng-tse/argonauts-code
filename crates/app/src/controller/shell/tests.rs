@@ -371,12 +371,13 @@ async fn a_fallback_hears_of_the_commands_too() {
 
 /// Polls state the events don't show, such as what the fake conductor received.
 async fn eventually(what: impl Fn() -> bool) {
-    use crate::controller::test_support::WAIT;
-    let deadline = tokio::time::Instant::now() + WAIT;
+    use crate::controller::test_support::max_wait;
+    let wait = max_wait();
+    let deadline = tokio::time::Instant::now() + wait;
     while !what() {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "not within {WAIT:?}"
+            "not within {wait:?}"
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }

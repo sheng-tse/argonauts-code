@@ -82,7 +82,7 @@ impl Detached {
     /// Reads what the app writes, answering its cursor question, until `text` shows.
     fn read_until(&mut self, text: &str) {
         let master = self.master.as_ref().expect("the terminal is open");
-        let deadline = Instant::now() + DRAWN_WITHIN;
+        let deadline = argonauts_testkit::deadline::after(DRAWN_WITHIN);
         let mut buf = [0u8; 8192];
         while Instant::now() < deadline {
             if String::from_utf8_lossy(&self.output).contains(text) {
@@ -116,7 +116,7 @@ impl Detached {
     }
 
     fn ended_within(&mut self, limit: Duration) -> Option<ExitStatus> {
-        let deadline = Instant::now() + limit;
+        let deadline = argonauts_testkit::deadline::after(limit);
         while Instant::now() < deadline {
             if let Some(status) = self.child.try_wait().expect("checking the app") {
                 return Some(status);

@@ -53,6 +53,7 @@ use argonauts_crew::merge::{branch, final_check};
 use argonauts_crew::run_review;
 use argonauts_crew::state::RunState;
 use argonauts_crew::workflow::{Flow, StepAt, StepCall, StepDone};
+use argonauts_testkit::deadline;
 use argonauts_testkit::repo::TempRepo;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
@@ -385,7 +386,7 @@ impl Bench {
         let call = step_call()?;
         let step = merge_step(&self.host, &call);
         let (done, answered) = tokio::join!(
-            async { tokio::time::timeout(Duration::from_secs(20), step).await },
+            async { tokio::time::timeout(deadline::scaled(Duration::from_secs(20)), step).await },
             answering
         );
         // A step that failed explains an answer that never came.
@@ -2500,7 +2501,7 @@ async fn bytecode_the_run_committed_and_you_have_waits_to_merge() -> anyhow::Res
         bench.answer(&asked, choose(MERGE_LATER))
     };
     let (done, answered) = tokio::join!(
-        tokio::time::timeout(Duration::from_secs(20), step),
+        tokio::time::timeout(deadline::scaled(Duration::from_secs(20)), step),
         answering
     );
     answered?;
@@ -2848,7 +2849,7 @@ async fn merge_later_pauses_and_resuming_merges() -> anyhow::Result<()> {
         bench.answer(&asked, choose(MERGE_LATER))
     };
     let (done, answered) = tokio::join!(
-        tokio::time::timeout(Duration::from_secs(20), step),
+        tokio::time::timeout(deadline::scaled(Duration::from_secs(20)), step),
         answering
     );
     answered?;

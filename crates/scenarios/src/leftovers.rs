@@ -40,7 +40,7 @@ pub(crate) fn stop(scenario: &Scenario) {
     for pid in run_hosts {
         kill_with_group(pid);
     }
-    let deadline = Instant::now() + SWEEP;
+    let deadline = argonauts_testkit::deadline::after(SWEEP);
     while !hosting(root).is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(50));
     }

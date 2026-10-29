@@ -126,7 +126,7 @@ impl Limits {
         timeout: Duration,
         done: impl Fn(&[RunEvent]) -> bool,
     ) -> anyhow::Result<Vec<RunEvent>> {
-        let deadline = Instant::now() + timeout;
+        let deadline = argonauts_testkit::deadline::after(timeout);
         loop {
             let events = self.events();
             if done(&events) {

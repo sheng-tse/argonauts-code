@@ -3,8 +3,6 @@
 //! uncommitted files.
 
 use crate::app_support;
-use std::thread;
-use std::time::{Duration, Instant};
 
 use app_support::*;
 use argonauts_core::app::{AppEvent, AppMode, ChoiceKind, ConversationEvent, TurnReply, UiCommand};
@@ -12,7 +10,7 @@ use argonauts_core::events::run::{RunLifecycle, RunMode};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::input::SlashCommand;
 use argonauts_scenarios::{Scenario, WAIT};
-use argonauts_testkit::{Key, Pty};
+use argonauts_testkit::Key;
 use regex::Regex;
 
 /// The turn end, whichever done word the app picked, such as `✻ Sailed for 3s`.
@@ -219,7 +217,7 @@ fn app_routes_input_by_mode() -> anyhow::Result<()> {
     );
 
     // Pausing: Enter on an empty prompt goes up as it is, and the app cancels the pause.
-    argonauts_scenarios::pause_run(&mut pty)?;
+    scenario.pause_run(&mut pty)?;
     wait_mode(&scenario, "the run to start pausing", |m| {
         matches!(m, AppMode::Pausing { .. })
     })?;
@@ -635,24 +633,31 @@ fn app_watching_costs_no_tokens() -> anyhow::Result<()> {
     let journal_before = run_events(&waiting.dir)?.len();
     let mut pty = start(&scenario)?;
 
+    // Each view and what its key line says once it shows. With nothing to go back to, `/rewind`
+    // opens none.
     let views = [
-        "/status",
-        "/context",
-        "/workflows",
-        "/rewind",
-        "/config",
-        "/approvals",
-        "/resume",
-        "/help",
+        ("/status", Some("esc closes")),
+        ("/context", Some("esc closes")),
+        ("/workflows", Some("esc back")),
+        ("/rewind", None),
+        ("/config", Some("Esc to clear")),
+        ("/approvals", Some("esc back")),
+        ("/resume", Some("/ search · esc")),
+        ("/help", Some("esc back")),
     ];
-    for view in views {
+    for (view, key_line) in views {
+        let before = scenario.trace.lines()?.len();
         submit(&mut pty, view)?;
-        settle(&scenario)?;
-        // A view the app answers opens when its answer comes, so an Esc sent before then would
-        // leave it open over the conversation once it does.
-        wait_for_view(&pty);
+        // A view the app answers for opens when its answer comes, so an Esc sent before then
+        // would leave it open over the conversation once it does.
+        match key_line {
+            Some(key_line) => {
+                pty.wait_for_visible(key_line, WAIT)?;
+            }
+            None => wait_answered(&scenario, before, view)?,
+        }
         pty.press(Key::Esc)?;
-        settle(&scenario)?;
+        back_to_the_input(&mut pty)?;
     }
     for key in [
         Key::Char('?'),
@@ -663,9 +668,8 @@ fn app_watching_costs_no_tokens() -> anyhow::Result<()> {
     ] {
         check_bottom_row(&pty)?;
         pty.press(key)?;
-        settle(&scenario)?;
         pty.press(Key::Esc)?;
-        settle(&scenario)?;
+        back_to_the_input(&mut pty)?;
     }
 
     let sessions = all_sessions(&scenario)?;
@@ -680,38 +684,5 @@ fn app_watching_costs_no_tokens() -> anyhow::Result<()> {
     let journal: Vec<RunEvent> = run_events(&waiting.dir)?;
     assert_eq!(journal.len(), journal_before, "watching wrote to the run");
     scenario.shot(&pty, "app_watching_costs_no_tokens")?;
-    Ok(())
-}
-
-/// Waits for the view a command opens, which hides the bottom line, or for the screen to hold
-/// still a second after a command that opens none. Five seconds at most.
-fn wait_for_view(pty: &Pty) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut last = String::new();
-    let mut still_since = Instant::now();
-    while Instant::now() < deadline {
-        let text = pty.screen().visible_text();
-        if !text.contains("shift+tab to cycle") {
-            return;
-        }
-        if text != last {
-            last = text;
-            still_since = Instant::now();
-        } else if still_since.elapsed() >= Duration::from_secs(1) {
-            return;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// Lets the app answer a key before the next one, since views answer with no event to wait on.
-fn settle(scenario: &Scenario) -> anyhow::Result<()> {
-    let before = scenario.trace.lines()?.len();
-    for _ in 0..20 {
-        thread::sleep(Duration::from_millis(50));
-        if scenario.trace.lines()?.len() > before {
-            break;
-        }
-    }
     Ok(())
 }

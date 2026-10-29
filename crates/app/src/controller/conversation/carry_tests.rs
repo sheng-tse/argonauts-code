@@ -11,7 +11,7 @@ use argonauts_core::settings::SettingScope;
 use argonauts_testkit::{FakeRunner, FakeSession};
 use serde_json::json;
 
-use crate::controller::test_support::{CliOptions, TestDriver, WAIT};
+use crate::controller::test_support::{CliOptions, TestDriver, max_wait};
 
 const SESSION: &str = "claude-session-1";
 
@@ -203,7 +203,7 @@ async fn switching_back_before_sending_cancels_the_summary_and_keeps_the_session
     );
     // The summary's session is stopped, and once it ends the next turn may resume the session.
     let agent = driver.agent.clone();
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     while !agent.controls().iter().any(|(key, control)| {
         key.as_str().ends_with("t-carry-001") && matches!(control, SessionControl::Stop)
     }) {

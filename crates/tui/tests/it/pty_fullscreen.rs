@@ -95,7 +95,10 @@ fn start_from_shell(script: Script) -> TestDriver {
 #[test]
 fn the_start_takes_the_alternate_screen_with_the_header_on_top() {
     let driver = start_from_shell(Script::idle());
-    let screen = driver.wait_visible(MODE_IDLE);
+    // The input and the header can reach the terminal in frames of their own.
+    let screen = driver.wait_until("the header and the input", |screen| {
+        row_of(screen, HEADER).is_some() && row_of(screen, MODE_IDLE).is_some()
+    });
     assert!(on_alternate(&driver));
     assert!(raw_text(&driver).contains(MOUSE_ON));
     assert!(screen.visible[0].is_empty(), "{}", screen.visible_text());
@@ -209,7 +212,10 @@ fn ctrl_o_shows_the_full_transcript_and_comes_back() {
 
 #[test]
 fn ctrl_c_twice_gives_the_shell_back_as_it_was() {
-    let mut driver = start_from_shell(Script::idle().all(0, notes(1..=3)));
+    let mut driver = TestDriver::launch(Script::idle().all(0, notes(1..=3)))
+        .after_shell_line(SHELL_LINE)
+        .double_press_room()
+        .start();
     driver.wait_visible("note 03");
     driver.press(Key::Ctrl('c'));
     driver.wait_visible("Press Ctrl-C again to exit");
@@ -307,6 +313,7 @@ fn the_inline_screen_never_takes_the_alternate_screen() {
     let mut driver = TestDriver::launch(Script::idle().all(0, notes(1..=3)))
         .inline()
         .after_shell_line(SHELL_LINE)
+        .double_press_room()
         .start();
     driver.wait_visible("note 03");
     assert!(!raw_text(&driver).contains(ENTER));
@@ -398,6 +405,7 @@ fn ctrl_c_in_a_handed_over_program_leaves_the_app_running() {
         let launch = if inline { launch.inline() } else { launch };
         let mut driver = launch
             .name(&format!("handed_over_ctrl_c_inline_{inline}"))
+            .double_press_room()
             .start();
         driver.wait_visible("Back from");
         driver.submit("still here");

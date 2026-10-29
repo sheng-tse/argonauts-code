@@ -120,6 +120,7 @@ impl<W: Write> Screen<W> {
         }
         let mut ui = Ui::new(terminal, theme, model, Instant::now());
         ui.time_keys(true);
+        ui.set_double_press(options.double_press);
         if options.settings.screen == ScreenMode::Fullscreen {
             ui.use_fullscreen();
         }

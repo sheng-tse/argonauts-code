@@ -62,7 +62,7 @@ pub fn wait_for_rows(
     timeout: Duration,
     pick: impl Fn(&str) -> bool,
 ) -> anyhow::Result<()> {
-    let deadline = Instant::now() + timeout;
+    let deadline = argonauts_testkit::deadline::after(timeout);
     loop {
         let screen = pty.screen();
         let read: Vec<&str> = screen.visible.iter().map(|row| row.trim()).collect();
@@ -86,7 +86,7 @@ pub fn wait_for_row(
     timeout: Duration,
     pick: impl Fn(&str) -> bool,
 ) -> anyhow::Result<()> {
-    let deadline = Instant::now() + timeout;
+    let deadline = argonauts_testkit::deadline::after(timeout);
     loop {
         let screen = pty.screen();
         if screen.visible.iter().any(|row| pick(row)) {

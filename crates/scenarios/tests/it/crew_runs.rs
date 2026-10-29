@@ -127,7 +127,7 @@ fn wait_for_event<T>(
     timeout: Duration,
     found: impl Fn(&RunEvent) -> Option<T>,
 ) -> anyhow::Result<T> {
-    let deadline = Instant::now() + timeout;
+    let deadline = argonauts_testkit::deadline::after(timeout);
     loop {
         if let Ok(events) = scenario.latest_run_events()
             && let Some(hit) = events.iter().find_map(&found)

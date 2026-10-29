@@ -14,6 +14,7 @@ mod engine_captain;
 mod engine_claude_codes;
 mod engine_core;
 mod engine_declared;
+mod engine_delivery;
 mod engine_divide;
 mod engine_fallback;
 mod engine_fallback_context;

@@ -11,9 +11,9 @@ use argonauts_core::events::session::{SubagentKind, SubagentStatus, SubagentUpda
 use argonauts_core::input::SlashCommand;
 use argonauts_core::screen::{ScreenChange, ScreenRequest};
 use argonauts_core::session_runner::{RunnerEvent, SessionControl};
-use argonauts_testkit::FakeSession;
+use argonauts_testkit::{FakeSession, Hold};
 
-use crate::controller::test_support::{CliOptions, TestDriver};
+use crate::controller::test_support::{CliOptions, TestDriver, max_wait};
 
 fn init(capabilities: &[&str], plugins: &[&str]) -> RunnerEvent {
     let names = |list: &[&str]| list.iter().map(|&name| name.to_owned()).collect();
@@ -71,15 +71,19 @@ async fn working(driver: &mut TestDriver, events: Vec<RunnerEvent>) {
 
 /// What the session got, once something came.
 async fn controls_after(driver: &TestDriver, count: usize) -> Vec<SessionControl> {
-    let agent = driver.agent.clone();
-    for _ in 0..200 {
-        let controls: Vec<SessionControl> = agent.controls().into_iter().map(|(_, c)| c).collect();
-        if controls.len() >= count {
+    let deadline = tokio::time::Instant::now() + max_wait();
+    loop {
+        let controls: Vec<SessionControl> = driver
+            .agent
+            .controls()
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect();
+        if controls.len() >= count || tokio::time::Instant::now() >= deadline {
             return controls;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    agent.controls().into_iter().map(|(_, c)| c).collect()
 }
 
 #[tokio::test]
@@ -694,10 +698,9 @@ async fn a_turn_stopped_alone_starts_no_work_when_its_session_ends() {
         background(&[]),
         verdict,
     ];
-    // Slow enough that Esc lands while the main agent still writes.
-    driver
-        .agent
-        .push(session.with_delay(Duration::from_millis(200)));
+    // Held once it writes, so Esc lands while the main agent still does.
+    let writes = Hold::new();
+    driver.agent.push(session.held_after(4, &writes));
     driver.submit("fix the install command in the README").await;
     driver
         .until(|event| {
@@ -713,6 +716,9 @@ async fn a_turn_stopped_alone_starts_no_work_when_its_session_ends() {
         })
         .await;
     driver.send(UiCommand::CancelTurn).await;
+    // It goes on once it has taken the stop in.
+    controls_after(&driver, 1).await;
+    writes.release();
     let finished = driver
         .until(|event| {
             matches!(
@@ -776,9 +782,8 @@ async fn a_turn_stopped_alone_with_nothing_after_it_ends_cancelled() {
             is_error: true,
         }),
     ];
-    driver
-        .agent
-        .push(session.with_delay(Duration::from_millis(200)));
+    let writes = Hold::new();
+    driver.agent.push(session.held_after(4, &writes));
     driver.submit("count in the background").await;
     driver
         .until(|event| {
@@ -794,6 +799,9 @@ async fn a_turn_stopped_alone_with_nothing_after_it_ends_cancelled() {
         })
         .await;
     driver.send(UiCommand::CancelTurn).await;
+    // It goes on once it has taken the stop in.
+    controls_after(&driver, 1).await;
+    writes.release();
     let ended = driver
         .until(|event| {
             matches!(

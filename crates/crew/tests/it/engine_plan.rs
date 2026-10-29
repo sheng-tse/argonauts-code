@@ -38,6 +38,7 @@ use argonauts_crew::engine::host::Host;
 use argonauts_crew::state::RunState;
 use argonauts_crew::workflow::{Flow, StepAt, StepCall, StepDone, runner, yaml};
 use argonauts_crew::{approvals, divide, orchestrated, plan, tie_breaker};
+use argonauts_testkit::deadline;
 use argonauts_testkit::repo::TempRepo;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, engine_context_in};
@@ -162,7 +163,7 @@ impl Bench {
         )?;
         let mut step: PlanStep =
             tokio::spawn(async move { Ok(divide::plan_approval_step(&host, &call).await?) });
-        let opened = tokio::time::timeout(Duration::from_secs(20), async {
+        let opened = tokio::time::timeout(deadline::scaled(Duration::from_secs(20)), async {
             loop {
                 if let Some(opened) = plan_approvals(&self.sink.events())
                     .into_iter()
@@ -2150,7 +2151,7 @@ async fn answer_plan(
     action: impl FnOnce(&ApprovalOpened) -> AnswerAction,
     text: Option<&str>,
 ) -> anyhow::Result<ApprovalOpened> {
-    let opened = tokio::time::timeout(Duration::from_secs(30), async {
+    let opened = tokio::time::timeout(deadline::scaled(Duration::from_secs(30)), async {
         loop {
             if let Some(opened) = plan_approvals_of(bench).into_iter().nth(n - 1) {
                 return Ok(opened);

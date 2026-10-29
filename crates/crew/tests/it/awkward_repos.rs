@@ -26,6 +26,7 @@ use argonauts_crew::merge::{detached, your_folder};
 use serde_json::json;
 
 use argonauts_core::steps::StepName;
+use argonauts_testkit::deadline;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 
 use support::{Crew, Outcome, names, recommended, smallest_answer, wrote};
@@ -318,7 +319,7 @@ async fn the_mergers_message_is_for_the_runs_work_alone() -> anyhow::Result<()> 
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         };
-        let (merge, reply) = tokio::time::timeout(Duration::from_secs(30), asked)
+        let (merge, reply) = tokio::time::timeout(deadline::scaled(Duration::from_secs(30)), asked)
             .await
             .context("the merger never wrote a message")?
             .context("the merge question")?;

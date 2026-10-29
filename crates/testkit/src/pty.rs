@@ -11,9 +11,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow, bail};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 
 use self::emulator::Emulator;
+use crate::deadline;
 
 mod emulator;
 
@@ -27,12 +28,47 @@ const POLL: Duration = Duration::from_millis(20);
 /// How long, at most, the reader gets after the program exits to take the last it wrote.
 const DRAIN: Duration = Duration::from_secs(2);
 
+/// Variables that name the terminal the tests run in, or a multiplexer around it. The program
+/// runs in this emulator, an xterm that draws no pictures, and must not take them for its own
+/// terminal's. A test that plays another terminal sets them itself.
+const OUTER_TERMINAL: &[&str] = &[
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "TERMINFO",
+    "LC_TERMINAL",
+    "LC_TERMINAL_VERSION",
+    "GHOSTTY_RESOURCES_DIR",
+    "GHOSTTY_BIN_DIR",
+    "GHOSTTY_SHELL_FEATURES",
+    "KITTY_WINDOW_ID",
+    "KITTY_PID",
+    "WEZTERM_PANE",
+    "WEZTERM_EXECUTABLE",
+    "WEZTERM_UNIX_SOCKET",
+    "ITERM_SESSION_ID",
+    "VTE_VERSION",
+    "WT_SESSION",
+    "TMUX",
+    "TMUX_PANE",
+    "STY",
+];
+
+/// Pixels a cell, width then height, unless a test sets its own. A real terminal reports its
+/// size in pixels beside its rows and columns, and the app finds its cell size from them.
+const CELL_PIXELS: (u16, u16) = (10, 20);
+
 /// Enter this soon after typed text could be a line break in a paste that a terminal without
 /// bracketed paste types out key by key, which the app reads as part of the text. The app's
 /// window is 120 ms.
 const ENTER_GAP: Duration = Duration::from_millis(150);
-/// The longest Enter waits for the app to draw the typed text first.
-const ENTER_WAIT: Duration = Duration::from_secs(1);
+/// The longest Enter waits for the app to show the typed text first. Text the screen never
+/// shows as typed waits this long.
+const ENTER_WAIT: Duration = Duration::from_secs(2);
+/// How much of the typed text's last word Enter looks for on the screen.
+const TAIL_CHARS: usize = 8;
+/// How long a lone Esc gets to be read before the next key. Read together, `ESC ESC` is one
+/// Esc and `ESC d` is Alt+d, as in any terminal app.
+const ESC_SETTLE: Duration = Duration::from_millis(60);
 
 #[derive(Debug, Clone)]
 pub struct PtyCommand {
@@ -43,6 +79,7 @@ pub struct PtyCommand {
     env_remove: Vec<String>,
     rows: u16,
     cols: u16,
+    cell: (u16, u16),
     answers: bool,
 }
 
@@ -56,6 +93,7 @@ impl PtyCommand {
             env_remove: Vec::new(),
             rows: 32,
             cols: 100,
+            cell: CELL_PIXELS,
             answers: true,
         }
     }
@@ -103,6 +141,22 @@ impl PtyCommand {
         self.rows = rows;
         self.cols = cols;
         self
+    }
+
+    /// Pixels a cell, width then height, as a terminal's font size sets them.
+    pub fn cell_pixels(mut self, width: u16, height: u16) -> Self {
+        self.cell = (width, height);
+        self
+    }
+}
+
+/// The window size a terminal reports: its rows and columns, and the pixels they cover.
+fn window(rows: u16, cols: u16, (width, height): (u16, u16)) -> PtySize {
+    PtySize {
+        rows,
+        cols,
+        pixel_width: cols.saturating_mul(width),
+        pixel_height: rows.saturating_mul(height),
     }
 }
 
@@ -187,8 +241,31 @@ pub struct Pty {
     terminal: Arc<Mutex<Terminal>>,
     reader: Option<JoinHandle<()>>,
     size: (u16, u16),
-    /// When text was last typed, and how many bytes the app had drawn by then.
-    typed: Option<(Instant, usize)>,
+    /// Pixels a cell, width then height.
+    cell: (u16, u16),
+    /// Text typed since the last Enter.
+    typed: Option<Typed>,
+}
+
+/// Text typed and not yet sent with Enter.
+struct Typed {
+    at: Instant,
+    /// How many bytes the app had drawn by then.
+    drawn: usize,
+    /// The end of the text, and how many times the screen showed it before the text was typed.
+    /// `None` for a lone key, or text whose end the screen wouldn't show as typed.
+    tail: Option<(String, usize)>,
+}
+
+/// Up to [`TAIL_CHARS`] of the text's last word, which a screen showing the text shows as
+/// typed: a person's draft wraps between words, and control keys show as something else.
+fn tail_of(text: &str) -> Option<String> {
+    let word = text.split_whitespace().last()?;
+    if word.chars().any(char::is_control) {
+        return None;
+    }
+    let skip = word.chars().count().saturating_sub(TAIL_CHARS);
+    Some(word.chars().skip(skip).collect())
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -200,12 +277,7 @@ static OPENING: Mutex<()> = Mutex::new(());
 
 impl Pty {
     pub fn spawn(command: PtyCommand) -> anyhow::Result<Self> {
-        let size = PtySize {
-            rows: command.rows,
-            cols: command.cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        };
+        let size = window(command.rows, command.cols, command.cell);
         let pair = {
             let _one_at_a_time = lock(&OPENING);
             native_pty_system().openpty(size)
@@ -215,6 +287,9 @@ impl Pty {
         builder.args(&command.args);
         if let Some(cwd) = &command.cwd {
             builder.cwd(cwd);
+        }
+        for name in OUTER_TERMINAL {
+            builder.env_remove(name);
         }
         builder.env("TERM", "xterm-256color");
         builder.env("COLUMNS", command.cols.to_string());
@@ -261,6 +336,7 @@ impl Pty {
             terminal,
             reader: Some(reader),
             size: (command.rows, command.cols),
+            cell: command.cell,
             typed: None,
         })
     }
@@ -271,8 +347,16 @@ impl Pty {
         let mut parts = text.split('\r').peekable();
         while let Some(part) = parts.next() {
             if !part.is_empty() {
+                let tail = tail_of(part).map(|tail| {
+                    let shown = self.visible_text().matches(tail.as_str()).count();
+                    (tail, shown)
+                });
                 self.write(part.as_bytes())?;
-                self.typed = Some((Instant::now(), self.drawn()));
+                self.typed = Some(Typed {
+                    at: Instant::now(),
+                    drawn: self.drawn(),
+                    tail,
+                });
             }
             if parts.peek().is_some() {
                 self.press(Key::Enter)?;
@@ -290,29 +374,55 @@ impl Pty {
     pub fn press(&mut self, key: Key) -> anyhow::Result<()> {
         match key {
             Key::Enter => self.settle_typing(),
-            Key::Char(_) => self.typed = Some((Instant::now(), self.drawn())),
+            Key::Char(_) => {
+                self.typed = Some(Typed {
+                    at: Instant::now(),
+                    drawn: self.drawn(),
+                    tail: None,
+                });
+            }
             _ => {}
         }
-        self.write(&key.bytes())
+        self.write(&key.bytes())?;
+        if key == Key::Esc {
+            thread::sleep(ESC_SETTLE);
+        }
+        Ok(())
     }
 
-    /// Waits until [`ENTER_GAP`] after the app drew the last typed text, so it reads the next
-    /// Enter as a key of its own.
+    /// Waits until [`ENTER_GAP`] after the screen showed the last typed text, so the app reads
+    /// the next Enter as a key of its own. Any output won't do: a spinner's next frame can come
+    /// before the app has read the text, and the text and Enter read together are a paste.
     fn settle_typing(&mut self) {
-        let Some((typed_at, drawn)) = self.typed.take() else {
+        let Some(typed) = self.typed.take() else {
             return;
         };
-        let mut drew_at = None;
+        let deadline = typed.at + deadline::scaled(ENTER_WAIT);
+        let mut looked_at = typed.drawn;
+        let mut shown_at = None;
         loop {
             let now = Instant::now();
-            if drew_at.is_none() && self.drawn() > drawn {
-                drew_at = Some(now);
+            let drawn = self.drawn();
+            if shown_at.is_none() && drawn > looked_at {
+                looked_at = drawn;
+                if self.shows(&typed) {
+                    shown_at = Some(now);
+                }
             }
-            let settled = drew_at.is_some_and(|at| now >= at + ENTER_GAP);
-            if settled || now >= typed_at + ENTER_WAIT {
+            let settled = shown_at.is_some_and(|at| now >= at + ENTER_GAP);
+            if settled || now >= deadline {
                 return;
             }
             thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Whether the screen shows the typed text: its end once more than before, or for a lone
+    /// key, anything drawn since.
+    fn shows(&self, typed: &Typed) -> bool {
+        match &typed.tail {
+            Some((tail, before)) => self.visible_text().matches(tail.as_str()).count() > *before,
+            None => true,
         }
     }
 
@@ -327,21 +437,19 @@ impl Pty {
     }
 
     /// Rows scrolled off the top of the screen, or off a scroll region starting at the top
-    /// row, are in the scrollback, as xterm and iTerm2 keep them.
+    /// row, are in the scrollback, as xterm and iTerm2 keep them. A frame drawn as one
+    /// synchronized update shows only once it is whole, as in those terminals.
     pub fn screen(&self) -> Screen {
         let terminal = lock(&self.terminal);
-        let scrollback = terminal.emulator.scrollback().map(str::to_owned).collect();
-        let screen = terminal.emulator.screen();
-        let (rows, cols) = screen.size();
-        let visible = screen
-            .rows(0, cols)
-            .take(usize::from(rows))
-            .map(|line| line.trim_end().to_owned())
-            .collect();
         Screen {
-            scrollback,
-            visible,
+            scrollback: terminal.emulator.scrollback().map(str::to_owned).collect(),
+            visible: visible_rows(&terminal),
         }
+    }
+
+    /// The visible rows alone, cheaper than [`Self::screen`] with its scrollback.
+    fn visible_text(&self) -> String {
+        visible_rows(&lock(&self.terminal)).join("\n")
     }
 
     /// Everything the program wrote, escape sequences included.
@@ -351,12 +459,67 @@ impl Pty {
 
     /// Waits until the screen, scrollback included, matches `pattern`. The error shows the
     /// screen as it was.
+    ///
+    /// The scrollback keeps every line the program ever printed there, so this suits what
+    /// stays, such as a line in the transcript. A state the screen shows only for a while, or
+    /// one it showed earlier too, needs [`Self::wait_for_visible`] or [`Self::wait_until`].
     pub fn wait_for(&self, pattern: &str, timeout: Duration) -> anyhow::Result<Screen> {
         let regex = Regex::new(pattern).with_context(|| format!("bad pattern {pattern:?}"))?;
-        let deadline = Instant::now() + timeout;
+        self.poll(
+            &format!("{pattern:?}"),
+            deadline::after(timeout),
+            |screen| regex.is_match(&screen.text()),
+        )
+    }
+
+    /// Waits until the visible rows, leaving out the scrollback, match `pattern`, where `^`
+    /// and `$` match at each row. The screen comes back once two looks in a row agree, so a
+    /// frame read half drawn isn't taken.
+    pub fn wait_for_visible(&self, pattern: &str, timeout: Duration) -> anyhow::Result<Screen> {
+        let regex = RegexBuilder::new(pattern)
+            .multi_line(true)
+            .build()
+            .with_context(|| format!("bad pattern {pattern:?}"))?;
+        self.wait_until(&format!("{pattern:?} on screen"), timeout, |screen| {
+            regex.is_match(&screen.visible_text())
+        })
+    }
+
+    /// Waits until `done` holds for the screen, `what` naming it for the error. Like
+    /// [`Self::wait_for_visible`], it returns once two looks in a row agree.
+    pub fn wait_until(
+        &self,
+        what: &str,
+        timeout: Duration,
+        done: impl Fn(&Screen) -> bool,
+    ) -> anyhow::Result<Screen> {
+        let deadline = deadline::after(timeout);
+        'look: loop {
+            let mut screen = self.poll(what, deadline, &done)?;
+            while Instant::now() < deadline {
+                thread::sleep(POLL);
+                let next = self.screen();
+                if !done(&next) {
+                    continue 'look;
+                }
+                if next.visible == screen.visible {
+                    return Ok(next);
+                }
+                screen = next;
+            }
+            return Ok(screen);
+        }
+    }
+
+    fn poll(
+        &self,
+        what: &str,
+        deadline: Instant,
+        done: impl Fn(&Screen) -> bool,
+    ) -> anyhow::Result<Screen> {
         loop {
             let screen = self.screen();
-            if regex.is_match(&screen.text()) {
+            if done(&screen) {
                 return Ok(screen);
             }
             let closed = lock(&self.terminal).closed;
@@ -367,7 +530,7 @@ impl Pty {
                     "timed out"
                 };
                 bail!(
-                    "{why} waiting for {pattern:?}; the screen was:\n{}",
+                    "{why} waiting for {what}; the screen was:\n{}",
                     screen.text()
                 );
             }
@@ -376,7 +539,7 @@ impl Pty {
     }
 
     pub fn wait_for_exit(&mut self, timeout: Duration) -> anyhow::Result<u32> {
-        let deadline = Instant::now() + timeout;
+        let deadline = deadline::after(timeout);
         loop {
             if let Some(status) = self.child.try_wait().context("checking the program")? {
                 self.drain();
@@ -384,7 +547,8 @@ impl Pty {
             }
             if Instant::now() >= deadline {
                 bail!(
-                    "the program didn't exit in {timeout:?}; the screen was:\n{}",
+                    "the program didn't exit in {:?}; the screen was:\n{}",
+                    deadline::scaled(timeout),
                     self.screen().text()
                 );
             }
@@ -396,24 +560,41 @@ impl Pty {
     /// can still have in the terminal. A program it started may keep the terminal open, so
     /// the wait is short.
     fn drain(&self) {
-        let deadline = Instant::now() + DRAIN;
+        let deadline = deadline::after(DRAIN);
         while !lock(&self.terminal).closed && Instant::now() < deadline {
             thread::sleep(POLL);
         }
     }
 
+    /// Resizes the window, keeping the pixels a cell.
     pub fn resize(&mut self, rows: u16, cols: u16) -> anyhow::Result<()> {
+        self.resize_with_cell(rows, cols, self.cell)
+    }
+
+    /// Resizes the window with new pixels a cell, as a font size change does. The rows and
+    /// columns may stay as they were: the size in pixels still changes, so the program is told.
+    pub fn resize_with_cell(
+        &mut self,
+        rows: u16,
+        cols: u16,
+        cell: (u16, u16),
+    ) -> anyhow::Result<()> {
         self.master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
+            .resize(window(rows, cols, cell))
             .map_err(|err| anyhow!("resizing the pty: {err}"))?;
         lock(&self.terminal).emulator.set_size(rows, cols);
         self.size = (rows, cols);
+        self.cell = cell;
         Ok(())
+    }
+
+    /// The size in pixels the program reads with its rows and columns, width then height.
+    pub fn pixel_size(&self) -> anyhow::Result<(u16, u16)> {
+        let size = self
+            .master
+            .get_size()
+            .map_err(|err| anyhow!("reading the pty's size: {err}"))?;
+        Ok((size.pixel_width, size.pixel_height))
     }
 
     /// Saves the screen as `<name>.txt` (text), `<name>.ansi` (everything the program wrote,
@@ -489,7 +670,20 @@ fn read_output(
             }
         }
     }
-    lock(terminal).closed = true;
+    let mut terminal = lock(terminal);
+    terminal.emulator.release();
+    terminal.closed = true;
+}
+
+/// The rows the terminal shows, top to bottom, trailing spaces trimmed.
+fn visible_rows(terminal: &Terminal) -> Vec<String> {
+    let screen = terminal.emulator.shown();
+    let (rows, cols) = screen.size();
+    screen
+        .rows(0, cols)
+        .take(usize::from(rows))
+        .map(|line| line.trim_end().to_owned())
+        .collect()
 }
 
 /// Spots terminal queries in the output stream, even split across reads, and builds replies.

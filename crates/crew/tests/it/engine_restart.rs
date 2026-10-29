@@ -17,6 +17,7 @@ use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::ModelRef;
 use argonauts_core::session_runner::{Access, SessionControl, SessionSpec};
 use argonauts_crew::task::take_over;
+use argonauts_testkit::deadline;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 
 use support::{Crew, Spawned, names};
@@ -111,7 +112,7 @@ async fn a_running_task_given_to_its_own_worker_starts_over() -> anyhow::Result<
     let task = building(&run).await?;
 
     assert_eq!(reassign(&run, &task, WORKER).await?, Ok(()));
-    let exit = tokio::time::timeout(Duration::from_secs(30), run.exit).await??;
+    let exit = tokio::time::timeout(deadline::scaled(Duration::from_secs(30)), run.exit).await??;
     assert_eq!(exit, EngineExit::Waiting(WaitReason::Approval));
 
     let events = run.sink.events();

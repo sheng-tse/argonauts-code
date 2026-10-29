@@ -13,6 +13,29 @@ pub const RUN: &str = "run-01";
 pub const ELAPSED: &str = r"(?:\d+h\d+m|(?:\d+m)?\d+s)";
 /// How long an agent has run, as the list under the input says it: `3s`, `29m`, `1h 7m`.
 pub const LISTED_FOR: &str = r"(?:\d+h \d+m|\d+m|\d+s)";
+
+/// Each compact time a running row can read once it has counted on from `from_ms`, given to the
+/// screen no sooner than `asked`: from `from_ms` itself up to that plus all the time since.
+/// Call it once the screen shows the row.
+pub fn counted_on(from_ms: u64, asked: std::time::Instant) -> String {
+    let waited = u64::try_from(asked.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let times: Vec<String> = (from_ms / 1000..=from_ms.saturating_add(waited) / 1000)
+        .map(compact)
+        .collect();
+    format!("(?:{})", times.join("|"))
+}
+
+/// The screen's compact time for `secs`: `45s`, `6m02s`, `1h07m`.
+fn compact(secs: u64) -> String {
+    let (hours, minutes, seconds) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if hours > 0 {
+        format!("{hours}h{minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
 pub const EVIDENCE: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
 
 /// One agent of a scripted run.
@@ -528,4 +551,13 @@ fn part_kind(label: &str) -> &str {
         "goal" | "notes" | "rules" | "status" => label,
         _ => "task",
     }
+}
+
+#[test]
+fn a_counted_time_reads_each_second_it_may_have_reached() {
+    let asked = std::time::Instant::now() - std::time::Duration::from_millis(1500);
+    let times = counted_on(59_000, asked);
+    assert!(times.starts_with("(?:59s|1m00s"), "{times}");
+    let at = regex::Regex::new(&format!("^{times}$")).unwrap();
+    assert!(at.is_match("1m00s") && !at.is_match("58s"), "{times}");
 }

@@ -1,6 +1,7 @@
-# A Captain task whose worker is mid-turn when you mention it. The first turn holds for a few
-# seconds so the mention arrives while it works; the worker then waits on stdin for the
-# mention, which Argonauts Code delivers when the turn ends, and finishes in a second turn.
+# A Captain task whose worker is mid-turn when you mention it. The first turn holds until the
+# test has seen the mention queued, so it arrives while the worker works; the worker then waits
+# on stdin for the mention, which Argonauts Code delivers when the turn ends, and finishes in a
+# second turn.
 
 [version]
 claude = "2.1.284 (Claude Code)"
@@ -199,7 +200,7 @@ emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-worker
 [[rule.step]]
 emit = "{\"type\":\"assistant\",\"session_id\":\"claude-worker\",\"parent_tool_use_id\":null,\"message\":{\"id\":\"msg-0024\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"Reading the 429 handler.\"}],\"stop_reason\":null,\"usage\":{\"input_tokens\":50,\"output_tokens\":20}}}"
 [[rule.step]]
-sleep_ms = 4000
+await_signal = "mention-queued"
 [[rule.step]]
 emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"Read the handler.\",\"session_id\":\"claude-worker\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60}}"
 [[rule.step]]

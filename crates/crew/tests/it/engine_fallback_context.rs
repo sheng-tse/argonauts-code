@@ -42,6 +42,7 @@ use argonauts_crew::engine::host::Host;
 use argonauts_crew::fallback::{self, rules};
 use argonauts_crew::state::RunState;
 use argonauts_crew::task::{pipeline, prompt};
+use argonauts_testkit::deadline;
 use argonauts_testkit::repo::TempRepo;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
@@ -287,7 +288,7 @@ impl Bench {
             }
             anyhow::Ok(())
         };
-        tokio::time::timeout(Duration::from_secs(60), run)
+        tokio::time::timeout(deadline::scaled(Duration::from_secs(60)), run)
             .await
             .with_context(|| format!("{c1} never got to {state:?}"))?
     }

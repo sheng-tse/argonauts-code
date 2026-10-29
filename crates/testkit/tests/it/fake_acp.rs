@@ -113,7 +113,7 @@ impl Client {
     /// Closes stdin, as a client does when it's done, and returns the exit code.
     fn finish(mut self) -> i32 {
         drop(self.stdin.take());
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = argonauts_testkit::deadline::after(PATIENCE);
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
                 return status.code().unwrap_or(-1);

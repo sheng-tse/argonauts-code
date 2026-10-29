@@ -14,12 +14,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
-use argonauts_core::app::{AppChoice, AppEvent, AppMode, ChoiceKind, ConversationEvent, UiCommand};
+use argonauts_core::app::{
+    AppChoice, AppEvent, AppMode, ChoiceKind, ConversationEvent, TraceLine, UiCommand,
+};
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::approval::{AnswerOption, ApprovalEvent, ApprovalKind, ApprovalOpened};
 use argonauts_core::layout::run_files;
 use argonauts_core::names::ChoiceId;
-use argonauts_scenarios::{COLS, ROWS, Scenario, WAIT, as_set_up, past_the_question_guard};
+use argonauts_scenarios::{
+    COLS, ROWS, Scenario, WAIT, as_set_up, past_the_guard_of, past_the_question_guard,
+};
 use argonauts_testkit::{Invocation, Key, Pty, PtyCommand, argonauts_bin};
 
 pub use files::{TomlEntry, json_at, same_toml, toml_entries, toml_value};
@@ -96,6 +100,8 @@ pub mod requests {
     pub const TASK_IN_A_TOOL_CALL: &str = "rename the config loader while the build runs";
     /// A Captain change whose worker takes a few seconds, then reports.
     pub const TIMED_TASK: &str = "rename the settings reader in a few seconds";
+    /// A Captain change whose worker works until the test signals `worker-may-finish`.
+    pub const HELD_TASK: &str = "rename the settings writer when told";
     /// A conversation turn the fake never finishes.
     pub const HANGING_TURN: &str = "take your time with this one";
     /// Answered only; for `/ask`.
@@ -256,6 +262,66 @@ pub fn submit(pty: &mut Pty, text: &str) -> anyhow::Result<()> {
     pty.press(Key::Enter)
 }
 
+/// Waits for the bottom line to show and hold for a moment, pressing Esc on whatever hides it
+/// meanwhile: a view the app answers for opens when the answer comes, which can be after the
+/// Esc that was to close it.
+pub fn back_to_the_input(pty: &mut Pty) -> anyhow::Result<()> {
+    let holds = argonauts_testkit::deadline::scaled(Duration::from_millis(300));
+    let patience = argonauts_testkit::deadline::scaled(Duration::from_secs(1));
+    let deadline = argonauts_testkit::deadline::after(WAIT);
+    let mut shown_since = None;
+    let mut hidden_since = Instant::now();
+    loop {
+        let now = Instant::now();
+        if pty.screen().visible_text().contains("shift+tab to cycle") {
+            let since = *shown_since.get_or_insert(now);
+            if now >= since + holds {
+                return check_no_history_search(pty);
+            }
+        } else {
+            if shown_since.take().is_some() {
+                hidden_since = now;
+            }
+            // Something opened after all, or is taking its time to close.
+            if now >= hidden_since + patience {
+                pty.press(Key::Esc)?;
+                hidden_since = now;
+            }
+        }
+        if now >= deadline {
+            bail!(
+                "the bottom line never came back to stay:\n{}",
+                pty.screen().visible_text()
+            );
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Waits for the app to take the slash command typed once the trace had `before` lines, and
+/// to answer it.
+pub fn wait_answered(scenario: &Scenario, before: usize, line: &str) -> anyhow::Result<()> {
+    wait_until(&format!("the app's answer to {line}"), || {
+        let lines = scenario.trace.lines()?;
+        let after = lines.get(before..).unwrap_or_default();
+        let taken = after.iter().position(|line| {
+            matches!(
+                line,
+                TraceLine::In {
+                    command: UiCommand::Slash { .. },
+                    ..
+                }
+            )
+        });
+        let answered = taken.is_some_and(|at| {
+            after[at..]
+                .iter()
+                .any(|line| matches!(line, TraceLine::Out { .. }))
+        });
+        Ok(answered.then_some(()))
+    })
+}
+
 /// The number the question shows beside the option the event gives `key`. The letters stay in the
 /// protocol, and the screen answers to numbers only.
 pub fn number_of(options: &[AnswerOption], key: char) -> char {
@@ -277,7 +343,7 @@ pub fn answer_question(pty: &mut Pty, number: char) -> anyhow::Result<()> {
     check_no_history_search(pty)?;
     // The trace has the question before the screen does, and an Up that comes first recalls the
     // last prompt instead. A question opens focused on an option.
-    pty.wait_for(r"❯ \d+\. ", WAIT)?;
+    pty.wait_for_visible(r"❯ \d+\. ", WAIT)?;
     past_the_question_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Char(number))
@@ -286,7 +352,7 @@ pub fn answer_question(pty: &mut Pty, number: char) -> anyhow::Result<()> {
 /// A question that needs you takes the keys as it shows, so a command typed while it waits needs
 /// Esc first, which hands the question on and leaves a line saying who decides it now.
 pub fn pass_task_on(pty: &mut Pty) -> anyhow::Result<()> {
-    pty.wait_for(QUESTION_HAS_THE_KEYS, WAIT)?;
+    pty.wait_for_visible(QUESTION_HAS_THE_KEYS, WAIT)?;
     past_the_question_guard();
     pty.press(Key::Esc)?;
     pty.wait_for(r"left to the (main )?agent · you, ", WAIT)
@@ -339,7 +405,7 @@ pub fn wait_until<T>(
     what: &str,
     mut check: impl FnMut() -> anyhow::Result<Option<T>>,
 ) -> anyhow::Result<T> {
-    let deadline = Instant::now() + WAIT;
+    let deadline = argonauts_testkit::deadline::after(WAIT);
     loop {
         if let Some(found) = check()? {
             return Ok(found);
@@ -404,17 +470,27 @@ pub fn wait_turns_finished(scenario: &Scenario, n: usize) -> anyhow::Result<()> 
     .map(|_| ())
 }
 
-/// The newest app choice of `kind` that is still open.
-/// A question drops the keys pressed in its first moment, so once it is open this waits that out,
-/// as someone reading it would.
+/// The newest app choice of `kind` that is still open, as the trace has it. The screen may show
+/// it a while later, so a key for it waits for the screen, as [`answer_question`] and
+/// [`wait_shown_choice`] do.
 pub fn wait_open_choice(scenario: &Scenario, kind: ChoiceKind) -> anyhow::Result<AppChoice> {
-    let choice = wait_until(&format!("an open {kind:?} choice"), || {
+    wait_until(&format!("an open {kind:?} choice"), || {
         Ok(open_choices(scenario)?
             .into_iter()
             .rev()
             .find(|c| c.kind == kind))
-    })?;
-    past_the_question_guard();
+    })
+}
+
+/// [`wait_open_choice`], once the screen shows it too and past its guard, for a key pressed at
+/// once.
+pub fn wait_shown_choice(
+    scenario: &Scenario,
+    pty: &Pty,
+    kind: ChoiceKind,
+) -> anyhow::Result<AppChoice> {
+    let choice = wait_open_choice(scenario, kind)?;
+    past_the_guard_of(pty, &choice.title)?;
     Ok(choice)
 }
 

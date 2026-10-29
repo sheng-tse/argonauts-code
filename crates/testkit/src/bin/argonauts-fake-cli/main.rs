@@ -12,9 +12,10 @@ use std::io::{self, BufRead, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use argonauts_testkit::fake_clis::is_message_command;
+use argonauts_testkit::deadline;
+use argonauts_testkit::fake_clis::{is_message_command, signal_path};
 use argonauts_testkit::scenario::{
     BAD_SCENARIO_EXIT, FakeRule, FakeScenario, FakeStep, Invocation, LOG_ENV, LogLine,
     NO_RULE_EXIT, SCENARIO_ENV, StdinPrompt,
@@ -155,6 +156,7 @@ fn play(
                 out.flush()?;
             }
             FakeStep::SleepMs(ms) => thread::sleep(Duration::from_millis(*ms)),
+            FakeStep::AwaitSignal(name) => await_signal(name)?,
             FakeStep::Write { path, content } => write_inside_cwd(path, content)?,
             FakeStep::ReadStdinLine(_) => {
                 if let Some(line) = stdin.line() {
@@ -249,6 +251,35 @@ fn env_names() -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// The longest a fake waits for a test's signal, before the deadline scale stretches it: past
+/// any wait a test makes before it gives one.
+const SIGNAL_WAIT: Duration = Duration::from_secs(600);
+
+/// Waits for the test's signal. Without a log there's no test to give it, so the steps go on.
+/// A test that ended took the log's folder with it, and one that never signals in time has
+/// failed already, so the fake stops then rather than wait on after its test.
+fn await_signal(name: &str) -> anyhow::Result<()> {
+    let Some(log) = std::env::var_os(LOG_ENV) else {
+        return Ok(());
+    };
+    let path = signal_path(Path::new(&log), name)?;
+    let folder = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let deadline = deadline::after(SIGNAL_WAIT);
+    while !path.exists() {
+        anyhow::ensure!(
+            folder.is_dir(),
+            "the test that would signal {name} has ended"
+        );
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "no {name} signal came in {:?}",
+            deadline::scaled(SIGNAL_WAIT)
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
 }
 
 fn log(line: &LogLine) {

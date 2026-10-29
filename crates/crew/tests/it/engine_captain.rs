@@ -25,6 +25,7 @@ use argonauts_core::session_runner::{Access, SessionSpec};
 use argonauts_core::steps::StepName;
 use argonauts_core::{PhaseStatus, RunId};
 use argonauts_crew::understand::file;
+use argonauts_testkit::deadline;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 
 use support::{Crew, Outcome, answer, names};
@@ -383,7 +384,7 @@ async fn a_pause_cancelled_before_it_settles_resumes_and_waits_once() -> anyhow:
         .send(EngineCommand::Pause { now: true })
         .await?;
     run.commands.send(EngineCommand::CancelPause).await?;
-    let exit = tokio::time::timeout(Duration::from_secs(30), run.exit).await??;
+    let exit = tokio::time::timeout(deadline::scaled(Duration::from_secs(30)), run.exit).await??;
     assert_eq!(exit, EngineExit::Waiting(WaitReason::Approval));
 
     let events = run.sink.events();
@@ -445,7 +446,7 @@ async fn a_stopped_run_reopens_and_resumes_its_build() -> anyhow::Result<()> {
     }
     assert!(building, "{:?}", names(&run.sink.events()));
     run.commands.send(EngineCommand::Stop).await?;
-    let exit = tokio::time::timeout(Duration::from_secs(30), run.exit).await??;
+    let exit = tokio::time::timeout(deadline::scaled(Duration::from_secs(30)), run.exit).await??;
     assert_eq!(exit, EngineExit::Finished(RunOutcome::Stopped));
     let stopped = run.sink.events();
 

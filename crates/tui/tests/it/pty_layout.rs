@@ -58,7 +58,10 @@ fn the_start_shows_the_header_on_top_and_the_input_at_the_bottom() {
         .inline()
         .after_shell_line(SHELL_LINE)
         .start();
-    let screen = driver.wait_visible(MODE_IDLE);
+    // The input and the header can reach the terminal in frames of their own.
+    let screen = driver.wait_until("the header and the input", |screen| {
+        row_of(screen, HEADER).is_some() && row_of(screen, MODE_IDLE).is_some()
+    });
     // As in Claude Code, the top row stays blank and the header starts under it.
     assert_eq!(
         expect_row(&screen, HEADER),

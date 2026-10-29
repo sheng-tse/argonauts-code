@@ -17,7 +17,7 @@ use argonauts_core::events::approval::{
 use argonauts_core::events::run::{RunLifecycle, RunStarted};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::ChoiceId;
-use argonauts_scenarios::{Scenario, WAIT, as_set_up, past_the_question_guard};
+use argonauts_scenarios::{Scenario, WAIT, as_set_up, past_the_guard_of};
 use argonauts_testkit::{Invocation, Key, Pty, argonauts_bin};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation,
@@ -86,7 +86,7 @@ pub fn write_global_config(scenario: &Scenario, text: &str) -> anyhow::Result<()
 pub fn trust_repo(scenario: &Scenario) -> anyhow::Result<()> {
     const PICKS: [&str; 2] = ["Now", "Trust them"];
     let mut pty = scenario.launch(&["setup"])?;
-    let deadline = Instant::now() + WAIT;
+    let deadline = argonauts_testkit::deadline::after(WAIT);
     let mut answered: Vec<ChoiceId> = Vec::new();
     loop {
         let open = open_setup_steps(scenario)?;
@@ -96,7 +96,7 @@ pub fn trust_repo(scenario: &Scenario) -> anyhow::Result<()> {
                 .iter()
                 .position(|option| PICKS.contains(&option.label.as_str()));
             // A step drops the keys pressed in its first moment, as every question does.
-            past_the_question_guard();
+            past_the_guard_of(&pty, &step.title)?;
             match pick.and_then(|index| char::from_digit(index as u32 + 1, 10)) {
                 Some(number) => pty.press(Key::Char(number))?,
                 None => pty.press(Key::Enter)?,
@@ -169,7 +169,7 @@ pub fn wait_for_events(
     timeout: Duration,
     done: impl Fn(&[RunEvent]) -> bool,
 ) -> anyhow::Result<Vec<RunEvent>> {
-    let deadline = Instant::now() + timeout;
+    let deadline = argonauts_testkit::deadline::after(timeout);
     loop {
         // No run yet reads as no events.
         let events = scenario.latest_run_events().unwrap_or_default();
@@ -405,7 +405,7 @@ impl McpServer {
         timeout: Duration,
         done: impl Fn(&[Value]) -> bool,
     ) -> anyhow::Result<Vec<Value>> {
-        let deadline = Instant::now() + timeout;
+        let deadline = argonauts_testkit::deadline::after(timeout);
         let mut since = 0;
         let mut events = Vec::new();
         loop {

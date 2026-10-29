@@ -168,3 +168,60 @@ fn answers_help_with_the_flags_the_doctor_looks_for() {
     let (code, _, _) = run(&clis, &repo, "claude", &["-p", "--help"], "");
     assert_eq!(code, NO_RULE_EXIT);
 }
+
+/// A fake waiting for a signal goes on once its test gives it, and stops once that test has
+/// ended and taken its folder with it, so no fake waits on after its test.
+#[test]
+fn a_signal_lets_a_fake_go_on_and_an_ended_test_stops_it() {
+    let repo = TempRepo::new().unwrap();
+    let scenario = FakeScenario::default().rule(
+        FakeRule::for_program("codex")
+            .step(FakeStep::AwaitSignal("go".into()))
+            .step(FakeStep::Emit("{\"went\":true}".into()))
+            .step(FakeStep::Exit(0)),
+    );
+    let path = repo.scratch().join("scenario.toml");
+    scenario.save(&path).unwrap();
+    let fakes = repo.scratch().join("fakes");
+    let clis = FakeClis::install_with(Path::new(FAKE), &fakes, &path).unwrap();
+    let start = || {
+        Command::new(clis.bin_dir().join("codex"))
+            .current_dir(repo.root())
+            .envs(clis.envs())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let waiting = start();
+    clis.signal("go").unwrap();
+    let went = waiting.wait_with_output().unwrap();
+    assert_eq!(went.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&went.stdout).contains("went"));
+
+    std::fs::remove_file(argonauts_testkit::fake_clis::signal_path(clis.log_path(), "go").unwrap())
+        .unwrap();
+    let mut waiting = start();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(
+        waiting.try_wait().unwrap().is_none(),
+        "it waits for the signal"
+    );
+    std::fs::remove_dir_all(&fakes).unwrap();
+    let until = argonauts_testkit::deadline::after(std::time::Duration::from_secs(5));
+    let status = loop {
+        if let Some(status) = waiting.try_wait().unwrap() {
+            break status;
+        }
+        assert!(std::time::Instant::now() < until, "the fake waited on");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(!status.success());
+    let mut said = String::new();
+    std::io::Read::read_to_string(&mut waiting.stderr.take().unwrap(), &mut said).unwrap();
+    assert!(
+        said.contains("the test that would signal go has ended"),
+        "{said}"
+    );
+}

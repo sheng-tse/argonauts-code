@@ -133,12 +133,13 @@ fn capture(scenario: &Scenario, look: &Look, cols: u16) -> anyhow::Result<()> {
     pty.press(Key::Enter)?;
     // The working line says the run is going. The mode's `esc to interrupt` hint is the
     // first thing a narrow terminal takes for the chips, so it's no sign of that here.
-    let screen = pty.wait_for(r"(?m)^[∙✢✲✶✻✼*] [\w'-]+… \(", WAIT)?;
+    pty.wait_for_visible(r"^[∙✢✲✶✻✼*] [\w'-]+… \(", WAIT)?;
     // Esc leaves a run's agents going, so the bottom line counts them and makes
     // no offer to interrupt.
-    pty.wait_for(r"←  \d+ agents?", WAIT)?;
+    let screen = pty.wait_for_visible(r"←  \d+ agents?", WAIT)?;
     check(&screen, cols, "busy");
     shot(&pty, "busy")?;
+    scenario.clis.signal("busy-captured")?;
 
     pty.wait_for(r"(?m)^◆ Merge", WAIT)?;
     // The merge question needs you, so it takes the keys as it shows.

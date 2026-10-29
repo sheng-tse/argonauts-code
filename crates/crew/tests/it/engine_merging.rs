@@ -40,6 +40,7 @@ use argonauts_crew::merge::{branch, conductor, merge_packet};
 use argonauts_crew::state::RunState;
 use argonauts_crew::task::{self, checks};
 use argonauts_crew::workflow::{StepAt, StepCall, StepDone};
+use argonauts_testkit::deadline;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::MemorySink;
 
@@ -718,7 +719,7 @@ impl Bench {
             item: None,
         };
         let build = tokio::spawn(async move { task::build_step(&host, &call).await });
-        let joined = tokio::time::timeout(Duration::from_secs(60), build)
+        let joined = tokio::time::timeout(deadline::scaled(Duration::from_secs(60)), build)
             .await
             .context("the build step didn't finish")?;
         Ok(joined??)

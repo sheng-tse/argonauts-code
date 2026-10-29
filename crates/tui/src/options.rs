@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use argonauts_core::settings::ui::{ColorChoice, UiSettings};
 use argonauts_core::{KeyScheme, Verbosity};
@@ -30,6 +31,12 @@ pub struct UiOptions {
     /// The first start's greeting, which the app sets on that start alone. The screen prints
     /// it before anything else.
     pub greeting: Option<crate::welcome::Greeting>,
+    /// How long a first Ctrl+C, Ctrl+D or Esc waits for the second: [`QUIT_WINDOW`] for people.
+    /// The pty tests' driver widens it, since a busy test machine can stall longer than that
+    /// between two keys it sends.
+    ///
+    /// [`QUIT_WINDOW`]: crate::app::QUIT_WINDOW
+    pub double_press: Duration,
 }
 
 impl UiOptions {
@@ -50,6 +57,7 @@ impl UiOptions {
             history_file: None,
             ultracode_trigger: true,
             greeting: None,
+            double_press: crate::app::QUIT_WINDOW,
         }
     }
 }

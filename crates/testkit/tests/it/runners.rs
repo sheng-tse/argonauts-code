@@ -13,7 +13,7 @@ use argonauts_core::session_runner::{
 use argonauts_core::steps::intake::{Estimate, ReplyKind};
 use argonauts_core::steps::{StepRequest, StepRunner, decode, output_schema};
 use argonauts_testkit::runner::{drain, session_spec};
-use argonauts_testkit::{FakeDirectory, FakeRunner, FakeServices, FakeSession};
+use argonauts_testkit::{FakeDirectory, FakeRunner, FakeServices, FakeSession, Hold, deadline};
 use serde_json::json;
 
 fn prompt(text: &str) -> Vec<InputPart> {
@@ -197,4 +197,127 @@ async fn dropping_the_control_sender_stops_the_session() {
     drop(control);
     while events.recv().await.is_some() {}
     assert_eq!(ended.await.unwrap().reason, EndReason::Stopped);
+}
+
+/// Polls `done` until it holds, failing the test with `what` after the deadline.
+async fn until(what: &str, done: impl Fn() -> bool) {
+    let give_up = deadline::after(Duration::from_secs(5));
+    while !done() {
+        assert!(std::time::Instant::now() < give_up, "{what}");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Nothing more comes out of the session for a moment.
+async fn quiet(handle: &mut SessionHandle) {
+    let next = tokio::time::timeout(Duration::from_millis(50), handle.events.recv()).await;
+    assert!(next.is_err(), "the held session went on: {next:?}");
+}
+
+#[tokio::test]
+async fn a_held_session_waits_for_its_release_and_records_messages_meanwhile() {
+    let hold = Hold::new();
+    let worker =
+        FakeRunner::cli("agy", "google").then(FakeSession::completed("done").held_after(1, &hold));
+    let mut handle = worker
+        .start(session_spec("agy", Access::ReadOnly, Path::new("/")))
+        .await
+        .unwrap();
+    assert!(matches!(
+        handle.events.recv().await,
+        Some(RunnerEvent::Session(SessionEvent::Input(_)))
+    ));
+    assert!(matches!(
+        handle.events.recv().await,
+        Some(RunnerEvent::Agent(
+            argonauts_core::AgentEvent::TextDelta { .. }
+        ))
+    ));
+    handle
+        .control
+        .send(SessionControl::Deliver(message("use EVAL")))
+        .await
+        .unwrap();
+    until("the held session takes the message in", || {
+        worker.controls().len() == 1
+    })
+    .await;
+    quiet(&mut handle).await;
+    hold.release();
+    let (events, end) = drain(handle).await;
+    assert!(matches!(
+        &events[0],
+        RunnerEvent::Session(SessionEvent::Delivered { .. })
+    ));
+    assert!(matches!(
+        &events[1],
+        RunnerEvent::Session(SessionEvent::Input(_))
+    ));
+    assert!(matches!(
+        &events[2],
+        RunnerEvent::Agent(argonauts_core::AgentEvent::Result { .. })
+    ));
+    assert_eq!(events.len(), 3, "{events:#?}");
+    assert_eq!(end.reason, EndReason::Completed);
+}
+
+#[tokio::test]
+async fn a_stop_taken_in_while_held_ends_the_session_once_released() {
+    let hold = Hold::new();
+    let worker =
+        FakeRunner::cli("agy", "google").then(FakeSession::completed("done").held_after(0, &hold));
+    let mut handle = worker
+        .start(session_spec("agy", Access::ReadOnly, Path::new("/")))
+        .await
+        .unwrap();
+    handle.control.send(SessionControl::Stop).await.unwrap();
+    until("the held session takes the stop in", || {
+        worker.controls().len() == 1
+    })
+    .await;
+    assert!(
+        handle.ended.try_recv().is_err(),
+        "a held session doesn't end"
+    );
+    hold.release();
+    let (events, end) = drain(handle).await;
+    assert_eq!(events.len(), 1, "only the input record: {events:#?}");
+    assert_eq!(end.reason, EndReason::Stopped);
+}
+
+#[tokio::test]
+async fn a_hold_past_the_last_event_keeps_the_session_from_ending() {
+    let hold = Hold::new();
+    let worker =
+        FakeRunner::cli("agy", "google").then(FakeSession::completed("done").held_after(2, &hold));
+    let mut handle = worker
+        .start(session_spec("agy", Access::ReadOnly, Path::new("/")))
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        assert!(handle.events.recv().await.is_some());
+    }
+    quiet(&mut handle).await;
+    hold.release();
+    let (events, end) = drain(handle).await;
+    assert!(events.is_empty(), "{events:#?}");
+    assert_eq!(end.reason, EndReason::Completed);
+}
+
+#[tokio::test]
+async fn dropping_the_hold_lets_its_sessions_go_on() {
+    let hold = Hold::new();
+    let worker = FakeRunner::cli("agy", "google")
+        .then(FakeSession::completed("one").held_after(0, &hold))
+        .then(FakeSession::completed("two").held_after(1, &hold));
+    drop(hold);
+    for _ in 0..2 {
+        let handle = worker
+            .start(session_spec("agy", Access::ReadOnly, Path::new("/")))
+            .await
+            .unwrap();
+        let (events, end) = drain(handle).await;
+        assert_eq!(events.len(), 3, "{events:#?}");
+        assert_eq!(end.reason, EndReason::Completed);
+    }
 }

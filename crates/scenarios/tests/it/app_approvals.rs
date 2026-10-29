@@ -54,7 +54,8 @@ fn app_approval_mode_logged_and_applied() -> anyhow::Result<()> {
         run_config()
     ))?;
     let mut pty = start(&scenario)?;
-    let run_dir = start_captain(&scenario, &mut pty, requests::TIMED_TASK)?;
+    // The worker holds until the mode has changed, so the merge question comes after it.
+    let run_dir = start_captain(&scenario, &mut pty, requests::HELD_TASK)?;
     wait_worker_started(&scenario)?;
 
     check_bottom_row(&pty)?;
@@ -84,6 +85,7 @@ fn app_approval_mode_logged_and_applied() -> anyhow::Result<()> {
     let name = format!("{mode:?}").to_lowercase();
     pty.wait_for(&format!("{glyph} {name} mode on"), WAIT)?;
 
+    scenario.clis.signal("worker-may-finish")?;
     let merge_question = wait_approval(&scenario, ApprovalKind::Merge)?;
     assert_eq!(
         merge_question.mode, mode,

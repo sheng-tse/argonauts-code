@@ -53,7 +53,7 @@ fn wait_for_event<T>(
     timeout: Duration,
     found: impl Fn(&RunEvent) -> Option<T>,
 ) -> anyhow::Result<T> {
-    let deadline = Instant::now() + timeout;
+    let deadline = argonauts_testkit::deadline::after(timeout);
     loop {
         if let Ok(events) = scenario.latest_run_events()
             && let Some(hit) = events.iter().find_map(&found)
@@ -137,10 +137,17 @@ fn crew_mention_delivered_next_turn() -> anyhow::Result<()> {
     let worker = worker_session(&scenario)?;
     pty.wait_for("Reading the 429 handler", WAIT)?;
 
-    // Typed while the worker's first turn is still going.
+    // Typed while the worker's first turn is still going, which holds until the mention waits
+    // for its next turn. Enter goes once the input says it sends to the run, not to the main
+    // agent, which it can say a moment after the worker's first words show.
     pty.send(&format!("@claude-code {mention}"))?;
+    pty.wait_for_visible("Enter sends guidance to the run", WAIT)?;
     pty.press(Key::Enter)?;
+    wait_for_event(&scenario, WAIT, |event| {
+        queued(std::slice::from_ref(event), &worker, mention)
+    })?;
     scenario.shot(&pty, "crew-mention-queued")?;
+    scenario.clis.signal("mention-queued")?;
     wait_for_event(&scenario, WAIT, |event| match &event.kind {
         RunEventKind::Session(SessionEvent::Ended(_))
             if event.session.as_ref() == Some(&worker) =>
@@ -291,7 +298,7 @@ fn crew_status_tool_mid_session() -> anyhow::Result<()> {
 }
 
 fn wait_for_file(path: &Path) -> anyhow::Result<Vec<u8>> {
-    let deadline = Instant::now() + WAIT;
+    let deadline = argonauts_testkit::deadline::after(WAIT);
     loop {
         if let Ok(bytes) = fs::read(path) {
             return Ok(bytes);

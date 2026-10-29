@@ -12,7 +12,7 @@ use argonauts_core::app::{AppChoice, AppEvent, ChoiceKind, UiCommand};
 use argonauts_core::events::approval::{AnswerAction, AnswerOption};
 use argonauts_core::prompt_files;
 use argonauts_core::settings::workflows::WORKFLOW_FILE_KEYS;
-use argonauts_scenarios::{Scenario, past_the_question_guard, scenario_file};
+use argonauts_scenarios::{Scenario, past_the_guard_of, scenario_file};
 use argonauts_testkit::{FakeKind, FakeModelServer, FakeRule, FakeScenario, FakeStep, Key, Pty};
 
 /// The keys an Enter-through setup writes, and nothing else.
@@ -88,7 +88,7 @@ fn walk_setup(
         };
         check_no_history_search(pty)?;
         // A step drops the keys pressed in its first moment, as every question does.
-        past_the_question_guard();
+        past_the_guard_of(pty, &step.title)?;
         match pick(&step) {
             Some(key) => pty.press(Key::Char(number_of(&step.options, key)))?,
             None => pty.press(Key::Enter)?,
@@ -273,13 +273,11 @@ fn app_first_run_enter_through_writes_commented_global() -> anyhow::Result<()> {
 fn app_first_run_esc_takes_defaults() -> anyhow::Result<()> {
     let scenario = first_run_scenario()?;
     let mut pty = launch_setup(&scenario, &[], &[])?;
-    let terms = wait_open_choice(&scenario, ChoiceKind::TermsNote)?;
-    past_the_question_guard();
+    let terms = wait_shown_choice(&scenario, &pty, ChoiceKind::TermsNote)?;
     pty.press(Key::Enter)?;
     wait_choice_closed(&scenario, &terms.id)?;
 
-    let agents = wait_open_choice(&scenario, ChoiceKind::Init)?;
-    past_the_question_guard();
+    let agents = wait_shown_choice(&scenario, &pty, ChoiceKind::Init)?;
     pty.press(Key::Esc)?;
     wait_choice_closed(&scenario, &agents.id)?;
     assert!(

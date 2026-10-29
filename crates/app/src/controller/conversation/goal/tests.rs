@@ -10,7 +10,7 @@ use argonauts_core::asking::{Ask, AskLine, AskReply};
 use argonauts_core::input::SlashCommand;
 use argonauts_core::session_runner::SessionSpec;
 use argonauts_core::steps::StepName;
-use argonauts_testkit::{FakeRunner, FakeSession};
+use argonauts_testkit::{FakeRunner, FakeSession, Hold};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -333,15 +333,18 @@ async fn the_main_session_sets_a_goal_for_one_request_with_its_tool() {
     let mut driver = TestDriver::start_with(alone("")).await;
     // The tool goes to a CLI that takes Argonauts Code's tools when driven.
     driver.directory.taking_tools("claude-code");
-    driver.agent.respond(|spec: &SessionSpec| {
+    // Held so the session is still at work when it calls the tool.
+    let working = Hold::new();
+    let wrote = FakeSession::completed("Wrote done.txt.").held_after(0, &working);
+    driver.agent.respond(move |spec: &SessionSpec| {
         std::fs::write(spec.workdir.join("done.txt"), "done\n").unwrap();
-        FakeSession::completed("Wrote done.txt.").with_delay(std::time::Duration::from_millis(300))
+        wrote.clone()
     });
     let worker = driver.agent.clone();
     driver
         .submit("Write the release note, and keep going until done.txt is there.")
         .await;
-    let deadline = tokio::time::Instant::now() + crate::controller::test_support::WAIT;
+    let deadline = tokio::time::Instant::now() + crate::controller::test_support::max_wait();
     let spec = loop {
         if let Some(spec) = worker.specs().into_iter().next() {
             break spec;
@@ -365,6 +368,7 @@ async fn the_main_session_sets_a_goal_for_one_request_with_its_tool() {
         "{}",
         reply.text
     );
+    working.release();
     let met = notice(&mut driver, "Goal met").await;
     assert_eq!(met, "Goal met · 1 try · kept by Argonauts Code");
     assert!(noticed(

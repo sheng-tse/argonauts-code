@@ -68,6 +68,26 @@ emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-worker-
 [[rule.step]]
 hang = true
 
+# A worker that works until the test signals `worker-may-finish`, then reports, so a pause
+# always finds it at work. A resumed session goes on at once once the signal is given.
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+prompt_contains = 'rename the settings writer when told'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-worker-held","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-worker-held","message":{"id":"msg-sess-worker-held","content":[{"type":"text","text":"Renaming the settings writer."}]}}'
+[[rule.step]]
+write = { path = "writer-notes.md", content = "settings writer renamed\n" }
+[[rule.step]]
+await_signal = "worker-may-finish"
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-worker-held","result":"Renamed the settings writer.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"status":"done","summary":"Renamed the settings writer.","files_changed":["writer-notes.md"],"tests_run":[],"concerns":[],"questions":[],"change_requests":[],"memory_proposals":[]}}'
+[[rule.step]]
+exit = 0
+
 # A worker that takes a few seconds, then reports.
 [[rule]]
 argv0 = "claude"
@@ -374,6 +394,19 @@ emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude
 emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"Rename it and update the callers."}]}}'
 [[rule.step]]
 emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"Rename it and update the callers.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"Rename it and update the callers.","estimate":{"task_type":"refactor","summary":"Rename the config loader","files_likely":["src/config.rs","src/main.rs"],"file_count":2,"risk_labels":[],"tests_exist":true,"unknowns":[]}}}'
+[[rule.step]]
+exit = 0
+
+# A Captain change whose worker works until the test lets it finish.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'rename the settings writer when told'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"Rename it and update the callers.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"Rename it and update the callers.","estimate":{"task_type":"refactor","summary":"Rename the settings writer","files_likely":["src/settings.rs"],"file_count":1,"risk_labels":[],"tests_exist":true,"unknowns":[]}}}'
 [[rule.step]]
 exit = 0
 
