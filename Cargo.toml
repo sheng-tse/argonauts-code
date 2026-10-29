@@ -24,7 +24,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
@@ -37,25 +37,25 @@ categories = ["command-line-utilities", "development-tools"]
 # `workspace = true`. A feature one member adds would build the dependency one way when that
 # member is in a build and another way when it isn't, and rebuild everything above it.
 [workspace.dependencies]
-argonauts-core = { path = "crates/core", version = "0.1.0" }
-argonauts-adapter-claude-code = { path = "crates/adapters/claude-code", version = "0.1.0" }
-argonauts-adapter-codex = { path = "crates/adapters/codex", version = "0.1.0" }
-argonauts-adapter-antigravity-cli = { path = "crates/adapters/antigravity-cli", version = "0.1.0" }
-argonauts-conductor = { path = "crates/conductor", version = "0.1.0" }
-argonauts-tui = { path = "crates/tui", version = "0.1.0" }
-argonauts-app = { path = "crates/app", version = "0.1.0" }
-argonauts-crew = { path = "crates/crew", version = "0.1.0" }
-argonauts-policy = { path = "crates/policy", version = "0.1.0" }
-argonauts-mcp = { path = "crates/mcp", version = "0.1.0" }
-argonauts-registry = { path = "crates/registry", version = "0.1.0" }
-argonauts-endpoints = { path = "crates/endpoints", version = "0.1.0" }
-argonauts-learning = { path = "crates/learning", version = "0.1.0" }
-argonauts-adapter-opencode = { path = "crates/adapters/opencode", version = "0.1.0" }
-argonauts-adapter-manifest = { path = "crates/adapters/manifest", version = "0.1.0" }
-argonauts-adapter-acp = { path = "crates/adapters/acp", version = "0.1.0" }
+argonauts-core = { path = "crates/core", version = "0.2.0" }
+argonauts-adapter-claude-code = { path = "crates/adapters/claude-code", version = "0.2.0" }
+argonauts-adapter-codex = { path = "crates/adapters/codex", version = "0.2.0" }
+argonauts-adapter-antigravity-cli = { path = "crates/adapters/antigravity-cli", version = "0.2.0" }
+argonauts-conductor = { path = "crates/conductor", version = "0.2.0" }
+argonauts-tui = { path = "crates/tui", version = "0.2.0" }
+argonauts-app = { path = "crates/app", version = "0.2.0" }
+argonauts-crew = { path = "crates/crew", version = "0.2.0" }
+argonauts-policy = { path = "crates/policy", version = "0.2.0" }
+argonauts-mcp = { path = "crates/mcp", version = "0.2.0" }
+argonauts-registry = { path = "crates/registry", version = "0.2.0" }
+argonauts-endpoints = { path = "crates/endpoints", version = "0.2.0" }
+argonauts-learning = { path = "crates/learning", version = "0.2.0" }
+argonauts-adapter-opencode = { path = "crates/adapters/opencode", version = "0.2.0" }
+argonauts-adapter-manifest = { path = "crates/adapters/manifest", version = "0.2.0" }
+argonauts-adapter-acp = { path = "crates/adapters/acp", version = "0.2.0" }
 # No version: a dev-dependency without one is left out of the published packages.
 argonauts-testkit = { path = "crates/testkit" }
-argonauts-runner = { path = "crates/runner", version = "0.1.0" }
+argonauts-runner = { path = "crates/runner", version = "0.2.0" }
 
 agent-client-protocol = "2.2.0"
 anyhow = "1.0.104"
