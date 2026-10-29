@@ -216,6 +216,7 @@ fn the_never_lists_names_stay_closed_wherever_the_session_looks() {
     profile.outside = outside::Outside {
         read: true,
         write: true,
+        after_asking: false,
         project: Some(repo.clone()),
         never: Never::resolve(&[".env".to_owned(), ".env.*".to_owned()], &s.root),
     };
@@ -259,13 +260,19 @@ fn autopilot_profile(
     access: Access,
     workdir: &Path,
 ) -> SandboxProfile {
+    profile_in(ApprovalMode::Autopilot, home, project, access, workdir)
+}
+
+/// The profile the app makes for a session in `mode`, in a made-up home.
+fn profile_in(
+    mode: ApprovalMode,
+    home: &Path,
+    project: &Path,
+    access: Access,
+    workdir: &Path,
+) -> SandboxProfile {
     let requested = SandboxProfile {
-        outside: outside::Outside::for_mode(
-            &OutsideSettings::default(),
-            ApprovalMode::Autopilot,
-            Some(project),
-            home,
-        ),
+        outside: outside::Outside::for_mode(&OutsideSettings::default(), mode, Some(project), home),
         ..SandboxProfile::default()
     };
     let input = ProfileInput {
@@ -298,6 +305,81 @@ fn tries(home: &Path, lines: &str) -> String {
         "#,
         home = home.display()
     )
+}
+
+/// Supervised and auto preview open outside once asked, as the Seatbelt tests check it on
+/// macOS: the asking holds a direct turn, so a write you approved lands anywhere but the
+/// never-list, a program's folder and a tool config included. A worker can't ask, so it reads
+/// outside and writes only its worktree.
+#[test]
+fn supervised_works_outside_once_asked_and_never_in_the_never_list() {
+    if expect_no_userns() {
+        return;
+    }
+    for mode in [ApprovalMode::Supervised, ApprovalMode::AutoPreview] {
+        let s = Scratch::new();
+        let home = s.dir("home");
+        let project = s.dir("home/work/app");
+        let tree = s.dir("home/.argonauts/worktrees/app/run-1/task-a/src");
+        let tree = tree.parent().unwrap();
+        s.dir("home/.argonauts/state/app/conversations/c-1/turn-1");
+        s.file("home/work/app/src/lib.rs", "");
+        s.file("home/work/app/.env", "MADE_UP=1");
+        s.file("home/Downloads/x.png", "picture");
+        s.file("home/.ssh/id_rsa", "not a real key");
+        s.file("home/.local/bin/agy", "#!/bin/sh");
+        s.file("home/.cargo/config.toml", "# made up");
+        std::os::unix::fs::symlink(home.join(".ssh"), home.join("Downloads/keys")).unwrap();
+
+        let direct = profile_in(mode, &home, &project, Access::Direct, &project);
+        let stdout = run(
+            &direct,
+            &project,
+            &[],
+            &tries(
+                &home,
+                "w Downloads/y.md; w work/app/src/a.rs; r .ssh/id_rsa; w Downloads/keys/id_rsa
+                r work/app/.env; w work/app/../app/.env; w .local/bin/agy
+                w .cargo/config.toml; r .cargo/config.toml",
+            ),
+        );
+        assert_said(
+            &stdout,
+            &[
+                "wrote Downloads/y.md",
+                "wrote work/app/src/a.rs",
+                "kept .ssh/id_rsa",
+                "kept Downloads/keys/id_rsa from writes",
+                "kept work/app/.env",
+                "kept work/app/../app/.env from writes",
+                "wrote .local/bin/agy",
+                "wrote .cargo/config.toml",
+                "read .cargo/config.toml",
+            ],
+        );
+
+        let worker = profile_in(mode, &home, &project, Access::Build, tree);
+        let stdout = run(
+            &worker,
+            tree,
+            &[],
+            &tries(
+                &home,
+                "w .argonauts/worktrees/app/run-1/task-a/src/a.rs; w work/app/src/b.rs
+                w Downloads/z.md; r Downloads/x.png; w .local/bin/agy",
+            ),
+        );
+        assert_said(
+            &stdout,
+            &[
+                "wrote .argonauts/worktrees/app/run-1/task-a/src/a.rs",
+                "kept work/app/src/b.rs from writes",
+                "kept Downloads/z.md from writes",
+                "read Downloads/x.png",
+                "kept .local/bin/agy from writes",
+            ],
+        );
+    }
 }
 
 /// Autopilot with the profile the app makes, as the Seatbelt tests check it on macOS: a direct
@@ -349,7 +431,7 @@ fn autopilot_works_outside_the_project_and_never_in_the_never_list() {
         "wrote Downloads/y.md".to_owned(),
         "wrote work/app/src/a.rs".to_owned(),
         "read .zshrc".to_owned(),
-        "kept .zshrc from writes".to_owned(),
+        "wrote .zshrc".to_owned(),
         "kept .argonauts/state/app/conversations/c-1/turn-1/x from writes".to_owned(),
     ];
     for path in never {
@@ -401,6 +483,48 @@ fn autopilot_works_outside_the_project_and_never_in_the_never_list() {
             "kept Downloads/r.md from writes",
             "kept .ssh/id_rsa",
         ],
+    );
+}
+
+/// For each system folder that exists, whether the session lists it and whether the mount
+/// that holds it is read-only. A distribution keeps `/bin`, `/sbin` and `/lib` as folders of
+/// their own or as links into `/usr`, so each is judged at its real path.
+const SYSTEM_MOUNTS: &str = r#"
+    for d in /etc /bin /sbin /lib /lib32 /lib64 /libx32 /usr/bin; do
+        [ -e "$d" ] || continue
+        real=$(realpath "$d")
+        ls "$real" >/dev/null 2>&1 && echo "listed $d"
+        opts=$(awk -v p="$real" '{ m = $5; if ((m == "/" || p == m || index(p, m "/") == 1) && length(m) >= best) { best = length(m); o = $6 } } END { print o }' /proc/self/mountinfo)
+        case ",$opts," in *,ro,*) echo "read-only $d" ;; *) echo "writable $d" ;; esac
+    done
+"#;
+
+/// A session that writes anywhere still only reads the never-list's system folders.
+#[test]
+fn a_session_that_writes_anywhere_reads_the_system_folders_and_never_writes_them() {
+    if expect_no_userns() {
+        return;
+    }
+    let s = Scratch::new();
+    let home = s.dir("home");
+    let project = s.dir("home/work/app");
+    s.dir("home/.argonauts/state/app/conversations/c-1/turn-1");
+    let direct = autopilot_profile(&home, &project, Access::Direct, &project);
+    let stdout = run(&direct, &project, &[], SYSTEM_MOUNTS);
+    let present = [
+        "/etc", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/usr/bin",
+    ]
+    .into_iter()
+    .filter(|folder| Path::new(folder).exists());
+    let mut expected = Vec::new();
+    for folder in present {
+        expected.push(format!("listed {folder}"));
+        expected.push(format!("read-only {folder}"));
+    }
+    assert!(!expected.is_empty());
+    assert_said(
+        &stdout,
+        &expected.iter().map(String::as_str).collect::<Vec<_>>(),
     );
 }
 

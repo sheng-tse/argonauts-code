@@ -35,6 +35,7 @@ use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::settings::ui::NarratorMode;
+use argonauts_core::steps::StepName;
 use argonauts_core::steps::judgment::{ReviewOutput, ReviewVerdict};
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
 use argonauts_core::{AgentEvent, DiffStat, Note, NoteLevel, PhaseStatus, Spend, TaskId};
@@ -904,6 +905,89 @@ fn a_reviewer_that_sent_the_work_back_waits_for_its_next_round() {
         state.apply(event);
     }
     assert_eq!(counted(&state), (1, 1), "its rounds are one agent");
+}
+
+/// The commit-message writer stopped because the run merged without its message is neither
+/// done nor unfinished: the run's count leaves it out, as the workflow view's header does.
+#[test]
+fn a_commit_message_writer_stopped_by_a_merge_at_once_is_no_agent_to_count() {
+    let mut log = Log::new();
+    let mut state = fold(&[log.event(started("Cap the bucket refill", RunMode::Crew))]);
+    let step = StepRef {
+        workflow: WorkflowId::numbered(1),
+        phase: 1,
+        path: vec![0],
+    };
+    let start = |log: &mut Log, n: u32, label: &str, step_name: Option<StepName>| {
+        let SessionEvent::Started(mut started) = session_started(worker("claude-code", "haiku"), 1)
+        else {
+            unreachable!()
+        };
+        started.label = Some(label.into());
+        started.step = step_name;
+        started.workflow_step = Some(step.clone());
+        log.session(n, None, SessionEvent::Started(started))
+    };
+    let ended = |log: &mut Log, n: u32, reason: EndReason| {
+        log.session(
+            n,
+            None,
+            SessionEvent::Ended(Box::new(SessionEnd {
+                cli_session: None,
+                exit_code: Some(0),
+                signal: None,
+                duration_ms: 1_000,
+                reason,
+                spend: Spend::default(),
+                tool_calls: 0,
+                result_text: None,
+                structured: None,
+                last_message: None,
+                raw_log: None,
+            })),
+        )
+    };
+    let events = [
+        start(&mut log, 1, "build:refill-cap", None),
+        ended(&mut log, 1, EndReason::Completed),
+        start(
+            &mut log,
+            2,
+            argonauts_core::views::COMMIT_MESSAGE,
+            Some(StepName::CommitMessage),
+        ),
+        ended(&mut log, 2, EndReason::Stopped),
+    ];
+    for event in &events {
+        state.apply(event);
+    }
+    let counted = |state: &AppState| {
+        let totals = run(state).totals(T0);
+        (totals.agents_done, totals.agents_total)
+    };
+    assert_eq!(counted(&state), (1, 2), "stopped before anything merged");
+
+    let merged = MergeEvent::RunMerged {
+        target: "main".into(),
+        sha: "30f0733".into(),
+        fast_forward: true,
+    };
+    state.apply(&log.event(RunEventKind::Merge(merged)));
+    assert_eq!(
+        counted(&state),
+        (1, 1),
+        "not needed once the run merged at once"
+    );
+
+    // An agent a workflow's script only named for the message counts as any stopped agent.
+    let named = [
+        start(&mut log, 3, argonauts_core::views::COMMIT_MESSAGE, None),
+        ended(&mut log, 3, EndReason::Stopped),
+    ];
+    for event in &named {
+        state.apply(event);
+    }
+    assert_eq!(counted(&state), (1, 2), "named so, it isn't the writer");
 }
 
 #[test]

@@ -576,12 +576,8 @@ pub fn decided(state: &RunState) -> Vec<String> {
                 .options
                 .iter()
                 .find(|option| option.action == decided.action)?;
-            let because = record
-                .policy_check()
-                .and_then(|check| check.reasons.first())
-                .map(|why| first_sentence(why.as_str()))
-                .filter(|why| !why.is_empty())
-                .map(|why| format!(", since {}", clause_case(why)))
+            let because = reason(record)
+                .map(|why| format!(", since {why}"))
                 .unwrap_or_default();
             Some(format!(
                 "\"{}\" took \"{}\"{because}",
@@ -590,6 +586,17 @@ pub fn decided(state: &RunState) -> Vec<String> {
             ))
         })
         .collect()
+}
+
+/// Why autopilot couldn't go ahead on its own with `record`, as one clause: the policy's first
+/// reason, as the line it wrote at the time gives it.
+pub fn reason(record: &ApprovalRecord) -> Option<String> {
+    record
+        .policy_check()
+        .and_then(|check| check.reasons.first())
+        .map(|why| first_sentence(why.as_str()))
+        .filter(|why| !why.is_empty())
+        .map(clause_case)
 }
 
 /// Whether the policy weighed this approval in autopilot: it opened there, or was asked

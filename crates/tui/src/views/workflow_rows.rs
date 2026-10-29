@@ -242,8 +242,9 @@ pub(super) struct Cells {
     glyph: &'static str,
     glyph_role: Role,
     label: String,
-    /// Whether the glyph is the grey one of a row at work, whose label is dim with it.
-    at_work: bool,
+    /// Whether the label is dim: a row at work, whose glyph is the grey one, and an agent the
+    /// run went on without once it wasn't needed.
+    dim_label: bool,
     /// The model, a command such as `npm test`, `git`, or `workflow`.
     model: String,
     model_style: Style,
@@ -307,10 +308,15 @@ impl Cells {
             WorkflowRow::Workflow(nested) => (nested.status, nested.elapsed_ms),
             WorkflowRow::Command(command) => (command.status, command.elapsed_ms),
         };
+        let not_needed = matches!(row, WorkflowRow::Agent(agent) if agent.not_needed);
         let (glyph, glyph_role) = match row {
             // A job left out never ran: a grey cross.
             WorkflowRow::Agent(agent) if agent.left_out => {
                 (glyph(RowStatus::Failed, false, theme).0, Role::Faint)
+            }
+            // Neither done nor failed: a grey dash.
+            WorkflowRow::Agent(_) if not_needed => {
+                (if theme.glyphs.is_ascii() { "-" } else { "–" }, Role::Faint)
             }
             WorkflowRow::Agent(agent) => glyph(status, agent.fallback_for.is_some(), theme),
             WorkflowRow::Workflow(nested) => workflow_outline::mark(nested, false, theme),
@@ -322,7 +328,7 @@ impl Cells {
             matches!(row, WorkflowRow::Agent(agent) if agent.answered && agent.note.is_some());
         let left_out = matches!(row, WorkflowRow::Agent(agent) if agent.left_out);
         let time = match status {
-            _ if left_out => String::new(),
+            _ if left_out || not_needed => String::new(),
             RowStatus::Waiting | RowStatus::Queued => String::new(),
             RowStatus::Running if !answer_in => panes::elapsed(elapsed_ms + around.ticking),
             _ => panes::elapsed(elapsed_ms),
@@ -350,6 +356,11 @@ impl Cells {
                 };
                 stats.push((Span::styled(said, dim), Holds::Longest));
                 (sanitize_line(&names.short(&agent.worker)).into_owned(), dim)
+            }
+            // Why it wasn't needed, dim, in its model's place, with no numbers.
+            WorkflowRow::Agent(agent) if not_needed => {
+                let why = agent.note.as_ref().map_or("", |note| note.text.trim());
+                (sanitize_line(why).into_owned(), dim)
             }
             WorkflowRow::Agent(agent) => {
                 // An agent on a goal says where the goal stands, where its tokens would be.
@@ -411,7 +422,7 @@ impl Cells {
         Self {
             glyph,
             glyph_role,
-            at_work: status == RowStatus::Running && glyph_role == Role::Faint,
+            dim_label: not_needed || (status == RowStatus::Running && glyph_role == Role::Faint),
             label: row_label(row),
             model,
             model_style,
@@ -572,7 +583,7 @@ impl RowColumns {
         let marks = Marks::for_theme(theme);
         let accent = theme.style(Role::Question);
         let dim = theme.style(Role::Dim);
-        let label_style = match (selected, cells.at_work) {
+        let label_style = match (selected, cells.dim_label) {
             (true, _) => accent,
             (false, true) => dim,
             (false, false) => theme.style(Role::Text),
@@ -832,7 +843,7 @@ pub(super) fn steps_in_phase(phase: &PhaseRow) -> usize {
         .rows
         .iter()
         .map(|row| match row {
-            WorkflowRow::Agent(agent) if agent.left_out => 0,
+            WorkflowRow::Agent(agent) if agent.left_out || agent.not_needed => 0,
             WorkflowRow::Agent(_) | WorkflowRow::Command(_) => 1,
             WorkflowRow::Workflow(nested) => nested.agents_total as usize,
         })
@@ -847,17 +858,29 @@ pub(super) fn phase_size(phase: &PhaseRow) -> String {
         .iter()
         .any(|row| matches!(row, WorkflowRow::Command(_)));
     let noun = if has_steps { "step" } else { "agent" };
-    let mut size = panes::count(steps_in_phase(phase), noun);
-    // A job the workflow does without isn't counted, and the title says so once.
-    let left_out = phase
-        .rows
-        .iter()
-        .filter(|row| matches!(row, WorkflowRow::Agent(agent) if agent.left_out))
-        .count();
-    if left_out > 0 {
-        size.push_str(&format!(" · {left_out} left out"));
+    // A job the workflow does without isn't counted, nor an agent it went on without once it
+    // wasn't needed, and the title says so once for each.
+    let agents = |kind: fn(&AgentRow) -> bool| {
+        phase
+            .rows
+            .iter()
+            .filter(|row| matches!(row, WorkflowRow::Agent(agent) if kind(agent)))
+            .count()
+    };
+    let (left_out, skipped) = (agents(|a| a.left_out), agents(|a| a.not_needed));
+    let counted = steps_in_phase(phase);
+    let mut size = Vec::new();
+    // A phase whose only agent wasn't needed has none to count.
+    if counted > 0 || skipped == 0 {
+        size.push(panes::count(counted, noun));
     }
-    size
+    if left_out > 0 {
+        size.push(format!("{left_out} left out"));
+    }
+    if skipped > 0 {
+        size.push(format!("{skipped} skipped"));
+    }
+    size.join(" · ")
 }
 
 #[cfg(test)]
@@ -877,7 +900,7 @@ mod tests {
             glyph,
             glyph_role: Role::Dim,
             label: label.to_owned(),
-            at_work: false,
+            dim_label: false,
             model: model.to_owned(),
             model_style: Default::default(),
             model_cli: None,

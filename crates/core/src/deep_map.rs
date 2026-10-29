@@ -135,6 +135,18 @@ pub struct DeepOffer {
     /// The summarizer `behaviors.summarizer` names, when it names one rather than auto.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub named: Option<ModelRef>,
+    /// The embedding model of an endpoint with your key, which auto turns to without Ollama.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyed_embedder: Option<EmbedderOffer>,
+}
+
+/// An embedding model the embedder's picker offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbedderOffer {
+    /// Such as `openai/text-embedding-3-small`.
+    pub model: ModelRef,
+    /// Such as `text-embedding-3-small on OpenAI`.
+    pub name: String,
 }
 
 /// The summarizer of the map that's there.

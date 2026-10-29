@@ -84,6 +84,9 @@ pub enum CrewState {
     Done,
     Stopped,
     Failed,
+    /// Stopped once its run no longer needed its work, such as the commit-message writer when
+    /// the run merged at once: neither done nor stopped.
+    Skipped,
 }
 
 /// One row of the panel.
@@ -218,14 +221,15 @@ pub fn fold_tries(tries: Vec<LabelTry>) -> Vec<CrewRow> {
 }
 
 /// What a folded row says of its tries, such as `accepted on its 6th try`. A row that asks you
-/// something keeps its question, and so does one that stands for a single try.
+/// something keeps its question, one the run no longer needed says why, and so does one that
+/// stands for a single try.
 fn tries_words(state: CrewState, tries: u32) -> Option<String> {
     if tries < 2 {
         return None;
     }
     let nth = ordinal(tries);
     Some(match state {
-        CrewState::NeedsYou | CrewState::Ready => return None,
+        CrewState::NeedsYou | CrewState::Ready | CrewState::Skipped => return None,
         CrewState::Working | CrewState::Waiting => format!("{nth} try"),
         CrewState::Done => format!("accepted on its {nth} try"),
         CrewState::Stopped => format!("stopped on its {nth} try"),

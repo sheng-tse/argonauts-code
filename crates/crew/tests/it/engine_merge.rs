@@ -813,6 +813,12 @@ async fn the_merger_writes_the_merged_message() -> anyhow::Result<()> {
     assert_eq!(started.workflow_step, Some(step_ref()));
     assert_eq!(started.worker, worker(MERGER));
     assert_eq!(started.label.as_deref(), Some("commit message"));
+    // Its step says it writes the message, which a label a script gave can't.
+    assert_eq!(started.step, Some(StepName::CommitMessage));
+    assert_eq!(
+        specs[0].json_schema,
+        StepName::CommitMessage.output_schema()
+    );
     Ok(())
 }
 

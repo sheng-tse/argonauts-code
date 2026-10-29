@@ -25,6 +25,7 @@ use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::ui::{AgentsInConversation, Glyphs as GlyphChoice};
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::task::assumption;
+use argonauts_core::views::writes_the_message;
 use argonauts_core::{AgentEvent, ErrorCategory, RunId, TaskId, TodoItem, TodoStatus, Verbosity};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -82,6 +83,8 @@ struct StartedGroup {
 struct Live {
     /// Headed by its label, with the agent's name after it.
     labeled: bool,
+    /// The merge's commit message writer, stopped once your answer to the merge comes first.
+    writes_the_message: bool,
     run: RunId,
     key: SessionKey,
     agent_id: String,
@@ -211,6 +214,7 @@ impl AgentBlocks {
                             .filter(|label| !label.is_empty())
                             .map(str::to_owned),
                         task: task_label(started.role, started.step, event.task_id.as_ref()),
+                        step: started.step,
                     },
                     cx,
                 );
@@ -414,6 +418,13 @@ impl AgentBlocks {
     /// the overlay.
     fn end(&mut self, index: usize, end: &SessionEnd, cx: &mut Cx<'_>) {
         let mut live = self.remove(index, cx);
+        // Once stopped, nothing waits for the writer's message, and the change lands with the
+        // one plain code writes, so it leaves no row.
+        if live.writes_the_message && end.reason == EndReason::Stopped && !live.printed {
+            let row = live.started_row();
+            self.started.agents.retain(|agent| *agent != row);
+            return;
+        }
         let state = end_state(&end.reason);
         live.whole.stop();
         live.whole.state = state;
@@ -616,6 +627,7 @@ impl AgentBlocks {
         let named = Named {
             label: session.label.clone(),
             task: task_label(session.role, session.step, task.as_ref()),
+            step: session.step,
         };
         let live = Live::new(
             Place {
@@ -715,6 +727,8 @@ fn prints(kind: &RunEventKind) -> bool {
 struct Named {
     label: Option<String>,
     task: String,
+    /// The step it works, which says whether it writes the commit message.
+    step: Option<StepName>,
 }
 
 struct Place<'a> {
@@ -754,6 +768,7 @@ impl Live {
         .with_stamp(format!("{started} {worker}"));
         let mut live = Self {
             labeled: named.label.is_some(),
+            writes_the_message: writes_the_message(named.step),
             run: place.run.clone(),
             key: place.key.clone(),
             agent_id: agent_id.to_owned(),
@@ -1495,4 +1510,149 @@ fn back_from(now: Instant, offset: time::Duration) -> Instant {
         .ok()
         .and_then(|offset| now.checked_sub(offset))
         .unwrap_or(now)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use argonauts_core::app::AppEvent;
+    use argonauts_core::events::RunEvent;
+    use argonauts_core::settings::ui::UiSettings;
+    use serde_json::json;
+
+    use super::AgentBlocks;
+    use crate::bridge::{Cx, Effects};
+    use crate::model::ViewModel;
+    use crate::render::{Clock, RenderCtx};
+    use crate::state::AppState;
+    use crate::text::plain_text;
+    use crate::theme::{Glyphs, Theme};
+
+    /// An agent named for the commit message, as a run's log records its start and its end:
+    /// the merger's writer where it works the `commit_message` step, else one a workflow's
+    /// script only gave that name.
+    fn named_for_the_message(session: &str, step: Option<&str>, why: &str) -> Vec<RunEvent> {
+        let on = |seq: u64, data: serde_json::Value| -> RunEvent {
+            serde_json::from_value(json!({
+                "seq": seq,
+                "ts": "2026-10-15T00:35:00Z",
+                "run_id": "run-01",
+                "session": session,
+                "source": "argonauts-code",
+                "kind": { "type": "session", "data": data },
+            }))
+            .expect("a session event")
+        };
+        vec![
+            on(
+                1,
+                json!({
+                    "event": "started",
+                    "worker": "claude-code/haiku",
+                    "agent_id": "claude-code",
+                    "provider": "anthropic",
+                    "kind": "cli",
+                    "role": "worker",
+                    "step": step,
+                    "access": "no_tools",
+                    "lifetime": "task",
+                    "resumed_from": null,
+                    "follow_key": null,
+                    "label": argonauts_core::views::COMMIT_MESSAGE,
+                }),
+            ),
+            on(
+                2,
+                json!({
+                    "event": "ended",
+                    "cli_session": null,
+                    "exit_code": null,
+                    "signal": null,
+                    "duration_ms": 12_000,
+                    "reason": { "why": why },
+                    "spend": argonauts_core::Spend::default(),
+                    "tool_calls": 0,
+                    "result_text": null,
+                    "structured": null,
+                    "last_message": null,
+                }),
+            ),
+        ]
+    }
+
+    /// What the conversation prints once `events` are in.
+    fn printed(events: Vec<RunEvent>) -> String {
+        plain_text(&printed_lines(events))
+    }
+
+    /// [`printed`] as the screen's lines, colours and all.
+    fn printed_lines(events: Vec<RunEvent>) -> Vec<ratatui::text::Line<'static>> {
+        let mut model = ViewModel::default();
+        let mut state = AppState::default();
+        let settings = UiSettings::default();
+        let mut agents = AgentBlocks::default();
+        for event in events {
+            let event = AppEvent::Run {
+                event: Box::new(event),
+            };
+            state.apply(&event);
+            let mut out = Effects::default();
+            let mut cx = Cx {
+                model: &mut model,
+                state: &state,
+                settings: &settings,
+                now: Instant::now(),
+                out: &mut out,
+            };
+            agents.on_event(&event, &mut cx);
+        }
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+        model.history.drain_printable(&ctx)
+    }
+
+    /// Your answer to the merge came before the commit message, so the writer was stopped and
+    /// the change lands with the message plain code writes: the writer leaves no row. One that
+    /// wrote its message ends on its row as any agent does, and so does an agent a script only
+    /// named for the message once you stop it.
+    #[test]
+    fn a_message_writer_the_merge_didnt_wait_for_leaves_no_row() {
+        let writer = Some("commit_message");
+        assert_eq!(
+            printed(named_for_the_message("s-001", writer, "stopped")),
+            ""
+        );
+        assert_eq!(
+            printed(named_for_the_message("s-002", writer, "completed")),
+            "● commit message · Haiku on Claude Code\n  ⎿  Done · 0 tool uses · 12s"
+        );
+        let stopped = printed(named_for_the_message("s-003", None, "stopped"));
+        assert!(
+            stopped.starts_with("● commit message · Haiku on Claude Code"),
+            "{stopped}"
+        );
+    }
+
+    /// A run's rows once it merged without waiting for the message: the commit message's
+    /// writer it stopped leaves none, and an agent a workflow's script only named for the
+    /// message, stopped too, keeps its row as any stopped agent does.
+    #[test]
+    fn the_rows_leave_out_only_the_writer_the_merge_didnt_wait_for() {
+        use crate::bridge::transcript::picture_check::assert_matches;
+
+        let mut events = named_for_the_message("s-001", Some("commit_message"), "stopped");
+        events.extend(named_for_the_message("s-002", None, "stopped"));
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        assert_matches(
+            "writer_not_waited_for",
+            &printed_lines(events),
+            include_str!("../../tests/golden/transcript/writer_not_waited_for.txt"),
+            include_str!("../../tests/golden/transcript/writer_not_waited_for.html"),
+            &theme,
+            &[],
+        );
+    }
 }

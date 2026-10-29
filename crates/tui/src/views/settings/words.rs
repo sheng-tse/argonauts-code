@@ -5,7 +5,7 @@ use argonauts_core::display_names::DisplayNames;
 use argonauts_core::model_picker::ModelSource;
 use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::SettingScope;
-use argonauts_core::settings::approvals::Decides;
+use argonauts_core::settings::approvals::{ApprovalMode, Decides};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::format::setting_value;
@@ -279,13 +279,31 @@ pub fn worker_words(worker: &str) -> String {
 }
 
 /// A row's value in words. An empty one says what it stands for where unset means something,
-/// such as the judge picked for each piece of work.
+/// such as the judge picked for each piece of work, and a list of approval modes names each as
+/// the approval mode row does, `auto preview` for `auto_preview`.
 pub fn row_value_words(key: &str, toml: &str) -> String {
     let words = value_words(toml);
     match default_meaning(key) {
         Some(meaning) if matches!(words.as_str(), "unset" | "none") => meaning.to_owned(),
+        _ if lists_modes(key) => words
+            .split(", ")
+            .map(mode_words)
+            .collect::<Vec<_>>()
+            .join(", "),
         _ => words,
     }
+}
+
+/// The `[outside]` lists, whose items are approval modes.
+fn lists_modes(key: &str) -> bool {
+    matches!(key, "outside.read" | "outside.write" | "outside.ask")
+}
+
+/// An approval mode as its row says it, or the word as it is when it names none.
+fn mode_words(word: &str) -> String {
+    serde_json::from_value::<ApprovalMode>(serde_json::Value::String(word.to_owned()))
+        .map(|mode| mode.label().to_owned())
+        .unwrap_or_else(|_| word.to_owned())
 }
 
 /// What an unset or empty value means for the keys whose default stands for something.
@@ -297,6 +315,7 @@ fn default_meaning(key: &str) -> Option<&'static str> {
         ["approvals", "judge", "second_model"] => "none, one judge",
         ["fallback", "order"] | ["fallback", _, "order"] => "other logged-in CLIs",
         ["roles", _, "sandbox", _] => "same as every agent",
+        ["outside", "ask"] => "none, kept to the project",
         _ => return None,
     })
 }
@@ -550,6 +569,22 @@ mod tests {
             "same as every agent"
         );
         assert_eq!(row_value_words("fallback.order", "[\"codex\"]"), "codex");
+        assert_eq!(
+            row_value_words("outside.ask", "[\"supervised\", \"auto_preview\"]"),
+            "supervised, auto preview"
+        );
+        assert_eq!(
+            row_value_words("outside.write", "[\"auto\", \"autopilot\"]"),
+            "auto, autopilot"
+        );
+        assert_eq!(
+            row_value_words("outside.read", "[\"auto_preview\"]"),
+            "auto preview"
+        );
+        assert_eq!(
+            row_value_words("outside.ask", "[]"),
+            "none, kept to the project"
+        );
         assert_eq!(row_value_words("fallback.summarizer", ""), "unset");
         assert_eq!(value_words("30.0"), "30.0");
         assert!(same_value("'dark'", "\"dark\""));

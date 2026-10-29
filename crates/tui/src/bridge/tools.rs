@@ -152,10 +152,7 @@ pub fn start_call(agent_id: &str, name: &str, input: &Value) -> ToolCall {
 /// [`start_call`] for a call made in `places.folder`, whose paths show relative to it.
 pub fn start_call_in(agent_id: &str, name: &str, input: &Value, places: &Places) -> ToolCall {
     let _ = agent_id;
-    let mut tool = Tool::named(name);
-    if normalize(name) == "filechange" {
-        tool = file_change_tool(input);
-    }
+    let tool = tool_of(name, input);
     let args = cut(&args_of(tool, input, places));
     let mut call = ToolCall::call(tool.kind(), label_of(tool, name), args);
     match tool {
@@ -388,10 +385,19 @@ pub fn is_tool_lookup(name: &str) -> bool {
     normalize(name) == "toolsearch"
 }
 
-/// The normalized kind, which decides folding into collapsed groups.
-pub fn kind_of(agent_id: &str, name: &str) -> ToolKind {
+/// The normalized kind, which decides folding into collapsed groups, from the call's name and
+/// its input, since Codex names a written file and an edited one alike.
+pub fn kind_of(agent_id: &str, name: &str, input: &Value) -> ToolKind {
     let _ = agent_id;
-    Tool::named(name).kind()
+    tool_of(name, input).kind()
+}
+
+/// The tool a call is, by its name and, for Codex's `file_change`, what it changed.
+fn tool_of(name: &str, input: &Value) -> Tool {
+    if normalize(name) == "filechange" {
+        return file_change_tool(input);
+    }
+    Tool::named(name)
 }
 
 fn result_items(tool: Tool, call: &ToolCall, target: &str, output: Option<&str>) -> Vec<ToolItem> {
@@ -900,11 +906,7 @@ fn write_preview(input: &Value, places: &Places) -> Vec<ToolItem> {
 /// The lines an edit or a write adds and removes, read off its input as its preview is. A
 /// written file counts every line as added, since the file it replaced isn't known.
 pub fn changed_lines(name: &str, input: &Value) -> (usize, usize) {
-    let tool = match normalize(name).as_str() {
-        "filechange" => file_change_tool(input),
-        _ => Tool::named(name),
-    };
-    match tool {
+    match tool_of(name, input) {
         Tool::Update => edit_pairs(input)
             .iter()
             .map(|(old, new)| DiffView::between(old, new, 0).stats())
@@ -1617,9 +1619,7 @@ mod tests {
             let call = start_call(agent_id, name, &input);
             assert_eq!(call.title.plain(), title, "{agent_id} {name}");
             assert_eq!(call.kind, kind, "{agent_id} {name}");
-            if name != "file_change" {
-                assert_eq!(kind_of(agent_id, name), kind, "{agent_id} {name}");
-            }
+            assert_eq!(kind_of(agent_id, name, &input), kind, "{agent_id} {name}");
             assert_eq!(call.state, ToolState::Running);
         }
     }

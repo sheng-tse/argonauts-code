@@ -7,6 +7,12 @@
 //! commands are held to them too, except on Linux, where it leaves out a rule with a glob: a
 //! never-list name such as `.env` binds only its file tools there. A worker in a worktree
 //! never writes your checkout: that goes through its worktree.
+//!
+//! Where a mode opens outside only once asked, a direct turn gets no allow rule, so what
+//! Claude Code asks about there still goes to you, and a write you approve lands, our sandbox
+//! being open there. The deny rules still hold after a Yes, since Claude Code checks them before
+//! it asks. A run's session can't ask, so there it reads without asking and writes only its
+//! worktree.
 
 use std::path::Path;
 
@@ -30,16 +36,21 @@ pub struct PathRules {
     pub deny: Vec<String>,
 }
 
-pub fn rules(outside: &Outside, role: SessionRole, workdir: &Path) -> PathRules {
+/// With `held_by_ours`, our OS sandbox holds the session and keeps the never-list there too.
+pub fn rules(
+    outside: &Outside,
+    role: SessionRole,
+    workdir: &Path,
+    held_by_ours: bool,
+) -> PathRules {
     let mut rules = PathRules::default();
     if !outside.is_open() {
         return rules;
     }
-    let writes = outside.write && role != SessionRole::ReadOnly;
-    if outside.read {
+    if outside.reads_unasked(role) {
         rules.allow.extend(each(READS, ANYWHERE));
     }
-    if writes {
+    if outside.writes_unasked(role) {
         rules.allow.extend(each(WRITES, ANYWHERE));
     }
     let both: Vec<&str> = READS.iter().chain(WRITES).copied().collect();
@@ -49,6 +60,12 @@ pub fn rules(outside: &Outside, role: SessionRole, workdir: &Path) -> PathRules 
         }
     }
     for name in outside.never.names.iter().filter(|name| is_plain(name)) {
+        // A deny wins over every allow, so a rule can't take a template such as `.env.example`
+        // back out of `.env.*`. Our sandbox can, so where it holds the session the name is left
+        // to it; under Claude Code's own the templates stay closed to its file tools.
+        if held_by_ours && !outside.never.taken_back_from(name).is_empty() {
+            continue;
+        }
         rules.deny.extend(each(&both, &format!("//**/{name}")));
     }
     for path in &outside.never.unwritten {
@@ -56,6 +73,7 @@ pub fn rules(outside: &Outside, role: SessionRole, workdir: &Path) -> PathRules 
             rules.deny.extend(each(WRITES, &pattern));
         }
     }
+    let writes = outside.writes_outside(role);
     let checkout = outside
         .project
         .as_ref()
@@ -125,10 +143,12 @@ mod tests {
         Outside {
             read: true,
             write: true,
+            after_asking: false,
             project: Some(PathBuf::from("/home/you/app")),
             never: Never {
                 paths: vec![PathBuf::from("/home/you/.ssh")],
                 names: vec![".env".to_owned()],
+                except: Vec::new(),
                 unwritten: vec![PathBuf::from("/etc")],
             },
         }
@@ -136,7 +156,12 @@ mod tests {
 
     #[test]
     fn a_closed_mode_adds_no_rule() {
-        let rules = rules(&Outside::default(), SessionRole::Direct, Path::new("/w"));
+        let rules = rules(
+            &Outside::default(),
+            SessionRole::Direct,
+            Path::new("/w"),
+            true,
+        );
         assert_eq!(rules, PathRules::default());
     }
 
@@ -146,6 +171,7 @@ mod tests {
             &autopilot(),
             SessionRole::Direct,
             Path::new("/home/you/app"),
+            true,
         );
         assert_eq!(
             rules.allow,
@@ -184,10 +210,81 @@ mod tests {
         );
     }
 
+    fn supervised() -> Outside {
+        Outside {
+            read: false,
+            write: false,
+            after_asking: true,
+            ..autopilot()
+        }
+    }
+
+    /// Nothing is allowed without asking, so Claude Code asks about a write outside as it does
+    /// on its own, and the never-list is denied before any question.
+    #[test]
+    fn a_supervised_turn_asks_outside_and_the_never_list_is_denied_even_after_yes() {
+        let rules = rules(
+            &supervised(),
+            SessionRole::Direct,
+            Path::new("/home/you/app"),
+            true,
+        );
+        assert!(rules.allow.is_empty(), "{:?}", rules.allow);
+        for denied in [
+            "Read(//home/you/.ssh/**)",
+            "Edit(//home/you/.ssh/**)",
+            "Write(//home/you/.ssh/**)",
+            "Read(//**/.env)",
+            "Edit(//**/.env)",
+            "Edit(//etc/**)",
+        ] {
+            assert!(rules.deny.iter().any(|rule| rule == denied), "{denied}");
+        }
+        assert!(
+            !rules
+                .deny
+                .iter()
+                .any(|rule| rule.contains("//home/you/app"))
+        );
+    }
+
+    /// A run's session can't ask, so nothing it writes outside would wait for you: it reads
+    /// there without asking and writes only its worktree, and the never-list holds.
+    #[test]
+    fn a_run_s_sessions_in_supervised_read_outside_and_write_only_their_worktree() {
+        let tree = Path::new("/home/you/.argonauts/worktrees/app/run-1/task-a");
+        let worker = rules(&supervised(), SessionRole::Build, tree, true);
+        assert_eq!(worker.allow, ["Read(//**)"]);
+        assert!(worker.deny.iter().any(|rule| rule == "Read(//**/.env)"));
+        let reader = rules(&supervised(), SessionRole::ReadOnly, tree, true);
+        assert_eq!(reader.allow, ["Read(//**)"]);
+    }
+
+    /// A rule can't take `.env.example` back out of `.env.*`, a deny winning over every allow.
+    /// Where our sandbox holds the session, which can, the name is left to it; under Claude
+    /// Code's own sandbox the templates stay closed to its file tools.
+    #[test]
+    fn a_name_a_template_is_taken_back_from_is_left_to_our_sandbox() {
+        let mut outside = autopilot();
+        outside.never.names = vec![".env".to_owned(), ".env.*".to_owned()];
+        outside.never.except = vec![".env.example".to_owned()];
+        let workdir = Path::new("/home/you/app");
+        let ours = rules(&outside, SessionRole::Direct, workdir, true);
+        assert!(ours.deny.iter().any(|rule| rule == "Read(//**/.env)"));
+        assert!(
+            !ours.deny.iter().any(|rule| rule.contains(".env.*")),
+            "{:?}",
+            ours.deny
+        );
+        let own = rules(&outside, SessionRole::Direct, workdir, false);
+        assert!(own.deny.iter().any(|rule| rule == "Read(//**/.env.*)"));
+        assert!(own.deny.iter().any(|rule| rule == "Edit(//**/.env.*)"));
+    }
+
     #[test]
     fn a_worker_writes_the_checkout_only_through_its_worktree() {
         let tree = Path::new("/home/you/.argonauts/worktrees/app/run-1/task-a");
-        let rules = rules(&autopilot(), SessionRole::Build, tree);
+        let rules = rules(&autopilot(), SessionRole::Build, tree, true);
         assert!(
             rules
                 .deny
@@ -204,7 +301,7 @@ mod tests {
 
     #[test]
     fn a_reader_reads_anywhere_and_writes_nothing_outside() {
-        let rules = rules(&autopilot(), SessionRole::ReadOnly, Path::new("/w"));
+        let rules = rules(&autopilot(), SessionRole::ReadOnly, Path::new("/w"), true);
         assert_eq!(rules.allow, ["Read(//**)"]);
         assert!(
             rules

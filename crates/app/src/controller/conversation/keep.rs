@@ -47,7 +47,8 @@ pub(super) fn offer_in_run(
 ) {
     let crew = crew_lines::understood(ctx.settings(), applied, run);
     if let Some(lines) = &crew {
-        ctx.notice(NoteLevel::Info, crew_lines::text(lines));
+        let rows = crew_lines::rows(lines, &ctx.names.names());
+        ctx.send(AppEvent::CrewForRequest { rows });
     }
     // Nothing waits for you on autopilot: what you said applies to this request, nothing is
     // written, and one line says how to keep it.

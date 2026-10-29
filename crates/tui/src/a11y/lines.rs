@@ -44,6 +44,15 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             };
             labeled(label, text)
         }
+        AppEvent::CrewForRequest { rows } => rows
+            .iter()
+            .flat_map(|row| {
+                labeled(
+                    "crew for this request",
+                    &format!("{}, {}, {}", row.role, row.who, row.from),
+                )
+            })
+            .collect(),
         AppEvent::SettingRefused { why, .. } => labeled("error", why),
         AppEvent::Hint { text } => labeled("notice", text),
         AppEvent::Updated { words } => labeled("notice", words),

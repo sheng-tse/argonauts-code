@@ -1,8 +1,8 @@
 //! The agent's process group while it runs: recorded in the session's `process.json`, listed in
-//! `~/.argonauts/agents/`, guarded against the run host's death, and watched for CPU. Before
-//! the runner signals it, its whole tree is noted, so releasing it kills whatever is left, in
-//! the group or out of it, even what its dead parents can no longer reach. Everything that
-//! scans the process table or forks runs off the async runtime.
+//! `~/.argonauts/agents/` and guarded against the run host's death before its program runs, and
+//! watched for CPU. Before the runner signals it, its whole tree is noted, so releasing it kills
+//! whatever is left, in the group or out of it, even what its dead parents can no longer reach.
+//! Everything that scans the process table or forks runs off the async runtime.
 
 use std::io;
 use std::sync::Arc;
@@ -40,8 +40,10 @@ struct Held {
 }
 
 impl Group {
-    /// Fails when a running group can't be recorded, listed, or guarded, since then a crash
-    /// could leave it running unseen. It kills the agent's tree before it fails.
+    /// Records, lists and guards the agent's group, then lets its program run, so nothing it
+    /// starts finds its ancestry off the record. Fails when the group can't be recorded, listed,
+    /// or guarded, since then a crash could leave it running unseen; it kills the agent's tree
+    /// before it fails.
     pub async fn register(
         ctx: &Arc<Context>,
         process: &AgentProcess,
@@ -52,7 +54,7 @@ impl Group {
         let key = ctx.spec.key.clone();
         let record = match process.record() {
             Ok(record) => record,
-            // A quick agent can finish before its start time is read.
+            // Gone before its start time is read, as when it was killed while it waited.
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 return Ok(Self {
                     pgid,
@@ -73,11 +75,17 @@ impl Group {
             .map_err(|err| format!("could not record the agent's process group: {err}"))
             .and_then(|held| held);
         match held {
-            Ok(held) => Ok(Self {
-                pgid,
-                launch,
-                held: Some(held),
-            }),
+            Ok(held) => {
+                // A process killed while it waited ends as any other, so its exit tells.
+                if let Err(err) = process.let_run() {
+                    tracing::debug!("session {key}'s process was gone before it could run: {err}");
+                }
+                Ok(Self {
+                    pgid,
+                    launch,
+                    held: Some(held),
+                })
+            }
             Err(message) => {
                 let problems =
                     blocking(move || kill_tree(&key, pgid, Some(&record), &launch)).await;

@@ -30,7 +30,7 @@ const INTERRUPTED: &str = "Interrupted · What should Argonauts Code do instead?
 
 /// Maps an agent's tool name to its kind, which decides whether it folds and how the fold line
 /// counts it.
-pub type ToolKinds = fn(agent_id: &str, name: &str) -> ToolKind;
+pub type ToolKinds = fn(agent_id: &str, name: &str, input: &serde_json::Value) -> ToolKind;
 
 #[derive(Debug)]
 pub struct ConversationTurns {
@@ -402,7 +402,7 @@ fn agent_event(
             }
             end_stream(open, cx);
             let mut call = tools::writing_call(&agent_id, name).with_key(id.clone());
-            call.kind = kinds(&agent_id, name);
+            call.kind = kinds(&agent_id, name, &serde_json::Value::Null);
             // A shell call doesn't say yet whether it only looks around, so it waits in the
             // fold line before it, and leaves it once its command shows it does more.
             let fold = folds(&call, cx)
@@ -446,7 +446,7 @@ fn agent_event(
             let places = tools::Places::of_conversation(cx.state);
             let mut call =
                 tools::start_call_in(&agent_id, name, input, &places).with_key(id.clone());
-            call.kind = kinds(&agent_id, name);
+            call.kind = kinds(&agent_id, name, input);
             // A shell call shows on its own while its command is being written, and joins
             // the fold once it turns out only to look around.
             let fold = folds(&call, cx);

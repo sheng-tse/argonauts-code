@@ -1,6 +1,9 @@
+use argonauts_core::app::CrewRow;
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
 use super::HistoryCell;
+use super::layout::{BODY_COL, indent, result_prefix};
 use crate::render::RenderCtx;
 use crate::text::marks;
 use crate::text::{fit_lines, sanitize_line, str_width, wrap_spans};
@@ -87,6 +90,51 @@ impl HistoryCell for AgentsStarted {
                 ));
             }
             lines.extend(wrap_spans(&spans, width, &opening, &hang));
+        }
+        fit_lines(&mut lines, width);
+        lines
+    }
+}
+
+/// The crew a request runs with when your words set it: `● Crew for this request`, its bullet
+/// done and `Crew` bold as a tool's name reads, then each role under `⎿` with its models and,
+/// dim, where they came from, in columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrewForRequest {
+    pub rows: Vec<CrewRow>,
+}
+
+impl HistoryCell for CrewForRequest {
+    fn lines(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+        let theme = ctx.theme;
+        let width = usize::from(ctx.width);
+        let text = theme.style(Role::Text);
+        let dim = theme.style(Role::Dim);
+        let mut lines = vec![Line::from(vec![
+            marks::decorative(theme.glyphs.bullet, theme.style(Role::Success)),
+            Span::raw(" "),
+            Span::styled("Crew", text.add_modifier(Modifier::BOLD)),
+            Span::styled(" for this request", dim),
+        ])];
+        let clean = |words: &str| sanitize_line(words).trim().to_owned();
+        let rows: Vec<[String; 3]> = self
+            .rows
+            .iter()
+            .map(|row| [clean(&row.role), clean(&row.who), clean(&row.from)])
+            .collect();
+        let column = |at: usize| rows.iter().map(|row| str_width(&row[at])).max();
+        let (roles, whos) = (column(0).unwrap_or(0), column(1).unwrap_or(0));
+        for (at, [role, who, from]) in rows.iter().enumerate() {
+            let mut spans = if at == 0 {
+                result_prefix(theme)
+            } else {
+                vec![indent(BODY_COL)]
+            };
+            let pad = |words: &str, to: usize| " ".repeat(to - str_width(words) + 3);
+            spans.push(Span::styled(format!("{role}{}", pad(role, roles)), text));
+            spans.push(Span::styled(format!("{who}{}", pad(who, whos)), text));
+            spans.push(Span::styled(from.clone(), dim));
+            lines.push(Line::from(spans));
         }
         fit_lines(&mut lines, width);
         lines

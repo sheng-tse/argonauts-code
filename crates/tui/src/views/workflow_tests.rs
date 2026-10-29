@@ -50,6 +50,7 @@ pub(super) fn agent(session: &str, label: &str, status: RowStatus) -> AgentRow {
         note: None,
         inner: None,
         left_out: false,
+        not_needed: false,
         fallback_why: None,
     }
 }

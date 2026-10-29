@@ -70,6 +70,7 @@ fn row(session: u32, label: &str, worker: &ModelRef, status: RowStatus) -> Agent
         note: None,
         inner: None,
         left_out: false,
+        not_needed: false,
         fallback_why: None,
     }
 }

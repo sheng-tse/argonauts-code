@@ -31,6 +31,7 @@ use argonauts_core::names::{AgentId, ModelRef, SessionKey};
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::judgment::ReviewVerdict;
 use argonauts_core::steps::plan::Severity;
+use argonauts_core::views::writes_the_message;
 use argonauts_core::{AgentEvent, RunId, Spend, TaskId, create_private_dir_all};
 use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime};
@@ -40,8 +41,6 @@ use crate::views::sessions::{RunFacts, SessionFacts, add_spend};
 
 /// The Captain-or-crew rule that sends a request to a workflow because ultracode is on.
 const ULTRACODE_RULE: &str = "ultracode";
-/// The label of the session that writes a run's commit message, which the merger runs.
-const COMMIT_MESSAGE: &str = "commit message";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WorkLine {
@@ -280,8 +279,8 @@ impl MergeFacts {
 /// The role a session's line is filed under: its own, or the merger's for the sessions that
 /// settle a conflict or write the commit message, which start as a worker's.
 pub(crate) fn role_of(started: &SessionStarted) -> &'static str {
-    let merges = started.step == Some(StepName::ResolveConflict)
-        || started.label.as_deref() == Some(COMMIT_MESSAGE);
+    let merges =
+        started.step == Some(StepName::ResolveConflict) || writes_the_message(started.step);
     if merges {
         StatsRole::MERGER
     } else {

@@ -3,11 +3,13 @@
 //! from: your words, your settings, the main session, or the role it follows. One question
 //! then asks where to keep it.
 
+use argonauts_core::app::CrewRow;
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::names::ModelRef;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::steps::intake::InstructionKind;
-use argonauts_crew::roles::{candidates, display_name};
+use argonauts_crew::roles::candidates;
 
 use crate::controller::instructions::Applied;
 
@@ -23,7 +25,8 @@ const SHOWN: [CrewRole; 4] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CrewLine {
     pub role: CrewRole,
-    pub who: String,
+    /// The models that fill it in the run.
+    pub models: Vec<ModelRef>,
     pub from: String,
     /// Its models, when your words set them.
     pub asked: Option<Vec<ModelRef>>,
@@ -96,7 +99,7 @@ pub(crate) fn understood(
             };
             CrewLine {
                 role,
-                who: names(&models(&asked, role)),
+                models: models(&asked, role),
                 from,
                 asked: set_by_words.then(|| models(&asked, role)),
             }
@@ -105,28 +108,17 @@ pub(crate) fn understood(
     Some(lines)
 }
 
-/// The lines as the conversation shows them, the names and sources in columns.
-pub(crate) fn text(lines: &[CrewLine]) -> String {
-    let role_width = lines
+/// The rows the conversation shows, which it sets in columns. Each model is named in full, as
+/// the request's start line names it.
+pub(crate) fn rows(lines: &[CrewLine], names: &DisplayNames) -> Vec<CrewRow> {
+    lines
         .iter()
-        .map(|line| line.role.plural().len())
-        .max()
-        .unwrap_or(0);
-    let who_width = lines
-        .iter()
-        .map(|line| line.who.chars().count())
-        .max()
-        .unwrap_or(0);
-    let mut text = "Crew for this request".to_owned();
-    for line in lines {
-        text.push_str(&format!(
-            "\n{:role_width$}   {:who_width$}   {}",
-            line.role.plural(),
-            line.who,
-            line.from
-        ));
-    }
-    text
+        .map(|line| CrewRow {
+            role: line.role.plural().to_owned(),
+            who: named(names, &line.models),
+            from: line.from.clone(),
+        })
+        .collect()
 }
 
 /// What "Keep this crew?" writes, as `(key, TOML value)`: each role your words set, under
@@ -204,12 +196,14 @@ fn follows(settings: &Settings, role: CrewRole) -> Option<CrewRole> {
     })
 }
 
-fn names(models: &[ModelRef]) -> String {
+/// A CLI named alone reads as the model it runs, so `claude-code` and `claude-code/haiku`
+/// both read `Haiku 5.5 on Claude Code` when that's what runs.
+fn named(names: &DisplayNames, models: &[ModelRef]) -> String {
     match models {
         [] => "nobody".to_owned(),
         models => models
             .iter()
-            .map(display_name)
+            .map(|model| names.worker(&names.running(model)))
             .collect::<Vec<_>>()
             .join(", "),
     }

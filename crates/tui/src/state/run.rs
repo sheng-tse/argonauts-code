@@ -20,7 +20,7 @@ use argonauts_core::names::{ApprovalId, MessageId, ModelRef, RoleName, SessionKe
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::judgment::ReviewVerdict;
-use argonauts_core::views::{is_workflow_agent, round_stem};
+use argonauts_core::views::{is_workflow_agent, not_needed, round_stem};
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
 use argonauts_core::{DiffStat, PhaseStatus, RunId, Spend, TaskId};
 use time::OffsetDateTime;
@@ -271,11 +271,19 @@ impl RunState {
 
     /// The agents its workflow ran, done and in all, as the workflow view counts them. The
     /// agents of a workflow one of its steps runs count as that workflow reports them, so one
-    /// tried again is one agent, and those still to start are counted before they do.
+    /// tried again is one agent, and those still to start are counted before they do. One
+    /// stopped once it wasn't needed counts as neither done nor unfinished.
     fn agents(&self) -> (u32, u32) {
         let agents: Vec<&SessionState> = self
             .sessions_in_order()
             .filter(|session| is_workflow_agent(session.step, session.workflow_step.as_ref()))
+            .filter(|session| {
+                !not_needed(
+                    session.step,
+                    session.status == SessionStatus::Stopped,
+                    self.merged_onto.is_some(),
+                )
+            })
             .filter(|session| {
                 !self
                     .reported

@@ -61,6 +61,13 @@ impl Picture {
         Self { name, rows }
     }
 
+    /// The same picture under `name`, for a screen with no picture of its own that a test
+    /// draws from this one, changed: what it draws is then written apart from this one's.
+    pub(crate) fn named(mut self, name: &'static str) -> Self {
+        self.name = name;
+        self
+    }
+
     /// The picture's rows as text, without the blanks at their ends.
     pub(crate) fn text(&self, rows: Range<usize>) -> Vec<String> {
         self.rows[rows].iter().map(|row| line_text(row)).collect()

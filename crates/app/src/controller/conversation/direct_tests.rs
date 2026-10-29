@@ -97,7 +97,7 @@ fn turn_ended(event: &AppEvent) -> bool {
     )
 }
 
-fn choose(id: argonauts_core::names::ChoiceId, value: &str) -> UiCommand {
+pub(super) fn choose(id: argonauts_core::names::ChoiceId, value: &str) -> UiCommand {
     UiCommand::Answer {
         to: AnswerTarget::Choice { id },
         action: AnswerAction::Choose {
@@ -115,7 +115,7 @@ fn read(root: &Path, path: &str) -> String {
 }
 
 /// Asks the turn's listener as the session's MCP server does, and waits for the answer.
-async fn ask(spec: &SessionSpec, ask: Ask) -> AskReply {
+pub(super) async fn ask(spec: &SessionSpec, ask: Ask) -> AskReply {
     let asking = spec.asking.clone().expect("the turn listens for questions");
     let mut stream = TcpStream::connect(&asking.endpoint).await.unwrap();
     let line = AskLine {
@@ -129,7 +129,7 @@ async fn ask(spec: &SessionSpec, ask: Ask) -> AskReply {
     serde_json::from_str(answer.trim()).unwrap()
 }
 
-async fn first_spec(driver: &TestDriver) -> SessionSpec {
+pub(super) async fn first_spec(driver: &TestDriver) -> SessionSpec {
     let deadline = tokio::time::Instant::now() + max_wait();
     loop {
         if let Some(spec) = driver.agent.specs().into_iter().next() {
@@ -1111,22 +1111,20 @@ async fn in_captain_a_workflow_with_codex_as_the_reviewer_starts_with_codex_revi
     );
     // The crew shown is the one that runs: the main session builds, Codex reviews.
     let crew = driver
-        .until(|event| {
-            matches!(event, AppEvent::Notice { text, .. } if text.starts_with("Crew for this request"))
-        })
+        .until(|event| matches!(event, AppEvent::CrewForRequest { .. }))
         .await;
-    let AppEvent::Notice { text, .. } = crew else {
+    let AppEvent::CrewForRequest { rows } = crew else {
         unreachable!()
     };
-    let workers = text.lines().find(|line| line.starts_with("workers"));
+    let workers = rows.iter().find(|row| row.role == "workers");
     assert!(
-        workers.is_some_and(|line| line.ends_with("your main session")),
-        "{text}"
+        workers.is_some_and(|row| row.from == "your main session"),
+        "{rows:?}"
     );
-    let reviewers = text.lines().find(|line| line.starts_with("reviewers"));
+    let reviewers = rows.iter().find(|row| row.role == "reviewers");
     assert!(
-        reviewers.is_some_and(|line| line.contains("Codex") && line.ends_with("as you asked")),
-        "{text}"
+        reviewers.is_some_and(|row| row.who.contains("Codex") && row.from == "as you asked"),
+        "{rows:?}"
     );
     driver.exit().await;
 }

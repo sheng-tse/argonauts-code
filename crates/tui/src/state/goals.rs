@@ -276,6 +276,7 @@ mod tests {
             note: None,
             inner: None,
             left_out: false,
+            not_needed: false,
             fallback_why: None,
         };
         // Another agent in the same session keeps its goal.

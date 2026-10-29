@@ -386,6 +386,7 @@ impl AppState {
             AppEvent::TakeOver { .. }
             | AppEvent::RunInTerminal { .. }
             | AppEvent::Recap { .. }
+            | AppEvent::CrewForRequest { .. }
             | AppEvent::RepoFiles { .. }
             | AppEvent::Report { .. }
             | AppEvent::ReportSoFar { .. }

@@ -362,10 +362,13 @@ pub(crate) enum TurnStep {
     /// does and ends with its own answer. `asking` is the turn's listener for what it asks you,
     /// and for the main session's tools; `None` asks nothing. `go_ahead` is what the session reads
     /// in place of your message when it has it already, as after its estimate or its plan.
+    /// `writes_outside` is the turn you let write outside the project by answering "Yes, and
+    /// continue" to what its CLI was refused, in a mode that works there once asked.
     Direct {
         asking: Option<Asking>,
         go_ahead: Option<String>,
         words: DirectWords,
+        writes_outside: bool,
     },
     /// Plan first in direct Captain: your message to the main session, which reads and plans
     /// without changing anything and ends with its plan. "Go ahead with this plan?" then resumes
@@ -441,6 +444,17 @@ impl TurnStep {
     /// A turn that may change your files.
     pub(crate) fn writes(&self) -> bool {
         self.direct_asking().is_some()
+    }
+
+    /// The turn you let write outside the project by answering, as [`Self::Direct`] says.
+    pub(crate) fn writes_outside(&self) -> bool {
+        matches!(
+            self,
+            Self::Direct {
+                writes_outside: true,
+                ..
+            }
+        )
     }
 
     /// Direct Captain's turns, a plan first included, whose own answer is the end.
@@ -649,6 +663,8 @@ pub(crate) struct Launched {
     pub key: SessionKey,
     pub cancel: CancellationToken,
     pub control: mpsc::Sender<SessionControl>,
+    /// What the session's sandbox lets it reach outside its folder: in a container, nothing.
+    pub outside: argonauts_core::outside::Outside,
 }
 
 /// Starts the step on its own task. Its events and its end come back as `Internal::Conversation`.
@@ -665,6 +681,7 @@ pub(crate) fn launch(ctx: &Ctx, launch: Launch<'_>) -> anyhow::Result<Launched> 
         .map_err(|err| anyhow::anyhow!("creating {}: {err}", session_dir.display()))?;
     say_in_place(ctx, &launch);
     let spec = session_spec(ctx, &launch, key.clone(), session_dir);
+    let outside = argonauts_conductor::sandbox::profile::outside_reach(&spec.sandbox);
     if spec.cli_workflow.ultracode || spec.cli_workflow.typed_keyword {
         crate::telemetry::used(&ctx.env.paths, crate::telemetry::Use::Ultracode);
     }
@@ -707,6 +724,7 @@ pub(crate) fn launch(ctx: &Ctx, launch: Launch<'_>) -> anyhow::Result<Launched> 
         key,
         cancel,
         control,
+        outside,
     })
 }
 

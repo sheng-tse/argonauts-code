@@ -1,0 +1,40 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome
+
+  What your agents did, from 75 actions in 19 runs across 6 projects · Argonauts' labels
+
+                                                                    Comparing Qwen3 Coder 30B
+                                                                    with the other models
+                                                                    red: Coder does this more
+                                                                    blue: Coder does this less
+
+                                                                    3 more above
+                                                                    ○ Haiku 4.5           9
+                                                                    ○ Gemini 3.8 Flash    8
+                                                                    ○ Sonnet 5            7
+                                                                    ○ Opus 5.5            6
+                                                                    ○ GPT 6               5
+                                                                    ● Qwen3 Coder 30B     4
+                                                                    ○ Gemma 3 12B         3
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   r to cycle dates · g group · s this project · d deeper map · ←  →  compare · ↓  the list · esc back

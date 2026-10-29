@@ -12,15 +12,18 @@
 //! it, `Set Editor mode to vim`, or `Config dialog dismissed` when nothing changed.
 
 mod draw;
+mod picks;
 mod rows;
 #[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
 
-use argonauts_core::app::{SettingRow, UiCommand};
+use argonauts_core::app::{SettingRow, UiCommand, ViewRequest};
+use argonauts_core::deep_map::DeepOffer;
 use argonauts_core::input::{ParsedInput, parse_input};
 use argonauts_core::names::ModelRef;
+use argonauts_core::settings::behaviors::{AUTO, WORD_VECTORS};
 use argonauts_core::settings::mods::ModPlace;
 use argonauts_core::settings::mods::builtin;
 use argonauts_core::settings::mods::view::ModRowKind;
@@ -38,6 +41,7 @@ use crate::views::settings::words::row_value_words;
 use crate::views::settings::{edit_key, flow};
 
 pub use draw::{body_rows, draw};
+use picks::{Picked, Picking};
 use rows::{Control, ROWS, Row, START_MODE};
 
 /// What Esc says when nothing changed, as Claude Code says it.
@@ -84,8 +88,11 @@ pub struct ConfigTab {
     waiting: Vec<Waiting>,
     /// How many of the state's setting outcomes the tab has read, once it has looked.
     outcomes_read: Option<usize>,
-    /// A Behaviors row was followed to the map, which the panel shows on its own tab.
-    to_map: bool,
+    /// A Behaviors row's picker, over the rows while it shows.
+    picking: Option<Picking>,
+    /// The models the Behaviors pickers saved, by the TOML each saved, so the row names its
+    /// pick as the picker did.
+    picked_names: Vec<(String, String)>,
 }
 
 /// A change sent from a row that asks where, waiting for the app's word.
@@ -157,9 +164,16 @@ impl ConfigTab {
         !self.settings.is_empty()
     }
 
-    /// Whether the last key followed a Behaviors row to the map, once.
-    pub fn followed_to_map(&mut self) -> bool {
-        std::mem::take(&mut self.to_map)
+    /// The offer a Behaviors row's picker asked for, which fills its rows.
+    pub fn accept_offer(&mut self, offer: &DeepOffer) {
+        if let Some(picking) = self.picking.as_mut() {
+            picking.accept(offer);
+        }
+    }
+
+    /// A Behaviors row's picker, while it shows.
+    pub fn picker(&self) -> Option<&crate::bottom::Picker> {
+        self.picking.as_ref().map(|picking| &picking.picker)
     }
 
     /// The approval mode the app runs in now, which Default approval mode's Last used names.
@@ -230,7 +244,12 @@ impl ConfigTab {
                     _ => words,
                 }
             }
-            Control::Opens(_) | Control::BehaviorsMap => link_words(key, value, state),
+            Control::Picks(_) => self
+                .picked_names
+                .iter()
+                .find(|(saved, _)| same(saved, value))
+                .map_or_else(|| link_words(key, value, state), |(_, label)| label.clone()),
+            Control::Opens(_) => link_words(key, value, state),
             Control::Typed => typed_words(key, value),
             Control::OnTheLine(card) => on_the_line(card, state).to_string(),
             Control::AllSettings => String::new(),
@@ -259,6 +278,9 @@ impl ConfigTab {
         self.read_outcomes(state);
         if self.editor.is_some() {
             return Some(self.editor_key(key, state));
+        }
+        if self.picking.is_some() {
+            return Some(self.picking_key(key, state));
         }
         let plain = !key
             .modifiers
@@ -372,7 +394,7 @@ impl ConfigTab {
         let next = match row.control {
             // ← and → only flip and step; the other rows open on Enter and Space alone.
             Control::Opens(_)
-            | Control::BehaviorsMap
+            | Control::Picks(_)
             | Control::Typed
             | Control::AllSettings
             | Control::OnTheLine(_)
@@ -403,9 +425,10 @@ impl ConfigTab {
         match (row.control, next, setting) {
             (_, Some(value), Some(setting)) => self.save(row, &setting, value, state),
             (Control::Opens(command), ..) => self.open_command(command),
-            (Control::BehaviorsMap, ..) => {
-                self.to_map = true;
-                ViewOutcome::Consumed
+            (Control::Picks(pick), _, setting) => {
+                let value = setting.map(|setting| setting.value).unwrap_or_default();
+                self.picking = Some(Picking::new(pick, &value, list::vim(state)));
+                ViewOutcome::Request(ViewRequest::DeepOffer)
             }
             // `/mods <card> bottom-line` puts the card on the line or takes it off.
             (Control::OnTheLine(card), ..) => {
@@ -509,6 +532,36 @@ impl ConfigTab {
             }
             ViewOutcome::Ignored => ViewOutcome::Consumed,
             outcome => outcome,
+        }
+    }
+
+    /// A key while a Behaviors row's picker shows. A pick saves as the row's other changes do;
+    /// Esc keeps the value it had.
+    fn picking_key(&mut self, key: KeyEvent, state: &AppState) -> ViewOutcome {
+        let Some(picking) = self.picking.as_mut() else {
+            return ViewOutcome::Consumed;
+        };
+        let picked = picking.key(key, &state.names);
+        let row_key = match picking.pick {
+            picks::Pick::Summarizer => "behaviors.summarizer",
+            picks::Pick::Embedder => "behaviors.embedder",
+        };
+        match picked {
+            Picked::Open => ViewOutcome::Consumed,
+            Picked::Keep => {
+                self.picking = None;
+                ViewOutcome::Consumed
+            }
+            Picked::Save { value, label } => {
+                self.picking = None;
+                self.picked_names.retain(|(saved, _)| !same(saved, &value));
+                self.picked_names.push((value.clone(), label));
+                let row = ROWS.iter().find(|row| row.key == row_key);
+                match (row, self.setting(row_key).cloned()) {
+                    (Some(row), Some(setting)) => self.save(row, &setting, value, state),
+                    _ => ViewOutcome::Consumed,
+                }
+            }
         }
     }
 
@@ -673,6 +726,14 @@ fn link_words(key: &str, value: &str, state: &AppState) -> String {
         "workflow" | "ui.theme" => capitalized(&format::setting_value(value)),
         "fallback.same_cli" if value.trim() == "true" => "the same CLI".to_owned(),
         "fallback.same_cli" => "any CLI".to_owned(),
+        "behaviors.summarizer" | "behaviors.embedder" => {
+            let named = format::setting_value(value);
+            match named.trim() {
+                "" | AUTO => AUTO.to_owned(),
+                WORD_VECTORS => "word vectors".to_owned(),
+                _ => worker(&named),
+            }
+        }
         "" => String::new(),
         _ => row_value_words(key, value),
     }

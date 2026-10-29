@@ -2,7 +2,9 @@
 
 use argonauts_core::api::StatusSummary;
 use argonauts_core::app::TurnReply;
-use argonauts_core::events::run::{ClosingAnswer, RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::events::run::{
+    ClosingAnswer, KEPT_ON_ITS_BRANCH, RunLifecycle, RunMode, RunOutcome, says_merged,
+};
 use argonauts_core::events::task::TaskState;
 use argonauts_core::events::{RunEvent, RunEventKind};
 
@@ -11,14 +13,15 @@ const TITLE_MAX: usize = 60;
 
 /// Such as "Export now takes --json. All 4 tasks merged, and the checks pass. Ask for another
 /// change, or /resume an older run." A run that ended starts with what changed, from its
-/// closing answer, rather than its goal, which only repeats what you asked.
+/// closing answer, rather than its goal, which only repeats what you asked. A run that didn't
+/// merge never says it did, and one kept on its branch says so and why, as its answer does.
 pub(crate) fn recap_from_summary(
     summary: &StatusSummary,
     outcome: Option<RunOutcome>,
     closing: Option<&ClosingAnswer>,
 ) -> String {
     let main_agent = match outcome {
-        Some(_) => closing.and_then(what_changed),
+        Some(outcome) => closing.and_then(|closing| what_changed(closing, outcome)),
         None => Some(goal_line(summary)),
     };
     let tasks = Tasks::count(summary);
@@ -38,10 +41,12 @@ pub(crate) fn recap_from_summary(
             with_done(&tasks, "The work waits in a pull request for review")
         }
         // The recap is of the run on screen, which `/resume` alone carries on.
-        Some(RunOutcome::BranchLeft) => format!(
-            "{} /resume picks it up.",
-            with_done(&tasks, "The branches are kept for later")
-        ),
+        Some(RunOutcome::BranchLeft) => {
+            let kept = closing
+                .and_then(ClosingAnswer::kept)
+                .unwrap_or(KEPT_ON_ITS_BRANCH);
+            format!("{} /resume picks it up.", with_done(&tasks, kept))
+        }
         Some(RunOutcome::Abandoned) => "You abandoned the run, so nothing merged.".to_owned(),
         Some(RunOutcome::Stopped) => format!(
             "{} /resume goes on from there.",
@@ -69,15 +74,17 @@ pub(crate) fn closing_in(events: &[RunEvent]) -> Option<&ClosingAnswer> {
     })
 }
 
-/// The agent's first sentence, or without an agent's words, the files that changed.
-fn what_changed(closing: &ClosingAnswer) -> Option<String> {
+/// The agent's first sentence, or without an agent's words, the files that changed. Of a run
+/// that didn't merge, words that say it did give way to the files.
+fn what_changed(closing: &ClosingAnswer, outcome: RunOutcome) -> Option<String> {
     if closing.by.is_some() {
         let text = closing.text.trim();
         let first = match text.find(". ") {
             Some(end) => &text[..end],
             None => text,
         };
-        if !first.is_empty() {
+        let contradicts = outcome != RunOutcome::Merged && says_merged(first);
+        if !first.is_empty() && !contradicts {
             return Some(first.to_owned());
         }
     }
@@ -351,10 +358,10 @@ mod tests {
             recap_from_summary(&one, Some(RunOutcome::PullRequest), None),
             "The work waits in a pull request for review, with the task done."
         );
-        // A run left on its branches never says its task merged.
+        // A run kept on its branch never says its task merged.
         assert_eq!(
             recap_from_summary(&one, Some(RunOutcome::BranchLeft), None),
-            "The branches are kept for later, with the task done. /resume picks it up."
+            "Kept on its branch, not merged, with the task done. /resume picks it up."
         );
         assert_eq!(
             recap_from_summary(&stopped, Some(RunOutcome::Failed), None),
@@ -390,6 +397,36 @@ mod tests {
             "Changed invoice/money.py. The task merged, and the checks pass. Ask for another \
              change, or /resume an older run."
         );
+    }
+
+    /// The agent called the work merged, but the run kept it on its branch: the recap says what
+    /// changed by its files instead, then that it was kept and why, as the answer's line does.
+    #[test]
+    fn a_run_kept_on_its_branch_never_reads_as_merged() {
+        let one = summary(vec![task(1, TaskState::Merged)]);
+        let kept = "Kept on its branch, not merged, as autopilot chose, since the review stayed \
+                    within Claude";
+        let closing = ClosingAnswer {
+            text: "The money rounding fix is merged: invoice/money.py now passes the three \
+                   tests. The reviewer accepted it."
+                .to_owned(),
+            by: Some("claude-code/haiku".parse().unwrap()),
+            files: vec![ChangedFile {
+                path: "invoice/money.py".to_owned(),
+                insertions: 12,
+                deletions: 4,
+            }],
+            checks: Vec::new(),
+            tests: Vec::new(),
+            left: vec![kept.to_owned()],
+            decided: Vec::new(),
+        };
+        let recap = recap_from_summary(&one, Some(RunOutcome::BranchLeft), Some(&closing));
+        assert_eq!(
+            recap,
+            format!("Changed invoice/money.py. {kept}, with the task done. /resume picks it up.")
+        );
+        assert!(!says_merged(&recap), "{recap}");
     }
 
     #[test]

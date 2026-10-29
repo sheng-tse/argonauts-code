@@ -1,7 +1,7 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
-   Overview    Models    Behaviors                                                                                    
-  What your agents did, from 562 actions in 19 runs across 6 projects · by model · Argonauts' labels                  
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
+   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
+  What your agents did, from 562 actions in 19 runs across 6 projects · Argonauts' labels                             
                                                                                                                       
 
 [picture]
@@ -25,6 +25,6 @@ blue: Luna does this less
     checked git status or diff and ran a shell command      3 (4.5%)   others   4 (0.8%)                              
     ran the test suite                                      8 (12.1%)   others  19 (3.8%)                             
                                                                                                                       
-  ✻ Deeper map: a model summarizes each action, so behaviors no label names show up too. d to set it up               
+  ✻  Deeper map: a model summarizes each action, so behaviors no label names show up too. d to set it up              
                                                                                                                       
-  ←  →  compare a model · ↓  into the list, which lights each behavior · g group · p period · esc back                
+  r to cycle dates · g group · s this project · d deeper map · ←  →  compare · ↓  the list · esc back                 

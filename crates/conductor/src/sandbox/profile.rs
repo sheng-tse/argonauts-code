@@ -20,6 +20,7 @@ use std::path::{Component, Path, PathBuf};
 use argonauts_core::CommandSpec;
 use argonauts_core::layout::{repo_state, session_files};
 use argonauts_core::outside::Outside;
+use argonauts_core::session::SessionRole;
 use argonauts_core::session_runner::{Access, SandboxMode, SandboxProfile};
 
 use super::SandboxError;
@@ -400,7 +401,10 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
         let asked = requested.writable.iter().chain(input.extra_writable);
         writable.extend(outside_all(asked, &fixed));
     }
-    let writes_outside = builds && outside.write;
+    // A direct turn whose CLI asks writes anywhere once asked, its asking being what holds it.
+    // A run's session can't ask, so only `write` opens outside for it. The never-list stays
+    // closed whatever is answered, and so does your checkout for a session in a worktree of it.
+    let writes_outside = outside.writes_outside(role_of(input.access));
     if writes_outside {
         writable.push(PathBuf::from("/"));
     }
@@ -423,7 +427,7 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
         readable.push(input.workdir.join(WORKTREE_FOLDER));
     }
     if writes_outside {
-        readable.extend(kept_from_writes(outside, input, home, &deny_read));
+        readable.extend(kept_from_writes(outside, input.workdir, &deny_read));
     }
     // Readable paths that aren't writable become read-only, even inside the writable state.
     readable.extend(config);
@@ -507,46 +511,29 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
     }
 }
 
-/// Relative to your home. Files your shell, your login, and git run code from: a session that
-/// writes anywhere still can't plant a command there that runs outside any sandbox later.
-const STARTUP_FILES: &[&str] = &[
-    ".profile",
-    ".bashrc",
-    ".bash_profile",
-    ".bash_login",
-    ".bash_logout",
-    ".zshrc",
-    ".zshenv",
-    ".zprofile",
-    ".zlogin",
-    ".zlogout",
-    ".config/fish",
-    ".gitconfig",
-    ".config/git",
-    "Library/LaunchAgents",
-    ".config/autostart",
-    ".config/systemd/user",
-];
-
-/// What stays read-only for a session that writes anywhere: system folders, the files above,
-/// and your checkout when the session works in a worktree of it, which is where its changes
-/// to the project go. A path in a denied area is closed already, and isn't opened to reads.
-fn kept_from_writes(
-    outside: &argonauts_core::outside::Outside,
-    input: &ProfileInput<'_>,
-    home: &Path,
-    denied: &[PathBuf],
-) -> Vec<PathBuf> {
+/// What stays read-only for a session that writes anywhere: the system folders on the
+/// never-list, and your checkout when the session works in a worktree of it, which is where its
+/// changes to the project go. A path in a denied area is closed already, and isn't opened to
+/// reads.
+fn kept_from_writes(outside: &Outside, workdir: &Path, denied: &[PathBuf]) -> Vec<PathBuf> {
     let mut kept: Vec<PathBuf> = outside.never.unwritten.clone();
-    kept.extend(STARTUP_FILES.iter().map(|path| home.join(path)));
     kept.extend(
         outside
             .project
             .iter()
-            .filter(|project| !is_within(input.workdir, project))
+            .filter(|project| !is_within(workdir, project))
             .cloned(),
     );
-    outside_all(kept.iter(), denied)
+    outside_all(dedup(kept).iter(), denied)
+}
+
+/// What a session's access makes it, for what it may reach outside its project.
+fn role_of(access: Access) -> SessionRole {
+    match access {
+        Access::Direct => SessionRole::Direct,
+        Access::Build | Access::Experiment => SessionRole::Build,
+        Access::NoTools | Access::ReadOnly => SessionRole::ReadOnly,
+    }
 }
 
 /// A direct turn's protected paths in `workdir`, and git's hooks folder where `core.hooksPath`

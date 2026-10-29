@@ -95,13 +95,22 @@ fn while_it_runs_the_tab_says_who_summarizes_and_how_far_as_its_picture_shows() 
     let theme = theme();
     let kit = Kit::new(&theme);
     let picture = include_str!("../../tests/golden/overview/choose_running.txt");
-    // Before the first request is back, none of the scope's actions is done.
+    // Before the first request is back, none of the scope's actions is done, and the offer
+    // says how long they take.
     let first = rows(flow.above_map(&kit).unwrap());
     assert_eq!(first[0], picture_rows(picture, 3..4)[0]);
+    assert_eq!(
+        first[2],
+        "  ✻  Summarizing…  0 of 562 · about 2 min left · esc keeps it going in the background · \
+         x stops it"
+    );
+    // The app's first word has no estimate yet, so the offer's says what's left of the rest.
+    flow.sync(&running(281, 562, None));
+    let half = rows(flow.above_map(&kit).unwrap());
     assert!(
-        first[2].contains("Summarizing… 0 of 562 · esc"),
+        half[2].contains("Summarizing…  281 of 562 · about 1 min left · esc"),
         "{}",
-        first[2]
+        half[2]
     );
     flow.sync(&running(312, 562, Some(50)));
     assert_eq!(

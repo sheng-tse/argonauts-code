@@ -2003,7 +2003,12 @@ impl Host {
                     },
                 )?;
                 let mut spec = spec;
-                lock(&self.shared.outside_writes).began(&key, &spec.workdir);
+                // The never-list holds only where the session may work outside the project, as
+                // its mode and its sandbox let it: a container shows it nothing outside. Only
+                // there does a refusal of a path on it come from the list.
+                let never =
+                    argonauts_conductor::sandbox::profile::outside_reach(&spec.sandbox).never;
+                lock(&self.shared.outside_writes).began(&key, &spec.workdir, never);
                 let own = identity
                     .task
                     .as_ref()
@@ -2158,9 +2163,10 @@ impl Host {
         let _ = control.try_send(stop);
     }
 
-    /// What the run's sessions read and write outside the project without asking, as
-    /// `[outside]` says for the run's mode. Inside the project they still write only their
-    /// worktrees.
+    /// What the run's sessions read and write outside the project, as `[outside]` says for the
+    /// run's mode. They can't ask, so where it opens outside only once asked they read there
+    /// and write nothing: no question would come before such a write. Inside the project they
+    /// still write only their worktrees.
     fn outside(&self) -> argonauts_core::outside::Outside {
         let Some(home) = std::env::var_os("HOME") else {
             return argonauts_core::outside::Outside::default();
@@ -2171,6 +2177,7 @@ impl Host {
             Some(&self.shared.repo.root),
             Path::new(&home),
         )
+        .without_asking()
     }
 
     /// The state directory, `~/.ssh`, and every other worktree of the run, and your checkout

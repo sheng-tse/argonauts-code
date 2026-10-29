@@ -1,5 +1,5 @@
-//! Task steps: predictions, builds, acceptance tests, merge conflicts, the run review, and the
-//! closing answer.
+//! Task steps: predictions, builds, acceptance tests, merge conflicts, the commit message, the
+//! run review, and the closing answer.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,17 @@ impl Step for ResolveConflict {
     const NAME: StepName = StepName::ResolveConflict;
     type Input = BuildInput;
     type Output = TaskReport;
+}
+
+/// The message a run's change lands with, which the merger writes from the change in its
+/// prompt: what the change does, never how it was made.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CommitMessage {
+    /// What the change does, in the imperative, under 72 characters.
+    pub subject: String,
+    /// What changed and why. Empty when the subject says it all.
+    #[serde(default)]
+    pub body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

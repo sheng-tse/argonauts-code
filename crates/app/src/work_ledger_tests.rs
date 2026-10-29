@@ -11,6 +11,7 @@ use argonauts_core::limits::{PlanUsageReading, PlanUsageSource};
 use argonauts_core::names::{ApprovalId, RoleName, SessionKey};
 use argonauts_core::settings::fallback::{FallbackMode, FallbackStrategy};
 use argonauts_core::steps::judgment::{ReviewOutput, SettleOutput};
+use argonauts_core::views::COMMIT_MESSAGE;
 use time::macros::datetime;
 
 fn reviewed(
@@ -387,7 +388,7 @@ fn a_run_to_its_merge() -> Vec<RunEvent> {
             "resolve:main",
         ),
         usage(10, &conflict, 300, 30, 0.03),
-        merging(11, &message, None, COMMIT_MESSAGE),
+        merging(11, &message, Some(StepName::CommitMessage), COMMIT_MESSAGE),
         usage(12, &message, 100, 10, 0.01),
         approval_decided(
             13,

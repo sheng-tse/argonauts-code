@@ -1,9 +1,9 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
-   Overview    Models    Behaviors                                                                                    
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
+   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
   Deeper map · 562 actions · summarizing with Qwen3 Coder 30B on Ollama                                               
                                                                                                                       
-  ✻ Summarizing… 312 of 562 · about 50 s left · esc keeps it going in the background · x stops it                     
+  ✻  Summarizing…  312 of 562 · about 50 s left · esc keeps it going in the background · x stops it                   
                                                                                                                       
 
 [picture]

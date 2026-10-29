@@ -989,7 +989,7 @@ fn output_lines(
 fn diffs_of_calls(session: &SessionState) -> Vec<(&str, usize)> {
     let edits = |tool: &&crate::state::ToolRecord| {
         matches!(
-            tools::kind_of(&session.agent_id, &tool.name),
+            tools::kind_of(&session.agent_id, &tool.name, &tool.input),
             crate::cell::ToolKind::Edit | crate::cell::ToolKind::Write
         ) && tool.ok == Some(true)
     };

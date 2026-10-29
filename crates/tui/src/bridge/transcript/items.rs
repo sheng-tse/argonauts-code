@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::app::{AppEvent, HeaderAndBottomLine};
+use argonauts_core::app::{AppEvent, CrewRow, HeaderAndBottomLine};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::log::{NO_LONGER_OFFERS, NO_SECOND_TRY, SAME_CLI_IS_ON};
 use argonauts_core::names::{ConversationId, ModelRef};
@@ -13,7 +13,8 @@ use argonauts_core::settings::Settings;
 use argonauts_core::{Note, NoteLevel};
 
 use crate::cell::{
-    AgentReady, Cell, HungLine, Notice, Recap, ResultLine, SessionHeader, Tone, UserMessage,
+    AgentReady, Cell, CrewForRequest, HungLine, Notice, Recap, ResultLine, SessionHeader, Tone,
+    UserMessage,
 };
 use crate::format;
 use crate::history::CellId;
@@ -323,6 +324,20 @@ pub(super) fn folded(title: &str, lines: &[String], more: &[String], cx: &mut Cx
         notice = notice.with_more(line.trim_end());
     }
     emit(cx, notice);
+}
+
+/// The crew your words set for a request, shown before its work starts. A screen that keeps
+/// to fewer lines leaves it out with the other notices.
+pub(super) fn crew_for_request(rows: &[CrewRow], cx: &mut Cx<'_>) {
+    if rows.is_empty() || quiet(cx) {
+        return;
+    }
+    emit(
+        cx,
+        Cell::Custom(Box::new(CrewForRequest {
+            rows: rows.to_vec(),
+        })),
+    );
 }
 
 /// `※ recap: … (disable recaps in /config)`, unless recaps are off.

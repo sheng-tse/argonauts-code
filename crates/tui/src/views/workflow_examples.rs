@@ -4,9 +4,9 @@
 use argonauts_core::names::{ModelRef, SessionKey, WorkflowId};
 use argonauts_core::steps::plan::Severity;
 use argonauts_core::views::{
-    ActivityLine, AgentRow, AgentView as AgentData, ContextUse, Finding, Findings, PhaseCount,
-    PhaseRow, ReviewGiven, RowNote, RowStatus, StatusKind, StatusLine, Tone, WorkflowRow,
-    WorkflowState, WorkflowView as WorkflowData,
+    ActivityLine, AgentRow, AgentView as AgentData, ContextUse, Finding, Findings, MERGED_AT_ONCE,
+    PhaseCount, PhaseRow, ReviewGiven, RowNote, RowStatus, StatusKind, StatusLine, Tone,
+    WorkflowRow, WorkflowState, WorkflowView as WorkflowData,
 };
 use argonauts_core::workflow::StandardPhase;
 use argonauts_core::{RunId, Spend};
@@ -49,6 +49,7 @@ pub(crate) fn agent(
         note: None,
         inner: None,
         left_out: false,
+        not_needed: false,
         fallback_why: None,
     }
 }
@@ -291,6 +292,8 @@ pub(crate) enum Merge {
     Conflict,
     /// Your branch moved, a test broke with it, and a model fixed it.
     BranchMoved,
+    /// Merged at once, so the commit message wasn't waited for and its writer was stopped.
+    AtOnce,
     /// A folder without git, where the work is written into your files.
     NoGit,
 }
@@ -323,6 +326,12 @@ fn merge_rows(merge: Merge) -> Vec<WorkflowRow> {
             ),
             message(None),
         ],
+        Merge::AtOnce => {
+            let mut writer = model(7, "commit message", 0, 0);
+            writer.status = RowStatus::Skipped;
+            writer.not_needed = true;
+            vec![noted(writer, MERGED_AT_ONCE, Tone::Plain)]
+        }
         Merge::NoGit => Vec::new(),
     }
 }
@@ -332,7 +341,7 @@ pub(crate) fn done(merge: Merge) -> WorkflowData {
     let models = match merge {
         Merge::Clean => 1,
         Merge::Conflict | Merge::BranchMoved => 2,
-        Merge::NoGit => 0,
+        Merge::AtOnce | Merge::NoGit => 0,
     };
     let sign_off = noted(
         agent(

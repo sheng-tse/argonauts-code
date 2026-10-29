@@ -94,10 +94,12 @@ pub fn build(program: &str, req: &SessionRequest) -> anyhow::Result<CommandSpec>
 /// ours keeps a read-only session from writing. `sandbox.mode = "none"` turns it off too, with
 /// nothing in its place. `codex exec` never asks before a command.
 ///
-/// Work outside the project in auto and autopilot needs nothing more inside ours, which holds
-/// the never-list. Codex 0.163's own sandbox reads anywhere, but a writable root it adds with
-/// `--add-dir` is open whole, `~/.ssh` included, so under its own sandbox it writes only its
-/// workspace.
+/// Work outside the project needs nothing more inside ours, which holds the never-list: in auto
+/// and autopilot, and on the turn you allow to write there by answering. Codex can't ask in a
+/// headless run, so in supervised ours keeps a direct turn's writes in its project until you
+/// allow them, and a run's session reads outside and writes only its worktree. Codex 0.163's own
+/// sandbox reads anywhere, but a writable root it adds with `--add-dir` is open whole, `~/.ssh`
+/// included, so under its own sandbox it writes only its workspace.
 pub fn sandbox_mode(req: &SessionRequest) -> &'static str {
     match req.role {
         _ if req.tool_sandbox_off => "danger-full-access",

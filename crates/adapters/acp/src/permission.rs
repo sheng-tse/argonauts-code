@@ -516,6 +516,53 @@ mod tests {
         }
     }
 
+    /// With every folder a root, as the session's scope has it where the session reads outside
+    /// its project, a generic ACP agent's read there is allowed, so a direct turn's driver puts
+    /// it to you. The never-list's folders stay denied, and a run's session in supervised, which
+    /// writes only its worktree, still has an edit outside refused.
+    #[test]
+    fn a_read_outside_is_allowed_where_the_session_reads_outside() {
+        let read = |policy: &Policy, path: &str| {
+            policy.judge(&json!({ "kind": "read", "locations": [{ "path": path }] }))
+        };
+        let mut direct = start(Access::Direct, false);
+        direct.scope.roots = vec!["/w".into(), "/".into()];
+        direct.scope.writable = vec!["/w".into(), "/".into()];
+        direct.scope.deny = vec!["/home/you/.ssh".into()];
+        let policy = Policy::new(&direct, None);
+        assert_eq!(
+            read(&policy, "/home/you/Downloads/brief.txt"),
+            Verdict::Allow
+        );
+        assert!(matches!(
+            read(&policy, "/home/you/.ssh/id_rsa"),
+            Verdict::Reject(_)
+        ));
+        assert_eq!(
+            policy.judge(&edit("/home/you/Downloads/notes.md")),
+            Verdict::Allow
+        );
+
+        let mut run = start(Access::Build, false);
+        run.scope.roots = vec!["/w".into(), "/".into()];
+        run.scope.deny = vec!["/home/you/.ssh".into()];
+        let policy = Policy::new(&run, None);
+        assert_eq!(
+            read(&policy, "/home/you/Downloads/brief.txt"),
+            Verdict::Allow
+        );
+        assert!(matches!(
+            policy.judge(&edit("/home/you/Downloads/notes.md")),
+            Verdict::Reject(_)
+        ));
+
+        let kept_in = Policy::new(&start(Access::Direct, false), None);
+        assert!(matches!(
+            read(&kept_in, "/home/you/Downloads/brief.txt"),
+            Verdict::Reject(_)
+        ));
+    }
+
     fn edit(path: &str) -> Value {
         json!({ "toolCallId": "t", "title": format!("Edit {path}"), "kind": "edit", "locations": [{ "path": path }] })
     }

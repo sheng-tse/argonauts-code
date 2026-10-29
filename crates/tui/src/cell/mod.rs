@@ -25,7 +25,7 @@ use crate::render::RenderCtx;
 use crate::theme::Role;
 
 pub use assistant::AssistantMessage;
-pub use crew::{AgentsStarted, StartedAgent};
+pub use crew::{AgentsStarted, CrewForRequest, StartedAgent};
 pub use decided::DecidedOnAutopilot;
 pub use diff::{DiffCell, DiffHunk, DiffKind, DiffLine, DiffParseError, DiffView};
 pub use group::CollapsedGroup;

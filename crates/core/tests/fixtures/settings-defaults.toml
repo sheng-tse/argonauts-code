@@ -797,6 +797,10 @@ write = [
     "auto",
     "autopilot",
 ]
+ask = [
+    "supervised",
+    "auto_preview",
+]
 never = [
     "~/.ssh",
     "~/.aws",
@@ -805,6 +809,10 @@ never = [
     "~/.local/share/keyrings",
     ".env",
     ".env.*",
+    "!.env.example",
+    "!.env.sample",
+    "!.env.template",
+    "!.env.dist",
     "~/.claude/.credentials.json",
     "~/.codex/auth.json",
     "~/.gemini/oauth_creds.json",
@@ -825,6 +833,12 @@ never = [
     "/System",
     "/usr",
     "/etc",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/libx32",
 ]
 
 [behaviors]

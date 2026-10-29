@@ -1318,8 +1318,9 @@ fn priced(message: &str, list: &[Instruction]) -> Applied {
 }
 
 /// "Use only Claude" leaves no reviewer of another provider, so for this request reviews stay
-/// within Claude, on another model than the one that builds: Opus builds, Sonnet reviews. The
-/// line says so once, and "from now on" keeps the crew, never the relaxed rule.
+/// within Claude, on another model than the one that builds: Opus, the main agent's, builds and
+/// Sonnet reviews, both named. The line says so once, and "from now on" keeps the crew, never
+/// the relaxed rule.
 #[test]
 fn only_claude_reviews_on_another_claude_model() {
     let message = "Use only Claude for this.";
@@ -1327,7 +1328,8 @@ fn only_claude_reviews_on_another_claude_model() {
     let applied = priced(message, std::slice::from_ref(&only));
     assert_eq!(
         followed(&applied, "Use only Claude"),
-        "Crew: Claude Code, reviews stay within Claude, as you asked"
+        "Crew: Claude Code, reviews stay within Claude (Opus 5.5 builds, Sonnet 5 reviews), \
+         as you asked"
     );
     assert_eq!(
         setting(&applied, "crew").as_deref(),
@@ -1341,7 +1343,10 @@ fn only_claude_reviews_on_another_claude_model() {
         setting(&applied, "roles.reviewer.models").as_deref(),
         Some("[\"claude-code/claude-sonnet-5\"]")
     );
-    assert_eq!(setting(&applied, "roles.worker.models"), None);
+    assert_eq!(
+        setting(&applied, "roles.worker.models").as_deref(),
+        Some("[\"claude-code/claude-opus-5-5\"]")
+    );
     let resolved = resolve_with(&applied).settings;
     assert!(!resolved.review.other_provider);
 
@@ -1361,6 +1366,87 @@ fn only_claude_reviews_on_another_claude_model() {
             .keep
             .iter()
             .any(|(key, _)| key == "review.other_provider")
+    );
+}
+
+/// "Use only Claude" with the main agent on Claude Code's Sonnet: the workers build on Sonnet,
+/// the main agent's model, and Haiku reviews, so the review is never the builder's own model.
+#[test]
+fn only_claude_builds_on_the_main_agents_model_when_it_runs_on_claude_code() {
+    let message = "Use only Claude for this.";
+    let mut settings = Settings::default();
+    settings.crew.main = ModelRef::new("claude-code", Some("sonnet".to_owned()));
+    let applied = check(
+        &[says(InstructionKind::Crew, "Use only Claude", "claude")],
+        message,
+        &settings,
+        &priced_roster(),
+        None,
+    );
+    assert_eq!(
+        setting(&applied, "roles.worker.models").as_deref(),
+        Some("[\"claude-code/claude-sonnet-5\"]")
+    );
+    assert_eq!(
+        setting(&applied, "roles.reviewer.models").as_deref(),
+        Some("[\"claude-code/claude-haiku-4-5\"]")
+    );
+    assert_eq!(
+        followed(&applied, "Use only Claude"),
+        "Crew: Claude Code, reviews stay within Claude (Sonnet 5 builds, Haiku 4.5 reviews), \
+         as you asked"
+    );
+
+    // The main agent named in the same words counts as the one in the settings does.
+    let words = "Claude Code with Haiku is the main agent";
+    let named = priced(
+        &format!("{words}. Use only Claude for this."),
+        &[
+            with(
+                says(InstructionKind::MainAgent, words, "claude"),
+                "haiku",
+                "",
+                "",
+            ),
+            says(InstructionKind::Crew, "Use only Claude", "claude"),
+        ],
+    );
+    assert_eq!(
+        setting(&named, "roles.worker.models").as_deref(),
+        Some("[\"claude-code/claude-haiku-4-5\"]")
+    );
+    assert_eq!(
+        setting(&named, "roles.reviewer.models").as_deref(),
+        Some("[\"claude-code/claude-sonnet-5\"]")
+    );
+}
+
+/// "Use only Claude" with the main agent on another CLI: the workers build on Claude Code's own
+/// default model, named, and the next one down reviews.
+#[test]
+fn only_claude_builds_on_claude_codes_default_when_the_main_agent_runs_elsewhere() {
+    let message = "Use only Claude for this.";
+    let mut settings = Settings::default();
+    settings.crew.main = ModelRef::new("codex", Some("gpt-6-luna".to_owned()));
+    let applied = check(
+        &[says(InstructionKind::Crew, "Use only Claude", "claude")],
+        message,
+        &settings,
+        &priced_roster(),
+        None,
+    );
+    assert_eq!(
+        setting(&applied, "roles.worker.models").as_deref(),
+        Some("[\"claude-code/claude-opus-5-5\"]")
+    );
+    assert_eq!(
+        setting(&applied, "roles.reviewer.models").as_deref(),
+        Some("[\"claude-code/claude-sonnet-5\"]")
+    );
+    assert_eq!(
+        followed(&applied, "Use only Claude"),
+        "Crew: Claude Code, reviews stay within Claude (Opus 5.5 builds, Sonnet 5 reviews), \
+         as you asked"
     );
 }
 
@@ -1465,6 +1551,11 @@ fn cheap_and_only_claude_has_sonnet_build_and_haiku_review_and_the_merge_waits()
     assert_eq!(
         setting(&applied, "roles.reviewer.models").as_deref(),
         Some("[\"claude-code/claude-haiku-4-5\"]")
+    );
+    assert_eq!(
+        followed(&applied, "use only Claude"),
+        "Crew: Claude Code, reviews stay within Claude (Sonnet 5 builds, Haiku 4.5 reviews), \
+         as you asked"
     );
     let resolved = resolve_with(&applied).settings;
     let facts = EvidenceFacts {

@@ -642,3 +642,14 @@ fn an_agent_or_run_the_screen_doesnt_hold_opens_from_its_log() {
         );
     }
 }
+
+/// An agent its run no longer needed, such as the commit-message writer when the run merged
+/// at once, is marked as the workflow view marks a skipped row: dim, never stopped.
+#[test]
+fn an_agent_the_run_no_longer_needed_reads_as_skipped() {
+    let theme = Theme::default();
+    let (glyph, role) = draw::glyph(CrewState::Skipped, false, &theme);
+    assert_eq!((glyph, role), ("–", Role::Dim));
+    assert_eq!(draw::state_word(CrewState::Skipped), "Skipped");
+    assert_ne!(glyph, draw::glyph(CrewState::Stopped, false, &theme).0);
+}

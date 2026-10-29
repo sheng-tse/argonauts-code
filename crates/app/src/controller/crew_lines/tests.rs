@@ -1,4 +1,5 @@
 use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome};
+use argonauts_core::model_catalog::{CatalogEntry, ModelCatalog};
 use argonauts_core::names::RoleName;
 use argonauts_core::settings::crew::{CrewSettings, Orchestrator};
 use argonauts_core::settings::roles::RoleSettings;
@@ -78,12 +79,9 @@ fn the_words_show_against_where_the_rest_came_from() {
             ("judge", "as you asked: \"all the other agents\""),
         ]
     );
-    assert_eq!(lines[1].who, lines[3].who, "the judge is Opus too");
-    let shown = text(&lines);
-    assert!(
-        shown.starts_with("Crew for this request\norchestrator   "),
-        "{shown}"
-    );
+    assert_eq!(lines[1].models, lines[3].models, "the judge is Opus too");
+    let shown = rows(&lines, &DisplayNames::default());
+    assert_eq!(shown[0].role, "orchestrator", "{shown:?}");
 }
 
 /// A crew set with two lines, the orchestrator and the reviewers, and words naming the
@@ -106,7 +104,7 @@ fn a_role_that_follows_says_so() {
         &[("roles.reviewer.models", "[\"astra\"]")],
     );
     let lines = understood(&settings, &words, None).unwrap();
-    assert_eq!(lines[3].who, lines[2].who, "the judge is Astra too");
+    assert_eq!(lines[3].models, lines[2].models, "the judge is Astra too");
     assert_eq!(lines[2].from, "as you asked");
     assert_eq!(lines[3].from, "follows the reviewers");
     assert_eq!(lines[1].from, "follows the orchestrator");
@@ -226,8 +224,11 @@ fn a_crew_from_captain_shows_the_models_the_run_has() {
             ("judge", "your settings"),
         ]
     );
-    assert_eq!(lines[0].who, lines[1].who, "the main session builds too");
-    assert!(!lines[1].who.contains("Antigravity"), "{}", lines[1].who);
+    assert_eq!(
+        lines[0].models, lines[1].models,
+        "the main session builds too"
+    );
+    assert_eq!(lines[1].models, [settings.crew.main.clone()]);
     assert_eq!(
         to_keep(&settings, &lines),
         [("crew.reviewer".to_owned(), "[\"codex\"]".to_owned())]
@@ -236,6 +237,62 @@ fn a_crew_from_captain_shows_the_models_the_run_has() {
     // Without the run's own layer the inferred workers would read as your words.
     let words_only = understood(&settings, &words, None).unwrap();
     assert_eq!(words_only[1].from, "as you asked");
+}
+
+/// The table names each model in full, as the request's start line does: an alias reads as
+/// the model it runs, and a CLI named alone as the model its default runs.
+#[test]
+fn the_table_names_each_model_in_full() {
+    let settings = Settings {
+        crew: CrewSettings {
+            main: "claude-code/haiku".parse().unwrap(),
+            ..CrewSettings::default()
+        },
+        ..Settings::default()
+    };
+    let words = applied(
+        vec![followed(InstructionKind::Review, "codex reviews")],
+        &[("roles.reviewer.models", "[\"codex\"]")],
+    );
+    let lines = understood(&settings, &words, None).expect("the reviewer is your words");
+    let mut haiku = CatalogEntry::new("claude-code/claude-haiku-5-5".parse().unwrap());
+    haiku.name = Some("Haiku 5.5".to_owned());
+    haiku.aliases = Some(vec!["haiku".to_owned()]);
+    let mut opus = CatalogEntry::new("claude-code/claude-opus-5-5".parse().unwrap());
+    opus.name = Some("Opus 5.5".to_owned());
+    let mut luna = CatalogEntry::new("codex/gpt-5.6-luna".parse().unwrap());
+    luna.name = Some("GPT 5.6 Luna".to_owned());
+    let names = DisplayNames {
+        catalog: ModelCatalog {
+            models: vec![haiku, opus, luna],
+            ..ModelCatalog::default()
+        },
+        defaults: [
+            ("claude-code".to_owned(), "claude-opus-5-5".to_owned()),
+            ("codex".to_owned(), "gpt-5.6-luna".to_owned()),
+        ]
+        .into(),
+        ..DisplayNames::default()
+    };
+    let row = |role: &str, who: &str, from: &str| CrewRow {
+        role: role.to_owned(),
+        who: who.to_owned(),
+        from: from.to_owned(),
+    };
+    let all = "Opus 5.5 on Claude Code, GPT 5.6 Luna on Codex, agy";
+    assert_eq!(
+        rows(&lines, &names),
+        [
+            row(
+                "orchestrator",
+                "Haiku 5.5 on Claude Code",
+                "your main session"
+            ),
+            row("workers", all, "your settings"),
+            row("reviewers", "GPT 5.6 Luna on Codex", "as you asked"),
+            row("judge", all, "your settings"),
+        ]
+    );
 }
 
 #[test]

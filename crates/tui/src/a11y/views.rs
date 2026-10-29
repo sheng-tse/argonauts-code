@@ -733,6 +733,7 @@ mod tests {
             )),
             inner: None,
             left_out: false,
+            not_needed: false,
             fallback_why: None,
         };
         let read = agent_row(&row, &Default::default());
@@ -740,5 +741,23 @@ mod tests {
             read.starts_with("review:store: astra, sent it back · 2 findings, "),
             "{read}"
         );
+        // A writer the merge didn't wait for is spoken as skipped, never as stopped.
+        let writer = argonauts_core::views::AgentRow {
+            label: "commit message".to_owned(),
+            status: argonauts_core::views::RowStatus::Skipped,
+            note: Some(argonauts_core::views::RowNote::new(
+                argonauts_core::views::MERGED_AT_ONCE,
+                argonauts_core::views::Tone::Plain,
+            )),
+            not_needed: true,
+            answered: false,
+            ..row
+        };
+        let read = agent_row(&writer, &Default::default());
+        assert!(
+            read.starts_with("commit message: astra, not needed, merged at once, skipped, "),
+            "{read}"
+        );
+        assert!(!read.contains("stopped"), "{read}");
     }
 }

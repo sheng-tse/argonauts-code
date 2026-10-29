@@ -471,6 +471,17 @@ pub enum PullRequestStands {
     Ended,
 }
 
+/// One role of the crew a request runs with, as its row shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrewRow {
+    /// Such as `workers`.
+    pub role: String,
+    /// Its models in full, such as `Opus 5.5 on Claude Code, GPT 5.6 Luna on Codex`.
+    pub who: String,
+    /// Where they came from, such as `your settings` or `as you asked`.
+    pub from: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AppEvent {
@@ -561,6 +572,11 @@ pub enum AppEvent {
     Notice {
         level: NoteLevel,
         text: String,
+    },
+    /// The crew a request runs with when your words set it, shown before any work starts:
+    /// each role with its models and where they came from.
+    CrewForRequest {
+        rows: Vec<CrewRow>,
     },
     /// Why a key you pressed did nothing, such as asking for a view there's nothing in yet. It
     /// goes on the notice line, replacing the last one, and never into the transcript, so
@@ -1135,8 +1151,9 @@ pub enum ChoiceKind {
     /// ask again, or No, which tells it to stop. The body shows the edit or the command. Esc
     /// means No, as in Claude Code.
     Permission,
-    /// agy was refused commands it would have asked about: Yes, and continue `y`, which
-    /// resumes it for one turn that runs commands without asking, or No `n`. Esc sets it aside.
+    /// A CLI that can't ask was refused what it would have asked about: agy's commands, or a
+    /// write outside the project our sandbox turned away. Yes, and continue `y` resumes it for
+    /// one turn that may do them, or No `n`. Esc sets it aside.
     RefusedCommands,
     /// `/rewind` in a direct conversation: one option per message whose turn changed files,
     /// newest first. Esc cancels.

@@ -222,17 +222,9 @@ async fn dropped_session_handle_kills_process_group() {
         .map(|pid| pid.trim().parse().unwrap())
         .collect();
     assert_eq!(pids.len(), 4);
-    // The group is recorded off the async runtime, so the listing can trail the agent's start.
-    wait_for_file(&dirs.session.join(session_files::PROCESS)).await;
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // The agent runs only once its group is on record.
+    assert!(dirs.session.join(session_files::PROCESS).exists());
     let listed = || std::fs::read_dir(h.agents_dir()).map_or(0, |dir| dir.count());
-    while listed() == 0 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the group is never listed"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
     assert_eq!(listed(), 1, "the group is listed while it runs");
 
     drop(handle);
@@ -244,6 +236,23 @@ async fn dropped_session_handle_kills_process_group() {
         assert!(std::time::Instant::now() < deadline, "the listing stayed");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test]
+async fn an_agent_runs_only_once_its_group_is_on_record() {
+    let dirs = Dirs::new();
+    // At once and with the shell's own commands, as fast as a command it starts to check its
+    // own ancestry could look.
+    let script = "read -r agents < agents; read -r session < session; \
+                  if [ -f \"$agents/$$.json\" ] && [ -f \"$session/process.json\" ]; \
+                  then echo on-record > seen; else echo unrecorded > seen; fi";
+    let h = TestDriver::new(TestAdapter::new(script));
+    let path = |path: PathBuf| path.display().to_string();
+    std::fs::write(dirs.work.join("agents"), path(h.agents_dir())).unwrap();
+    std::fs::write(dirs.work.join("session"), path(dirs.session.clone())).unwrap();
+    let handle = h.worker.start(dirs.spec("hi")).await.unwrap();
+    let (_, end) = collect(handle).await;
+    assert_eq!(dirs.read("seen").trim(), "on-record", "{end:?}");
 }
 
 #[tokio::test]

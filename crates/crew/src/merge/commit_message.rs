@@ -8,14 +8,16 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use argonauts_core::events::session::{EndReason, InputPart, InputPartKind};
 use argonauts_core::hash::sha256_hex;
 use argonauts_core::names::{RoleName, SessionKey};
 use argonauts_core::session_runner::{Access, SessionControl};
 use argonauts_core::settings::delivery::DeliveryCommits;
-use argonauts_core::steps::last_json_object;
+use argonauts_core::steps::task::CommitMessage;
+use argonauts_core::steps::{StepName, last_json_object};
+use argonauts_core::views::COMMIT_MESSAGE;
 
 use crate::engine::host::{Fallbacks, Host, SessionPlan};
 use crate::engine::shared::lock;
@@ -33,14 +35,6 @@ struct Kept {
     /// leaves it the same while the run's own change is.
     change: String,
     subject: String,
-    body: String,
-}
-
-/// What the merger answers.
-#[derive(Debug, Deserialize)]
-struct Answer {
-    subject: String,
-    #[serde(default)]
     body: String,
 }
 
@@ -115,13 +109,13 @@ pub async fn write(host: &Host, writing: &Writing) -> EngineResult<()> {
         task: None,
         // The change is in its prompt, so it reads nothing and runs nothing.
         access: Access::NoTools,
-        step: None,
+        step: Some(StepName::CommitMessage),
         workdir: worktree.clone(),
         parts: parts(host, &worktree, &main, &head).await?,
-        json_schema: Some(schema()),
+        json_schema: StepName::CommitMessage.output_schema(),
         resume: None,
         slot: 0,
-        label: Some(merger::COMMIT_MESSAGE.to_owned()),
+        label: Some(COMMIT_MESSAGE.to_owned()),
         reviews: false,
         fresh: true,
         independent_of: Vec::new(),
@@ -196,7 +190,7 @@ fn path(host: &Host) -> PathBuf {
     host.repo().run_dir.join("merge").join("message.json")
 }
 
-fn answer_of(end: &argonauts_core::events::session::SessionEnd) -> Option<Answer> {
+fn answer_of(end: &argonauts_core::events::session::SessionEnd) -> Option<CommitMessage> {
     if end.reason != EndReason::Completed {
         return None;
     }
@@ -205,27 +199,9 @@ fn answer_of(end: &argonauts_core::events::session::SessionEnd) -> Option<Answer
         .clone()
         .filter(Value::is_object)
         .or_else(|| end.result_text.as_deref().and_then(last_json_object))?;
-    serde_json::from_value::<Answer>(value)
+    serde_json::from_value::<CommitMessage>(value)
         .ok()
         .filter(|answer| !answer.subject.trim().is_empty())
-}
-
-fn schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "subject": {
-                "type": "string",
-                "description": "What the change does, in the imperative, under 72 characters."
-            },
-            "body": {
-                "type": "string",
-                "description": "What changed and why. Empty when the subject says it all."
-            }
-        },
-        "required": ["subject", "body"],
-        "additionalProperties": false
-    })
 }
 
 /// The instructions, then what the change is: its title, the tasks in it, its files, and its

@@ -5,6 +5,7 @@ pub(crate) mod autopilot;
 pub(crate) mod crew;
 pub(crate) mod fallback;
 pub(crate) mod limit_units;
+pub(crate) mod outside;
 pub(crate) mod passing_over;
 pub(crate) mod plain;
 pub(crate) mod renamed;

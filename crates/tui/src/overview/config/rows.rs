@@ -2,6 +2,8 @@
 //! rows you reach for most come first, then the rest of Claude Code's list in its order, then
 //! Argonauts Code's own, and last the way to every key.
 
+use super::picks::Pick;
+
 /// How a row changes, as Claude Code's Config draws each kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
@@ -12,9 +14,9 @@ pub enum Control {
     Choice(&'static [Choice]),
     /// `value ›`: Enter opens the command's own picker, as `/theme` and `/model` do.
     Opens(&'static str),
-    /// `value ›`: Enter opens the Behaviors map, beside Overview and Models, where d asks who
-    /// summarizes and sets up the embedder.
-    BehaviorsMap,
+    /// `value ›`: Enter opens a picker over the rows of the models the deeper Behaviors map may
+    /// use, from the offer `d` asks with.
+    Picks(Pick),
     /// A value you type, edited as All settings edits a key.
     Typed,
     /// Whether a card shows on the bottom line, which keeps a file of its own.
@@ -247,12 +249,12 @@ pub const ROWS: &[Row] = &[
     row(
         "Behaviors summarizer",
         "behaviors.summarizer",
-        Control::BehaviorsMap,
+        Control::Picks(Pick::Summarizer),
     ),
     row(
         "Behaviors embedder",
         "behaviors.embedder",
-        Control::BehaviorsMap,
+        Control::Picks(Pick::Embedder),
     ),
     row("Auto-updates", "updates.auto", BOOL),
     row("Usage reports", "telemetry.enabled", BOOL),

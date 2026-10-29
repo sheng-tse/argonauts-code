@@ -95,6 +95,18 @@ pub(super) fn direct_asked(instructions: &[CheckedInstruction], cx: &mut Cx<'_>)
     start_note(as_you_asked(instructions), cx);
 }
 
+/// What a followed instruction said, without the `as you asked` some end on, which the line
+/// they go in starts with already.
+fn without_as_you_asked(said: &str) -> &str {
+    let said = said.trim();
+    match said.strip_suffix("as you asked") {
+        Some(rest) if rest.is_empty() || rest.ends_with([' ', ',']) => {
+            rest.trim_end_matches([' ', ','])
+        }
+        _ => said,
+    }
+}
+
 /// The first line stands as the item, and the rest go under it.
 fn start_note(mut lines: Vec<String>, cx: &mut Cx<'_>) {
     if lines.is_empty() {
@@ -112,7 +124,7 @@ pub(super) fn as_you_asked(instructions: &[CheckedInstruction]) -> Vec<String> {
     let followed: Vec<&str> = instructions
         .iter()
         .filter_map(|instruction| match &instruction.outcome {
-            InstructionOutcome::Followed { said, .. } => Some(said.trim()),
+            InstructionOutcome::Followed { said, .. } => Some(without_as_you_asked(said)),
             _ => None,
         })
         .filter(|said| !said.is_empty())
@@ -315,4 +327,58 @@ fn disputed_table(story: &RunStory) -> Option<String> {
     }
     table.push('\n');
     Some(table)
+}
+
+#[cfg(test)]
+mod tests {
+    use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome};
+    use argonauts_core::steps::intake::InstructionKind;
+
+    use super::as_you_asked;
+
+    fn followed(says: &str, kind: InstructionKind, said: &str) -> CheckedInstruction {
+        CheckedInstruction {
+            says: says.into(),
+            kind,
+            outcome: InstructionOutcome::Followed {
+                said: said.into(),
+                note: None,
+            },
+        }
+    }
+
+    /// Words that keep a crew to one CLI say "as you asked" at their end, which the line they
+    /// go in starts with, so it shows once.
+    #[test]
+    fn as_you_asked_shows_once_in_the_line() {
+        let only = followed(
+            "Use only Claude",
+            InstructionKind::Crew,
+            "Crew: Claude Code, reviews stay within Claude (Opus 5.5 builds, Sonnet 5 reviews), \
+             as you asked",
+        );
+        let review = followed(
+            "codex reviews",
+            InstructionKind::Review,
+            "Codex reviews, reviewing its own provider's work, as you asked",
+        );
+        assert_eq!(
+            as_you_asked(&[only, review]),
+            [
+                "As you asked: Crew: Claude Code, reviews stay within Claude (Opus 5.5 builds, \
+              Sonnet 5 reviews) · Codex reviews, reviewing its own provider's work"
+            ]
+        );
+        let plain = followed(
+            "have codex orchestrate",
+            InstructionKind::Orchestrate,
+            "Codex orchestrates",
+        );
+        let alone = followed("as before", InstructionKind::Crew, "as you asked");
+        let within = followed("keep it", InstructionKind::Crew, "Keep what was asked for");
+        assert_eq!(
+            as_you_asked(&[plain, alone, within]),
+            ["As you asked: Codex orchestrates · Keep what was asked for"]
+        );
+    }
 }

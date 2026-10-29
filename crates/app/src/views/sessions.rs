@@ -16,13 +16,15 @@ use argonauts_core::events::session::{
     EndReason, InputPartKind, LimitEvent, SessionEnd, SessionEvent, SessionStarted, SubagentUpdate,
 };
 use argonauts_core::events::task::{TaskEvent, TaskState};
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::events::{MergeEvent, RunEvent, RunEventKind};
 use argonauts_core::limits::{network_down_in, served_on_this_machine, waiting_for_the_network};
 use argonauts_core::names::{ApprovalId, ModelRef, RoleName, SessionKey};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::sessions::RotateAt;
 use argonauts_core::steps::{StepName, summary_line};
-use argonauts_core::views::{AgentRow, ContextUse, RowNote, RowStatus, Tone};
+use argonauts_core::views::{
+    AgentRow, ContextUse, MERGED_AT_ONCE, RowNote, RowStatus, Tone, not_needed,
+};
 use argonauts_core::{AgentEvent, Spend, TaskId};
 use time::OffsetDateTime;
 
@@ -165,6 +167,9 @@ pub(crate) struct RunFacts {
     pub held: Option<WaitReason>,
     /// When the internet went, while the log says it's still down.
     pub network_down: Option<OffsetDateTime>,
+    /// Whether the run's work merged, so a session stopped because the merge didn't wait for
+    /// it wasn't needed.
+    merged: bool,
 }
 
 impl RunFacts {
@@ -178,6 +183,7 @@ impl RunFacts {
         let mut finished_at = None;
         let mut held = None;
         let mut network_down = None;
+        let mut merged = false;
         // Each CLI's model from the run's settings (`agents.<cli>.model`).
         let mut configured: BTreeMap<String, String> = BTreeMap::new();
         // Each task's current try, where its latest report is in the log, and its worker
@@ -240,6 +246,7 @@ impl RunFacts {
                     held = Some(reason.clone());
                 }
                 RunEventKind::Run(RunLifecycle::Resumed(_)) => held = None,
+                RunEventKind::Merge(MergeEvent::RunMerged { .. }) => merged = true,
                 RunEventKind::Approval(ApprovalEvent::Opened(opened)) => {
                     if opened.needs_you {
                         let task = opened.task.clone().or_else(|| match &opened.packet {
@@ -374,6 +381,7 @@ impl RunFacts {
             verdicts: Verdicts::of(events),
             held,
             network_down,
+            merged,
         }
     }
 
@@ -423,6 +431,7 @@ impl RunFacts {
 
     pub fn agent_row(&self, facts: &SessionFacts) -> AgentRow {
         let spent = facts.spent();
+        let not_needed = self.not_needed(facts);
         AgentRow {
             session: facts.key.clone(),
             label: facts.label(),
@@ -443,8 +452,9 @@ impl RunFacts {
             // A fallback's row says why it runs until it has something of its own to say. Why
             // a step chose another before the start reads on from the asked model's name, which
             // only the agent view has room for.
-            note: self
-                .held_by_the_network(facts)
+            note: not_needed
+                .then(|| RowNote::new(MERGED_AT_ONCE, Tone::Plain))
+                .or_else(|| self.held_by_the_network(facts))
                 .or_else(|| self.verdicts.note(self, facts))
                 .or_else(|| {
                     let why = facts.fallback_why.as_deref()?;
@@ -453,11 +463,22 @@ impl RunFacts {
                 }),
             inner: None,
             left_out: false,
+            not_needed,
             fallback_why: facts
                 .fallback_why
                 .clone()
                 .filter(|_| facts.fallback_for.is_some()),
         }
+    }
+
+    /// Whether `facts` is the commit-message writer that was stopped once the run merged
+    /// without its message.
+    fn not_needed(&self, facts: &SessionFacts) -> bool {
+        let stopped = facts
+            .ended
+            .as_ref()
+            .is_some_and(|end| end.reason == EndReason::Stopped);
+        not_needed(facts.started.step, stopped, self.merged)
     }
 
     /// What a running session's row says while the internet is down: how long it has waited.
@@ -536,6 +557,11 @@ pub(crate) fn crew_rows(
             let label = session.label();
             let state = crew_state(&facts, session, live);
             let last_message = session.last_said();
+            // A writer the merge didn't wait for says why, not what it was writing.
+            let latest = match state {
+                CrewState::Skipped => Some(MERGED_AT_ONCE.to_owned()),
+                _ => last_message.as_deref().and_then(last_line),
+            };
             let row = CrewRow {
                 target: CrewTarget::Agent {
                     run: run.id.clone(),
@@ -548,10 +574,7 @@ pub(crate) fn crew_rows(
                 repo: repo.to_owned(),
                 run: Some(run.clone()),
                 worker: Some(session.worker.clone()),
-                latest: last_message
-                    .as_deref()
-                    .and_then(last_line)
-                    .unwrap_or_else(|| state_word(state).to_owned()),
+                latest: latest.unwrap_or_else(|| state_word(state).to_owned()),
                 updated: session
                     .ended_at
                     .or(facts.last_ts)
@@ -580,6 +603,9 @@ pub(crate) fn crew_rows(
 }
 
 fn crew_state(facts: &RunFacts, session: &SessionFacts, live: bool) -> CrewState {
+    if facts.not_needed(session) {
+        return CrewState::Skipped;
+    }
     let stopped = session
         .ended
         .as_ref()
@@ -605,6 +631,7 @@ fn state_word(state: CrewState) -> &'static str {
         CrewState::Done => "done",
         CrewState::Stopped => "stopped",
         CrewState::Failed => "failed",
+        CrewState::Skipped => "skipped",
     }
 }
 

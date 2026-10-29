@@ -197,10 +197,11 @@ fn app_crew_request_runs_the_steps_its_orchestrator_writes() -> anyhow::Result<(
 
     // One finished run reads the same wherever it is drawn. Its closing row in the
     // conversation counts the workflow's agents: the three that propose and the three that
-    // challenge, the judge, the builder, the reviewer, and the merger when it began the commit
-    // message before your rules answered. The agent that wrote the steps is none of them. Its
-    // row under the input, kept a while after the end, counts the same, every one done but a
-    // merger the answer stopped before it wrote.
+    // challenge, the judge, the builder, the reviewer, and the merger when it wrote the commit
+    // message before your rules answered. A merger the merge stopped before it wrote wasn't
+    // needed, so it counts as neither done nor unfinished. The agent that wrote the steps is
+    // none of them. Its row under the input, kept a while after the end, counts the same,
+    // every one done.
     let ended = pty
         .wait_for(
             r"Completed in \S+ · \d+ agents · \S+ tokens · merged onto main",
@@ -210,15 +211,17 @@ fn app_crew_request_runs_the_steps_its_orchestrator_writes() -> anyhow::Result<(
     let closing = line_with(&ended, "Completed in ");
     let counts: Vec<&str> = closing.split(" · ").collect();
     let (agents, tokens) = (counts[1].trim_end_matches(" agents"), counts[2]);
-    assert!(agents == "9" || agents == "10", "{closing}");
     let unfinished = unfinished_sessions(&run_dir)?;
     let stopped_merger = unfinished
         .iter()
         .any(|(label, reason)| label == "commit message" && *reason == EndReason::Stopped);
-    let done = agents.parse::<u32>()? - u32::from(stopped_merger);
+    assert!(
+        agents == "9" || (agents == "10" && !stopped_merger),
+        "{closing}\n{unfinished:?}"
+    );
     let row = line_with(&ended, "\u{25b0}");
     assert!(
-        row.contains(&format!("  {done}/{agents} · ")),
+        row.contains(&format!("  {agents}/{agents} · ")),
         "{row}\n{unfinished:?}"
     );
     assert!(
@@ -230,7 +233,7 @@ fn app_crew_request_runs_the_steps_its_orchestrator_writes() -> anyhow::Result<(
     // workflow in use before what the run does, and says what the merge changed.
     pty.press(Key::Ctrl('t'))?;
     let view = pty.wait_for(r"esc back · s save", WAIT)?.visible_text();
-    let header = line_with(&view, &format!("  {done}/{agents} agents · "));
+    let header = line_with(&view, &format!("  {agents}/{agents} agents · "));
     // A council is the mode itself, named before what the run does.
     assert!(header.starts_with(" Council · "), "{view}");
     assert!(header.ends_with(" · done"), "{view}");
@@ -475,7 +478,10 @@ fn app_workflow_page_changes_the_file_and_refuses_what_would_not_run() -> anyhow
         .join(".argonauts/workflows/spec-first.toml");
 
     submit(&mut pty, "/workflow edit spec-first")?;
-    let screen = pty.wait_for(r"the file is valid", WAIT)?.text();
+    // The page's last line, so a frame read while it was still being drawn isn't taken.
+    let screen = pty
+        .wait_for(r"(?s)the file is valid.*esc back", WAIT)?
+        .text();
     let order = [
         "Workflows › Spec-first",
         "who would take it",

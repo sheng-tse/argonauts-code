@@ -1897,6 +1897,7 @@ mod tests {
                 note: None,
                 inner: None,
                 left_out: false,
+                not_needed: false,
                 fallback_why: None,
             },
             prompt: "Build the history cells.".into(),
@@ -2407,6 +2408,7 @@ mod tests {
             note: None,
             inner: None,
             left_out: false,
+            not_needed: false,
             fallback_why: None,
         }
     }

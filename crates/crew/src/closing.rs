@@ -8,14 +8,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{ApprovalKind, ApprovalPacket};
+use argonauts_core::events::approval::{AnswerAction, ApprovalKind, ApprovalPacket};
 use argonauts_core::events::run::{
-    ChangedFile, CheckLine, ClosingAnswer, DecidedAlone, Party, RunLifecycle, RunMode, RunOutcome,
+    ChangedFile, CheckLine, ClosingAnswer, DecidedAlone, KEPT_ON_ITS_BRANCH, Party, RunLifecycle,
+    RunMode, RunOutcome, says_merged,
 };
 use argonauts_core::events::session::EndReason;
 use argonauts_core::events::shared::{BlackboardKind, Recipient};
 use argonauts_core::events::task::{CheckOutcome, TaskState};
 use argonauts_core::events::workflow::StepEnd;
+use argonauts_core::hidden_git::MergedInto;
 use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::session_runner::Access;
 use argonauts_core::settings::Settings;
@@ -72,6 +74,8 @@ async fn write(
     match host.read(|state| state.run.mode) {
         Some(RunMode::Crew) if !ask_main_agent => {}
         Some(RunMode::Crew) => match main_agent_answer(host, outcome, detail, &answer).await {
+            // Words that call a run merged when it wasn't give way to code's.
+            Ok(Some((text, _))) if contradicts(outcome, &text) => {}
             Ok(Some((text, by))) => {
                 answer.text = text;
                 answer.by = Some(by);
@@ -82,7 +86,10 @@ async fn write(
             Err(_) => {}
         },
         _ => {
-            if let Some((text, by)) = host.read(worker_answer) {
+            let worker = host
+                .read(worker_answer)
+                .filter(|(text, _)| !contradicts(outcome, text));
+            if let Some((text, by)) = worker {
                 answer.text = text;
                 answer.by = by;
             }
@@ -98,21 +105,27 @@ async fn write(
 
 /// Code's own answer, with the files, checks, and what's left filled in.
 async fn gather(host: &Host, outcome: RunOutcome, detail: Option<&str>) -> ClosingAnswer {
-    let (tasks, put_off, run_merged, checks, diff_path, agents) = host.read(|state| {
-        let tasks: Vec<TaskEntry> = state.tasks.by_id.values().cloned().collect();
-        let (checks, diff_path) = match latest_merge(state) {
-            Some((checks, diff_path)) => (checks, Some(diff_path)),
-            None => (tasks_checks(&tasks), None),
-        };
-        (
-            tasks,
-            put_off(state),
-            run_merged(state),
-            checks,
-            diff_path,
-            Agents::of(state),
-        )
-    });
+    let (tasks, put_off, run_merged, checks, diff_path, agents, kept, committed) =
+        host.read(|state| {
+            let tasks: Vec<TaskEntry> = state.tasks.by_id.values().cloned().collect();
+            let (checks, diff_path) = match latest_merge(state) {
+                Some((checks, diff_path)) => (checks, Some(diff_path)),
+                None => (tasks_checks(&tasks), None),
+            };
+            let kept = (outcome == RunOutcome::BranchLeft).then(|| kept_line(state, detail));
+            (
+                tasks,
+                put_off(state),
+                run_merged(state),
+                checks,
+                diff_path,
+                Agents::of(state),
+                kept,
+                committed_line(state, outcome),
+            )
+        });
+    // A run kept on its branch says so first among what's left, with why.
+    let detail = kept.as_deref().or(detail);
     let mut agents = agents;
     for unchecked in &mut agents.unchecked {
         if let Some(task) = tasks.iter().find(|task| task.spec.id == unchecked.task) {
@@ -147,6 +160,9 @@ async fn gather(host: &Host, outcome: RunOutcome, detail: Option<&str>) -> Closi
         detail,
         &agents,
     );
+    if let Some(committed) = &committed {
+        answer.left = answered_by_the_commit(std::mem::take(&mut answer.left), committed);
+    }
     answer.decided = host.read(|state| decided_alone(state, host.settings(), &run_merged));
     if let Some(reviews) = host.read(reviews_line) {
         answer.checks.push(reviews);
@@ -380,10 +396,11 @@ fn answer_from(
         .map(|report| report.summary.trim())
         .filter(|summary| !summary.is_empty())
         .collect();
-    let text = if summaries.is_empty() {
+    let text = summaries.join(" ");
+    let text = if text.is_empty() || contradicts(outcome, &text) {
         ending_sentence(outcome, agents)
     } else {
-        summaries.join(" ")
+        text
     };
     ClosingAnswer {
         text,
@@ -492,18 +509,29 @@ fn digest_state(
     task: &TaskEntry,
     run_merged: &BTreeSet<TaskId>,
     put_off: &BTreeMap<TaskId, String>,
+    outcome: RunOutcome,
 ) -> String {
-    if run_merged.contains(&task.spec.id) {
-        "merged".to_owned()
-    } else {
-        not_merged(task, run_merged, put_off).unwrap_or_else(|| "taken over".to_owned())
+    if !run_merged.contains(&task.spec.id) {
+        return not_merged(task, run_merged, put_off).unwrap_or_else(|| "taken over".to_owned());
     }
+    // A task in what the run delivers is merged only once the run is: until then it is in the
+    // run's own branch alone.
+    match outcome {
+        RunOutcome::Merged => "merged",
+        RunOutcome::PullRequest => "done, waiting in the pull request",
+        RunOutcome::Abandoned => "done, abandoned with the run",
+        RunOutcome::BranchLeft | RunOutcome::Stopped | RunOutcome::Failed => {
+            "done, kept on the run's branch"
+        }
+    }
+    .to_owned()
 }
 
 /// What the main agent is told of each task, the merged ones first.
-fn digests(state: &RunState) -> Vec<TaskDigest> {
+fn digests(state: &RunState, outcome: RunOutcome) -> Vec<TaskDigest> {
     let run_merged = run_merged(state);
     let put_off = put_off(state);
+    let committed = committed_line(state, outcome);
     let mut records: Vec<&TaskEntry> = state.tasks.by_id.values().collect();
     records.sort_by_key(|record| !run_merged.contains(&record.spec.id));
     records
@@ -513,7 +541,7 @@ fn digests(state: &RunState) -> Vec<TaskDigest> {
             let report = record.reports.last();
             TaskDigest {
                 title: record.spec.title.clone(),
-                state: digest_state(record, &run_merged, &put_off),
+                state: digest_state(record, &run_merged, &put_off, outcome),
                 summary: report
                     .map(|report| report.summary.clone())
                     .unwrap_or_default(),
@@ -521,11 +549,133 @@ fn digests(state: &RunState) -> Vec<TaskDigest> {
                     .map(|report| report.tests_run.clone())
                     .unwrap_or_default(),
                 concerns: report
-                    .map(|report| report.concerns.clone())
+                    .map(|report| {
+                        // A task the run branch never took keeps its work on its own branch.
+                        let own = (!run_merged.contains(&record.spec.id)
+                            && outcome != RunOutcome::Abandoned)
+                            .then(|| record.branch.as_ref().map(|branch| committed_on(branch)))
+                            .flatten();
+                        match own.as_ref().or(committed.as_ref()) {
+                            Some(committed) => {
+                                answered_by_the_commit(report.concerns.clone(), committed)
+                            }
+                            None => report.concerns.clone(),
+                        }
+                    })
                     .unwrap_or_default(),
             }
         })
         .collect()
+}
+
+/// Whether `text` calls the run merged when it ended as `outcome`, which it may only say of a
+/// run that merged.
+fn contradicts(outcome: RunOutcome, text: &str) -> bool {
+    outcome != RunOutcome::Merged && says_merged(text)
+}
+
+/// Where a run kept on its branch left its work, and why, in the run's own words: what it said
+/// as it ended, else who kept it there by answering the merge question, and for autopilot, the
+/// reason it gave.
+fn kept_line(state: &RunState, detail: Option<&str>) -> String {
+    let why = match detail.map(str::trim).filter(|detail| !detail.is_empty()) {
+        Some(detail) => format!(": {detail}"),
+        None => kept_by(state).unwrap_or_default(),
+    };
+    format!("{KEPT_ON_ITS_BRANCH}{why}")
+}
+
+/// Who answered the merge question with "Keep the branch", as the words after the kept line.
+fn kept_by(state: &RunState) -> Option<String> {
+    let record = state.approvals.last_decided(ApprovalKind::Merge, None)?;
+    let decided = record.decided.as_ref()?;
+    if decided.action != AnswerAction::KeepBranch {
+        return None;
+    }
+    Some(match &decided.by {
+        Party::User => ", as you chose".to_owned(),
+        Party::Autopilot => match autopilot::reason(record) {
+            Some(why) => format!(", as autopilot chose, since {why}"),
+            None => ", as autopilot chose in your place".to_owned(),
+        },
+        Party::Declined => ", as your settings say when you leave the merge question".to_owned(),
+        Party::Config => ", as your merge settings say".to_owned(),
+        Party::Rules => ", as your approval rules say".to_owned(),
+        Party::Judge { .. } => ", as the judge of approvals chose".to_owned(),
+        _ => return None,
+    })
+}
+
+/// Where a run's work was committed, for the line that says a task's work isn't committed
+/// yet: `Committed and merged onto main · 30f0733` once the run merged, `Committed on
+/// argonauts/run-1 · pull request <url>` for one waiting in its pull request, and `Committed on
+/// argonauts/run-1` for one that kept its branch. `None` where no branch is left to name, as
+/// for a run abandoned with its branches.
+fn committed_line(state: &RunState, outcome: RunOutcome) -> Option<String> {
+    if let Some(merged) = &state.merge.run_merged {
+        return Some(match MergedInto::of(&merged.target) {
+            MergedInto::Branch(branch) => {
+                let sha: String = merged.sha.chars().take(7).collect();
+                format!("Committed and merged onto {branch} · {sha}")
+            }
+            into @ MergedInto::YourFolder => into.heading(),
+        });
+    }
+    if let Some(pull) = &state.merge.pull_request {
+        return Some(match &pull.url {
+            Some(url) => format!("{} · pull request {url}", committed_on(&pull.branch)),
+            None => format!("{}, for its pull request", committed_on(&pull.branch)),
+        });
+    }
+    match outcome {
+        RunOutcome::BranchLeft | RunOutcome::Stopped | RunOutcome::Failed => {
+            state.merge.branch.as_deref().map(committed_on)
+        }
+        RunOutcome::Merged | RunOutcome::PullRequest | RunOutcome::Abandoned => None,
+    }
+}
+
+fn committed_on(branch: &str) -> String {
+    format!("Committed on {branch}")
+}
+
+/// `concerns` once the run's work is committed somewhere: one that only says the work isn't
+/// committed yet, which Argonauts Code does as the session ends, reads as where it was
+/// committed instead.
+fn answered_by_the_commit(concerns: Vec<String>, committed: &str) -> Vec<String> {
+    let mut answered: Vec<String> = Vec::new();
+    for concern in concerns {
+        let concern = if only_uncommitted(&concern) {
+            committed.to_owned()
+        } else {
+            concern
+        };
+        if !answered.contains(&concern) {
+            answered.push(concern);
+        }
+    }
+    answered
+}
+
+/// Whether a worker's concern only says its own work isn't committed, as it was told to leave
+/// it: `Not committed; Argonauts Code commits on session end`. One that names something else
+/// left uncommitted, such as the files a test run wrote, says what and stays.
+fn only_uncommitted(concern: &str) -> bool {
+    const UNCOMMITTED: &[&str] = &[
+        "not committed",
+        "uncommitted",
+        "isn't committed",
+        "aren't committed",
+        "wasn't committed",
+        "weren't committed",
+        "not yet committed",
+        "didn't commit",
+        "did not commit",
+    ];
+    const LEFT_TO_US: &[&str] = &["argonauts", "session end", "session ends", "as instructed"];
+    let concern = concern.to_lowercase().replace('\u{2019}', "'");
+    UNCOMMITTED.iter().any(|said| concern.contains(said))
+        && LEFT_TO_US.iter().any(|said| concern.contains(said))
 }
 
 /// A Captain run's worker already said it all in its last report: its answer, else its summary.
@@ -569,13 +719,21 @@ async fn main_agent_answer(
             .as_ref()
             .map(|started| started.request.clone())
             .unwrap_or_default();
-        (request, digests(state), asked(state), needed_you(state))
+        (
+            request,
+            digests(state, outcome),
+            asked(state),
+            needed_you(state),
+        )
     });
     if tasks.iter().all(|task| task.summary.trim().is_empty()) {
         return Ok(None);
     }
     let mut ending = ending_words(outcome).to_owned();
-    if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
+    // A run kept on its branch tells why as its answer's own line does.
+    if let Some(kept) = gathered.kept() {
+        ending = lowercase_first(kept);
+    } else if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
         ending.push_str(": ");
         ending.push_str(detail.trim());
     }
@@ -811,7 +969,7 @@ fn ending_words(outcome: RunOutcome) -> &'static str {
     match outcome {
         RunOutcome::Merged => "merged into your branch",
         RunOutcome::PullRequest => "waiting in a pull request",
-        RunOutcome::BranchLeft => "left on its branches, not merged",
+        RunOutcome::BranchLeft => "kept on its branch, not merged",
         RunOutcome::Abandoned => "abandoned at the merge, nothing merged",
         RunOutcome::Stopped => "stopped before it finished",
         RunOutcome::Failed => "failed",
@@ -839,7 +997,7 @@ fn ending_sentence(outcome: RunOutcome, agents: &Agents) -> String {
             format!("The run's work waits in a pull request after {who} reported")
         }
         RunOutcome::BranchLeft => {
-            format!("The run's work is on its branches, not merged, after {who} reported")
+            format!("The run's work is kept on its branch, not merged, after {who} reported")
         }
         RunOutcome::Abandoned => {
             format!("The run was abandoned after {who} reported, so nothing merged")
@@ -946,7 +1104,7 @@ fn nobody_reported(outcome: RunOutcome) -> String {
     match outcome {
         RunOutcome::Merged => "The run merged.",
         RunOutcome::PullRequest => "The run's work waits in a pull request.",
-        RunOutcome::BranchLeft => "The run's work is on its branches, not merged.",
+        RunOutcome::BranchLeft => "The run's work is kept on its branch, not merged.",
         RunOutcome::Abandoned => "The run was abandoned, so nothing merged.",
         RunOutcome::Stopped => "The run stopped before any agent reported.",
         RunOutcome::Failed => "The run failed before any agent reported.",
@@ -1020,6 +1178,44 @@ mod tests {
         );
     }
 
+    /// What a task's report says the main agent is told: its word that its work isn't committed
+    /// yet names where it was, the run's branch for a task the run branch took, and its own for
+    /// one it didn't.
+    #[test]
+    fn a_tasks_digest_names_the_branch_its_work_was_committed_on() {
+        let uncommitted = "Not committed; Argonauts Code commits on session end";
+        let mut tasks = vec![
+            task("task-001", "Add the flag", TaskState::Merged, "FLAG"),
+            task("task-002", "Write the docs", TaskState::Cancelled, "DOCS"),
+        ];
+        for (record, branch) in tasks
+            .iter_mut()
+            .zip(["argonauts/run-01/task-001", "argonauts/run-01/task-002"])
+        {
+            record.branch = Some(branch.to_owned());
+            record.reports[0].concerns = vec![uncommitted.to_owned()];
+        }
+        let mut state = state_of(tasks);
+        state.merge.branch = Some("argonauts/run-01".to_owned());
+        let concerns = |outcome: RunOutcome| -> Vec<Vec<String>> {
+            digests(&state, outcome)
+                .into_iter()
+                .map(|digest| digest.concerns)
+                .collect()
+        };
+        assert_eq!(
+            concerns(RunOutcome::BranchLeft),
+            [
+                vec!["Committed on argonauts/run-01".to_owned()],
+                vec!["Committed on argonauts/run-01/task-002".to_owned()]
+            ]
+        );
+        assert_eq!(
+            concerns(RunOutcome::Abandoned),
+            [vec![uncommitted.to_owned()], vec![uncommitted.to_owned()]]
+        );
+    }
+
     #[test]
     fn only_a_task_that_merged_is_what_changed() {
         // A crew run whose second task was dropped: its claims are left, never what changed.
@@ -1042,7 +1238,7 @@ mod tests {
         assert_eq!(answer.text, "FLAG summary");
         assert_eq!(answer.tests, ["FLAG tests"]);
         assert_eq!(answer.left, ["Write the docs · dropped", "FLAG concern"]);
-        let told: Vec<(String, String)> = digests(&state)
+        let told: Vec<(String, String)> = digests(&state, RunOutcome::Merged)
             .into_iter()
             .map(|digest| (digest.title, digest.state))
             .collect();
@@ -1459,6 +1655,160 @@ diff --git a/my notes.md b/my notes.md
             "Failed before anything merged. task-001 (f1.py +1 \u{2212}0, f2.py +2 \u{2212}0, \
              f3.py +3 \u{2212}0 and 1 more file) and task-002 have work no one has checked, on \
              their branches."
+        );
+    }
+
+    /// The merge question answered with "Keep the branch", by `by`, with `reasons` from the
+    /// policy that weighed it.
+    fn kept_by_answer(state: &mut RunState, by: Party, reasons: &[&str]) {
+        use argonauts_core::events::approval::{
+            ApprovalDecided, ApprovalOpened, FreeText, PolicyCheck,
+        };
+        use argonauts_core::names::ApprovalId;
+        use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+
+        let id = ApprovalId::numbered(1);
+        let opened = ApprovalOpened {
+            id: id.clone(),
+            kind: ApprovalKind::Merge,
+            title: "Merge this run into main?".to_owned(),
+            task: None,
+            packet: ApprovalPacket::WorkflowPromotion(serde_json::json!({})),
+            evidence_sha256: String::new(),
+            mode: ApprovalMode::Autopilot,
+            decide_with: DecideWith::Rules,
+            options: Vec::new(),
+            free_text: FreeText::None,
+            needs_you: false,
+        };
+        let check = PolicyCheck {
+            id: id.clone(),
+            violations: Vec::new(),
+            verdict: None,
+            by: None,
+            judge: None,
+            reasons: reasons.iter().map(|why| (*why).to_owned()).collect(),
+            auto_preview: false,
+        };
+        let decided = ApprovalDecided {
+            id: id.clone(),
+            action: AnswerAction::KeepBranch,
+            text: None,
+            by,
+            evidence_sha256: String::new(),
+            auto_preview: None,
+            tasks: Vec::new(),
+        };
+        let record = crate::state::approvals::ApprovalRecord {
+            opened,
+            since: 1,
+            checks: vec![check],
+            decided: Some(decided),
+            withdrawn: None,
+            spot_check: false,
+        };
+        state.approvals.by_id.insert(id, record);
+    }
+
+    /// A run kept on its branch never reads as merged: its task is done on the run's branch as
+    /// the main agent is told, code's words never call it merged, and its first line of what's
+    /// left says it was kept there and why, as whoever kept it said.
+    #[test]
+    fn a_run_kept_on_its_branch_says_so_and_why() {
+        let mut flag = task("task-001", "Add the flag", TaskState::Merged, "FLAG");
+        flag.reports[0].summary = "The flag is merged and documented.".to_owned();
+        let tasks = vec![flag];
+        let mut state = state_of(tasks.clone());
+        let told: Vec<String> = digests(&state, RunOutcome::BranchLeft)
+            .into_iter()
+            .map(|digest| digest.state)
+            .collect();
+        assert_eq!(told, ["done, kept on the run's branch"]);
+
+        kept_by_answer(&mut state, Party::User, &[]);
+        let kept = kept_line(&state, None);
+        assert_eq!(kept, "Kept on its branch, not merged, as you chose");
+        let answer = answer_from(
+            &tasks,
+            &BTreeMap::new(),
+            &run_merged(&state),
+            &[],
+            Vec::new(),
+            RunOutcome::BranchLeft,
+            Some(&kept),
+            &Agents::default(),
+        );
+        assert_eq!(answer.kept(), Some(kept.as_str()));
+        assert_eq!(answer.left[0], kept);
+        assert!(!says_merged(&answer.text), "{}", answer.text);
+
+        kept_by_answer(
+            &mut state,
+            Party::Autopilot,
+            &["The review stayed within Claude. Autopilot keeps such a merge for you."],
+        );
+        assert_eq!(
+            kept_line(&state, None),
+            "Kept on its branch, not merged, as autopilot chose, since the review stayed \
+             within Claude"
+        );
+        // What the run said as it ended comes first.
+        assert_eq!(
+            kept_line(&state, Some("branch kept by merge.mode")),
+            "Kept on its branch, not merged: branch kept by merge.mode"
+        );
+        assert!(contradicts(RunOutcome::BranchLeft, "The fix is merged."));
+        assert!(!contradicts(RunOutcome::Merged, "The fix is merged."));
+    }
+
+    /// Once the run merged, a worker's word that its work isn't committed yet reads as the
+    /// commit the merge made; anything else left uncommitted stays, saying what. A run that kept
+    /// its branch or waits in a pull request names the branch its work is committed on.
+    #[test]
+    fn a_runs_left_line_names_where_its_work_was_committed() {
+        use crate::state::merge::{PullRequest, RunMerged};
+
+        let mut state = RunState::default();
+        assert_eq!(committed_line(&state, RunOutcome::BranchLeft), None);
+        state.merge.branch = Some("argonauts/run-01".to_owned());
+        for outcome in [
+            RunOutcome::BranchLeft,
+            RunOutcome::Stopped,
+            RunOutcome::Failed,
+        ] {
+            assert_eq!(
+                committed_line(&state, outcome).as_deref(),
+                Some("Committed on argonauts/run-01"),
+                "{outcome:?}"
+            );
+        }
+        assert_eq!(committed_line(&state, RunOutcome::Abandoned), None);
+        state.merge.pull_request = Some(PullRequest {
+            branch: "argonauts/run-01".to_owned(),
+            url: Some("https://github.com/you/app/pull/7".to_owned()),
+            command: None,
+        });
+        assert_eq!(
+            committed_line(&state, RunOutcome::PullRequest).as_deref(),
+            Some("Committed on argonauts/run-01 · pull request https://github.com/you/app/pull/7")
+        );
+        state.merge.run_merged = Some(RunMerged {
+            target: "main".to_owned(),
+            sha: "30f0733c9d".to_owned(),
+            fast_forward: true,
+        });
+        let merge_commit = committed_line(&state, RunOutcome::Merged).expect("the merge");
+        assert_eq!(merge_commit, "Committed and merged onto main · 30f0733");
+        let stays = "Untracked invoice/__pycache__/ was left by the test runs and should not be \
+                     committed.";
+        let concerns = vec![
+            "Not committed; Argonauts Code commits on session end".to_owned(),
+            stays.to_owned(),
+            "Changes are left uncommitted, as instructed.".to_owned(),
+        ];
+        assert_eq!(
+            answered_by_the_commit(concerns, &merge_commit),
+            [merge_commit.clone(), stays.to_owned()]
         );
     }
 

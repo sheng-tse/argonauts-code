@@ -141,9 +141,7 @@ async fn words_that_set_the_crew_ask_nothing() {
         .submit("all the other agents need to be codex. add due dates")
         .await;
     driver
-        .until(|event| {
-            matches!(event, AppEvent::Notice { text, .. } if text.starts_with("Crew for this request"))
-        })
+        .until(|event| matches!(event, AppEvent::CrewForRequest { .. }))
         .await;
     driver
         .until(|event| {

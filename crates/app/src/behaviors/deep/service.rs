@@ -23,7 +23,7 @@ use super::action::DeepAction;
 use super::choose::{self, Candidate, HostedModel, Place};
 use super::embed::{Embedder, EmbeddingEndpoint, KeyedEndpoint, NOMIC, pull_nomic};
 use super::gather::{Gathered, cheapest_effort, gather, project_of};
-use super::offer::{covers, embedder_note, offer, scope_offer};
+use super::offer::{covers, embedder_note, keyed_embedder, offer, scope_offer};
 use super::prompt::PROMPT_VERSION;
 use super::records::recorded;
 use super::session::SessionSummarizer;
@@ -124,6 +124,7 @@ impl DeepMaps {
             OffsetDateTime::now_utc(),
         );
         offer.named = choose::named(&self.settings.behaviors.summarizer, &candidates);
+        offer.keyed_embedder = keyed_embedder(gathered.keyed.as_ref());
         let everything = offer.scopes.first().map_or(0, |scope| scope.actions);
         offer.made_by = self.store.layout().map(|layout| {
             let model = layout
@@ -367,6 +368,17 @@ impl DeepMaps {
         }
         let model = |endpoint: EmbeddingEndpoint| Embedding::Model(Box::new(endpoint));
         if !self.settings.behaviors.embedder_is_auto() {
+            // nomic-embed-text named on Ollama is downloaded first when you said yes, as
+            // auto's is.
+            let named_nomic = setting.parse::<ModelRef>().is_ok_and(|named| {
+                named.agent == "ollama" && named.model.as_deref() == Some(NOMIC)
+            });
+            if download
+                && named_nomic
+                && let Some((base_url, false)) = &gathered.ollama
+            {
+                let _ = pull_nomic(base_url).await;
+            }
             return match self.named_embedder(setting, gathered) {
                 Some(embedder) => Embedding::Model(embedder),
                 None => Embedding::Missing(format!("{setting} isn't set up here")),

@@ -313,6 +313,30 @@ pub struct AgentRow {
     /// note says why it was left out.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub left_out: bool,
+    /// An agent stopped once the run no longer needed its work, such as the commit-message
+    /// writer when the run merged at once. Its note says why, in its model's place, and no
+    /// count counts it, as neither done nor unfinished.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub not_needed: bool,
+}
+
+/// The label of the merger's session that writes a merge's commit message.
+pub const COMMIT_MESSAGE: &str = "commit message";
+
+/// What the commit-message writer's row says once the run merged without its message.
+pub const MERGED_AT_ONCE: &str = "not needed, merged at once";
+
+/// Whether a session working `step` is the merger's that writes a merge's commit message. Its
+/// step says so, never its label, which a workflow's script may give any agent.
+pub fn writes_the_message(step: Option<StepName>) -> bool {
+    step == Some(StepName::CommitMessage)
+}
+
+/// Whether an agent working `step` and `stopped` before it finished was one the run then did
+/// without: the commit-message writer, stopped once the run `merged`, since the merge lands
+/// with the message code writes rather than wait for it.
+pub fn not_needed(step: Option<StepName>, stopped: bool, merged: bool) -> bool {
+    stopped && merged && writes_the_message(step)
 }
 
 /// Agents done and in all among `rows`, by the one rule every count of a workflow keeps: its
@@ -320,11 +344,12 @@ pub struct AgentRow {
 /// whatever tries and rounds fold under it, and it is done once it finished, unless `again`
 /// says a later round of its own is coming, as for one of Argonauts Code's reviewers that sent
 /// the work back. A workflow inside counts its own agents, and a step Argonauts Code runs
-/// itself, such as a check or the merge, none.
+/// itself, such as a check or the merge, none, as a job left out or an agent not needed.
 pub fn agents_counted(rows: &[WorkflowRow], again: impl Fn(&AgentRow) -> bool) -> (u32, u32) {
     rows.iter().fold((0, 0), |(done, total), row| match row {
-        // A job left out never ran, and is no agent of the workflow's.
-        WorkflowRow::Agent(agent) if agent.left_out => (done, total),
+        // A job left out never ran, and is no agent of the workflow's; one stopped once it
+        // wasn't needed is neither done nor unfinished.
+        WorkflowRow::Agent(agent) if agent.left_out || agent.not_needed => (done, total),
         WorkflowRow::Agent(agent) => {
             let finished = agent.status == RowStatus::Done && !again(agent);
             (done + u32::from(finished), total + 1)
@@ -790,6 +815,7 @@ fn inner_row(
             index: agent.index,
         }),
         left_out: false,
+        not_needed: false,
         fallback_why: None,
     }
 }
@@ -1506,6 +1532,7 @@ mod tests {
             note: None,
             inner: None,
             left_out: false,
+            not_needed: false,
             fallback_why: None,
         })
     }
@@ -1542,7 +1569,8 @@ mod tests {
     }
 
     /// One rule for every count: an agent is done once it finished, unless its next round is
-    /// coming; a workflow inside counts its own agents; a check or the merge counts none.
+    /// coming; a workflow inside counts its own agents; a check or the merge counts none, nor
+    /// does an agent stopped once it wasn't needed.
     #[test]
     fn agents_count_by_one_rule() {
         let inside = WorkflowRow::Workflow(NestedWorkflowRow {
@@ -1566,12 +1594,20 @@ mod tests {
             status: RowStatus::Done,
             elapsed_ms: 0,
         });
+        let skipped = match agent(COMMIT_MESSAGE, RowStatus::Skipped) {
+            WorkflowRow::Agent(mut writer) => {
+                writer.not_needed = true;
+                WorkflowRow::Agent(writer)
+            }
+            other => other,
+        };
         let rows = vec![
             agent("build:due-flag", RowStatus::Done),
             agent("review:due-flag", RowStatus::Done),
             agent("review:due-tests", RowStatus::Running),
             inside,
             check,
+            skipped,
         ];
         assert_eq!(agents_counted(&rows, |_| false), (3, 6));
         let sent_back = |row: &AgentRow| row.label == "review:due-flag";

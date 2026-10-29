@@ -27,7 +27,7 @@ mod roster;
 mod words;
 
 pub(crate) use roster::{Agent, AgentState, Roster};
-use roster::{clamp, display_model, model_named};
+use roster::{clamp, display_model, known_model, model_named};
 use words::{
     Stance, dollars_in, effort_level, is_generic, joined, key, money, names_in, number_in,
     plainly_asks_you, quoted_at, stance, tokens, toml_list, toml_text, turned_around,
@@ -1383,9 +1383,11 @@ impl Checker<'_> {
 impl Checker<'_> {
     /// "Only Claude": a crew of one provider has nobody from another to review its work, so
     /// for this request its reviews stay within that provider, as naming such a reviewer
-    /// does, on another model of the builder's CLI, and the crew's words say so once. With
-    /// "keep it cheap" the two cheapest models share the work: the dearer one builds and the
-    /// cheaper one reviews. A crew of two providers keeps the rule.
+    /// does, on another model of the builder's CLI, and the crew's words say so once, naming
+    /// both models. The workers' model is named too, so whatever plans the work can't hand
+    /// them the reviewer's: the main agent's when it runs on that CLI, else the CLI's own
+    /// default. With "keep it cheap" the two cheapest models share the work: the dearer one
+    /// builds and the cheaper one reviews. A crew of two providers keeps the rule.
     fn within_one_provider(&self, entries: &mut [Entry]) {
         if !self.settings.review.other_provider {
             return;
@@ -1409,6 +1411,11 @@ impl Checker<'_> {
             .iter()
             .flat_map(|effect| effect.settings.clone())
             .collect();
+        let main = followed
+            .iter()
+            .rev()
+            .find_map(|effect| effect.main_agent.clone())
+            .unwrap_or_else(|| self.settings.crew.main.clone());
         let Some(entry) = entries.iter_mut().rev().find(|entry| {
             entry
                 .result
@@ -1451,10 +1458,16 @@ impl Checker<'_> {
         else {
             return;
         };
+        // Workers you named run on what that CLI runs; the workers this names run on the main
+        // agent's model when it shares their CLI.
+        let mains = (builders.is_empty() && main.agent == agent.id)
+            .then(|| main.model.clone())
+            .flatten();
         let runs = builder
             .model
             .clone()
             .or_else(|| asked_text(&asked, &format!("agents.{}.model", agent.id)))
+            .or(mains)
             .or_else(|| {
                 self.settings
                     .agents
@@ -1476,53 +1489,66 @@ impl Checker<'_> {
         effect
             .inferred
             .push(("review.other_provider".to_owned(), "false".to_owned()));
-        let on = |model: String| ModelRef::new(agent.id.clone(), Some(model));
+        let on = |model: &str| ModelRef::new(agent.id.clone(), Some(model.to_owned()));
         effect.inferred.push((
             "roles.reviewer.models".to_owned(),
-            toml_list(&[on(reviews)]),
+            toml_list(&[on(&reviews)]),
         ));
-        if let Some(builds) = builds.filter(|_| builders.is_empty()) {
+        // Workers you named keep the model they run on, which is named only when it is known.
+        let building = if builders.is_empty() {
             effect
                 .inferred
-                .push(("roles.worker.models".to_owned(), toml_list(&[on(builds)])));
-        }
+                .push(("roles.worker.models".to_owned(), toml_list(&[on(&builds)])));
+            Some(builds)
+        } else {
+            runs.map(|model| known_model(agent, &model).unwrap_or(model))
+        };
         let within = match kind {
             InstructionKind::Crew => as_written(&says, &who).unwrap_or_else(|| agent.name.clone()),
             _ => agent.name.clone(),
         };
+        let reviewing = display_model(agent, &reviews);
+        let models = match building {
+            Some(builds) => format!(
+                "{} builds, {reviewing} reviews",
+                display_model(agent, &builds)
+            ),
+            None => format!("{reviewing} reviews"),
+        };
         effect.said = format!(
-            "{}, reviews stay within {within}, as you asked",
+            "{}, reviews stay within {within} ({models}), as you asked",
             effect.said
         );
     }
 }
 
-/// Who builds and who reviews on `agent`'s models when reviews stay within its provider: the
-/// model the builder must move to, if it must, and the reviewer's. The reviewer takes the next
-/// model down from the builder's, or up when the builder's is the cheapest; with `cheap` the
-/// dearer of the two cheapest builds. `None` when the CLI has fewer than two priced models.
-fn review_pair(
-    agent: &Agent,
-    builds: Option<&str>,
-    cheap: bool,
-) -> Option<(Option<String>, String)> {
+/// Who builds and who reviews on `agent`'s models when reviews stay within its provider, each
+/// as the CLI names it. The builder keeps the model it `runs` on and the reviewer takes the next
+/// one down, or up when the builder's is the cheapest; with `cheap` the dearer of the two
+/// cheapest builds. `None` when the CLI has fewer than two priced models.
+fn review_pair(agent: &Agent, runs: Option<&str>, cheap: bool) -> Option<(String, String)> {
     let ladder = &agent.by_price;
     if ladder.len() < 2 {
         return None;
     }
     if cheap {
-        return Some((Some(ladder[1].clone()), ladder[0].clone()));
+        return Some((ladder[1].clone(), ladder[0].clone()));
     }
-    let at = builds.and_then(|model| {
+    let at = runs.and_then(|model| {
         ladder
             .iter()
             .position(|listed| same_model(agent, listed, model))
     });
-    Some(match at {
-        Some(0) => (None, ladder[1].clone()),
-        Some(at) => (None, ladder[at - 1].clone()),
-        // A builder on a model nothing prices, or the CLI's own default: the cheapest reviews.
-        None => (None, ladder[0].clone()),
+    Some(match (at, runs) {
+        (Some(0), _) => (ladder[0].clone(), ladder[1].clone()),
+        (Some(at), _) => (ladder[at].clone(), ladder[at - 1].clone()),
+        // A model nothing prices keeps building, and the cheapest reviews.
+        (None, Some(model)) => (
+            known_model(agent, model).unwrap_or_else(|| model.to_owned()),
+            ladder[0].clone(),
+        ),
+        // Nothing says what the CLI runs: the two cheapest share the work.
+        (None, None) => (ladder[1].clone(), ladder[0].clone()),
     })
 }
 
