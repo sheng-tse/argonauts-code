@@ -10162,6 +10162,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 ### MIT License
 
 Used by:
+- tokio-stream 0.1.18 (https://github.com/tokio-rs/tokio)
 - tokio-util 0.7.19 (https://github.com/tokio-rs/tokio)
 - tokio 1.53.1 (https://github.com/tokio-rs/tokio)
 
