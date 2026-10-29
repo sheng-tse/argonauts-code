@@ -30,8 +30,10 @@ pub fn user_message_line(content: &str) -> String {
 /// A direct turn that asks like agy gets neither: its own `request-review` applies, so edits go
 /// through and the commands it would ask about are refused and listed after the turn.
 ///
-/// Work outside the project in auto and autopilot needs nothing more inside ours, which holds
-/// the never-list. agy 1.2.13 has no rule that keeps a folder closed, and `--add-dir` opens a
+/// Work outside the project needs nothing more inside ours, which holds the never-list. agy
+/// can't ask before a write in a headless run, so in supervised ours lets an asking turn read
+/// outside and write only its project, and the turn you allow by answering what it was refused
+/// writes there too. agy 1.2.13 has no rule that keeps a folder closed, and `--add-dir` opens a
 /// folder whole, so under its own sandbox it keeps to its workspace.
 fn own_sandbox(req: &SessionRequest) -> Option<&'static str> {
     if req.role == SessionRole::Direct && req.asks != Asks::Never {
@@ -385,6 +387,42 @@ mod tests {
         });
         assert!(has_arg(&own, "--sandbox"));
         assert!(!has_arg(&own, "--add-dir"));
+    }
+
+    /// In supervised a turn that asks like agy keeps its own policy, and the one you allow to
+    /// run what it was refused, like a run's session, skips its permissions inside ours.
+    #[test]
+    fn in_supervised_agy_asks_as_it_does_and_an_allowed_turn_writes_outside() {
+        let outside = argonauts_core::outside::Outside {
+            after_asking: true,
+            ..Default::default()
+        };
+        let asking = build(&SessionRequest {
+            goal_hash: Some("abc".into()),
+            asks: Asks::LikeCli,
+            tool_sandbox_off: true,
+            outside: outside.clone(),
+            ..request(SessionRole::Direct)
+        });
+        assert!(!has_arg(&asking, "--sandbox"));
+        assert!(!has_arg(&asking, "--dangerously-skip-permissions"));
+        for (role, asks) in [
+            (SessionRole::Direct, Asks::Never),
+            (SessionRole::Build, Asks::Never),
+        ] {
+            let allowed = build(&SessionRequest {
+                goal_hash: Some("abc".into()),
+                asks,
+                tool_sandbox_off: true,
+                outside: outside.clone(),
+                ..request(role)
+            });
+            assert!(
+                has_arg(&allowed, "--dangerously-skip-permissions"),
+                "{role:?}"
+            );
+            assert!(!has_arg(&allowed, "--add-dir"), "{role:?}");
+        }
     }
 
     #[test]

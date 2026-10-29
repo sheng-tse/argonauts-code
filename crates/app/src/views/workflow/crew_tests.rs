@@ -54,6 +54,7 @@ fn row(session: &SessionKey, label: &str, worker: &ModelRef, status: RowStatus) 
         note: None,
         inner: None,
         left_out: false,
+        not_needed: false,
         fallback_why: None,
     }
 }

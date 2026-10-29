@@ -1056,7 +1056,10 @@ impl WorkflowLog {
                 if report.is_some_and(|report| report.holds(&row)) {
                     continue;
                 }
-                built.agents_total += 1;
+                // An agent stopped once it wasn't needed is neither done nor unfinished.
+                if !row.not_needed {
+                    built.agents_total += 1;
+                }
                 if row.status == RowStatus::Done && !self.waits_for_its_round(session) {
                     built.agents_done += 1;
                 }
@@ -1355,6 +1358,7 @@ fn left_out_row(left: &AgentLeftOut) -> AgentRow {
         note: Some(RowNote::new(left.why.clone(), Tone::Plain)),
         inner: None,
         left_out: true,
+        not_needed: false,
         fallback_why: None,
     }
 }
@@ -2200,7 +2204,8 @@ mod tests {
     fn the_mergers_commit_message_is_a_row_of_the_merge_phase() {
         use argonauts_core::session_runner::Access;
         use argonauts_core::steps::StepName;
-        use argonauts_crew::merge::merger::{COMMIT_MESSAGE, SETTLE_CONFLICT, fix_after_move};
+        use argonauts_core::views::COMMIT_MESSAGE;
+        use argonauts_crew::merge::merger::{SETTLE_CONFLICT, fix_after_move};
 
         let recorded: Vec<RunEvent> = DEFAULT_CREW_RUN
             .lines()
@@ -2228,11 +2233,12 @@ mod tests {
             })
             .expect("the run merged");
         // A session of the merger at the Merge step, just before git merged the run.
-        let session_of = |key: &SessionKey, label: &str| {
+        let session_of = |key: &SessionKey, label: &str, step: Option<StepName>| {
             let at = recorded[merged - 1].ts;
             let mut started = session_started(0, key, None, RoleName::Worker, "claude-code");
             if let RunEventKind::Session(SessionEvent::Started(session)) = &mut started.kind {
                 session.label = Some(label.to_owned());
+                session.step = step;
                 session.access = Access::NoTools;
                 session.workflow_step = Some(merge_step.clone());
             }
@@ -2244,9 +2250,10 @@ mod tests {
             [started, ended]
         };
         let message = SessionKey::numbered(90);
+        let writer = Some(StepName::CommitMessage);
 
         let mut clean = recorded.clone();
-        clean.splice(merged..merged, session_of(&message, COMMIT_MESSAGE));
+        clean.splice(merged..merged, session_of(&message, COMMIT_MESSAGE, writer));
         let view = workflow_view(&clean, &run, None).unwrap();
         assert_eq!(
             merge_rows(&view),
@@ -2258,10 +2265,19 @@ mod tests {
         let merge = view.phases.iter().find(|phase| phase.name == "Merge");
         assert_eq!(merge.unwrap().count, PhaseCount::of(1, 1));
 
+        // An agent only named for the message, as a workflow's script may name any, isn't the
+        // merger's writer, so its row says nothing of how the writer is asked.
+        let mut named = recorded.clone();
+        named.splice(merged..merged, session_of(&message, COMMIT_MESSAGE, None));
+        assert_eq!(
+            merge_rows(&workflow_view(&named, &run, None).unwrap()),
+            [("commit message".to_owned(), None)]
+        );
+
         let mut settled = recorded.clone();
-        let both = session_of(&SessionKey::numbered(89), SETTLE_CONFLICT)
+        let both = session_of(&SessionKey::numbered(89), SETTLE_CONFLICT, None)
             .into_iter()
-            .chain(session_of(&message, COMMIT_MESSAGE));
+            .chain(session_of(&message, COMMIT_MESSAGE, writer));
         settled.splice(merged..merged, both);
         let view = workflow_view(&settled, &run, None).unwrap();
         let rows = merge_rows(&view);
@@ -2272,9 +2288,8 @@ mod tests {
         // that settled a conflict in its own words, and the one that fixed what broke after
         // your branch came in by the files it changed.
         let reported = |key: &SessionKey, label: &str, step: Option<StepName>, did: &str| {
-            let [mut started, mut ended] = session_of(key, label);
+            let [mut started, mut ended] = session_of(key, label, step);
             if let RunEventKind::Session(SessionEvent::Started(session)) = &mut started.kind {
-                session.step = step;
                 session.access = Access::Build;
             }
             if let RunEventKind::Session(SessionEvent::Ended(end)) = &mut ended.kind {
@@ -2298,10 +2313,11 @@ mod tests {
             "Made the date test read the new format.",
         );
         let mut moved = recorded.clone();
-        let sessions = settler
-            .into_iter()
-            .chain(fixer)
-            .chain(session_of(&message, COMMIT_MESSAGE));
+        let sessions =
+            settler
+                .into_iter()
+                .chain(fixer)
+                .chain(session_of(&message, COMMIT_MESSAGE, writer));
         moved.splice(merged..merged, sessions);
         let rows = merge_rows(&workflow_view(&moved, &run, None).unwrap());
         assert_eq!(
@@ -2316,6 +2332,127 @@ mod tests {
             ("fix after main moved".to_owned(), Some("1 file".to_owned()))
         );
         assert_eq!(rows[2], ("commit message".to_owned(), None));
+    }
+
+    /// A merge that lands at once stops the commit-message writer, since the change lands with
+    /// the message code writes. Its row reads as skipped, not needed, and counts as neither done
+    /// nor unfinished, so the Merge phase it was alone in has no count and the header reads as
+    /// it would without it. Stopped in a run that didn't merge, it stays a stopped agent.
+    #[test]
+    fn a_commit_message_writer_the_merge_didnt_wait_for_is_skipped_and_uncounted() {
+        use argonauts_core::session_runner::Access;
+        use argonauts_core::steps::StepName;
+        use argonauts_core::views::{COMMIT_MESSAGE, MERGED_AT_ONCE};
+
+        let recorded: Vec<RunEvent> = DEFAULT_CREW_RUN
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let run = recorded[0].run_id.clone();
+        let merge_step = recorded
+            .iter()
+            .find_map(|event| match &event.kind {
+                RunEventKind::Workflow(WorkflowEvent::StepStarted(step))
+                    if step.kind == StepKind::Merge =>
+                {
+                    Some(step.step.clone())
+                }
+                _ => None,
+            })
+            .expect("the run's Merge step");
+        let merged = recorded
+            .iter()
+            .position(|event| {
+                matches!(
+                    event.kind,
+                    RunEventKind::Merge(MergeEvent::RunMerged { .. })
+                )
+            })
+            .expect("the run merged");
+        let key = SessionKey::numbered(90);
+        let mut started = session_started(0, &key, None, RoleName::Worker, "claude-code");
+        if let RunEventKind::Session(SessionEvent::Started(session)) = &mut started.kind {
+            session.label = Some(COMMIT_MESSAGE.to_owned());
+            session.step = Some(StepName::CommitMessage);
+            session.access = Access::NoTools;
+            session.workflow_step = Some(merge_step);
+        }
+        let mut ended = session_ended(0, &key, EndReason::Stopped, 0);
+        for event in [&mut started, &mut ended] {
+            event.run_id = run.clone();
+            event.ts = recorded[merged - 1].ts;
+        }
+        let mut stopped = recorded.clone();
+        stopped.splice(merged..merged, [started, ended]);
+
+        let without = workflow_view(&recorded, &run, None).unwrap();
+        let view = workflow_view(&stopped, &run, None).unwrap();
+        assert_eq!(
+            merge_rows(&view),
+            [("commit message".to_owned(), Some(MERGED_AT_ONCE.to_owned()))]
+        );
+        let merge = view
+            .phases
+            .iter()
+            .find(|phase| phase.name == "Merge")
+            .unwrap();
+        let WorkflowRow::Agent(writer) = &merge.rows[0] else {
+            panic!("the writer's row: {:?}", merge.rows[0]);
+        };
+        assert!(writer.not_needed);
+        assert_eq!(writer.status, RowStatus::Skipped);
+        assert_eq!(merge.status, RowStatus::Done);
+        assert_eq!(merge.count, None);
+        assert_eq!(
+            (view.agents_done, view.agents_total),
+            (without.agents_done, without.agents_total)
+        );
+        assert_eq!(view.agents_done, view.agents_total);
+        // The list of everything running says the same, never "stopped".
+        let listed = crate::views::crew_rows(
+            &stopped,
+            &argonauts_core::agent_panel::CrewRun::new(run.clone(), "Add due dates"),
+            "~/app",
+            false,
+        );
+        let writer = listed
+            .iter()
+            .find(|row| row.label.as_deref() == Some(COMMIT_MESSAGE))
+            .unwrap();
+        assert_eq!(
+            writer.state,
+            argonauts_core::agent_panel::CrewState::Skipped
+        );
+        assert_eq!(writer.latest, MERGED_AT_ONCE);
+
+        // Kept off your branch, the run didn't merge at once, so the writer was stopped.
+        stopped.retain(|event| {
+            !matches!(
+                event.kind,
+                RunEventKind::Merge(MergeEvent::RunMerged { .. })
+            )
+        });
+        let kept = workflow_view(&stopped, &run, None).unwrap();
+        let rows = merge_rows(&kept);
+        assert_eq!(
+            rows,
+            [("commit message".to_owned(), Some("stopped".to_owned()))]
+        );
+        assert_eq!(kept.agents_total, without.agents_total + 1);
+        let listed = crate::views::crew_rows(
+            &stopped,
+            &argonauts_core::agent_panel::CrewRun::new(run.clone(), "Add due dates"),
+            "~/app",
+            false,
+        );
+        let writer = listed
+            .iter()
+            .find(|row| row.label.as_deref() == Some(COMMIT_MESSAGE))
+            .unwrap();
+        assert_eq!(
+            writer.state,
+            argonauts_core::agent_panel::CrewState::Stopped
+        );
     }
 
     /// The line a merged run ends on says what the merge changed, as its merge question put

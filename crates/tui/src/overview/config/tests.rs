@@ -1,6 +1,9 @@
 use std::time::Instant;
 
-use argonauts_core::app::{AppEvent, HeaderAndBottomLine, SettingRow, UiCommand};
+use argonauts_core::app::{
+    AppEvent, HeaderAndBottomLine, SettingRow, UiCommand, ViewData, ViewRequest,
+};
+use argonauts_core::deep_map::{DeepOffer, EmbedderNote, EmbedderOffer};
 use argonauts_core::input::SlashCommand;
 use argonauts_core::log::NoteLevel;
 use argonauts_core::settings::SettingScope;
@@ -14,6 +17,7 @@ use super::ConfigTab;
 use crate::cell::{HistoryCell, ResultLine, Tone, UserMessage};
 use crate::overview::golden::{Picture, Region, assert_matches, theme};
 use crate::overview::{OverviewView, Tab, UsageWatch, sample};
+use crate::questions::deep_map::sample::page_offer;
 use crate::render::{Clock, RenderCtx};
 use crate::state::{AppState, SettingOutcome};
 use crate::theme::Theme;
@@ -882,17 +886,292 @@ fn the_behaviors_rows_say_what_auto_means_before_a_deeper_map() {
     );
 }
 
-/// Enter on a Behaviors row goes to the Behaviors map beside Overview and Models, where d asks
-/// who summarizes, and asks for the map; ← on it does nothing.
+fn behaviors_view() -> OverviewView {
+    config_view(vec![
+        setting("behaviors.map", "\"labels\"", "built-in"),
+        setting("behaviors.summarizer", "\"auto\"", "built-in"),
+        setting("behaviors.embedder", "\"auto\"", "built-in"),
+    ])
+}
+
+/// Filters to a Behaviors row, opens its picker with Enter, and hands it the offer `d` asks
+/// with, which the picker asked for.
+fn open_picker(view: &mut OverviewView, state: &AppState, label: &str, offer: &DeepOffer) {
+    for ch in format!("behaviors {label}").chars() {
+        key(view, state, KeyCode::Char(ch));
+    }
+    key(view, state, KeyCode::Enter);
+    let outcome = key(view, state, KeyCode::Enter);
+    assert!(
+        matches!(outcome, ViewOutcome::Request(ViewRequest::DeepOffer)),
+        "{label}: {outcome:?}"
+    );
+    assert_eq!(view.tab(), Tab::Config, "{label}");
+    let waiting = rows(view, state, 118);
+    assert!(
+        waiting
+            .iter()
+            .any(|row| row.trim() == "Asking this computer's model servers…"),
+        "{waiting:#?}"
+    );
+    assert!(view.accept(&ViewData::DeepOffer {
+        offer: Box::new(offer.clone()),
+    }));
+}
+
+/// The row that holds `label`, pointed at or not.
+fn row_with(view: &mut OverviewView, state: &AppState, label: &str) -> String {
+    rows(view, state, 118)
+        .into_iter()
+        .find(|row| row.contains(&format!("{label}  ")))
+        .unwrap_or_else(|| panic!("{label}"))
+}
+
+fn saved(outcome: ViewOutcome) -> (String, String) {
+    match outcome {
+        ViewOutcome::SaveQuietly(UiCommand::SetSetting { key, value, scope }) => {
+            assert_eq!(scope, SettingScope::Global);
+            (key, value)
+        }
+        outcome => panic!("{outcome:?}"),
+    }
+}
+
+/// The summarizer's picker lists auto first, saying what it picks now, then the "Summarize
+/// with" question's models with its descriptions; the embedder's lists auto, nomic-embed-text
+/// on Ollama, the endpoint with your key and word vectors. Each marks the value the row has.
 #[test]
-fn a_behaviors_row_opens_the_behaviors_map() {
+fn the_behaviors_pickers_list_the_models_the_map_may_use() {
+    let state = state();
+    let mut offer = page_offer();
+    offer.keyed_embedder = Some(EmbedderOffer {
+        model: "openai/text-embedding-3-small".parse().unwrap(),
+        name: "text-embedding-3-small on OpenAI".to_owned(),
+    });
+    let mut view = behaviors_view();
+    open_picker(&mut view, &state, "summarizer", &offer);
+    let drawn = rows(&mut view, &state, 118);
+    let at = drawn
+        .iter()
+        .position(|row| row.trim() == "Summarize with")
+        .unwrap_or_else(|| panic!("{drawn:#?}"));
+    let listed: Vec<&str> = drawn[at..]
+        .iter()
+        .map(|row| row.trim())
+        .filter(|row| row.starts_with(char::is_numeric) || row.starts_with('❯'))
+        .collect();
+    let squeezed: Vec<String> = listed
+        .iter()
+        .map(|row| row.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    assert_eq!(
+        squeezed,
+        [
+            "❯ 1. Auto ✓ picks Qwen3 Coder 30B on Ollama now",
+            "2. Qwen3 Coder 30B on Ollama free · on this Mac · 18 GB, fits now",
+            "3. Gemma 3 12B on Ollama free · on this Mac · faster, a little rougher",
+            "4. Haiku 5.5 on Claude Code your Claude plan · about 55k tokens",
+            "5. GPT 6 Luna on Codex your ChatGPT plan · about 55k tokens",
+        ],
+        "{drawn:#?}"
+    );
+    key(&mut view, &state, KeyCode::Esc);
+
+    let mut view = behaviors_view();
+    open_picker(&mut view, &state, "embedder", &offer);
+    let drawn = rows(&mut view, &state, 118);
+    let squeezed: Vec<String> = drawn
+        .iter()
+        .map(|row| row.trim())
+        .filter(|row| row.starts_with(char::is_numeric) || row.starts_with('❯'))
+        .map(|row| row.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    assert_eq!(
+        squeezed,
+        [
+            "❯ 1. Auto ✓ picks nomic-embed-text on Ollama, once its 274 MB are downloaded",
+            "2. nomic-embed-text on Ollama free · on this Mac · 274 MB, downloaded once d asks",
+            "3. text-embedding-3-small on OpenAI an OpenAI-compatible endpoint with your key",
+            "4. Word vectors placed by the summaries' words alone",
+        ],
+        "{drawn:#?}"
+    );
+}
+
+/// The summarizer's picker over the rows, cell for cell, colours and weight included.
+#[test]
+fn the_summarizer_picker_draws_as_its_picture() {
+    let state = state();
+    let mut view = behaviors_view();
+    open_picker(&mut view, &state, "summarizer", &page_offer());
+    let theme = theme();
+    let buf = screen(&mut view, &state, &theme, 118);
+    crate::overview::golden::keep("config_summarizer_picker", &buf);
+    let picture = Picture::load("config_summarizer_picker");
+    assert_matches(&picture, &buf, &Region::whole(&picture, (0, 0)), &theme);
+}
+
+/// A model on this computer saves at once, as the row's other changes do, and the row then
+/// names it; Esc on the rows says what changed.
+#[test]
+fn a_local_summarizer_saves_and_the_row_names_it() {
+    let state = state();
+    let mut view = behaviors_view();
+    open_picker(&mut view, &state, "summarizer", &page_offer());
+    key(&mut view, &state, KeyCode::Down);
+    key(&mut view, &state, KeyCode::Down);
+    let (key_saved, value) = saved(key(&mut view, &state, KeyCode::Enter));
+    assert_eq!(key_saved, "behaviors.summarizer");
+    assert_eq!(value, "\"ollama/gemma3:12b-32k\"");
+    let row = row_with(&mut view, &state, "Behaviors summarizer");
+    assert!(row.contains("Gemma 3 12B on Ollama ›"), "{row}");
+    assert!(
+        !row.contains("a model on this computer"),
+        "a named model isn't auto: {row}"
+    );
+    match key(&mut view, &state, KeyCode::Esc) {
+        ViewOutcome::CloseSaying { line, .. } => {
+            assert_eq!(line, "Set Behaviors summarizer to Gemma 3 12B on Ollama");
+        }
+        outcome => panic!("{outcome:?}"),
+    }
+}
+
+/// A hosted summarizer asks once more in the `d` flow's words before it saves; its second
+/// answer takes the model on this computer instead, Esc goes back to the list, and Not now
+/// keeps the value.
+#[test]
+fn a_hosted_summarizer_asks_once_more_before_it_saves() {
+    let state = state();
+    let mut view = behaviors_view();
+    open_picker(&mut view, &state, "summarizer", &page_offer());
+    let outcome = key(&mut view, &state, KeyCode::Char('4'));
+    assert!(matches!(outcome, ViewOutcome::Consumed), "{outcome:?}");
+    let drawn = rows(&mut view, &state, 118);
+    let text = drawn
+        .iter()
+        .map(|row| row.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        text.contains("Send 562 actions to Anthropic for summaries?"),
+        "{drawn:#?}"
+    );
+    assert!(text.contains("Haiku 5.5 on Claude Code would read each action as it ran"));
+    assert!(text.contains("Nothing is sent anywhere else."));
+    for words in [
+        "1. Yes, summarize with Haiku 5.5",
+        "2. Use Qwen3 Coder 30B on this Mac instead",
+        "3. Not now",
+    ] {
+        assert!(text.contains(words), "{words}: {drawn:#?}");
+    }
+
+    key(&mut view, &state, KeyCode::Esc);
+    let back = rows(&mut view, &state, 118);
+    assert!(
+        back.iter().any(|row| row
+            .trim_start()
+            .starts_with("❯ 4. Haiku 5.5 on Claude Code")),
+        "back on the list, on Haiku: {back:#?}"
+    );
+
+    key(&mut view, &state, KeyCode::Enter);
+    let (_, value) = saved(key(&mut view, &state, KeyCode::Enter));
+    assert_eq!(value, "\"claude-code/haiku\"");
+
+    let mut view = behaviors_view();
+    open_picker(&mut view, &state, "summarizer", &page_offer());
+    key(&mut view, &state, KeyCode::Char('5'));
+    let (_, value) = saved(key(&mut view, &state, KeyCode::Char('2')));
+    assert_eq!(
+        value, "\"ollama/qwen3-coder:30b-64k\"",
+        "the local one instead"
+    );
+
+    let mut view = behaviors_view();
+    open_picker(&mut view, &state, "summarizer", &page_offer());
+    key(&mut view, &state, KeyCode::Char('5'));
+    let outcome = key(&mut view, &state, KeyCode::Char('3'));
+    assert!(matches!(outcome, ViewOutcome::Consumed), "{outcome:?}");
+    assert!(row_with(&mut view, &state, "Behaviors summarizer").contains("auto ›"));
+}
+
+/// Before any action is recorded the offer has no scope to count, and a hosted summarizer
+/// still asks once more, for the actions recorded from then on, before it saves.
+#[test]
+fn a_hosted_summarizer_asks_before_any_map_exists() {
+    let state = state();
+    let mut offer = page_offer();
+    offer.scopes.clear();
+    offer.made_by = None;
+    let mut view = behaviors_view();
+    open_picker(&mut view, &state, "summarizer", &offer);
+    let outcome = key(&mut view, &state, KeyCode::Char('4'));
+    assert!(matches!(outcome, ViewOutcome::Consumed), "{outcome:?}");
+    let drawn = rows(&mut view, &state, 118);
+    let text = drawn
+        .iter()
+        .map(|row| row.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        text.contains("Send your actions to Anthropic for summaries?"),
+        "{drawn:#?}"
+    );
+    assert!(text.contains("None are recorded yet"), "{drawn:#?}");
+    assert!(
+        text.contains("1. Yes, summarize with Haiku 5.5"),
+        "{drawn:#?}"
+    );
+    let (_, value) = saved(key(&mut view, &state, KeyCode::Char('1')));
+    assert_eq!(value, "\"claude-code/haiku\"");
+}
+
+/// Without Ollama running, the embedder's nomic-embed-text row says so and saves nothing, as
+/// the endpoint row does without a key: the next d couldn't use it.
+#[test]
+fn nomic_embed_text_saves_nothing_where_ollama_isnt_running() {
+    let state = state();
+    for embedder in [
+        EmbedderNote::Words,
+        EmbedderNote::Ready {
+            name: "text-embedding-3-small on OpenAI".to_owned(),
+        },
+    ] {
+        let mut offer = page_offer();
+        offer.embedder = embedder.clone();
+        let mut view = behaviors_view();
+        open_picker(&mut view, &state, "embedder", &offer);
+        key(&mut view, &state, KeyCode::Down);
+        let drawn = rows(&mut view, &state, 118).join("\n");
+        assert!(
+            drawn.contains("Ollama isn't running on this Mac."),
+            "{embedder:?}: {drawn}"
+        );
+        assert!(
+            matches!(
+                key(&mut view, &state, KeyCode::Enter),
+                ViewOutcome::Consumed
+            ),
+            "{embedder:?}"
+        );
+        assert!(
+            rows(&mut view, &state, 118)
+                .iter()
+                .any(|row| row.trim() == "Embed with"),
+            "{embedder:?}: still picking"
+        );
+    }
+}
+
+/// Esc leaves the picker with the value as it was and nothing to say; ← on the row opens
+/// nothing.
+#[test]
+fn esc_in_a_behaviors_picker_keeps_the_value() {
     let state = state();
     for label in ["summarizer", "embedder"] {
-        let mut view = config_view(vec![
-            setting("behaviors.map", "\"labels\"", "built-in"),
-            setting("behaviors.summarizer", "\"auto\"", "built-in"),
-            setting("behaviors.embedder", "\"auto\"", "built-in"),
-        ]);
+        let mut view = behaviors_view();
         for ch in format!("behaviors {label}").chars() {
             key(&mut view, &state, KeyCode::Char(ch));
         }
@@ -901,24 +1180,82 @@ fn a_behaviors_row_opens_the_behaviors_map() {
             key(&mut view, &state, KeyCode::Left),
             ViewOutcome::Consumed
         ));
-        assert_eq!(view.tab(), Tab::Config, "← stays");
-        let outcome = key(&mut view, &state, KeyCode::Enter);
-        assert!(
-            matches!(
-                outcome,
-                ViewOutcome::Request(argonauts_core::app::ViewRequest::Behaviors(_))
-            ),
-            "{label}: {outcome:?}"
-        );
-        assert_eq!(view.tab(), Tab::Overview, "{label}");
-        let drawn = rows(&mut view, &state, 118);
-        assert!(
-            drawn
-                .iter()
-                .any(|row| row.trim() == "Overview    Models    Behaviors"),
-            "{drawn:#?}"
-        );
+        let mut view = behaviors_view();
+        open_picker(&mut view, &state, label, &page_offer());
+        key(&mut view, &state, KeyCode::Down);
+        assert!(matches!(
+            key(&mut view, &state, KeyCode::Esc),
+            ViewOutcome::Consumed
+        ));
+        let row = row_with(&mut view, &state, &format!("Behaviors {label}"));
+        assert!(row.contains("auto ›"), "{label}: {row}");
+        match key(&mut view, &state, KeyCode::Esc) {
+            ViewOutcome::CloseSaying { line, .. } => assert_eq!(line, "Config dialog dismissed"),
+            outcome => panic!("{outcome:?}"),
+        }
     }
+}
+
+/// The embedder's picks save their own values: word vectors as `words`, nomic-embed-text on
+/// Ollama by its model. Without an endpoint with a key, that row says why and saves nothing.
+#[test]
+fn the_embedder_saves_its_picks_and_an_endpoint_needs_a_key() {
+    let state = state();
+    let mut view = behaviors_view();
+    open_picker(&mut view, &state, "embedder", &page_offer());
+    let (key_saved, value) = saved(key(&mut view, &state, KeyCode::Char('4')));
+    assert_eq!(
+        (key_saved.as_str(), value.as_str()),
+        ("behaviors.embedder", "\"words\"")
+    );
+    assert!(row_with(&mut view, &state, "Behaviors embedder").contains("Word vectors ›"));
+
+    let mut view = behaviors_view();
+    open_picker(&mut view, &state, "embedder", &page_offer());
+    let (_, value) = saved(key(&mut view, &state, KeyCode::Char('2')));
+    assert_eq!(value, "\"ollama/nomic-embed-text\"");
+
+    let mut view = behaviors_view();
+    open_picker(&mut view, &state, "embedder", &page_offer());
+    key(&mut view, &state, KeyCode::Down);
+    key(&mut view, &state, KeyCode::Down);
+    let drawn = rows(&mut view, &state, 118).join("\n");
+    assert!(
+        drawn.contains("No endpoint with your key is set up."),
+        "{drawn}"
+    );
+    assert!(matches!(
+        key(&mut view, &state, KeyCode::Enter),
+        ViewOutcome::Consumed
+    ));
+    assert!(
+        rows(&mut view, &state, 118)
+            .iter()
+            .any(|row| row.trim() == "Embed with")
+    );
+}
+
+/// A model the row names that this computer doesn't offer now keeps a row of its own, marked,
+/// so the list still says what the value is.
+#[test]
+fn a_named_model_not_offered_here_keeps_its_row() {
+    let state = state();
+    let mut view = config_view(vec![setting(
+        "behaviors.summarizer",
+        "\"ollama/llama3:8b\"",
+        "global",
+    )]);
+    open_picker(&mut view, &state, "summarizer", &page_offer());
+    let drawn = rows(&mut view, &state, 118);
+    let second = drawn
+        .iter()
+        .find(|row| row.trim_start().starts_with("❯ 2."))
+        .unwrap_or_else(|| panic!("{drawn:#?}"));
+    assert!(second.contains("✓"), "{second}");
+    assert!(
+        second.contains("not served or installed here now"),
+        "{second}"
+    );
 }
 
 fn config_view(rows: Vec<SettingRow>) -> OverviewView {

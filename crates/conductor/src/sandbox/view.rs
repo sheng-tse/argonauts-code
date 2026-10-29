@@ -10,7 +10,6 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use argonauts_core::outside::name_matches;
 use argonauts_core::session_runner::SandboxProfile;
 use serde::{Deserialize, Serialize};
 
@@ -207,14 +206,14 @@ const UNSEARCHED: &[&str] = &[".git", "node_modules"];
 /// later or past [`MOST_SEARCHED`] is held only by the CLI's own rules. A link is covered at the
 /// file it opens, so that file is hidden by every name it has.
 pub fn cover_names(view: &mut View, profile: &SandboxProfile, disk: &dyn Disk, workdir: &Path) {
-    let names = &profile.outside.never.names;
-    if names.is_empty() {
+    let never = &profile.outside.never;
+    if never.names.is_empty() {
         return;
     }
     let named = |path: &Path| {
         path.file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| names.iter().any(|glob| name_matches(glob, name)))
+            .is_some_and(|name| never.holds_name(name))
     };
     let rules = ordered_rules(profile);
     let mut roots: Vec<PathBuf> = Vec::new();
@@ -1007,6 +1006,7 @@ mod tests {
         profile.outside = Outside {
             read: true,
             write: true,
+            after_asking: false,
             project: Some(p(project)),
             never: Never {
                 names: vec![".env".to_owned(), ".env.*".to_owned()],
@@ -1053,6 +1053,23 @@ mod tests {
                 at("/repo/app/config/.env.local")
             ]
         );
+    }
+
+    /// A template a project commits, taken back out of `.env.*`, stays where the session sees
+    /// it, and every other env file is covered.
+    #[test]
+    fn a_template_taken_back_from_the_env_files_is_left_uncovered() {
+        let repo = at("/repo");
+        let disk = FakeDisk::new(&[
+            &at("/repo/.env.example"),
+            &at("/repo/.env.local"),
+            &at("/repo/app/.env.sample"),
+        ]);
+        let mut profile = with_never_names(profile(&["/"], &[], &[]), &repo);
+        profile.outside.never.except = vec![".env.example".to_owned(), ".env.sample".to_owned()];
+        let mut view = plan(&profile, &disk);
+        cover_names(&mut view, &profile, &disk, Path::new(&repo));
+        assert_eq!(covered(&view), [at("/repo/.env.local")]);
     }
 
     #[test]

@@ -25,7 +25,8 @@ use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::events::run::{CaptainOrCrewDecision, RunMode};
 use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::names::{ChoiceId, ModelRef, TurnId};
-use argonauts_core::outside::changed_outside;
+use argonauts_core::outside::{BeforeWrites, KeptIn, KeptOut, Outside, both, shown};
+use argonauts_core::session::SessionRole;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::approvals::SandboxChoice;
 use argonauts_core::settings::fallback::FallbackEntry;
@@ -56,6 +57,10 @@ const ANTIGRAVITY: &str = "antigravity-cli";
 /// What agy's resumed turn is told when you let it run what it was refused.
 const RUN_REFUSED: &str = "You may run the commands you were refused.";
 
+/// What a resumed turn is told when you let it write outside the project where it was turned
+/// away.
+const WRITE_REFUSED: &str = "You may now write the files outside the project you were refused.";
+
 /// Direct Captain's part of the conversation.
 #[derive(Debug, Default)]
 pub(crate) struct DirectState {
@@ -69,7 +74,8 @@ pub(crate) struct DirectState {
     turns: Vec<TurnRecord>,
     /// Stopped turns whose session hasn't ended yet, so their files may still change.
     stopping: HashMap<TurnId, Running>,
-    /// agy's refused commands, offered after its turn.
+    /// What a CLI that can't ask was refused, offered after its turn: agy's commands, and
+    /// writes outside the project.
     refused: HashMap<ChoiceId, RefusedOffer>,
     /// The open `/rewind` question. Its answers name turns by their place in `turns`.
     rewinding: Option<ChoiceId>,
@@ -171,6 +177,12 @@ pub(super) struct Running {
     untracked: BTreeSet<String>,
     /// Your home, which the line about such a write names as `~`.
     home: Option<PathBuf>,
+    /// The calls that named a path on the never-list, for the line a refusal leaves.
+    kept_out: KeptOut,
+    /// Writes outside the project that were turned away, for a CLI that can't ask.
+    kept_in: KeptIn,
+    /// How each file a write call named looked as it started, to tell a change the disk shows.
+    before_writes: BeforeWrites,
 }
 
 #[derive(Debug)]
@@ -187,6 +199,39 @@ struct RefusedOffer {
     worker: ModelRef,
     /// The turn's request, which the turn that runs the commands carries on.
     request: String,
+    /// agy was refused commands.
+    commands: bool,
+    /// Writes outside the project were turned away.
+    writes: bool,
+    /// The turn you allow runs without its CLI's own asking: agy's, whose policy can't be set
+    /// for one run, so that its policy doesn't refuse what you allowed again.
+    unasked: bool,
+}
+
+impl RefusedOffer {
+    /// What the turn you allow is told.
+    fn told(&self) -> String {
+        match (self.commands, self.writes) {
+            (true, true) => format!("{RUN_REFUSED} {WRITE_REFUSED}"),
+            (true, false) => RUN_REFUSED.to_owned(),
+            (false, _) => WRITE_REFUSED.to_owned(),
+        }
+    }
+
+    /// The asking of the turn you allow: none for agy, as on autopilot, and what the mode says
+    /// for a write outside from any other CLI.
+    fn asks(&self) -> Option<Asks> {
+        self.unasked.then_some(Asks::Never)
+    }
+
+    /// What the turn you allow goes on to do, after "continues".
+    fn carries_on(&self) -> &'static str {
+        match (self.unasked, self.writes) {
+            (true, true) => "running commands without asking and writing outside the project",
+            (true, false) => "running commands without asking",
+            (false, _) => "and may write outside the project",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -254,6 +299,7 @@ pub(super) fn begin_with(
         asking,
         go_ahead: None,
         words,
+        writes_outside: false,
     })?;
     Ok(Vec::new())
 }
@@ -269,6 +315,19 @@ pub(super) fn go_ahead(
     asks: Option<Asks>,
     words: DirectWords,
 ) -> anyhow::Result<Vec<Effect>> {
+    carry_on(ctx, conversation, request, said, asks, words, false)
+}
+
+/// [`go_ahead`], or with `writes_outside` the turn you let write outside the project.
+fn carry_on(
+    ctx: &mut Ctx,
+    conversation: &mut ConversationState,
+    request: String,
+    said: &str,
+    asks: Option<Asks>,
+    words: DirectWords,
+    writes_outside: bool,
+) -> anyhow::Result<Vec<Effect>> {
     let asks = asks.unwrap_or_else(|| mode_asks(ctx, conversation, &words));
     if let Some(instead) = instead(ctx, conversation, asks, &request) {
         return Ok(instead);
@@ -278,6 +337,7 @@ pub(super) fn go_ahead(
             asking,
             go_ahead: Some(said.to_owned()),
             words,
+            writes_outside,
         }
     })?;
     Ok(Vec::new())
@@ -735,6 +795,9 @@ fn start(
             setup_wrote: BTreeSet::new(),
             untracked,
             home: ctx.env.user_home.clone(),
+            kept_out: KeptOut::default(),
+            kept_in: KeptIn::default(),
+            before_writes: BeforeWrites::default(),
         });
     }
     Ok(())
@@ -863,10 +926,28 @@ pub(super) fn notes(
     notes
 }
 
-/// Follows the turn's events for what comes after it: agy's refused commands, and what the
-/// agent said, for a fallback. Gives the line a write outside your folder leaves, once it's
-/// done.
-pub(super) fn on_agent(running: &mut Running, event: &AgentEvent) -> Option<String> {
+/// Follows the turn's events for what comes after it: agy's refused commands, the writes outside
+/// that were turned away where the turn reads there but writes only its folder, and what the
+/// agent said, for a fallback. Gives the line a write outside your folder leaves, by a file
+/// tool or a command, once it's done, and the one a read or write the never-list refused leaves.
+pub(super) fn on_agent(
+    running: &mut Running,
+    outside: &Outside,
+    event: &AgentEvent,
+) -> Option<String> {
+    let home = running.home.as_deref();
+    running.before_writes.note(&running.root, event, home);
+    let wrote = running
+        .before_writes
+        .changed_by_command(&[&running.root], event, home);
+    let kept_out = running
+        .kept_out
+        .follow(&outside.never, &running.root, event, home);
+    if outside.read && !outside.writes_outside(SessionRole::Direct) {
+        running
+            .kept_in
+            .follow(outside, &running.root, event, home, &running.before_writes);
+    }
     match event {
         AgentEvent::ToolStarted { id, input, .. } => {
             let command = ["CommandLine", "command", "cmd"]
@@ -878,7 +959,9 @@ pub(super) fn on_agent(running: &mut Running, event: &AgentEvent) -> Option<Stri
         }
         AgentEvent::FileChanged { path, .. } => {
             running.written.extend(in_your_folder(&running.root, path));
-            return changed_outside(&[&running.root], event, running.home.as_deref());
+            return running
+                .before_writes
+                .changed_as_reported(&[&running.root], event, home);
         }
         AgentEvent::ToolFinished {
             id,
@@ -903,7 +986,7 @@ pub(super) fn on_agent(running: &mut Running, event: &AgentEvent) -> Option<Stri
         }
         _ => {}
     }
-    None
+    both(kept_out, wrote)
 }
 
 /// A file the agent changed, by path from your folder. One outside your folder isn't
@@ -923,7 +1006,9 @@ fn in_your_folder(root: &Path, changed: &str) -> Option<String> {
     (!relative.is_empty() && !relative.starts_with("..")).then(|| relative.to_owned())
 }
 
-/// After the turn's answer: the snapshot for `/rewind`, then agy's refused commands, offered.
+/// After the turn's answer: the snapshot for `/rewind`, then what a CLI that can't ask was
+/// refused, offered: agy's commands, and writes outside the project in a mode that works there
+/// once asked.
 pub(super) fn finished(ctx: &mut Ctx, conversation: &mut ConversationState, turn: &mut Turn) {
     let Some(mut running) = turn.direct.take() else {
         return;
@@ -935,8 +1020,19 @@ pub(super) fn finished(ctx: &mut Ctx, conversation: &mut ConversationState, turn
         ctx.notice(NoteLevel::Info, left);
     }
     let agy = turn.worker.agent == ANTIGRAVITY;
-    if agy && running.asks != Asks::Never && !running.refused.is_empty() {
-        offer_refused(ctx, conversation, turn, &running.refused);
+    let commands: &[String] = if agy && running.asks != Asks::Never {
+        &running.refused
+    } else {
+        &[]
+    };
+    let opens_outside = outside::opens_once_asked(ctx, conversation, &turn.step);
+    let writes: &[PathBuf] = if opens_outside && !asks_each(&turn.worker.agent) {
+        running.kept_in.refused()
+    } else {
+        &[]
+    };
+    if !commands.is_empty() || !writes.is_empty() {
+        offer_refused(ctx, conversation, turn, commands, writes, opens_outside);
     }
 }
 
@@ -1231,11 +1327,17 @@ pub(crate) fn on_asked(
             tool_name, input, ..
         } => {
             let patterns = &ctx.settings().approvals.allow_commands;
+            let folder = ask::Folder {
+                path: conversation.folder(ctx),
+                writes_outside: current.outside.writes_outside(SessionRole::Direct),
+                home: ctx.env.user_home.as_deref(),
+            };
             if ask::allowed(
                 &tool_name,
                 &input,
                 conversation.direct.edits_allowed,
                 patterns,
+                &folder,
             ) {
                 let _ = asked.reply.send(AskReply::allow(&input));
                 return Ok(Vec::new());
@@ -1246,7 +1348,7 @@ pub(crate) fn on_asked(
                 return Ok(Vec::new());
             }
             let cli = ctx.names.cli(&current.worker.agent);
-            let question = ask::Question::of(&tool_name, &input);
+            let question = ask::Question::in_folder(&tool_name, &input, &folder);
             let id = ctx.next_choice_id();
             let mut choice = choices::app_choice(
                 id.clone(),
@@ -1452,9 +1554,9 @@ fn settle_plans(
     Ok(effects)
 }
 
-/// agy's offer to run what it was refused gets a yes, as a turn started on autopilot runs
-/// commands unasked in our sandbox. The grant is for one turn of agy's own session, so an offer
-/// that can't have it now closes.
+/// An offer to do what a CLI was refused gets a yes, as a turn started on autopilot runs
+/// commands unasked and writes outside in our sandbox. The grant is for one turn of the CLI's
+/// own session, so an offer that can't have it now closes.
 fn settle_refused(
     ctx: &mut Ctx,
     conversation: &mut ConversationState,
@@ -1479,16 +1581,19 @@ fn settle_refused(
         ctx.send(AppEvent::ChoiceClosed {
             id,
             outcome: format!(
-                "Decided on autopilot · {cli} continues, running commands without asking"
+                "Decided on autopilot · {cli} continues, {}",
+                offer.carries_on()
             ),
         });
-        effects.extend(go_ahead(
+        let told = offer.told();
+        effects.extend(carry_on(
             ctx,
             conversation,
-            offer.request,
-            RUN_REFUSED,
-            Some(Asks::Never),
+            offer.request.clone(),
+            &told,
+            offer.asks(),
             DirectWords::default(),
+            true,
         )?);
     }
     Ok(effects)
@@ -1641,11 +1746,23 @@ fn grant(
 fn answer_waiting(ctx: &mut Ctx, conversation: &mut ConversationState) {
     let patterns = ctx.settings().approvals.allow_commands.clone();
     let edits = conversation.direct.edits_allowed;
+    let path = conversation.folder(ctx).to_path_buf();
+    let writes_outside = conversation
+        .turn
+        .as_ref()
+        .is_some_and(|turn| turn.outside.writes_outside(SessionRole::Direct));
+    let folder = ask::Folder {
+        path: &path,
+        writes_outside,
+        home: ctx.env.user_home.as_deref(),
+    };
     let allowed: Vec<ChoiceId> = conversation
         .direct
         .asks
         .iter()
-        .filter(|(_, pending)| ask::allowed(&pending.tool, &pending.input, edits, &patterns))
+        .filter(|(_, pending)| {
+            ask::allowed(&pending.tool, &pending.input, edits, &patterns, &folder)
+        })
         .map(|(id, _)| id.clone())
         .collect();
     for id in allowed {
@@ -1677,25 +1794,57 @@ fn close_asks(ctx: &Ctx, conversation: &mut ConversationState, turn: &TurnId) {
     }
 }
 
+/// Asks whether the turn's CLI may do what it was refused, in one more turn of its session:
+/// agy's `commands`, and the `writes` outside the project our sandbox turned away. Where the
+/// mode works outside once asked, `opens_outside`, the turn you allow may write there too.
 fn offer_refused(
     ctx: &mut Ctx,
     conversation: &mut ConversationState,
     turn: &Turn,
     commands: &[String],
+    writes: &[PathBuf],
+    opens_outside: bool,
 ) {
     let cli = ctx.names.cli(&turn.worker.agent);
+    let home = ctx.env.user_home.clone();
     let id = ctx.next_choice_id();
     let mut options = choices::options(ChoiceKind::RefusedCommands);
+    let unasked = !commands.is_empty() || turn.worker.agent == ANTIGRAVITY;
+    let detail = match (unasked, opens_outside) {
+        (true, true) => format!(
+            "one more turn in which {cli} runs commands without asking and may write outside \
+             the project, in our sandbox"
+        ),
+        (true, false) => {
+            format!("one more turn in which {cli} runs commands without asking, in our sandbox")
+        }
+        (false, _) => format!(
+            "one more turn in which {cli} may write outside the project, in our sandbox. The \
+             never-list still holds"
+        ),
+    };
     if let Some(first) = options.first_mut() {
-        first.detail = Some(
-            "one more turn in which agy runs commands without asking, in our sandbox".to_owned(),
-        );
+        first.detail = Some(detail);
     }
+    let title = if commands.is_empty() {
+        format!("Let {cli} write outside the project?")
+    } else {
+        format!("Let {cli} run what it was refused?")
+    };
+    let mut lines = commands.to_vec();
+    lines.extend(writes.iter().map(|path| {
+        let path = shown(path, home.as_deref());
+        if commands.is_empty() {
+            path
+        } else {
+            format!("write {path}")
+        }
+    }));
     let choice = choices::app_choice(
         id.clone(),
         ChoiceKind::RefusedCommands,
-        format!("Let {cli} run what it was refused?"),
-        commands.to_vec(),
+        title,
+        lines,
         options,
     );
     conversation.direct.refused.insert(
@@ -1703,13 +1852,18 @@ fn offer_refused(
         RefusedOffer {
             worker: turn.worker.clone(),
             request: turn.text.clone(),
+            commands: !commands.is_empty(),
+            writes: !writes.is_empty(),
+            unasked,
         },
     );
     ctx.send(AppEvent::Choice { choice });
 }
 
-/// "Yes, and continue" resumes agy for one turn with `--dangerously-skip-permissions`, inside
-/// our sandbox: permission rules can't be set for one agy run, so this is the narrowest grant.
+/// "Yes, and continue" resumes the CLI's session for one turn that may do what it was refused,
+/// inside our sandbox: agy with `--dangerously-skip-permissions`, since permission rules can't
+/// be set for one agy run, and a write outside with our sandbox open there but for the
+/// never-list. Either is the narrowest grant.
 fn answer_refused(
     ctx: &mut Ctx,
     conversation: &mut ConversationState,
@@ -1724,11 +1878,13 @@ fn answer_refused(
         });
         return Ok(Vec::new());
     }
-    // The grant is for one turn of agy's own session, so it waits for the turn that's running.
+    // The grant is for one turn of the CLI's own session, so it waits for the turn that's
+    // running.
     if conversation.turn.is_some() {
+        let cli = ctx.names.cli(&offer.worker.agent);
         ctx.notice(
             NoteLevel::Info,
-            "A turn is running. Answer agy's question once it ends.",
+            format!("A turn is running. Answer {cli}'s question once it ends."),
         );
         conversation.direct.refused.insert(id, offer);
         return Ok(Vec::new());
@@ -1736,15 +1892,17 @@ fn answer_refused(
     let cli = ctx.names.cli(&offer.worker.agent);
     ctx.send(AppEvent::ChoiceClosed {
         id,
-        outcome: format!("{cli} continues, running commands without asking"),
+        outcome: format!("{cli} continues, {}", offer.carries_on()),
     });
-    go_ahead(
+    let told = offer.told();
+    carry_on(
         ctx,
         conversation,
-        offer.request,
-        RUN_REFUSED,
-        Some(Asks::Never),
+        offer.request.clone(),
+        &told,
+        offer.asks(),
         DirectWords::default(),
+        true,
     )
 }
 

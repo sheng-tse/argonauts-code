@@ -118,7 +118,7 @@ fn call_row(agent_id: &str, call: &CliCall, places: &tools::Places) -> ToolCall 
 /// The row with every call of its subagent under it, at every depth.
 fn whole_row(agent_id: &str, call: &CliCall, places: &tools::Places) -> ToolCall {
     let mut row = tools::start_call_in(agent_id, &call.name, &call.input, places);
-    row.kind = tools::kind_of(agent_id, &call.name);
+    row.kind = tools::kind_of(agent_id, &call.name, &call.input);
     for step in &call.steps {
         if let CliStep::Ran(inner) = step {
             row.push_call(whole_row(agent_id, inner, places));

@@ -1,0 +1,19 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats
+
+
+  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ⌕ behaviors summarizer                                                                                         │
+  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+  Summarize with
+  One model writes every summary, so the map compares the agents, not their summarizers. The next d asks before it
+  summarizes a map again.
+
+  ❯ 1. Auto ✓                      picks Qwen3 Coder 30B on Ollama now
+    2. Qwen3 Coder 30B on Ollama   free · on this Mac · 18 GB, fits now
+    3. Gemma 3 12B on Ollama       free · on this Mac · faster, a little rougher
+    4. Haiku 5.5 on Claude Code    your Claude plan · about 55k tokens
+    5. GPT 6 Luna on Codex         your ChatGPT plan · about 55k tokens
+
+  Enter to choose · ↑↓  to move · type to filter · Esc to close

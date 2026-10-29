@@ -23,6 +23,7 @@ use crate::clis::declared_cli_ids;
 use crate::settings::crew;
 use crate::settings::fallback::{drop_entry_billing, entry_billing, merge_top_level};
 use crate::settings::limit_units::{LimitUnits, other_units};
+use crate::settings::outside;
 use crate::settings::passing_over::{
     PassedOver, Stop, drop_odd_keys, from_a_file, narrowed, refused_alone,
 };
@@ -142,6 +143,14 @@ fn resolve_once(
         let Some(mut table) = read_file_layer(&file, parsed, sources.strict, &mut warnings)? else {
             continue;
         };
+        if layer != GLOBAL {
+            for why in outside::narrow(&mut table, &merged, &source) {
+                if sources.strict {
+                    return Err(Stop::from(SettingsError::Refused(why)));
+                }
+                warnings.push(SettingsWarning::other(why));
+            }
+        }
         passed_over.leave_out(&mut table);
         set_by.record(&table, layer, &source);
         limit_units.note(layer, &source, &table)?;
@@ -1301,6 +1310,49 @@ mod tests {
         ] {
             assert!(!is_safety_key(key), "{key}");
         }
+    }
+
+    #[test]
+    fn a_trusted_project_file_keeps_agents_closer_to_the_project_but_never_farther() {
+        use argonauts_core::settings::outside::OutsideSettings;
+        let dir = tempfile::tempdir().unwrap();
+        let global = write(
+            dir.path(),
+            "global.toml",
+            "[outside]\nwrite = [\"autopilot\"]\n",
+        );
+        let project = write(
+            dir.path(),
+            "project.toml",
+            "[outside]\nwrite = [\"autopilot\", \"supervised\"]\nask = [\"supervised\"]\n\
+             never = [\"secrets\"]\n",
+        );
+        let sources = SettingsSources {
+            global: Some(global),
+            project: Some(project),
+            project_trusted: true,
+            ..SettingsSources::default()
+        };
+        let resolved = resolve(&sources).unwrap();
+        let outside = &resolved.settings.outside;
+        assert_eq!(outside.write, [ApprovalMode::Autopilot]);
+        assert_eq!(outside.ask, [ApprovalMode::Supervised]);
+        let yours = OutsideSettings::default().never;
+        assert_eq!(outside.never[..yours.len()], yours[..]);
+        assert_eq!(outside.never.last().map(String::as_str), Some("secrets"));
+        let said: Vec<&str> = resolved.warnings.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said[0].starts_with("outside.write in "), "{said:?}");
+        assert!(said[0].contains("adds supervised"), "{said:?}");
+        assert!(said[1].starts_with("outside.never in "), "{said:?}");
+
+        let strict = resolve(&SettingsSources {
+            strict: true,
+            ..sources
+        });
+        assert!(
+            matches!(strict, Err(SettingsError::Refused(why)) if why.contains("outside.write"))
+        );
     }
 
     #[test]

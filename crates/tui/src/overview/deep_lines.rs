@@ -18,16 +18,18 @@ pub fn summarizing(kit: &Kit<'_>, actions: usize, summarizer: &str) -> Line<'sta
     ))])
 }
 
-/// `✻ Summarizing… 312 of 562 · about 50 s left · esc keeps it going in the background · x stops it`.
+/// `✻ Summarizing… 312 of 562 · about 5 min left · esc keeps it going in the background · x stops it`.
 pub fn progress(kit: &Kit<'_>, progress: &DeepProgress) -> Line<'static> {
     let warn = kit.style(Role::Warn);
     let left = progress
         .seconds_left
         .map(|seconds| format!("about {} left · ", left_words(seconds)))
         .unwrap_or_default();
+    // Fonts such as Iosevka draw ✻ and the ellipsis two cells wide, over the cell after
+    // them, so each has two blanks after it and one always shows, as the arrows do.
     Line::from(vec![
-        Span::styled(format!("{MARGIN}✻ "), warn),
-        Span::styled("Summarizing… ", warn),
+        Span::styled(format!("{MARGIN}✻  "), warn),
+        Span::styled("Summarizing…  ", warn),
         kit.dim(format!("{} of {} · {left}", progress.done, progress.total)),
         kit.span("esc", Role::Question),
         kit.dim(" keeps it going in the background · "),
@@ -36,10 +38,11 @@ pub fn progress(kit: &Kit<'_>, progress: &DeepProgress) -> Line<'static> {
     ])
 }
 
-/// `50 s`, then whole minutes.
+/// `50 s`, to the nearest ten, then whole minutes, so 55 seconds reads `1 min`.
 fn left_words(seconds: u64) -> String {
-    if seconds < 60 {
-        format!("{} s", (seconds + 5) / 10 * 10)
+    let tens = (seconds + 5) / 10 * 10;
+    if tens < 60 {
+        format!("{tens} s")
     } else {
         format!("{} min", (seconds + 30) / 60)
     }
@@ -129,5 +132,13 @@ mod tests {
             "{}",
             ended(&waiting)
         );
+    }
+
+    #[test]
+    fn the_time_left_reads_in_tens_of_seconds_then_minutes() {
+        assert_eq!(left_words(50), "50 s");
+        assert_eq!(left_words(54), "50 s");
+        assert_eq!(left_words(55), "1 min");
+        assert_eq!(left_words(300), "5 min");
     }
 }

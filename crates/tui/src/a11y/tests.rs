@@ -827,3 +827,34 @@ fn a_refused_start_is_said_at_the_turns_end_unless_a_retry_worked() {
     let ended = said(&mut reader, finished());
     assert!(!ended.contains("No workflow started"), "{ended}");
 }
+
+/// The crew your words set for a request is read a role a line, each with its models and where
+/// they came from.
+#[test]
+fn the_crew_for_a_request_is_read_a_role_a_line() {
+    use argonauts_core::app::CrewRow;
+
+    let row = |role: &str, who: &str, from: &str| CrewRow {
+        role: role.into(),
+        who: who.into(),
+        from: from.into(),
+    };
+    let event = AppEvent::CrewForRequest {
+        rows: vec![
+            row(
+                "orchestrator",
+                "Haiku 5.5 on Claude Code",
+                "your main session",
+            ),
+            row("reviewers", "GPT 5.6 Luna on Codex", "as you asked"),
+        ],
+    };
+    let lines = super::lines::lines_for(&event, &crate::state::AppState::default());
+    assert_eq!(
+        lines,
+        [
+            "crew for this request: orchestrator, Haiku 5.5 on Claude Code, your main session",
+            "crew for this request: reviewers, GPT 5.6 Luna on Codex, as you asked",
+        ]
+    );
+}

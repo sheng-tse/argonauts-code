@@ -30,7 +30,8 @@ use crate::workflow::StepAt;
 
 /// What the merger's sessions go by, each named for its job and never for the branch, so a row
 /// can't read as the merge itself: code merges, and these only settle what needs judgement.
-pub const COMMIT_MESSAGE: &str = "commit message";
+/// The one that writes the commit message goes by `argonauts_core::views::COMMIT_MESSAGE`,
+/// which the screens read too.
 pub const SETTLE_CONFLICT: &str = "settle conflict";
 
 /// `fix after main moved`, for the branch the run lands on.

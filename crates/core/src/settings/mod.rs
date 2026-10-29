@@ -157,8 +157,8 @@ pub struct Settings {
     pub pr: pr::PrSettings,
     /// How long a run holds for the internet to come back.
     pub network: network::NetworkSettings,
-    /// Where agents read and write outside the project without asking, and what they never
-    /// reach.
+    /// Where agents read and write outside the project, without asking or once asked, and what
+    /// they never reach.
     pub outside: outside::OutsideSettings,
     /// The Behaviors map in Overview › Behaviors, and who writes its deeper map's summaries.
     pub behaviors: behaviors::BehaviorSettings,

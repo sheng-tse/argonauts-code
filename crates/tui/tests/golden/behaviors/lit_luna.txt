@@ -1,7 +1,7 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
-   Overview    Models    Behaviors                                                                                    
-  What your agents did, from 562 actions in 19 runs · last 30 days · by model                                         
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
+   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
+  What your agents did, from 562 actions in 19 runs · last 30 days                                                    
                                                                                                                       
 
 [picture]
@@ -29,4 +29,4 @@ blue: Luna does this less
     returned its structured answer                         34 (51.5%)   others 135 (27.2%)                            
     edited a source file                                    3 (4.5%)   others  23 (4.6%)                              
                                                                                                                       
-  ←  →  model · ↑  ↓  behavior, lit on the map · enter its actions · g group · p period · esc back                    
+  r to cycle dates · g group · s this project · d deeper map · ↑  ↓  behavior · enter actions · esc back              

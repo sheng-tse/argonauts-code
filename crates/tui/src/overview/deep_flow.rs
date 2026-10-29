@@ -41,19 +41,13 @@ pub enum DeepKey {
     Moved,
 }
 
-/// The update this tab started, until the app says where it is.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Started {
-    summarizer: String,
-    actions: usize,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct DeepFlow {
     /// `d` asked for the offer; what it opens waits for it.
     asked: Option<Shown>,
     questions: Option<DeepQuestions>,
-    started: Option<Started>,
+    /// The update this tab started, as it stood at its start, until the app says where it is.
+    started: Option<DeepProgress>,
     /// What the app last reported of its updates.
     update: DeepUpdate,
 }
@@ -127,11 +121,7 @@ impl DeepFlow {
                     DeepKey::Show(BehaviorMap::Labels)
                 }
                 Some(DeepAnswer::Start(start)) => {
-                    let (summarizer, actions) = questions.started(&start);
-                    self.started = Some(Started {
-                        summarizer,
-                        actions,
-                    });
+                    self.started = Some(questions.started(&start));
                     self.questions = None;
                     DeepKey::Send(UiCommand::DeepStart { start })
                 }
@@ -161,18 +151,20 @@ impl DeepFlow {
         self.running().then(|| deep_lines::arriving(kit))
     }
 
-    /// Where the update is: the app's word, else none done of what this tab started.
+    /// Where the update is: the app's word, else none done of what this tab started. Until
+    /// the app has an estimate of its own, the offer's says how long is left of what remains.
     fn progress(&self) -> Option<DeepProgress> {
-        if let Some(progress) = &self.update.running {
-            return Some(progress.clone());
+        let Some(running) = &self.update.running else {
+            return self.started.clone();
+        };
+        let mut progress = running.clone();
+        if progress.seconds_left.is_none()
+            && let Some(estimate) = self.started.as_ref().and_then(|s| s.seconds_left)
+        {
+            let left = progress.total.saturating_sub(progress.done) as u64;
+            progress.seconds_left = Some(estimate * left / progress.total.max(1) as u64);
         }
-        let started = self.started.as_ref()?;
-        Some(DeepProgress {
-            done: 0,
-            total: started.actions,
-            seconds_left: None,
-            summarizer: started.summarizer.clone(),
-        })
+        Some(progress)
     }
 }
 

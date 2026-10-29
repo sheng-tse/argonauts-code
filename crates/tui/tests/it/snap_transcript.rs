@@ -57,7 +57,7 @@ struct TestDriver {
 impl TestDriver {
     fn new() -> Self {
         let mut transcript = Transcript::with_clock(WallClock::pinned(NOW));
-        transcript.conversation = ConversationTurns::with_tool_kinds(|_, name| match name {
+        transcript.conversation = ConversationTurns::with_tool_kinds(|_, name, _| match name {
             "Read" => ToolKind::Read,
             "Grep" => ToolKind::Search,
             _ => ToolKind::Other,

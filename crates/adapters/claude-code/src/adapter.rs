@@ -607,10 +607,12 @@ mod tests {
         let outside = Outside {
             read: true,
             write: true,
+            after_asking: false,
             project: Some("/home/you/app".into()),
             never: Never {
                 paths: vec!["/home/you/.ssh".into()],
                 names: vec![".env".to_owned()],
+                except: Vec::new(),
                 unwritten: vec!["/etc".into()],
             },
         };
@@ -652,6 +654,68 @@ mod tests {
         assert!(has(&supervised, "--permission-prompt-tool"));
         let permissions = settings_file(&supervised)["permissions"].to_string();
         assert!(!permissions.contains("//"), "{permissions}");
+    }
+
+    /// In supervised a direct turn asks before it works outside: no allow rule reaches there,
+    /// each question goes to the approval tool, and no rule denies the folder, so a write you
+    /// approve lands. The never-list is denied before any question.
+    #[test]
+    fn a_supervised_turn_asks_before_an_outside_write_and_a_yes_lands() {
+        use argonauts_core::outside::{Never, Outside};
+        let outside = Outside {
+            after_asking: true,
+            project: Some("/home/you/app".into()),
+            never: Never {
+                paths: vec!["/home/you/.ssh".into()],
+                names: vec![".env".to_owned()],
+                except: Vec::new(),
+                unwritten: vec!["/etc".into()],
+            },
+            ..Outside::default()
+        };
+        for asks in [Asks::LikeCli, Asks::EveryChange] {
+            let spec = command(&SessionRequest {
+                asks,
+                tool_sandbox_off: true,
+                outside: outside.clone(),
+                mcp_config: Some("/tmp/state/t-001/mcp.json".into()),
+                scratch_dir: Some("/tmp/state/t-001".into()),
+                ..request(SessionRole::Direct)
+            });
+            assert!(has(&spec, "--permission-prompt-tool"), "{asks:?}");
+            assert!(!has(&spec, "--permission-prompts"), "{asks:?}");
+            let settings = settings_file(&spec);
+            assert_eq!(settings["sandbox"]["enabled"], json!(false));
+            let rules = |list: &str| -> Vec<String> {
+                settings["permissions"][list]
+                    .as_array()
+                    .map(|rules| {
+                        rules
+                            .iter()
+                            .filter_map(|rule| rule.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let allow = rules("allow");
+            assert!(!allow.iter().any(|rule| rule.contains("//")), "{allow:?}");
+            let deny = rules("deny");
+            for rule in [
+                "Read(//home/you/.ssh/**)",
+                "Write(//home/you/.ssh/**)",
+                "Read(//**/.env)",
+                "Edit(//**/.env)",
+                "Edit(//etc/**)",
+            ] {
+                assert!(deny.iter().any(|denied| denied == rule), "{rule}: {deny:?}");
+            }
+            assert!(
+                !deny
+                    .iter()
+                    .any(|rule| rule.contains("//home/you/Downloads") || rule.contains("//**)")),
+                "{deny:?}"
+            );
+        }
     }
 
     /// A direct turn is Claude Code as you run it: its default tools and no `--tools` list,

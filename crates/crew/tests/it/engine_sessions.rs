@@ -601,3 +601,112 @@ async fn a_session_in_a_folder_of_its_own_is_kept_out_of_your_checkout() -> anyh
     );
     Ok(())
 }
+
+/// A worker's read of a path on the never-list that failed leaves the note saying the list kept
+/// it out only where the run's mode lets its sessions out of the project: supervised does, once
+/// asked, and with `[outside] ask` emptied it keeps them in, where the list holds nothing.
+#[tokio::test]
+async fn a_refusal_is_put_down_to_the_never_list_only_where_it_holds() -> anyhow::Result<()> {
+    use argonauts_core::settings::approvals::SandboxChoice;
+    // A container shows the session nothing outside its own paths, so the list holds nothing
+    // there either.
+    for (ask, sandbox, said) in [
+        (vec![ApprovalMode::Supervised], SandboxChoice::Os, true),
+        (Vec::new(), SandboxChoice::Os, false),
+        (
+            vec![ApprovalMode::Supervised],
+            SandboxChoice::Container,
+            false,
+        ),
+    ] {
+        let mut crew = Crew::new()?;
+        crew.settings.approvals.understand.mode = ApprovalMode::Supervised;
+        crew.settings.outside.ask = ask;
+        crew.settings.sandbox.mode = sandbox;
+        let worker = crew.worker("opencode/glm", "zai");
+        let reference: ModelRef = "opencode/glm".parse()?;
+        let env = crew.repo.root().join(".env");
+        worker.push(
+            FakeSession::completed("Couldn't read it.")
+                .with_event(RunnerEvent::Agent(AgentEvent::ToolStarted {
+                    id: "r1".into(),
+                    name: "read".into(),
+                    input: json!({ "filePath": env }),
+                    parent: None,
+                }))
+                .with_event(RunnerEvent::Agent(AgentEvent::ToolFinished {
+                    id: "r1".into(),
+                    ok: false,
+                    output: Some("Unknown: FileSystem.stat".into()),
+                    parent: None,
+                })),
+        );
+        let (host, sink) = crew.host(RunMode::Captain)?;
+        host.start(plan(&reference, Access::ReadOnly, &host))
+            .await?
+            .ended()
+            .await?;
+
+        let spec = worker.specs().remove(0);
+        let reach = argonauts_conductor::sandbox::profile::outside_reach(&spec.sandbox);
+        assert_eq!(reach.is_open(), said);
+        let notes: Vec<String> = sink
+            .events()
+            .iter()
+            .filter_map(|event| match &event.kind {
+                RunEventKind::Note(note) => Some(note.text.clone()),
+                _ => None,
+            })
+            .collect();
+        let kept_out = notes.iter().any(|note| {
+            note.starts_with("kept out: ") && note.ends_with("/.env is on the never-list")
+        });
+        assert_eq!(kept_out, said, "{notes:?}");
+    }
+    Ok(())
+}
+
+/// A run's sessions can't ask, so where the run's mode opens outside only once asked, as
+/// supervised and auto preview do, they read there and write nothing: no question would come
+/// before such a write. A run set to supervised, as your words or a checked run set it, is held
+/// the same way whatever the settings' own mode.
+#[tokio::test]
+async fn a_run_that_waits_for_you_reads_outside_and_writes_nothing_there() -> anyhow::Result<()> {
+    for (settings_mode, run_mode) in [
+        (ApprovalMode::Supervised, None),
+        (ApprovalMode::AutoPreview, None),
+        (ApprovalMode::Autopilot, Some(ApprovalMode::Supervised)),
+    ] {
+        let mut crew = Crew::new()?;
+        crew.settings.approvals.understand.mode = settings_mode;
+        let worker = crew.worker("opencode/glm", "zai");
+        let reference: ModelRef = "opencode/glm".parse()?;
+        worker.push(FakeSession::completed("Read it."));
+        let (host, _sink) = crew.host(RunMode::Captain)?;
+        if let Some(mode) = run_mode {
+            commands::approval_mode(&host, mode)?;
+        }
+        host.start(plan(&reference, Access::ReadOnly, &host))
+            .await?
+            .ended()
+            .await?;
+        let outside = worker.specs().remove(0).sandbox.outside;
+        let case = format!("{settings_mode:?} {run_mode:?}: {outside:?}");
+        assert!(outside.read, "{case}");
+        assert!(!outside.write && !outside.after_asking, "{case}");
+        assert!(!outside.never.is_empty(), "{case}");
+    }
+    let mut crew = Crew::new()?;
+    crew.settings.approvals.understand.mode = ApprovalMode::Autopilot;
+    let worker = crew.worker("opencode/glm", "zai");
+    let reference: ModelRef = "opencode/glm".parse()?;
+    worker.push(FakeSession::completed("Read it."));
+    let (host, _sink) = crew.host(RunMode::Captain)?;
+    host.start(plan(&reference, Access::ReadOnly, &host))
+        .await?
+        .ended()
+        .await?;
+    let outside = worker.specs().remove(0).sandbox.outside;
+    assert!(outside.read && outside.write, "{outside:?}");
+    Ok(())
+}

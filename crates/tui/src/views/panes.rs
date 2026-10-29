@@ -387,6 +387,8 @@ pub struct Marks {
     pub failed: &'static str,
     pub needs_you: &'static str,
     pub stopped: &'static str,
+    /// An agent its run no longer needed, as the workflow view marks a skipped row.
+    pub skipped: &'static str,
     /// A workflow inside another, folded to its row and open to its phases.
     pub folded: &'static str,
     pub open: &'static str,
@@ -419,6 +421,7 @@ impl Marks {
                 failed: "x",
                 needs_you: glyphs.question,
                 stopped: "-",
+                skipped: "-",
                 folded: ">",
                 open: "v",
                 phase_waiting: ".",
@@ -443,6 +446,7 @@ impl Marks {
                 failed: "✗",
                 needs_you: glyphs.question,
                 stopped: "■",
+                skipped: "–",
                 folded: "▸",
                 open: "▾",
                 phase_waiting: "·",

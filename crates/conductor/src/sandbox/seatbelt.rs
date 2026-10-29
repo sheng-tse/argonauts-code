@@ -132,11 +132,27 @@ pub fn render_profile(profile: &SandboxProfile) -> String {
     for rule in ordered_rules(profile) {
         push_rule(&mut sbpl, &rule, profile.network);
     }
-    // Last, so a file of this name is closed in a writable folder too.
-    for name in &profile.outside.never.names {
-        if let Some(regex) = name_regex(name) {
+    // Last, so a file of this name is closed in a writable folder too. A name taken back out of
+    // one with `*`, such as `.env.example`, stays open there.
+    let never = &profile.outside.never;
+    for name in &never.names {
+        let Some(regex) = name_regex(name) else {
+            continue;
+        };
+        let taken_back: Vec<String> = never
+            .taken_back_from(name)
+            .into_iter()
+            .filter_map(name_regex)
+            .map(|kept| format!(" (require-not (regex #\"{kept}\"))"))
+            .collect();
+        if taken_back.is_empty() {
             sbpl.push_str(&format!(
                 "(deny file-read* file-write* (regex #\"{regex}\"))\n"
+            ));
+        } else {
+            sbpl.push_str(&format!(
+                "(deny file-read* file-write* (require-all (regex #\"{regex}\"){}))\n",
+                taken_back.concat()
             ));
         }
     }

@@ -6,7 +6,7 @@
     build:per-api-key      20261020-123036  "git status --short && git log -1 --oneline && sed -n '1,240…             
     build:per-api-key      20261017-071701  tmpdir=$(mktemp -d) && cp -R ratelimit tests "$tmpdir"/ && g…             
                                                                                                                       
-  ↑  ↓  example · enter opens it · esc back                                                                           
+  r to cycle dates · g group · s this project · d deeper map · ↑  ↓  example · enter opens it · esc back              
                                                                                                                       
  Enter on the second:                                                                                                 
                                                                                                                       
@@ -24,4 +24,4 @@
     history and copied it in, and review sent the copy back for its scope.                                            
                                                                                                                       
                                                                                                                       
-  ←  →  example · o opens the run · c copies the action · esc back                                                    
+  r to cycle dates · g group · s this project · ←  →  example · o opens the run · c copies the action · esc back      

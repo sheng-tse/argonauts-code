@@ -112,6 +112,7 @@ fn host_row(context: &ContextRow, workflow: &CliWorkflowRun) -> AgentRow {
         note: None,
         inner: None,
         left_out: false,
+        not_needed: false,
         fallback_why: None,
     }
 }

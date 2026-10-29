@@ -55,8 +55,7 @@ pub struct SpecInput {
     pub deny_read: Vec<PathBuf>,
     /// It reads a change to judge it, whatever its role, so by default it may run the checks.
     pub reviews: bool,
-    /// What it reads and writes outside the project without asking, as `[outside]` says for
-    /// the run's mode.
+    /// What it reads and writes outside the project, as `[outside]` says for the run's mode.
     pub outside: argonauts_core::outside::Outside,
 }
 
@@ -479,11 +478,17 @@ mod tests {
         use argonauts_core::settings::approvals::ApprovalMode;
         let home = std::path::Path::new("/home/you");
         let project = std::path::Path::new("/home/you/app");
-        for (mode, open) in [
-            (ApprovalMode::Autopilot, true),
-            (ApprovalMode::Supervised, false),
+        let kept_in = argonauts_core::settings::outside::OutsideSettings {
+            ask: Vec::new(),
+            ..settings.outside.clone()
+        };
+        for (outside_settings, mode, open) in [
+            (&settings.outside, ApprovalMode::Autopilot, true),
+            (&settings.outside, ApprovalMode::Supervised, true),
+            (&settings.outside, ApprovalMode::AutoPreview, true),
+            (&kept_in, ApprovalMode::Supervised, false),
         ] {
-            let outside = Outside::for_mode(&settings.outside, mode, Some(project), home);
+            let outside = Outside::for_mode(outside_settings, mode, Some(project), home);
             let spec = build(
                 &settings,
                 SpecInput {

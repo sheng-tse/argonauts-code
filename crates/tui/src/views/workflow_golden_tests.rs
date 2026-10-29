@@ -347,6 +347,34 @@ fn the_merge_phase_reads_as_its_pictures_in_each_case() {
     }
 }
 
+/// A run that merged at once didn't wait for its commit message. That screen has no picture
+/// of its own, so it is the clean merge's: the writer's row skipped and dim, why in its model's
+/// place with no numbers or time, and neither the Merge phase nor its pane counting it.
+#[test]
+fn a_commit_message_not_needed_reads_as_the_clean_merge_with_its_writer_skipped() {
+    let mut picture = picture!("merge_cases").named("skipped_merge_writer");
+    let theme = dark();
+    let faint = theme.style(crate::theme::Role::Faint).fg;
+    let dim = theme.style(crate::theme::Role::Dim).fg;
+    picture.reword(1, "Merge · 1 agent ──", "Merge · 1 skipped ");
+    picture.reword(
+        2,
+        "✔ commit message  Opus 5.5 · 11.8k tok · given the diff, no tools",
+        "– commit message  not needed, merged at once",
+    );
+    picture.reword(2, "19s", "   ");
+    let dash = picture.text(2..3)[0]
+        .chars()
+        .position(|ch| ch == '–')
+        .expect("the skipped row");
+    picture.write(2, dash, "–", faint);
+    picture.write(2, dash + 2, "commit message", dim);
+    picture.write(2, dash + 18, "not needed, merged at once", dim);
+    picture.reword(5, "Merge    1/1", "Merge       ");
+    let mut view = WorkflowView::new(examples::done(Merge::AtOnce));
+    picture.assert_drawn(1..7, &drawn(&mut view, ABOVE_BOX + 7), ABOVE_BOX);
+}
+
 /// Enter on the selected agent, and its answer arriving.
 /// A finding is blocking or a note now, in the colours `high` and `low` had, and its column is
 /// as wide as `blocking` in every section.

@@ -414,20 +414,20 @@ async fn words_that_set_the_crew_show_it_and_ask_where_to_keep_it() {
         )
         .await;
     let crew = driver
-        .until(|event| {
-            matches!(event, AppEvent::Notice { text, .. } if text.starts_with("Crew for this request"))
-        })
+        .until(|event| matches!(event, AppEvent::CrewForRequest { .. }))
         .await;
-    let AppEvent::Notice { text, .. } = crew else {
+    let AppEvent::CrewForRequest { rows } = crew else {
         unreachable!()
     };
-    let lines: Vec<&str> = text.lines().collect();
-    assert!(lines[1].ends_with("your main session"), "{text}");
-    assert!(lines[2].ends_with("as you asked"), "{text}");
-    assert!(lines[3].ends_with("as you asked"), "{text}");
-    assert!(
-        lines[4].ends_with("as you asked: \"all the other agents\""),
-        "{text}"
+    let from: Vec<&str> = rows.iter().map(|row| row.from.as_str()).collect();
+    assert_eq!(
+        from,
+        [
+            "your main session",
+            "as you asked",
+            "as you asked",
+            "as you asked: \"all the other agents\""
+        ]
     );
     let event = driver
         .until(|event| matches!(event, AppEvent::Choice { choice } if choice.kind == ChoiceKind::KeepInstructions))

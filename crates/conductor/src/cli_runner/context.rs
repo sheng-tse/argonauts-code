@@ -150,6 +150,12 @@ impl Context {
         }
         request.tool_sandbox_off =
             self.contained(spec.sandbox.mode) || self.rules.mode == SandboxChoice::None;
+        // With every sandbox off the CLI's own rules alone keep the never-list, and not every
+        // CLI's can take a template such as `.env.example` back out of `.env.*`, so there every
+        // env file stays closed.
+        if self.rules.mode == SandboxChoice::None {
+            request.outside.never.except.clear();
+        }
         if spec.isolated {
             request.builtins_off =
                 CliVersions::load(&self.home.cli_versions()).builtins(self.adapter.id());
@@ -830,17 +836,25 @@ mod tests {
         let h = with_settings(worker_mode(SandboxChoice::Tool, SandboxChoice::None));
         let mut spec = spec_in(dir.path(), dir.path(), "hi");
         spec.sandbox.mode = SandboxMode::None;
+        spec.sandbox.outside.read = true;
+        spec.sandbox.outside.never.names = vec![".env.*".to_owned()];
+        spec.sandbox.outside.never.except = vec![".env.example".to_owned()];
 
         let tool = launch(&h.worker, &spec);
         assert!(!tool.request.tool_sandbox_off);
         assert_eq!(tool.record.sandbox.as_deref(), Some("no sandbox"));
         assert_eq!(tool.command.program, tool.record.program);
+        assert_eq!(tool.request.outside.never.except, [".env.example"]);
 
+        // With every sandbox off, only the CLI's own rules keep the never-list, so no template is
+        // taken back out of it.
         spec.role = RoleName::Worker;
         let none = launch(&h.worker, &spec);
         assert!(none.request.tool_sandbox_off);
         assert_eq!(none.record.sandbox.as_deref(), Some("no sandbox"));
         assert_eq!(none.command.program, none.record.program);
+        assert!(none.request.outside.never.except.is_empty());
+        assert_eq!(none.request.outside.never.names, [".env.*"]);
     }
 
     /// A role's own `sandbox.mode` picks its sandbox over the top-level one, either way.

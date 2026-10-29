@@ -347,6 +347,7 @@ fn try_turn(
     } else {
         Vec::new()
     };
+    let outside = direct::outside::for_turn(ctx, conversation, &step, &worker.agent);
     let launched = turn::launch(
         ctx,
         Launch {
@@ -364,13 +365,14 @@ fn try_turn(
             shell: shell::context_part(&ran),
             fast: conversation.prefs.fast,
             workdir: conversation.folder(ctx).to_path_buf(),
-            outside: direct::outside::for_turn(ctx, conversation, &step),
+            outside,
         },
     );
     let turn::Launched {
         key,
         cancel,
         control,
+        outside: reach,
     } = match launched {
         Ok(launched) => launched,
         Err(err) => {
@@ -407,6 +409,7 @@ fn try_turn(
         plan_first: false,
         ran,
         direct: None,
+        outside: reach,
         live: live::Live::new(control, plain_reply),
         counted: None,
         signed_out: None,
@@ -463,13 +466,12 @@ pub(super) fn on_event(
     };
     match event {
         RunnerEvent::Agent(event) => {
-            if let Some(line) = turn
+            // The line a write outside your folder or a refused call leaves goes after the
+            // event, so it reads after the CLI's own words.
+            let line = turn
                 .direct
                 .as_mut()
-                .and_then(|running| direct::on_agent(running, &event))
-            {
-                ctx.notice(NoteLevel::Quiet, line);
-            }
+                .and_then(|running| direct::on_agent(running, &turn.outside, &event));
             // The CLI's own model list, so `/model` mirrors it.
             if let AgentEvent::ModelsReported { models } = &event {
                 ctx.services
@@ -477,6 +479,7 @@ pub(super) fn on_event(
                     .models_reported(&turn.worker.agent, models);
             }
             if !turn.step.own_session() && !live_event(ctx, conversation, id, &event) {
+                quiet_line(ctx, line);
                 return;
             }
             // Each patch goes ahead of its edit's end, so the edit is drawn with it.
@@ -490,6 +493,7 @@ pub(super) fn on_event(
                 );
             }
             let Some(turn) = conversation.turn.as_mut().filter(|turn| &turn.id == id) else {
+                quiet_line(ctx, line);
                 return;
             };
             // Another session's context isn't the conversation's.
@@ -532,6 +536,7 @@ pub(super) fn on_event(
                     event,
                 },
             );
+            quiet_line(ctx, line);
         }
         // Saved at once, so a turn cancelled halfway still leaves a session to resume.
         RunnerEvent::Session(SessionEvent::CliSession { id: agent_id, .. })
@@ -545,6 +550,13 @@ pub(super) fn on_event(
             remember_session(ctx, conversation, session);
         }
         RunnerEvent::Session(_) | RunnerEvent::AgentStatus(_) => {}
+    }
+}
+
+/// A dim line of what the turn's last event did, when it did something worth one.
+fn quiet_line(ctx: &mut Ctx, line: Option<String>) {
+    if let Some(line) = line {
+        ctx.notice(NoteLevel::Quiet, line);
     }
 }
 

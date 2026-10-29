@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use argonauts_core::RunId;
 use argonauts_core::api::{RunState, StatusSummary, UsagePeriod, UsageSummary};
 use argonauts_core::app::{AppMode, UiCommand, ViewData, ViewRequest};
+use argonauts_core::behavior_map::Grouping;
 use argonauts_core::input::{ModPlaceChange, ModsAction, SlashCommand, ViewAction};
 use argonauts_core::overview::{ModelTokens, OverviewPeriod};
 use argonauts_core::settings::mods::ModPlace;
@@ -40,7 +41,7 @@ use super::stats::{StatsKey, StatsState};
 use super::status::{Picks, RunShape, StatusCard, StatusCards};
 use super::status_tab::StatusTabCards;
 pub use super::subtabs::Level;
-use super::subtabs::{TAB_GAP, chosen, chosen_sub_tab};
+use super::subtabs::{self, TAB_GAP, chosen, chosen_sub_tab};
 use super::usage::{Stop, UsageTab};
 use crate::bottom::PinnedRun;
 use crate::bridge::tools::Places;
@@ -1072,16 +1073,22 @@ impl OverviewView {
         if self.tab.shows_usage() && self.tab != Tab::Overview {
             // A cell between the last tab and the periods, however narrow the screen.
             left.push(Span::raw(" "));
-            for (period, word) in periods::PERIODS {
-                right.push(if period == self.period {
-                    Span::styled(word, kit.bold(Role::Question))
-                } else {
-                    kit.dim(word)
-                });
-                right.push(Span::raw("  "));
-            }
-            right.pop();
-            right.push(Span::raw(" "));
+            let words = periods::PERIODS.map(|(period, word)| (word, period == self.period));
+            right = period_choices(kit, &words);
+        } else if self.tab == Tab::Overview && self.home.on_behaviors() {
+            // Behaviors' periods as Stats draws its own, the chosen one alone where all three
+            // don't fit.
+            left.push(Span::raw(" "));
+            let shown = self.home.behaviors.request.period;
+            let all = OverviewPeriod::ALL.map(|period| (period.title(), period == shown));
+            right = first_fitting(
+                spans_width(&left),
+                width,
+                [
+                    period_choices(kit, &all),
+                    period_choices(kit, &[(shown.title(), true)]),
+                ],
+            );
         }
         if spans_width(&left) + spans_width(&right) > width {
             return truncate_spans(&left, width);
@@ -1130,6 +1137,14 @@ impl OverviewView {
         if self.tab == Tab::Overview {
             let mut row = vec![Span::raw(" ")];
             row.extend(self.home.about(kit, &ctx.state.names, width - 1));
+            if self.home.on_behaviors() {
+                let right = first_fitting(
+                    spans_width(&row) + 1,
+                    width,
+                    grouping_choices(kit, self.home.behaviors.request.grouping),
+                );
+                return spread(row, right, width);
+            }
             return row;
         }
         if self.tab == Tab::Stats {
@@ -1223,7 +1238,7 @@ impl OverviewView {
                 .map(|page| owned(page.keys()))
                 .unwrap_or_default()
         } else if self.tab == Tab::Overview {
-            owned(self.home.keys())
+            self.home.keys()
         } else if self.tab == Tab::Stats {
             owned(self.stats.keys())
         } else {
@@ -1355,14 +1370,6 @@ impl OverviewView {
         }
     }
 
-    /// The Behaviors map, beside Overview and Models, as Config's Behaviors rows open it. The
-    /// map is asked for at once; the Overview sub-tab's numbers come with its first refresh.
-    fn open_behaviors(&mut self) -> ViewOutcome {
-        let request = self.home.show_behaviors();
-        let _overview = self.open(Tab::Overview);
-        ViewOutcome::Request(request)
-    }
-
     /// Opens `tab`, asking for what it shows when the screen doesn't hold it. The keys go to
     /// the tabs, where they moved.
     fn open(&mut self, tab: Tab) -> ViewOutcome {
@@ -1418,7 +1425,8 @@ impl OverviewView {
     /// The tab's key line starts with the period's hint.
     fn has_periods(&self) -> bool {
         match self.tab {
-            Tab::Overview => !self.home.asking() && !self.home.on_behaviors(),
+            // The import's question and the deeper map's take the keys while they show.
+            Tab::Overview => !(self.home.asking() || self.home.behaviors_asking()),
             Tab::Stats => !self.stats.page_open(),
             Tab::Usage | Tab::Limits => true,
             Tab::Status | Tab::Config | Tab::Context => false,
@@ -1598,13 +1606,13 @@ impl View for OverviewView {
         }
         // More is below: the arrows or a page down reach it.
         let more = self.scroll + shown < count;
-        let keys = self.keys(ctx, more, width);
         // The Overview's key line sits under its rows, two cells in, as Claude Code's does.
         let inset = if self.tab == Tab::Overview {
             "   "
         } else {
             " "
         };
+        let keys = self.keys(ctx, more, width.saturating_sub(inset.len()));
         let keys = Line::from(truncate_spans(&[kit.dim(format!("{inset}{keys}"))], width));
         buf.set_line(area.x, area.bottom() - 1, &keys, area.width);
     }
@@ -1640,9 +1648,6 @@ impl View for OverviewView {
         // Config's search box takes every letter, so vim's keys stay letters there.
         let in_config = self.tab == Tab::Config && self.level() != Level::Tabs;
         if in_config && let Some(outcome) = self.config.key(key, ctx.state) {
-            if self.config.followed_to_map() {
-                return self.open_behaviors();
-            }
             return outcome;
         }
         // The Behaviors sub-tab's `g` groups its map, so it reaches the sub-tab as the letter
@@ -1749,7 +1754,10 @@ impl View for OverviewView {
             ViewData::Context { view } => self.context = Some(view.clone()),
             ViewData::Overview { overview } => self.home.accept(overview),
             ViewData::Behaviors { map } => self.home.accept_map(map),
-            ViewData::DeepOffer { offer } => self.home.behaviors.accept_offer(offer),
+            ViewData::DeepOffer { offer } => {
+                self.home.behaviors.accept_offer(offer);
+                self.config.accept_offer(offer);
+            }
             // Every key, which the Config tab asked for when it opened.
             ViewData::Settings {
                 rows,
@@ -2315,6 +2323,75 @@ fn fit_keys(mut keys: Vec<String>, close: &str, width: usize) -> String {
             return line;
         }
     }
+}
+
+/// Periods side by side at the right of the tabs, the one shown bold in the accent, as the
+/// usage tabs and Behaviors draw theirs.
+fn period_choices(kit: &Kit<'_>, words: &[(&str, bool)]) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (at, (word, shown)) in words.iter().enumerate() {
+        if at > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(if *shown {
+            Span::styled(word.to_string(), kit.bold(Role::Question))
+        } else {
+            kit.dim(word.to_string())
+        });
+    }
+    spans.push(Span::raw(" "));
+    spans
+}
+
+/// Behaviors' groupings at the right of its sub-tabs, drawn as Stats draws By CLI, By model
+/// and By role at rest: every one, else the chosen one between its neighbours, else the chosen
+/// one alone.
+fn grouping_choices(kit: &Kit<'_>, shown: Grouping) -> [Vec<Span<'static>>; 3] {
+    let titles = Grouping::ALL.map(grouping_title);
+    let at = Grouping::ALL
+        .iter()
+        .position(|grouping| *grouping == shown)
+        .unwrap_or(0);
+    let count = titles.len();
+    let near = [
+        titles[(at + count - 1) % count],
+        titles[at],
+        titles[(at + 1) % count],
+    ];
+    let with_edge = |mut spans: Vec<Span<'static>>| {
+        spans.push(Span::raw(" "));
+        spans
+    };
+    [
+        with_edge(subtabs::row(kit, &titles, at, false)),
+        with_edge(subtabs::row(kit, &near, 1, false)),
+        with_edge(subtabs::row(kit, &[titles[at]], 0, false)),
+    ]
+}
+
+/// `By model`, as the grouping's selector names it.
+fn grouping_title(grouping: Grouping) -> &'static str {
+    match grouping {
+        Grouping::Model => "By model",
+        Grouping::Cli => "By CLI",
+        Grouping::Role => "By role",
+        Grouping::Workflow => "By workflow",
+        Grouping::Project => "By project",
+        Grouping::Outcome => "By outcome",
+    }
+}
+
+/// The first of `choices`, widest first, that fits in `width` after the `used` cells, which
+/// count any gap before it; none where even the last doesn't.
+fn first_fitting<const N: usize>(
+    used: usize,
+    width: usize,
+    choices: [Vec<Span<'static>>; N],
+) -> Vec<Span<'static>> {
+    choices
+        .into_iter()
+        .find(|spans| used + spans_width(spans) <= width)
+        .unwrap_or_default()
 }
 
 /// The sub-tabs Tab goes along, named: `Overview or Models`, `By CLI, By model, By role`, or

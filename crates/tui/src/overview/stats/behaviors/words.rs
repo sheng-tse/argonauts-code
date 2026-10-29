@@ -45,11 +45,11 @@ fn plural(count: usize, one: &str) -> String {
     }
 }
 
-/// `What your agents did, from 562 actions in 19 runs across 6 projects · by model · Argonauts'
-/// labels`, or with no action to show, where none were and what shows more.
+/// `What your agents did, from 562 actions in 19 runs across 6 projects · Argonauts' labels`,
+/// or with no action to show, where none were and what shows more. The grouping shows on the
+/// selector at the right of the sub-tabs.
 pub(super) fn headline_words(map: &BehaviorMap) -> String {
     let request = map.request;
-    let grouping = request.grouping.word();
     if map.actions.is_empty() {
         return empty_words(map);
     }
@@ -60,7 +60,7 @@ pub(super) fn headline_words(map: &BehaviorMap) -> String {
         } else {
             ""
         };
-        return format!("Deeper map · {actions} summarized by {by} · by {grouping}{words}");
+        return format!("Deeper map · {actions} summarized by {by}{words}");
     }
     let sources = match (map.runs, map.conversations) {
         (runs, 0) => plural(runs, "run"),
@@ -82,12 +82,12 @@ pub(super) fn headline_words(map: &BehaviorMap) -> String {
         other => format!(" · {}", other.title().to_lowercase()),
     };
     format!(
-        "What your agents did, from {actions} in {sources}{}{period} · by {grouping} · Argonauts' labels",
+        "What your agents did, from {actions} in {sources}{}{period} · Argonauts' labels",
         place.unwrap_or_default()
     )
 }
 
-/// `No actions in the last 7 days · p changes the period`.
+/// `No actions in the last 7 days · r changes the period`.
 fn empty_words(map: &BehaviorMap) -> String {
     let request = map.request;
     let place = match (request.scope, map.here.as_deref()) {
@@ -99,13 +99,50 @@ fn empty_words(map: &BehaviorMap) -> String {
             "No actions recorded yet: the map fills in as your agents work".to_owned()
         }
         (OverviewPeriod::All, Scope::ThisProject) => {
-            format!("No actions recorded{place} yet · r shows every project")
+            format!("No actions recorded{place} yet · s shows every project")
         }
         (period, _) => format!(
-            "No actions{place} in the {} · p changes the period",
+            "No actions{place} in the {} · r changes the period",
             period.title().to_lowercase()
         ),
     }
+}
+
+/// The legend's groups that show in `room` rows, from the first, where `groups` run on: as
+/// many from the top as leave a row to say how many more are below, else scrolled on just far
+/// enough to show the `compared` one, with a row above saying how many it passed. A room of
+/// fewer than three rows shows the compared one alone.
+fn legend_window(groups: usize, room: usize, compared: usize) -> (usize, usize) {
+    if groups <= room {
+        return (0, groups);
+    }
+    if room < 3 {
+        return (compared.min(groups - 1), room.min(1));
+    }
+    let shown_from = |first: usize| match first {
+        0 => room - 1,
+        _ if first + room > groups => groups - first,
+        _ => room - 2,
+    };
+    (0..groups)
+        .map(|first| (first, shown_from(first)))
+        .find(|(first, shown)| compared < first + shown)
+        .unwrap_or((0, room - 1))
+}
+
+/// The marks the legend's window leaves room for: how many groups it passed above, and how
+/// many are below. A room of fewer than three rows holds the compared group alone, with neither.
+fn legend_marks(
+    groups: usize,
+    room: usize,
+    first: usize,
+    shown: usize,
+) -> (Option<usize>, Option<usize>) {
+    if room < 3 || shown >= room {
+        return (None, None);
+    }
+    let below = groups.saturating_sub(first + shown);
+    ((first > 0).then_some(first), (below > 0).then_some(below))
 }
 
 /// What the legend calls a group in "red: … does this more": a model by its name without the
@@ -296,21 +333,13 @@ impl Look<'_> {
         out.push(Vec::new());
         let room = MAP_ROWS.saturating_sub(out.len());
         let groups = self.map.groups.len();
-        let shown = if groups > room {
-            room.saturating_sub(1)
-        } else {
-            groups
-        };
-        // The group compared always has its row, in the last place shown when it's further on.
-        let mut rows: Vec<usize> = (0..shown).collect();
-        if let Some(compared) = self.compared.filter(|compared| *compared >= shown)
-            && let Some(last) = rows.last_mut()
-        {
-            *last = compared;
+        let (first, shown) = legend_window(groups, room, self.compared.unwrap_or(0));
+        let (above, below) = legend_marks(groups, room, first, shown);
+        if let Some(above) = above {
+            out.push(vec![kit.dim(format!("{above} more above"))]);
         }
-        for (at, group) in rows
-            .into_iter()
-            .filter_map(|at| Some((at, self.map.groups.get(at)?)))
+        for (at, group) in
+            (first..first + shown).filter_map(|at| Some((at, self.map.groups.get(at)?)))
         {
             let this = self.compared == Some(at);
             let mark = if self.compared.is_none() || this {
@@ -330,8 +359,8 @@ impl Look<'_> {
                 kit.dim(format!("{:>4}", group.actions)),
             ]);
         }
-        if shown < groups {
-            out.push(vec![kit.dim(format!("and {} more", groups - shown))]);
+        if let Some(below) = below {
+            out.push(vec![kit.dim(format!("{below} more below"))]);
         }
         out
     }
@@ -339,7 +368,8 @@ impl Look<'_> {
     /// Under a braille map, the groups on one row and what the colours behind the dots say.
     pub fn braille_legend(&self) -> Vec<Vec<Span<'static>>> {
         let kit = self.kit;
-        let mut groups = vec![Span::raw(" ")];
+        // Every group shows: those a row can't hold go on to the next, each whole.
+        let mut out: Vec<Vec<Span<'static>>> = vec![vec![Span::raw(" ")]];
         for (at, group) in self.map.groups.iter().enumerate() {
             let this = self.compared.is_none() || self.compared == Some(at);
             let style = if this {
@@ -347,10 +377,21 @@ impl Look<'_> {
             } else {
                 kit.style(Role::Dim)
             };
-            groups.push(Span::styled("⣿ ", self.colours.style(at)));
-            groups.push(Span::styled(format!("{}  ", group.name), style));
+            let entry = [
+                Span::styled("⣿ ", self.colours.style(at)),
+                Span::styled(format!("{}  ", group.name), style),
+            ];
+            let row = out.last_mut().expect("a row");
+            let fits = crate::text::spans_width(row) + crate::text::spans_width(&entry);
+            if row.len() > 1 && fits > self.width {
+                out.push(vec![Span::raw(" ")]);
+            }
+            out.last_mut().expect("a row").extend(entry);
         }
-        let mut out = vec![crate::text::truncate_spans(&groups, self.width)];
+        let mut out: Vec<Vec<Span<'static>>> = out
+            .iter()
+            .map(|row| crate::text::truncate_spans(row, self.width))
+            .collect();
         if let Some(group) = self.compared {
             let comparison = self.map.comparisons.get(group);
             let said = match comparison.and_then(|c| c.why_not.as_deref()) {
@@ -616,11 +657,12 @@ impl Look<'_> {
         out
     }
 
-    /// The line that offers the deeper map until one is made.
+    /// The line that offers the deeper map until one is made. Fonts such as Iosevka draw ✻ two
+    /// cells wide, over the cell after it, so two blanks follow it and one always shows.
     pub fn offer(&self) -> Vec<Span<'static>> {
         let kit = self.kit;
         vec![
-            Span::styled(" ✻ ", kit.style(Role::Warn)),
+            Span::styled(" ✻  ", kit.style(Role::Warn)),
             Span::styled("Deeper map: ", kit.bold(Role::Text)),
             kit.dim("a model summarizes each action, so behaviors no label names show up too. "),
             Span::styled("d", kit.style(Role::Question)),
@@ -709,5 +751,36 @@ impl Look<'_> {
             self.map.request.grouping.plural(),
             percent(in_others, others),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// However long the comparison's words leave the legend, it never takes more rows than
+    /// its room: the groups shown and the marks above and below fit, the compared group always
+    /// among them, and a room of fewer than three rows holds that group alone.
+    #[test]
+    fn the_legend_never_takes_more_rows_than_its_room() {
+        for groups in 1..12 {
+            for room in 1..14 {
+                for compared in 0..groups {
+                    let (first, shown) = legend_window(groups, room, compared);
+                    let (above, below) = legend_marks(groups, room, first, shown);
+                    let rows = shown + usize::from(above.is_some()) + usize::from(below.is_some());
+                    let case = format!("{groups} groups, room {room}, comparing {compared}");
+                    assert!(rows <= room, "{case}: {rows} rows");
+                    assert!((first..first + shown).contains(&compared), "{case}");
+                    if room < 3 && groups > room {
+                        assert_eq!((shown, above, below), (1, None, None), "{case}");
+                    }
+                    let marked = above.unwrap_or(0) + shown + below.unwrap_or(0);
+                    if room >= 3 {
+                        assert_eq!(marked, groups, "{case}: every group is counted");
+                    }
+                }
+            }
+        }
     }
 }

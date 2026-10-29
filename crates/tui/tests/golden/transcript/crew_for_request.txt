@@ -1,0 +1,5 @@
+● Crew for this request
+  ⎿  orchestrator   Haiku 5.5 on Claude Code                              your main session
+     workers        Opus 5.5 on Claude Code, GPT 5.6 Luna on Codex, agy   your settings
+     reviewers      GPT 5.6 Luna on Codex                                 as you asked
+     judge          Opus 5.5 on Claude Code, GPT 5.6 Luna on Codex, agy   your settings

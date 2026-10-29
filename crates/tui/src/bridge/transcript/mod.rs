@@ -29,6 +29,8 @@ mod picture_tests;
 mod question_after_tests;
 mod replay;
 #[cfg(test)]
+mod request_lines_tests;
+#[cfg(test)]
 mod resumed_tests;
 mod shell;
 mod status;
@@ -151,6 +153,7 @@ impl Transcript {
             } => items::setting_changed(key, value, *scope, previous.as_deref(), *reset, cx),
             AppEvent::SettingRefused { key, why } => items::setting_refused(key, why, cx),
             AppEvent::Notice { level, text } => self.items.notice(*level, text, cx),
+            AppEvent::CrewForRequest { rows } => items::crew_for_request(rows, cx),
             AppEvent::Narrator { line } => items::narrator(line, cx),
             AppEvent::Shell { event } => self.shell.on_event(event, cx),
             AppEvent::View { data } => match data.as_ref() {

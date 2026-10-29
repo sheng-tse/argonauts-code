@@ -1,7 +1,7 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
-   Overview    Models    Behaviors                                                                                    
-  What your agents did, from 562 actions in 19 runs across 6 projects · by model · Argonauts' labels                  
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
+   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
+  What your agents did, from 562 actions in 19 runs across 6 projects · Argonauts' labels                             
                                                                                                                       
 
 [picture]
@@ -22,4 +22,4 @@ the rest
                                                                                                                       
   Pick a model with ←  →  to see what it does more or less than the rest.                                             
                                                                                                                       
-  ←  →  compare a model · ↓  into the list, which lights each behavior · g group · p period · esc back                
+  r to cycle dates · g group · s this project · d deeper map · ←  →  compare · ↓  the list · esc back                 

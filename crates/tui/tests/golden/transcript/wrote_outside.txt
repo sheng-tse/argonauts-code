@@ -1,0 +1,4 @@
+● Bash(cp NOTES.md ~/Downloads/notes.md)
+  ⎿  (No output)
+
+  wrote ~/Downloads/notes.md, outside the project

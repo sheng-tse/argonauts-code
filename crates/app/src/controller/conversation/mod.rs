@@ -31,6 +31,8 @@ mod copies;
 mod crew;
 mod direct;
 #[cfg(test)]
+mod direct_kept_out_tests;
+#[cfg(test)]
 mod direct_outside_tests;
 #[cfg(test)]
 mod direct_tests;
@@ -218,6 +220,10 @@ struct Turn {
     ran: Vec<ShellRan>,
     /// A direct turn's listener, snapshot, and what it ran.
     direct: Option<direct::Running>,
+    /// What the session may reach outside its folder: for the line a refusal of a path on the
+    /// never-list leaves, which holds only where the turn works outside, and for the writes
+    /// there turned away from a turn that reads outside but writes only its folder.
+    outside: argonauts_core::outside::Outside,
     /// What the session takes while it works: your messages, send now, and the screen.
     live: live::Live,
     /// The CLI's last count of the session's context, which the record keeps as the turn ends.

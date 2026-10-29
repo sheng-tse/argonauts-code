@@ -197,7 +197,7 @@ impl BehaviorsTab {
         match code {
             KeyCode::Char('d') => self.map_shown() && self.has_actions() && self.deep.claims(code),
             KeyCode::Char('x') => self.deep.claims(code),
-            KeyCode::Char('g' | 'p' | 'r') => true,
+            KeyCode::Char('g' | 's') => true,
             KeyCode::Esc => self.at != At::Map || self.hovered.is_some(),
             KeyCode::Char('o' | 'c') => matches!(self.at, At::Card { .. }),
             KeyCode::Up => in_rows && self.at != At::Map,
@@ -223,12 +223,7 @@ impl BehaviorsTab {
                 self.request.grouping = self.request.grouping.step(1);
                 return Some(self.asked());
             }
-            KeyCode::Char('p') => {
-                let all = argonauts_core::overview::OverviewPeriod::ALL;
-                self.request.period = super::super::periods::cycled(&all, self.request.period, 1);
-                return Some(self.asked());
-            }
-            KeyCode::Char('r') => {
+            KeyCode::Char('s') => {
                 self.request.scope = match self.request.scope {
                     Scope::Everywhere => Scope::ThisProject,
                     Scope::ThisProject => Scope::Everywhere,
@@ -315,6 +310,38 @@ impl BehaviorsTab {
         };
         self.at = next;
         Some(MapKey::Moved)
+    }
+
+    /// The period `by` along from this one, wrapping, through the Overview's own three, as the
+    /// panel's `r` and Shift+R step it. The deeper map's questions keep the period as it is.
+    pub fn step_period(&mut self, by: isize) -> Option<MapKey> {
+        if self.deep.asking() {
+            return None;
+        }
+        let all = argonauts_core::overview::OverviewPeriod::ALL;
+        self.request.period = super::super::periods::cycled(&all, self.request.period, by);
+        Some(self.asked())
+    }
+
+    /// The keys every key line of the sub-tab starts with, on its rows and on the tabs alike:
+    /// the period, the grouping, the projects and the deeper map, where `d` reaches it now.
+    pub fn own_keys(&self) -> Vec<String> {
+        if self.deep.asking() {
+            return Vec::new();
+        }
+        let projects = match self.request.scope {
+            Scope::Everywhere => "s this project",
+            Scope::ThisProject => "s all projects",
+        };
+        let mut keys = vec![
+            super::super::periods::CYCLE_HINT.to_owned(),
+            "g group".to_owned(),
+            projects.to_owned(),
+        ];
+        if self.claims(KeyCode::Char('d'), true) {
+            keys.push("d deeper map".to_owned());
+        }
+        keys
     }
 
     /// The map on screen, as `d` reads it.
@@ -452,11 +479,11 @@ impl BehaviorsTab {
     }
 
     /// The keys, in display order, in their short words where the long ones don't fit in
-    /// `width` cells. An arrow is followed by two spaces, since many fonts draw it two cells
-    /// wide.
+    /// `width` cells, with a cell to spare. An arrow is followed by two spaces, since many
+    /// fonts draw it two cells wide.
     pub fn keys(&self, width: usize) -> Vec<String> {
         let long = self.keys_in(false);
-        let fits = long.join(" · ").width() + 4 <= width;
+        let fits = long.join(" · ").width() < width;
         if fits { long } else { self.keys_in(true) }
     }
 
@@ -480,16 +507,14 @@ impl BehaviorsTab {
                     "↓  into the list, which lights each behavior",
                     "↓  the list",
                 ),
-                "g group".to_owned(),
-                "p period".to_owned(),
                 "esc back".to_owned(),
             ],
+            // ← → also work on the map, so they are the first to give way where the line is
+            // short of room.
             At::List(_) => vec![
-                format!("←  →  {word}"),
                 pick("↑  ↓  behavior, lit on the map", "↑  ↓  behavior"),
                 pick("enter its actions", "enter actions"),
-                "g group".to_owned(),
-                "p period".to_owned(),
+                format!("←  →  {word}"),
                 "esc back".to_owned(),
             ],
             At::Actions { .. } if deeper => vec![
@@ -510,11 +535,11 @@ impl BehaviorsTab {
             ],
         };
         if !self.has_actions() && self.at == At::Map {
-            keys.retain(|key| {
-                key.starts_with('p') || key.starts_with('g') || key.starts_with("esc")
-            });
+            keys.retain(|key| key.starts_with("esc"));
         }
-        keys
+        let mut all = self.own_keys();
+        all.extend(keys);
+        all
     }
 
     /// The sub-tab's blocks for a screen `width` wide with `room` rows under the tabs.

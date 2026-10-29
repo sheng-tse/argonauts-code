@@ -168,16 +168,13 @@ impl HomeTab {
         HomeKey::Moved
     }
 
-    /// The Behaviors sub-tab, as Config's Behaviors rows open it, with what to ask for its map.
-    pub fn show_behaviors(&mut self) -> ViewRequest {
-        self.sub = SubTab::Behaviors;
-        self.picked = 0;
-        self.turn_page();
-        self.behaviors.ask()
-    }
-
     pub fn on_behaviors(&self) -> bool {
         self.sub == SubTab::Behaviors
+    }
+
+    /// The deeper map's questions show on Behaviors.
+    pub fn behaviors_asking(&self) -> bool {
+        self.on_behaviors() && self.behaviors.deep.asking()
     }
 
     /// The colour of each of the Behaviors map's groups, as the rest of the tab colours them.
@@ -200,8 +197,7 @@ impl HomeTab {
     /// Behaviors answers this key before the panel does.
     pub fn claims(&self, code: KeyCode) -> bool {
         self.sub == SubTab::Behaviors
-            && (matches!(code, KeyCode::Char('g' | 'p' | 'r' | 'd' | 'x'))
-                || self.level != Level::Tabs)
+            && (matches!(code, KeyCode::Char('g' | 's' | 'd' | 'x')) || self.level != Level::Tabs)
             && self.behaviors.claims(code, self.level == Level::Cards)
     }
 
@@ -368,36 +364,40 @@ impl HomeTab {
         frame.draw(kit, body)
     }
 
-    /// The keys, in display order.
-    pub fn keys(&self) -> Vec<&str> {
+    /// The keys, in display order. Behaviors' own come first wherever it shows.
+    pub fn keys(&self) -> Vec<String> {
         if self.asking() {
-            return vec!["↑↓  choose", "enter answer", "1 2 answer"];
+            return owned(&["↑↓  choose", "enter answer", "1 2 answer"]);
         }
         if self.sub == SubTab::Behaviors && self.level == Level::Cards {
             return Vec::new();
         }
         // The period's key comes first, as on every tab that has periods.
-        let mut keys = vec![super::periods::CYCLE_HINT];
-        if self.sub == SubTab::Behaviors {
-            keys.clear();
-        }
+        let mut keys = if self.sub == SubTab::Behaviors {
+            self.behaviors.own_keys()
+        } else {
+            owned(&[super::periods::CYCLE_HINT])
+        };
         if self.level == Level::Tabs {
-            keys.extend(["tab · ←  →  tabs", "↓  Overview, Models, Behaviors"]);
+            keys.extend(owned(&[
+                "tab · ←  →  tabs",
+                "↓  Overview, Models, Behaviors",
+            ]));
         } else {
             if self.sub == SubTab::Models && !self.page.is_empty() {
-                keys.push(self.page.as_str());
+                keys.push(self.page.clone());
             }
-            keys.push("↑  tabs");
+            keys.push("↑  tabs".to_owned());
             if self.sub == SubTab::Overview {
-                keys.push("tab Overview, Models, Behaviors");
+                keys.push("tab Overview, Models, Behaviors".to_owned());
             }
         }
-        keys.push("ctrl+s to copy");
+        keys.push("ctrl+s to copy".to_owned());
         if matches!(
             self.data.as_ref().map(|data| &data.import),
             Some(ImportStatus::Declined | ImportStatus::Failed { .. })
         ) {
-            keys.push("i import");
+            keys.push("i import".to_owned());
         }
         keys
     }
@@ -477,6 +477,12 @@ impl HomeTab {
     /// The period `by` along from this one, wrapping, asked for at once. The panel reads the
     /// period's keys for every tab that has periods and steps this tab's through here.
     pub fn step_period(&mut self, by: isize) -> HomeKey {
+        if self.sub == SubTab::Behaviors {
+            return match self.behaviors.step_period(by) {
+                Some(MapKey::Ask(request)) => HomeKey::Ask(request),
+                _ => HomeKey::Moved,
+            };
+        }
         self.period = super::periods::cycled(&OverviewPeriod::ALL, self.period, by);
         self.picked = 0;
         HomeKey::Ask(self.request(None))
@@ -562,6 +568,10 @@ Import the date, CLI, model, folder and token counts of each, so the Overview st
 history?";
 const PROMISE: &str = "What was said is skipped as each line is read and never kept, and nothing leaves this \
      computer.";
+
+fn owned(keys: &[&str]) -> Vec<String> {
+    keys.iter().map(|key| (*key).to_owned()).collect()
+}
 
 fn note(kit: &Kit<'_>, words: &str) -> Drawn {
     let mut block = Drawn::new();

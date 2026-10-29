@@ -191,6 +191,7 @@ fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
                 &req.outside,
                 effective_role(req),
                 &req.workdir,
+                req.tool_sandbox_off,
             )),
         },
     )?;

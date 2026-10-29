@@ -1,7 +1,7 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
-   Overview    Models    Behaviors                                                                                    
-  What your agents did, from 562 actions in 19 runs · last 30 days · by model                                         
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
+   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
+  What your agents did, from 562 actions in 19 runs · last 30 days                                                    
                                                                                                                       
 
 [picture]
@@ -30,4 +30,4 @@ blue: Haiku does this less
     searched code by pattern                               25 (6.2%)   others   3 (1.9%)                              
     read a source file                                     53 (13.1%)   others   9 (5.8%)                             
                                                                                                                       
-  ←  →  model · ↑  ↓  behavior, lit on the map · enter its actions · g group · p period · esc back                    
+  r to cycle dates · g group · s this project · d deeper map · ↑  ↓  behavior · enter actions · esc back              

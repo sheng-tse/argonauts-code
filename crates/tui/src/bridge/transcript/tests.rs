@@ -38,7 +38,7 @@ impl TestDriver {
     fn new() -> Self {
         let mut transcript =
             Transcript::with_clock(WallClock::pinned(datetime!(2026-09-30 10:42 UTC)));
-        transcript.conversation = ConversationTurns::with_tool_kinds(|_, name| match name {
+        transcript.conversation = ConversationTurns::with_tool_kinds(|_, name, _| match name {
             "Read" => ToolKind::Read,
             _ => ToolKind::Other,
         });
@@ -3153,7 +3153,7 @@ fn a_workflow_of_one_phase_or_none_reported_still_prints_its_start() {
 #[test]
 fn an_edit_in_the_conversation_shows_the_file_numbers_its_result_reported() {
     let mut driver = TestDriver::new();
-    driver.transcript.conversation = ConversationTurns::with_tool_kinds(|_, name| match name {
+    driver.transcript.conversation = ConversationTurns::with_tool_kinds(|_, name, _| match name {
         "Edit" => ToolKind::Edit,
         _ => ToolKind::Other,
     });
@@ -3201,6 +3201,58 @@ fn an_edit_in_the_conversation_shows_the_file_numbers_its_result_reported() {
         driver.printed(),
         "\n● Update(src/lib.rs)\n  ⎿  Added 1 line, removed 1 line\n      11  fn total() -> u32 {\n      12 -    let count = 0;\n      12 +    let mut count = 0;\n      13      count"
     );
+}
+
+/// Codex reports a file it wrote as a `file_change` with no output of its own. Its row is the
+/// write it was, with the patch under it and nothing after: no `(No output)`.
+#[test]
+fn a_file_codex_wrote_in_the_conversation_ends_at_its_patch() {
+    let mut driver = TestDriver::new();
+    driver.transcript.conversation = ConversationTurns::default();
+    let turn = TurnId::numbered(1);
+    let agent = |event| AppEvent::Conversation {
+        event: ConversationEvent::Agent {
+            turn: turn.clone(),
+            event,
+        },
+    };
+    driver.send(AppEvent::Conversation {
+        event: ConversationEvent::TurnStarted {
+            turn: turn.clone(),
+            text: "write the notes".into(),
+            worker: ModelRef::new("codex", Some("gpt-6-luna".into())),
+            read_only: false,
+            commit: "8b41d07".into(),
+            uncommitted: vec![],
+            settings_sha256: None,
+            continues: false,
+        },
+    });
+    driver.printed();
+    driver.send(agent(AgentEvent::ToolStarted {
+        id: "patch-1".into(),
+        name: "file_change".into(),
+        input: serde_json::json!({"changes": [{"path": "notes.md", "kind": "add"}]}),
+        parent: None,
+    }));
+    driver.send(agent(AgentEvent::FilePatch {
+        id: "patch-1".into(),
+        path: "notes.md".into(),
+        hunks: "@@ -0,0 +1 @@\n+The meeting moved to Thursday.\n".into(),
+        parent: None,
+    }));
+    driver.send(agent(AgentEvent::ToolFinished {
+        id: "patch-1".into(),
+        ok: true,
+        output: None,
+        parent: None,
+    }));
+    let printed = driver.printed();
+    assert_eq!(
+        printed,
+        "\n● Write(notes.md)\n  ⎿  Added 1 line\n      1 +The meeting moved to Thursday."
+    );
+    assert!(!printed.contains("(No output)"), "{printed}");
 }
 
 /// With a second workflow on screen, the first's events still print, and its closing answer

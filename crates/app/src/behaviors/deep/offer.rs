@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Duration;
 
 use argonauts_core::deep_map::{
-    CliCount, DeepOffer, DeepScope, EmbedderNote, OfferPlace, ScopeOffer, SummarizerOffer,
+    CliCount, DeepOffer, DeepScope, EmbedderNote, EmbedderOffer, OfferPlace, ScopeOffer,
+    SummarizerOffer,
 };
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::registry::ModelRegistry;
@@ -149,6 +150,7 @@ pub(crate) fn offer(
         mac: cfg!(target_os = "macos"),
         made_by: None,
         named: None,
+        keyed_embedder: None,
     }
 }
 
@@ -166,14 +168,26 @@ pub(crate) fn embedder_note(
             name,
             megabytes: NOMIC_MEGABYTES,
         },
-        (None, Some(keyed)) => EmbedderNote::Ready {
-            name: format!(
-                "{OPENAI_EMBEDDING} on {}",
-                argonauts_core::registry::provider::provider_name(&keyed.id)
-            ),
+        (None, keyed) => match keyed_embedder(keyed) {
+            Some(keyed) => EmbedderNote::Ready { name: keyed.name },
+            None => EmbedderNote::Words,
         },
-        (None, None) => EmbedderNote::Words,
     }
+}
+
+/// The embedding model of the endpoint with your key, as the embedder's picker offers it.
+pub(crate) fn keyed_embedder(keyed: Option<&KeyedEndpoint>) -> Option<EmbedderOffer> {
+    let keyed = keyed?;
+    Some(EmbedderOffer {
+        model: argonauts_core::names::ModelRef::new(
+            keyed.id.clone(),
+            Some(OPENAI_EMBEDDING.to_owned()),
+        ),
+        name: format!(
+            "{OPENAI_EMBEDDING} on {}",
+            argonauts_core::registry::provider::provider_name(&keyed.id)
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -265,5 +279,9 @@ mod tests {
                 name: "text-embedding-3-small on OpenAI".to_owned()
             }
         );
+        let offered = keyed_embedder(Some(&keyed)).unwrap();
+        assert_eq!(offered.model.to_string(), "openai/text-embedding-3-small");
+        assert_eq!(offered.name, "text-embedding-3-small on OpenAI");
+        assert_eq!(keyed_embedder(None), None);
     }
 }

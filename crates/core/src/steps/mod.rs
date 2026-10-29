@@ -52,6 +52,8 @@ pub enum StepName {
     Review,
     Settle,
     ResolveConflict,
+    /// The merger writes the message a run's change lands with.
+    CommitMessage,
     Orchestrate,
     RunReview,
     /// The closing answer of a crew run.
@@ -203,7 +205,7 @@ pub fn output_schema<S: Step>() -> Value {
 
 impl StepName {
     /// Every step, so a check can hold each one's answer format to the same rules.
-    pub const ALL: [StepName; 32] = [
+    pub const ALL: [StepName; 33] = [
         Self::Estimate,
         Self::ConversationAnswer,
         Self::Read,
@@ -223,6 +225,7 @@ impl StepName {
         Self::Review,
         Self::Settle,
         Self::ResolveConflict,
+        Self::CommitMessage,
         Self::Orchestrate,
         Self::RunReview,
         Self::CloseRun,
@@ -262,6 +265,10 @@ impl StepName {
             Self::Review => output_schema::<judgment::Review>(),
             Self::Settle => output_schema::<judgment::Settle>(),
             Self::ResolveConflict => output_schema::<task::ResolveConflict>(),
+            // Its prompt is the change itself, so it renders no input of its own.
+            Self::CommitMessage => {
+                written_schema(schemars::schema_for!(task::CommitMessage).to_value())
+            }
             Self::Orchestrate => output_schema::<plan::Orchestrate>(),
             Self::RunReview => output_schema::<task::RunReview>(),
             Self::CloseRun => output_schema::<task::CloseRun>(),

@@ -59,6 +59,7 @@ pub(super) fn state_word(state: CrewState) -> &'static str {
         CrewState::Done => "Done",
         CrewState::Stopped => "Stopped",
         CrewState::Failed => "Failed",
+        CrewState::Skipped => "Skipped",
     }
 }
 
@@ -75,6 +76,7 @@ pub(super) fn glyph(state: CrewState, sleeping: bool, theme: &Theme) -> (&'stati
         CrewState::Done => (marks.done, Role::Success),
         CrewState::Stopped => (marks.stopped, Role::Dim),
         CrewState::Failed => (marks.failed, Role::Danger),
+        CrewState::Skipped => (marks.skipped, Role::Dim),
     }
 }
 
@@ -337,7 +339,7 @@ fn run_heading(
     if let Some(stands) = &run.stands {
         let ended = matches!(
             stands.state,
-            CrewState::Done | CrewState::Stopped | CrewState::Failed
+            CrewState::Done | CrewState::Stopped | CrewState::Failed | CrewState::Skipped
         );
         tail.push_str(&format!(" · {}", clean(&stands.word)));
         if ended {

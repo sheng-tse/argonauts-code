@@ -1,7 +1,7 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
-   Overview    Models    Behaviors                                                                                    
-  Deeper map · 562 actions summarized by Qwen3 Coder 30B on Ollama · by model                                         
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
+   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
+  Deeper map · 562 actions summarized by Qwen3 Coder 30B on Ollama                                                    
                                                                                                                       
 
 [picture]
@@ -32,4 +32,4 @@ blue: Luna does this less
                                                                                                                       
   new: the summary names what its label only groups                                                                   
                                                                                                                       
-  ←  →  model · ↑  ↓  behavior, lit on the map · enter its actions · g group · p period · esc back                    
+  r to cycle dates · g group · s this project · d deeper map · ↑  ↓  behavior · enter actions · esc back              

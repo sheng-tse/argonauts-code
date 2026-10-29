@@ -63,6 +63,7 @@ fn agent(
         note: note.map(|(text, tone)| RowNote::new(text, tone)),
         inner: None,
         left_out: false,
+        not_needed: false,
         fallback_why: None,
     })
 }

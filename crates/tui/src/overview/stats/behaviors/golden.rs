@@ -387,6 +387,18 @@ fn drawn_in(
     height: u16,
     pictures: bool,
 ) -> (OverviewView, Buffer) {
+    drawn_sized(state, map, keys, pointer, (WIDTH, height), pictures)
+}
+
+/// As [`drawn_in`], on a screen `size` wide and tall.
+fn drawn_sized(
+    state: &AppState,
+    map: &BehaviorMap,
+    keys: &[KeyCode],
+    pointer: Option<(f32, f32)>,
+    (width, height): (u16, u16),
+    pictures: bool,
+) -> (OverviewView, Buffer) {
     let mut theme = golden::theme();
     theme.mascot_pictures = pictures;
     let mut view =
@@ -423,7 +435,7 @@ fn drawn_in(
         state,
         now: Instant::now(),
     };
-    let area = Rect::new(0, 0, WIDTH, height);
+    let area = Rect::new(0, 0, width, height);
     let mut buf = Buffer::empty(area);
     view.render(area, &mut buf, &ctx);
     (view, buf)
@@ -468,7 +480,7 @@ const NEWER_LINE: &str = "the line under the tabs reads as the opening pictures 
      earlier wording, with the period and without the projects";
 
 fn opening_line() -> String {
-    "  What your agents did, from 562 actions in 19 runs across 6 projects · by model · Argonauts' labels"
+    "  What your agents did, from 562 actions in 19 runs across 6 projects · Argonauts' labels"
         .to_owned()
 }
 
@@ -661,7 +673,7 @@ fn enter_on_a_deeper_behavior_rings_its_actions() {
     row.behavior = actions[0].0.to_owned();
     row.lit = haiku;
     let line = (
-        "  Deeper map · 562 actions summarized by Qwen3 Coder 30B on Ollama · by model".to_owned(),
+        "  Deeper map · 562 actions summarized by Qwen3 Coder 30B on Ollama".to_owned(),
         "the picture's line names what it shows; the screen keeps the map's own line",
     );
     let keys = [KeyCode::Right, KeyCode::Down, KeyCode::Enter];
@@ -856,11 +868,7 @@ fn without_pictures_the_map_is_braille_its_shading_the_comparison() {
                 "    checked git status or diff and read git history         4 (6.1%)   others   2 (0.4%)".to_owned(),
                 "with the keys on the map no row is selected; the picture marked the first",
             ),
-            _ if at == last => How::Ours(
-                "   ←  →  compare a model · ↓  into the list, which lights each behavior · g group · p period · esc back"
-                    .to_owned(),
-                "the key line is the map's own; the picture's is an earlier one",
-            ),
+            _ if at == last => How::Cells(1),
             _ => How::Cells(0),
         };
         checks.push(Check {
@@ -894,7 +902,7 @@ fn the_mouse_rings_the_dot_it_rests_near_and_says_what_it_is() {
         true,
     );
     let line = (
-        "  Deeper map · 562 actions summarized by Qwen3 Coder 30B on Ollama · by model".to_owned(),
+        "  Deeper map · 562 actions summarized by Qwen3 Coder 30B on Ollama".to_owned(),
         "the picture's line names what it shows; the screen keeps the map's own line",
     );
     let blank = blank_map_row();
@@ -1051,7 +1059,7 @@ fn d_on_the_first_visit_asks_in_the_tab_as_its_picture_shows_and_starts_on_the_a
         ViewOutcome::Send(UiCommand::DeepStart { .. })
     ));
     // The map the update makes is the one the tab asks for next.
-    let next = view.handle_key(KeyCode::Char('p').into(), &ctx);
+    let next = view.handle_key(KeyCode::Char('r').into(), &ctx);
     assert!(
         matches!(
             next,
@@ -1117,4 +1125,179 @@ fn when_the_deeper_map_is_made_its_list_marks_what_labels_only_group_as_its_pict
         None,
         &[],
     );
+}
+
+/// The panel as it is now, `width` wide and 40 rows tall.
+fn redrawn(view: &mut OverviewView, width: u16) -> Buffer {
+    let theme = golden::theme();
+    let state = state();
+    let ctx = ViewCtx {
+        theme: &theme,
+        state: &state,
+        now: Instant::now(),
+    };
+    let area = Rect::new(0, 0, width, 40);
+    let mut buf = Buffer::empty(area);
+    view.render(area, &mut buf, &ctx);
+    buf
+}
+
+fn press_key(
+    view: &mut OverviewView,
+    key: crossterm::event::KeyEvent,
+) -> crate::views::ViewOutcome {
+    let theme = golden::theme();
+    let state = state();
+    let ctx = ViewCtx {
+        theme: &theme,
+        state: &state,
+        now: Instant::now(),
+    };
+    view.handle_key(key, &ctx)
+}
+
+/// The request a key asked for, which must be a new map.
+fn asked_map(outcome: crate::views::ViewOutcome) -> MapRequest {
+    match outcome {
+        crate::views::ViewOutcome::Request(argonauts_core::app::ViewRequest::Behaviors(
+            request,
+        )) => request,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Behaviors shows its choices top right as Stats does: the periods on the tab row, the chosen
+/// one bold in the accent, and the groupings on the sub-tab row, the chosen one on the grey
+/// band. `r` and Shift+R step the period, `g` the grouping and `s` the projects, from the map
+/// and from the tabs alike; `p` asks for nothing.
+#[test]
+fn the_period_and_the_grouping_show_top_right_and_their_keys_change_them() {
+    use crossterm::event::{KeyEvent, KeyModifiers};
+
+    let theme = golden::theme();
+    let (mut view, buf) = drawn_sized(&state(), &label_map(), &[], None, (WIDTH, 40), true);
+    assert!(
+        text_at(&buf, (0, 1)).ends_with("Stats   All time  Last 7 days  Last 30 days"),
+        "{:?}",
+        text_at(&buf, (0, 1))
+    );
+    let groupings = "By model    By CLI    By role    By workflow    By project    By outcome";
+    assert!(
+        text_at(&buf, (0, 3)).ends_with(groupings),
+        "{:?}",
+        text_at(&buf, (0, 3))
+    );
+    let accent = theme.color(crate::theme::Role::Question);
+    let at = |buf: &Buffer, y: u16, words: &str| {
+        let row = text_at(buf, (0, y));
+        let x = row.find(words).unwrap_or_else(|| panic!("{words}: {row}"));
+        u16::try_from(row[..x].chars().count()).unwrap()
+    };
+    let chosen = &buf[(at(&buf, 1, "All time"), 1)];
+    assert_eq!(chosen.fg, accent.unwrap());
+    assert!(chosen.modifier.contains(ratatui::style::Modifier::BOLD));
+    let band = theme.color(crate::theme::Role::UserBand).unwrap();
+    assert_eq!(buf[(at(&buf, 3, "By model"), 3)].bg, band);
+    assert_ne!(buf[(at(&buf, 3, "By CLI"), 3)].bg, band);
+
+    let week = asked_map(press_key(&mut view, KeyCode::Char('r').into()));
+    assert_eq!(week.period, OverviewPeriod::Week);
+    let buf = redrawn(&mut view, WIDTH);
+    assert_eq!(buf[(at(&buf, 1, "Last 7 days"), 1)].fg, accent.unwrap());
+    assert_ne!(buf[(at(&buf, 1, "All time"), 1)].fg, accent.unwrap());
+    let shift_r = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
+    assert_eq!(
+        asked_map(press_key(&mut view, shift_r)).period,
+        OverviewPeriod::All
+    );
+    let by_cli = asked_map(press_key(&mut view, KeyCode::Char('g').into()));
+    assert_eq!(by_cli.grouping, argonauts_core::behavior_map::Grouping::Cli);
+    let buf = redrawn(&mut view, WIDTH);
+    assert_eq!(buf[(at(&buf, 3, "By CLI"), 3)].bg, band);
+    let here = asked_map(press_key(&mut view, KeyCode::Char('s').into()));
+    assert_eq!(here.scope, argonauts_core::behavior_map::Scope::ThisProject);
+    assert!(matches!(
+        press_key(&mut view, KeyCode::Char('p').into()),
+        crate::views::ViewOutcome::Ignored | crate::views::ViewOutcome::Consumed
+    ));
+    let next = asked_map(press_key(&mut view, KeyCode::Char('g').into()));
+    assert_eq!(
+        (next.period, next.scope),
+        (here.period, here.scope),
+        "p changed nothing"
+    );
+
+    // Up to the tabs, the period still steps and the key line starts with Behaviors' keys.
+    for _ in 0..3 {
+        press_key(&mut view, KeyCode::Up.into());
+    }
+    let buf = redrawn(&mut view, WIDTH);
+    let keys = text_at(&buf, (0, 39));
+    assert!(
+        keys.trim_start().starts_with(
+            "r to cycle dates · g group · s all projects · d deeper map · tab · ←  →  tabs"
+        ),
+        "{keys:?}"
+    );
+    assert_eq!(
+        asked_map(press_key(&mut view, KeyCode::Char('r').into())).period,
+        OverviewPeriod::Week
+    );
+}
+
+/// Where the row has no room for every grouping, the chosen one shows between its neighbours,
+/// and where not even that fits, alone; the tab row keeps the chosen period alone.
+#[test]
+fn on_a_narrow_screen_the_choices_keep_the_chosen_one() {
+    let (mut view, buf) = drawn_sized(&state(), &label_map(), &[], None, (100, 40), true);
+    assert!(
+        text_at(&buf, (0, 3)).ends_with("By outcome    By model    By CLI"),
+        "{:?}",
+        text_at(&buf, (0, 3))
+    );
+    let tabs = text_at(&buf, (0, 1));
+    assert!(
+        tabs.ends_with(" All time") && !tabs.contains("Last 7 days"),
+        "{tabs:?}"
+    );
+    let buf = redrawn(&mut view, 60);
+    let sub_tabs = text_at(&buf, (0, 3));
+    assert!(
+        sub_tabs.ends_with(" By model") && !sub_tabs.contains("By CLI"),
+        "{sub_tabs:?}"
+    );
+}
+
+/// Ten models with a few actions each, more than the legend's rows beside the map hold.
+fn ten_models_map() -> BehaviorMap {
+    let mut sample = Sample::new(MapRequest::default());
+    for (name, agent, model, _) in MODELS {
+        sample = sample.model(name, agent, model);
+    }
+    for (name, agent, model) in [
+        ("Sonnet 5", "claude-code", "claude-sonnet-5"),
+        ("Opus 5.5", "claude-code", "claude-opus-5-5"),
+        ("GPT 6", "codex", "gpt-6"),
+        ("Qwen3 Coder 30B", "opencode", "ollama/qwen3-coder:30b"),
+        ("Gemma 3 12B", "opencode", "ollama/gemma3:12b"),
+    ] {
+        sample = sample.model(name, agent, model);
+    }
+    for group in 0..10 {
+        let place = (0.1 + 0.08 * group as f32, 0.2 + 0.06 * group as f32);
+        sample = sample.actions(group, "read a source file", 12 - group, place);
+    }
+    sample.map
+}
+
+/// With Qwen3 Coder 30B compared, the legend has scrolled on to keep it in view: how many are above,
+/// the models from there, and how many are below, cell for cell.
+#[test]
+fn the_legend_scrolls_to_keep_the_compared_model_in_view() {
+    let keys = [KeyCode::Right; 9];
+    let (_, buf) = drawn_sized(&state(), &ten_models_map(), &keys, None, (WIDTH, 40), true);
+    golden::keep("legend_scrolled", &buf);
+    let picture = Picture::screen("behaviors", "legend_scrolled");
+    let theme = golden::theme();
+    golden::assert_matches(&picture, &buf, &Region::whole(&picture, (0, 0)), &theme);
 }

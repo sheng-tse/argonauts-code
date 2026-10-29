@@ -69,7 +69,7 @@ fn it_opens_on_every_groups_dots_with_nothing_compared_or_lit() {
     let lines = shown(&tab, 40, true);
     assert_eq!(
         lines[0],
-        " What your agents did, from 28 actions in 19 runs across 6 projects · by model · Argonauts' labels"
+        " What your agents did, from 28 actions in 19 runs across 6 projects · Argonauts' labels"
     );
     assert!(lines.iter().any(|l| l.ends_with("Every model")));
     assert!(lines.iter().any(|l| l.contains("● Haiku 5.5          18")));
@@ -118,7 +118,7 @@ fn the_deeper_map_is_offered_on_the_map_and_gives_its_rows_to_the_list() {
     let offered = |tab: &BehaviorsTab| {
         shown(tab, 40, true)
             .iter()
-            .any(|line| line.contains("✻ Deeper map"))
+            .any(|line| line.contains("✻  Deeper map"))
     };
     assert!(offered(&tab), "on the map");
     press(&mut tab, &[KeyCode::Down]);
@@ -227,8 +227,10 @@ fn enter_lists_a_behaviors_actions_and_opens_each_ones_card() {
     assert_eq!(tab.at, At::List(0));
 }
 
+/// `g` groups, the panel's `r` and Shift+R step the period, and `s` switches between every
+/// project and this one, each asking for a new map from the top. `p` and `r` are the panel's.
 #[test]
-fn g_p_and_r_ask_for_a_new_map_from_the_top() {
+fn g_s_and_the_period_ask_for_a_new_map_from_the_top() {
     let mut tab = opened();
     press(&mut tab, &[KeyCode::Right, KeyCode::Down]);
     let asked = |key| match key {
@@ -238,14 +240,17 @@ fn g_p_and_r_ask_for_a_new_map_from_the_top() {
     let request = asked(press(&mut tab, &[KeyCode::Char('g')]));
     assert_eq!(request.grouping, Grouping::Cli);
     assert_eq!(tab.at, At::Map);
+    assert_eq!(asked(tab.step_period(1)).period, OverviewPeriod::Week);
+    assert_eq!(asked(tab.step_period(-1)).period, OverviewPeriod::All);
+    assert_eq!(asked(tab.step_period(-1)).period, OverviewPeriod::Month);
     assert_eq!(
-        asked(press(&mut tab, &[KeyCode::Char('p')])).period,
-        OverviewPeriod::Week
-    );
-    assert_eq!(
-        asked(press(&mut tab, &[KeyCode::Char('r')])).scope,
+        asked(press(&mut tab, &[KeyCode::Char('s')])).scope,
         Scope::ThisProject
     );
+    assert!(tab.keys(118).contains(&"s all projects".to_owned()));
+    for key in ['p', 'r', 'R'] {
+        assert!(!tab.claims(KeyCode::Char(key), true), "{key}");
+    }
     // A map for another request is an old answer.
     let mut old = sample().map;
     old.groups.clear();
@@ -337,28 +342,34 @@ fn without_pictures_the_map_is_braille_with_its_legend_under_it() {
 fn the_keys_say_what_each_place_takes_each_arrow_followed_by_two_spaces() {
     let mut tab = opened();
     assert_eq!(
-        tab.keys(118).join(" · "),
-        "←  →  compare a model · ↓  into the list, which lights each behavior · g group · p period · esc back"
+        tab.keys(160).join(" · "),
+        "r to cycle dates · g group · s this project · d deeper map · ←  →  compare a model · ↓  \
+         into the list, which lights each behavior · esc back"
     );
     assert_eq!(
-        tab.keys(80).join(" · "),
-        "←  →  compare · ↓  the list · g group · p period · esc back",
+        tab.keys(118).join(" · "),
+        "r to cycle dates · g group · s this project · d deeper map · ←  →  compare · ↓  the list \
+         · esc back",
         "the short words where the long ones don't fit"
     );
     press(&mut tab, &[KeyCode::Right, KeyCode::Down]);
     assert_eq!(
-        tab.keys(118).join(" · "),
-        "←  →  model · ↑  ↓  behavior, lit on the map · enter its actions · g group · p period · esc back"
+        tab.keys(160).join(" · "),
+        "r to cycle dates · g group · s this project · d deeper map · ↑  ↓  behavior, lit on the \
+         map · enter its actions · ←  →  model · esc back"
     );
     press(&mut tab, &[KeyCode::Enter]);
     assert_eq!(
         tab.keys(118).join(" · "),
-        "↑  ↓  example · enter opens it · esc back"
+        "r to cycle dates · g group · s this project · d deeper map · ↑  ↓  example · enter opens \
+         it · esc back"
     );
     press(&mut tab, &[KeyCode::Enter]);
     assert_eq!(
         tab.keys(118).join(" · "),
-        "←  →  example · o opens the run · c copies the action · esc back"
+        "r to cycle dates · g group · s this project · ←  →  example · o opens the run · c copies \
+         the action · esc back",
+        "a card hides the map, so d waits"
     );
 }
 
@@ -522,7 +533,7 @@ fn d_switches_between_the_label_map_and_a_kept_deeper_one() {
     tab.accept(&deeper);
     let line = shown(&tab, 40, false).remove(0);
     assert!(
-        line.ends_with("by model · placed by word vectors"),
+        line.ends_with("Qwen3 Coder 30B on Ollama · placed by word vectors"),
         "{line}"
     );
     let back = press(&mut tab, &[KeyCode::Char('d')]);
@@ -677,7 +688,10 @@ fn with_no_action_the_tab_says_what_shows_more_and_offers_nothing() {
         !lines.iter().any(|line| line.contains("Deeper map")),
         "{lines:#?}"
     );
-    assert_eq!(tab.keys(118).join(" · "), "g group · p period · esc back");
+    assert_eq!(
+        tab.keys(118).join(" · "),
+        "r to cycle dates · g group · s this project · esc back"
+    );
     assert_eq!(
         press(&mut tab, &[KeyCode::Char('d')]),
         None,
@@ -689,7 +703,7 @@ fn with_no_action_the_tab_says_what_shows_more_and_offers_nothing() {
     });
     assert_eq!(
         shown(&week, 40, true)[0].trim_end(),
-        " No actions in the last 7 days · p changes the period"
+        " No actions in the last 7 days · r changes the period"
     );
     let here = empty(MapRequest {
         scope: Scope::ThisProject,
@@ -697,7 +711,7 @@ fn with_no_action_the_tab_says_what_shows_more_and_offers_nothing() {
     });
     assert_eq!(
         shown(&here, 40, true)[0].trim_end(),
-        " No actions recorded in council yet · r shows every project"
+        " No actions recorded in council yet · s shows every project"
     );
 }
 
@@ -736,7 +750,112 @@ fn a_group_named_for_its_cli_keeps_its_whole_name_and_the_compared_one_always_sh
         lines.iter().any(|line| line.contains("● Claude Code")),
         "{lines:#?}"
     );
-    assert!(lines.iter().any(|line| line.contains("and ")), "{lines:#?}");
+    assert!(
+        lines.iter().any(|line| line.trim() == "2 more above"),
+        "{lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("and ")),
+        "{lines:#?}"
+    );
+}
+
+/// Ten models, as many as the legend has never had room for beside the map.
+fn ten_models() -> BehaviorsTab {
+    let mut sample =
+        super::sample::Sample::new(argonauts_core::behavior_map::MapRequest::default());
+    for at in 0..10 {
+        sample = sample.model(&format!("Model {at}"), "codex", &format!("model-{at}"));
+    }
+    let mut map = sample.map;
+    for group in 0..10 {
+        map.actions.push(super::sample::action(
+            group,
+            "read a source file",
+            (0.5, 0.5),
+        ));
+        map.groups[group].actions = 10 - group;
+    }
+    let mut tab = BehaviorsTab::default();
+    tab.accept(&map);
+    tab
+}
+
+/// The legend's rows after its heading: each group shown and the marks of those above and
+/// below.
+fn legend_rows(tab: &BehaviorsTab) -> Vec<String> {
+    shown(tab, 40, true)
+        .iter()
+        .map(|line| line.trim().to_owned())
+        .filter(|line| {
+            line.starts_with('●')
+                || line.starts_with('○')
+                || line.ends_with(" more above")
+                || line.ends_with(" more below")
+        })
+        .collect()
+}
+
+/// The legend lists every group, never "and 3 more": those its rows hold, then how many more
+/// are below, and as ← → step through every one, it scrolls to keep the compared one in view
+/// with how many are above.
+#[test]
+fn the_legend_lists_every_group_and_scrolls_to_the_compared_one() {
+    let mut tab = ten_models();
+    let rows = legend_rows(&tab);
+    assert_eq!(rows.len(), 8, "{rows:#?}");
+    assert!(rows[0].starts_with("● Model 0"), "{rows:#?}");
+    assert!(rows[6].starts_with("● Model 6"), "{rows:#?}");
+    assert_eq!(rows[7], "3 more below");
+    for group in 0..10 {
+        press(&mut tab, &[KeyCode::Right]);
+        assert_eq!(tab.compared(), Some(group));
+        let rows = legend_rows(&tab);
+        assert!(
+            rows.iter()
+                .any(|row| row.starts_with(&format!("● Model {group} "))),
+            "{group}: {rows:#?}"
+        );
+        let count = |row: &String| {
+            row.strip_suffix(" more above")
+                .or_else(|| row.strip_suffix(" more below"))
+                .and_then(|n| n.parse::<usize>().ok())
+        };
+        let marked: usize = rows.iter().filter_map(count).sum();
+        let listed = rows.iter().filter(|row| count(row).is_none()).count();
+        assert_eq!(marked + listed, 10, "{group}: {rows:#?}");
+        assert!(rows.len() <= 8, "{group}: {rows:#?}");
+    }
+    let rows = legend_rows(&tab);
+    assert_eq!(rows[0], "3 more above", "{rows:#?}");
+    assert!(rows[7].starts_with("● Model 9"), "{rows:#?}");
+    // Round again to every group alike, and back with ← to the last one.
+    press(&mut tab, &[KeyCode::Right]);
+    assert_eq!(tab.compared(), None);
+    press(&mut tab, &[KeyCode::Left]);
+    assert_eq!(tab.compared(), Some(9));
+}
+
+/// Under a braille map every group shows too: those a row can't hold go on to the next, each
+/// with its mark.
+#[test]
+fn the_braille_legend_lists_every_group_on_as_many_rows_as_it_takes() {
+    let tab = ten_models();
+    let lines = shown_at(&tab, 80, 40, false);
+    let legend: Vec<&String> = lines
+        .iter()
+        .filter(|line| line.contains("⣿ Model"))
+        .collect();
+    assert_eq!(legend.len(), 2, "{lines:#?}");
+    for group in 0..10 {
+        assert!(
+            legend
+                .iter()
+                .any(|line| line.contains(&format!("⣿ Model {group}"))),
+            "{group}: {legend:#?}"
+        );
+    }
+    assert!(legend.iter().all(|line| line.width() <= 80));
 }
 
 #[test]

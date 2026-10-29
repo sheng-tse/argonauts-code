@@ -417,6 +417,33 @@ mod tests {
         assert!(!own.args.iter().any(|arg| arg == "--add-dir"));
     }
 
+    /// In supervised a run's Codex session writes outside in place, as the run you approved
+    /// says: inside our sandbox nothing of Codex's holds an outside write back.
+    #[test]
+    fn in_supervised_nothing_of_codex_s_holds_an_approved_outside_write() {
+        let outside = argonauts_core::outside::Outside {
+            after_asking: true,
+            ..Default::default()
+        };
+        for role in [SessionRole::Build, SessionRole::Direct] {
+            let spec = command(&SessionRequest {
+                tool_sandbox_off: true,
+                goal_hash: Some("abc".into()),
+                outside: outside.clone(),
+                ..request(role)
+            });
+            assert_eq!(value_after(&spec.args, "--sandbox"), "danger-full-access");
+            assert!(
+                !spec
+                    .args
+                    .iter()
+                    .any(|arg| arg == "--add-dir" || arg.starts_with("--dangerously")),
+                "{:?}",
+                spec.args
+            );
+        }
+    }
+
     #[test]
     fn codex_loads_its_own_skills_plugins_and_servers() {
         for role in [SessionRole::ReadOnly, SessionRole::Build] {

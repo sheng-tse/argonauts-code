@@ -259,6 +259,43 @@ pub struct ClosingAnswer {
     pub decided: Vec<DecidedAlone>,
 }
 
+/// How a run that didn't merge starts the line of its closing answer that says where its work
+/// stayed, and why: `Kept on its branch, not merged, as you chose`.
+pub const KEPT_ON_ITS_BRANCH: &str = "Kept on its branch, not merged";
+
+impl ClosingAnswer {
+    /// Where the run's work stayed and why, when it was kept on its branch: the line of `left`
+    /// that says so.
+    pub fn kept(&self) -> Option<&str> {
+        self.left
+            .iter()
+            .map(String::as_str)
+            .find(|line| line.starts_with(KEPT_ON_ITS_BRANCH))
+    }
+}
+
+/// Whether `text` says something merged, which nothing about a run that didn't merge may say:
+/// `merged` with no word just before it that denies it, such as `not merged`, `nothing merged`
+/// or `before anything merged`, or puts it ahead, such as `ready to be merged`.
+pub fn says_merged(text: &str) -> bool {
+    const DENIED: &[&str] = &[
+        "not", "never", "nothing", "anything", "before", "no", "none", "without", "be", "to",
+        "until",
+    ];
+    let words: Vec<String> = text
+        .replace('\u{2019}', "'")
+        .split(|ch: char| !(ch.is_alphanumeric() || ch == '\''))
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    words.iter().enumerate().any(|(at, word)| {
+        word == "merged"
+            && !words[at.saturating_sub(3)..at]
+                .iter()
+                .any(|before| DENIED.contains(&before.as_str()) || before.ends_with("n't"))
+    })
+}
+
 /// One thing a run on autopilot decided where it would have asked you.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecidedAlone {
@@ -555,6 +592,28 @@ mod tests {
             "yes, do that\n\nFrom the conversation, as the main agent put it: Add due dates to \
              tasks, in the cli and the store."
         );
+    }
+
+    #[test]
+    fn only_words_that_say_something_merged_say_so() {
+        for said in [
+            "The money rounding fix is merged: the one task changed invoice/money.py.",
+            "Merged onto main, and the checks pass.",
+            "The task merged into the run's branch.",
+        ] {
+            assert!(says_merged(said), "{said}");
+        }
+        for said in [
+            "The run's work is kept on its branch, not merged.",
+            "Stopped before anything merged.",
+            "You abandoned the run, so nothing merged.",
+            "The judge signed off as ready to merge.",
+            "It's ready to be merged once you look.",
+            "It wasn't merged, since you kept the branch.",
+            "The branch isn\u{2019}t merged yet.",
+        ] {
+            assert!(!says_merged(said), "{said}");
+        }
     }
 
     #[test]

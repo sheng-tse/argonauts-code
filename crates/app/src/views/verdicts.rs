@@ -17,9 +17,9 @@ use argonauts_core::steps::judgment::{ReviewOutput, ReviewVerdict};
 use argonauts_core::steps::plan::Severity;
 use argonauts_core::views::{
     EarlierFindings, EarlierVerdict, Finding, Findings, ReviewGiven, RowNote, Tone,
+    writes_the_message,
 };
 use argonauts_crew::claude_codes::review_of;
-use argonauts_crew::merge::merger::COMMIT_MESSAGE;
 use serde_json::Value;
 use time::OffsetDateTime;
 
@@ -509,7 +509,7 @@ const GIVEN_THE_DIFF: &str = "given the diff, no tools";
 /// merge needed. One that also settled a conflict or fixed a check has rows that say more.
 fn wrote_only_the_message(facts: &RunFacts, session: &SessionFacts) -> bool {
     let started = &session.started;
-    started.label.as_deref() == Some(COMMIT_MESSAGE)
+    writes_the_message(started.step)
         && started.access == Access::NoTools
         && started.workflow_step.is_some()
         && !facts.sessions.iter().any(|other| {

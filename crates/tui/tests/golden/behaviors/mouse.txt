@@ -1,6 +1,6 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
-   Overview    Models    Behaviors                                                                                    
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
+   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
   Deeper map · 562 actions · the mouse resting near a dot                                                             
                                                                                                                       
 
@@ -23,4 +23,4 @@ blue: Luna does this less
   ◉ Reviewed git history and previous implementations · GPT 6 Luna · tie-breaker-2 · label: read git history          
     the map stays as it was; move away and the ring goes; click opens its card                                        
                                                                                                                       
-  ←  →  compare a model · ↓  into the list, which lights each behavior · g group · p period · esc back                
+  r to cycle dates · g group · s this project · d deeper map · ←  →  compare · ↓  the list · esc back                 

@@ -4,7 +4,8 @@
 //! of the embedding model is asked last, and only once.
 
 use argonauts_core::deep_map::{
-    DeepOffer, DeepScope, DeepStart, EmbedderNote, OfferPlace, ScopeOffer, SummarizerOffer,
+    DeepOffer, DeepProgress, DeepScope, DeepStart, EmbedderNote, OfferPlace, ScopeOffer,
+    SummarizerOffer,
 };
 use argonauts_core::model_picker::Fit;
 use crossterm::event::KeyCode;
@@ -91,25 +92,42 @@ impl DeepQuestions {
         }
     }
 
-    /// The summarizer `start` names, as the line under the sub-tabs says it, and the actions
-    /// it will read.
-    pub fn started(&self, start: &DeepStart) -> (String, usize) {
-        let name = self
+    /// The update `start` begins, as the tab says it until the app reports: the summarizer by
+    /// its name, the actions it will read, and how long the offer said they take, where it
+    /// said so for a summarizer of this kind (on this computer, or hosted).
+    pub fn started(&self, start: &DeepStart) -> DeepProgress {
+        let chosen = self
             .offer
             .summarizers
             .iter()
-            .find(|offer| offer.model == start.summarizer)
-            .map_or_else(|| start.summarizer.to_string(), |offer| offer.name.clone());
-        let actions = match (&self.step, &self.offer.made_by) {
-            (Step::Update, Some(made_by)) => made_by.new_actions,
+            .find(|offer| offer.model == start.summarizer);
+        let summarizer =
+            chosen.map_or_else(|| start.summarizer.to_string(), |offer| offer.name.clone());
+        let everything = self.offer.scopes.first();
+        let (actions, seconds) = match (&self.step, &self.offer.made_by) {
+            (Step::Update, Some(made_by)) => {
+                let new = made_by.new_actions;
+                let seconds = everything.map_or(0, |scope| {
+                    scope.seconds * new as u64 / scope.actions.max(1) as u64
+                });
+                (new, seconds)
+            }
             _ => self
                 .offer
                 .scopes
                 .iter()
                 .find(|scope| scope.scope == start.scope)
-                .map_or(0, |scope| scope.actions),
+                .map_or((0, 0), |scope| (scope.actions, scope.seconds)),
         };
-        (name, actions)
+        // The offer timed auto's summarizer, which is the first.
+        let auto_local = self.offer.summarizers.first().map(SummarizerOffer::local);
+        let timed = chosen.is_some_and(|offer| Some(offer.local()) == auto_local);
+        DeepProgress {
+            done: 0,
+            total: actions,
+            seconds_left: timed.then_some(seconds),
+            summarizer,
+        }
     }
 
     /// A key while the questions show. `None` while they go on.
@@ -268,10 +286,7 @@ impl DeepQuestions {
     }
 
     fn first_local(&self) -> Option<usize> {
-        self.offer
-            .summarizers
-            .iter()
-            .position(SummarizerOffer::local)
+        first_local(&self.offer)
     }
 
     fn chosen_scope(&self) -> &ScopeOffer {
@@ -328,62 +343,32 @@ impl DeepQuestions {
                 answers
             }
             Step::Summarizer => {
-                let tokens = self.chosen_scope().tokens;
-                let first_bytes =
-                    self.offer
-                        .summarizers
-                        .iter()
-                        .find_map(|offer| match offer.place {
-                            OfferPlace::ThisMachine { bytes, .. } => Some(bytes),
-                            OfferPlace::Plan { .. } => None,
-                        });
+                let descriptions = summarizer_descriptions(&self.offer, self.chosen_scope().tokens);
                 self.offer
                     .summarizers
                     .iter()
+                    .zip(descriptions)
                     .enumerate()
-                    .map(|(at, offer)| {
-                        let answer = Answer::new(offer.name.clone());
-                        let answer = if at == 0 {
+                    .map(|(at, (offer, description))| {
+                        let answer = Answer::new(offer.name.clone()).described(description);
+                        if at == 0 {
                             answer.noted("(recommended)")
                         } else {
                             answer
-                        };
-                        let here = self.here();
-                        answer.described(match &offer.place {
-                            OfferPlace::ThisMachine { bytes, fit } => {
-                                let smaller = at > 0
-                                    && fits_now(*fit)
-                                    && matches!((bytes, first_bytes), (Some(b), Some(Some(first))) if b < &first);
-                                if smaller {
-                                    format!("free · on this {here} · faster, a little rougher")
-                                } else {
-                                    format!("free · on this {here}{}", memory_words(*bytes, *fit))
-                                }
-                            }
-                            OfferPlace::Plan { plan, .. } => {
-                                format!("your {plan} plan · about {} tokens", token_words(tokens))
-                            }
-                        })
+                        }
                     })
                     .collect()
             }
-            Step::Hosted(chosen) => {
-                let offer = &self.offer.summarizers[*chosen];
-                let mut answers = vec![Answer::new(format!("Yes, summarize with {}", offer.short))];
-                if let Some(local) = self.first_local() {
-                    let local = &self.offer.summarizers[local];
-                    answers.push(
-                        Answer::new(format!(
-                            "Use {} on this {} instead",
-                            local.short,
-                            self.here()
-                        ))
-                        .described("free".to_owned()),
-                    );
-                }
-                answers.push(Answer::new("Not now".to_owned()));
-                answers
-            }
+            Step::Hosted(chosen) => hosted_answers(&self.offer, *chosen)
+                .into_iter()
+                .map(|(words, description)| {
+                    let answer = Answer::new(words);
+                    match description {
+                        Some(description) => answer.described(description),
+                        None => answer,
+                    }
+                })
+                .collect(),
             Step::Redo(chosen) => vec![
                 Answer::new(format!(
                     "Yes, summarize them again with {}",
@@ -408,7 +393,7 @@ impl DeepQuestions {
     }
 
     fn here(&self) -> &'static str {
-        if self.offer.mac { "Mac" } else { "computer" }
+        here(&self.offer)
     }
 
     fn title_and_body(&self) -> (String, Vec<String>) {
@@ -445,43 +430,7 @@ impl DeepQuestions {
                 ],
             ),
             Step::Hosted(chosen) => {
-                let offer = &self.offer.summarizers[*chosen];
-                let scope = self.chosen_scope();
-                let (cli, plan, provider) = match &offer.place {
-                    OfferPlace::Plan {
-                        cli,
-                        plan,
-                        provider,
-                    } => (cli.as_str(), plan.as_str(), provider.as_str()),
-                    OfferPlace::ThisMachine { .. } => ("", "", ""),
-                };
-                let others: Vec<String> = scope
-                    .by_cli
-                    .iter()
-                    .filter(|count| count.cli != cli && count.actions > 0)
-                    .map(|count| format!("{} {}", count.actions, count.name))
-                    .collect();
-                let reads = if others.is_empty() {
-                    String::new()
-                } else {
-                    format!(", including the {} actions", and_list(&others))
-                };
-                (
-                    format!(
-                        "Send {} actions to {provider} for summaries?",
-                        scope.actions
-                    ),
-                    vec![
-                        format!(
-                            "{} would read each action as it ran: commands, file paths and the \
-                             lines they touched{reads}. It uses about {} tokens of your {plan} \
-                             plan.",
-                            offer.name,
-                            token_words(scope.tokens)
-                        ),
-                        "Nothing is sent anywhere else.".to_owned(),
-                    ],
-                )
+                hosted_question(&self.offer, *chosen, Some(self.chosen_scope()))
             }
             Step::Redo(chosen) => {
                 let offer = &self.offer.summarizers[*chosen];
@@ -602,6 +551,125 @@ impl DeepQuestions {
 /// The first question, as a screen reader says it when the offer comes.
 pub fn spoken(offer: &DeepOffer) -> Vec<String> {
     DeepQuestions::new(offer.clone()).spoken()
+}
+
+/// What each summarizer costs and where it runs, as "Summarize with" describes it: free on
+/// this computer with what its memory allows, or about the tokens a hosted one would use of
+/// `tokens`.
+pub(crate) fn summarizer_descriptions(offer: &DeepOffer, tokens: u64) -> Vec<String> {
+    let here = here(offer);
+    let first_bytes = offer
+        .summarizers
+        .iter()
+        .find_map(|offer| match offer.place {
+            OfferPlace::ThisMachine { bytes, .. } => Some(bytes),
+            OfferPlace::Plan { .. } => None,
+        });
+    offer
+        .summarizers
+        .iter()
+        .enumerate()
+        .map(|(at, offer)| match &offer.place {
+            OfferPlace::ThisMachine { bytes, fit } => {
+                let smaller = at > 0
+                    && fits_now(*fit)
+                    && matches!((bytes, first_bytes), (Some(b), Some(Some(first))) if b < &first);
+                if smaller {
+                    format!("free · on this {here} · faster, a little rougher")
+                } else {
+                    format!("free · on this {here}{}", memory_words(*bytes, *fit))
+                }
+            }
+            OfferPlace::Plan { plan, .. } => {
+                format!("your {plan} plan · about {} tokens", token_words(tokens))
+            }
+        })
+        .collect()
+}
+
+/// The question a hosted summarizer asks once more, for the actions `scope` covers: its title
+/// and body. With no scope, before any action is recorded, it asks for whatever is recorded
+/// from then on.
+pub(crate) fn hosted_question(
+    offer: &DeepOffer,
+    chosen: usize,
+    scope: Option<&ScopeOffer>,
+) -> (String, Vec<String>) {
+    let summarizer = &offer.summarizers[chosen];
+    let (cli, plan, provider) = match &summarizer.place {
+        OfferPlace::Plan {
+            cli,
+            plan,
+            provider,
+        } => (cli.as_str(), plan.as_str(), provider.as_str()),
+        OfferPlace::ThisMachine { .. } => ("", "", ""),
+    };
+    let Some(scope) = scope else {
+        return (
+            format!("Send your actions to {provider} for summaries?"),
+            vec![
+                format!(
+                    "{} would read each action as it ran: commands, file paths and the lines \
+                     they touched, from every CLI. None are recorded yet, so how much of your \
+                     {plan} plan it uses isn't known until d asks.",
+                    summarizer.name
+                ),
+                "Nothing is sent anywhere else.".to_owned(),
+            ],
+        );
+    };
+    let others: Vec<String> = scope
+        .by_cli
+        .iter()
+        .filter(|count| count.cli != cli && count.actions > 0)
+        .map(|count| format!("{} {}", count.actions, count.name))
+        .collect();
+    let reads = if others.is_empty() {
+        String::new()
+    } else {
+        format!(", including the {} actions", and_list(&others))
+    };
+    (
+        format!(
+            "Send {} actions to {provider} for summaries?",
+            scope.actions
+        ),
+        vec![
+            format!(
+                "{} would read each action as it ran: commands, file paths and the lines they \
+                 touched{reads}. It uses about {} tokens of your {plan} plan.",
+                summarizer.name,
+                token_words(scope.tokens)
+            ),
+            "Nothing is sent anywhere else.".to_owned(),
+        ],
+    )
+}
+
+/// The hosted question's answers, each with its description: yes, the first model on this
+/// computer instead where there is one, and not now.
+pub(crate) fn hosted_answers(offer: &DeepOffer, chosen: usize) -> Vec<(String, Option<String>)> {
+    let summarizer = &offer.summarizers[chosen];
+    let mut answers = vec![(format!("Yes, summarize with {}", summarizer.short), None)];
+    if let Some(local) = first_local(offer) {
+        let local = &offer.summarizers[local];
+        answers.push((
+            format!("Use {} on this {} instead", local.short, here(offer)),
+            Some("free".to_owned()),
+        ));
+    }
+    answers.push(("Not now".to_owned(), None));
+    answers
+}
+
+/// The first summarizer on this computer, which the hosted question offers instead.
+pub(crate) fn first_local(offer: &DeepOffer) -> Option<usize> {
+    offer.summarizers.iter().position(SummarizerOffer::local)
+}
+
+/// This computer as the questions call it.
+pub(crate) fn here(offer: &DeepOffer) -> &'static str {
+    if offer.mac { "Mac" } else { "computer" }
 }
 
 /// One answer: its words, a dim note after them, and its description at the column.
@@ -868,6 +936,7 @@ pub(crate) mod sample {
             mac: true,
             made_by: None,
             named: None,
+            keyed_embedder: None,
         }
     }
 }
@@ -1135,6 +1204,26 @@ mod tests {
             said.last().unwrap(),
             "Enter to choose · Esc to keep the label map"
         );
+    }
+
+    /// The update starts from the offer's time for the summarizer it timed, auto's, and
+    /// waits for the app's estimate for another kind.
+    #[test]
+    fn an_update_starts_with_the_offers_estimate_for_the_summarizer_it_timed() {
+        let questions = DeepQuestions::new(page_offer());
+        let start = |summarizer: &str| DeepStart {
+            scope: DeepScope::Everything,
+            summarizer: summarizer.parse().unwrap(),
+            download_embedder: false,
+            redo: false,
+        };
+        let local = questions.started(&start("ollama/qwen3-coder:30b-64k"));
+        assert_eq!((local.done, local.total), (0, 562));
+        assert_eq!(local.seconds_left, Some(page_offer().scopes[0].seconds));
+        assert_eq!(local.summarizer, "Qwen3 Coder 30B on Ollama");
+        let hosted = questions.started(&start("claude-code/haiku"));
+        assert_eq!(hosted.seconds_left, None, "the offer timed the local model");
+        assert_eq!(hosted.summarizer, "Haiku 5.5 on Claude Code");
     }
 
     #[test]

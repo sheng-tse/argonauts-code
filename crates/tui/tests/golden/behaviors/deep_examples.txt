@@ -1,6 +1,6 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
-   Overview    Models    Behaviors                                                                                    
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
+   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
   Deeper map · 562 actions · the actions of one behavior                                                              
                                                                                                                       
 
@@ -30,4 +30,4 @@ blue: Haiku does this less
     Haiku 5.5        plan:orchestrator      Document task name and description                 20261014-055235        
     Haiku 5.5        plan:orchestrator      Outline project plan and build phases for task man 20261017-070202        
                                                                                                                       
-  ↑  ↓  action, ringed on the map · enter its card · esc back to the behaviors                                        
+  r to cycle dates · g group · s this project · d deeper map · ↑  ↓  action · enter card · esc back                   

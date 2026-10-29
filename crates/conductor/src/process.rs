@@ -2,12 +2,13 @@
 //! line by line, and signals go to the whole group so nothing it started is left behind.
 
 use std::ffi::OsStr;
-use std::io;
+use std::io::{self, PipeReader, PipeWriter, Write as _};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use argonauts_core::agents::AgentGroup;
 use argonauts_core::layout::session_files;
@@ -28,6 +29,16 @@ pub const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Lines buffered between the reader tasks and the consumer. Small, because lines can be large.
 const LINE_QUEUE: usize = 64;
+
+/// The shell a held start waits in.
+const SHELL: &str = "/bin/sh";
+/// The descriptor a held start's shell reads its go-ahead from.
+const GO_AHEAD: i32 = 3;
+/// Runs the program only once a line reading `go` comes on [`GO_AHEAD`]. Until then nothing of
+/// the agent's runs, so nothing can look at its ancestry before the process group that gives it
+/// away is on record. Given anything else, or the pipe's end, it never runs the program.
+const HELD_START: &str =
+    r#"IFS= read -r go <&3; exec 3<&-; [ "$go" = go ] || exit 125; exec "$0" "$@""#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Stream {
@@ -74,6 +85,8 @@ pub struct AgentProcess {
     /// The head's start time, once [`AgentProcess::record`] read it.
     start_time: OnceLock<u64>,
     launch: String,
+    /// What lets a held start run its program, until [`AgentProcess::let_run`] does.
+    go_ahead: Mutex<Option<PipeWriter>>,
     input: Option<mpsc::UnboundedSender<String>>,
     lines: mpsc::Receiver<OutputLine>,
     lines_open: bool,
@@ -85,16 +98,21 @@ pub struct AgentProcess {
 impl AgentProcess {
     /// Must be called inside a tokio runtime.
     pub fn spawn(spec: &CommandSpec) -> Result<Self, SpawnError> {
-        Self::start(spec, None)
+        Self::start(spec, None, Start::Now)
     }
 
     /// Like [`AgentProcess::spawn`], and copies stdout and stderr into the raw log exactly as
-    /// they are read.
+    /// they are read. The program waits to run until [`AgentProcess::let_run`], for an agent
+    /// whose process group is put on record first.
     pub fn spawn_logged(spec: &CommandSpec, copies: OutputCopies) -> Result<Self, SpawnError> {
-        Self::start(spec, Some(copies))
+        Self::start(spec, Some(copies), Start::Held)
     }
 
-    fn start(spec: &CommandSpec, copies: Option<OutputCopies>) -> Result<Self, SpawnError> {
+    fn start(
+        spec: &CommandSpec,
+        copies: Option<OutputCopies>,
+        start: Start,
+    ) -> Result<Self, SpawnError> {
         let program = resolve_program(
             &spec.program,
             std::env::var_os("PATH").as_deref(),
@@ -106,9 +124,10 @@ impl AgentProcess {
             source,
         };
         let launch = new_launch_id();
-        let mut child = session_command(&program, spec, &launch)
-            .spawn()
-            .map_err(spawn_error)?;
+        let (mut command, go_ahead) =
+            session_command(&program, spec, &launch, start).map_err(spawn_error)?;
+        let mut child = command.spawn().map_err(spawn_error)?;
+        drop(command);
         let group = child.id().ok_or_else(|| {
             spawn_error(io::Error::other(
                 "the process exited before it could be tracked",
@@ -130,6 +149,7 @@ impl AgentProcess {
             group,
             start_time: OnceLock::new(),
             launch,
+            go_ahead: Mutex::new(go_ahead),
             input,
             lines,
             lines_open: true,
@@ -137,6 +157,20 @@ impl AgentProcess {
             exited: false,
             readers,
         })
+    }
+
+    /// Lets a held start run its program. A process started at once, or let run already, is
+    /// left as it is. Fails when the process is gone, as one killed while it waited is.
+    pub fn let_run(&self) -> io::Result<()> {
+        let go_ahead = self
+            .go_ahead
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        match go_ahead {
+            Some(mut go_ahead) => go_ahead.write_all(b"go\n"),
+            None => Ok(()),
+        }
     }
 
     /// The id in this launch's `ARGONAUTS_LAUNCH`, which everything it starts inherits.
@@ -341,9 +375,33 @@ fn new_launch_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-fn session_command(program: &Path, spec: &CommandSpec, launch: &str) -> Command {
+/// When a launched program runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Start {
+    Now,
+    /// Once [`AgentProcess::let_run`] says so: the process waits in [`HELD_START`].
+    Held,
+}
+
+/// The command that starts `program` for `spec`, and for a held start the end of the pipe that
+/// lets it run.
+fn session_command(
+    program: &Path,
+    spec: &CommandSpec,
+    launch: &str,
+    start: Start,
+) -> io::Result<(Command, Option<PipeWriter>)> {
     let wants_stdin = spec.stdin.is_some() || spec.keep_stdin_open;
-    let mut command = Command::new(program);
+    let (mut command, go_ahead) = match start {
+        Start::Now => (Command::new(program), None),
+        Start::Held => {
+            let (waits, lets_run) = std::io::pipe()?;
+            let mut command = Command::new(SHELL);
+            command.arg("-c").arg(HELD_START).arg(program);
+            hand_go_ahead(&mut command, waits);
+            (command, Some(lets_run))
+        }
+    };
     command
         .args(&spec.args)
         .current_dir(&spec.cwd)
@@ -366,7 +424,29 @@ fn session_command(program: &Path, spec: &CommandSpec, launch: &str) -> Command 
     command.env(crate::reaper::LAUNCH_MARKER, launch);
     // No terminal to ask on, so git must fail instead of waiting for a password.
     command.env("GIT_TERMINAL_PROMPT", "0");
-    command
+    Ok((command, go_ahead))
+}
+
+/// Gives the child `waits` as [`GO_AHEAD`]. The command keeps it, so the parent's copy closes
+/// when the command is dropped after the spawn.
+fn hand_go_ahead(command: &mut Command, waits: PipeReader) {
+    // SAFETY: the closure runs in the child between fork and exec. It only makes syscalls (dup2
+    // or fcntl) on a descriptor the child holds, allocates nothing, and touches no memory shared
+    // with the parent.
+    unsafe {
+        command.pre_exec(move || {
+            let fd = waits.as_raw_fd();
+            // dup2 onto itself would leave it closed on exec.
+            let done = match fd == GO_AHEAD {
+                true => nix::libc::fcntl(GO_AHEAD, nix::libc::F_SETFD, 0),
+                false => nix::libc::dup2(fd, GO_AHEAD),
+            };
+            if done == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 fn start_readers(
@@ -518,9 +598,9 @@ pub struct DriverPipes {
 }
 
 impl AgentProcess {
-    /// Like [`AgentProcess::spawn`], but hands stdin and stdout to the caller, for a session
-    /// driver. `spec.stdin` is not written, since the driver owns stdin. Must be called inside a
-    /// tokio runtime.
+    /// Like [`AgentProcess::spawn_logged`], but hands stdin and stdout to the caller, for a
+    /// session driver. `spec.stdin` is not written, since the driver owns stdin. Must be called
+    /// inside a tokio runtime.
     pub fn spawn_piped(spec: &CommandSpec) -> Result<(Self, DriverPipes), SpawnError> {
         let program = resolve_program(
             &spec.program,
@@ -533,9 +613,11 @@ impl AgentProcess {
             source,
         };
         let launch = new_launch_id();
-        let mut command = session_command(&program, spec, &launch);
+        let (mut command, go_ahead) =
+            session_command(&program, spec, &launch, Start::Held).map_err(spawn_error)?;
         command.stdin(Stdio::piped());
         let mut child = command.spawn().map_err(spawn_error)?;
+        drop(command);
         let group = child.id().ok_or_else(|| {
             spawn_error(io::Error::other(
                 "the process exited before it could be tracked",
@@ -557,6 +639,7 @@ impl AgentProcess {
             group,
             start_time: OnceLock::new(),
             launch,
+            go_ahead: Mutex::new(go_ahead),
             input: None,
             lines,
             lines_open: true,
@@ -662,6 +745,7 @@ mod tests {
         );
         let spec = sh_spec(dir.path(), &script);
         let process = AgentProcess::spawn_logged(&spec, raw.output_copies()).unwrap();
+        process.let_run().unwrap();
         let (lines, status) = collect(process).await;
         assert!(status.success());
 
@@ -743,6 +827,64 @@ mod tests {
             texts(&lines, Stream::Stdout),
             ["{\"type\":\"object\"}", "set=yes home=gone", "from stdin"]
         );
+    }
+
+    #[tokio::test]
+    async fn a_held_start_runs_its_program_as_given_once_let_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = sh_spec(
+            dir.path(),
+            "printf '<%s>' \"$0\" \"$@\"; echo; \
+             if [ -e /dev/fd/3 ]; then echo fd3; else echo no-fd3; fi; \
+             echo \"set=$SET_ME pwd=$PWD\"; cat",
+        );
+        spec.args
+            .extend(["one two", "it's", "", "-c"].map(String::from));
+        spec.env_set.push(("SET_ME".into(), "yes".into()));
+        let (process, mut pipes) = AgentProcess::spawn_piped(&spec).unwrap();
+        pipes.stdin.write_all(b"from the driver\n").await.unwrap();
+        drop(pipes.stdin);
+        process.let_run().unwrap();
+        // Let run already, so it goes on as it is.
+        process.let_run().unwrap();
+        let mut out = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut pipes.stdout, &mut out)
+            .await
+            .unwrap();
+        let (_, status) = collect(process).await;
+        assert!(status.success());
+        let pwd = dir.path().display();
+        assert_eq!(
+            out,
+            format!("<sh><one two><it's><><-c>\nno-fd3\nset=yes pwd={pwd}\nfrom the driver\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_held_start_runs_nothing_until_let_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (held, _pipes) = AgentProcess::spawn_piped(&sh_spec(dir.path(), ": > held")).unwrap();
+        // Started after the held one, so once it has run the held one would have too.
+        let (_, status) =
+            collect(AgentProcess::spawn(&sh_spec(dir.path(), ": > after")).unwrap()).await;
+        assert!(status.success());
+        assert!(dir.path().join("after").exists());
+        assert!(!dir.path().join("held").exists());
+        held.let_run().unwrap();
+        let (_, status) = collect(held).await;
+        assert!(status.success());
+        assert!(dir.path().join("held").exists());
+    }
+
+    #[tokio::test]
+    async fn a_held_start_whose_pipe_closes_never_runs_its_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = sh_spec(dir.path(), ": > ran");
+        let (process, _pipes) = AgentProcess::spawn_piped(&spec).unwrap();
+        drop(process.go_ahead.lock().unwrap().take());
+        let (_, status) = collect(process).await;
+        assert_eq!(status.code(), Some(125));
+        assert!(!dir.path().join("ran").exists());
     }
 
     #[tokio::test]
@@ -932,6 +1074,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let script = r#"read line; echo "got $line"; echo "note" >&2"#;
         let (process, pipes) = AgentProcess::spawn_piped(&sh_spec(dir.path(), script)).unwrap();
+        process.let_run().unwrap();
         let DriverPipes { mut stdin, stdout } = pipes;
         stdin.write_all(b"hello\n").await.unwrap();
         stdin.flush().await.unwrap();
