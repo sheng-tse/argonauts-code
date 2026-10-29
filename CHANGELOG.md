@@ -4,7 +4,7 @@ Notable changes to Argonauts Code, newest first. The format follows [Keep a Chan
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-10-29
+## [0.2.0] - 2026-10-30
 
 Council is a preview in this release.
 
