@@ -124,9 +124,15 @@ fn input_box_pinned_under_blank_rows() {
 #[test]
 fn streaming_text_word_by_word() {
     let answer = "Streaming arrives one word at a time until the very last word, finish.";
+    let mut turn = conversation_turn("t-001", "stream", answer, 120);
+    // The last word, the usage, the end and the idle mode wait until the test has seen part of
+    // the answer, which a stalled machine would otherwise send all at once.
+    let last = turn.split_off(turn.len() - 4);
     let script = Script::idle()
         .await_command("submit")
-        .timed(conversation_turn("t-001", "stream", answer, 120));
+        .timed(turn)
+        .await_signal("partial-seen")
+        .all(0, last.into_iter().map(|(_, event)| event));
     let mut driver = TestDriver::start(script);
     driver.wait_for(TOP_RULE);
     driver.submit("stream please");
@@ -135,6 +141,7 @@ fn streaming_text_word_by_word() {
         text.contains("Streaming") && !text.contains("finish.")
     });
     driver.shot("partial");
+    driver.signal("partial-seen");
     let screen = driver.wait_visible("finish\\.");
     assert_eq!(
         count_rows(&screen, "Streaming arrives"),

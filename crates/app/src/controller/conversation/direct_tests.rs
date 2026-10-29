@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
-use crate::controller::test_support::{CliOptions, TestDriver, WAIT};
+use crate::controller::test_support::{CliOptions, TestDriver, max_wait};
 
 use super::direct_outside_tests::written_by;
 
@@ -130,7 +130,7 @@ async fn ask(spec: &SessionSpec, ask: Ask) -> AskReply {
 }
 
 async fn first_spec(driver: &TestDriver) -> SessionSpec {
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     loop {
         if let Some(spec) = driver.agent.specs().into_iter().next() {
             return spec;
@@ -223,7 +223,7 @@ async fn slash_captain_is_direct_and_checked_captain_is_a_run() {
         let driver = TestDriver::start_with(captain(checked)).await;
         driver.send(slash.clone()).await;
         let conductor = driver.conductor.clone();
-        let deadline = tokio::time::Instant::now() + WAIT;
+        let deadline = tokio::time::Instant::now() + max_wait();
         while conductor.starts().is_empty() {
             assert!(tokio::time::Instant::now() < deadline, "{checked}");
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -424,7 +424,7 @@ async fn autopilot_coming_on_answers_the_open_question_and_the_ones_after() {
             mode: ApprovalMode::Autopilot,
         })
         .await;
-    let reply = tokio::time::timeout(WAIT, answered)
+    let reply = tokio::time::timeout(max_wait(), answered)
         .await
         .expect("the open question was answered")
         .unwrap();
@@ -924,7 +924,7 @@ async fn in_captain_the_main_session_starts_a_run_only_when_you_asked_for_one() 
         "{asked:?}"
     );
     let conductor = driver.conductor.clone();
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     while conductor.starts().is_empty() {
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1199,7 +1199,7 @@ async fn a_captain_the_rules_pick_runs_direct_only_when_its_kind_says_so() {
     driver.submit(TASK).await;
     driver.until(turn_ended).await;
     let conductor = driver.conductor.clone();
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     while conductor.starts().is_empty() {
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1228,7 +1228,7 @@ async fn a_cli_command_in_a_direct_conversation_works_in_your_checkout() {
         source: CommandSource::BuiltIn,
     };
     super::cli_command(&mut parts.ctx, &mut conversation, &init, "", "/init".into()).unwrap();
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     while parts.agent.specs().is_empty() {
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1255,7 +1255,7 @@ async fn every_change_with_codex_runs_in_a_checked_worktree() {
         )
         .await;
     let conductor = driver.conductor.clone();
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     while conductor.starts().is_empty() {
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1847,7 +1847,7 @@ async fn under_the_captain_workflow_workflow_starts_its_run_and_goal_starts_noth
         })
         .await;
     let conductor = driver.conductor.clone();
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     while conductor.starts().is_empty() {
         assert!(
             tokio::time::Instant::now() < deadline,

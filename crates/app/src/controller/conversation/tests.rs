@@ -18,13 +18,13 @@ use argonauts_core::names::{AgentId, ChoiceId};
 use argonauts_core::session_runner::{Access, RunnerEvent, SessionControl};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::steps::StepName;
-use argonauts_testkit::{FakeRunner, FakeSession};
+use argonauts_testkit::{FakeRunner, FakeSession, Hold};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 
 use crate::app_settings::AppSettings;
 use crate::controller::conversation::{self, ConversationState};
-use crate::controller::test_support::{CliOptions, TestCtx, TestDriver, WAIT};
+use crate::controller::test_support::{CliOptions, TestCtx, TestDriver, max_wait};
 use crate::controller::{Effect, Internal};
 use crate::conversation_store::ConversationStore;
 
@@ -92,11 +92,12 @@ fn answer_choice(id: ChoiceId, value: &str) -> UiCommand {
 
 /// Polls state the events don't show, such as what a fake session received.
 async fn eventually(what: impl Fn() -> bool) {
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let wait = max_wait();
+    let deadline = tokio::time::Instant::now() + wait;
     while !what() {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "not within {WAIT:?}"
+            "not within {wait:?}"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -403,9 +404,10 @@ async fn checked_captain_skips_the_estimate() {
 /// `/captain` while the estimate still reads the same request: its reply starts nothing more.
 async fn captain_during_the_estimate(kind: &str) -> Vec<AppEvent> {
     let mut driver = TestDriver::start_with(checked_captain()).await;
+    let estimate = Hold::new();
     driver
         .agent
-        .push(reply(kind, "Add a middleware after auth.").with_delay(Duration::from_millis(300)));
+        .push(reply(kind, "Add a middleware after auth.").held_after(0, &estimate));
     driver.submit("add rate limiting").await;
     driver
         .until(|event| {
@@ -424,6 +426,8 @@ async fn captain_during_the_estimate(kind: &str) -> Vec<AppEvent> {
             },
         })
         .await;
+    driver.taken().await;
+    estimate.release();
     driver.until(finished).await;
     let conductor = driver.conductor.clone();
     let events = driver.exit().await;
@@ -494,7 +498,7 @@ async fn forced_runs_and_estimated_changes_carry_what_start_needs() {
     .unwrap();
     let mut effects = Vec::new();
     while effects.is_empty() {
-        let message = tokio::time::timeout(WAIT, parts.internal.recv())
+        let message = tokio::time::timeout(max_wait(), parts.internal.recv())
             .await
             .expect("the turn ends")
             .expect("the channel stays open");
@@ -522,9 +526,10 @@ async fn forced_runs_and_estimated_changes_carry_what_start_needs() {
 #[tokio::test]
 async fn text_while_answering_queues_the_next_turn() {
     let mut driver = TestDriver::start().await;
+    let answering = Hold::new();
     driver
         .agent
-        .push(answer("first answer").with_delay(Duration::from_millis(300)));
+        .push(answer("first answer").held_after(0, &answering));
     driver.agent.push(answer("second answer"));
     driver.submit("first question").await;
     driver
@@ -538,6 +543,8 @@ async fn text_while_answering_queues_the_next_turn() {
         })
         .await;
     driver.submit("second question").await;
+    driver.taken().await;
+    answering.release();
     // The second starts only once the first finished.
     let first = driver.until(finished).await;
     let second_started = driver
@@ -719,7 +726,7 @@ async fn run_turn(parts: &mut TestCtx, conversation: &mut ConversationState, tex
         .await
         .unwrap();
     loop {
-        let message = tokio::time::timeout(WAIT, parts.internal.recv())
+        let message = tokio::time::timeout(max_wait(), parts.internal.recv())
             .await
             .expect("the turn ends")
             .expect("the channel stays open");
@@ -806,11 +813,13 @@ async fn cancel_turn_stops_the_step_session() {
 async fn a_turn_after_esc_never_resumes_a_session_still_stopping() {
     let mut driver = TestDriver::start().await;
     driver.agent.push(answer("one").with_cli_session("cli-7"));
-    // Stop is seen only after the pause, so the step outlives the cancel for a while.
+    // Held, the session takes the stop in but acts on it only once released, so the step
+    // outlives the cancel.
+    let stopping = Hold::new();
     driver.agent.push(
         answer("two")
             .with_cli_session("cli-7")
-            .with_delay(Duration::from_millis(400)),
+            .held_after(0, &stopping),
     );
     driver.agent.push(answer("three"));
     driver.submit("first").await;
@@ -828,6 +837,7 @@ async fn a_turn_after_esc_never_resumes_a_session_still_stopping() {
     driver.until(idle).await;
     driver.submit("third").await;
     turn_done(&mut driver).await;
+    stopping.release();
     let specs = driver.agent.specs();
     assert_eq!(specs[1].resume.as_deref(), Some("cli-7"));
     assert_eq!(specs[2].resume, None);

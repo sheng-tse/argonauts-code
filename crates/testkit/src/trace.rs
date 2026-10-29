@@ -73,14 +73,15 @@ impl Trace {
         matches: impl Fn(&AppEvent) -> bool,
         timeout: Duration,
     ) -> anyhow::Result<AppEvent> {
-        let deadline = Instant::now() + timeout;
+        let deadline = crate::deadline::after(timeout);
         loop {
             if let Some(event) = self.events()?.into_iter().find(|event| matches(event)) {
                 return Ok(event);
             }
             if Instant::now() >= deadline {
                 bail!(
-                    "no matching event in {timeout:?}; the trace has {} lines",
+                    "no matching event in {:?}; the trace has {} lines",
+                    crate::deadline::scaled(timeout),
                     self.lines()?.len()
                 );
             }
@@ -93,13 +94,16 @@ impl Trace {
         matches: impl Fn(&UiCommand) -> bool,
         timeout: Duration,
     ) -> anyhow::Result<UiCommand> {
-        let deadline = Instant::now() + timeout;
+        let deadline = crate::deadline::after(timeout);
         loop {
             if let Some(command) = self.commands()?.into_iter().find(|c| matches(c)) {
                 return Ok(command);
             }
             if Instant::now() >= deadline {
-                bail!("no matching command in {timeout:?}");
+                bail!(
+                    "no matching command in {:?}",
+                    crate::deadline::scaled(timeout)
+                );
             }
             thread::sleep(Duration::from_millis(20));
         }

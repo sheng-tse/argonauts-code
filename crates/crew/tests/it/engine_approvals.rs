@@ -15,6 +15,7 @@ use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{ApprovalId, ModelRef};
 use argonauts_core::policy::{PolicyOutcome, Verdict};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_testkit::deadline;
 
 const TWO_PHASES: &str = "name: two-looks\ndescription: Two looks\nphases:\n  - name: First look\n    standard: check\n    steps:\n      - kind: checks\n  - name: Second look\n    standard: check\n    steps:\n      - kind: checks\n";
 
@@ -272,7 +273,7 @@ async fn user_answer_beats_slow_judge() -> anyhow::Result<()> {
     let engine = argonauts_crew::engine_for(&crew.settings, RunMode::Crew);
     let run = tokio::spawn(engine.run(context));
 
-    let question = tokio::time::timeout(Duration::from_secs(10), async {
+    let question = tokio::time::timeout(deadline::scaled(Duration::from_secs(10)), async {
         loop {
             if let Some(question) = opened(&sink.events()) {
                 break question;
@@ -285,7 +286,7 @@ async fn user_answer_beats_slow_judge() -> anyhow::Result<()> {
     let (command, reply) = answer(&question, AnswerAction::SendBack, &question.evidence_sha256);
     commands.send(command).await?;
     assert_eq!(reply.await?, Ok(()));
-    let exit = tokio::time::timeout(Duration::from_secs(10), run).await??;
+    let exit = tokio::time::timeout(deadline::scaled(Duration::from_secs(10)), run).await??;
     assert!(matches!(exit, EngineExit::Finished(_)), "{exit:?}");
     tokio::time::sleep(Duration::from_millis(600)).await;
 

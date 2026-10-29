@@ -85,6 +85,13 @@ impl FakeClis {
         ]
     }
 
+    /// Lets every fake step `await_signal = "<name>"` go on, those waiting now and those that
+    /// come to it later.
+    pub fn signal(&self, name: &str) -> anyhow::Result<()> {
+        let path = signal_path(&self.log, name)?;
+        fs::write(&path, b"").with_context(|| format!("writing {}", path.display()))
+    }
+
     pub fn log(&self) -> anyhow::Result<Vec<LogLine>> {
         read_log(&self.log)
     }
@@ -113,4 +120,12 @@ impl FakeClis {
             })
             .collect())
     }
+}
+
+/// Where the signal `name` is: beside the fakes' log, which every fake of a scenario knows.
+pub fn signal_path(log: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    let plain = !name.is_empty() && !name.starts_with('.') && !name.contains(['/', '\\']);
+    anyhow::ensure!(plain, "a signal name is a plain file name, not {name:?}");
+    let dir = log.parent().context("the fakes' log has no folder")?;
+    Ok(dir.join(format!("signal-{name}")))
 }

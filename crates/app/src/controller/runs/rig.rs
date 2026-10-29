@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 
 use super::{RunsState, on_update};
 use crate::app_settings::AppSettings;
-use crate::controller::test_support::{FakeApprovals, FakeConductor, WAIT};
+use crate::controller::test_support::{FakeApprovals, FakeConductor, max_wait};
 use crate::controller::{AppServices, Ctx, Effect, Internal, Outbox};
 use crate::env::AppEnv;
 use crate::trace::Trace;
@@ -112,7 +112,8 @@ impl Rig {
 
     /// Applies stream updates until an event matches, and returns it.
     pub(crate) async fn until(&mut self, what: impl Fn(&AppEvent) -> bool) -> AppEvent {
-        let deadline = tokio::time::Instant::now() + WAIT;
+        let wait = max_wait();
+        let deadline = tokio::time::Instant::now() + wait;
         loop {
             while let Ok(event) = self.events.try_recv() {
                 self.seen.push(event.clone());
@@ -136,7 +137,7 @@ impl Rig {
                     }
                 }
                 _ = tokio::time::sleep_until(deadline) => {
-                    panic!("no match within {WAIT:?}; seen so far: {:#?}", self.seen)
+                    panic!("no match within {wait:?}; seen so far: {:#?}", self.seen)
                 }
             }
         }

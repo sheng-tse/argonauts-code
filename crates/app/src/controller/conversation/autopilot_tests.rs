@@ -20,7 +20,7 @@ use argonauts_testkit::services::StaticRegistry;
 use argonauts_testkit::{FakeRunner, FakeSession, TempRepo};
 use serde_json::{Value, json};
 
-use crate::controller::test_support::{CliOptions, TestDriver, WAIT};
+use crate::controller::test_support::{CliOptions, TestDriver, max_wait};
 
 fn estimate() -> Value {
     json!({
@@ -75,7 +75,7 @@ async fn with_approvals(approvals: &'static str) -> TestDriver {
 
 /// Waits for a run to start, and gives its mode.
 async fn started(driver: &TestDriver) -> RunMode {
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     while driver.conductor.starts().is_empty() {
         assert!(tokio::time::Instant::now() < deadline, "no run started");
         tokio::time::sleep(Duration::from_millis(10)).await;

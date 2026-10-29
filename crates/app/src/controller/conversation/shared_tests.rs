@@ -433,7 +433,7 @@ async fn a_saved_output_style_takes_over_at_once() {
 
 /// The runs started, once there are `count` of them.
 async fn starts(driver: &TestDriver, count: usize) -> Vec<argonauts_core::api::StartRun> {
-    let deadline = tokio::time::Instant::now() + crate::controller::test_support::WAIT;
+    let deadline = tokio::time::Instant::now() + crate::controller::test_support::max_wait();
     loop {
         let started = driver.conductor.starts();
         if started.len() >= count {

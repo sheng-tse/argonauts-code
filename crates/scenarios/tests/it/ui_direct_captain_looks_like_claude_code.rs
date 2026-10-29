@@ -49,7 +49,7 @@ fn count(screen: &Screen, pattern: &str) -> usize {
 /// The screen once the working line has gone, which it does a moment after the `✻` line.
 fn settled(pty: &Pty) -> anyhow::Result<Screen> {
     let working = Regex::new(r"^\S \S+…").expect("a valid pattern");
-    let deadline = std::time::Instant::now() + WAIT;
+    let deadline = argonauts_testkit::deadline::after(WAIT);
     loop {
         let screen = pty.wait_for(BOTTOM_ROW, WAIT)?;
         if !screen.visible.iter().any(|row| working.is_match(row)) {

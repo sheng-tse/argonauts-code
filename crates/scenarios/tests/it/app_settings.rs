@@ -441,6 +441,8 @@ fn app_effort_offers_only_supported_levels() -> anyhow::Result<()> {
     unique.dedup();
     assert_eq!(unique.len(), levels.len(), "{levels:?}");
     assert!(!levels.iter().any(|level| level.contains("turbo")));
+    // The picker opens when the screen has the app's answer, so Esc waits for it to show.
+    pty.wait_for_visible("Esc to (cancel|close)", WAIT)?;
     pty.press(Key::Esc)?;
     pty.wait_for("Kept", WAIT)?;
 

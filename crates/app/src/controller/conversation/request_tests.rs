@@ -16,7 +16,7 @@ use argonauts_registry::{SettingsSources, resolve};
 use argonauts_testkit::{FakeRunner, FakeSession, TempRepo};
 use serde_json::{Value, json};
 
-use crate::controller::test_support::{CliOptions, TestDriver, WAIT};
+use crate::controller::test_support::{CliOptions, TestDriver, max_wait};
 
 fn estimate(files: u32) -> Value {
     json!({
@@ -60,7 +60,7 @@ async fn crew_driver(options: CliOptions) -> TestDriver {
 
 async fn first_start(driver: &TestDriver) -> StartRun {
     let conductor = driver.conductor.clone();
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     while conductor.starts().is_empty() {
         assert!(tokio::time::Instant::now() < deadline, "no run started");
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -381,7 +381,7 @@ async fn from_now_on_asks_where_to_keep_it() {
         })
         .await;
     let local = driver.env.project_local_config();
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     loop {
         let text = std::fs::read_to_string(&local).unwrap_or_default();
         if text.contains("codex") {
@@ -460,7 +460,7 @@ async fn words_that_set_the_crew_show_it_and_ask_where_to_keep_it() {
         })
         .await;
     let shared = driver.env.project_config();
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     loop {
         let text = std::fs::read_to_string(&shared).unwrap_or_default();
         if text.contains("[crew]") {

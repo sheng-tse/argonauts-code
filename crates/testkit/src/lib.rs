@@ -4,6 +4,7 @@
 mod accept;
 pub mod acp;
 pub mod bins;
+pub mod deadline;
 pub mod fake_clis;
 pub mod fake_gh;
 pub mod journal;
@@ -27,7 +28,7 @@ pub use model_server::{FakeKind, FakeModelServer};
 pub use openai::{FakeOpenAi, FakeReply};
 pub use pty::{Key, Pty, PtyCommand, Screen};
 pub use repo::{EnvGuard, TempRepo};
-pub use runner::{FakeDirectory, FakeRunner, FakeSession};
+pub use runner::{FakeDirectory, FakeRunner, FakeSession, Hold};
 pub use scenario::{FakeRule, FakeScenario, FakeStep, Invocation, LogLine};
 pub use script::write_script;
 pub use services::{FakeClock, FakeServices, MemorySink, engine_context};

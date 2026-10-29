@@ -112,11 +112,15 @@ fn no_color_env() {
     assert!(!sets_color(&driver.raw()), "NO_COLOR sets no color");
 }
 
-/// The working line's glyphs seen over `window`.
-fn glyphs_over(driver: &TestDriver, window: Duration) -> BTreeSet<char> {
+/// The working line's glyphs seen over `window`, or until `enough` holds for them.
+fn glyphs_until(
+    driver: &TestDriver,
+    window: Duration,
+    enough: impl Fn(&BTreeSet<char>) -> bool,
+) -> BTreeSet<char> {
     let started = Instant::now();
     let mut seen = BTreeSet::new();
-    while started.elapsed() < window {
+    while started.elapsed() < window && !enough(&seen) {
         let screen = driver.screen();
         if let Some(row) = row_of(&screen, WORKING_LINE) {
             seen.extend(screen.visible[row].chars().next());
@@ -147,7 +151,8 @@ fn thinking_script() -> Script {
 fn reduced_motion_static_spinner() {
     let mut moving = TestDriver::start(thinking_script());
     working_turn(&mut moving);
-    let normal = glyphs_over(&moving, Duration::from_millis(1500));
+    // A stalled machine only makes the next glyph come later, so this looks until it does.
+    let normal = glyphs_until(&moving, WAIT, |seen| seen.len() > 1);
     assert!(
         normal.len() > 1,
         "the glyph animates by default: {normal:?}"
@@ -158,7 +163,7 @@ fn reduced_motion_static_spinner() {
         .ui("motion = \"reduced\"")
         .start();
     working_turn(&mut still);
-    let reduced = glyphs_over(&still, Duration::from_millis(1500));
+    let reduced = glyphs_until(&still, Duration::from_millis(1500), |_| false);
     assert_eq!(reduced.len(), 1, "one glyph, held still: {reduced:?}");
 }
 

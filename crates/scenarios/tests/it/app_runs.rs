@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context as _, bail};
 use app_support::*;
 use argonauts_core::agent_panel::{AgentPanelRows, CrewState, CrewTarget};
-use argonauts_core::app::{AppChoice, AppEvent, AppMode, ChoiceKind, TraceLine};
+use argonauts_core::app::{AppChoice, AppEvent, AppMode, ChoiceKind};
 use argonauts_core::app::{UiCommand, ViewData};
 use argonauts_core::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
@@ -258,9 +258,9 @@ fn app_close_screen_run_continues_and_reattaches() -> anyhow::Result<()> {
     let worker = wait_worker_started(&scenario)?;
     let run_host = run_host_pid(&run_dir)?;
 
-    pty.press(Key::Ctrl('c'))?;
-    pty.wait_for("Press Ctrl-C again to exit · the run keeps going", WAIT)?;
-    pty.press(Key::Ctrl('c'))?;
+    // Both presses in one write: a busy machine can stall longer than the second the first
+    // press gives the second. The screen's own tests check the hint between them.
+    pty.send_at_once("\x03\x03")?;
     pty.wait_for_exit(WAIT)?;
     let text = pty.screen().text();
     assert!(text.contains(&format!("{run} keeps going")), "{text}");
@@ -565,8 +565,8 @@ fn app_resume_stopped_run() -> anyhow::Result<()> {
     let refusal = wait_until("the refusal", || {
         Ok(notices(&scenario)?.into_iter().nth(notices_before))
     })?;
+    // The refusal is the command's whole answer: a merged run gets no run host to resume it.
     assert!(refusal.contains("merged"), "{refusal}");
-    thread::sleep(Duration::from_millis(500));
     let resumes_after = run_events(&run_dir)?.into_iter().filter(is_resumed).count();
     assert_eq!(resumes_after, resumes_before, "a merged run resumed");
     scenario.shot(&pty, "app_resume_stopped_run")?;
@@ -642,10 +642,10 @@ fn app_project_main_session_across_runs() -> anyhow::Result<()> {
 fn app_pause_at_safe_point_and_resume() -> anyhow::Result<()> {
     let scenario = scenario_with(&merge_question_config())?;
     let mut pty = start(&scenario)?;
-    let run_dir = start_captain(&scenario, &mut pty, requests::TIMED_TASK)?;
+    let run_dir = start_captain(&scenario, &mut pty, requests::HELD_TASK)?;
     let worker = wait_worker_started(&scenario)?;
 
-    argonauts_scenarios::pause_run(&mut pty)?;
+    scenario.pause_run(&mut pty)?;
     wait_journal(&run_dir, "the pause request", |event| {
         matches!(
             event.kind,
@@ -691,6 +691,7 @@ fn app_pause_at_safe_point_and_resume() -> anyhow::Result<()> {
         matches!(m, AppMode::Waiting { .. })
     })?;
 
+    scenario.clis.signal("worker-may-finish")?;
     submit(&mut pty, "/resume")?;
     wait_journal(&run_dir, "the run to resume", is_resumed)?;
     wait_approval(&scenario, ApprovalKind::Merge)?;
@@ -705,11 +706,11 @@ fn app_pause_at_safe_point_and_resume() -> anyhow::Result<()> {
 fn app_workflow_view_p_pauses_and_resumes() -> anyhow::Result<()> {
     let scenario = scenario_with(&merge_question_config())?;
     let mut pty = start(&scenario)?;
-    let run_dir = start_captain(&scenario, &mut pty, requests::TIMED_TASK)?;
+    let run_dir = start_captain(&scenario, &mut pty, requests::HELD_TASK)?;
     let worker = wait_worker_started(&scenario)?;
 
     pty.press(Key::Ctrl('t'))?;
-    pty.wait_for(r"p pause · esc back", WAIT)?;
+    pty.wait_for_visible(r"p pause · esc back", WAIT)?;
     pty.press(Key::Char('p'))?;
     wait_journal(&run_dir, "the pause request", |event| {
         matches!(
@@ -730,8 +731,7 @@ fn app_workflow_view_p_pauses_and_resumes() -> anyhow::Result<()> {
         )
     })?;
     wait_pid_gone(worker)?;
-    pty.wait_for(r"p resume · esc back", WAIT)?;
-    // While it waits, no session starts.
+    pty.wait_for_visible(r"p resume · esc back", WAIT)?;
     let started = |run_dir: &Path| -> anyhow::Result<usize> {
         Ok(run_events(run_dir)?
             .iter()
@@ -739,12 +739,35 @@ fn app_workflow_view_p_pauses_and_resumes() -> anyhow::Result<()> {
             .count())
     };
     let before = started(&run_dir)?;
-    thread::sleep(Duration::from_millis(500));
-    assert_eq!(started(&run_dir)?, before, "a session started while paused");
 
+    scenario.clis.signal("worker-may-finish")?;
     pty.press(Key::Char('p'))?;
     wait_journal(&run_dir, "the run to resume", is_resumed)?;
-    pty.wait_for(r"p pause · esc back", WAIT)?;
+    // While it waited, from its wait to its resume, no session started.
+    let events = run_events(&run_dir)?;
+    let waited = events
+        .iter()
+        .position(|event| {
+            matches!(
+                &event.kind,
+                RunEventKind::Run(RunLifecycle::Waiting {
+                    reason: WaitReason::Paused,
+                    ..
+                })
+            )
+        })
+        .context("the run's wait")?;
+    let resumed = events
+        .iter()
+        .position(is_resumed)
+        .context("the run's resume")?;
+    assert!(
+        !events[waited..resumed]
+            .iter()
+            .any(|event| matches!(event.kind, RunEventKind::Session(SessionEvent::Started(_)))),
+        "a session started while paused"
+    );
+    pty.wait_for_visible(r"p pause · esc back", WAIT)?;
     wait_approval(&scenario, ApprovalKind::Merge)?;
     assert!(
         started(&run_dir)? > before,
@@ -766,7 +789,7 @@ fn app_second_esc_stops_now_and_commits() -> anyhow::Result<()> {
     pty.wait_for("cargo build", WAIT)?;
 
     // Esc leaves a working run going. Once it is pausing, Esc stops it now.
-    argonauts_scenarios::pause_run(&mut pty)?;
+    scenario.pause_run(&mut pty)?;
     pty.press(Key::Esc)?;
     wait_journal(&run_dir, "stop now", |event| {
         matches!(
@@ -800,7 +823,7 @@ fn app_guidance_while_waiting_delivered_on_resume() -> anyhow::Result<()> {
     let run_dir = start_captain(&scenario, &mut pty, requests::SLOW_TASK)?;
     wait_worker_started(&scenario)?;
     pty.wait_for("Renaming the config loader", WAIT)?;
-    argonauts_scenarios::pause_run(&mut pty)?;
+    scenario.pause_run(&mut pty)?;
     pty.press(Key::Esc)?;
     wait_journal(&run_dir, "the run to wait", is_waiting)?;
     wait_mode(&scenario, "the waiting mode", |m| {
@@ -852,9 +875,10 @@ fn app_offers_detected_checks_once() -> anyhow::Result<()> {
     // one has merged.
     wait_approval(&skipping, ApprovalKind::Merge)?;
     merge(&mut pty, &first)?;
+    // The checks are offered before a run starts, so once its worker has started, an offer
+    // for it would be in the trace.
     start_captain(&skipping, &mut pty, requests::TIMED_TASK)?;
     wait_worker_started(&skipping)?;
-    thread::sleep(Duration::from_millis(500));
     let offers = events(&skipping)?
         .into_iter()
         .filter(|event| {
@@ -980,32 +1004,15 @@ fn app_every_slash_command_handled() -> anyhow::Result<()> {
                 Ok(answered.then_some(()))
             })?;
         } else {
-            wait_until(&format!("the app's answer to {line}"), || {
-                let lines = scenario.trace.lines()?;
-                let after = lines.get(before..).unwrap_or_default();
-                let got_it = after.iter().any(|l| {
-                    matches!(
-                        l,
-                        TraceLine::In {
-                            command: UiCommand::Slash { .. },
-                            ..
-                        }
-                    )
-                });
-                let answered = after.iter().any(|l| matches!(l, TraceLine::Out { .. }));
-                Ok((got_it && answered).then_some(()))
-            })?;
+            wait_answered(&scenario, before, &line)?;
         }
-        thread::sleep(Duration::from_millis(200));
         pty.press(Key::Esc)?;
-        thread::sleep(Duration::from_millis(200));
         // The menu completes a command that needs an argument rather than running it, so
         // its text is still in the prompt.
         if needs_argument {
             pty.press(Key::Ctrl('c'))?;
-            thread::sleep(Duration::from_millis(200));
         }
-        check_bottom_row(&pty).map_err(|err| err.context(format!("after {line}")))?;
+        back_to_the_input(&mut pty).map_err(|err| err.context(format!("after {line}")))?;
     }
 
     // `/setup` checks each CLI's login and `/update` runs each CLI's updater (`update`, or
@@ -1073,7 +1080,7 @@ fn ask_rewind(scenario: &Scenario, pty: &mut Pty) -> anyhow::Result<AppChoice> {
     open_rewind(scenario, pty)?;
     pty.wait_for("fallback-1", WAIT)?;
     pty.press(Key::Enter)?;
-    wait_open_choice(scenario, ChoiceKind::ConfirmRewind)
+    wait_shown_choice(scenario, pty, ChoiceKind::ConfirmRewind)
 }
 
 /// `/rewind` at the merge approval: the task's branch goes back to `fallback-1`, and the run's
@@ -1467,7 +1474,8 @@ fn app_context_command_lists_sessions() -> anyhow::Result<()> {
         text.contains("Context Usage") && text.contains("Crew agents") && text.contains("1 agent"),
         "{text}"
     );
-    thread::sleep(Duration::from_millis(500));
+    // The view is the command's answer, drawn from what it counted, so a session it started
+    // would be among them by now.
     assert_eq!(
         all_sessions(&scenario)?.len(),
         sessions,

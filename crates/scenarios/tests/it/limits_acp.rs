@@ -95,7 +95,7 @@ fn limits_acp_steer_then_stop_after_tool() -> anyhow::Result<()> {
         tool_update(frame, "t2", "in_progress") || is_tool_call(frame, "t2")
     })?;
     // A pause stops each session after its running tool call.
-    argonauts_scenarios::pause_run(&mut pty)?;
+    limits.pause_run(&mut pty)?;
     let cancel = limits.wait_for_frame("the cancel after t2", LONG_WAIT, |frame| {
         client_call(frame, "session/cancel") && frame.index > running.index
     })?;

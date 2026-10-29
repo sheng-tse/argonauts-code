@@ -420,6 +420,38 @@ fn a_machines_name_and_an_organization_are_found() {
 }
 
 #[test]
+fn a_copy_of_the_source_without_git_reads_the_files_git_would() {
+    let root = table::workspace();
+    // What a copy without git holds: the tracked files and the new ones no ignore file names.
+    let args = [
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-per-directory=.gitignore",
+    ];
+    let Some(mut listed) = tree::listed_by_git(&root, &args) else {
+        return;
+    };
+    listed.sort();
+    listed.dedup();
+    let walked = tree::walked(&root);
+    let left_out: Vec<&String> = listed
+        .iter()
+        .filter(|path| walked.binary_search(path).is_err())
+        .collect();
+    let taken_in: Vec<&String> = walked
+        .iter()
+        .filter(|path| listed.binary_search(path).is_err())
+        .collect();
+    assert!(
+        left_out.is_empty() && taken_in.is_empty(),
+        "outside a git checkout the walk reads other files than git lists\n\
+         left out: {left_out:?}\ntaken in: {taken_in:?}"
+    );
+}
+
+#[test]
 fn every_fixture_is_a_recording_or_made_here() {
     let table = table::load();
     let unsorted: Vec<&str> = tree::files()

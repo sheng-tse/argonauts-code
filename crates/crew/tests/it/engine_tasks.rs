@@ -51,6 +51,7 @@ use argonauts_crew::state::RunState;
 use argonauts_crew::task;
 use argonauts_crew::task::checks::{self, NO_COMMAND_CHECKS};
 use argonauts_crew::workflow::{StepAt, StepCall, StepDone};
+use argonauts_testkit::deadline;
 use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::MemorySink;
 
@@ -850,7 +851,11 @@ async fn a_task_the_run_had_no_room_for_starts_its_try_once_the_limit_is_raised(
     ];
     let bench = Bench::new(&crew, RunMode::Crew, &tasks).await?;
 
-    let built = tokio::time::timeout(Duration::from_secs(60), bench.spawn_build()).await??;
+    let built = tokio::time::timeout(
+        deadline::scaled(Duration::from_secs(60)),
+        bench.spawn_build(),
+    )
+    .await??;
     assert!(
         matches!(built, Err(EngineError::Interrupted)),
         "the build unwinds as a pause has it: {built:?}"
@@ -2078,7 +2083,7 @@ impl Bench {
 async fn finish(
     build: tokio::task::JoinHandle<argonauts_crew::EngineResult<StepDone>>,
 ) -> anyhow::Result<StepDone> {
-    let joined = tokio::time::timeout(Duration::from_secs(60), build)
+    let joined = tokio::time::timeout(deadline::scaled(Duration::from_secs(60)), build)
         .await
         .context("the build step didn't finish")?;
     Ok(joined??)

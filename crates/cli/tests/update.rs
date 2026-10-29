@@ -23,7 +23,7 @@ fn waiting_claude(dir: &Path, pid: &Path) -> std::path::PathBuf {
 }
 
 fn gone(pid: &str) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = argonauts_testkit::deadline::after(Duration::from_secs(5));
     while Instant::now() < deadline {
         let alive = Command::new("kill")
             .args(["-0", pid])
@@ -65,7 +65,7 @@ fn ctrl_c_stops_argonauts_update_and_its_updaters() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = argonauts_testkit::deadline::after(Duration::from_secs(30));
     let updater_child = loop {
         if let Ok(text) = fs::read_to_string(&pid)
             && !text.trim().is_empty()

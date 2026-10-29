@@ -64,7 +64,7 @@ impl Limits {
         arg: &str,
         timeout: Duration,
     ) -> anyhow::Result<Invocation> {
-        let deadline = Instant::now() + timeout;
+        let deadline = argonauts_testkit::deadline::after(timeout);
         loop {
             if let Some(call) = self.call_with(program, arg)? {
                 return Ok(call);
@@ -107,7 +107,7 @@ impl Limits {
         timeout: Duration,
         pick: impl Fn(&Frame) -> bool,
     ) -> anyhow::Result<Frame> {
-        let deadline = Instant::now() + timeout;
+        let deadline = argonauts_testkit::deadline::after(timeout);
         loop {
             if let Some(frame) = self.frames()?.into_iter().find(|frame| pick(frame)) {
                 return Ok(frame);

@@ -5,6 +5,10 @@
 //!
 //! A second parser runs one byte ahead of vt100 to say what each byte is about to do. Before a
 //! byte that can scroll, the rows it would push off the top are copied out.
+//!
+//! Like those terminals, it shows a frame the app wraps in a synchronized update
+//! (`CSI ? 2026 h` … `CSI ? 2026 l`) only once the frame is whole, so a test never reads one
+//! half drawn, however long the app stalls in the middle of it.
 
 use std::collections::VecDeque;
 
@@ -20,6 +24,14 @@ pub(super) struct Emulator {
     /// wrap without asking vt100 after every character.
     cursor: Option<(u16, u16)>,
     printed: u16,
+    /// What the screen showed when an unfinished synchronized update began.
+    held: Option<Held>,
+}
+
+struct Held {
+    screen: vt100::Screen,
+    /// Rows the update has pushed into the scrollback so far, shown once it ends.
+    pushed: usize,
 }
 
 /// What a byte does, as far as scrolling cares.
@@ -34,9 +46,14 @@ enum Action {
     Region(u16, u16),
     /// `ESC c`.
     Reset,
+    /// `CSI ? 2026 h` begins a synchronized update and `CSI ? 2026 l` ends it.
+    Synchronized(bool),
     /// Anything else, which may move the cursor.
     Other,
 }
+
+/// The private mode of synchronized updates.
+const SYNCHRONIZED: u16 = 2026;
 
 #[derive(Default)]
 struct Spy {
@@ -66,11 +83,14 @@ impl vte::Perform for Spy {
             .iter()
             .map(|param| param.first().copied().unwrap_or(0));
         let mut next = || numbers.next().unwrap_or(0);
-        self.action = Some(match (intermediates.is_empty(), action) {
-            (true, 'S') => Action::ScrollUp(next().max(1)),
-            (true, 'r') => {
+        self.action = Some(match (intermediates, action) {
+            ([], 'S') => Action::ScrollUp(next().max(1)),
+            ([], 'r') => {
                 let top = next();
                 Action::Region(top, next())
+            }
+            ([b'?'], 'h' | 'l') if numbers.any(|mode| mode == SYNCHRONIZED) => {
+                Action::Synchronized(action == 'h')
             }
             _ => Action::Other,
         });
@@ -104,16 +124,35 @@ impl Emulator {
             limit: scrollback,
             cursor: None,
             printed: 0,
+            held: None,
         }
     }
 
+    /// The screen as the program has drawn it so far, which is where the cursor is.
     pub(super) fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
     }
 
-    /// Oldest first, trailing spaces trimmed.
+    /// The screen a person would see: during an unfinished synchronized update, the one from
+    /// before it.
+    pub(super) fn shown(&self) -> &vt100::Screen {
+        self.held
+            .as_ref()
+            .map_or(self.parser.screen(), |held| &held.screen)
+    }
+
+    /// The scrollback a person would see, oldest first, trailing spaces trimmed. Rows an
+    /// unfinished synchronized update pushed up aren't in it yet.
     pub(super) fn scrollback(&self) -> impl Iterator<Item = &str> {
-        self.scrollback.iter().map(String::as_str)
+        let pushed = self.held.as_ref().map_or(0, |held| held.pushed);
+        let shown = self.scrollback.len().saturating_sub(pushed);
+        self.scrollback.iter().take(shown).map(String::as_str)
+    }
+
+    /// Shows what the program drew, even mid-update, as a terminal does once the program is
+    /// gone.
+    pub(super) fn release(&mut self) {
+        self.held = None;
     }
 
     /// As vt100 resizes a region: one that reached the bottom still does.
@@ -129,6 +168,8 @@ impl Emulator {
         self.region = (top, bottom);
         self.parser.screen_mut().set_size(rows, cols);
         self.cursor = None;
+        // A held screen has the old size; the program draws the new one whole.
+        self.held = None;
     }
 
     pub(super) fn process(&mut self, bytes: &[u8]) {
@@ -190,7 +231,15 @@ impl Emulator {
             Action::Reset => {
                 self.region = (0, rows.saturating_sub(1));
                 self.scrollback.clear();
+                self.held = None;
             }
+            Action::Synchronized(true) if self.held.is_none() => {
+                self.held = Some(Held {
+                    screen: screen.clone(),
+                    pushed: 0,
+                });
+            }
+            Action::Synchronized(false) => self.held = None,
             _ => {}
         }
         self.parser.process(&[byte]);
@@ -230,6 +279,9 @@ impl Emulator {
     }
 
     fn push(&mut self, row: String) {
+        if let Some(held) = &mut self.held {
+            held.pushed += 1;
+        }
         self.scrollback.push_back(row);
         while self.scrollback.len() > self.limit {
             self.scrollback.pop_front();
@@ -382,6 +434,49 @@ mod tests {
         assert_eq!(kept(&whole), kept(&bytewise));
         assert_eq!(visible(&whole), visible(&bytewise));
         assert!(kept(&whole).contains(&"row-1 ünï 界"), "{:?}", kept(&whole));
+    }
+
+    fn shown(emulator: &Emulator) -> Vec<String> {
+        let (_, cols) = emulator.shown().size();
+        emulator
+            .shown()
+            .rows(0, cols)
+            .map(|row| row.trim_end().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_synchronized_frame_shows_once_it_is_whole() {
+        let mut emulator = Emulator::new(3, 20, 100);
+        emulator.process(b"\x1b[?2026h\x1b[1;1Hfirst\x1b[?2026l");
+        assert_eq!(shown(&emulator), ["first", "", ""]);
+        emulator.process(b"\x1b[?2026h\x1b[1;1Hsecond\x1b[2;1Hhalf");
+        assert_eq!(shown(&emulator), ["first", "", ""], "a frame half drawn");
+        assert_eq!(visible(&emulator), ["second", "half", ""]);
+        emulator.process(b" done\x1b[?2026l");
+        assert_eq!(shown(&emulator), ["second", "half done", ""]);
+    }
+
+    #[test]
+    fn rows_a_synchronized_frame_pushes_up_show_with_it() {
+        let mut emulator = Emulator::new(2, 20, 100);
+        emulator.process(b"\x1b[?2026h");
+        emulator.process(lines(1..=4).as_bytes());
+        assert!(kept(&emulator).is_empty(), "{:?}", kept(&emulator));
+        emulator.process(b"\x1b[?2026l");
+        assert_eq!(kept(&emulator), ["line-1", "line-2", "line-3"]);
+    }
+
+    #[test]
+    fn a_frame_left_unfinished_shows_once_released_or_resized() {
+        let mut emulator = Emulator::new(2, 20, 100);
+        emulator.process(b"\x1b[?2026hlost");
+        assert_eq!(shown(&emulator), ["", ""]);
+        emulator.release();
+        assert_eq!(shown(&emulator), ["lost", ""]);
+        emulator.process(b"\x1b[?2026h\r\nmore");
+        emulator.set_size(3, 20);
+        assert_eq!(shown(&emulator), ["lost", "more", ""]);
     }
 
     #[test]

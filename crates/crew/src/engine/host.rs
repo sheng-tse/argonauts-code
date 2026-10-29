@@ -1095,10 +1095,14 @@ impl Host {
                     continue;
                 }
                 // A worker's input record comes first, so by its first event the session has
-                // started with its messages. A start that fails sends no event.
+                // started with its messages, and is owed what was posted while it started. A
+                // start that fails sends no event.
                 let recorded = deliveries
                     .take()
-                    .map_or(Ok(()), |start| start.record(self))
+                    .map_or(Ok(()), |start| {
+                        start.record(self)?;
+                        delivery::catch_up(self, key).map(drop)
+                    })
                     .and_then(|()| self.record_worker_event(&source, key, task, event));
                 if let Err(err) = recorded {
                     failed = Some(err);
@@ -1419,6 +1423,8 @@ impl Host {
                 () = halt.cancelled() => {}
             }
         });
+        // What was posted for it while it started, which no poster could hand it until now.
+        delivery::catch_up(self, &key)?;
         Ok(Running::new(key, running, ended))
     }
 

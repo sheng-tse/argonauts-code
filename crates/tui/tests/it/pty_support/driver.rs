@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use argonauts_core::app::UiCommand;
-use argonauts_testkit::{Key, Pty, PtyCommand, Screen};
+use argonauts_testkit::{Key, Pty, PtyCommand, Screen, deadline};
 use regex::{Regex, RegexBuilder};
 use serde_json::Value;
 use tempfile::TempDir;
@@ -16,17 +16,15 @@ use tempfile::TempDir;
 use super::screen::{bells, titles};
 use super::script::Script;
 
-/// The longest any single wait may take.
+/// The longest any single wait may take, multiplied by the testkit's deadline scale.
 pub const WAIT: Duration = Duration::from_secs(5);
 pub const ROWS: u16 = 32;
 pub const COLS: u16 = 100;
 
 const POLL: Duration = Duration::from_millis(20);
-/// How long a lone Esc gets to be read before the next key. Read together, `ESC ESC` is one
-/// Esc and `ESC d` is Alt+d, as in any terminal app.
-const ESC_SETTLE: Duration = Duration::from_millis(60);
 
-/// Variables from the developer's shell that would change what the screen draws.
+/// Variables from the developer's shell that would change what the screen draws, beside the
+/// ones naming the terminal, which the pty itself leaves out.
 const CLEARED_ENV: &[&str] = &[
     "NO_COLOR",
     "FORCE_COLOR",
@@ -36,8 +34,6 @@ const CLEARED_ENV: &[&str] = &[
     "ARGONAUTS_SESSION",
     "VISUAL",
     "EDITOR",
-    "TMUX",
-    "TERM_PROGRAM",
     "LC_ALL",
 ];
 
@@ -54,6 +50,9 @@ pub struct Launch {
     unanswered: bool,
     /// Written under the private home before start, by path within it.
     home_files: Vec<(String, String)>,
+    /// How long a first Ctrl+C, Ctrl+D or Esc waits for the second, when not the second
+    /// people get.
+    double_press: Option<Duration>,
 }
 
 /// Runs the test driver from a shell, which prints a line first, as a prompt would, and can start
@@ -83,6 +82,15 @@ impl Launch {
 
     pub fn env(mut self, name: &str, value: impl Into<OsString>) -> Self {
         self.env.push((name.to_owned(), value.into()));
+        self
+    }
+
+    /// Gives a first Ctrl+C, Ctrl+D or Esc as long as a wait may take to get its second, for a
+    /// test that looks at the screen between the two presses: a busy machine can stall there
+    /// for longer than the second people get. The hint the first press shows stays as long.
+    /// The screen's own tests check the second against a clock of theirs.
+    pub fn double_press_room(mut self) -> Self {
+        self.double_press = Some(deadline::scaled(WAIT));
         self
     }
 
@@ -178,6 +186,9 @@ impl Launch {
             .env("DRIVER_UI", self.ui.join("\n"))
             .env("DRIVER_COMMANDS", commands.as_os_str())
             .env("DRIVER_SIGNALS", signals.as_os_str());
+        if let Some(window) = self.double_press {
+            command = command.env("DRIVER_DOUBLE_PRESS_MS", window.as_millis().to_string());
+        }
         for name in CLEARED_ENV {
             command = command.env_remove(name);
         }
@@ -244,6 +255,7 @@ impl TestDriver {
             shell: None,
             unanswered: false,
             home_files: Vec::new(),
+            double_press: None,
         }
     }
 
@@ -264,11 +276,9 @@ impl TestDriver {
         self.pty.send(text).expect("typing into the CLI");
     }
 
+    /// Presses a key. An Esc gets a moment to be read alone, as the pty driver gives it.
     pub fn press(&mut self, key: Key) {
         self.pty.press(key).expect("pressing a key");
-        if key == Key::Esc {
-            thread::sleep(ESC_SETTLE);
-        }
     }
 
     pub fn press_all(&mut self, keys: &[Key]) {
@@ -319,7 +329,7 @@ impl TestDriver {
     /// may or may not be needed.
     pub fn poll_visible(&self, pattern: &str, timeout: Duration) -> Option<Screen> {
         let regex = regex(pattern);
-        let deadline = Instant::now() + timeout.min(WAIT);
+        let deadline = deadline::after(timeout.min(WAIT));
         loop {
             let screen = self.screen();
             if regex.is_match(&screen.visible_text()) {
@@ -343,7 +353,7 @@ impl TestDriver {
     }
 
     pub fn wait_until(&self, what: &str, done: impl Fn(&Screen) -> bool) -> Screen {
-        let deadline = Instant::now() + WAIT;
+        let deadline = deadline::after(WAIT);
         loop {
             let screen = self.screen();
             if done(&screen) {
@@ -438,7 +448,7 @@ impl TestDriver {
 
     /// Like `wait_command`, for the oldest one that also passes `check`.
     pub fn wait_command_where(&self, kind: &str, check: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + WAIT;
+        let deadline = deadline::after(WAIT);
         loop {
             let values = self.command_values();
             let mut taken = self.taken.borrow_mut();
@@ -514,7 +524,7 @@ impl TestDriver {
 
     pub fn wait_title(&self, pattern: &str) -> String {
         let regex = regex(pattern);
-        let deadline = Instant::now() + WAIT;
+        let deadline = deadline::after(WAIT);
         loop {
             let titles = self.titles();
             if let Some(title) = titles.iter().rev().find(|title| regex.is_match(title)) {

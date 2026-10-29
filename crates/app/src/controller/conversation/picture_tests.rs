@@ -4,7 +4,7 @@
 use argonauts_core::app::{AppEvent, ConversationEvent, UiCommand};
 use argonauts_core::events::session::InputPartKind;
 use argonauts_core::pictures::Picture;
-use argonauts_testkit::FakeSession;
+use argonauts_testkit::{FakeSession, Hold};
 
 use crate::controller::test_support::TestDriver;
 
@@ -86,9 +86,10 @@ async fn messages_typed_while_a_turn_runs_each_keep_their_own_pictures() {
     for path in [&first, &second] {
         std::fs::write(path, [0x89, b'P', b'N', b'G']).unwrap();
     }
+    let looking = Hold::new();
     driver
         .agent
-        .push(FakeSession::completed("Looking.").with_delay(std::time::Duration::from_millis(200)));
+        .push(FakeSession::completed("Looking.").held_after(0, &looking));
     driver.agent.push(FakeSession::completed("One."));
     driver.agent.push(FakeSession::completed("Two."));
     driver.submit("look at the login page").await;
@@ -98,6 +99,8 @@ async fn messages_typed_while_a_turn_runs_each_keep_their_own_pictures() {
     driver
         .send(with_picture("the footer [Image #2]", 2, &second))
         .await;
+    driver.taken().await;
+    looking.release();
     for _ in 0..3 {
         driver.until(turn_ended).await;
     }

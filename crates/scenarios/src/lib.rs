@@ -7,18 +7,37 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context as _;
+use argonauts_core::app::UiCommand;
 use argonauts_core::events::RunEvent;
-use argonauts_testkit::{FakeClis, Key, Pty, PtyCommand, TempRepo, Trace, argonauts_bin, journal};
+use argonauts_testkit::{
+    FakeClis, Key, Pty, PtyCommand, Screen, TempRepo, Trace, argonauts_bin, journal,
+};
 
 mod leftovers;
 
+/// The longest a wait may take, multiplied by the testkit's deadline scale.
 pub const WAIT: Duration = Duration::from_secs(20);
 
-/// A question works only the arrows for its first moment on screen (the screen's
-/// `QUESTION_GUARD`), so a key meant for something else never answers it. A test waits that out
-/// before working a question, as someone reading it would.
+/// How long a question works only the arrows once it shows, as the screen's `QUESTION_GUARD`.
+const QUESTION_GUARD: Duration = Duration::from_millis(150);
+
+/// A question works only the arrows for its first moment on screen, so a key meant for
+/// something else never answers it. Once the screen shows the question, a test waits that out
+/// as someone reading it would. The moment counts from when the question shows, not from when
+/// the app asked it, so the wait is as long on a busy machine: call this only once the screen
+/// shows the question, as [`past_the_guard_of`] does.
 pub fn past_the_question_guard() {
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(QUESTION_GUARD + Duration::from_millis(100));
+}
+
+/// Waits for the screen to show the question titled `title`, then past its guard. The trace
+/// has a question before the screen does, and on a busy machine well before.
+pub fn past_the_guard_of(pty: &Pty, title: &str) -> anyhow::Result<()> {
+    pty.wait_until(&format!("the question {title:?}"), WAIT, |screen| {
+        screen.visible.iter().any(|row| row.contains(title))
+    })?;
+    past_the_question_guard();
+    Ok(())
 }
 
 /// The workflow line a setup that picked council writes, with its comment.
@@ -143,25 +162,37 @@ pub fn no_servers_of_yours<'a>(args: &[&'a str]) -> Vec<&'a str> {
     all
 }
 
-/// Pauses the run on screen at its next safe point, from its row in the list under the input:
-/// `x` asks, and `p` pauses in place of stopping. Esc leaves a run's agents going, so it no
-/// longer starts a pause. Back in the input, the working line says the run is pausing, or the
-/// transcript says it paused.
-pub fn pause_run(pty: &mut Pty) -> anyhow::Result<()> {
-    pty.press(Key::Down)?;
-    pty.press(Key::Char('x'))?;
-    pty.wait_for("p to pause it", WAIT)?;
-    pty.press(Key::Char('p'))?;
-    // An agent with no tool call open stops at once, so on a busy machine the pausing line
-    // can come and go between two looks at the screen. The paused run's line stays.
-    pty.wait_for(
-        r"Pausing… \(esc again to stop now\)|You paused the run",
-        WAIT,
-    )?;
-    // The list still has the keys, and Esc hands them back to the input.
-    pty.press(Key::Esc)?;
-    pty.wait_for(r"shift\+tab to cycle", WAIT)?;
-    Ok(())
+/// The bottom line once the input has the keys again: Shift+Tab's hint, and none of the
+/// list's own keys.
+fn input_has_the_keys(screen: &Screen) -> bool {
+    let text = screen.visible_text();
+    text.contains("shift+tab to cycle") && !text.contains("esc to go back")
+}
+
+impl Scenario {
+    /// Pauses the run on screen at its next safe point, from its row in the list under the
+    /// input: `x` asks, and `p` pauses in place of stopping. Esc leaves a run's agents going,
+    /// so it no longer starts a pause. It returns once the app took the pause and the input
+    /// has the keys back; the run may still be pausing then, or already paused.
+    pub fn pause_run(&self, pty: &mut Pty) -> anyhow::Result<()> {
+        pty.press(Key::Down)?;
+        pty.press(Key::Char('x'))?;
+        pty.wait_for_visible("p to pause it", WAIT)?;
+        pty.press(Key::Char('p'))?;
+        // An agent with no tool call open stops at once, so on a busy machine the pausing
+        // line can come and go between two looks at the screen. The app's trace keeps the
+        // pause it was sent.
+        self.trace
+            .wait_for_command(
+                |command| matches!(command, UiCommand::Pause { now: false }),
+                WAIT,
+            )
+            .context("waiting for the app to take the pause")?;
+        // The list still has the keys, and Esc hands them back to the input.
+        pty.press(Key::Esc)?;
+        pty.wait_until("the input to have the keys back", WAIT, input_has_the_keys)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -245,7 +276,7 @@ mod tests {
                 .filter(|line| line.split_whitespace().next() == Some(&group.to_string()))
                 .count()
         };
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = argonauts_testkit::deadline::after(Duration::from_secs(5));
         while in_group() < 2 {
             assert!(
                 Instant::now() < deadline,
@@ -255,7 +286,7 @@ mod tests {
         }
 
         drop(scenario);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = argonauts_testkit::deadline::after(Duration::from_secs(5));
         while run_host.try_wait().unwrap().is_none() || in_group() > 0 {
             assert!(
                 Instant::now() < deadline,

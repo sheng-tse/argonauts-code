@@ -3,6 +3,7 @@
 //! marks the message passed to that session, so replaying a log never sends it twice.
 
 use std::fmt::Write as _;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::run::Party;
@@ -20,6 +21,16 @@ use argonauts_core::settings::Settings;
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::state::blackboard::Addressee;
+
+/// Checking that a session hasn't had a message, recording that it has, and sending it are one
+/// step, so two posters, or a poster and a session catching up as it goes live, never both
+/// hand one message over. A hand-over is a check and two records, so one lock shared by every
+/// run in the process is cheaper than keeping one per run.
+static HANDING_OVER: Mutex<()> = Mutex::new(());
+
+fn one_at_a_time() -> MutexGuard<'static, ()> {
+    HANDING_OVER.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// The parts a session that has already started gets: every pending message for it, recorded
 /// delivered at once.
@@ -76,6 +87,7 @@ impl StartDeliveries {
         let Some(who) = &self.to else {
             return Ok(());
         };
+        let _one_at_a_time = one_at_a_time();
         for message in &self.messages {
             record_delivered(host, message, who)?;
         }
@@ -107,10 +119,32 @@ pub fn queue(
         queued_at: host.now(),
         delivery: Delivery::NextTurn,
     };
-    if host.read(|state| state.blackboard.was_delivered(message, session)) {
-        return Ok(queued);
-    }
     hand_over(host, &who, queued)
+}
+
+/// Queues on a session that has just gone live every message posted for it while it started:
+/// its first prompt was built before them, and no poster could reach it until it was live. Call
+/// it once the session is live and its first prompt's messages are recorded delivered.
+pub fn catch_up(host: &Host, session: &SessionKey) -> EngineResult<Vec<QueuedMessage>> {
+    let who = addressee(host, session)?;
+    let pending: Vec<MessageId> = host.read(|state| {
+        state
+            .blackboard
+            .pending_for(&who)
+            .into_iter()
+            .map(|message| message.id.clone())
+            .collect()
+    });
+    let mut queued = Vec::new();
+    for message in pending {
+        match queue(host, &message, session) {
+            Ok(one) => queued.push(one),
+            // Blind, or it ended meanwhile: it waits for a delivery point it can take.
+            Err(EngineError::Refused(_)) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(queued)
 }
 
 /// Queues the message on every running session it's for that hasn't had it. Sessions that
@@ -141,14 +175,18 @@ pub fn to_running(host: &Host, message: &MessageId) -> EngineResult<Vec<QueuedMe
     Ok(queued)
 }
 
-/// Records the message queued and delivered, then sends it. The send takes a place in the
-/// session's control queue held before the records, so nothing can fail once they're written,
-/// and a replay that finds them never sends the message again.
+/// Records the message queued and delivered, then sends it, unless the session had it already.
+/// The send takes a place in the session's control queue held before the records, so nothing
+/// can fail once they're written, and a replay that finds them never sends the message again.
 pub(crate) fn hand_over(
     host: &Host,
     who: &Addressee,
     queued: QueuedMessage,
 ) -> EngineResult<QueuedMessage> {
+    let _one_at_a_time = one_at_a_time();
+    if host.read(|state| state.blackboard.was_delivered(&queued.id, &who.session)) {
+        return Ok(queued);
+    }
     let slot = host
         .reserve_control(&who.session)
         .map_err(EngineError::Refused)?;

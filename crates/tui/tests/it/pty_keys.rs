@@ -34,7 +34,9 @@ fn wait_input(driver: &TestDriver, text: &str) {
 #[test]
 fn ctrl_c_clears_then_exits_twice() {
     let (_, _, events) = crew_run(1);
-    let mut driver = TestDriver::start(Script::idle().all(0, events));
+    let mut driver = TestDriver::launch(Script::idle().all(0, events))
+        .double_press_room()
+        .start();
     driver.wait_visible(WORKING);
     driver.send("a draft to throw away");
     driver.wait_visible("❯ a draft to throw away");
@@ -56,6 +58,7 @@ fn ctrl_c_twice_on_the_inline_screen_leaves_what_keeps_going_in_scrollback() {
     let (_, _, events) = crew_run(1);
     let mut driver = TestDriver::launch(Script::idle().all(0, events))
         .inline()
+        .double_press_room()
         .start();
     driver.wait_visible(WORKING);
     driver.press(Key::Ctrl('c'));

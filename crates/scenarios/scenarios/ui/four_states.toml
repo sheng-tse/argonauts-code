@@ -1,6 +1,6 @@
 # The four states a session shows at every capture width: a conversation answer, a run at work,
-# its merge approval, and the finished run. The worker sleeps before it edits, so the busy
-# screen stays up long enough to capture.
+# its merge approval, and the finished run. The worker waits for the test's `busy-captured`
+# signal before it edits, so the busy screen stays up until it is captured.
 
 [version]
 claude = "2.1.284 (Claude Code)"
@@ -14,7 +14,7 @@ args_contain = ["acceptEdits"]
 prompt_contains = "Fix the install command"
 stdin_prompt = "line"
 [[rule.step]]
-sleep_ms = 3000
+await_signal = "busy-captured"
 [[rule.step]]
 write = { path = "README.md", content = "# acme-api\n\nInstall it with:\n\n    npm install @acme/api\n" }
 [[rule.step]]

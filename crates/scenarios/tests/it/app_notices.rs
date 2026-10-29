@@ -138,7 +138,7 @@ fn app_committed_local_file_warned() -> anyhow::Result<()> {
 
     let mut pty = start(&scenario)?;
     submit(&mut pty, "/effort high")?;
-    let question = wait_open_choice(&scenario, ChoiceKind::SettingScope)?;
+    let question = wait_shown_choice(&scenario, &pty, ChoiceKind::SettingScope)?;
     let said = format!(
         "{}\n{}\n{}",
         question.title,
@@ -187,13 +187,7 @@ fn app_needs_you_sends_conversation_notification() -> anyhow::Result<()> {
         let sends = scenario.clis.message_sends()?;
         Ok((!sends.is_empty()).then_some(sends))
     })?;
-    thread::sleep(Duration::from_millis(500));
-    let sends_now = scenario.clis.message_sends()?;
-    assert_eq!(
-        sends_now.len(),
-        sends.len(),
-        "one task sent more than one message"
-    );
+    assert_eq!(sends.len(), 1, "{sends:?}");
     let argv = &sends[0];
     assert_eq!(argv.len(), 5, "the text isn't one whole argument: {argv:?}");
     assert_eq!(argv[..4], ["hermes", "send", "--to", "me"], "{argv:?}");
@@ -212,5 +206,18 @@ fn app_needs_you_sends_conversation_notification() -> anyhow::Result<()> {
         );
     }
     scenario.shot(&pty, "app_needs_you_sends_conversation_notification")?;
+    // Once the run has merged it waits for nobody, so a second message for the question would
+    // have come by now.
+    merge(&mut pty, &run_dir)?;
+    let waits = scenario
+        .clis
+        .message_sends()?
+        .into_iter()
+        .filter(|argv| {
+            argv.last()
+                .is_some_and(|text| text.contains("waits for you"))
+        })
+        .count();
+    assert_eq!(waits, 1, "one question sent more than one message");
     Ok(())
 }

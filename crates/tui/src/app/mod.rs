@@ -41,6 +41,7 @@ use crate::views::ViewCtx;
 
 pub use frames::{FrameScheduler, MIN_FRAME_INTERVAL};
 pub use fullscreen::Scrollback;
+pub use input::QUIT_WINDOW;
 pub use live::{DockedRows, LiveView, compose_docked, compose_live};
 pub use overlay::{OverlayEvent, OverlayView, TranscriptOverlay};
 pub use run::{Flow, Host, StdoutWriter, run};
@@ -185,6 +186,8 @@ pub struct Ui<W: Write> {
     /// conversation the inline screen would have printed into the terminal's scrollback.
     scrollback: Option<Scrollback>,
     quit: Option<QuitArm>,
+    /// How long a first press of a double-press key waits for the second.
+    double_press: Duration,
     /// Until when a second press of the stop-all chord stops every background agent.
     stop_all_armed: Option<Instant>,
     /// Until when a second Esc clears the input.
@@ -235,6 +238,7 @@ impl<W: Write> Ui<W> {
             on_alternate: false,
             scrollback: None,
             quit: None,
+            double_press: QUIT_WINDOW,
             stop_all_armed: None,
             clear_armed: None,
             chord: None,
@@ -250,6 +254,11 @@ impl<W: Write> Ui<W> {
     /// For keys from a real terminal, with the times they arrived.
     pub fn time_keys(&mut self, on: bool) {
         self.key_times = on;
+    }
+
+    /// How long a first Ctrl+C, Ctrl+D or Esc waits for the second, [`QUIT_WINDOW`] unless set.
+    pub fn set_double_press(&mut self, window: Duration) {
+        self.double_press = window;
     }
 
     pub fn keymap(&self) -> &Keymap {

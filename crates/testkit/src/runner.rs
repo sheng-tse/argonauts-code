@@ -23,7 +23,7 @@ use argonauts_core::session_runner::{
 use argonauts_core::{AgentEvent, CommandSpec, Spend};
 use serde_json::Value;
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -59,6 +59,72 @@ pub struct FakeSession {
     pub event_delay: Duration,
     /// After its events, keep running until told to stop, like an agent mid-task.
     pub until_stopped: bool,
+    /// Where it waits for a test to let it go on.
+    held: Option<HeldAt>,
+}
+
+/// Holds fake sessions part way through until the test releases it, so a test can act while a
+/// session is still at work however slow the machine is. Once released it stays released, and
+/// dropping it releases it too, so a test that fails never leaves a session waiting.
+#[derive(Debug)]
+pub struct Hold {
+    open: watch::Sender<bool>,
+}
+
+impl Hold {
+    pub fn new() -> Self {
+        Self {
+            open: watch::Sender::new(false),
+        }
+    }
+
+    /// Lets every session it holds go on.
+    pub fn release(&self) {
+        self.open.send_replace(true);
+    }
+}
+
+impl Default for Hold {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HeldAt {
+    /// How many of its events the session plays before it waits.
+    after: usize,
+    open: watch::Receiver<bool>,
+}
+
+impl PartialEq for HeldAt {
+    fn eq(&self, other: &Self) -> bool {
+        self.after == other.after && self.open.same_channel(&other.open)
+    }
+}
+
+impl HeldAt {
+    /// Waits to be released, taking in control messages meanwhile so the test sees them at
+    /// once. What they ask, a stop or a dropped control sender included, happens only once the
+    /// session goes on, as with a CLI busy in the middle of a step. `take_in` records one and
+    /// says whether it stops the session; the wait returns whether anything did.
+    async fn wait(
+        mut self,
+        control: &mut mpsc::Receiver<SessionControl>,
+        mut take_in: impl FnMut(SessionControl) -> bool,
+    ) -> bool {
+        let mut stop = false;
+        let mut dropped = false;
+        loop {
+            tokio::select! {
+                _ = self.open.wait_for(|open| *open) => return stop || dropped,
+                message = control.recv(), if !dropped => match message {
+                    Some(message) => stop |= take_in(message),
+                    None => dropped = true,
+                },
+            }
+        }
+    }
 }
 
 impl FakeSession {
@@ -79,6 +145,7 @@ impl FakeSession {
             end: session_end(EndReason::Completed, Some(text), None),
             event_delay: Duration::ZERO,
             until_stopped: false,
+            held: None,
         }
     }
 
@@ -94,6 +161,7 @@ impl FakeSession {
             end: session_end(EndReason::Completed, Some(&text), Some(value)),
             event_delay: Duration::ZERO,
             until_stopped: false,
+            held: None,
         }
     }
 
@@ -104,6 +172,7 @@ impl FakeSession {
             end: session_end(reason, None, None),
             event_delay: Duration::ZERO,
             until_stopped: false,
+            held: None,
         }
     }
 
@@ -115,6 +184,7 @@ impl FakeSession {
             end: session_end(EndReason::Stopped, None, None),
             event_delay: Duration::ZERO,
             until_stopped: true,
+            held: None,
         }
     }
 
@@ -148,6 +218,17 @@ impl FakeSession {
 
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.event_delay = delay;
+        self
+    }
+
+    /// Plays its first `events` events, then waits for `hold` to be released before the rest
+    /// and its end. A test that acts mid-session waits for what it needs on that hold instead
+    /// of racing a delay.
+    pub fn held_after(mut self, events: usize, hold: &Hold) -> Self {
+        self.held = Some(HeldAt {
+            after: events,
+            open: hold.open.subscribe(),
+        });
         self
     }
 }
@@ -401,19 +482,27 @@ impl SessionRunner for FakeRunner {
                 let mut end = session.end;
                 let mut stopped = false;
                 let mut deliveries = Vec::new();
+                let mut held = session.held;
+                let take_in = |message: SessionControl, deliveries: &mut Vec<RunnerEvent>| {
+                    deliveries.extend(delivered(&message, &record));
+                    let stop = is_stop(&message);
+                    lock(&controls).push((spec.key.clone(), message));
+                    stop
+                };
                 // The input record always comes first, whatever arrives on the control channel.
                 let _ = events_tx.send(input).await;
-                for event in session.events {
+                for (played, event) in session.events.into_iter().enumerate() {
+                    if let Some(hold) = held.take_if(|hold| hold.after == played) {
+                        stopped |= hold
+                            .wait(&mut control_rx, |message| take_in(message, &mut deliveries))
+                            .await;
+                    }
                     if !session.event_delay.is_zero() {
                         tokio::time::sleep(session.event_delay).await;
                     }
                     loop {
                         match control_rx.try_recv() {
-                            Ok(message) => {
-                                stopped |= is_stop(&message);
-                                deliveries.extend(delivered(&message, &record));
-                                lock(&controls).push((spec.key.clone(), message));
-                            }
+                            Ok(message) => stopped |= take_in(message, &mut deliveries),
                             // Nobody holds the control sender any more: that means stop.
                             Err(TryRecvError::Disconnected) => {
                                 stopped = true;
@@ -431,6 +520,15 @@ impl SessionRunner for FakeRunner {
                     }
                     if events_tx.send(event).await.is_err() {
                         break;
+                    }
+                }
+                // Held past its last event: it waits before it ends, or before it keeps running.
+                if let Some(hold) = held.filter(|_| !stopped && !events_tx.is_closed()) {
+                    stopped |= hold
+                        .wait(&mut control_rx, |message| take_in(message, &mut deliveries))
+                        .await;
+                    for delivery in deliveries.drain(..) {
+                        let _ = events_tx.send(delivery).await;
                     }
                 }
                 if session.until_stopped && !stopped {

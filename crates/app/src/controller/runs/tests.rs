@@ -18,7 +18,7 @@ use super::{RunNews, RunUpdate, attached, focus, on_update, open, status_parts};
 use crate::FirstView;
 use crate::client::test_support as log;
 use crate::controller::header_and_bottom_line::header_and_bottom_line;
-use crate::controller::test_support::{ApprovalCall, Call, CliOptions, TestDriver, WAIT};
+use crate::controller::test_support::{ApprovalCall, Call, CliOptions, TestDriver, max_wait};
 use crate::controller::{Effect, Opening, run_commands};
 use crate::conversation_store::{ConversationRun, ConversationStore};
 use crate::env::AppEnv;
@@ -224,7 +224,7 @@ async fn replayed_approvals_before_replay_done_do_not_notify() {
         .push(&run, question(&run, 4, "approval-002"))
         .await;
     rig.settle().await;
-    let lines = lines_after(&log, 1, WAIT).await;
+    let lines = lines_after(&log, 1, max_wait()).await;
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(
         lines[0].contains(&format!("{run} waits for you at approval-002")),
@@ -745,7 +745,7 @@ async fn a_run_from_elsewhere_notifies_you_while_you_are_away() {
             "run-012 title needs you · /resume run-012"
         ]
     );
-    let lines = lines_after(&log, 2, WAIT).await;
+    let lines = lines_after(&log, 2, max_wait()).await;
     assert_eq!(lines.len(), 2, "{lines:?}");
     // Each notification goes out on its own, so they may land in either order.
     for said in [
@@ -1034,7 +1034,7 @@ async fn a_question_waiting_at_start_waits_while_you_conversation() {
     // The conversation saves it once the step that opened it is done.
     let conversation =
         ConversationStore::open(&driver.env.conversation_dir(), &ConversationId::numbered(1));
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     while conversation.runs().is_empty() && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

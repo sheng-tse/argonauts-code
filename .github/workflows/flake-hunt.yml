@@ -1,0 +1,112 @@
+# Once a week: the terminal and scenario tests, the ones that drive the app in a pty, ten times on
+# Linux and on macOS with no retries, to find the tests that fail now and then before a pull
+# request does. The job's summary lists every test that failed in any run, with how many runs it
+# failed in and its first message, and the job fails when one did. The runs' JUnit reports are
+# kept for 30 days.
+name: Flake hunt
+
+on:
+  schedule:
+    - cron: "41 3 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: flake-hunt
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # As in CI, so a test that fails here is one CI's runners can fail.
+  RUST_TOOLCHAIN: "1.95.0"
+  RUNS: "10"
+  PACKAGES: -p argonauts-scenarios -p argonauts-tui -p argonauts-testkit
+  # Every scenario test, the screen's pty tests, and the pty driver's own.
+  TESTS: >-
+    package(argonauts-scenarios)
+    | (package(argonauts-tui) & binary(it) & test(/^pty_/))
+    | (package(argonauts-testkit) & binary(it) & test(/^pty::/))
+
+jobs:
+  hunt:
+    name: Flake hunt (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update && rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: flake-hunt
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-nextest@0.9
+      # Ubuntu 24.04's AppArmor takes every capability from an unprivileged user namespace, and
+      # the Linux sandbox mounts each session's view of the files in one.
+      - name: Allow user namespaces
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Build and list the tests
+        run: |
+          read -ra packages <<< "$PACKAGES"
+          cargo nextest list --locked "${packages[@]}" -E "$TESTS"
+      - name: Run them ten times
+        env:
+          ARGONAUTS_TEST_DEADLINE_SCALE: ${{ startsWith(matrix.os, 'macos') && '4' || '2' }}
+        run: |
+          read -ra packages <<< "$PACKAGES"
+          reports="$RUNNER_TEMP/flake-hunt"
+          mkdir -p "$reports"
+          unreported=0
+          for run in $(seq 1 "$RUNS"); do
+            echo "::group::Run $run of $RUNS"
+            # A run that writes no report must never pass for the one before it.
+            rm -f target/nextest/hunt/junit.xml
+            # A failed run is counted from its report below, so the next run still goes.
+            status=0
+            cargo nextest run --locked --profile hunt --no-fail-fast "${packages[@]}" -E "$TESTS" \
+              || status=$?
+            if [ -f target/nextest/hunt/junit.xml ]; then
+              cp target/nextest/hunt/junit.xml "$reports/run-$run.xml"
+              [ "$status" -eq 0 ] || echo "Run $run had failures (exit $status)."
+            else
+              echo "::error::Run $run wrote no report (exit $status)."
+              unreported=$((unreported + 1))
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$unreported" -gt 0 ]; then
+            echo "::error::$unreported of $RUNS runs tested nothing that was reported."
+            exit 1
+          fi
+      - name: Tests that failed in any run
+        if: ${{ !cancelled() }}
+        env:
+          TITLE: Flake hunt (${{ matrix.os }})
+        run: |
+          reports=()
+          for run in $(seq 1 "$RUNS"); do
+            reports+=("$RUNNER_TEMP/flake-hunt/run-$run.xml")
+          done
+          python3 -I .github/scripts/junit_report.py --title "$TITLE" --fail-on-failures \
+            --summary "$GITHUB_STEP_SUMMARY" "${reports[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: flake-hunt-${{ matrix.os }}
+          path: ${{ runner.temp }}/flake-hunt
+          retention-days: 30
+          if-no-files-found: warn

@@ -18,7 +18,7 @@ use tokio::net::TcpStream;
 
 use crate::client::test_support::session_started;
 use crate::controller::runs::rig;
-use crate::controller::test_support::{Call as ConductorCall, CliOptions, TestDriver, WAIT};
+use crate::controller::test_support::{Call as ConductorCall, CliOptions, TestDriver, max_wait};
 use argonauts_core::RunId;
 use argonauts_core::events::run::RunOutcome;
 use argonauts_core::events::{RunEvent, RunEventKind, RunLifecycle};
@@ -56,7 +56,7 @@ fn turn_ended(event: &AppEvent) -> bool {
 }
 
 async fn spec_number(driver: &TestDriver, number: usize) -> SessionSpec {
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     loop {
         if let Some(spec) = driver.agent.specs().into_iter().nth(number) {
             return spec;
@@ -96,7 +96,7 @@ fn calling(
 
 /// The run the app started and now follows, once its stream is open.
 pub(super) async fn followed_run(driver: &TestDriver) -> RunId {
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     loop {
         let followed = driver
             .conductor
@@ -309,7 +309,7 @@ async fn after_a_failed_start_the_session_may_start_again() {
     assert!(answer.await.unwrap().is_error);
 
     let again = calling(&spec, START_WORKFLOW, json!({ "request": "Add dates." }));
-    let second = tokio::time::timeout(WAIT, async {
+    let second = tokio::time::timeout(max_wait(), async {
         loop {
             let other = driver
                 .conductor
@@ -474,7 +474,7 @@ async fn a_step_kept_for_this_request_goes_with_the_workflow_it_starts() {
     assert!(!kept.is_error, "{kept:?}");
     let started = handed_over(&driver, &spec, json!({ "request": "Add due dates." })).await;
     assert!(!started.is_error, "{started:?}");
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     while driver.conductor.starts().is_empty() {
         assert!(tokio::time::Instant::now() < deadline, "no run started");
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -669,7 +669,7 @@ async fn slash_plan_has_the_workflow_plan_first() {
     let spec = spec_number(&driver, 0).await;
     let started = handed_over(&driver, &spec, json!({ "request": WORK })).await;
     assert!(!started.is_error, "{started:?}");
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     while driver.conductor.starts().is_empty() {
         assert!(tokio::time::Instant::now() < deadline, "no run started");
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -706,7 +706,7 @@ fn forking(worker: &str) -> argonauts_testkit::FakeRunner {
 
 /// The `n`th session `runner` started.
 async fn spec_of(runner: &argonauts_testkit::FakeRunner, n: usize) -> SessionSpec {
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + max_wait();
     loop {
         if let Some(spec) = runner.specs().into_iter().nth(n) {
             return spec;
@@ -749,7 +749,7 @@ async fn worked_out(config: &'static str) -> (TestDriver, tokio::task::JoinHandl
 async fn an_orchestrator_that_copies_the_session_hears_the_answer_first() {
     let (driver, answer) = worked_out(FORKING).await;
     let run = followed_run(&driver).await;
-    let answer = tokio::time::timeout(WAIT, answer)
+    let answer = tokio::time::timeout(max_wait(), answer)
         .await
         .expect("answered before any agent started")
         .unwrap();

@@ -35,45 +35,105 @@ fn paths() -> &'static HashSet<&'static str> {
     PATHS.get_or_init(|| files().iter().map(|file| file.path.as_str()).collect())
 }
 
-/// What git tracks. Outside a git checkout, every file but build output and hidden folders.
+/// What git tracks. Outside a git checkout, as in a copy of the source, every file the ignore
+/// files leave in.
 fn tracked(root: &Path) -> Vec<String> {
-    let listed = Command::new("git")
+    listed_by_git(root, &["ls-files", "-z"]).unwrap_or_else(|| walked(root))
+}
+
+/// The files git lists under `root` with `args`, those still on disk, or `None` outside a git
+/// checkout.
+pub fn listed_by_git(root: &Path, args: &[&str]) -> Option<Vec<String>> {
+    let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["ls-files", "-z"])
-        .output();
-    if let Ok(output) = listed
-        && output.status.success()
-        && !output.stdout.is_empty()
-    {
-        return String::from_utf8_lossy(&output.stdout)
-            .split('\0')
-            .filter(|path| !path.is_empty() && root.join(path).is_file())
-            .map(str::to_owned)
-            .collect();
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
     }
+    let listed = String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|path| !path.is_empty() && root.join(path).is_file())
+        .map(str::to_owned)
+        .collect();
+    Some(listed)
+}
+
+/// Every file under `root` that no `.gitignore` on its way names, sorted: what git would list,
+/// tracked or not, in a checkout of the same files.
+pub fn walked(root: &Path) -> Vec<String> {
     let mut found = Vec::new();
-    walk(root, root, &mut found);
+    walk(root, "", &mut Vec::new(), &mut found);
+    found.retain(|path| root.join(path).is_file());
     found.sort();
     found
 }
 
-fn walk(root: &Path, dir: &Path, found: &mut Vec<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with('.') || name == "target" {
-            continue;
+/// Walks `dir`, `from_top` below the workspace's top, with the ignore lines read on the way.
+fn walk(dir: &Path, from_top: &str, ignores: &mut Vec<Ignore>, found: &mut Vec<String>) {
+    let own = std::fs::read_to_string(dir.join(".gitignore"))
+        .map(|text| Ignore::read(from_top, &text))
+        .unwrap_or_default();
+    let before = ignores.len();
+    ignores.extend(own);
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // A link to a folder is listed as itself, as git keeps it.
+            let is_folder = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            let path = format!("{from_top}{name}");
+            if name == ".git" || ignores.iter().any(|ignore| ignore.skips(&path, is_folder)) {
+                continue;
+            }
+            match is_folder {
+                true => walk(&entry.path(), &format!("{path}/"), ignores, found),
+                false => found.push(path),
+            }
         }
-        if path.is_dir() {
-            walk(root, &path, found);
-        } else if let Ok(inside) = path.strip_prefix(root) {
-            found.push(inside.to_string_lossy().replace('\\', "/"));
+    }
+    ignores.truncate(before);
+}
+
+/// One line of a `.gitignore`, in the forms the workspace's own use: a name or a pattern with
+/// `*` matched against every name below the file's folder, or against the path from that
+/// folder when it holds a slash; a folder only when it ends in one.
+struct Ignore {
+    /// The ignore file's folder, from the workspace's top: empty, or ending in a slash.
+    base: String,
+    pattern: String,
+    anchored: bool,
+    folders_only: bool,
+}
+
+impl Ignore {
+    fn read(base: &str, text: &str) -> Vec<Self> {
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| {
+                let folders_only = line.ends_with('/');
+                let line = line.trim_end_matches('/');
+                Self {
+                    base: base.to_owned(),
+                    anchored: line.contains('/'),
+                    pattern: line.trim_start_matches('/').to_owned(),
+                    folders_only,
+                }
+            })
+            .collect()
+    }
+
+    fn skips(&self, path: &str, is_folder: bool) -> bool {
+        let Some(below) = path.strip_prefix(&self.base) else {
+            return false;
+        };
+        if self.folders_only && !is_folder {
+            return false;
         }
+        let name = below.rsplit('/').next().unwrap_or(below);
+        table::fits(&self.pattern, if self.anchored { below } else { name })
     }
 }
 

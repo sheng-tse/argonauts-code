@@ -32,6 +32,7 @@ use argonauts_core::settings::workflows::OrchestratorDesigns;
 use argonauts_core::steps::StepName;
 use argonauts_core::workflow::WorkflowRef;
 use argonauts_crew::engine::shared::with_git_env;
+use argonauts_testkit::deadline;
 use argonauts_testkit::{FakeRunner, FakeSession};
 
 use support::{Crew, Gh, Outcome, names};
@@ -491,9 +492,12 @@ async fn in_autopilot_a_pull_request_that_cant_open_keeps_the_branch() -> anyhow
     crew.settings.approvals.autopilot = true;
     crew.settings.approvals.merge.at_hard_limit = AtHardLimit::OpenPullRequest;
     crew.with_tools(Some(Gh::Opens("https://example.invalid/you/repo/pull/3")))?;
-    let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), run(&crew))
-        .await
-        .context("the run asked for a pull request again and again")??;
+    let outcome = tokio::time::timeout(
+        deadline::scaled(std::time::Duration::from_secs(60)),
+        run(&crew),
+    )
+    .await
+    .context("the run asked for a pull request again and again")??;
     assert_eq!(
         outcome.exit,
         EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
@@ -529,9 +533,12 @@ async fn a_checkout_with_no_branch_at_all_keeps_the_runs_branch() -> anyhow::Res
         crew.settings.approvals.autopilot = autopilot;
         crew.repo.git(&["checkout", "--quiet", "--detach"])?;
         crew.repo.git(&["branch", "--quiet", "-D", "main"])?;
-        let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), run(&crew))
-            .await
-            .context("the run asked to merge again and again")??;
+        let outcome = tokio::time::timeout(
+            deadline::scaled(std::time::Duration::from_secs(60)),
+            run(&crew),
+        )
+        .await
+        .context("the run asked to merge again and again")??;
         assert_eq!(
             outcome.exit,
             EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
@@ -560,9 +567,12 @@ async fn in_auto_a_landing_that_cant_be_done_comes_to_you() -> anyhow::Result<()
     crew.settings.approvals.merge.otherwise = Otherwise::OpenPullRequest;
     crew.settings.approvals.rules.merge.max_changed_lines = 0;
     crew.with_tools(Some(Gh::Opens("https://example.invalid/you/repo/pull/3")))?;
-    let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), run(&crew))
-        .await
-        .context("the run asked for a pull request again and again")??;
+    let outcome = tokio::time::timeout(
+        deadline::scaled(std::time::Duration::from_secs(60)),
+        run(&crew),
+    )
+    .await
+    .context("the run asked for a pull request again and again")??;
     assert!(
         matches!(outcome.exit, EngineExit::Waiting(_)),
         "{:?}: {:?}",
@@ -599,9 +609,12 @@ async fn in_autopilot_a_cap_another_round_cant_change_stops_instead_of_sending_b
     crew.settings.limits.auto_merges_per_day = Some(0);
     crew.settings.approvals.autopilot = true;
     crew.settings.approvals.merge.at_hard_limit = AtHardLimit::SendBack;
-    let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), run(&crew))
-        .await
-        .context("the run never ended")??;
+    let outcome = tokio::time::timeout(
+        deadline::scaled(std::time::Duration::from_secs(60)),
+        run(&crew),
+    )
+    .await
+    .context("the run never ended")??;
     assert!(
         matches!(
             outcome.exit,
@@ -628,9 +641,12 @@ async fn in_autopilot_a_hard_limit_sends_back_once_and_says_why() -> anyhow::Res
     crew.settings.limits.protected_paths = vec![FILE.to_owned()];
     crew.settings.approvals.autopilot = true;
     crew.settings.approvals.plan.at_hard_limit = AtHardLimit::SendBack;
-    let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), run(&crew))
-        .await
-        .context("the run never ended")??;
+    let outcome = tokio::time::timeout(
+        deadline::scaled(std::time::Duration::from_secs(60)),
+        run(&crew),
+    )
+    .await
+    .context("the run never ended")??;
     let sent_back: Vec<String> = outcome
         .events
         .iter()

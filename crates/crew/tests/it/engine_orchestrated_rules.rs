@@ -28,6 +28,7 @@ use argonauts_core::settings::protocol::{
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::intake::InstructionKind;
 use argonauts_crew::engine::shared::with_git_env;
+use argonauts_testkit::deadline;
 use argonauts_testkit::{FakeRunner, FakeSession};
 
 use support::{Crew, Outcome};
@@ -226,7 +227,7 @@ async fn run_in(crew: &Crew, mode: Option<ApprovalMode>) -> anyhow::Result<Outco
     context.services.policy = real_policy(crew, &context.settings)?;
     let engine = argonauts_crew::engine_for(&crew.settings, RunMode::Crew).run(context);
     let exit = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
+        deadline::scaled(std::time::Duration::from_secs(120)),
         with_git_env(crew.git_env(), engine),
     )
     .await

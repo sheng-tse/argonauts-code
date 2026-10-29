@@ -126,7 +126,7 @@ pub fn wait_for_events(
     timeout: Duration,
     done: impl Fn(&[RunEvent]) -> bool,
 ) -> anyhow::Result<Vec<RunEvent>> {
-    let deadline = Instant::now() + timeout;
+    let deadline = argonauts_testkit::deadline::after(timeout);
     loop {
         // No run yet reads as no events.
         let events = scenario.latest_run_events().unwrap_or_default();

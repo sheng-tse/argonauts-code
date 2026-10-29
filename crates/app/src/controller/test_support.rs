@@ -35,8 +35,11 @@ use crate::app_settings::AppSettings;
 use crate::env::AppEnv;
 use crate::trace::Trace;
 
-/// How long a test waits for the next event before failing.
-pub(crate) const WAIT: Duration = Duration::from_secs(5);
+/// How long a test waits for the next event before failing: five seconds, times the deadline
+/// multiplier a slower machine sets.
+pub(crate) fn max_wait() -> Duration {
+    argonauts_testkit::deadline::scaled(Duration::from_secs(5))
+}
 
 /// Argonauts Code call, as the fake recorded it.
 #[derive(Debug, Clone, PartialEq)]
@@ -765,9 +768,24 @@ impl TestDriver {
         .await;
     }
 
-    /// The next event. Fails the test after [`WAIT`], or when the controller stopped.
+    /// Waits until the controller has taken every command sent so far. It handles a command
+    /// whole before it reads anything else, so what the command does comes before any session
+    /// event a test lets go after this.
+    pub(crate) async fn taken(&self) {
+        let wait = max_wait();
+        let deadline = tokio::time::Instant::now() + wait;
+        while self.commands.capacity() < self.commands.max_capacity() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the controller took no command within {wait:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// The next event. Fails the test after [`max_wait`], or when the controller stopped.
     pub(crate) async fn next(&mut self) -> AppEvent {
-        self.next_within(WAIT).await
+        self.next_within(max_wait()).await
     }
 
     async fn next_within(&mut self, wait: Duration) -> AppEvent {
@@ -781,7 +799,7 @@ impl TestDriver {
 
     /// Reads events until one matches, and returns it.
     pub(crate) async fn until(&mut self, what: impl Fn(&AppEvent) -> bool) -> AppEvent {
-        self.until_within(WAIT, what).await
+        self.until_within(max_wait(), what).await
     }
 
     /// As [`Self::until`], giving each event up to `wait`: for a test that starts real
@@ -807,7 +825,7 @@ impl TestDriver {
     /// Sends `Exit`, waits for the loop to end, and returns every event it sent.
     pub(crate) async fn exit(mut self) -> Vec<AppEvent> {
         self.send(UiCommand::Exit).await;
-        let result = tokio::time::timeout(WAIT, &mut self.task)
+        let result = tokio::time::timeout(max_wait(), &mut self.task)
             .await
             .expect("the controller exits")
             .expect("the controller task doesn't panic");

@@ -10,10 +10,11 @@
 //!   `$DRIVER_SIGNALS`, so a test can hold an event back until it has typed something;
 //! - `{"panic": "<message>"}` panics, so a test can see the terminal given back after a crash.
 //!
-//! `$DRIVER_UI` holds `[ui]` settings as TOML, bare or under a `[ui]` table. Every command the
-//! screen sends goes to `$DRIVER_COMMANDS` as one JSON line. The driver exits when the screen
-//! does. Without `ARGONAUTS_HOME` the prompt history stays in memory, so a run by hand never
-//! touches `~/.argonauts`.
+//! `$DRIVER_UI` holds `[ui]` settings as TOML, bare or under a `[ui]` table.
+//! `$DRIVER_DOUBLE_PRESS_MS` sets how long a first Ctrl+C, Ctrl+D or Esc waits for the second,
+//! a second unless set. Every command the screen sends goes to `$DRIVER_COMMANDS` as one JSON
+//! line. The driver exits when the screen does. Without `ARGONAUTS_HOME` the prompt history
+//! stays in memory, so a run by hand never touches `~/.argonauts`.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
@@ -33,6 +34,7 @@ use tokio::time::Instant;
 const UI_ENV: &str = "DRIVER_UI";
 const COMMANDS_ENV: &str = "DRIVER_COMMANDS";
 const SIGNALS_ENV: &str = "DRIVER_SIGNALS";
+const DOUBLE_PRESS_ENV: &str = "DRIVER_DOUBLE_PRESS_MS";
 const SIGNAL_POLL: Duration = Duration::from_millis(10);
 const RECORDER_DRAIN: Duration = Duration::from_secs(1);
 
@@ -44,6 +46,9 @@ fn main() -> anyhow::Result<()> {
     let steps = load_script(&script)?;
     let settings = ui_settings()?;
     let mut options = UiOptions::from_settings(&settings);
+    if let Some(window) = double_press()? {
+        options.double_press = window;
+    }
     // Only a test that gave the driver a home of its own keeps history on disk.
     if std::env::var_os(argonauts_core::paths::HOME_ENV).is_some_and(|home| !home.is_empty()) {
         options.history_file = history_here();
@@ -275,6 +280,17 @@ impl Recorder {
         }
         Ok(kind)
     }
+}
+
+fn double_press() -> anyhow::Result<Option<Duration>> {
+    let Some(text) = std::env::var_os(DOUBLE_PRESS_ENV) else {
+        return Ok(None);
+    };
+    let ms = text
+        .to_str()
+        .and_then(|text| text.parse::<u64>().ok())
+        .with_context(|| format!("${DOUBLE_PRESS_ENV} isn't a number of milliseconds"))?;
+    Ok(Some(Duration::from_millis(ms)))
 }
 
 fn ui_settings() -> anyhow::Result<UiSettings> {

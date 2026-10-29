@@ -1081,7 +1081,7 @@ mod tests {
     use argonauts_testkit::runner::session_end;
 
     use crate::controller::conversation::{self, ConversationState};
-    use crate::controller::test_support::{CliOptions, TestCtx, WAIT};
+    use crate::controller::test_support::{CliOptions, TestCtx, max_wait};
     use crate::host::clis::RepoModels;
     use crate::host::services::{LiveRegistry, SettingsSource, directory};
 
@@ -1326,7 +1326,7 @@ mod tests {
             }
         }
         assert_eq!(started, Some(ModelRef::new("codex", None)));
-        let done = tokio::time::timeout(WAIT, async {
+        let done = tokio::time::timeout(max_wait(), async {
             loop {
                 match parts.internal.recv().await {
                     Some(Internal::Conversation(update @ TurnUpdate::Done { .. })) => {
