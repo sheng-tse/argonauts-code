@@ -1,7 +1,8 @@
 //! "Crew for this request": when your words set the crew for a request, the
 //! crew Argonauts Code understood is shown before any work starts, each role with where it came
-//! from: your words, your settings, the main session, or the role it follows. One question
-//! then asks where to keep it.
+//! from: your words, your settings, the main session, or the role it follows. It is for that
+//! request alone, unless your words say to keep it from now on, when it saves where your changes
+//! go.
 
 use argonauts_core::app::CrewRow;
 use argonauts_core::display_names::DisplayNames;
@@ -121,29 +122,6 @@ pub(crate) fn rows(lines: &[CrewLine], names: &DisplayNames) -> Vec<CrewRow> {
         .collect()
 }
 
-/// What "Keep this crew?" writes, as `(key, TOML value)`: each role your words set, under
-/// `[crew]`, or under the role's own workers where your settings set those, since they beat
-/// the crew's.
-pub(crate) fn to_keep(settings: &Settings, lines: &[CrewLine]) -> Vec<(String, String)> {
-    lines
-        .iter()
-        .filter_map(|line| {
-            let asked = line.asked.as_ref()?;
-            let fine = line.role.fine_role();
-            let own = settings
-                .roles
-                .get(&fine)
-                .is_some_and(|own| !own.models.is_empty());
-            let key = if own {
-                format!("roles.{}.models", fine.as_str())
-            } else {
-                format!("crew.{}", line.role.as_str())
-            };
-            Some((key, toml_list(asked)))
-        })
-        .collect()
-}
-
 /// The kinds of instruction that give roles their agents.
 const CREW_KINDS: [InstructionKind; 8] = [
     InstructionKind::MainAgent,
@@ -203,18 +181,10 @@ fn named(names: &DisplayNames, models: &[ModelRef]) -> String {
         [] => "nobody".to_owned(),
         models => models
             .iter()
-            .map(|model| names.worker(&names.running(model)))
+            .map(|model| names.worker(model))
             .collect::<Vec<_>>()
             .join(", "),
     }
-}
-
-fn toml_list(models: &[ModelRef]) -> String {
-    let items: Vec<String> = models
-        .iter()
-        .map(|model| toml::Value::String(model.to_string()).to_string())
-        .collect();
-    format!("[{}]", items.join(", "))
 }
 
 /// The request layer as `key=value`, the way [`Applied::apply_to`] gives it to the run.

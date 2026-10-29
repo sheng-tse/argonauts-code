@@ -301,6 +301,12 @@ impl SessionRunner for CliRunner {
         )
     }
 
+    fn seat_take_over_command(&self, cli_session: &str, workdir: &Path) -> Option<CommandSpec> {
+        let mut command = self.take_over_command(cli_session, workdir)?;
+        command.args.extend(self.adapter.seat_screen_args());
+        Some(command)
+    }
+
     /// The CLI's own screen on the session, run by the binary its sessions run.
     fn take_over_command(&self, cli_session: &str, workdir: &Path) -> Option<CommandSpec> {
         let req = SessionRequest {
@@ -343,6 +349,10 @@ impl SessionRunner for CliRunner {
 
     fn instruction_files(&self, workdir: &Path, isolated: bool) -> Vec<String> {
         self.adapter.instruction_files(workdir, isolated)
+    }
+
+    fn identity_marks(&self) -> argonauts_core::adapter::IdentityMarks {
+        self.adapter.identity_marks()
     }
 
     fn logged_in(&self) -> BoxFuture<'_, Option<bool>> {

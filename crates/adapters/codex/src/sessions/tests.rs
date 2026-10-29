@@ -131,6 +131,10 @@ fn turns_leave_out_what_codex_adds() {
     );
     let last = turns(&scan(home.path()), INPUT, 2).unwrap();
     assert_eq!(last[0].text, "And the paste handling?");
+    // Each prompt has when you sent it, which tells the turns made in Codex's own screen.
+    assert_eq!(all[0].sent, Some(datetime!(2026-09-28 09:01:00.200 UTC)));
+    assert_eq!(all[1].sent, None);
+    assert!(last[0].sent.is_some());
 }
 
 #[test]

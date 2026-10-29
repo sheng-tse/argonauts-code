@@ -7,16 +7,16 @@
 use std::collections::BTreeMap;
 
 use argonauts_core::Spend;
-use argonauts_core::api::UsagePeriod;
 use argonauts_core::crew_stats::{Fallback, ReviewTally, StatsRole};
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::settings::stats::StatsMeasure;
 use ratatui::style::Style;
 use ratatui::text::Span;
 use time::{Date, Month};
 
-use super::cli::{SQUARES, Stats, count, model_style, took};
-use super::data::{Cli, DayPart, Model, short_cli};
-use super::draw::{self, Entry, Fared};
+use super::cli::{SQUARES, Stats, count, model_fill, model_style, took};
+use super::data::{Cli, DayPart, Model};
+use super::draw::{self, Fared, Fill, Legend};
 use crate::format;
 use crate::kit::bars::fit_keeping_bars;
 use crate::kit::{Drawn, Frame, Kit, fit};
@@ -47,7 +47,8 @@ const EACH_NAME: usize = 20;
 const EACH_DID: usize = 13;
 /// A plan window's bar.
 const PLAN_BAR: usize = 6;
-/// Where the second row of a fallback starts, under the words after `fallbacks`.
+/// Where the second row of a fallback starts, under the words after `fallbacks`, where it
+/// fits there.
 const FALLBACK_INDENT: usize = 10;
 
 impl Stats<'_> {
@@ -354,7 +355,7 @@ impl Stats<'_> {
         rows
     }
 
-    /// `its tokens · 23.4M`, a bar of what they were, and a legend of each.
+    /// `its tokens · 23.4M`, a bar of what they were, and a table of them under it.
     fn tokens_split(
         &self,
         kit: &Kit<'_>,
@@ -362,41 +363,43 @@ impl Stats<'_> {
         spent: &Spend,
         width: usize,
     ) -> Vec<Vec<Span<'static>>> {
-        let cached = spent.cached_tokens;
-        let new = spent.input_tokens.saturating_sub(cached);
-        let output = spent.output_tokens;
-        let kinds = [
-            (cached, Role::TokensCached, "from cache"),
-            (new, Role::TokensInput, "new input"),
-            (output, Role::TokensOutput, "output"),
-        ];
-        let parts: Vec<(u64, Style)> = kinds
-            .iter()
-            .map(|(n, role, _)| (*n, kit.fg(*role)))
-            .collect();
-        let entries: Vec<Entry> = kinds
-            .iter()
-            .map(|(n, role, name)| Entry {
-                style: kit.fg(*role),
-                name: (*name).to_owned(),
-                amount: self.tokens_short(*n),
-                note: String::new(),
-            })
+        let kinds = self.kinds(kit, spent, ["from cache", "new input", "output"]);
+        let parts: Vec<(u64, Fill)> = (kinds.iter())
+            .map(|row| (row.part.value, row.part.fill))
             .collect();
         let mut rows = vec![vec![kit.dim(format!(
             "{label} · {}",
             self.tokens_short(spent.total_tokens())
         ))]];
         rows.push(draw::stacked(kit, &parts, width));
-        rows.extend(draw::legend(kit, &entries, None, width));
+        let columns = draw::table_columns(kinds.iter(), width, false);
+        rows.extend(draw::table(kit, &kinds, columns, true));
         rows
+    }
+
+    /// The tokens of `spent` by kind, as a table's rows: from cache, new input and output,
+    /// named as `names` says, each with its share of them all.
+    pub(super) fn kinds(&self, kit: &Kit<'_>, spent: &Spend, names: [&str; 3]) -> Vec<Legend> {
+        let cached = spent.cached_tokens;
+        let kinds = [
+            (cached, Role::TokensCached),
+            (spent.input_tokens.saturating_sub(cached), Role::TokensInput),
+            (spent.output_tokens, Role::TokensOutput),
+        ];
+        let whole = spent.total_tokens();
+        (kinds.into_iter().zip(names))
+            .map(|((n, role), name)| {
+                Legend::of(kit.fg(role), name, (n, n, whole), self.table_tokens(n))
+            })
+            .collect()
     }
 
     /// `a week` when the period's slots are weeks, else `a day`.
     fn per(&self) -> &'static str {
-        match self.crew.period {
-            UsagePeriod::All => "a week",
-            _ => "a day",
+        if self.crew.slots_are_days() {
+            "a day"
+        } else {
+            "a week"
         }
     }
 
@@ -461,14 +464,23 @@ impl Stats<'_> {
             let why = match &first.window {
                 Some(window) => {
                     let cli = self.crew.clis.iter().find(|cli| cli.agent == agent);
-                    let cli = cli.map_or_else(|| short_cli(&agent, &agent), Cli::short);
+                    let cli = cli.map_or_else(
+                        || DisplayNames::default().cli(&agent),
+                        |cli| cli.name.clone(),
+                    );
                     format!("when {cli}'s {} window ran out", window_words(window))
                 }
                 None => first.why.clone(),
             };
             if !why.is_empty() {
-                let indent = " ".repeat(FALLBACK_INDENT);
-                rows.push(truncate_spans(&[kit.dim(format!("{indent}{why}"))], width));
+                // Under the words after `fallbacks` where it fits there, else from the left.
+                let indent = if FALLBACK_INDENT + str_width(&why) <= width {
+                    FALLBACK_INDENT
+                } else {
+                    0
+                };
+                let why = format!("{}{why}", " ".repeat(indent));
+                rows.push(truncate_spans(&[kit.dim(why)], width));
             }
         }
         rows
@@ -644,7 +656,7 @@ fn column(words: impl Iterator<Item = String>, least: usize) -> usize {
 
 /// A model's swatch and name in its column, the name cut so a blank always follows it.
 fn named(kit: &Kit<'_>, cli: &Cli, model: &Model) -> Vec<Span<'static>> {
-    let mut row = draw::swatch(kit, model_style(kit, cli, model));
+    let mut row = draw::swatch(kit, model_fill(kit, cli, model));
     row.push(Span::raw(model.name.clone()));
     fit(truncate_spans(&row, EACH_NAME - 1), EACH_NAME)
 }

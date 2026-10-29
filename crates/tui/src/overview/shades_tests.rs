@@ -10,130 +10,127 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
+use ratatui::style::{Color, Style};
+
 use super::*;
 use crate::kit::fit;
 use crate::overview::golden::{self, Picture, Region};
-use crate::overview::stats::draw;
 use crate::overview::{OverviewView, Tab, UsageWatch, home, sample};
 use crate::state::AppState;
+use crate::theme::{Brightness, ColorLevel, Glyphs, Theme};
 use crate::views::{View, ViewCtx};
 
-/// The CLIs' colors, and the two a CLI without one of its own takes.
-const BASES: [Role; 5] = [
+/// The four CLIs' hues.
+const CLIS: [Role; 4] = [
     Role::CliClaude,
     Role::CliCodex,
     Role::CliAgy,
-    Role::AgentGreen,
-    Role::AgentPink,
+    Role::CliOpenCode,
 ];
 
 fn full_color_theme(brightness: Brightness) -> Theme {
     Theme::for_brightness(brightness).with_level(ColorLevel::TrueColor)
 }
 
-fn shade_rgb(kit: &Kit<'_>, base: Role, nth: usize) -> Rgb {
-    match shade(kit, base, nth).fg {
-        Some(Color::Rgb(r, g, b)) => (r, g, b),
-        other => panic!("{base:?} shade {nth}: {other:?}"),
-    }
-}
-
-/// A color in CIELAB, under D65.
-fn lab((r, g, b): Rgb) -> [f64; 3] {
-    let linear = |c: u8| {
-        let c = f64::from(c) / 255.0;
-        if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let (r, g, b) = (linear(r), linear(g), linear(b));
-    let f = |t: f64| {
-        if t > 216.0 / 24389.0 {
-            t.cbrt()
-        } else {
-            (24389.0 / 27.0 * t + 16.0) / 116.0
-        }
-    };
-    let x = f((0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047);
-    let y = f(0.2126729 * r + 0.7151522 * g + 0.0721750 * b);
-    let z = f((0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / 1.08883);
-    [116.0 * y - 16.0, 500.0 * (x - y), 200.0 * (y - z)]
-}
-
-/// How far apart two colors are in CIELAB.
-fn apart(a: Rgb, b: Rgb) -> f64 {
-    let (a, b) = (lab(a), lab(b));
-    (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>().sqrt()
-}
-
 #[test]
-fn the_shades_of_one_color_stand_at_least_15_apart_on_either_screen() {
+fn a_clis_first_three_models_take_its_hue_and_the_rest_its_grey() {
     for brightness in [Brightness::Dark, Brightness::Light] {
         let theme = full_color_theme(brightness);
         let kit = Kit::new(&theme);
-        for base in BASES {
-            let shades: Vec<Rgb> = (0..SHADES).map(|nth| shade_rgb(&kit, base, nth)).collect();
-            for (at, a) in shades.iter().enumerate() {
-                for b in &shades[at + 1..] {
-                    let far = apart(*a, *b);
-                    assert!(
-                        far >= 15.0,
-                        "{brightness:?} {base:?}: {a:?} and {b:?} are {far:.1} apart"
-                    );
-                }
+        for cli in CLIS {
+            for place in 0..OWN_TEXTURES {
+                assert_eq!(shade(&kit, cli, place), kit.fg(cli), "{cli:?} {place}");
+            }
+            for place in OWN_TEXTURES..OWN_TEXTURES + 3 {
+                assert_eq!(shade(&kit, cli, place), kit.fg(Role::CatOther), "{cli:?}");
             }
         }
     }
 }
 
+/// A CLI's first three models are █ ▚ ⣿, shapes Ghostty draws itself at full strength, and
+/// the rest one solid cell, which their grey tells from the first's hue.
 #[test]
-fn the_first_shade_is_the_clis_own_and_the_fifth_model_starts_again() {
-    for brightness in [Brightness::Dark, Brightness::Light] {
-        let theme = full_color_theme(brightness);
+fn each_place_takes_its_shape_and_the_rest_share_a_solid_cell() {
+    let theme = Theme::dark();
+    let kit = Kit::new(&theme);
+    let textures: Vec<&str> = (0..6).map(|place| texture(&kit, place)).collect();
+    assert_eq!(textures, ["█", "▚", "⣿", "█", "█", "█"]);
+    let mut ascii = Theme::dark();
+    ascii.glyphs = Glyphs::ASCII;
+    let kit = Kit::new(&ascii);
+    let textures: Vec<&str> = (0..5).map(|place| texture(&kit, place)).collect();
+    assert_eq!(textures, ["#", "=", "+", ":", ":"]);
+}
+
+/// None of the shapes is one Ghostty paints as a flat mix of its colour into the background.
+#[test]
+fn no_model_draws_in_a_shade_glyph() {
+    for level in [
+        ColorLevel::TrueColor,
+        ColorLevel::Ansi256,
+        ColorLevel::Ansi16,
+    ] {
+        let theme = Theme::dark().with_level(level);
         let kit = Kit::new(&theme);
-        for base in BASES {
-            assert_eq!(shade(&kit, base, 0), kit.fg(base));
-            assert_eq!(shade(&kit, base, SHADES), kit.fg(base));
-            assert_eq!(shade(&kit, base, SHADES + 1), shade(&kit, base, 1));
+        for place in 0..OWN_TEXTURES + 2 {
+            let shape = texture(&kit, place);
+            assert!(
+                !["▓", "▒", "░"].contains(&shape),
+                "{level:?} {place}: {shape}"
+            );
         }
     }
 }
 
-/// A color of your own has no fixed shades, so they are mixed from it.
+/// A bar that ends in half a cell ends in the left half of its shape.
 #[test]
-fn a_color_you_set_is_mixed_into_shades_of_its_own() {
-    let mut theme = full_color_theme(Brightness::Dark);
-    theme.set(
-        Role::CliClaude,
-        Style::new().fg(Color::Rgb(0x80, 0xc0, 0x40)),
-    );
+fn half_a_cell_is_the_left_half_of_the_shape() {
+    let theme = Theme::dark();
     let kit = Kit::new(&theme);
-    assert_eq!(shade_rgb(&kit, Role::CliClaude, 0), (0x80, 0xc0, 0x40));
-    let deep = shade_rgb(&kit, Role::CliClaude, 1);
-    assert_eq!(deep, (0x5a, 0x86, 0x2d), "three tenths toward black");
-    let pale = shade_rgb(&kit, Role::CliClaude, 3);
-    assert!(pale.0 > 0xe0 && pale.1 > 0xf0 && pale.2 > 0xe0, "{pale:?}");
+    let halves: Vec<Option<&str>> = (0..5).map(|place| half_texture(&kit, place)).collect();
+    assert_eq!(
+        halves,
+        [Some("▌"), Some("▘"), Some("⡇"), Some("▌"), Some("▌")]
+    );
+    let mut ascii = Theme::dark();
+    ascii.glyphs = Glyphs::ASCII;
+    let kit = Kit::new(&ascii);
+    assert!((0..5).all(|place| half_texture(&kit, place).is_none()));
 }
 
+/// A hue of your own is the one all three of the CLI's first models take.
 #[test]
-fn fewer_colors_have_fewer_shades() {
-    let sixteen = Theme::dark().with_level(ColorLevel::Ansi16);
-    let kit = Kit::new(&sixteen);
-    assert_eq!(shade(&kit, Role::CliClaude, 1), kit.fg(Role::CliClaude));
-    let none = Theme::dark().with_level(ColorLevel::None);
-    let kit = Kit::new(&none);
-    assert_eq!(shade(&kit, Role::CliClaude, 2), kit.fg(Role::CliClaude));
-    // With 256 colors a shade is the nearest of them to the one full color draws.
+fn a_color_you_set_is_the_hue_of_the_clis_models() {
+    let mut theme = full_color_theme(Brightness::Dark);
+    let yours = Style::new().fg(Color::Rgb(0x80, 0xc0, 0x40));
+    theme.set(Role::CliClaude, yours);
+    let kit = Kit::new(&theme);
+    for place in 0..OWN_TEXTURES {
+        assert_eq!(shade(&kit, Role::CliClaude, place), yours);
+    }
+}
+
+/// Textures tell the models apart however few colors the terminal shows, and in sixteen
+/// colors Claude Code's models draw in the terminal's own text.
+#[test]
+fn textures_carry_the_models_where_colors_are_few() {
+    for level in [ColorLevel::Ansi16, ColorLevel::None] {
+        let theme = Theme::dark().with_level(level);
+        let kit = Kit::new(&theme);
+        assert_eq!(shade(&kit, Role::CliClaude, 1).fg, None, "{level:?}");
+        assert_ne!(texture(&kit, 0), texture(&kit, 1));
+        assert_ne!(texture(&kit, 1), texture(&kit, 2));
+    }
+    // Without colour the rest's grey can't tell it from a first model's solid cell.
+    let plain = Theme::dark().with_level(ColorLevel::None);
+    let kit = Kit::new(&plain);
+    assert_eq!(texture(&kit, OWN_TEXTURES), "░");
+    assert_eq!(half_texture(&kit, OWN_TEXTURES), None);
     let many = Theme::dark().with_level(ColorLevel::Ansi256);
     let kit = Kit::new(&many);
-    let deep = shade(&kit, Role::CliClaude, 1).fg;
-    assert_eq!(
-        deep,
-        Some(Color::Indexed(nearest_ansi256((0xb4, 0x47, 0x2a))))
-    );
-    assert_ne!(deep, kit.fg(Role::CliClaude).fg);
+    assert_eq!(shade(&kit, Role::CliCodex, 2).fg, Some(Color::Indexed(75)));
+    assert_eq!(shade(&kit, Role::CliCodex, 3).fg, Some(Color::Indexed(103)));
 }
 
 fn tokens(agent: &str, model: Option<&str>, tokens: u64) -> ModelTokens {
@@ -160,7 +157,7 @@ fn names() -> DisplayNames {
 }
 
 #[test]
-fn a_model_takes_its_place_by_its_tokens_in_all_among_its_clis_models() {
+fn a_model_takes_its_place_among_its_clis_models_by_what_ran_here() {
     let names = DisplayNames::default();
     let ranked = [
         tokens("codex", Some("gpt-6-astra"), 900),
@@ -173,6 +170,56 @@ fn a_model_takes_its_place_by_its_tokens_in_all_among_its_clis_models() {
     assert_eq!(shades.place("claude-code", Some("claude-opus-5")), 1);
     assert_eq!(shades.place("codex", Some("gpt-6-astra")), 0);
     assert_eq!(shades.place("codex", Some("gpt-5.6-luna")), 1);
+}
+
+/// The app's list breaks ties already, by the whole computer's count, and puts the models
+/// that never ran here after the rest: models with as many tokens keep its order.
+#[test]
+fn models_with_as_many_tokens_keep_the_lists_order() {
+    let names = DisplayNames::default();
+    let ranked = [
+        tokens("claude-code", Some("claude-haiku-5-5"), 6_500),
+        tokens("claude-code", Some("claude-opus-5"), 120),
+        tokens("claude-code", Some("claude-haiku-4-5"), 120),
+        tokens("claude-code", Some("claude-opus-4-8"), 0),
+        tokens("claude-code", Some("claude-fable-5-1"), 0),
+    ];
+    let shades = ModelColors::new(&ranked, &names);
+    let places: Vec<usize> = ranked
+        .iter()
+        .map(|model| shades.place(&model.agent, model.model.as_deref()))
+        .collect();
+    assert_eq!(places, [0, 1, 2, 3, 4]);
+}
+
+/// A screen's colours come from the list, then the models it shows that the list lacks, each
+/// after its CLI's others, so the screen draws no two of a CLI's models alike.
+#[test]
+fn a_screens_colours_take_the_list_then_its_own_models() {
+    let names = DisplayNames::default();
+    let ranked = [
+        tokens("codex", Some("gpt-6-luna"), 1_470),
+        tokens("codex", Some("gpt-6.1-sol"), 630),
+    ];
+    let shown = [
+        ("codex", Some("gpt-6-astra")),
+        ("codex", Some("gpt-6.1-sol")),
+        ("codex", Some("gpt-5.6-terra")),
+    ];
+    let shades = ModelColors::for_screen(&ranked, &names, shown);
+    let theme = full_color_theme(Brightness::Dark);
+    let kit = Kit::new(&theme);
+    let looks: Vec<(&str, Style)> = ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-terra"]
+        .into_iter()
+        .map(|model| {
+            (
+                shades.texture(&kit, "codex", Some(model)),
+                shades.style(&kit, "codex", Some(model)),
+            )
+        })
+        .collect();
+    let (hue, grey) = (kit.fg(Role::CliCodex), kit.fg(Role::CatOther));
+    assert_eq!(looks, [("█", hue), ("▚", hue), ("⣿", hue), ("█", grey)]);
 }
 
 #[test]
@@ -214,12 +261,12 @@ fn a_model_the_list_hasnt_met_comes_after_the_ones_it_has() {
     assert_eq!(alone.place("claude-code", Some("claude-opus-5")), 1);
 }
 
-/// The picture of the shades: each model's dot in the Models legend, then four of Claude
-/// Code's models as a legend's square and a thin bar, in the colors `model_shades.html`
-/// gives by their values.
+/// The picture of the textures: each model's swatch as a legend writes it, then the tokens
+/// bar of Claude Code's four models and Codex's two, a cell apart, and each of Claude Code's
+/// models on a bar of its own, in the colors `model_textures.html` gives by their values.
 #[test]
-fn the_shades_match_their_picture() {
-    let picture = Picture::load("model_shades");
+fn the_textures_match_their_picture() {
+    let picture = Picture::load("model_textures");
     let theme = golden::theme();
     let kit = Kit::new(&theme);
     let names = DisplayNames::default();
@@ -236,21 +283,38 @@ fn the_shades_match_their_picture() {
         .map(|(agent, model, sum)| tokens(agent, Some(model), *sum))
         .collect();
     let shades = ModelColors::new(&ranked, &names);
+    let paint = |agent: &str, model: &str, cells: usize| {
+        let texture = shades.texture(&kit, agent, Some(model));
+        Span::styled(
+            texture.repeat(cells),
+            shades.style(&kit, agent, Some(model)),
+        )
+    };
 
-    let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new(), Vec::new()];
-    for (at, (agent, model, _)) in models.iter().enumerate() {
+    let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new(), Vec::new(), Vec::new()];
+    for (at, (agent, model, sum)) in models.iter().enumerate() {
         if at > 0 {
             rows[0].push(Span::raw("   "));
         }
-        rows[0].push(Span::styled("● ", shades.style(&kit, agent, Some(model))));
-        rows[0].push(Span::raw(names.model(agent, Some(model)).unwrap()));
+        rows[0].push(paint(agent, model, 2));
+        rows[0].push(Span::raw(format!(
+            " {}",
+            names.model(agent, Some(model)).unwrap()
+        )));
+        if at == 4 {
+            rows[2].push(Span::raw(" "));
+        }
+        rows[2].push(paint(agent, model, (*sum as usize).div_ceil(8)));
     }
+    rows.push(Vec::new());
     for (agent, model, sum) in &models[..4] {
-        let style = shades.style(&kit, agent, Some(model));
-        let mut row = draw::swatch(&kit, style);
-        row.push(Span::raw(names.model(agent, Some(model)).unwrap()));
-        let mut row = fit(row, 14);
-        row.extend(draw::thin(&kit, *sum, 100, 40, style));
+        let mut row = vec![paint(agent, model, 2)];
+        row.push(Span::raw(format!(
+            " {}",
+            names.model(agent, Some(model)).unwrap()
+        )));
+        let mut row = fit(row, 15);
+        row.push(paint(agent, model, (*sum as usize * 40).div_ceil(100)));
         rows.push(row);
     }
 
@@ -262,17 +326,26 @@ fn the_shades_match_their_picture() {
     golden::assert_matches(&picture, &buf, &Region::whole(&picture, (0, 0)), &theme);
 }
 
-/// The color of the square or dot a row of the screen draws before the model `name`.
-fn mark_color(buf: &Buffer, mark: char, name: &str) -> Option<Color> {
-    let start = format!("{mark} {name} ");
+/// The mark a row of the screen draws before the model `name`, a square, a dot or a texture,
+/// and its color.
+fn mark_before(buf: &Buffer, name: &str) -> Option<(String, Color)> {
+    let start = format!(" {name} ");
     for y in 0..buf.area.height {
         let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
         for (at, _) in row.match_indices(&start) {
             // A longer name that starts the same way, as GPT 5.6 Luna does, is another model.
             let after = &row[at + start.len()..];
-            if after.starts_with([' ', '(']) {
-                let x = row[..at].chars().count() as u16;
-                return Some(buf[(x, y)].fg);
+            // A table's swatch stands two blanks before the name, a legend's mark one.
+            let before = row[..at].chars().count();
+            let Some(x) = (1..=2)
+                .filter_map(|back| before.checked_sub(back))
+                .find(|x| buf[(*x as u16, y)].symbol() != " ")
+            else {
+                continue;
+            };
+            let mark = buf[(x as u16, y)].symbol();
+            if after.starts_with([' ', '(']) && mark != " " {
+                return Some((mark.to_owned(), buf[(x as u16, y)].fg));
             }
         }
     }
@@ -336,21 +409,28 @@ fn codex_health() -> StatusTabView {
     }
 }
 
-/// GPT 5.6 Luna has run the most of Codex's models in all, so it draws in Codex's own color
-/// and GPT 5.6 in the deep shade, on the Overview's Models tab, on Stats and on the spend
-/// card alike, though GPT 5.6 is ahead of it in each one's own numbers, and on the Status
-/// tab's health card, which lists GPT 5.6 first.
+/// Codex's models in all: GPT 5.6 Luna has run the most, and GPT 5.6 is the fourth.
+fn codex_ranked() -> Vec<ModelTokens> {
+    vec![
+        tokens("codex", Some("gpt-5.6-luna"), 900),
+        tokens("codex", Some("gpt-6-astra"), 800),
+        tokens("codex", Some("gpt-6-sol"), 700),
+        tokens("codex", Some("gpt-5.6"), 500),
+    ]
+}
+
+/// GPT 5.6 Luna draws in Codex's hue and GPT 5.6, its fourth model in all, in the grey of the
+/// rest, on the Overview's Models tab, on Stats and on the spend card alike, though GPT 5.6 is
+/// ahead of it in each one's own numbers, and on the Status tab's health card, which lists GPT
+/// 5.6 first.
 #[test]
 fn a_model_draws_in_one_color_on_every_tab() {
-    let ranked = vec![
-        tokens("codex", Some("gpt-5.6-luna"), 900),
-        tokens("codex", Some("gpt-5.6"), 500),
-    ];
+    let ranked = codex_ranked();
     let theme = golden::theme();
     let kit = Kit::new(&theme);
     let own = shade(&kit, Role::CliCodex, 0).fg;
-    let deep = shade(&kit, Role::CliCodex, 1).fg;
-    assert_ne!(own, deep);
+    let rest = shade(&kit, Role::CliCodex, OWN_TEXTURES).fg;
+    assert_ne!(own, rest);
 
     let mut state = AppState::default();
     state.names = sample::names();
@@ -378,18 +458,20 @@ fn a_model_draws_in_one_color_on_every_tab() {
     let models = drawn(models, &state, &[KeyCode::Down, KeyCode::Right]);
     let stats = drawn(panel(Tab::Stats), &state, &[KeyCode::Down, KeyCode::Right]);
     let spend = drawn(panel(Tab::Limits), &state, &[]);
-    for (tab, buf, mark) in [
-        ("Models", &models, '●'),
-        ("Stats, by model", &stats, '■'),
-        ("the spend card", &spend, '■'),
+    // Each draws both solid, the first in Codex's hue and the rest's after the third in grey.
+    for (tab, buf) in [
+        ("Models", &models),
+        ("Stats, by model", &stats),
+        ("the spend card", &spend),
     ] {
-        assert_eq!(mark_color(buf, mark, "GPT 5.6 Luna"), own, "{tab}");
-        assert_eq!(mark_color(buf, mark, "GPT 5.6"), deep, "{tab}");
+        let mark = |name| mark_before(buf, name).map(|(mark, color)| (mark, Some(color)));
+        assert_eq!(mark("GPT 5.6 Luna"), Some(("█".to_owned(), own)), "{tab}");
+        assert_eq!(mark("GPT 5.6"), Some(("█".to_owned(), rest)), "{tab}");
     }
     let status = panel(Tab::Status).with_status_tab(codex_health());
     let status = drawn(status, &state, &[]);
     assert_eq!(health_name_color(&status, "GPT 5.6 Luna"), own);
-    assert_eq!(health_name_color(&status, "GPT 5.6"), deep);
+    assert_eq!(health_name_color(&status, "GPT 5.6"), rest);
 }
 
 /// A panel that holds only the Overview's numbers ranks the health card's models by the list
@@ -401,10 +483,7 @@ fn the_health_card_ranks_by_the_overviews_numbers_when_they_are_all_it_has() {
     let mut state = AppState::default();
     state.names = sample::names();
     let mut overview = home::sample::models();
-    overview.all_time_models = vec![
-        tokens("codex", Some("gpt-5.6-luna"), 900),
-        tokens("codex", Some("gpt-5.6"), 500),
-    ];
+    overview.all_time_models = codex_ranked();
     let mut panel = OverviewView::new(Tab::Overview, UsageWatch::default())
         .at(sample::now())
         .with_status_tab(codex_health());
@@ -418,6 +497,6 @@ fn the_health_card_ranks_by_the_overviews_numbers_when_they_are_all_it_has() {
     );
     assert_eq!(
         health_name_color(&status, "GPT 5.6"),
-        shade(&kit, Role::CliCodex, 1).fg
+        shade(&kit, Role::CliCodex, OWN_TEXTURES).fg
     );
 }

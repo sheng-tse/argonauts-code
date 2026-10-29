@@ -11,16 +11,23 @@ use argonauts_testkit::FakeStep;
 use argonauts_testkit::acp::AcpStep;
 use time::OffsetDateTime;
 
-/// Replaced by the Unix time [`SOON`] from now, in seconds, as Claude Code's `resetsAt` is.
+/// Replaced by the Unix time [`SOON`] after the fake agent sends it, in seconds, as Claude
+/// Code's `resetsAt` is.
 pub const RESET_SOON: &str = "@RESET_SOON@";
 
 /// Replaced by the Unix time two hours from now, for an agent that must stay out.
 pub const RESET_LATER: &str = "@RESET_LATER@";
 
-/// How soon an agent comes back in the scenarios that wait for it.
-pub const SOON: Duration = Duration::from_secs(20);
+/// How soon an agent comes back in the scenarios that wait for it, after it hit its limit.
+pub const SOON: Duration = Duration::from_secs(6);
 
 const LATER: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// What [`RESET_SOON`] renders as: the fake agent's own placeholder, which it fills with the
+/// Unix time [`SOON`] on as it sends the line.
+pub fn reset_in_soon() -> String {
+    format!("@RESET_IN:{}s@", SOON.as_secs())
+}
 
 /// Writes the rendered `limits/<name>.toml` into `folder` and returns its path.
 pub fn render(name: &str, folder: &Path) -> anyhow::Result<PathBuf> {
@@ -31,9 +38,11 @@ pub fn render(name: &str, folder: &Path) -> anyhow::Result<PathBuf> {
         .to_path_buf();
     let mut scenario = FakeScenario::load(&source)?;
     let now = OffsetDateTime::now_utc().unix_timestamp();
+    // The fake agent works the soon reset out as it sends the line, so it counts from the
+    // limit, however long the app took to start.
     let values = [
-        (RESET_SOON, now + SOON.as_secs() as i64),
-        (RESET_LATER, now + LATER.as_secs() as i64),
+        (RESET_SOON, reset_in_soon()),
+        (RESET_LATER, (now + LATER.as_secs() as i64).to_string()),
     ];
     for step in scenario.rules.iter_mut().flat_map(|rule| &mut rule.steps) {
         match step {
@@ -57,11 +66,11 @@ pub fn render(name: &str, folder: &Path) -> anyhow::Result<PathBuf> {
     Ok(rendered)
 }
 
-fn fill(line: &str, values: &[(&str, i64)]) -> String {
+fn fill(line: &str, values: &[(&str, String)]) -> String {
     values
         .iter()
         .fold(line.to_owned(), |line, (placeholder, value)| {
-            line.replace(placeholder, &value.to_string())
+            line.replace(placeholder, value)
         })
 }
 

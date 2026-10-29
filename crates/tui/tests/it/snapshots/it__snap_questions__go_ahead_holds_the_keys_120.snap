@@ -1,5 +1,5 @@
 ---
-source: crates/tui/tests/snap_questions.rs
+source: crates/tui/tests/it/snap_questions.rs
 expression: shown
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -11,7 +11,9 @@ expression: shown
     3. Send back for another round
     4. Show the goal
     5. No, stop here
+    6. Carry on without me
+       The main agent decides and goes on; kept as an assumption to review
 
-  Enter to choose · Esc to carry on without me · shift+tab to cycle modes
+  Enter to choose · Esc back to the list · shift+tab to cycle modes
 
   ⏵⏵ autopilot on

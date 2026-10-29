@@ -1,34 +1,32 @@
-//! The sub-tab's words: the line under the tabs, the legend beside the map, the list of
-//! distinctive behaviors, a behavior's actions, and an action's card. Each line starts one cell
-//! in, as the panel's rows do, and a second cell sets it in from the panel's edge.
+//! The sub-tab's words under the map: the list of distinctive behaviors, a behavior's actions,
+//! an action's card, and the legend under a braille map too narrow to hold it beside. Each line
+//! starts one cell in, as the panel's rows do, and a second cell sets it in from the panel's
+//! edge. Every line starts with a capital; key hints stay lowercase.
 
-use argonauts_core::behavior_map::{
-    BehaviorMap, BehaviorRow, Comparison, Grouping, MapAction, Placing, Scope,
-};
-use argonauts_core::overview::OverviewPeriod;
+use argonauts_core::behavior_map::{BehaviorMap, BehaviorRow, Comparison, MapAction, Placing};
+use argonauts_core::behavior_world::WorldFacts;
+use argonauts_core::display_names::DisplayNames;
 use ratatui::style::Style;
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
-use super::{GroupColours, LEGEND_GAP, MAP_COLUMNS, MAP_INSET, MAP_ROWS};
+use super::GroupColours;
+use super::level::Level;
+use super::universe::Universe;
+use super::window::Window;
 use crate::format::WallClock;
 use crate::kit::{Drawn, Kit};
+use crate::text::{At, cut};
 use crate::theme::Role;
+use crate::world::Pointed;
 
 /// The list's behavior column, and the most a card's prose runs across before it wraps.
 const BEHAVIOR_CELLS: usize = 54;
 const PROSE_CELLS: usize = 100;
 /// The narrowest the behavior column gets, so a list on a narrow screen still names each one.
 const FEWEST_BEHAVIOR_CELLS: usize = 12;
-/// The legend's widest line, `red: Luna does this more`, which a screen too narrow to hold it
-/// beside the map shows under it instead.
-const LEGEND_CELLS: usize = 24;
-
-/// Whether a screen `width` wide holds the legend beside the map.
-pub(super) fn legend_beside(width: usize) -> bool {
-    width >= 1 + MAP_INSET + MAP_COLUMNS + LEGEND_GAP + LEGEND_CELLS
-}
-
+/// The blanks before a column of numbers.
+const BEFORE_NUMBERS: usize = 3;
 pub(super) struct Look<'a> {
     pub kit: &'a Kit<'a>,
     pub map: &'a BehaviorMap,
@@ -36,6 +34,75 @@ pub(super) struct Look<'a> {
     pub compared: Option<usize>,
     pub width: usize,
     pub clock: WallClock,
+    pub names: &'a DisplayNames,
+    pub world: Option<&'a WorldFacts>,
+    pub universe: &'a Universe,
+    pub level: Level,
+    pub picked: Option<Pointed>,
+    /// `←  →`, or `h  l` with vim keys.
+    pub arrows: &'static str,
+    /// Logos stand before names, as the world draws them; braille has none to stand for a
+    /// maker, so its names stay whole.
+    pub logos: bool,
+    /// Which way the planet faces.
+    pub planet: crate::world::View,
+    /// The map's size and where its legend goes.
+    pub fit: super::Fit,
+}
+
+/// How much more or less often a compared group does a behavior than the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Class {
+    MuchLess,
+    Less,
+    Same,
+    More,
+    MuchMore,
+}
+
+impl Class {
+    pub fn word(self) -> &'static str {
+        match self {
+            Class::MuchLess => "much less here",
+            Class::Less => "less here",
+            Class::Same => "about the same here",
+            Class::More => "more here",
+            Class::MuchMore => "much more here",
+        }
+    }
+}
+
+/// How `group` does `behavior` against the rest: twice as often or more is much more, 1.25
+/// times more, 0.8 times less and half or under much less. `None` where either side has under
+/// 5 actions, or the behavior too few to tell.
+pub(super) fn compare_class(map: &BehaviorMap, group: usize, behavior: &str) -> Option<Class> {
+    let group_actions = map.groups.get(group)?.actions as f64;
+    let others_actions = map.actions.len() as f64 - group_actions;
+    if group_actions < 5.0 || others_actions < 5.0 {
+        return None;
+    }
+    let (mine, others) =
+        map.actions
+            .iter()
+            .filter(|a| a.behavior == behavior)
+            .fold((0.0, 0.0), |(m, o), a| {
+                if a.group == group {
+                    (m + 1.0, o)
+                } else {
+                    (m, o + 1.0)
+                }
+            });
+    if mine < 3.0 && group_actions * others / others_actions < 3.0 {
+        return None;
+    }
+    let ratio = ((mine / group_actions) / ((others + 1.0) / others_actions)).log2();
+    Some(match ratio {
+        r if r >= 1.0 => Class::MuchMore,
+        r if r >= 0.321928 => Class::More,
+        r if r > -0.321928 => Class::Same,
+        r if r > -1.0 => Class::Less,
+        _ => Class::MuchLess,
+    })
 }
 
 fn plural(count: usize, one: &str) -> String {
@@ -45,153 +112,11 @@ fn plural(count: usize, one: &str) -> String {
     }
 }
 
-/// `What your agents did, from 562 actions in 19 runs across 6 projects · Argonauts' labels`,
-/// or with no action to show, where none were and what shows more. The grouping shows on the
-/// selector at the right of the sub-tabs.
-pub(super) fn headline_words(map: &BehaviorMap) -> String {
-    let request = map.request;
-    if map.actions.is_empty() {
-        return empty_words(map);
-    }
-    let actions = plural(map.actions.len(), "action");
-    if let Placing::Summaries { by } = &map.placing {
-        let words = if map.by_words {
-            " · placed by word vectors"
-        } else {
-            ""
-        };
-        return format!("Deeper map · {actions} summarized by {by}{words}");
-    }
-    let sources = match (map.runs, map.conversations) {
-        (runs, 0) => plural(runs, "run"),
-        (0, talks) => plural(talks, "conversation"),
-        (runs, talks) => format!(
-            "{} and {}",
-            plural(runs, "run"),
-            plural(talks, "conversation")
-        ),
-    };
-    let place = match (request.scope, map.projects.as_slice()) {
-        (Scope::ThisProject, _) => map.here.as_deref().map(|here| format!(" in {here}")),
-        (Scope::Everywhere, [one]) => Some(format!(" in {one}")),
-        (Scope::Everywhere, []) => None,
-        (Scope::Everywhere, many) => Some(format!(" across {}", plural(many.len(), "project"))),
-    };
-    let period = match request.period {
-        OverviewPeriod::All => String::new(),
-        other => format!(" · {}", other.title().to_lowercase()),
-    };
-    format!(
-        "What your agents did, from {actions} in {sources}{}{period} · Argonauts' labels",
-        place.unwrap_or_default()
-    )
-}
-
-/// `No actions in the last 7 days · r changes the period`.
-fn empty_words(map: &BehaviorMap) -> String {
-    let request = map.request;
-    let place = match (request.scope, map.here.as_deref()) {
-        (Scope::ThisProject, Some(here)) => format!(" in {here}"),
-        _ => String::new(),
-    };
-    match (request.period, request.scope) {
-        (OverviewPeriod::All, Scope::Everywhere) => {
-            "No actions recorded yet: the map fills in as your agents work".to_owned()
-        }
-        (OverviewPeriod::All, Scope::ThisProject) => {
-            format!("No actions recorded{place} yet · s shows every project")
-        }
-        (period, _) => format!(
-            "No actions{place} in the {} · r changes the period",
-            period.title().to_lowercase()
-        ),
-    }
-}
-
-/// The legend's groups that show in `room` rows, from the first, where `groups` run on: as
-/// many from the top as leave a row to say how many more are below, else scrolled on just far
-/// enough to show the `compared` one, with a row above saying how many it passed. A room of
-/// fewer than three rows shows the compared one alone.
-fn legend_window(groups: usize, room: usize, compared: usize) -> (usize, usize) {
-    if groups <= room {
-        return (0, groups);
-    }
-    if room < 3 {
-        return (compared.min(groups - 1), room.min(1));
-    }
-    let shown_from = |first: usize| match first {
-        0 => room - 1,
-        _ if first + room > groups => groups - first,
-        _ => room - 2,
-    };
-    (0..groups)
-        .map(|first| (first, shown_from(first)))
-        .find(|(first, shown)| compared < first + shown)
-        .unwrap_or((0, room - 1))
-}
-
-/// The marks the legend's window leaves room for: how many groups it passed above, and how
-/// many are below. A room of fewer than three rows holds the compared group alone, with neither.
-fn legend_marks(
-    groups: usize,
-    room: usize,
-    first: usize,
-    shown: usize,
-) -> (Option<usize>, Option<usize>) {
-    if room < 3 || shown >= room {
-        return (None, None);
-    }
-    let below = groups.saturating_sub(first + shown);
-    ((first > 0).then_some(first), (below > 0).then_some(below))
-}
-
-/// What the legend calls a group in "red: … does this more": a model by its name without the
-/// maker's word and the version, `Luna` for GPT 6 Luna and `Haiku` for Haiku 5.5. A group
-/// named for its CLI alone, or any group but a model, keeps its whole name.
-fn short_name(name: &str, grouping: Grouping, model: bool) -> String {
-    if grouping != Grouping::Model || !model {
-        return name.to_owned();
-    }
-    let words: Vec<&str> = name
-        .split_whitespace()
-        .filter(|word| !word.starts_with(|c: char| c.is_ascii_digit()))
-        .collect();
-    match words.as_slice() {
-        [] => name.to_owned(),
-        [one] => (*one).to_owned(),
-        [.., last] => (*last).to_owned(),
-    }
-}
-
 /// `text` cut to `cells` with `…`, then filled out to them.
 fn padded(text: &str, cells: usize) -> String {
-    let cut = cut_with_dots(text, cells);
+    let cut = cut(text, cells, At::Char);
     let room = cells.saturating_sub(cut.width());
     format!("{cut}{}", " ".repeat(room))
-}
-
-/// `text` cut to `cells` and filled out to `width`, cut short with no mark, as a column of
-/// summaries or labels lines up beside the next.
-fn column(text: &str, cells: usize, width: usize) -> String {
-    let mut kept = String::new();
-    let mut used = 0;
-    for ch in text.chars() {
-        let cell = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + cell > cells {
-            break;
-        }
-        used += cell;
-        kept.push(ch);
-    }
-    format!("{kept}{}", " ".repeat(width.saturating_sub(used)))
-}
-
-/// `text` cut to `cells`, with `…` in the last cell when it ran on.
-fn cut_with_dots(text: &str, cells: usize) -> String {
-    crate::text::truncate_spans(&[Span::raw(text)], cells)
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect()
 }
 
 fn percent(part: usize, whole: usize) -> String {
@@ -232,139 +157,6 @@ impl Look<'_> {
         matches!(self.map.placing, Placing::Summaries { .. })
     }
 
-    /// The line under the tabs.
-    pub fn headline(&self) -> Drawn {
-        let mut out = Drawn::new();
-        let words = format!(" {}", headline_words(self.map));
-        out.push(vec![
-            self.kit
-                .dim(cut_with_dots(&words, self.width.saturating_sub(1))),
-        ]);
-        out
-    }
-
-    /// The map's rows with the legend beside them, for a picture drawn over the map's cells.
-    pub fn beside_picture(&self) -> Drawn {
-        let legend = self.legend();
-        let mut out = Drawn::new();
-        for row in 0..MAP_ROWS {
-            let mut line = vec![Span::raw(" ".repeat(MAP_INSET + MAP_COLUMNS + LEGEND_GAP))];
-            if let Some(words) = legend.get(row) {
-                line.extend(words.iter().cloned());
-            }
-            out.push(line);
-        }
-        out
-    }
-
-    /// The map's rows left blank for its picture, and the legend under them, for a screen too
-    /// narrow to hold the legend beside the picture.
-    pub fn under_picture(&self) -> Drawn {
-        let mut out = Drawn::new();
-        for _ in 0..MAP_ROWS {
-            out.push(Vec::new());
-        }
-        out.push(Vec::new());
-        for line in self.braille_legend() {
-            out.push(line);
-        }
-        out
-    }
-
-    /// The legend's cells across.
-    fn legend_cells(&self) -> usize {
-        self.width
-            .saturating_sub(1 + MAP_INSET + MAP_COLUMNS + LEGEND_GAP)
-            .max(20)
-    }
-
-    /// The legend: what is compared and what the colours say, then each group with its count.
-    pub fn legend(&self) -> Vec<Vec<Span<'static>>> {
-        let kit = self.kit;
-        let grouping = self.map.request.grouping;
-        let cells = self.legend_cells();
-        let mut out: Vec<Vec<Span<'static>>> = Vec::new();
-        match self.compared {
-            None => {
-                out.push(vec![Span::styled(
-                    format!("Every {}", grouping.word()),
-                    kit.bold(Role::Text),
-                )]);
-                out.push(vec![kit.dim("nothing compared")]);
-                out.push(vec![kit.dim("←  →  compares one with")]);
-                out.push(vec![kit.dim("the rest")]);
-            }
-            Some(group) => {
-                let name = self.group_name(group).to_owned();
-                out.push(vec![
-                    kit.dim("Comparing "),
-                    Span::styled(name.clone(), kit.bold(Role::Text)),
-                ]);
-                out.push(vec![
-                    kit.dim(format!("with the other {}", grouping.plural())),
-                ]);
-                let comparison = self.map.comparisons.get(group);
-                // A group with no list says why under the map, where its list would be.
-                let listed = comparison.is_some_and(|c| !c.rows.is_empty());
-                match comparison.and_then(|c| c.why_not.as_deref()) {
-                    Some(why) if listed => {
-                        let style = kit.style(Role::Dim);
-                        for line in crate::text::wrap_text(why, style, cells, &[], &[]) {
-                            out.push(line.spans);
-                        }
-                    }
-                    Some(_) => {}
-                    None => {
-                        let model = self.map.groups[group].model.is_some();
-                        let short = short_name(&name, grouping, model);
-                        let text = kit.style(Role::Text);
-                        out.push(vec![
-                            kit.dim("red: "),
-                            Span::styled(format!("{short} does this more"), text),
-                        ]);
-                        out.push(vec![
-                            kit.dim("blue: "),
-                            Span::styled(format!("{short} does this less"), text),
-                        ]);
-                    }
-                }
-            }
-        }
-        out.push(Vec::new());
-        let room = MAP_ROWS.saturating_sub(out.len());
-        let groups = self.map.groups.len();
-        let (first, shown) = legend_window(groups, room, self.compared.unwrap_or(0));
-        let (above, below) = legend_marks(groups, room, first, shown);
-        if let Some(above) = above {
-            out.push(vec![kit.dim(format!("{above} more above"))]);
-        }
-        for (at, group) in
-            (first..first + shown).filter_map(|at| Some((at, self.map.groups.get(at)?)))
-        {
-            let this = self.compared == Some(at);
-            let mark = if self.compared.is_none() || this {
-                "● "
-            } else {
-                "○ "
-            };
-            let name_style = if self.compared.is_none() || this {
-                kit.style(Role::Text)
-            } else {
-                kit.style(Role::Dim)
-            };
-            let name = padded(&group.name, 17);
-            out.push(vec![
-                Span::styled(mark, self.colours.style(at)),
-                Span::styled(name, name_style),
-                kit.dim(format!("{:>4}", group.actions)),
-            ]);
-        }
-        if let Some(below) = below {
-            out.push(vec![kit.dim(format!("{below} more below"))]);
-        }
-        out
-    }
-
     /// Under a braille map, the groups on one row and what the colours behind the dots say.
     pub fn braille_legend(&self) -> Vec<Vec<Span<'static>>> {
         let kit = self.kit;
@@ -397,7 +189,7 @@ impl Look<'_> {
             let said = match comparison.and_then(|c| c.why_not.as_deref()) {
                 Some(why) => vec![kit.dim(format!(" {why}."))],
                 None => vec![
-                    kit.dim(" red behind the dots: "),
+                    kit.dim(" Red behind the dots: "),
                     Span::styled("  ", super::braille::more_style(kit)),
                     kit.dim(format!(
                         " {} does this more · blue: less",
@@ -410,18 +202,8 @@ impl Look<'_> {
         out
     }
 
-    /// With nothing compared, what ← → does, while there's anything to compare.
-    pub fn pick_note(&self, grouping: Grouping) -> Vec<Span<'static>> {
-        if self.map.actions.is_empty() {
-            return Vec::new();
-        }
-        vec![self.kit.dim(format!(
-            " Pick a {} with ←  →  to see what it does more or less than the rest.",
-            grouping.word()
-        ))]
-    }
-
-    /// `lit: read git history · 6 actions, 4 of them GPT 6 Luna's`.
+    /// `Lit: read git history · 6 actions, 4 of them GPT 6 Luna's`, whole: the pointer's rows
+    /// hold it.
     pub fn lit_line(&self, row: &BehaviorRow) -> Vec<Span<'static>> {
         let kit = self.kit;
         let rest = if self.summaries() {
@@ -437,61 +219,92 @@ impl Look<'_> {
                 row.mine
             )
         };
-        let line = vec![
-            kit.dim(" lit: "),
+        vec![
+            kit.dim(" Lit: "),
             Span::styled(row.behavior.clone(), kit.bold(Role::Text)),
             kit.dim(rest),
-        ];
-        crate::text::truncate_spans(&line, self.width.saturating_sub(1))
+        ]
     }
 
-    /// The compared group's distinctive behaviors, at most `fits` of them, `selected` lit.
-    /// The behaviors from `first`, at most `fits` of them, `selected` lit.
+    /// `Distinctive to Opus 5.5 · 63 actions; the others 760`. Summaries say how many of the
+    /// group's actions the list holds, and mark what says more than its label; where the line
+    /// is short of room, "in the model's words" goes first, since the headline names who wrote
+    /// them.
+    pub fn list_heading(&self, comparison: &Comparison) -> Vec<Span<'static>> {
+        let kit = self.kit;
+        let name = self.compared.map_or("", |g| self.group_name(g));
+        let heading = Span::styled(format!(" Distinctive to {name}"), kit.bold(Role::Text));
+        let room = self.width.saturating_sub(1);
+        if !self.summaries() {
+            let counts = format!(
+                " · {} actions; the others {}",
+                comparison.mine, comparison.others
+            );
+            return crate::text::truncate_spans(&[heading, kit.dim(counts)], room);
+        }
+        let held = comparison.rows.len();
+        let counts = match held < comparison.mine {
+            true => format!(" · {held} of its {} actions", comparison.mine),
+            false => format!(" · {} actions", comparison.mine),
+        };
+        let mut note = Vec::new();
+        if comparison.rows.iter().any(|row| row.new) {
+            note = vec![
+                kit.dim(" · "),
+                self.new_badge(),
+                kit.dim(" says more than its label"),
+            ];
+        }
+        let line = |words: &str| {
+            let mut line = vec![heading.clone(), kit.dim(format!("{counts}{words}"))];
+            line.extend(note.iter().cloned());
+            line
+        };
+        let whole = line(", in the model's words");
+        let line = match crate::text::spans_width(&whole) <= room {
+            true => whole,
+            false => line(""),
+        };
+        crate::text::truncate_spans(&line, room)
+    }
+
+    /// ` new `, on the rows whose summary names what their label only groups.
+    fn new_badge(&self) -> Span<'static> {
+        let kit = self.kit;
+        let mut badge = kit
+            .cell(Role::BadgeText, Role::Warn)
+            .add_modifier(ratatui::style::Modifier::BOLD);
+        badge.fg = super::colours::paper_colour(kit);
+        Span::styled(" new ", badge)
+    }
+
+    /// The compared group's distinctive behaviors the window shows, `selected` lit. A label's
+    /// counts are measured over every row, so they stay put as the list scrolls, and show
+    /// whole; its words give way, cut with `…`. A summary takes the row's room.
     pub fn list(
         &self,
         comparison: &Comparison,
         selected: Option<usize>,
-        first: usize,
-        fits: usize,
+        window: Window,
     ) -> Vec<Vec<Span<'static>>> {
         let kit = self.kit;
-        if comparison.rows.is_empty() {
-            return Vec::new();
-        }
-        let name = self.compared.map_or("", |g| self.group_name(g)).to_owned();
-        let counts = if self.summaries() {
-            format!(" · {} actions, in the model's words", comparison.mine)
-        } else {
-            format!(
-                " · {} actions; the others {}",
-                comparison.mine, comparison.others
-            )
-        };
-        let heading = vec![
-            Span::styled(format!(" Distinctive to {name}"), kit.bold(Role::Text)),
-            kit.dim(counts),
-        ];
-        let mut out = vec![crate::text::truncate_spans(
-            &heading,
-            self.width.saturating_sub(1),
-        )];
         let counted = |row: &BehaviorRow| {
             (
                 format!("{:>3}", row.mine),
-                format!(" ({})", percent(row.mine, comparison.mine)),
                 format!(
-                    "   others {:>3} ({})",
+                    "  {:>7}",
+                    format!("({})", percent(row.mine, comparison.mine))
+                ),
+                format!(
+                    "   others {:>3}  {:>7}",
                     row.others,
-                    percent(row.others, comparison.others)
+                    format!("({})", percent(row.others, comparison.others))
                 ),
             )
         };
-        // The counts always show whole; the behavior's words give way, cut with `…`.
         let widest_counts = comparison
             .rows
             .iter()
-            .skip(first)
-            .take(fits)
             .map(|row| {
                 let (mine, share, others) = counted(row);
                 mine.width() + share.width() + others.width()
@@ -502,16 +315,13 @@ impl Look<'_> {
             .width
             .saturating_sub(1 + 3 + widest_counts)
             .clamp(FEWEST_BEHAVIOR_CELLS, BEHAVIOR_CELLS);
-        let rows = comparison.rows.iter().enumerate().skip(first).take(fits);
-        let widest = comparison
-            .rows
-            .iter()
-            .skip(first)
-            .take(fits)
-            .map(|r| r.behavior.width())
-            .max()
-            .unwrap_or(0);
-        for (at, row) in rows {
+        // The cursor, the badge's five cells and a blank come before a summary.
+        let summary_cells = self.width.saturating_sub(1 + 3 + 5 + 1);
+        let mut out = Vec::new();
+        for at in window.rows() {
+            let Some(row) = comparison.rows.get(at) else {
+                continue;
+            };
             let this = selected == Some(at);
             let cursor = if this { " ❯ " } else { "   " };
             let words = if this {
@@ -521,22 +331,24 @@ impl Look<'_> {
             };
             let mut line = vec![Span::styled(cursor, kit.style(Role::Question))];
             if self.summaries() {
-                line.push(if row.new {
-                    let mut badge = kit
-                        .cell(Role::BadgeText, Role::Warn)
-                        .add_modifier(ratatui::style::Modifier::BOLD);
-                    badge.fg = super::picture::paper_colour(kit);
-                    Span::styled(" new ", badge)
-                } else {
-                    Span::raw("     ")
+                line.push(match row.new {
+                    true => self.new_badge(),
+                    false => Span::raw("     "),
                 });
                 line.push(Span::raw(" "));
-                line.push(Span::styled(padded(&row.behavior, widest + 2), words));
-                let label = row.label.as_deref().unwrap_or_default();
-                line.push(kit.dim(format!("label: {}", column(label, 36, 0))));
+                line.push(Span::styled(
+                    cut(&row.behavior, summary_cells, At::Char),
+                    words,
+                ));
             } else {
                 let (mine, share, others) = counted(row);
-                line.push(Span::styled(padded(&row.behavior, behavior_cells), words));
+                // A label that fills its column still stands three blanks before its count.
+                let label = cut(
+                    &super::hover::cap(&row.behavior),
+                    behavior_cells.saturating_sub(BEFORE_NUMBERS),
+                    At::Char,
+                );
+                line.push(Span::styled(padded(&label, behavior_cells), words));
                 line.push(Span::styled(mine, kit.bold(Role::Text)));
                 line.push(kit.dim(share));
                 line.push(kit.dim(others));
@@ -544,24 +356,6 @@ impl Look<'_> {
             out.push(line);
         }
         out
-    }
-
-    /// How many behaviors the list holds above and below the `fits` it shows from `first`,
-    /// where it runs on.
-    pub fn more(
-        &self,
-        comparison: &Comparison,
-        first: usize,
-        fits: usize,
-    ) -> Option<Vec<Span<'static>>> {
-        let (above, below) = (first, comparison.rows.len().saturating_sub(first + fits));
-        let words = match (above, below) {
-            (0, 0) => return None,
-            (0, below) => format!("   {below} more below"),
-            (above, 0) => format!("   {above} more above"),
-            (above, below) => format!("   {above} more above, {below} below"),
-        };
-        Some(vec![self.kit.dim(words)])
     }
 
     /// One action on one line under the map, its dot ringed: what it was, whose, and where.
@@ -575,10 +369,7 @@ impl Look<'_> {
         let line = vec![
             Span::styled(" ◉ ", kit.fg(Role::Bright)),
             Span::styled(
-                action
-                    .summary
-                    .clone()
-                    .unwrap_or_else(|| action.label.clone()),
+                super::hover::cap(action.summary.as_deref().unwrap_or(&action.label)),
                 kit.bold(Role::Text),
             ),
             kit.dim(rest),
@@ -586,43 +377,85 @@ impl Look<'_> {
         vec![
             crate::text::truncate_spans(&line, self.width.saturating_sub(1)),
             vec![kit.dim(
-                "   the map stays as it was; move away and the ring goes; click opens its card",
+                "   The map stays as it was; move away and the ring goes; click opens its card",
             )],
         ]
     }
 
-    /// A behavior's actions, `selected` ringed, from `first`, at most `fits` of them.
+    /// The action the keys ring on the map, in the pointer's place: what it was, the model
+    /// after its logo, the agent, and its label or its input.
+    pub fn ringed_line(&self, action: &MapAction) -> Vec<Span<'static>> {
+        let kit = self.kit;
+        let mut line = vec![
+            Span::styled(" ◉ ", kit.fg(Role::Bright)),
+            Span::styled(
+                super::hover::cap(action.summary.as_deref().unwrap_or(&action.label)),
+                kit.bold(Role::Text),
+            ),
+            kit.dim(" · "),
+        ];
+        line.extend(self.group_label(action.group));
+        let rest = match &action.summary {
+            Some(_) => format!(" · {} · label: {}", action.agent, action.label),
+            None => format!(" · {} · {}", action.agent, action.input),
+        };
+        line.push(kit.dim(rest));
+        line
+    }
+
+    /// Over a behavior's actions: the summary they're like and how many, with the keys that
+    /// ring each where the row has room; or the group, the label and how many times, and a
+    /// blank row.
+    pub fn actions_heading(&self, behavior: &str, count: usize) -> Vec<Vec<Span<'static>>> {
+        let kit = self.kit;
+        let room = self.width.saturating_sub(1);
+        if self.summaries() {
+            let line = |hint: &str| {
+                vec![
+                    kit.dim(" Actions like "),
+                    Span::styled(behavior.to_owned(), kit.bold(Role::Text)),
+                    kit.dim(format!(" · {count}{hint}")),
+                ]
+            };
+            let whole = line(" · ↑  ↓  rings each on the map");
+            let line = match crate::text::spans_width(&whole) <= room {
+                true => whole,
+                false => line(""),
+            };
+            return vec![crate::text::truncate_spans(&line, room)];
+        }
+        let mut who = vec![Span::raw(" ")];
+        if let Some(group) = self.compared {
+            who.extend(self.group_label(group));
+        }
+        who.push(kit.dim(" · "));
+        who.push(Span::styled(behavior.to_owned(), kit.bold(Role::Text)));
+        who.push(kit.dim(format!(" · {}", plural(count, "time"))));
+        vec![crate::text::truncate_spans(&who, room), Vec::new()]
+    }
+
+    /// The actions the window shows of a behavior's, `selected` ringed, in columns measured
+    /// over every action listed, four blanks apart; the words column gives way, cut with `…`.
     pub fn actions(
         &self,
-        behavior: &str,
         actions: &[usize],
         selected: usize,
-        first: usize,
-        fits: usize,
+        window: Window,
     ) -> Vec<Vec<Span<'static>>> {
         let kit = self.kit;
-        let name = self.compared.map_or("", |g| self.group_name(g)).to_owned();
-        let mut out = vec![if self.summaries() {
-            vec![
-                kit.dim(" Actions like "),
-                Span::styled(behavior.to_owned(), kit.bold(Role::Text)),
-                kit.dim(format!(
-                    " · {} · ↑  ↓  rings each on the map",
-                    actions.len()
-                )),
-            ]
-        } else {
-            vec![
-                kit.dim(format!(" {name} · ")),
-                Span::styled(behavior.to_owned(), kit.bold(Role::Text)),
-                kit.dim(format!(" · {}", plural(actions.len(), "time"))),
-            ]
-        }];
-        if !self.summaries() {
-            out.push(Vec::new());
-        }
-        for (at, index) in actions.iter().enumerate().skip(first).take(fits) {
-            let Some(action) = self.map.actions.get(*index) else {
+        let all: Vec<&MapAction> = actions
+            .iter()
+            .filter_map(|at| self.map.actions.get(*at))
+            .collect();
+        let widest =
+            |cells: &dyn Fn(&MapAction) -> usize| all.iter().map(|a| cells(a)).max().unwrap_or(0);
+        let said = |a: &MapAction| a.summary.clone().unwrap_or_else(|| a.label.clone());
+        let agent_cells = widest(&|a| a.agent.width()) + 4;
+        // The cursor's three cells come first.
+        let room = self.width.saturating_sub(1 + 3);
+        let mut out = Vec::new();
+        for at in window.rows() {
+            let Some(action) = actions.get(at).and_then(|at| self.map.actions.get(*at)) else {
                 continue;
             };
             let this = at == selected;
@@ -633,41 +466,82 @@ impl Look<'_> {
                 kit.style(Role::Text)
             };
             let mut line = vec![Span::styled(cursor, kit.style(Role::Question))];
+            let run = run_short(action);
             if self.summaries() {
-                let summary = action.summary.as_deref().unwrap_or(&action.label);
                 let quiet = if this {
                     kit.style(Role::Question)
                 } else {
                     kit.style(Role::Dim)
                 };
+                let group_cells = widest(&|a| self.group_name(a.group).width()) + 4;
+                // The logo and its blank, then the columns, then four blanks before the run.
+                let used = 3 + group_cells + agent_cells + 4 + run.width();
+                let summary_cells = widest(&|a| said(a).width())
+                    .min(room.saturating_sub(used))
+                    .max(1);
+                if let Some(logo) = self.group_logo(action.group) {
+                    line.extend(crate::kit::logo::logo_spans(&logo, kit.theme));
+                    line.push(Span::raw(" "));
+                } else {
+                    line.push(Span::raw("   "));
+                }
                 line.push(Span::styled(
-                    padded(self.group_name(action.group), 17),
+                    padded(self.group_name(action.group), group_cells),
                     self.colours.style(action.group),
                 ));
-                line.push(Span::styled(column(&action.agent, 22, 23), strong));
-                line.push(Span::styled(column(summary, 50, 51), quiet));
-                line.push(kit.dim(run_short(action)));
+                line.push(Span::styled(padded(&action.agent, agent_cells), strong));
+                line.push(Span::styled(padded(&said(action), summary_cells), quiet));
+                line.push(kit.dim(format!("    {run}")));
             } else {
-                line.push(Span::styled(column(&action.agent, 22, 23), strong));
-                line.push(kit.dim(format!("{}  ", run_short(action))));
-                line.push(kit.dim(cut_with_dots(&action.input, 61)));
+                let input_cells = room.saturating_sub(agent_cells + run.width() + 4);
+                line.push(Span::styled(padded(&action.agent, agent_cells), strong));
+                line.push(kit.dim(format!("{run}    ")));
+                line.push(kit.dim(cut(&action.input, input_cells, At::Char)));
             }
             out.push(line);
         }
         out
     }
 
-    /// The line that offers the deeper map until one is made. Fonts such as Iosevka draw ✻ two
-    /// cells wide, over the cell after it, so two blanks follow it and one always shows.
-    pub fn offer(&self) -> Vec<Span<'static>> {
+    /// The rows that offer Summaries until they're made, wrapped at a word to the look's width
+    /// with each row after the first set in under `Summaries:`. Fonts such as Iosevka draw ✻
+    /// two cells wide, over the cell after it, so two blanks follow it and one always shows.
+    pub fn offer(&self) -> Vec<Vec<Span<'static>>> {
+        const MARK: &str = " ✻  ";
+        const WHY: &str =
+            "a model summarizes each action, so behaviors no label names show up too.";
         let kit = self.kit;
-        vec![
-            Span::styled(" ✻  ", kit.style(Role::Warn)),
-            Span::styled("Deeper map: ", kit.bold(Role::Text)),
-            kit.dim("a model summarizes each action, so behaviors no label names show up too. "),
+        let room = self.width.saturating_sub(1);
+        let set_in = MARK.width();
+        let mut rows = Vec::new();
+        let mut row = vec![
+            Span::styled(MARK, kit.style(Role::Warn)),
+            Span::styled("Summaries:", kit.bold(Role::Text)),
+        ];
+        let mut used = crate::text::spans_width(&row);
+        let words = WHY.split(' ').map(|word| vec![kit.dim(word.to_owned())]);
+        // The key and what it does stay together.
+        let key = vec![
             Span::styled("d", kit.style(Role::Question)),
-            kit.dim(" to set it up"),
-        ]
+            kit.dim(" to set them up"),
+        ];
+        for word in words.chain([key]) {
+            let cells = crate::text::spans_width(&word);
+            if used + 1 + cells > room && used > set_in {
+                rows.push(std::mem::replace(
+                    &mut row,
+                    vec![Span::raw(" ".repeat(set_in))],
+                ));
+                used = set_in;
+            } else {
+                row.push(Span::raw(" "));
+                used += 1;
+            }
+            row.extend(word);
+            used += cells;
+        }
+        rows.push(row);
+        rows
     }
 
     /// An action's card: whose it is and where, what it did, why it's on the map, and what its
@@ -680,14 +554,20 @@ impl Look<'_> {
         } else {
             format!("{} on {}", action.model, action.cli)
         };
-        let mut whose = format!(" · {agent} · {}", action.role);
+        let mut whose = format!("{agent} · {}", action.role);
         if let Some(place) = &action.place {
             whose.push_str(&format!(" · {place}"));
         }
-        out.push(vec![
+        let mut line = vec![
             Span::styled(format!(" {}", action.agent), kit.bold(Role::Text)),
-            kit.dim(whose),
-        ]);
+            kit.dim(" · "),
+        ];
+        if let Some(logo) = self.group_logo(action.group) {
+            line.extend(crate::kit::logo::logo_spans(&logo, kit.theme));
+            line.push(Span::raw(" "));
+        }
+        line.push(kit.dim(whose));
+        out.push(line);
         let run = action
             .run
             .clone()
@@ -751,36 +631,5 @@ impl Look<'_> {
             self.map.request.grouping.plural(),
             percent(in_others, others),
         )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// However long the comparison's words leave the legend, it never takes more rows than
-    /// its room: the groups shown and the marks above and below fit, the compared group always
-    /// among them, and a room of fewer than three rows holds that group alone.
-    #[test]
-    fn the_legend_never_takes_more_rows_than_its_room() {
-        for groups in 1..12 {
-            for room in 1..14 {
-                for compared in 0..groups {
-                    let (first, shown) = legend_window(groups, room, compared);
-                    let (above, below) = legend_marks(groups, room, first, shown);
-                    let rows = shown + usize::from(above.is_some()) + usize::from(below.is_some());
-                    let case = format!("{groups} groups, room {room}, comparing {compared}");
-                    assert!(rows <= room, "{case}: {rows} rows");
-                    assert!((first..first + shown).contains(&compared), "{case}");
-                    if room < 3 && groups > room {
-                        assert_eq!((shown, above, below), (1, None, None), "{case}");
-                    }
-                    let marked = above.unwrap_or(0) + shown + below.unwrap_or(0);
-                    if room >= 3 {
-                        assert_eq!(marked, groups, "{case}: every group is counted");
-                    }
-                }
-            }
-        }
     }
 }

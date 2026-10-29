@@ -1,0 +1,38 @@
+   █ A bucket has two numbers to tune, burst and refill. A window counter is one INCR and █                             
+▐▌ █ one EXPIRE, and nobody has to pick a burst size.                                     █                             
+  ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘                             
+                                                                                                                        
+     Opus 5.5                                                                                                           
+   ╭─ ▐▌ A window counter is one INCR and one EXPIRE                                                                  
+   ▗▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ ▐▌✔  ▐▌✔  ▐▌✔                                 
+   █ A window counter lets a client send twice its limit across a window's edge. With █                                 
+   █ ▐▌ 3.8 Flash's Lua script a bucket is still one Redis call, and its burst is the █                                 
+▐▌ █ plan's limit, so there's nothing new to tune.                                    █                                 
+  ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘                                 
+                                                                                                                        
+            ▐▌ 5.6 Luna moved to a token bucket: "twice the limit at a window's edge" · 4 of 6 points agreed            
+                                                                                                                        
+     3.8 Flash                                                                                                          
+   ╭─ ▐▌ An in-memory bucket on each node                                                                             
+   ▗▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ ▐▌✔  ▐▌✘                                
+   █ The balancer spreads a client over all 3 nodes, so a third each still lets bursts █                                
+   █ through. Redis is already here for sessions (src/session/store.ts); keep your     █                                
+   █ interface for the tests. And the balancer's probe calls /health with no key, so a █                                
+▐▌ █ plain 401 takes a node out.                                                       █                                
+  ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘                                
+                                                                                                                        
+▐▌▗▟ • • •   Qwen3 Coder 30B is writing · 3.8 Flash replied to its message                                             
+                                                                                                                        
+✻ Parleying… (3m 20s · ↓  61.2k of 200k tokens · 2/4 seats agree)                                                       
+  ⎿  Still open: Redis or memory · calls with no key                                                                     
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task                                                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ↓  to manage                                           
+                                                                                                                        
+  ⣾  Rate limit the API                    ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  2/4 · 3m20s · ↓  61.2k tokens                          
+    ⎿ ✔  ▐▌ Opus 5.5                       Backs all 6 points          1m58s · ↓  19.6k tokens                          
+      ○  ▐▌ 5.6 Luna                       Backs 5 of 6 points         1m06s · ↓  12.4k tokens                          
+      ✔  ▐▌ 3.8 Flash                      Backs all 6 points          2m02s · ↓  17.1k tokens                          
+      ○  ▐▌ Qwen3 Coder 30B                Answering Gemini 3.8 Fl…    1m52s · ↓  12.1k tokens                          

@@ -7,11 +7,13 @@ use serde_json::Value;
 use time::OffsetDateTime;
 
 use super::run::Party;
+use crate::cli_sessions::ResumeCommand;
 use crate::input::MentionTarget;
 use crate::limits::PlanUsageReading;
-use crate::names::{AgentId, MessageId, ModelRef, RoleName, SessionKey, WorkflowId};
+use crate::names::{AgentId, MessageId, ModelRef, RoleName, SeatId, SessionKey, WorkflowId};
 use crate::session_runner::{Access, RunnerKind};
 use crate::settings::sessions::SessionLifetime;
+use crate::status_tab::ProviderBilling;
 use crate::steps::StepName;
 use crate::workflow::StepRef;
 use crate::{ErrorCategory, LimitDimension, Spend, SpendStatus};
@@ -29,6 +31,9 @@ pub enum SessionEvent {
         id: String,
         transcript: Option<PathBuf>,
     },
+    /// What you type to carry the session on in its CLI's own screen, as its adapter builds it
+    /// once the CLI's id for the session is known.
+    CarryOn(ResumeCommand),
     /// A message waits for delivery (an `@mention`, guidance, a blackboard message).
     Queued(QueuedMessage),
     Delivered {
@@ -77,6 +82,35 @@ pub struct SessionStarted {
     /// asking session's latest workflow report named that agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked_by: Option<AskedBy>,
+    /// The council seat it sits for, by which the seat finds its session again from its first
+    /// answer to its last task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<SeatId>,
+    /// Who pays for its tokens, as its provider bills them. `None` in records that don't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<Billing>,
+}
+
+/// Who pays for a session's tokens, which splits a run's tokens into plan, free and paid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Billing {
+    /// A plan you signed in to, whose limits it counts against.
+    Plan,
+    /// Nothing: a model on this computer, or a free model or tier.
+    Free,
+    /// A key of yours, charged by use.
+    Paid,
+}
+
+impl From<ProviderBilling> for Billing {
+    fn from(billing: ProviderBilling) -> Self {
+        match billing {
+            ProviderBilling::Plan => Self::Plan,
+            ProviderBilling::Local => Self::Free,
+            ProviderBilling::ApiKey => Self::Paid,
+        }
+    }
 }
 
 /// Who asked for a session: the session whose CLI asked, the workflow its latest report was
@@ -759,6 +793,41 @@ mod tests {
 
     fn names(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_start_from_before_seats_and_billing_reads_without_them() {
+        let written = serde_json::json!({
+            "event": "started", "worker": "claude-code/opus", "agent_id": "claude-code",
+            "provider": "anthropic", "kind": "cli", "role": "reader", "step": "read",
+            "access": "read_only", "lifetime": "task", "resumed_from": null, "follow_key": null,
+        });
+        let SessionEvent::Started(started) = serde_json::from_value(written).unwrap() else {
+            panic!("not a start");
+        };
+        assert_eq!((started.seat.as_ref(), started.billing), (None, None));
+
+        let seat = SessionStarted {
+            seat: Some(SeatId::numbered(2)),
+            billing: Some(Billing::Free),
+            lifetime: SessionLifetime::Seat,
+            ..*started
+        };
+        let written = serde_json::to_value(SessionEvent::Started(Box::new(seat.clone()))).unwrap();
+        assert_eq!(written["seat"], "seat-002");
+        assert_eq!(written["billing"], "free");
+        assert_eq!(written["lifetime"], "seat");
+        let SessionEvent::Started(back) = serde_json::from_value(written).unwrap() else {
+            panic!("not a start");
+        };
+        assert_eq!(*back, seat);
+    }
+
+    #[test]
+    fn a_providers_billing_says_who_pays_for_a_session() {
+        assert_eq!(Billing::from(ProviderBilling::Plan), Billing::Plan);
+        assert_eq!(Billing::from(ProviderBilling::Local), Billing::Free);
+        assert_eq!(Billing::from(ProviderBilling::ApiKey), Billing::Paid);
     }
 
     /// The model a command launched, as each CLI's command names it.

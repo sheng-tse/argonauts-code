@@ -40,3 +40,8 @@ pub use require::{Required, RequiredStep};
 pub use run::{Ended, RunInput, run};
 pub use sandbox::{CallKind, Limits, ScriptEnd};
 pub use script::{Meta, MetaPhase, Script, ScriptError};
+
+/// A council written as steps, as the tests read one. The built-in Council talks in its phases
+/// and has no steps.
+#[cfg(test)]
+pub(crate) const COUNCIL_STEPS: &str = include_str!("../tests/fixtures/council-steps.toml");

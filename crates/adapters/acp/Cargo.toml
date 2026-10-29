@@ -14,7 +14,7 @@ categories.workspace = true
 include = ["/src/**/*.rs", "/LICENSE", "/NOTICE"]
 
 [dependencies]
-agent-client-protocol = "2.2.0"
+agent-client-protocol.workspace = true
 anyhow.workspace = true
 argonauts-core.workspace = true
 regex.workspace = true
@@ -22,7 +22,7 @@ serde.workspace = true
 serde-saphyr.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tokio-util = { workspace = true, features = ["compat"] }
+tokio-util.workspace = true
 
 [dev-dependencies]
 argonauts-testkit.workspace = true

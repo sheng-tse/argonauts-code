@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
+
+                                                                    Comparing ◧◨ 6 Luna
+                                                                    With the rest, on the land:
+                                                                    Red where it does more, blue where less
+                                                                       Much more 2x as often or more
+                                                                       More      1.25x to 2x
+                                                                       Less      0.5x to 0.8x
+                                                                       Much less 0.5x or less
+                                                                       Untinted  About the same, or too few
+
+                                                                    ○  ◧◨ Haiku 5.5   406
+                                                                    ●  ◧◨ 6 Luna       66
+                                                                    ○  ◧◨ 5.6 Luna     49
+                                                                    ↓  2 more below
+
+  Lit: Accept task completion and the 13 actions summarized most like it
+
+  Summaries · 562 summarized by Qwen3 Coder 30B (64k) · last 30 days
+  Distinctive to GPT 6 Luna · 6 of its 66 actions, in the model's words ·  new  says more than its label
+  ❯  new  Accept task completion
+     new  Reject change due to negative input handling failure
+          Located key code elements and references
+          Run full unit test suite
+          Check current repository status and file changes
+     new  Confirm task completion
+
+   r to cycle dates · s this project · d labels · ↑  ↓  behavior · enter actions · ←  →  model · esc back

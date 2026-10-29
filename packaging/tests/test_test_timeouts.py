@@ -12,7 +12,8 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-# Room in a test job for all but the tries of one hung test: a cold build and the doc tests.
+# Room in a test job for all but the tries of one hung test: a cold build, the doc tests and
+# the world's timed tests.
 ROOM_MINUTES = 30
 
 

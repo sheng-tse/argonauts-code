@@ -16,7 +16,7 @@ use argonauts_registry::{SettingsSources, resolve};
 use argonauts_testkit::{FakeRunner, FakeSession, TempRepo};
 use serde_json::{Value, json};
 
-use crate::controller::test_support::{CliOptions, TestDriver, max_wait};
+use crate::controller::test_support::{CliOptions, TestDriver, max_wait, on_the_default_workflow};
 
 fn estimate(files: u32) -> Value {
     json!({
@@ -114,7 +114,7 @@ fn workers(settings: &argonauts_core::settings::Settings, role: RoleName) -> Vec
 /// reviews. The run is the crew's, orchestrated by Codex and reviewed by agy only.
 #[tokio::test]
 async fn codex_orchestrates_and_gemini_reviews_as_asked() {
-    let mut driver = crew_driver(CliOptions::default()).await;
+    let mut driver = crew_driver(on_the_default_workflow(CliOptions::default())).await;
     let message = "Add due dates to tasks. Have codex orchestrate, gemini review, and use \
                    opencode to build.";
     driver.agent.push(reply(
@@ -157,7 +157,7 @@ async fn codex_orchestrates_and_gemini_reviews_as_asked() {
     driver.exit().await;
 
     // The next request says nothing of how to run, so nothing of the last one stays.
-    let driver = crew_driver(CliOptions::default()).await;
+    let driver = crew_driver(on_the_default_workflow(CliOptions::default())).await;
     driver.agent.push(reply("change", 1, Vec::new()));
     driver.submit("Add due dates to tasks.").await;
     let next = first_start(&driver).await;
@@ -260,10 +260,10 @@ async fn instructions_in_a_mentioned_file_are_never_applied() {
 
 #[tokio::test]
 async fn with_read_instructions_off_a_request_runs_as_it_always_did() {
-    let options = CliOptions {
+    let options = on_the_default_workflow(CliOptions {
         flags: vec!["captain_or_crew.read_instructions=false".to_owned()],
         ..CliOptions::default()
-    };
+    });
     let driver = crew_driver(options).await;
     driver.agent.push(reply(
         "change",
@@ -329,10 +329,10 @@ async fn the_unclear_question_puts_the_asked_mode_first_and_your_pick_wins() {
     driver.exit().await;
 }
 
-/// "From now on" applies to its request, then asks where to keep it. An answer that starts no
-/// run shows only the question.
+/// "From now on" applies to its request, and is kept for later ones where your changes go,
+/// with nothing asked. An answer that starts no run shows only that.
 #[tokio::test]
-async fn from_now_on_asks_where_to_keep_it() {
+async fn from_now_on_is_kept_where_your_changes_go() {
     let mut driver = crew_driver(CliOptions::default()).await;
     driver.agent.push(reply(
         "answer",
@@ -346,59 +346,39 @@ async fn from_now_on_asks_where_to_keep_it() {
         )],
     ));
     driver.submit("From now on, codex reviews.").await;
-    let event = driver
-        .until(|event| matches!(event, AppEvent::Choice { choice } if choice.kind == ChoiceKind::KeepInstructions))
+    driver
+        .until(|event| {
+            matches!(event, AppEvent::Notice { text, .. }
+                if text == "Kept for later requests: Codex reviews.")
+        })
         .await;
-    let AppEvent::Choice { choice } = event else {
+    let event = driver
+        .until(|event| matches!(event, AppEvent::SettingChanged { .. }))
+        .await;
+    let AppEvent::SettingChanged { key, scope, .. } = event else {
         unreachable!()
     };
-    assert_eq!(choice.title, "Keep this for later requests?");
-    assert_eq!(choice.body, ["Codex reviews"]);
-    let labels: Vec<&str> = choice.options.iter().map(|o| o.label.as_str()).collect();
-    assert_eq!(
-        labels,
-        [
-            "This project, just me",
-            "This project, shared",
-            "Everywhere",
-            "Just this request"
-        ]
-    );
+    assert!(key.contains("reviewer"), "{key}");
+    assert_eq!(scope, argonauts_core::settings::SettingScope::Global);
+    let global = std::fs::read_to_string(driver.env.global_config()).unwrap();
+    assert!(global.contains("codex"), "{global}");
     assert!(
         driver.conductor.starts().is_empty(),
         "an answer starts no run"
     );
-    driver
-        .send(UiCommand::Answer {
-            to: AnswerTarget::Choice { id: choice.id },
-            action: AnswerAction::Choose {
-                value: "project_local".to_owned(),
-            },
-            text: None,
-            evidence_sha256: None,
-            tasks: Vec::new(),
-            remember: false,
-        })
-        .await;
-    let local = driver.env.project_local_config();
-    let deadline = tokio::time::Instant::now() + max_wait();
-    loop {
-        let text = std::fs::read_to_string(&local).unwrap_or_default();
-        if text.contains("codex") {
-            assert!(text.contains("reviewer"), "{text}");
-            break;
-        }
-        assert!(tokio::time::Instant::now() < deadline, "not saved: {text}");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    driver.exit().await;
+    let events = driver.exit().await;
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AppEvent::Choice { .. })),
+        "nothing asks where: {events:#?}"
+    );
 }
 
-/// Words that set the crew show the crew understood, each role with where it
-/// came from, then ask once where to keep it. Saving writes `[crew]` in the repository's
-/// shared settings.
+/// Words that set the crew show the crew understood, each role with where it came from, and
+/// apply to that request alone: nothing asks to keep them, and no file is written.
 #[tokio::test]
-async fn words_that_set_the_crew_show_it_and_ask_where_to_keep_it() {
+async fn words_that_set_the_crew_show_it_for_that_request_alone() {
     let mut driver = crew_driver(CliOptions::default()).await;
     driver.agent.push(reply(
         "change",
@@ -429,49 +409,18 @@ async fn words_that_set_the_crew_show_it_and_ask_where_to_keep_it() {
             "as you asked: \"all the other agents\""
         ]
     );
-    let event = driver
-        .until(|event| matches!(event, AppEvent::Choice { choice } if choice.kind == ChoiceKind::KeepInstructions))
-        .await;
-    let AppEvent::Choice { choice } = event else {
-        unreachable!()
-    };
-    assert_eq!(choice.title, "Keep this crew?");
-    let labels: Vec<&str> = choice.options.iter().map(|o| o.label.as_str()).collect();
-    assert_eq!(
-        labels,
-        [
-            "Just this request",
-            "This conversation",
-            "Save for this repository"
-        ]
-    );
     let start = first_start(&driver).await;
     assert_eq!(start.mode, RunMode::Crew);
-    driver
-        .send(UiCommand::Answer {
-            to: AnswerTarget::Choice { id: choice.id },
-            action: AnswerAction::Choose {
-                value: "project".to_owned(),
-            },
-            text: None,
-            evidence_sha256: None,
-            tasks: Vec::new(),
-            remember: false,
-        })
-        .await;
     let shared = driver.env.project_config();
-    let deadline = tokio::time::Instant::now() + max_wait();
-    loop {
-        let text = std::fs::read_to_string(&shared).unwrap_or_default();
-        if text.contains("[crew]") {
-            assert!(text.contains("antigravity-cli"), "{text}");
-            assert!(text.contains("codex"), "{text}");
-            break;
-        }
-        assert!(tokio::time::Instant::now() < deadline, "not saved: {text}");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    driver.exit().await;
+    let events = driver.exit().await;
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            AppEvent::Choice { .. } | AppEvent::SettingChanged { .. }
+        )),
+        "{events:#?}"
+    );
+    assert!(!shared.exists());
 }
 
 #[test]
@@ -513,8 +462,9 @@ async fn crew_and_captain_commands_read_the_words_too() {
     ));
     driver
         .send(command(SlashCommand::Crew {
-            task: "Add due dates. Have codex orchestrate and claude review, just do it alone."
-                .into(),
+            task: Some(
+                "Add due dates. Have codex orchestrate and claude review, just do it alone.".into(),
+            ),
         }))
         .await;
     let start = first_start(&driver).await;

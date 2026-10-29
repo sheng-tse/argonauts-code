@@ -31,6 +31,11 @@ allowed_in = [
     "crates/tui/tests/golden/stats/**",
     "crates/tui/tests/golden/behaviors/**",
     "crates/tui/tests/golden/transcript/resumed_after.*",
+    "approved/behaviors/**",
+    "approved/config-mods/**",
+    "approved/context-mod/**",
+    "approved/limits/spend-card*",
+    "approved/MANIFEST.toml",
     "crates/tui/src/kit/**",
     "crates/tui/src/bottom/band*.rs",
     "crates/tui/src/bottom/mod.rs",
@@ -200,10 +205,6 @@ new = "judge"
 old = ["adjudicate", "adjudicates", "adjudicated", "adjudicator", "adjudicators", "adjudication"]
 new = "judge"
 
-[[word]]
-old = ["seat", "seats", "seated"]
-new = "a role's model"
-
 # agy numbers its retries "attempt N", and Claude Code's retry line has the key and says it,
 # as the working line does while Claude Code retries.
 [[word]]
@@ -364,6 +365,11 @@ new = "fallback note"
 old = ["chat agent"]
 new = "the main agent"
 
+# A CLI keeps its whole name wherever it's written, so nothing keeps a shorter one of its own.
+[[phrase]]
+old = ["cli short", "short cli"]
+new = "DisplayNames::cli (ModelLabel::cli beside its logo)"
+
 # ── Retired patterns ─────────────────────────────────────────────────────────────────────
 
 [[pattern]]
@@ -389,6 +395,12 @@ new = "Usage reports"
 old = '\b(7d|30d)\b'
 new = "week, month"
 only_in = ["crates/core/src/settings/stats.rs", "crates/core/src/input.rs", "crates/core/src/input/**"]
+
+# A logo and the name after it are one unit: kit::logo::ModelLabel words the name by whether
+# the logo's picture draws, and only it.
+[[pattern]]
+old = 'after_logo\(&as_drawn\(|name_beside_picture\('
+new = "kit::logo::ModelLabel (ModelLabel::of for a worker, ModelLabel::named for a model's name)"
 
 # ── What a CLI itself wrote ──────────────────────────────────────────────────────────────
 # A recording's words are the CLI's, so it is checked by name only. Real folders and
@@ -440,6 +452,7 @@ made_here = [
     "crates/crew/tests/fixtures/runs/**",
     "crates/core/tests/fixtures/settings-defaults.toml",
     "crates/runner/tests/fixtures/spec-first.toml",
+    "crates/runner/tests/fixtures/council-steps.toml",
     "crates/registry/tests/fixtures/models.toml",
     "crates/learning/tests/fixtures/learned/**",
     # cards as the terminal shows them
@@ -602,7 +615,9 @@ not_ours = [
 table = "crates/core/src/input.rs"
 
 [slash_commands.variant_of]
+council = "WorkflowRequest"
 learned = "LearnedWorkflows"
+orchestrator = "WorkflowRequest"
 pin = "Mods"
 settings = "Config"
 unpin = "Mods"
@@ -649,6 +664,11 @@ word = "coordinates"
 # test, so the list can't outlive what it excuses.
 
 [[allow]]
+path = "crates/tui/src/kit/logo*.rs"
+text = "after_logo(&as_drawn("
+why = "ModelLabel itself, which words a name after the logo as it draws, and its tests"
+
+[[allow]]
 path = "crates/tui/tests/golden/waiting_rows.*"
 text = "If nothing can take the seats a run needs"
 why = "the picture's own caption"
@@ -667,6 +687,16 @@ why = "the picture's own caption"
 path = "crates/tui/tests/golden/fork_start.*"
 text = "then on plan:orchestrator: its card"
 why = "the picture's own caption"
+
+[[allow]]
+path = ".github/workflows/bot.yml"
+text = '"OWNER", "MEMBER", "COLLABORATOR"'
+why = "GitHub's own names for how a comment's author stands to the repository"
+
+[[allow]]
+path = "crates/crew/src/council/lexicon.rs"
+text = "\"chat\""
+why = "a word in models' own names and ids, as deepseek-chat, which no seat is told apart by"
 
 [[allow]]
 path = "crates/**"

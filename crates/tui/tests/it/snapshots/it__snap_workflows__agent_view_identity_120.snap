@@ -1,6 +1,5 @@
 ---
 source: crates/tui/tests/it/snap_workflows.rs
-assertion_line: 733
 expression: "&text"
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -12,7 +11,7 @@ expression: "&text"
  │   ✔ reader  GPT 5.6 on Codex    │ 31.0k tok · 195 tool calls · 58s                                           │
  │                                 │                                                                            │
  │                                 │ Prompt · 14 lines · ⏎ expand                                               │
- │                                 │   Build the terminal and the whole bottom region of the UI kit.            │
+ │                                 │   Build the terminal and the whole bottom region of the todo app.          │
  │                                 │   … 13 more lines                                                          │
  │                                 │                                                                            │
  │                                 │ Activity · last 3 of 195 tool calls · ⏎ expand                             │

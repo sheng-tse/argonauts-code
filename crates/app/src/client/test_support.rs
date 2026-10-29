@@ -24,6 +24,7 @@ use argonauts_core::input::MentionTarget;
 use argonauts_core::names::{AgentId, ApprovalId, MessageId, ModelRef, RoleName, SessionKey};
 use argonauts_core::session_runner::{Access, RunnerKind};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::{AgentEvent, Paths, RunId, Spend, TaskId};
@@ -125,6 +126,8 @@ pub(crate) fn session_started(
         asked_by: None,
         asked_why: None,
         forked: false,
+        seat: None,
+        billing: None,
     };
     session_event(
         seq,
@@ -250,6 +253,7 @@ pub(crate) fn task_spec(n: usize) -> TaskSpec {
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 
@@ -269,6 +273,7 @@ pub(crate) fn opened(
         evidence_sha256: "evidence".to_owned(),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options: Vec::new(),
         free_text: FreeText::None,
         needs_you: true,
@@ -302,6 +307,9 @@ pub(crate) fn plan_approval(seq: u64, id: &ApprovalId, tasks: usize) -> RunEvent
         new_dependencies: Vec::new(),
         flags: Vec::new(),
         workflow: None,
+        seats: Vec::new(),
+        objections: Vec::new(),
+        offer: None,
     };
     opened(
         seq,

@@ -584,6 +584,7 @@ mod tests {
             limit: TaskLimit::default(),
             predictions: None,
             item: None,
+            way: None,
         })))
     }
 
@@ -603,6 +604,7 @@ mod tests {
                 }],
                 tamper_suspected: false,
             },
+            picked_by: None,
         })
     }
 
@@ -773,6 +775,7 @@ mod tests {
             hour: None,
             conversation: None,
             took: 0,
+            billing: None,
         };
         let here = test.ctx.env.repo_root.display().to_string();
         UsageLedger::new(&test.ctx.env.paths)

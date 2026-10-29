@@ -8,6 +8,7 @@ use std::cmp::{Ordering, Reverse};
 
 use serde::{Deserialize, Serialize};
 
+use crate::display_names::maker_of;
 use crate::names::ModelRef;
 use crate::pricing::ListPrice;
 use crate::registry::ModelEntry;
@@ -19,6 +20,10 @@ pub const CATALOG_VERSION: u32 = 1;
 #[serde(default)]
 pub struct ModelCatalog {
     pub version: u32,
+    /// The day the catalog was published, `YYYY-MM-DD`, inside what its signature covers: a
+    /// copy published earlier than one already in hand says older facts and is refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published: Option<String>,
     #[serde(rename = "model", skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<CatalogEntry>,
     /// What each effort level means, for models whose entry doesn't say.
@@ -27,6 +32,9 @@ pub struct ModelCatalog {
     /// List prices, so a model that ships after a release still gets an API value.
     #[serde(rename = "price", skip_serializing_if = "Vec::is_empty")]
     pub prices: Vec<CatalogPrice>,
+    /// Models a local server can download, which `/model` ranks for this computer.
+    #[serde(rename = "local", skip_serializing_if = "Vec::is_empty")]
+    pub local: Vec<crate::model_picker::LocalModel>,
 }
 
 /// One model's list price, in dollars per million tokens.
@@ -180,6 +188,9 @@ impl ModelCatalog {
     /// Lays `later` over this one, field by field.
     pub fn merge(&mut self, later: ModelCatalog) {
         self.version = self.version.max(later.version);
+        if later.published > self.published {
+            self.published = later.published;
+        }
         for entry in later.models {
             match self.models.iter_mut().find(|known| known.id == entry.id) {
                 Some(known) => known.overlay(entry),
@@ -190,6 +201,12 @@ impl ModelCatalog {
         for price in later.prices {
             self.prices.retain(|known| known.model != price.model);
             self.prices.push(price);
+        }
+        for model in later.local {
+            match self.local.iter_mut().find(|known| known.tag == model.tag) {
+                Some(known) => *known = model,
+                None => self.local.push(model),
+            }
         }
     }
 
@@ -292,16 +309,43 @@ pub fn builtin_effort_note(level: &str) -> Option<&'static str> {
 /// A model's name as Argonauts Code shows it for `cli`. OpenCode's own list is the one place
 /// that names most of its models, as OpenCode Zen's "GLM-5.3-Flash Free", so its names stand
 /// as OpenCode writes them. The other CLIs name models that are also read from their ids, so
-/// their names are spelled one way.
+/// their names are spelled one way. Claude's models read as Claude Code names them on every
+/// CLI, so agy's "Claude Sonnet 4.6 (Thinking)" is "Sonnet 4.6".
 pub fn shown_name(cli: &str, name: &str) -> String {
-    if cli.trim() == OPENCODE {
+    let name = if cli.trim() == OPENCODE {
         name.trim().to_owned()
     } else {
         spelled_one_way(name)
-    }
+    };
+    as_claude_code_names_it(&name).unwrap_or(name)
 }
 
 const OPENCODE: &str = "opencode";
+
+/// A Claude model's name without the "Claude" that another CLI puts before its line, or the
+/// "(Thinking)" agy puts after it, since agy lists each Claude model in that one mode. `None`
+/// for any other maker's model, and for an old name such as "Claude 3.5 Sonnet", where only a
+/// version follows the word.
+fn as_claude_code_names_it(name: &str) -> Option<String> {
+    if maker_of(name)?.id != ANTHROPIC {
+        return None;
+    }
+    let mut words: Vec<&str> = name.split_whitespace().collect();
+    let line_follows = |words: &[&str]| {
+        words
+            .get(1)
+            .is_some_and(|line| line.starts_with(|c: char| c.is_ascii_alphabetic()))
+    };
+    if words[0].eq_ignore_ascii_case("claude") && line_follows(&words) {
+        words.remove(0);
+    }
+    if words.len() > 1 && words[words.len() - 1].eq_ignore_ascii_case("(thinking)") {
+        words.pop();
+    }
+    Some(words.join(" "))
+}
+
+const ANTHROPIC: &str = "anthropic";
 
 /// A model's name as every place in Argonauts Code writes it, with its words apart: a CLI's own
 /// list may join them, as Codex's "GPT-5.6-Luna", and the same model then read two ways.
@@ -334,12 +378,18 @@ pub fn display_name_from_id(id: &str) -> String {
         tokens.pop();
     }
     // The first word says it's Claude, unless only a version follows, as in `claude-3-5-sonnet`.
-    if tokens.first() == Some(&"claude")
+    let claude = tokens.first() == Some(&"claude");
+    if claude
         && tokens
             .get(1)
             .is_some_and(|next| next.starts_with(|c: char| c.is_ascii_alphabetic()))
     {
         tokens.remove(0);
+    }
+    // agy lists each Claude model in its thinking mode alone, as `claude-opus-4-6-thinking`, and
+    // the model goes by one name on every CLI.
+    if claude && tokens.len() > 1 && tokens.last() == Some(&"thinking") {
+        tokens.pop();
     }
     let mut words: Vec<String> = Vec::new();
     let mut pending_version: Vec<&str> = Vec::new();
@@ -440,6 +490,8 @@ mod tests {
             ("opus", "Opus"),
             ("claude-opus-5-5[1m]", "Opus 5.5 (1M context)"),
             ("claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet"),
+            ("claude-mythos-5-1", "Mythos 5.1"),
+            ("claude-opus-4-6-thinking", "Opus 4.6"),
             ("gpt-6.1-sol", "GPT 6.1 Sol"),
             ("gpt-oss-120b", "GPT OSS 120B"),
             ("gemini-3.8-flash-high", "Gemini 3.8 Flash High"),
@@ -588,6 +640,48 @@ mod tests {
             builtin_effort_note("low")
         );
         assert_eq!(catalog.effort_note(&id("codex/gpt-6.1-sol"), "turbo"), None);
+    }
+
+    /// agy's list names Claude's models its own way; every CLI shows them as Claude Code does,
+    /// and nothing else of agy's or OpenCode's names changes.
+    #[test]
+    fn a_claude_model_has_one_name_on_every_cli() {
+        for (cli, listed, shown) in [
+            (
+                "antigravity-cli",
+                "Claude Sonnet 4.6 (Thinking)",
+                "Sonnet 4.6",
+            ),
+            ("antigravity-cli", "Claude Opus 4.6 (Thinking)", "Opus 4.6"),
+            ("claude-code", "Sonnet 4.6", "Sonnet 4.6"),
+            ("opencode", "Claude Sonnet 4.6", "Sonnet 4.6"),
+            ("claude-code", "Claude 3.5 Sonnet", "Claude 3.5 Sonnet"),
+            ("claude-code", "Mythos 5.1", "Mythos 5.1"),
+            (
+                "antigravity-cli",
+                "Gemini 3.8 Flash (High)",
+                "Gemini 3.8 Flash (High)",
+            ),
+            (
+                "antigravity-cli",
+                "GPT-OSS 120B (Medium)",
+                "GPT OSS 120B (Medium)",
+            ),
+            ("opencode", "GLM-5.3-Flash Free", "GLM-5.3-Flash Free"),
+            ("opencode", "Kimi K2 (Thinking)", "Kimi K2 (Thinking)"),
+        ] {
+            assert_eq!(shown_name(cli, listed), shown, "{cli} {listed}");
+        }
+        let mut sonnet = CatalogEntry::new(id("antigravity-cli/claude-sonnet-4-6"));
+        sonnet.name = Some("Claude Sonnet 4.6 (Thinking)".to_owned());
+        let catalog = ModelCatalog {
+            models: vec![sonnet],
+            ..ModelCatalog::default()
+        };
+        let on_agy = catalog.label(&id("antigravity-cli/claude-sonnet-4-6")).name;
+        let on_claude_code = catalog.label(&id("claude-code/claude-sonnet-4-6")).name;
+        assert_eq!(on_agy, "Sonnet 4.6");
+        assert_eq!(on_agy, on_claude_code);
     }
 
     #[test]

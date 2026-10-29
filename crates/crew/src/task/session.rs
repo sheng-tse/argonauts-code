@@ -129,13 +129,19 @@ pub(crate) async fn run(host: &Host, call: SessionCall<'_>) -> EngineResult<Ende
                 parts.extend(told);
             }
             parts.extend(extra);
-            (parts, None)
+            // A council seat's first try carries on the seat's own session, in the folder it
+            // talked in, so it builds what it argued for.
+            let carried = (cause == TryCause::First)
+                .then(|| crate::council::talk::folder::session_to_carry_on(host, task, worker))
+                .flatten();
+            (parts, carried)
         }
         // A worker without a status tool gets the summary from the engine at every start,
         // resumes included.
         Next::Resume { parts, .. } => (parts, resume),
     };
     let mut plan = SessionPlan {
+        without_status: false,
         at: Some(at.clone()),
         role: RoleName::Worker,
         worker: worker.clone(),

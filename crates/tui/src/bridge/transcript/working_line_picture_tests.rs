@@ -9,7 +9,7 @@ use ratatui::text::Line;
 use serde_json::json;
 
 use super::live_rows_tests::{Screen, pending, started};
-use super::picture_check::{Unlike, assert_matches};
+use super::picture_check::assert_rows_match;
 use crate::bottom::{Activity, WorkingLine};
 use crate::render::{Clock, RenderCtx};
 
@@ -62,42 +62,20 @@ fn working_line_the_task_in_hand_the_next_one_and_going_quiet() {
     lines.extend(drawn(Duration::from_secs(72), |line, now| {
         line.heard_at = Some(now - Duration::from_secs(20));
     }));
-    // The picture's own note about the red line stands where the screen draws nothing.
-    lines.push(Line::default());
-    lines.push(Line::default());
-    lines.extend(running_command());
-
-    assert_matches(
-        "working_line",
-        &lines,
+    let picture = (
         include_str!("../../../tests/golden/transcript/working_line.txt"),
         include_str!("../../../tests/golden/transcript/working_line.html"),
+    );
+    // The picture's note about the red line, its row 4, isn't screen.
+    assert_rows_match("working_line", &lines, picture, 0..4, &Screen::theme(), &[]);
+    let mut command = vec![Line::default()];
+    command.extend(running_command());
+    assert_rows_match(
+        "working_line",
+        &command,
+        picture,
+        5..8,
         &Screen::theme(),
-        &[
-            Unlike {
-                row: 3,
-                cols: (68, 87),
-                why: "the working line ends with what the turn does; esc to interrupt is on the \
-                      bottom line, which the context_tab picture draws it on",
-            },
-            Unlike {
-                row: 4,
-                cols: (0, usize::from(WIDTH) - 1),
-                why: "the picture's note about the row above, which the screen doesn't draw",
-            },
-            Unlike {
-                row: 6,
-                cols: (0, 25),
-                why: "a running fold line keeps the transcript's look, its mark in the working \
-                      grey, its words in the text color and its count bold, where the picture \
-                      draws it in one color",
-            },
-            Unlike {
-                row: 7,
-                cols: (4, 53),
-                why: "a result hangs two cells after its hook on every tool row, so the \
-                      command starts one cell further right than the picture draws it",
-            },
-        ],
+        &[],
     );
 }

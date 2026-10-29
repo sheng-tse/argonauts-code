@@ -1,0 +1,38 @@
+     Opus 5.5 · keeps the notes                                                                                         
+                                                                                                                        
+     Where our four answers meet: 3 points agreed, 3 still open.                                                        
+                                                                                                                        
+      Proposal · 6 points from 4 answers · 3 ways from you                                                              
+      ✔  Limits from the key's plan: free 60 a minute, pro 600; importer 2,000                                          
+      ✔  An empty bucket answers 429 with Retry-After and X-RateLimit headers                                           
+      ✔  Tests use an in-memory store behind a RateStore interface                                                      
+      ?  A token bucket ▐▌ ▐▌ ▐▌   or   a window counter ▐▌                                                             
+      ?  Kept in Redis ▐▌ ▐▌ ▐▌   or   in memory on each node ▐▌                                                        
+      ?  Calls with no key: one shared bucket ▐▌ ▐▌   or   401 ▐▌ ▐▌                                                    
+      ❯  Yours, binding: the limiter by Maker-checker · the route tests across agents                                   
+▐▌       the plan limits by ▐▌ 5.6 Luna in its own session                                                              
+                                                                                                                        
+                                3 of 6 points agreed · they talk until every seat agrees                                
+                                                                                                                        
+     5.6 Luna                                                                                                           
+   ╭─ ▐▌ A token bucket per API key, in Redis                                                                           
+                                                                             ▐▌✘  ▐▌✘  ▐▌✘                              
+     A bucket has two numbers to tune, burst and refill. A window counter is one INCR and                               
+▐▌   one EXPIRE, and nobody has to pick a burst size.                                                                   
+                                                                                                                        
+                                                                                                                        
+▐▌  • • •   Opus 5.5 is writing · 5.6 Luna replied to its message                                                       
+                                                                                                                        
+✻ Parleying… (2m 30s · ↓  46k of 200k tokens · 2/4 seats agree)                                                       
+  ⎿  Still open: token bucket or window counter · Redis or memory · calls with no key                                    
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task                                                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ↓  to manage                                           
+                                                                                                                        
+  ⣾  Rate limit the API                    ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  2/4 · 2m30s · ↓    46k tokens                          
+    ⎿ ✔  ▐▌ Opus 5.5                       Answering GPT 5.6 Luna      1m40s · ↓  14.1k tokens                          
+      ○  ▐▌ 5.6 Luna                       Backs 4 of 6 points         1m06s · ↓   8.9k tokens                          
+      ✔  ▐▌ 3.8 Flash                      Backs all 6 points          1m30s · ↓    13k tokens                          
+      ○  ▐▌ Qwen3 Coder 30B                Backs 4 of 6 points         1m36s · ↓    10k tokens                          

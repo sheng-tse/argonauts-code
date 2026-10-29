@@ -111,19 +111,19 @@ fn every_workflow_resolves() {
 }
 
 #[test]
-fn captain_runs_when_nothing_names_a_workflow_on_councils_settings() {
-    assert_eq!(DEFAULT_WORKFLOW, "captain");
-    assert_eq!(BASE_WORKFLOW, "council");
+fn council_runs_when_nothing_names_a_workflow_on_its_own_settings() {
+    assert_eq!(DEFAULT_WORKFLOW, "council");
+    assert_eq!(BASE_WORKFLOW, DEFAULT_WORKFLOW);
     assert_eq!(Settings::default().workflow, BASE_WORKFLOW);
     let resolved = resolve(&SettingsSources::default()).unwrap();
-    assert_eq!(resolved.settings.workflow, "captain");
+    assert_eq!(resolved.settings.workflow, "council");
     let from_the_workflow: Vec<&str> = resolved
         .entries
         .iter()
         .filter(|entry| entry.layer == "workflow")
         .map(|entry| entry.key.as_str())
         .collect();
-    assert_eq!(from_the_workflow, ["captain_or_crew.force"]);
+    assert!(from_the_workflow.is_empty(), "{from_the_workflow:?}");
     // Council's file sets no key, so picking it gives the built-in settings.
     let council = resolve(&SettingsSources {
         overrides: vec!["workflow=council".into()],
@@ -138,7 +138,7 @@ fn the_default_nobody_picked_gives_way_to_every_settings_file() {
     let repo = Repo::new();
     repo.global("[captain_or_crew]\nforce = \"crew\"\n");
     let resolved = resolve(&repo.sources()).unwrap();
-    assert_eq!(resolved.settings.workflow, "captain");
+    assert_eq!(resolved.settings.workflow, "council");
     assert_eq!(
         resolved.settings.captain_or_crew.force,
         Some(argonauts_core::settings::protocol::ForcedMode::Crew)

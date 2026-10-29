@@ -96,7 +96,11 @@ async fn merge_drafts(
     merger: &ModelRef,
     latest: &[SealedDraft],
 ) -> EngineResult<SealedDraft> {
-    let plans = drafts::labeled(&latest.iter().collect::<Vec<_>>())?;
+    let plans = drafts::read_by(
+        host.run_id(),
+        &format!("merger {merger}"),
+        &drafts::labeled_for_agents(host, &latest.iter().collect::<Vec<_>>())?,
+    );
     let all = plans_text(&plans);
     let mut gaps: Option<String> = None;
     let mut merged = None;

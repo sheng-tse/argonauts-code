@@ -409,8 +409,9 @@ pub fn cheapest_model(
     }))
 }
 
-/// `argonauts config set`: to the key's default scope unless `scope` picks the file. A safety key
-/// needs a terminal, and this refuses inside an agent. Returns the file written.
+/// `argonauts config set`: where your changes go, as the app saves them, unless `scope` picks the
+/// file. A safety key needs a terminal, and this refuses inside an agent. Returns the file
+/// written.
 pub fn config_set(
     repo: Option<&Path>,
     key: &str,
@@ -418,7 +419,7 @@ pub fn config_set(
     scope: Option<SettingScope>,
 ) -> anyhow::Result<PathBuf> {
     // Only a project file needs a repository.
-    let env = match scope_for(key, scope)? {
+    let env = match scope_for(&home()?, key, scope)? {
         SettingScope::Project | SettingScope::ProjectLocal => Some(required(repo)?),
         SettingScope::Global | SettingScope::Session => None,
     };
@@ -448,7 +449,7 @@ fn config_set_in(
     value: &str,
     scope: Option<SettingScope>,
 ) -> anyhow::Result<Saved> {
-    let scope = scope_for(key, scope)?;
+    let scope = scope_for(paths, key, scope)?;
     safety_needs_a_terminal(env, key, value)?;
     let (env, file) = match (scope, env) {
         (SettingScope::Global, _) => {
@@ -457,8 +458,8 @@ fn config_set_in(
             return Ok(Saved { file, note: None });
         }
         (SettingScope::Session, _) => bail!(
-            "{key} is saved for one app session by default; pick a file with --local, \
-             --project, or --global"
+            "save_changes_to keeps your changes for one app session, which this isn't; pick a \
+             file with --local, --project, or --global"
         ),
         (_, None) => bail!("{key} goes in a project file, so run this in the project's folder"),
         (SettingScope::Project, Some(env)) => (env, env.project_config()),
@@ -467,11 +468,28 @@ fn config_set_in(
     write_project_file(env, &file, key, value)
 }
 
-/// The scope `scope` picks, or else the key's default one.
-fn scope_for(key: &str, scope: Option<SettingScope>) -> anyhow::Result<SettingScope> {
-    let meta = setting_meta(key)
+/// The scope `scope` picks, or else where your changes go: `save_changes_to` as your global file
+/// in `paths` sets it, a key for one repository kept in this project just for you, as the app
+/// saves a change.
+fn scope_for(
+    paths: &Paths,
+    key: &str,
+    scope: Option<SettingScope>,
+) -> anyhow::Result<SettingScope> {
+    setting_meta(key)
         .ok_or_else(|| anyhow!("there's no setting {key}; `argonauts config show` lists them"))?;
-    Ok(scope.unwrap_or(meta.default_scope))
+    if let Some(asked) = scope {
+        return crate::controller::settings::save::asked_place(key, asked);
+    }
+    let sources = SettingsSources {
+        global: Some(paths.global_config()),
+        ..SettingsSources::default()
+    };
+    let save_changes_to = resolve(&sources)?.settings.save_changes_to;
+    Ok(crate::controller::settings::save::usual_scope(
+        save_changes_to,
+        key,
+    ))
 }
 
 /// Writes into a project file and carries its trust forward, as the app's saves do. You trust
@@ -801,7 +819,7 @@ mod tests {
             "[sandbox]\nnetwork = true\n",
         )
         .unwrap();
-        let saved = set(&env, "crew.main", "codex", None).unwrap();
+        let saved = set(&env, "crew.main", "codex", Some(SettingScope::ProjectLocal)).unwrap();
         assert_eq!(saved.file, local);
         let note = saved.note.unwrap();
         assert!(note.contains("stays untrusted"), "{note}");
@@ -815,11 +833,16 @@ mod tests {
         trusted().trust(&local).unwrap();
         repo.write(".argonauts/config.local.toml", "[ui]\nbell = true\n")
             .unwrap();
-        for (key, value, file) in [
-            ("captain_or_crew.captain_max_files", "5", &project),
-            ("crew.main", "codex", &local),
+        for (key, value, scope, file) in [
+            (
+                "captain_or_crew.captain_max_files",
+                "5",
+                SettingScope::Project,
+                &project,
+            ),
+            ("crew.main", "codex", SettingScope::ProjectLocal, &local),
         ] {
-            let saved = set(&env, key, value, None).unwrap();
+            let saved = set(&env, key, value, Some(scope)).unwrap();
             assert_eq!((&saved.file, saved.note), (file, None), "{key}");
             assert!(trusted().was_trusted(file), "{key}");
         }
@@ -829,58 +852,64 @@ mod tests {
     fn config_set_of_the_global_file_needs_no_repository() {
         let home = tempfile::tempdir().unwrap();
         let paths = Paths::new(home.path());
-        let saved = config_set_in(None, &paths, "ui.bell", "false", None).unwrap();
-        assert_eq!(saved.file, paths.global_config());
-        assert!(
-            std::fs::read_to_string(&saved.file)
-                .unwrap()
-                .contains("bell = false")
-        );
-        for scope in [None, Some(SettingScope::Project)] {
-            let err = config_set_in(
-                None,
-                &paths,
-                "captain_or_crew.captain_max_files",
-                "5",
-                scope,
-            )
-            .unwrap_err()
-            .to_string();
-            assert!(err.contains("the project's folder"), "{err}");
-        }
-    }
-
-    #[test]
-    fn config_set_uses_the_key_default_scope() {
-        let repo = TempRepo::new().unwrap();
-        let env = env_for(&repo, false);
-        for (key, value, file, scope) in [
-            (
-                "crew.main",
-                "codex",
-                env.project_local_config(),
-                SettingScope::ProjectLocal,
-            ),
-            (
-                "ui.bell",
-                "false",
-                env.global_config(),
-                SettingScope::Global,
-            ),
+        for (key, value, leaf) in [
+            ("ui.bell", "false", "bell = false"),
             (
                 "captain_or_crew.captain_max_files",
                 "5",
-                env.project_config(),
-                SettingScope::Project,
+                "captain_max_files = 5",
             ),
         ] {
-            assert_eq!(setting_meta(key).unwrap().default_scope, scope, "{key}");
+            let saved = config_set_in(None, &paths, key, value, None).unwrap();
+            assert_eq!(saved.file, paths.global_config(), "{key}");
+            let text = std::fs::read_to_string(&saved.file).unwrap();
+            assert!(text.contains(leaf), "{key} in {text}");
+        }
+        let err = config_set_in(
+            None,
+            &paths,
+            "captain_or_crew.captain_max_files",
+            "5",
+            Some(SettingScope::Project),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("the project's folder"), "{err}");
+    }
+
+    /// With no flag, a setting saves where your changes go, as the app saves one: everywhere by
+    /// default, a key for one repository in this project just for you, and wherever your
+    /// global file's `save_changes_to` sends your changes.
+    #[test]
+    fn config_set_saves_where_your_changes_go() {
+        let repo = TempRepo::new().unwrap();
+        // merge.target and save_changes_to are safety keys, so you're at a terminal.
+        let env = env_for(&repo, true);
+        for (key, value, file) in [
+            ("crew.main", "codex", env.global_config()),
+            ("ui.bell", "false", env.global_config()),
+            (
+                "captain_or_crew.captain_max_files",
+                "5",
+                env.global_config(),
+            ),
+            ("merge.target", "main", env.project_local_config()),
+            ("save_changes_to", "\"just_you\"", env.global_config()),
+            // Your global file now sends your changes to this project, just for you.
+            ("ui.bell", "true", env.project_local_config()),
+            ("save_changes_to", "\"this_project\"", env.global_config()),
+            ("crew.main", "claude-code", env.project_config()),
+        ] {
             let written = set(&env, key, value, None).unwrap().file;
             assert_eq!(written, file, "{key}");
             let leaf = key.rsplit('.').next().unwrap();
             let text = std::fs::read_to_string(&written).unwrap();
             assert!(text.contains(&format!("{leaf} = ")), "{key} in {text}");
         }
+        // A change kept for one app session has no file here, so it asks for one.
+        set(&env, "save_changes_to", "\"this_session\"", None).unwrap();
+        let err = set(&env, "ui.bell", "false", None).unwrap_err().to_string();
+        assert!(err.contains("--local"), "{err}");
     }
 
     #[test]

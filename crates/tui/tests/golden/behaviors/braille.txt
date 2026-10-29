@@ -1,29 +1,33 @@
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
-   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
-  What your agents did, from 562 actions in 19 runs · last 30 days                                                    
-                                                                                                                      
-                                     ⠈⠉                                                                               
-                                           ⡀ ⣀ ⡀                                                                      
-    ⣀⡄ ⢀                                ⡨⣸⣼⣕⣿⣶⣧⣔⢅                                                                     
-  ⠆          ⠐  ⣠⣦⣶⣦⡆⠄                   ⠁⠊⠓⠙⠉⠝⠈  ⡀                                                                   
-              ⡀ ⠈⠙⠙⠉⠃⠈                                                                                                
-          ⢀       ⠈                       ⡀                   ⡀                                                       
-      ⢀⣦⣤⣤⡀                      ⠒                          ⢲⣵⣶⣵⣧⣗                                                    
-       ⠉⠉⠁                                                   ⠈⠙⠈⠈                                                     
-                                                                                                                      
-                       ⢀⢀        ⠣ ⠐⠂                                                                                 
-                       ⠁⠐⠄⡠⡄⢂    ⣍⢉⡒                                                                                  
-                        ⠴⠠⢒⠄ ⠐⢀ ⡈                ⠐⠉⠚⠓                                                                 
-                            ⠒ ⡀⠠⠥⢂⠈                                                                                   
-                                                                                                                      
-  ⣿ Haiku 5.5  ⣿ GPT 6 Luna  ⣿ GPT 5.6 Luna  ⣿ Haiku 4.5  ⣿ Gemini 3.8 Flash                                          
-  red behind the dots:    GPT 6 Luna does this more · blue: less                                                      
-                                                                                                                      
-  Distinctive to GPT 6 Luna · 66 actions; the others 496                                                              
-  ❯ checked git status or diff and read git history         4 (6.1%)   others   2 (0.4%)                              
-    checked git status or diff and ran a shell command      3 (4.5%)   others   4 (0.8%)                              
-    ran the test suite                                      8 (12.1%)   others  19 (3.8%)                             
-    returned its structured answer                         34 (51.5%)   others 135 (27.2%)                            
-                                                                                                                      
-  r to cycle dates · g group · s this project · d deeper map · ←  →  compare · ↓  the list · esc back                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+                                     ⠈⠉                             Every model                                Actions
+                                           ⡀ ⣀ ⡀                    Nothing compared · ←  →  compares one
+    ⣀⡄ ⢀                                ⡨⣸⣼⣕⣿⣶⣧⣔⢅
+  ⠆          ⠐  ⣠⣦⣶⣦⡆⠄                   ⠁⠊⠓⠙⠉⠝⠈  ⡀                 ● Haiku 5.5                                    406
+              ⡀ ⠈⠙⠙⠉⠃⠈                                              ● GPT 6 Luna                                    66
+          ⢀       ⠈                       ⡀                   ⡀     ● GPT 5.6 Luna                                  49
+      ⢀⣦⣤⣤⡀                      ⠒                          ⢲⣵⣶⣵⣧⣗  ● Haiku 4.5                                     22
+       ⠉⠉⠁                                                   ⠈⠙⠈⠈   ● Gemini 3.8 Flash                              19
+
+                       ⢀⢀        ⠣ ⠐⠂
+                       ⠁⠐⠄⡠⡄⢂    ⣍⢉⡒
+                        ⠴⠠⢒⠄ ⠐⢀ ⡈                ⠐⠉⠚⠓
+                            ⠒ ⡀⠠⠥⢂⠈
+
+  Point at a dot to see the action under it
+
+
+  Label map · 562 actions in 19 runs across 6 projects · last 30 days
+  Most common
+  Returned its structured answer   169    Ran the test suite                         27
+  Read a source file                62    Edited a source file                       26
+  Searched code by pattern          28    Gave a structured answer that didn't fit   21
+
+
+
+
+
+   r to cycle dates · s this project · d summaries · tab grouping · ←  →  compare · ↓  the list · esc back

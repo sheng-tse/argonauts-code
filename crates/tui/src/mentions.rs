@@ -16,6 +16,27 @@ use crate::text::{sanitize_line, truncate_line};
 use crate::theme::Role;
 use crate::views::{View, ViewCtx, ViewOutcome, list};
 
+/// A council's seats for the `@` list, each by the name the conversation gives it ("Opus 5.5 ·
+/// 2"), in seat order.
+pub fn seats(faces: &crate::council::Faces) -> Vec<MenuItem> {
+    faces
+        .iter()
+        .map(|(_, face)| MenuItem::new(face.label(), "a seat of the council").with_kind("seat"))
+        .collect()
+}
+
+/// The seats first, then everyone else not named the same, as the `@` list reads while a
+/// council talks.
+pub fn seats_first(seats: Vec<MenuItem>, rest: Vec<MenuItem>) -> Vec<MenuItem> {
+    let mut items = seats;
+    for item in rest {
+        if !items.iter().any(|seat| seat.name == item.name) {
+            items.push(item);
+        }
+    }
+    items
+}
+
 /// Everyone you can mention in the attached run, in the list's order: workers, tasks, roles,
 /// follow numbers, then `all`. Empty with no run on screen, since a mention needs one.
 pub fn candidates(state: &AppState) -> Vec<MenuItem> {
@@ -360,6 +381,7 @@ pub(crate) mod fixture {
             tokens_in: 0,
             tokens_out: 0,
             cost_usd: None,
+            billing: None,
             context: None,
             context_window: None,
             rotations: 0,
@@ -382,6 +404,7 @@ pub(crate) mod fixture {
             stalled: false,
             cli_session: None,
             sent_back: false,
+            seat: None,
         }
     }
 
@@ -401,6 +424,9 @@ pub(crate) mod fixture {
             reviews: 0,
             waiting_on_agent: None,
             item: None,
+            way: None,
+            todos: None,
+            reviewers: 0,
         }
     }
 
@@ -455,6 +481,33 @@ pub(crate) mod fixture {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_councils_seats_come_first_in_the_at_list() {
+        use crate::council::{Face, Faces};
+        use argonauts_core::logos::Logo;
+        use argonauts_core::names::SeatId;
+        let faces = Faces::new([
+            (
+                SeatId::numbered(1),
+                Face::new("Opus 5.5", "claude-code", Logo::dot("claude-code")).numbered(1),
+            ),
+            (
+                SeatId::numbered(2),
+                Face::new("5.6 Luna", "codex", Logo::dot("codex")),
+            ),
+        ]);
+        let items = seats_first(
+            seats(&faces),
+            vec![
+                MenuItem::new("codex", "1 session").with_kind("agent"),
+                MenuItem::new("5.6 Luna", "the same seat"),
+            ],
+        );
+        let names: Vec<&str> = items.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(names, ["Opus 5.5 · 1", "5.6 Luna", "codex"]);
+        assert_eq!(items[0].kind.as_deref(), Some("seat"));
+    }
+
     use super::*;
 
     #[test]

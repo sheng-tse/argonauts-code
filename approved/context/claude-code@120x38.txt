@@ -1,0 +1,87 @@
+Context, Claude Code the main session, counted: the tab as it first shows
+screen 120x38
+at ?,0
+size 120x32
+terminal fg=#c8d3f5 bg=#222436
+text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats
+ What fills each session's context                                                         1 session · 32.3k in context
+
+     Context Usage
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛀ ⛀ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ￼￼ Opus 5.5
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   claude-opus-5-5
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   32.3k/1m tokens (3%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 4.4k tokens (0.4%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 19.4k tokens (1.9%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP tools: 705 tokens (0.1%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP server instructions: 960 tokens (0.1%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Memory files: 503 tokens (0.1%)
+                                               ⛁ Skills: 6.4k tokens (0.6%)
+                                               ⛁ Messages: 10 tokens (<0.1%)
+                                               ⛶ Free space: 934.7k (93.5%)
+                                               ⛝ Autocompact buffer: 33k tokens (3.3%)
+
+     Auto-compact window: 1m tokens
+
+     MCP tools · /mcp (loaded on-demand)
+     └ 237 tools · 705 tokens
+
+     Memory files · /memory
+     └ 1 file · 503 tokens
+
+     Skills · /skills
+     └ 33 skills · 6.4k tokens
+
+ tab · ←  →  tabs · ↓  into the list · enter opens one · esc closes
+paint
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+.bbbbbbbb...cccccccc....cccccc....cccccc....ccccc...deeeeeeed...cccccc....ccccc
+.ffff.fffff.ffff.fffffffff.fffffff.........................................................f.fffffff.f.fffff.ff.fffffff
+
+.....bbbbbbb.bbbbb
+.....g.f.f.f.f.h.i.j.k.l.f.f.f.f.f.f.f.f.f.f...mm.cccc.ccc
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...fffffffffffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...ffffffff.ffffff.ffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...nnnnnnnnn.nnnnn.nn.nnnnnnnn
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...g.cccccc.ccccccc.ffff.ffffff.ffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...f.cccccc.cccccc.fffff.ffffff.ffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...h.ccc.cccccc.fff.ffffff.ffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...i.ccc.cccccc.ccccccccccccc.fff.ffffff.ffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...j.cccccc.cccccc.fff.ffffff.ffffff
+...............................................k.ccccccc.ffff.ffffff.ffffff
+...............................................l.ccccccccc.ff.ffffff.fffffff
+...............................................f.cccc.cccccc.ffffff.fffffff
+...............................................f.ccccccccccc.ccccccc.fff.ffffff.ffffff
+
+.....bbbbbbbbbbbb.bbbbbbb.ff.ffffff
+
+.....bbb.bbbbb.f.ffff.fffffff.ffffffffff
+.....f.fff.fffff.f.fff.ffffff
+
+.....bbbbbb.bbbbb.f.fffffff
+.....f.f.ffff.f.fff.ffffff
+
+.....bbbbbb.f.fffffff
+.....f.ff.ffffff.f.ffff.ffffff
+
+.fff.f.f..f..ffff.f.f..ffff.fff.ffff.f.fffff.fffff.fff.f.fff.ffffff
+key
+. blank
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+b fg=#c8d3f5 bold  ; the terminal's own
+c fg=#c8d3f5  ; the terminal's own
+d bg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+e fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp
+f fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+g fg=#888888  ; Rule
+h fg=#0a91b3
+i fg=#17a34a
+j fg=#d77757
+k fg=#ffc109
+l fg=#827dbd
+m logo=claudecode
+n fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment

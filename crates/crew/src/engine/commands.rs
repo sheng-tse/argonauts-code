@@ -107,6 +107,9 @@ pub async fn handle(host: &Host, command: EngineCommand) -> EngineResult<()> {
         EngineCommand::Goal { action, reply } => {
             let _ = reply.send(goal::pursue::act(host, action).await);
         }
+        EngineCommand::Council { action, reply } => {
+            let _ = reply.send(crate::council::deliver::command(host, action).await);
+        }
     }
     Ok(())
 }
@@ -160,7 +163,7 @@ pub fn after_finish(host: &Host, command: EngineCommand) {
         EngineCommand::ProposeWorkflowChange { reply, .. } => {
             let _ = reply.send(Err(FINISHED.to_owned()));
         }
-        EngineCommand::Goal { reply, .. } => {
+        EngineCommand::Goal { reply, .. } | EngineCommand::Council { reply, .. } => {
             let _ = reply.send(Err(FINISHED.to_owned()));
         }
         // A spot check is about an approval already given, so a finished run still takes one.

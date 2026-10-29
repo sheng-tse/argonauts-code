@@ -155,6 +155,9 @@ fn request(
         new_dependencies: Vec::new(),
         flags: review.flags(),
         workflow: host.read(super::workflow_plan::plan_workflow),
+        seats: Vec::new(),
+        objections: Vec::new(),
+        offer: None,
     };
     Ok(ApprovalRequest {
         at: Some(call.at.clone()),

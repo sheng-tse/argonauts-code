@@ -8,6 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use argonauts_core::app::UiCommand;
+use argonauts_testkit::screen::Grid;
 use argonauts_testkit::{Key, Pty, PtyCommand, Screen, deadline};
 use regex::{Regex, RegexBuilder};
 use serde_json::Value;
@@ -48,6 +49,8 @@ pub struct Launch {
     name: Option<String>,
     shell: Option<Shell>,
     unanswered: bool,
+    /// The terminal takes the kitty protocol's pictures, as Ghostty and kitty do.
+    pictures: bool,
     /// Written under the private home before start, by path within it.
     home_files: Vec<(String, String)>,
     /// How long a first Ctrl+C, Ctrl+D or Esc waits for the second, when not the second
@@ -104,6 +107,12 @@ impl Launch {
     /// A terminal that answers none of the start-up queries, so the app waits them out.
     pub fn unanswered(mut self) -> Self {
         self.unanswered = true;
+        self
+    }
+
+    /// A terminal that takes the kitty protocol's pictures and answers its graphics query.
+    pub fn takes_pictures(mut self) -> Self {
+        self.pictures = true;
         self
     }
 
@@ -193,6 +202,9 @@ impl Launch {
             command = command.env_remove(name);
         }
         command = command.envs(self.env);
+        if self.pictures {
+            command = command.takes_pictures();
+        }
         if self.unanswered {
             command = command.unanswered();
         }
@@ -200,6 +212,7 @@ impl Launch {
         let name = self.name.unwrap_or_else(test_name);
         TestDriver {
             pty,
+            pictures: self.pictures,
             dir,
             commands,
             signals,
@@ -230,6 +243,8 @@ fn test_name() -> String {
 /// even when the test failed, and the process is killed.
 pub struct TestDriver {
     pty: Pty,
+    /// The terminal takes pictures, so a wait for the screen waits for them too.
+    pictures: bool,
     dir: TempDir,
     commands: PathBuf,
     signals: PathBuf,
@@ -254,6 +269,7 @@ impl TestDriver {
             name: None,
             shell: None,
             unanswered: false,
+            pictures: false,
             home_files: Vec::new(),
             double_press: None,
         }
@@ -317,12 +333,17 @@ impl TestDriver {
             .unwrap_or_else(|err| panic!("{}: {err:#}", self.name))
     }
 
-    /// Waits until the visible rows match, ignoring the scrollback.
+    /// Waits until the visible rows match, ignoring the scrollback, and in a terminal that
+    /// takes pictures until every placeholder they show has its picture.
     pub fn wait_visible(&self, pattern: &str) -> Screen {
         let regex = regex(pattern);
-        self.wait_until(&format!("{pattern:?} on screen"), |screen| {
+        let screen = self.wait_until(&format!("{pattern:?} on screen"), |screen| {
             regex.is_match(&screen.visible_text())
-        })
+        });
+        if self.pictures {
+            self.wait_for_pictures();
+        }
+        screen
     }
 
     /// The screen once the visible rows match, or `None` after `timeout`, for a step that
@@ -507,9 +528,30 @@ impl TestDriver {
         self.pty.resize(rows, cols).expect("resizing the pty");
     }
 
+    /// Resizes the window with new pixels a cell, width then height, as a font size change
+    /// does. The program is told even when the rows and columns stay as they were.
+    pub fn resize_with_cell(&mut self, rows: u16, cols: u16, cell: (u16, u16)) {
+        self.pty
+            .resize_with_cell(rows, cols, cell)
+            .expect("resizing the pty");
+    }
+
     /// Everything the test driver wrote, escape sequences included.
     pub fn raw(&self) -> Vec<u8> {
         self.pty.raw()
+    }
+
+    /// The screen shown, cell by cell, with each placeholder's picture and whether it shows.
+    pub fn cells(&self) -> Grid {
+        self.pty.cells()
+    }
+
+    /// Waits until every placeholder on the screen shown has its picture there, as kitty and
+    /// Ghostty keep one store of pictures for each screen.
+    pub fn wait_for_pictures(&self) {
+        self.pty
+            .wait_for_pictures(WAIT)
+            .unwrap_or_else(|err| panic!("{}: {err:#}", self.name));
     }
 
     /// Bells rung so far. A bell that ends a title sequence doesn't count.

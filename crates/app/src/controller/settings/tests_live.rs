@@ -104,7 +104,7 @@ async fn open_model(fixture: &mut Fixture, role: Option<RoleName>) {
         worker: None,
         effort: None,
     };
-    command(&mut fixture.ctx, &mut fixture.state, model)
+    command(&mut fixture.ctx, &mut fixture.state, model, None)
         .await
         .unwrap();
 }

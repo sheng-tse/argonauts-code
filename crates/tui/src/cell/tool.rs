@@ -4,6 +4,7 @@ mod stats;
 
 use std::time::{Duration, Instant};
 
+use argonauts_core::logos::Logo;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
@@ -11,6 +12,9 @@ use super::diff::DiffView;
 use super::group::CollapsedGroup;
 use super::{HistoryCell, Tone};
 use crate::format;
+use crate::kit::Kit;
+use crate::kit::logo::{ModelLabel, NoPicture};
+use crate::overview::shades;
 use crate::render::RenderCtx;
 use crate::text::marks;
 use crate::text::{
@@ -45,7 +49,7 @@ pub struct ToolCall {
     /// Dim words after the title, such as ` · orchestrator · ctrl+t to open`. The first thing
     /// to go when the header has no room.
     pub tail: Option<String>,
-    /// A failed agent's row, marked `✗` rather than a red bullet, as one that gave up says so.
+    /// A failed agent's row, marked `✘` rather than a red bullet, as one that gave up says so.
     pub crossed: bool,
     /// What an edit shows only once it ends, and its words until then.
     pub held: Option<Box<Held>>,
@@ -87,27 +91,42 @@ pub enum ToolTitle {
         args: String,
     },
     Text(String),
-    /// Reads `Opus 5.5 on Claude Code · worker · task-002 (Add the JSON writer)`.
+    /// Reads `Opus 5.5 on Claude Code · worker · task-002 (Add the JSON writer)`, or for an
+    /// agent headed by its label, as Claude Code heads its agents, `build:due-flag(Add the
+    /// --due flag) · Haiku 5.5 on Claude Code` with the label bold.
     Agent {
-        /// Its display name, such as `Opus 5.5 on Claude Code`.
+        /// Its display name, such as `Opus 5.5 on Claude Code`, or its label.
         name: String,
         color: Option<AgentColor>,
-        /// Such as `worker · task-002`.
+        /// Such as `worker · task-002`, or after a label who runs it.
         role: String,
-        task: String,
-        /// How the model `role` names before ` on ` is drawn.
-        model: Option<ModelShade>,
+        /// A boxed `str`, since it never changes, which keeps a call small enough for a body
+        /// to hold its calls inline.
+        task: Box<str>,
+        /// Who runs an agent headed by its label, which `role` names in words. `Some` heads
+        /// it as Claude Code does.
+        model: Option<Box<ModelShade>>,
+        /// The round of the review it gives, 1 for the first. From the second on it reads after
+        /// the label and its task: `review:per-key(review the change) · round 2`. A `u16`, to
+        /// keep a call small.
+        round: u16,
     },
 }
 
-/// The shade an agent's header draws its model in, as every tab draws it: its CLI's own colour
-/// for the CLI's first model, a shade of it for each one after.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Who runs an agent headed by its label, as its header draws them: the logo of whoever serves
+/// the model, the model's name in its colour as every tab draws it (its CLI's hue for the CLI's
+/// three models that ran the most, the grey of the rest after them), then ` on ` and its CLI.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelShade {
     /// Its CLI's colour.
     pub cli: Role,
     /// Its place among its CLI's models, 0 for the CLI's own colour.
     pub place: u8,
+    pub logo: Logo,
+    /// The model's whole name, `GPT 6 Luna`, or `None` where its CLI runs its own default.
+    pub model: Option<String>,
+    /// Its CLI's name, `Codex`.
+    pub on: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
@@ -252,17 +271,26 @@ impl ToolTitle {
             ToolTitle::Call { name, args } => format!("{name}({args})"),
             ToolTitle::Text(text) => text.clone(),
             ToolTitle::Agent {
-                name, role, task, ..
+                name,
+                role,
+                task,
+                model,
+                round,
+                ..
             } => {
-                let mut text = name.trim().to_owned();
-                if !role.trim().is_empty() {
-                    text.push_str(" · ");
-                    text.push_str(role.trim());
+                let (name, role, task) = (name.trim(), role.trim(), task.trim());
+                let round = round_words(*round).unwrap_or_default();
+                let who = if role.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {role}")
+                };
+                match (task.is_empty(), model.is_some()) {
+                    (true, _) => format!("{name}{round}{who}"),
+                    // Headed by its label, its task comes right after it.
+                    (false, true) => format!("{name}({task}){round}{who}"),
+                    (false, false) => format!("{name}{round}{who} ({task})"),
                 }
-                if !task.trim().is_empty() {
-                    text.push_str(&format!(" ({})", task.trim()));
-                }
-                text
             }
         }
     }
@@ -306,8 +334,9 @@ impl ToolCall {
                 name: name.into(),
                 color,
                 role: role.into(),
-                task: task.into(),
+                task: task.into().into_boxed_str(),
                 model: None,
+                round: 1,
             },
         )
     }
@@ -315,7 +344,7 @@ impl ToolCall {
     /// An agent's header whose role names its model first, which draws in `shade`.
     pub fn with_model(mut self, shade: ModelShade) -> Self {
         if let ToolTitle::Agent { model, .. } = &mut self.title {
-            *model = Some(shade);
+            *model = Some(Box::new(shade));
         }
         self
     }
@@ -539,9 +568,17 @@ impl ToolCall {
         *self = ToolCall { key, ..whole };
     }
 
-    /// Folds a finished agent session's body into one line, `Done · 12 tool uses · {detail}`.
-    /// The live stats go, since `detail` says them. The whole call stays for the overlay.
+    /// Folds a finished agent session's body into one line as Claude Code writes its own
+    /// agents' rows, `Done (12 tool uses)`, then ` · {detail}`. The whole call stays for the
+    /// overlay.
     pub fn summarized(&self, detail: Option<&str>) -> ToolCall {
+        self.summarized_with("", detail)
+    }
+
+    /// [`ToolCall::summarized`] with `counts` after the tool uses, what the session spent and
+    /// then how long it took: `Done (12 tool uses · 61.0k tokens · 9m 40s) · report ✓`. The
+    /// live stats go, since the line says them.
+    pub fn summarized_with(&self, counts: &str, detail: Option<&str>) -> ToolCall {
         let outcome = match self.state {
             ToolState::Running | ToolState::Writing => "Running",
             ToolState::Done => "Done",
@@ -551,7 +588,13 @@ impl ToolCall {
         };
         let uses = self.tool_uses();
         let unit = if uses == 1 { "tool use" } else { "tool uses" };
-        let mut text = format!("{outcome} · {uses} {unit}");
+        let mut text = format!("{outcome} ({uses} {unit}");
+        let counts = counts.trim();
+        if !counts.is_empty() {
+            text.push_str(" · ");
+            text.push_str(counts);
+        }
+        text.push(')');
         if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
             text.push_str(" · ");
             text.push_str(detail);
@@ -597,7 +640,8 @@ impl ToolCall {
             ToolState::Stopped => marks::decorative(theme.glyphs.bullet, theme.style(Role::Warn)),
             ToolState::Done => marks::decorative(theme.glyphs.bullet, theme.style(Role::Success)),
             ToolState::Failed if self.crossed => {
-                marks::decorative(theme.glyphs.not_ready, theme.style(Role::Danger))
+                let cross = if theme.glyphs.is_ascii() { "x" } else { "✘" };
+                marks::decorative(cross, theme.style(Role::Danger))
             }
             ToolState::Failed => marks::decorative(theme.glyphs.bullet, theme.style(Role::Danger)),
             ToolState::Refused => marks::decorative(theme.glyphs.bullet, theme.style(Role::Dim)),
@@ -731,6 +775,8 @@ impl ToolCall {
         let width = usize::from(ctx.width);
         let text = theme.style(Role::Text);
         let mut fixed = vec![self.bullet(ctx), Span::raw(" ")];
+        // What follows the parentheses, such as who runs an agent headed by its label.
+        let mut after = Vec::new();
         let (cuttable, open, close) = match &self.title {
             ToolTitle::Call { name, args } => {
                 let name = sanitize_line(name).into_owned();
@@ -751,20 +797,38 @@ impl ToolCall {
                     None => (title, "", ""),
                 }
             }
+            // A label reads bold with its task right after it, as Claude Code heads its
+            // agents, then who runs it: dim, but for the logo and the model in its colour.
+            ToolTitle::Agent {
+                name,
+                task,
+                model: Some(model),
+                round,
+                ..
+            } => {
+                let name = sanitize_line(name).trim().to_owned();
+                fixed.push(Span::styled(name, text.add_modifier(Modifier::BOLD)));
+                after.extend(
+                    round_words(*round).map(|round| Span::styled(round, theme.style(Role::Dim))),
+                );
+                after.extend(who_runs_it(model, theme));
+                (sanitize_line(task).trim().to_owned(), "(", ")")
+            }
             ToolTitle::Agent {
                 name,
                 role,
                 task,
-                model,
+                round,
                 ..
             } => {
-                // The label reads in the text's colour and who runs it dim, the model in its
-                // shade.
                 fixed.push(Span::styled(sanitize_line(name).trim().to_owned(), text));
+                fixed.extend(
+                    round_words(*round).map(|round| Span::styled(round, theme.style(Role::Dim))),
+                );
                 let role = sanitize_line(role);
                 let role = role.trim();
                 if !role.is_empty() {
-                    fixed.extend(who_runs_it(role, *model, theme));
+                    fixed.push(Span::styled(format!(" · {role}"), theme.style(Role::Dim)));
                 }
                 (sanitize_line(task).trim().to_owned(), " (", ")")
             }
@@ -782,6 +846,7 @@ impl ToolCall {
                 spans.extend(shown);
                 spans.push(Span::styled(close, text));
             }
+            spans.extend(after.iter().cloned());
             spans.extend(failed.iter().cloned());
             spans.extend(stats.iter().cloned());
             spans
@@ -811,21 +876,27 @@ impl ToolCall {
     }
 }
 
-/// ` · Haiku 5.5 on Claude Code`, dim but for the model, which takes its shade.
-fn who_runs_it(role: &str, shade: Option<ModelShade>, theme: &Theme) -> Vec<Span<'static>> {
+/// ` · round 2`, after an agent's label and its task, from the second round on.
+fn round_words(round: u16) -> Option<String> {
+    (round > 1).then(|| format!(" · round {round}"))
+}
+
+/// ` · Haiku 5.5 on Claude Code` with the logo of whoever serves the model before its name
+/// where the logo's picture draws: the name as it reads after that logo, in the model's colour,
+/// then its CLI dim. Where the CLI runs its own default, the logo and the CLI's name, dim.
+fn who_runs_it(shade: &ModelShade, theme: &Theme) -> Vec<Span<'static>> {
     let dim = theme.style(Role::Dim);
-    let Some((shade, (model, cli))) =
-        shade.and_then(|shade| Some((shade, role.split_once(" on ")?)))
-    else {
-        return vec![Span::styled(format!(" · {role}"), dim)];
+    let on = sanitize_line(&shade.on).trim().to_owned();
+    let mut spans = vec![Span::styled(" · ", dim)];
+    let Some(model) = shade.model.as_deref() else {
+        spans.extend(ModelLabel::named(&shade.logo, &on, theme, NoPicture::Nothing).spans(dim));
+        return spans;
     };
-    let kit = crate::kit::Kit::new(theme);
-    let style = crate::overview::shades::shade(&kit, shade.cli, usize::from(shade.place));
-    vec![
-        Span::styled(" · ", dim),
-        Span::styled(model.to_owned(), style),
-        Span::styled(format!(" on {cli}"), dim),
-    ]
+    let model = sanitize_line(model);
+    let colour = shades::shade(&Kit::new(theme), shade.cli, usize::from(shade.place));
+    spans.extend(ModelLabel::named(&shade.logo, &model, theme, NoPicture::Nothing).spans(colour));
+    spans.push(Span::styled(format!(" on {on}"), dim));
+    spans
 }
 
 /// The fewest columns a cut task keeps before the stats give way instead. Kept small, so

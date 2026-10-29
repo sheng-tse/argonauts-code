@@ -154,7 +154,13 @@ pub(crate) fn memory_read(
 fn choices(ctx: &Ctx, settings: &SettingsState, role: Option<RoleName>) -> Vec<ModelChoice> {
     let mut choices = models::choices(ctx, role);
     if let Some(reading) = &settings.sources.reading {
-        memory_facts::annotate(&mut choices, reading, &ctx.services.registry.list());
+        let registry = &ctx.services.registry;
+        memory_facts::annotate(
+            &mut choices,
+            reading,
+            &registry.list(),
+            &registry.catalog().local,
+        );
     }
     choices
 }

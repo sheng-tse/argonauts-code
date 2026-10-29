@@ -1,6 +1,8 @@
-//! The setup's question: what would be written, and where it applies. Nothing is written until you
-//! pick a place, and Not now or Esc writes nothing. A place your own words named in the same
-//! message needs no question, and what was kept is said in the conversation instead.
+//! The setup's question: what would be written, and where. Nothing is written until you say yes,
+//! and then it holds for the request your message starts, when it starts one, or else saves where
+//! your changes go, as `save_changes_to` says. Not now or Esc writes nothing. A place your own
+//! words named in the same message needs no question, and what was kept is said in the
+//! conversation instead.
 
 use std::path::{Path, PathBuf};
 
@@ -15,12 +17,13 @@ use argonauts_core::required::{self, RequiredStep};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::limit::OnHit;
+use argonauts_core::settings::saving::SaveChangesTo;
 use unicode_width::UnicodeWidthStr;
 
 use super::form::{Place, Proposal, RoleChange};
 use super::{Call, ConversationState, fail};
 use crate::choices::{self, choose, option};
-use crate::controller::{Ctx, Effect};
+use crate::controller::{Ctx, Effect, settings};
 
 /// A setup waiting on your pick, and the call waiting on the setup.
 pub(super) struct Open {
@@ -30,6 +33,7 @@ pub(super) struct Open {
 }
 
 const TITLE: &str = "Your setup";
+const YES: &str = "Use it";
 const NOT_NOW: &str = "not_now";
 const MODS_DIR: &str = "mods";
 
@@ -41,15 +45,16 @@ pub(super) fn open(
     proposal: Proposal,
 ) {
     let id = ctx.next_choice_id();
+    let place = where_yes_keeps_it(ctx, &proposal);
     let mut body: Vec<String> = rows(ctx, &proposal).iter().map(Row::marked).collect();
     body.push(String::new());
-    body.extend(what_each_place_writes(ctx, &proposal));
+    body.extend(what_it_writes(ctx, &proposal, place));
     let mut choice = choices::app_choice(
         id.clone(),
         ChoiceKind::Setup,
         TITLE,
         body,
-        options(ctx, &proposal),
+        options(ctx, &proposal, place),
     );
     choice.bell = true;
     conversation.talk.questions.insert(
@@ -344,7 +349,7 @@ pub(super) fn answer(
     };
     ctx.send(AppEvent::ChoiceClosed {
         id,
-        outcome: label(place).to_owned(),
+        outcome: YES.to_owned(),
     });
     match apply(
         ctx,
@@ -361,10 +366,7 @@ pub(super) fn answer(
         Err(err) => {
             fail(
                 open.call,
-                format!(
-                    "The user picked {}, and writing it failed: {err:#}",
-                    label(place)
-                ),
+                format!("The user said yes, and writing it failed: {err:#}"),
             );
             Err(err)
         }
@@ -401,56 +403,77 @@ fn label(place: Place) -> &'static str {
     }
 }
 
-fn options(ctx: &Ctx, proposal: &Proposal) -> Vec<AnswerOption> {
-    let mut places = Vec::new();
+/// Where a setup goes when you say yes on its question. A message that starts work as well keeps
+/// it for that request alone, as words about a request's crew are. Else it goes in the folder of
+/// the place your changes save to: just you saves in this project's folder too, as only its
+/// settings file is yours alone.
+fn where_yes_keeps_it(ctx: &Ctx, proposal: &Proposal) -> Place {
     if proposal.request_too {
-        places.push(('r', Place::Request));
+        return Place::Request;
     }
-    places.extend([
-        ('c', Place::Conversation),
-        ('p', Place::Repository),
-        ('e', Place::AllRepositories),
-    ]);
-    let mut options: Vec<AnswerOption> = places
-        .into_iter()
-        .enumerate()
-        .map(|(at, (key, place))| {
-            let mut picked = option(key, label(place), choose(place.value()), at == 0);
-            picked.detail = detail(ctx, proposal, place);
-            picked
-        })
-        .collect();
-    options.push(option('n', "Not now", choose(NOT_NOW), false));
-    options.push(option(
-        'd',
-        "Show what would be written",
-        AnswerAction::ShowDiff,
-        false,
-    ));
-    options
+    match settings::save_changes_to(ctx) {
+        SaveChangesTo::Everywhere => Place::AllRepositories,
+        SaveChangesTo::JustYou | SaveChangesTo::ThisProject => Place::Repository,
+        SaveChangesTo::ThisSession => Place::Conversation,
+    }
 }
 
-fn detail(ctx: &Ctx, proposal: &Proposal, place: Place) -> Option<String> {
+/// Yes, with where it goes beside it, Not now, and `d` for what would be written.
+fn options(ctx: &Ctx, proposal: &Proposal, place: Place) -> Vec<AnswerOption> {
+    let mut yes = option('y', YES, choose(place.value()), false);
+    yes.detail = Some(detail(ctx, proposal, place));
+    vec![
+        yes,
+        option('n', "Not now", choose(NOT_NOW), false),
+        option(
+            'd',
+            "Show what would be written",
+            AnswerAction::ShowDiff,
+            false,
+        ),
+    ]
+}
+
+fn detail(ctx: &Ctx, proposal: &Proposal, place: Place) -> String {
+    let session = || {
+        let held = match place {
+            Place::Request => "this request alone",
+            _ => "this session",
+        };
+        let waits = !proposal.prompts.is_empty() || !proposal.mods.is_empty();
+        if waits {
+            format!("{held} · prompts and mods are kept only by a save")
+        } else {
+            held.to_owned()
+        }
+    };
+    let Some(folder) = folder(ctx, place) else {
+        return session();
+    };
+    let scope = settings_scope(ctx, proposal, place, Picked::OnTheQuestion);
+    let files: Vec<PathBuf> = files(ctx, proposal, place, scope)
+        .into_iter()
+        .map(|(file, _)| file)
+        .collect();
+    let writes = match files.len() {
+        0 => return session(),
+        1 => "writes 1 file".to_owned(),
+        n => format!("writes {n} files"),
+    };
+    // A setting a layer above would hide saves where it takes effect, so its file may be
+    // elsewhere; the folder is named only when every file is in it.
+    let writes = if files.iter().all(|file| file.starts_with(&folder)) {
+        let shown = match place {
+            Place::Repository => format!("{PROJECT_DIR}/"),
+            _ => ctx.env.display(&folder) + "/",
+        };
+        format!("{writes} in {shown}")
+    } else {
+        writes
+    };
     match place {
-        Place::Request | Place::Conversation => {
-            let waits = !proposal.prompts.is_empty() || !proposal.mods.is_empty();
-            waits.then(|| "prompts and mods are kept only by a save".to_owned())
-        }
-        Place::Repository | Place::AllRepositories => {
-            let files = files(ctx, proposal, place).len();
-            let folder = match place {
-                Place::Repository => format!("{PROJECT_DIR}/"),
-                _ => ctx.env.display(ctx.env.paths.home()) + "/",
-            };
-            let writes = match files {
-                1 => format!("writes 1 file in {folder}"),
-                n => format!("writes {n} files in {folder}"),
-            };
-            Some(match place {
-                Place::Repository => format!("{writes} · d shows the diff"),
-                _ => writes,
-            })
-        }
+        Place::Repository => format!("{writes} · d shows the diff"),
+        _ => writes,
     }
 }
 
@@ -849,49 +872,80 @@ fn quoted(text: &str) -> String {
 }
 
 /// For Show what would be written: what you asked, then what each place would write.
-fn what_each_place_writes(ctx: &Ctx, proposal: &Proposal) -> Vec<String> {
+fn what_it_writes(ctx: &Ctx, proposal: &Proposal, place: Place) -> Vec<String> {
     let mut lines = vec![format!("You asked: {}", proposal.asked), String::new()];
-    for place in Place::ALL {
-        if place == Place::Request && !proposal.request_too {
-            continue;
-        }
-        lines.push(label(place).to_owned());
-        match place {
-            Place::Request | Place::Conversation => {
-                for (key, value) in session_settings(ctx, proposal) {
-                    lines.push(format!("  {key} = {value}"));
+    match place {
+        Place::Request | Place::Conversation => {
+            lines.push(
+                match place {
+                    Place::Request => "This request alone",
+                    _ => "This session, until you quit",
                 }
-                for step in &proposal.steps {
-                    lines.push(format!("  every workflow has {}", step_said(step)));
-                }
-                if !proposal.prompts.is_empty() || !proposal.mods.is_empty() {
-                    lines.push("  Prompts and mods are kept only by a save.".to_owned());
-                }
+                .to_owned(),
+            );
+            for (key, value) in session_settings(ctx, proposal) {
+                lines.push(format!("  {key} = {value}"));
             }
-            Place::Repository | Place::AllRepositories => {
-                for (file, said) in files(ctx, proposal, place) {
-                    lines.push(format!("  {}", ctx.env.shown(&file)));
-                    lines.extend(said.into_iter().map(|line| format!("    {line}")));
-                }
+            for step in &proposal.steps {
+                lines.push(format!("  every workflow has {}", step_said(step)));
+            }
+            if !proposal.prompts.is_empty() || !proposal.mods.is_empty() {
+                lines.push("  Prompts and mods are kept only by a save.".to_owned());
             }
         }
-        lines.push(String::new());
+        Place::Repository | Place::AllRepositories => {
+            lines.push(
+                match place {
+                    Place::Repository => "This project",
+                    _ => "Everywhere",
+                }
+                .to_owned(),
+            );
+            let scope = settings_scope(ctx, proposal, place, Picked::OnTheQuestion);
+            if scope == SettingScope::Session && !proposal.settings.is_empty() {
+                lines.push("  this session".to_owned());
+                lines.extend(
+                    proposal
+                        .settings
+                        .iter()
+                        .map(|(key, value)| format!("    {key} = {value}")),
+                );
+            }
+            for (file, said) in files(ctx, proposal, place, scope) {
+                lines.push(format!("  {}", ctx.env.shown(&file)));
+                lines.extend(said.into_iter().map(|line| format!("    {line}")));
+            }
+        }
     }
-    lines.pop();
     lines
 }
 
-/// Each file a save to `place` writes, with what it gets.
-fn files(ctx: &Ctx, proposal: &Proposal, place: Place) -> Vec<(PathBuf, Vec<String>)> {
+/// Where a setup's settings save in `place`: where a change to them saves when you said yes on
+/// the question, as every change does, else the settings file of the place your words named.
+fn settings_scope(ctx: &Ctx, proposal: &Proposal, place: Place, picked: Picked) -> SettingScope {
+    let named = match place {
+        Place::Repository => SettingScope::Project,
+        Place::AllRepositories => SettingScope::Global,
+        Place::Request | Place::Conversation => SettingScope::Session,
+    };
+    match (picked, proposal.settings.first()) {
+        (Picked::OnTheQuestion, Some((key, _))) => settings::scope_for(ctx, key),
+        _ => named,
+    }
+}
+
+/// Each file a save to `place` writes, with what it gets, its settings in `scope`'s file.
+fn files(
+    ctx: &Ctx,
+    proposal: &Proposal,
+    place: Place,
+    scope: SettingScope,
+) -> Vec<(PathBuf, Vec<String>)> {
     let Some(dir) = folder(ctx, place) else {
         return Vec::new();
     };
     let mut files = Vec::new();
-    if !proposal.settings.is_empty() {
-        let config = match place {
-            Place::Repository => ctx.env.project_config(),
-            _ => ctx.env.global_config(),
-        };
+    if let Some(config) = settings::file_for(ctx, scope).filter(|_| !proposal.settings.is_empty()) {
         let said = proposal
             .settings
             .iter()
@@ -994,24 +1048,16 @@ fn apply(
         }
         Place::Repository | Place::AllRepositories => {
             let written = write_files(ctx, proposal, place)?;
+            let scope = settings_scope(ctx, proposal, place, picked);
+            let config = settings::file_for(ctx, scope).filter(|_| !proposal.settings.is_empty());
             // The turn's end puts back what the session wrote in `.argonauts/`, never this.
             let mut kept = written.clone();
-            if !proposal.settings.is_empty() && place == Place::Repository {
-                kept.push(ctx.env.project_config());
-            }
+            kept.extend(config.clone());
             crate::controller::conversation::direct::setup_wrote(conversation, turn, &kept);
-            let scope = match place {
-                Place::Repository => SettingScope::Project,
-                _ => SettingScope::Global,
-            };
             let effects = save(proposal.settings.clone(), scope, picked);
             let mut shown: Vec<String> = written.iter().map(|path| ctx.env.shown(path)).collect();
-            if !proposal.settings.is_empty() {
-                let config = match place {
-                    Place::Repository => ctx.env.project_config(),
-                    _ => ctx.env.global_config(),
-                };
-                shown.insert(0, ctx.env.shown(&config));
+            if let Some(config) = &config {
+                shown.insert(0, ctx.env.shown(config));
             }
             if !written.is_empty() {
                 let names: Vec<String> = written.iter().map(|path| ctx.env.shown(path)).collect();

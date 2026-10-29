@@ -22,7 +22,8 @@ use argonauts_core::events::approval::{AnswerOption, ApprovalEvent, ApprovalKind
 use argonauts_core::layout::run_files;
 use argonauts_core::names::ChoiceId;
 use argonauts_scenarios::{
-    COLS, ROWS, Scenario, WAIT, as_set_up, past_the_guard_of, past_the_question_guard,
+    COLS, ROWS, Scenario, WAIT, as_set_up, on_the_default_workflow, past_the_guard_of,
+    past_the_question_guard,
 };
 use argonauts_testkit::{Invocation, Key, Pty, PtyCommand, argonauts_bin};
 
@@ -126,6 +127,11 @@ pub fn scenario() -> anyhow::Result<AppScenario> {
     scenario_with(GLOBAL_CONFIG)
 }
 
+/// [`scenario`] on the built-in default workflow, which nobody chose.
+pub fn scenario_on_the_default() -> anyhow::Result<AppScenario> {
+    scenario_with(&on_the_default_workflow(GLOBAL_CONFIG))
+}
+
 /// A repo with the fake agents and this global config.
 pub fn scenario_with(global_config: &str) -> anyhow::Result<AppScenario> {
     let scenario = AppScenario(Scenario::new(AGENTS)?);
@@ -133,6 +139,83 @@ pub fn scenario_with(global_config: &str) -> anyhow::Result<AppScenario> {
         .context("writing the global config")?;
     Ok(scenario)
 }
+
+/// A council of your own written as steps, which the orchestrator adapts, for the scenarios
+/// of the script's engine. The built-in Council talks in its phases instead.
+pub fn with_council_steps(scenario: &AppScenario) -> anyhow::Result<()> {
+    let config = scenario.repo.global_config();
+    let folder = config
+        .parent()
+        .context("the global config has a folder")?
+        .join("workflows");
+    std::fs::create_dir_all(&folder)?;
+    std::fs::write(folder.join("council.toml"), COUNCIL_STEPS)
+        .context("writing the council's steps")?;
+    Ok(())
+}
+
+/// The workflow of yours that runs the crew's fixed phases: blind drafts, the map, critique and
+/// judging, which the fakes play. Council talks instead.
+pub const FIXED_PHASES: &str = "fixed-phases";
+
+/// Writes [`FIXED_PHASES`] among your workflows, beside the global config.
+pub fn write_fixed_phases(global_config: &std::path::Path) -> anyhow::Result<()> {
+    let folder = global_config
+        .parent()
+        .context("the global config has a folder")?
+        .join("workflows");
+    std::fs::create_dir_all(&folder)?;
+    let (base, text) = argonauts_core::workflow_files::BASE;
+    let named = text.replace(
+        &format!("name  = \"{base}\""),
+        &format!("name  = \"{FIXED_PHASES}\""),
+    );
+    std::fs::write(folder.join(format!("{FIXED_PHASES}.toml")), named)
+        .context("writing the fixed phases")?;
+    Ok(())
+}
+
+/// Council as steps: everyone proposes and challenges, the judge decides.
+pub const COUNCIL_STEPS: &str = r#"name  = "council"
+about = "No single planner: everyone proposes and challenges, the judge decides"
+adapt = true
+
+[[step]]
+name        = "Propose"
+role        = "worker"
+count       = "all"
+independent = true
+keep        = true
+
+[[step]]
+name  = "Challenge"
+role  = "worker"
+count = "all"
+does  = "Argue against the other proposals. Their authors are hidden."
+keep  = true
+
+[[step]]
+name = "Decide"
+role = "judge"
+does = "Pick the strongest plan or join the best parts. Split it into tasks."
+keep = true
+
+[[step]]
+name     = "Build"
+role     = "worker"
+for_each = "task"
+
+[[step]]
+name           = "Cross-review"
+role           = "worker"
+for_each       = "task"
+not_the_author = true
+send_back_to   = "Build"
+
+[[step]]
+name = "Sign-off"
+role = "judge"
+"#;
 
 /// A repo with the fake agents and no global config, so the guided setup opens.
 pub fn first_run_scenario() -> anyhow::Result<AppScenario> {
@@ -210,6 +293,20 @@ pub fn wait_ready(scenario: &Scenario, pty: &Pty) -> anyhow::Result<()> {
     check_ready(pty)
 }
 
+/// Waits until the app is through its start. The controller tells the command menu its
+/// workflows as its loop begins, after every one-time notice the start sends, so a notice that
+/// hasn't come by then won't.
+pub fn wait_start_through(scenario: &Scenario) -> anyhow::Result<()> {
+    scenario
+        .trace
+        .wait_for_event(
+            |event| matches!(event, AppEvent::WorkflowStatuses { .. }),
+            WAIT,
+        )
+        .context("waiting for the app's start to finish")?;
+    Ok(())
+}
+
 /// Before typing: the bottom line shows, vim's INSERT or NORMAL label doesn't, and nothing looks
 /// like a history search, which could resend old prompts.
 pub fn check_bottom_row(pty: &Pty) -> anyhow::Result<()> {
@@ -226,8 +323,9 @@ fn check_ready(pty: &Pty) -> anyhow::Result<()> {
 }
 
 /// The key line of a question that has the keys, which then stands in for the input: "Esc to
-/// cancel", or "Esc for not now" on a question that can wait, as the trust question can.
-const QUESTION_HAS_THE_KEYS: &str = r"(?m)^  Enter to \w+.* · Esc (?:to|for) ";
+/// cancel", "Esc for not now" on a question that can wait, as the trust question can, or "Esc
+/// back to the list" on a run's question.
+const QUESTION_HAS_THE_KEYS: &str = r"(?m)^  Enter to \w+.* · Esc (?:to|for|back) ";
 
 fn check_screen_for(pty: &Pty, ready: &str) -> anyhow::Result<()> {
     let screen = pty.wait_for(ready, WAIT)?;
@@ -350,13 +448,17 @@ pub fn answer_question(pty: &mut Pty, number: char) -> anyhow::Result<()> {
 }
 
 /// A question that needs you takes the keys as it shows, so a command typed while it waits needs
-/// Esc first, which hands the question on and leaves a line saying who decides it now.
-pub fn pass_task_on(pty: &mut Pty) -> anyhow::Result<()> {
+/// Esc first, which sets the question aside unanswered and gives the keys back to the input.
+pub fn set_question_aside(pty: &mut Pty) -> anyhow::Result<()> {
     pty.wait_for_visible(QUESTION_HAS_THE_KEYS, WAIT)?;
     past_the_question_guard();
     pty.press(Key::Esc)?;
-    pty.wait_for(r"left to the (main )?agent · you, ", WAIT)
-        .map(drop)
+    let has_the_keys = regex::Regex::new(QUESTION_HAS_THE_KEYS)?;
+    pty.wait_until("the question set aside", WAIT, |screen| {
+        let text = screen.visible_text();
+        text.contains("shift+tab to cycle") && !has_the_keys.is_match(&text)
+    })
+    .map(drop)
 }
 
 /// For Merge, Abandon, and the other options that wait for Enter after their number.
@@ -818,25 +920,6 @@ pub fn wait_worker_started(scenario: &Scenario) -> anyhow::Result<u32> {
             .first()
             .map(|i| i.pid))
     })
-}
-
-/// Answers the scope question a setting given as an argument asks, then the safety confirm
-/// when one follows. `scope` is the option's key in the event: `s`, `m`, `p`, or `e`.
-pub fn answer_scope(
-    scenario: &Scenario,
-    pty: &mut Pty,
-    scope: char,
-    confirm: Option<char>,
-) -> anyhow::Result<()> {
-    let question = wait_open_choice(scenario, ChoiceKind::SettingScope)?;
-    answer_question(pty, number_of(&question.options, scope))?;
-    wait_choice_closed(scenario, &question.id)?;
-    if let Some(answer) = confirm {
-        let safety = wait_open_choice(scenario, ChoiceKind::ConfirmSafetySetting)?;
-        answer_question(pty, number_of(&safety.options, answer))?;
-        wait_choice_closed(scenario, &safety.id)?;
-    }
-    Ok(())
 }
 
 /// Waits for the `n`th `SettingChanged` of `key` and returns its value.

@@ -1,0 +1,58 @@
+# Each CLI's own system prompt and tools, by the version it was recorded on: what a fresh
+# session held beyond the prompt it was sent. The recordings ran in repos holding only a
+# README (agy's a notes.txt too), so no instruction file was loaded. A part with no name is
+# the CLI's own prompt and tools, named after the CLI. When the CLI's own count first comes is
+# its adapter's to say.
+#
+# What this machine adds goes where the CLI counts it: `files` for the instruction files,
+# `skills` for its skills (with the CLI's own, `built_in`), `app_tools` for Argonauts Code's
+# tools and `app_note` for the lines about them. Without one, the files are "Instruction
+# files", the tools and the lines join the CLI's own part, and the skills stay in it as
+# recorded. `follows_imports` counts what an instruction file imports with `@path`. A
+# recording's window stands only for the model it ran.
+
+# fixtures/context_usage_summary, Claude Code's own count by category before its first answer,
+# on claude-haiku-4-5-20251001 with a 200k window that compacts at 167k.
+[[cli]]
+agent = "claude-code"
+version = "2.1.289"
+model = "claude-haiku-4-5-20251001"
+window = 200000
+buffer = 33000
+parts = [
+  { name = "System prompt", tokens = 6888, color = "promptBorder" },
+  { name = "System tools", tokens = 15135, color = "inactive" },
+]
+# Where Claude Code counts the instruction files it loads.
+files = { name = "Memory files", color = "claude" }
+# Its 14 built-in skills come with it, before the skill files this machine adds.
+skills = { name = "Skills", color = "warning", built_in = 1656 }
+app_tools = { name = "MCP tools", color = "cyan_FOR_SUBAGENTS_ONLY" }
+app_note = { name = "MCP server instructions", color = "green_FOR_SUBAGENTS_ONLY" }
+follows_imports = true
+
+# fixtures/read_only_ok: 15,244 tokens sent for an 8-token prompt.
+[[cli]]
+agent = "codex"
+version = "0.163.0"
+model = "gpt-6-luna"
+parts = [{ tokens = 15236 }]
+
+# fixtures/export_last_steps on ollama/qwen3-coder:30b-64k: the first step held 7,757 for a
+# 14-token prompt.
+[[cli]]
+agent = "opencode"
+version = "2.0.26"
+model = "ollama/qwen3-coder:30b-64k"
+parts = [{ tokens = 7743 }]
+
+# fixtures/readonly_ok, a read-only session: the first answer step held 4,234 for an 8-token
+# prompt.
+[[cli]]
+agent = "antigravity-cli"
+version = "1.4.4"
+model = "gemini-3.8-flash-low"
+parts = [{ tokens = 4226 }]
+# Its start names 60 tools; the read-only agent Argonauts Code gave it offers 5 of them.
+tools = 60
+read_only_tools = 5

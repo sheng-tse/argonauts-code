@@ -11,6 +11,7 @@ use crate::api::{
     ApprovalAnswer, DiffScope, DiffView, RawView, StatusSummary, SteerAck, TakeOverTicket,
 };
 use crate::events::RunEvent;
+use crate::events::council::CouncilAction;
 use crate::events::goal::GoalAction;
 use crate::events::session::QueuedMessage;
 use crate::input::MentionTarget;
@@ -135,6 +136,10 @@ pub enum ControlRequest {
     /// Clear the goal, turn the workflow into one, or change an assumption.
     Goal {
         action: GoalAction,
+    },
+    /// Write to the council that talks, to one of its seats alone, or have a seat sit out.
+    Council {
+        action: CouncilAction,
     },
 }
 

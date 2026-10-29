@@ -13,6 +13,7 @@ use argonauts_core::events::task::TaskKind;
 use argonauts_core::limits::{Candidate, CostEstimate, TrackRecord};
 use argonauts_core::names::{AgentId, ChoiceId, ModelRef};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::fallback::{FallbackMode, FallbackStrategy};
 use argonauts_core::settings::ui::UiSettings;
 use argonauts_core::steps::judgment::ReviewVerdict;
@@ -189,6 +190,7 @@ fn opened(
         evidence_sha256: HASH.into(),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options,
         free_text: FreeText::Guidance,
         needs_you: true,
@@ -344,8 +346,8 @@ fn choice(kind: ChoiceKind, options: Vec<AnswerOption>) -> AppChoice {
     AppChoice {
         id: ChoiceId::numbered(7),
         kind,
-        title: "Save effort = high where?".into(),
-        body: vec!["reasoning effort for the main agent".into()],
+        title: "Change a safety setting?".into(),
+        body: vec!["approvals.merge.mode: supervised →  auto".into()],
         options,
         free_text: FreeText::None,
         bell: false,
@@ -463,8 +465,9 @@ fn retry_opens_the_note_before_it_answers() {
     assert_eq!(text.as_deref(), Some("mock the clock"));
 }
 
-fn scope_choice() -> AppChoice {
-    let scope = |key: char, label: &str, value: &str| {
+/// The guided setup's step for the agent you talk to, one option per agent.
+fn setup_step_choice() -> AppChoice {
+    let agent = |key: char, label: &str, value: &str| {
         option(
             key,
             label,
@@ -474,12 +477,12 @@ fn scope_choice() -> AppChoice {
         )
     };
     choice(
-        ChoiceKind::SettingScope,
+        ChoiceKind::Init,
         vec![
-            scope('s', "Just this session", "session"),
-            scope('m', "This project, just me", "project_local"),
-            scope('p', "This project, shared", "project"),
-            scope('e', "Everywhere", "global"),
+            agent('c', "Claude Code", "claude-code"),
+            agent('x', "Codex", "codex"),
+            agent('a', "agy", "agy"),
+            agent('o', "OpenCode", "opencode"),
         ],
     )
 }
@@ -494,16 +497,14 @@ fn a_question_asks_over_any_view() {
     assert!(out.close_views, "it would wait behind the view");
     // One a change in a view raised closes the views but one that stays up for it, as Config
     // does for the change it sent.
-    for kind in [ChoiceKind::SettingScope, ChoiceKind::ConfirmSafetySetting] {
-        let mut screen = Screen::new();
-        let out = screen.event(AppEvent::Choice {
-            choice: choice(kind, Vec::new()),
-        });
-        assert!(
-            out.views_make_way && !out.close_views,
-            "{kind:?} would wait behind the view, or close the one it asks for"
-        );
-    }
+    let mut screen = Screen::new();
+    let out = screen.event(AppEvent::Choice {
+        choice: choice(ChoiceKind::ConfirmSafetySetting, Vec::new()),
+    });
+    assert!(
+        out.views_make_way && !out.close_views,
+        "it would wait behind the view, or close the one it asks for"
+    );
 }
 
 fn preview() -> AppChoice {
@@ -589,7 +590,7 @@ fn a_dry_runs_question_shows_its_whole_plan_and_answers_only_to_its_keys() {
 fn a_choice_you_set_off_opens_with_the_keys() {
     let mut screen = Screen::new();
     screen.event(AppEvent::Choice {
-        choice: scope_choice(),
+        choice: setup_step_choice(),
     });
     assert!(screen.question().focused && screen.question().takes_focus);
     for kind in [
@@ -612,7 +613,7 @@ fn a_choice_you_set_off_opens_with_the_keys() {
 
     // A number answers it, never a letter.
     let question = screen.model.bottom.question.as_mut().unwrap();
-    for c in ['s', 'm', 'p', 'e', '/'] {
+    for c in ['c', 'x', 'a', 'o', '/'] {
         assert_eq!(
             question.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
             QuestionEvent::Unhandled
@@ -626,7 +627,7 @@ fn a_choice_you_set_off_opens_with_the_keys() {
                 id: ChoiceId::numbered(7),
             },
             action: AnswerAction::Choose {
-                value: "global".into(),
+                value: "opencode".into(),
             },
             text: None,
             evidence_sha256: None,
@@ -646,12 +647,12 @@ fn a_choice_you_set_off_goes_before_a_waiting_run_question() {
         "a run's task that needs you takes the keys"
     );
     screen.event(AppEvent::Choice {
-        choice: scope_choice(),
+        choice: setup_step_choice(),
     });
     assert_ne!(screen.question().id, run_question);
     assert!(
         screen.question().focused,
-        "the scope question takes the keys at once"
+        "the setup step takes the keys at once"
     );
 
     screen.keys(&[KeyCode::Char('1')]);
@@ -672,7 +673,7 @@ fn a_choice_you_set_off_goes_before_a_waiting_run_question() {
     // Passed on, it stays off the screen after the next question.
     screen.keys(&[KeyCode::Esc]);
     screen.event(AppEvent::Choice {
-        choice: scope_choice(),
+        choice: setup_step_choice(),
     });
     screen.keys(&[KeyCode::Char('1')]);
     screen.event(AppEvent::ChoiceClosed {
@@ -715,26 +716,14 @@ fn a_trust_question_s_files_are_shown_by_the_app() {
 #[test]
 fn app_choice_esc_sends_set_aside() {
     let mut screen = Screen::new();
-    let scope = choice(
-        ChoiceKind::SettingScope,
+    let safety = choice(
+        ChoiceKind::ConfirmSafetySetting,
         vec![
-            option(
-                's',
-                "Just this session",
-                AnswerAction::Choose {
-                    value: "session".into(),
-                },
-            ),
-            option(
-                'e',
-                "Everywhere",
-                AnswerAction::Choose {
-                    value: "global".into(),
-                },
-            ),
+            option('y', "Change it", AnswerAction::Approve),
+            option('n', "Keep it as it is", AnswerAction::Cancel),
         ],
     );
-    screen.event(AppEvent::Choice { choice: scope });
+    screen.event(AppEvent::Choice { choice: safety });
     assert_eq!(screen.question().esc_hint, "Esc to cancel");
     // Esc answers it, so only Esc on the focused question does. An unclear request just waits.
     assert!(screen.question().esc_answers);
@@ -761,14 +750,16 @@ fn app_choice_esc_sends_set_aside() {
     assert!(screen.model.bottom.question.is_none());
     assert_eq!(
         screen.history(),
-        vec!["◆ Save effort = high where? · Not changed.".to_owned()]
+        vec!["◆ Change a safety setting? · Not changed.".to_owned()]
     );
 }
 
 #[test]
 fn not_changed_leaves_a_neutral_mark() {
-    let tone = |outcome: &str| match records::choice_closed_cell(Some("Save model where?"), outcome)
-    {
+    let tone = |outcome: &str| match records::choice_closed_cell(
+        Some("Change a safety setting?"),
+        outcome,
+    ) {
         crate::cell::Cell::Notice(notice) => notice.tone,
         _ => panic!("a notice"),
     };
@@ -782,31 +773,20 @@ fn not_changed_leaves_a_neutral_mark() {
 /// Esc on a run's question or approval hands it on: the engine takes an option in your place,
 /// and its decision closes the question.
 #[test]
-fn esc_hands_a_run_question_on() {
+fn esc_leaves_a_run_question_unanswered_and_carrying_on_hands_it_on() {
     let mut screen = Screen::new();
     screen.event(opened_event(merge()));
+    let before = screen.history().len();
     let effects = screen.keys(&[KeyCode::Esc]);
     let sent: Vec<&UiCommand> = effects.iter().flat_map(|out| &out.commands).collect();
-    assert!(
-        matches!(
-            sent.as_slice(),
-            [UiCommand::SetAside {
-                to: AnswerTarget::Approval { .. }
-            }]
-        ),
-        "the engine hears it, so whoever asked decides: {sent:?}"
-    );
+    assert!(sent.is_empty(), "Esc only goes back: {sent:?}");
     assert!(
         screen.model.bottom.question.is_none(),
         "no line stays behind"
     );
-    let record = screen.history().last().cloned().unwrap_or_default();
-    assert!(
-        record.starts_with("◆ Merge approval left to the main agent · you, "),
-        "{record}"
-    );
+    assert_eq!(screen.history().len(), before, "nothing was decided");
 
-    // Until the engine settles it, the list of what needs you still opens it, as it was.
+    // The list of what needs you still opens it, as it was, and its last row carries on.
     assert_eq!(screen.questions.open.len(), 1);
     let (taken, _) = screen.action(UiAction::AnswerQuestion(AnswerTarget::Approval {
         run: run(),
@@ -814,6 +794,27 @@ fn esc_hands_a_run_question_on() {
     }));
     assert!(taken);
     assert!(screen.question().focused && !screen.question().dismissed);
+    let last = screen.question().options.last().cloned().unwrap();
+    assert_eq!(last.label, crate::bottom::CARRY_ON);
+    let number = char::from_digit(screen.question().options.len() as u32, 10).unwrap();
+    let effects = screen.keys(&[KeyCode::Char(number)]);
+    let sent: Vec<&UiCommand> = effects.iter().flat_map(|out| &out.commands).collect();
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [UiCommand::Answer {
+                to: AnswerTarget::Approval { .. },
+                action: AnswerAction::CarryOn,
+                ..
+            }]
+        ),
+        "the engine hears it, so whoever asked decides: {sent:?}"
+    );
+    let record = screen.history().last().cloned().unwrap_or_default();
+    assert!(
+        record.starts_with("◆ Merge approval left to the main agent · you, "),
+        "{record}"
+    );
 }
 
 /// Esc on the draft a run on an issue ends with only sets it aside: what it posts on GitHub
@@ -859,15 +860,106 @@ fn esc_sets_an_issues_draft_aside_for_your_answer() {
 
 /// Esc's line says the question was left to the agent, so the decision the engine records for
 /// it prints nothing more: the line shows once.
+/// Enter on the row of a run that waits on you brings its question back with the keys, set
+/// back or not, and once it's answered, or set back again, the keys go back to that row and the
+/// view opened over it closes.
 #[test]
-fn esc_s_line_prints_once() {
+fn enter_on_a_runs_row_brings_its_question_and_answering_goes_back_to_the_row() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(merge()));
+    screen.keys(&[KeyCode::Esc]);
+    assert!(screen.model.bottom.question.is_none());
+
+    let list = &mut screen.model.bottom.workflows;
+    list.rows = vec![
+        crate::bottom::WorkflowRow::new(
+            "run-00",
+            "Per key rate limit",
+            crate::bottom::WorkflowRowState::Paused,
+        ),
+        crate::bottom::WorkflowRow::new(
+            run().to_string(),
+            "Add due dates",
+            crate::bottom::WorkflowRowState::NeedsYou,
+        ),
+    ];
+    list.selected = Some(1);
+    let (taken, _) = screen.action(UiAction::OpenWorkflow(run().to_string()));
+    assert!(!taken, "the run's view opens all the same");
+    assert!(screen.question().focused && !screen.question().dismissed);
+    screen.model.bottom.workflows.blur();
+    let effects = screen.keys(&[KeyCode::Char('2')]);
+    assert!(effects.iter().any(|out| out.close_views));
+    assert_eq!(screen.model.bottom.workflows.selected, Some(1));
+
+    // Another run's row, or a row with nothing waiting, brings nothing up.
+    let mut screen = Screen::new();
+    screen.event(opened_event(merge()));
+    screen.keys(&[KeyCode::Esc]);
+    screen.action(UiAction::OpenWorkflow("run-02".to_owned()));
+    assert!(screen.model.bottom.question.is_none());
+    screen.action(UiAction::OpenWorkflow(format!("{}#2", run())));
+    assert!(screen.model.bottom.question.is_none());
+}
+
+/// Enter on a task's row that waits on you brings up that task's question, not the run's oldest,
+/// and a row under the run with no question of its own brings nothing up.
+#[test]
+fn enter_on_a_tasks_row_brings_up_the_question_it_waits_on() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(merge()));
+    let mut asks = merge();
+    asks.id = ApprovalId::numbered(2);
+    asks.title = "Which store keeps the due dates?".into();
+    asks.task = Some(task_id(3));
+    screen.event(opened_event(asks.clone()));
+    while screen.model.bottom.question.is_some() {
+        screen.keys(&[KeyCode::Esc]);
+    }
+
+    let row = |key: String, state, answers: Option<u32>| {
+        let mut row = crate::bottom::WorkflowRow::new(key, "Due dates", state);
+        row.answers = answers.map(ApprovalId::numbered);
+        row
+    };
+    screen.model.bottom.workflows.rows = vec![
+        row(
+            run().to_string(),
+            crate::bottom::WorkflowRowState::NeedsYou,
+            Some(1),
+        ),
+        row(
+            format!("{}#{}", run(), task_id(2)),
+            crate::bottom::WorkflowRowState::Running,
+            None,
+        ),
+        row(
+            format!("{}#{}", run(), task_id(3)),
+            crate::bottom::WorkflowRowState::NeedsYou,
+            Some(2),
+        ),
+    ];
+    screen.action(UiAction::OpenWorkflow(format!("{}#{}", run(), task_id(3))));
+    assert_eq!(screen.question().title, asks.title);
+    screen.keys(&[KeyCode::Esc]);
+    assert!(screen.model.bottom.question.is_none());
+
+    screen.action(UiAction::OpenWorkflow(format!("{}#{}", run(), task_id(2))));
+    assert!(screen.model.bottom.question.is_none());
+    screen.action(UiAction::OpenWorkflow(run().to_string()));
+    assert_eq!(screen.question().title, merge().title);
+}
+
+#[test]
+fn carrying_on_says_so_once() {
     use argonauts_core::events::approval::LEFT_TO_THE_AGENT;
 
     let mut screen = Screen::new();
     let mut opened = merge();
     opened.kind = ApprovalKind::Question;
     screen.event(opened_event(opened));
-    screen.keys(&[KeyCode::Esc]);
+    let number = char::from_digit(screen.question().options.len() as u32, 10).unwrap();
+    screen.keys(&[KeyCode::Char(number)]);
     let before = screen.history().len();
     let mut left = decided(AnswerAction::Answer, Party::Declined);
     left.text = Some(LEFT_TO_THE_AGENT.to_owned());
@@ -907,8 +999,8 @@ fn a_question_you_left_is_recorded_as_left_to_the_agent() {
 #[test]
 fn an_agents_own_question_is_left_to_that_agent() {
     let at = datetime!(2026-10-06 20:47 UTC);
-    let record = |kind| {
-        let cell = records::passed_on_cell(kind, at, UtcOffset::UTC);
+    let record = |kind, when| {
+        let cell = records::passed_on_cell(kind, when, at, UtcOffset::UTC);
         let crate::cell::Cell::Notice(notice) = cell else {
             panic!("a notice");
         };
@@ -920,12 +1012,87 @@ fn an_agents_own_question_is_left_to_that_agent() {
         format!("{} · {}", notice.text, notice.decided.unwrap_or_default())
     };
     assert_eq!(
-        record(ApprovalKind::Question),
+        record(ApprovalKind::Question, WhenDeclined::Decide),
         "Question left to the agent · you, 8:47 PM"
     );
     assert_eq!(
-        record(ApprovalKind::Plan),
+        record(ApprovalKind::Plan, WhenDeclined::Decide),
         "Plan approval left to the main agent · you, 8:47 PM"
+    );
+}
+
+/// With `approvals.when_declined = "stop"`, what carrying on does is end that part, and the
+/// line says so rather than handing it to an agent.
+#[test]
+fn with_stop_set_a_question_left_ends_its_part() {
+    let at = datetime!(2026-10-06 20:47 UTC);
+    let text = |kind| {
+        let cell = records::passed_on_cell(kind, WhenDeclined::Stop, at, UtcOffset::UTC);
+        let crate::cell::Cell::Notice(notice) = cell else {
+            panic!("a notice");
+        };
+        notice.text
+    };
+    assert_eq!(
+        text(ApprovalKind::Question),
+        "Question left, so its agent stops and reports"
+    );
+    assert_eq!(
+        text(ApprovalKind::Merge),
+        "Merge approval left, so that part ends"
+    );
+
+    let mut opened = merge();
+    opened.kind = ApprovalKind::Question;
+    opened.when_declined = WhenDeclined::Stop;
+    let record = records::record(
+        &opened,
+        &decided(AnswerAction::Answer, Party::Declined),
+        None,
+        None,
+        UtcOffset::UTC,
+        &DisplayNames::default(),
+        &records::by_id,
+    );
+    assert_eq!(record.text, "Question left, so its agent stops and reports");
+}
+
+/// The last row says what carrying on does, as the question's own setting says: whoever asked
+/// decides, or with `stop` that part ends.
+#[test]
+fn carry_on_says_what_the_setting_does() {
+    let words = |opened: ApprovalOpened| {
+        let mut screen = Screen::new();
+        screen.event(opened_event(opened));
+        let last = screen.question().options.last().cloned().expect("a row");
+        assert_eq!(last.label, crate::bottom::CARRY_ON);
+        last.description.unwrap_or_default()
+    };
+    assert_eq!(
+        words(merge()),
+        "This part ends safely with its work kept, so nothing merges without you"
+    );
+    let mut stopping = merge();
+    stopping.when_declined = WhenDeclined::Stop;
+    assert_eq!(
+        words(stopping),
+        "This part ends here with its work kept; the closing answer says why"
+    );
+    let mut asking = opened(
+        ApprovalKind::Question,
+        "Question from build:fix-money",
+        ApprovalPacket::Question(QuestionPacket {
+            from: worker("claude-code/opus"),
+            task: task_id(2),
+            text: "Round half up?".into(),
+            options: Vec::new(),
+        }),
+        vec![option(' ', "Type my own answer", AnswerAction::Answer)],
+    );
+    asking.when_declined = WhenDeclined::Stop;
+    assert!(
+        words(asking).ends_with(" stops and reports what is done and what is left"),
+        "the agent that asked is told to stop"
     );
 }
 
@@ -933,12 +1100,14 @@ fn an_agents_own_question_is_left_to_that_agent() {
 fn fallback_remember_toggle_sets_remember() {
     let mut screen = Screen::new();
     screen.event(opened_event(fallback()));
-    let toggle = screen.question().options.last().unwrap().clone();
+    // The toggle comes after the event's options, and Carry on without me after it.
+    let rows = screen.question().options.len();
+    let toggle = screen.question().options[rows - 2].clone();
     assert_eq!(toggle.kind, OptionKind::Toggle);
     assert_eq!(toggle.label, REMEMBER_LABEL);
 
     let id = screen.question().id;
-    let number = char::from_digit(screen.question().options.len() as u32, 10).unwrap();
+    let number = char::from_digit(rows as u32 - 1, 10).unwrap();
     screen.keys(&[KeyCode::Char('m')]);
     assert!(
         !screen.questions.open[&id].remember,
@@ -949,7 +1118,7 @@ fn fallback_remember_toggle_sets_remember() {
         screen.questions.open[&id].remember,
         "its number turns it on"
     );
-    assert!(screen.question().options.last().unwrap().on);
+    assert!(screen.question().options[rows - 2].on);
     screen.keys(&[KeyCode::Char(number)]);
     assert!(
         !screen.questions.open[&id].remember,
@@ -1013,7 +1182,7 @@ fn fallback_remember_stays_off_for_other_answers() {
     let mut screen = Screen::new();
     screen.event(opened_event(fallback()));
     let remember =
-        KeyCode::Char(char::from_digit(screen.question().options.len() as u32, 10).unwrap());
+        KeyCode::Char(char::from_digit(screen.question().options.len() as u32 - 1, 10).unwrap());
     let effects = screen.keys(&[remember, number(&fallback(), 'w')]);
     let commands: Vec<&UiCommand> = effects.iter().flat_map(|out| &out.commands).collect();
     let [
@@ -1202,9 +1371,17 @@ fn options_keep_event_order() {
     use OptionKind::*;
     assert_eq!(
         kinds(&merge()),
-        vec![Irreversible, Answer, Checklist, Answer, Irreversible, View]
+        vec![
+            Irreversible,
+            Answer,
+            Checklist,
+            Answer,
+            Irreversible,
+            View,
+            Answer
+        ]
     );
-    assert_eq!(kinds(&stuck()), vec![Answer, Irreversible, View]);
+    assert_eq!(kinds(&stuck()), vec![Answer, Irreversible, View, Answer]);
 
     // An app choice's Cancel is only Not now or Keep it as it is.
     let trust = choice(
@@ -1293,6 +1470,62 @@ fn question_times_are_in_the_terminals_zone() {
         "{:?}",
         screen.history().last()
     );
+}
+
+/// A held council message's question says when you wrote the private words it repeats, in the
+/// terminal's zone, which the engine's own wording leaves out.
+#[test]
+fn a_held_council_message_says_when_you_wrote_it_in_the_terminals_zone() {
+    use argonauts_core::events::approval::{CouncilPacket, CouncilQuestion};
+    use argonauts_core::events::council::HeldWhy;
+    use argonauts_core::names::{MessageId, WorkflowId};
+    use argonauts_core::workflow::StepRef;
+
+    let why = HeldWhy::WordsInARow { count: 17 };
+    let held = |wrote_at| {
+        opened(
+            ApprovalKind::Question,
+            "GPT 5.6 Luna's message repeats your private words",
+            ApprovalPacket::Council(CouncilPacket {
+                talk: StepRef {
+                    workflow: WorkflowId::numbered(1),
+                    phase: 1,
+                    path: vec![0],
+                },
+                about: CouncilQuestion::Held {
+                    message: MessageId::numbered(9),
+                    why: Some(why.clone()),
+                    wrote_at,
+                },
+                text: why.question_text(None),
+            }),
+            vec![option(
+                'a',
+                "Drop it: no seat ever reads it",
+                AnswerAction::Choose {
+                    value: "drop".into(),
+                },
+            )],
+        )
+    };
+    let zone = UtcOffset::from_hms(-7, 0, 0).unwrap();
+    let names = DisplayNames::default();
+    let read = approval_question_local(
+        1,
+        &held(Some(datetime!(2026-10-26 17:46 UTC))),
+        None,
+        zone,
+        &names,
+    );
+    assert_eq!(
+        read.question.as_deref(),
+        Some(
+            "17 words in a row match what you wrote to it in private at 10:46 AM. The talk goes \
+             on without it."
+        )
+    );
+    let untimed = approval_question_local(1, &held(None), None, zone, &names);
+    assert_eq!(untimed.question, Some(why.question_text(None)));
 }
 
 #[test]
@@ -1460,6 +1693,9 @@ fn review_plan() -> ApprovalOpened {
             why: Some(why.into()),
             workflow,
         }),
+        seats: Vec::new(),
+        objections: Vec::new(),
+        offer: None,
     };
     opened(
         ApprovalKind::Plan,
@@ -2330,20 +2566,20 @@ fn a_go_ahead_autopilot_leaves_to_you_holds_the_keys() {
     );
 }
 
-/// The setup question as it was approved: the settings in plain text with only the notes dim, the
-/// four places to keep it listed, and `d` for what would be written.
+/// The setup question: the settings in plain text with only the notes dim, yes with where it
+/// saves beside it, Not now, and `d` for what would be written. No row asks where to keep it.
+/// The golden holds the question at 120 columns.
 #[test]
-fn a_setup_question_shows_its_settings_plain_its_notes_dim_and_four_choices() {
+fn a_setup_question_shows_its_settings_plain_its_notes_dim_and_where_yes_saves_it() {
     let mut screen = Screen::new();
-    let place = |key, label: &str, value: &str| {
-        option(
-            key,
-            label,
-            AnswerAction::Choose {
-                value: value.into(),
-            },
-        )
-    };
+    let mut yes = option(
+        'y',
+        "Use it",
+        AnswerAction::Choose {
+            value: "all_repositories".into(),
+        },
+    );
+    yes.detail = Some("writes 2 files in ~/.argonauts/".into());
     let setup = AppChoice {
         id: ChoiceId::numbered(9),
         kind: ChoiceKind::Setup,
@@ -2353,11 +2589,15 @@ fn a_setup_question_shows_its_settings_plain_its_notes_dim_and_four_choices() {
             "reviewers     \tadds to\t roles/reviewer.md".into(),
             String::new(),
             "You asked: never more than $5 a day.".into(),
+            String::new(),
+            "Everywhere".into(),
+            "  ~/.argonauts/config.toml".into(),
+            "    limits.spend_per_day = 5.0".into(),
+            "  ~/.argonauts/roles/reviewer.md".into(),
+            "    adds \"Treat a missing test as a required change.\"".into(),
         ],
         options: vec![
-            place('c', "This conversation", "conversation"),
-            place('p', "Save for this repository", "repository"),
-            place('e', "Save for all my repositories", "everywhere"),
+            yes,
             option('n', "Not now", AnswerAction::Cancel),
             option('d', "Show what would be written", AnswerAction::ShowDiff),
         ],
@@ -2367,19 +2607,11 @@ fn a_setup_question_shows_its_settings_plain_its_notes_dim_and_four_choices() {
     screen.event(AppEvent::Choice { choice: setup });
     let question = screen.question();
     let labels: Vec<&str> = question.options.iter().map(|o| o.label.as_str()).collect();
-    assert_eq!(
-        labels,
-        [
-            "This conversation",
-            "Save for this repository",
-            "Save for all my repositories",
-            "Not now"
-        ]
-    );
+    assert_eq!(labels, ["Use it", "Not now"]);
 
     let mut theme = Theme::dark();
     theme.glyphs = Glyphs::UNICODE;
-    let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+    let ctx = RenderCtx::new(120, &theme, Clock::still(Instant::now()));
     let lines = question.lines(&ctx);
     let dim = theme.style(crate::theme::Role::Dim);
     let style_of = |text: &str| {
@@ -2399,6 +2631,10 @@ fn a_setup_question_shows_its_settings_plain_its_notes_dim_and_four_choices() {
         "{shown}"
     );
     assert!(!shown.contains("You asked"), "{shown}");
+    let golden = include_str!("../../tests/golden/setup_question.txt");
+    let rows: Vec<&str> = shown.trim_end().lines().map(str::trim_end).collect();
+    let expected: Vec<&str> = golden.trim_end().lines().map(str::trim_end).collect();
+    assert_eq!(rows, expected, "{shown}");
 
     let effects = screen.keys(&[KeyCode::Char('d')]);
     assert_eq!(effects.len(), 1, "d opens what would be written");

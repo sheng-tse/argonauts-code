@@ -7,7 +7,7 @@
 //!
 //! Every number comes from the crew stats the usage numbers carry, which the work ledger
 //! records beside the usage ledger. Each CLI draws in its own color, each of its models in
-//! its own shade of it, and each role in a color of its own.
+//! that color with a texture of its own, and each role in a color of its own.
 
 mod argonauts;
 pub mod behaviors;
@@ -16,11 +16,13 @@ mod by_role;
 mod cli;
 mod data;
 pub(super) mod draw;
+mod fills;
 mod grid;
 mod opened;
 mod opened_model;
 pub mod pinned;
 mod settings;
+mod table;
 mod together;
 
 use argonauts_core::api::{UsagePeriod, UsageSummary};
@@ -31,6 +33,7 @@ use argonauts_core::settings::stats::{StatsGroup, StatsMeasure};
 use crossterm::event::{KeyCode, KeyEvent};
 use time::OffsetDateTime;
 
+pub(in crate::overview) use cli::letter;
 pub use opened::Opened;
 pub use settings::SettingsPage;
 
@@ -38,6 +41,7 @@ use self::cli::Stats;
 use self::data::Crew;
 use self::pinned::StatsCard;
 use self::settings::PageKey;
+use self::table::{Counted, Table, TableKey};
 use super::shades::shown_as;
 use super::subtabs::{self, Level};
 use crate::kit::{Drawn, Form, Frame, Kit};
@@ -66,6 +70,13 @@ pub struct StatsState {
     wanted: Option<Opened>,
     /// Why the model asked for has no row here, said above By model until the next key.
     missing: Option<String>,
+    /// By model's and By role's table, which the keys move over in place of the cards.
+    table: Table,
+    /// The stats mod's file leaves out the all-together box, and with it the table, so the
+    /// keys move over the cards.
+    no_total: bool,
+    /// The table's last key opened a card, which the tab keeps in view until the next one.
+    table_opened: bool,
 }
 
 /// What a key on the tab asks of the panel.
@@ -84,6 +95,7 @@ impl StatsState {
     /// that was asked for before they came.
     pub fn settle(&mut self, stats: &CrewStats) {
         self.left_out.clone_from(&stats.problems);
+        self.no_total = !stats.settings.total;
         if !self.settled {
             self.group = stats.settings.group;
             self.measure = stats.settings.measure;
@@ -222,18 +234,28 @@ impl StatsState {
         let mut focus = blocks.len();
         match self.group {
             StatsGroup::Cli => {
-                if stats.settings.total {
-                    blocks.push(look.all_together(kit, frame));
-                }
                 let clis = crew.clis.len();
                 let on_cli = (picked < clis).then_some(picked);
+                // With the all-together card the keys go down its table's CLIs, which stays
+                // in view, and the pointed CLI's card is the one picked under it.
+                let in_table = stats.settings.total && on_cli.is_some();
+                if stats.settings.total {
+                    if in_table {
+                        focus = blocks.len();
+                    }
+                    blocks.push(look.all_together(kit, frame, on_cli));
+                }
                 let (rows, layout) = look.cli_cards(kit, width, on_cli);
-                if let Some(picked) = on_cli {
+                if let Some(picked) = on_cli.filter(|_| !in_table) {
                     focus = blocks.len() + layout.row_of(picked);
                 }
                 blocks.extend(rows);
                 let opened_cli = matches!(self.opened, Some(Opened::Cli(_)));
                 if opened_cli && let Some(card) = self.opened_card(kit, &look, frame) {
+                    // From the table, the opened card comes into view as Enter opens it.
+                    if in_table && self.table_opened {
+                        focus = blocks.len();
+                    }
                     blocks.push(card);
                 }
                 let role = crew.roles().get(picked.saturating_sub(clis)).copied();
@@ -252,25 +274,48 @@ impl StatsState {
             }
             StatsGroup::Model | StatsGroup::Role => {
                 let by_model = self.group == StatsGroup::Model;
+                let in_table = self.in_table();
+                let mut on_card = (picked != usize::MAX).then_some(picked);
                 if stats.settings.total {
+                    let counted = self.counted(&look);
+                    self.table.seen(counted.len());
+                    if in_table {
+                        focus = blocks.len();
+                        // The pointed row's card is the one picked under the table.
+                        on_card = self.table.pointed(&counted);
+                    }
                     blocks.push(if by_model {
-                        look.all_models(kit, frame)
+                        look.all_models(kit, frame, &self.table, in_table)
                     } else {
-                        look.all_roles(kit, frame)
+                        look.all_roles(kit, frame, &self.table, in_table)
                     });
                 }
-                let on_card = (picked != usize::MAX).then_some(picked);
+                // With the table, cards stop at the six models with the most tokens and the
+                // rest get a line each under them; the keys move over the table's rows.
+                let models = crew.models().count();
+                let (carded, lines) = if by_model && stats.settings.total {
+                    self.table.carded(&self.counted(&look), by_model::CARDS)
+                } else {
+                    ((0..models).collect(), Vec::new())
+                };
                 let (rows, layout) = if by_model {
-                    look.model_cards(kit, width, on_card)
+                    look.model_cards(kit, width, &carded, on_card)
                 } else {
                     look.role_cards(kit, width, on_card)
                 };
-                if let Some(picked) = on_card {
+                if let Some(picked) = on_card.filter(|_| !in_table) {
                     focus = blocks.len() + layout.row_of(picked);
                 }
                 blocks.extend(rows);
+                if let Some(box_of_lines) = look.every_other_model(kit, frame, &lines, on_card) {
+                    blocks.push(box_of_lines);
+                }
                 if let Some(card) = self.opened_card(kit, &look, frame) {
-                    focus = blocks.len();
+                    // From the table, the opened card comes into view as Enter opens it, and
+                    // the table again as the keys move on it.
+                    if !in_table || self.table_opened {
+                        focus = blocks.len();
+                    }
                     blocks.push(card);
                 }
                 blocks.extend(if by_model {
@@ -285,6 +330,34 @@ impl StatsState {
 
     fn opened_card(&self, kit: &Kit<'_>, look: &Stats<'_>, frame: Frame) -> Option<Drawn> {
         look.opened(kit, frame, self.opened.as_ref()?)
+    }
+
+    /// The keys are on By model's or By role's table.
+    fn in_table(&self) -> bool {
+        self.level == Level::Cards && self.group != StatsGroup::Cli && !self.no_total
+    }
+
+    /// The table's rows as it reads them, in the bars' order.
+    fn counted(&self, look: &Stats<'_>) -> Vec<Counted> {
+        match self.group {
+            StatsGroup::Model => look.model_counted(),
+            StatsGroup::Cli | StatsGroup::Role => look.role_counted(),
+        }
+    }
+
+    /// Whether the keys are on the first card or row, so ↑ goes back up to the sub-tabs.
+    pub fn on_first(&self) -> bool {
+        if self.in_table() {
+            self.table.on_first()
+        } else {
+            self.picked == 0
+        }
+    }
+
+    /// The tab takes `code` itself before the panel reads it as one of its own keys: on the
+    /// table, its filter's letters, the side arrows that sort it, `/` and Esc.
+    pub fn claims(&self, code: KeyCode) -> bool {
+        self.in_table() && self.table.claims(code)
     }
 
     /// How many cards the keys move over.
@@ -326,6 +399,12 @@ impl StatsState {
         now: OffsetDateTime,
     ) -> Option<StatsKey> {
         self.missing = None;
+        // While the table's filter is typed, every letter is the filter's.
+        if self.in_table() && self.table.typing {
+            let usage = usage?;
+            let crew = Crew::of(usage, usage.stats.as_ref()?, names, now.date());
+            return self.table_key(code, usage, &crew);
+        }
         match code {
             KeyCode::Char('c') => {
                 self.regroup(StatsGroup::Cli, Level::Cards);
@@ -358,7 +437,7 @@ impl StatsState {
                 self.level = self.level.down();
                 return Some(StatsKey::Moved);
             }
-            KeyCode::Up if self.level != Level::Cards || self.picked == 0 => {
+            KeyCode::Up if self.level != Level::Cards || self.on_first() => {
                 self.level = self.level.up();
                 return Some(StatsKey::Moved);
             }
@@ -370,8 +449,12 @@ impl StatsState {
         let usage = usage?;
         let stats = usage.stats.as_ref()?;
         let crew = Crew::of(usage, stats, names, now.date());
+        if self.in_table() {
+            return self.table_key(code, usage, &crew);
+        }
         let last = self.picks(&crew).saturating_sub(1);
         self.picked = self.picked.min(last);
+        self.table_opened = false;
         match code {
             KeyCode::Up => self.picked = self.picked.saturating_sub(1),
             KeyCode::Down => self.picked = (self.picked + 1).min(last),
@@ -380,8 +463,40 @@ impl StatsState {
             KeyCode::Enter => {
                 let here = self.at_pick(&crew);
                 self.opened = if self.opened == here { None } else { here };
+                self.table_opened = self.opened.is_some();
             }
             _ => return None,
+        }
+        Some(StatsKey::Moved)
+    }
+
+    /// A key on the table: Enter opens or closes the pointed row's card, and Esc with nothing
+    /// left to clear goes back up to the sub-tabs.
+    fn table_key(&mut self, code: KeyCode, usage: &UsageSummary, crew: &Crew) -> Option<StatsKey> {
+        let look = Stats {
+            crew,
+            usage,
+            measure: self.measure,
+            on_this_computer: None,
+        };
+        let counted = self.counted(&look);
+        let key = self.table.key(code, &counted)?;
+        self.table_opened = matches!(key, TableKey::Open(_));
+        match key {
+            TableKey::Moved => {}
+            TableKey::Open(at) => {
+                let here = match self.group {
+                    StatsGroup::Model => crew
+                        .models()
+                        .nth(at)
+                        .map(|(_, model)| Opened::Model(model.agent.clone(), model.model.clone())),
+                    StatsGroup::Cli | StatsGroup::Role => {
+                        crew.filled().get(at).map(|role| Opened::Role(*role))
+                    }
+                };
+                self.opened = if self.opened == here { None } else { here };
+            }
+            TableKey::Leave => self.level = Level::SubTabs,
         }
         Some(StatsKey::Moved)
     }
@@ -414,6 +529,9 @@ impl StatsState {
     }
 
     fn regroup(&mut self, group: StatsGroup, level: Level) {
+        if group != self.group {
+            self.table = Table::default();
+        }
         self.group = group;
         self.picked = 0;
         self.opened = None;
@@ -456,6 +574,13 @@ impl StatsState {
             Some((at, (_, model))) => {
                 self.picked = at;
                 self.opened = Some(Opened::Model(model.agent.clone(), model.model.clone()));
+                let look = Stats {
+                    crew: &crew,
+                    usage,
+                    measure: self.measure,
+                    on_this_computer: None,
+                };
+                self.table.point_at(at, &look.model_counted());
             }
             None => {
                 if let Opened::Model(agent, model) = &wanted {
@@ -478,7 +603,11 @@ impl StatsState {
     /// move on, and in the cards what each key does there.
     pub fn keys(&self) -> Vec<&'static str> {
         const ALONG: &str = "tab By CLI, By model, By role";
-        const INTO: &str = "↓  into the cards";
+        let into = if self.no_total {
+            "↓  into the cards"
+        } else {
+            "↓  into the table"
+        };
         const MEASURE: &str = "u tokens, tasks or spend";
         const OPENS: &str = "enter opens or closes it";
         match (self.level, self.group) {
@@ -489,15 +618,64 @@ impl StatsState {
                 "enter open",
                 "p pin",
             ],
-            (Level::SubTabs, StatsGroup::Cli) => vec![ALONG, INTO, "↑  tabs"],
-            (Level::SubTabs, StatsGroup::Model) => vec![ALONG, INTO, "enter opens a model"],
-            (Level::SubTabs, StatsGroup::Role) => vec![ALONG, INTO, "enter opens a role"],
+            (Level::SubTabs, StatsGroup::Cli) => vec![ALONG, into, "↑  tabs"],
+            (Level::SubTabs, StatsGroup::Model) => vec![ALONG, into, "enter opens a model"],
+            (Level::SubTabs, StatsGroup::Role) => vec![ALONG, into, "enter opens a role"],
             (Level::Cards, StatsGroup::Cli) => {
-                vec!["↑↓  card", OPENS, ALONG, MEASURE, "p pin"]
+                // With the all-together card, the keys go down its CLIs, then the roles.
+                let moves = if self.no_total {
+                    "↑↓  card"
+                } else {
+                    "↑↓  CLI or role"
+                };
+                vec![moves, OPENS, ALONG, MEASURE, "p pin"]
             }
             (Level::Cards, StatsGroup::Model) => vec!["↑↓  model", OPENS, ALONG, MEASURE],
             (Level::Cards, StatsGroup::Role) => vec!["↑↓  role", OPENS, ALONG, MEASURE],
         }
+    }
+}
+
+impl StatsState {
+    /// The keys while they're on the table, in display order: the way out comes last, or with
+    /// a filter set, first.
+    pub fn table_keys(&self) -> Option<Vec<String>> {
+        if !self.in_table() {
+            return None;
+        }
+        let table = &self.table;
+        let moves = match self.group {
+            StatsGroup::Model => "↑↓  model",
+            StatsGroup::Cli | StatsGroup::Role => "↑↓  role",
+        };
+        let sort = format!("←  →  sort: {}", table.sort_for(table.parts()).word());
+        let enter = match table.on_mark {
+            Some(_) => "enter shows every row",
+            None => "enter opens it",
+        };
+        // What Tab does comes last before the way out, so a narrow line gives it up first.
+        const TAB: &str = "tab By CLI, By model, By role";
+        let words = |keys: &[&str]| keys.iter().map(|key| (*key).to_owned()).collect();
+        Some(match (&table.query, table.typing) {
+            (Some(_), true) => words(&["type to filter", moves, "enter keeps it", "esc clears it"]),
+            (Some(query), false) => {
+                let mut keys = vec![format!("esc clears {query}")];
+                keys.extend(words(&[moves, enter]));
+                keys.extend([sort, TAB.to_owned(), "/ search".to_owned()]);
+                keys
+            }
+            (None, _) => {
+                let out = if table.every_row {
+                    "esc shows nine rows"
+                } else {
+                    "esc leaves the table"
+                };
+                let mut keys = words(&[moves]);
+                keys.push(sort);
+                keys.extend(words(&["/ search", enter, TAB, out]));
+                keys
+            }
+        })
     }
 }
 
@@ -542,3 +720,6 @@ mod golden_tests;
 
 #[cfg(test)]
 mod golden_by_model_and_role;
+
+#[cfg(test)]
+mod golden_many_models;

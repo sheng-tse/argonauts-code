@@ -1,5 +1,5 @@
-# WORKFLOW 12's example: "add per-key rate limiting to the public API" with the default
-# council workflow and a crew of Claude Code, Codex, and agy. The rules pick crew; two of three
+# The request "add per-key rate limiting to the public API" with the crew's fixed
+# phases and a crew of Claude Code, Codex, and agy. The rules pick crew; two of three
 # readings read the limit per API key, so the comparers turn scope into the one goal question;
 # three blind drafts disagree on where counters live, a critique round and an experiment settle
 # it for Redis, cross-judging picks plan 2, and five tasks build, review, and merge.
@@ -48,7 +48,7 @@ prompt_contains = '"done_when"'
 [[rule.step]]
 emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-design\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-design\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"name\":\"rate-limit-the-api\",\"description\":\"Add per-key rate limiting to the API\",\"based_on\":\"council\",\"why\":\"A security-labeled API feature: council's blind drafts and cross-judging fit it.\",\"params\":[],\"workflow\":null,\"done_when\":[{\"id\":\"G1\",\"text\":\"Requests over the limit get 429 with Retry-After\",\"short\":\"Over the limit\",\"check\":\"review\"}],\"plan\":[],\"questions\":[],\"first_try\":null}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-design\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"name\":\"rate-limit-the-api\",\"description\":\"Add per-key rate limiting to the API\",\"based_on\":\"fixed-phases\",\"why\":\"A security-labeled API feature: blind drafts and cross-judging fit it.\",\"params\":[],\"workflow\":null,\"done_when\":[{\"id\":\"G1\",\"text\":\"Requests over the limit get 429 with Retry-After\",\"short\":\"Over the limit\",\"check\":\"review\"}],\"plan\":[],\"questions\":[],\"first_try\":null}}"
 [[rule.step]]
 exit = 0
 
@@ -401,7 +401,7 @@ emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-design\"}"
 [[rule.step]]
 emit = "{\"type\":\"turn.started\"}"
 [[rule.step]]
-emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"name\\\":\\\"rate-limit-the-api\\\",\\\"description\\\":\\\"Add per-key rate limiting to the API\\\",\\\"based_on\\\":\\\"council\\\",\\\"why\\\":\\\"A security-labeled API feature: council's blind drafts and cross-judging fit it.\\\",\\\"params\\\":[],\\\"workflow\\\":null,\\\"done_when\\\":[{\\\"id\\\":\\\"G1\\\",\\\"text\\\":\\\"Requests over the limit get 429 with Retry-After\\\",\\\"short\\\":\\\"Over the limit\\\",\\\"check\\\":\\\"review\\\"}],\\\"plan\\\":[],\\\"questions\\\":[],\\\"first_try\\\":null}\"}}"
+emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"name\\\":\\\"rate-limit-the-api\\\",\\\"description\\\":\\\"Add per-key rate limiting to the API\\\",\\\"based_on\\\":\\\"fixed-phases\\\",\\\"why\\\":\\\"A security-labeled API feature: blind drafts and cross-judging fit it.\\\",\\\"params\\\":[],\\\"workflow\\\":null,\\\"done_when\\\":[{\\\"id\\\":\\\"G1\\\",\\\"text\\\":\\\"Requests over the limit get 429 with Retry-After\\\",\\\"short\\\":\\\"Over the limit\\\",\\\"check\\\":\\\"review\\\"}],\\\"plan\\\":[],\\\"questions\\\":[],\\\"first_try\\\":null}\"}}"
 [[rule.step]]
 emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":120,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":60,\"reasoning_output_tokens\":0}}"
 [[rule.step]]
@@ -850,11 +850,11 @@ prompt_contains = '"done_when"'
 [[rule.step]]
 emit = "{\"event\":\"init\",\"conversation_id\":\"agy-design\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-design\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"name\":\"rate-limit-the-api\",\"description\":\"Add per-key rate limiting to the API\",\"based_on\":\"council\",\"why\":\"A security-labeled API feature: council's blind drafts and cross-judging fit it.\",\"params\":[],\"workflow\":null,\"done_when\":[{\"id\":\"G1\",\"text\":\"Requests over the limit get 429 with Retry-After\",\"short\":\"Over the limit\",\"check\":\"review\"}],\"plan\":[],\"questions\":[],\"first_try\":null}}}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-design\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"name\":\"rate-limit-the-api\",\"description\":\"Add per-key rate limiting to the API\",\"based_on\":\"fixed-phases\",\"why\":\"A security-labeled API feature: blind drafts and cross-judging fit it.\",\"params\":[],\"workflow\":null,\"done_when\":[{\"id\":\"G1\",\"text\":\"Requests over the limit get 429 with Retry-After\",\"short\":\"Over the limit\",\"check\":\"review\"}],\"plan\":[],\"questions\":[],\"first_try\":null}}}}"
 [[rule.step]]
 emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-design\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
 [[rule.step]]
-emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-design\",\"status\":\"SUCCESS\",\"response\":\"{\\\"name\\\":\\\"rate-limit-the-api\\\",\\\"description\\\":\\\"Add per-key rate limiting to the API\\\",\\\"based_on\\\":\\\"council\\\",\\\"why\\\":\\\"A security-labeled API feature: council's blind drafts and cross-judging fit it.\\\",\\\"params\\\":[],\\\"workflow\\\":null,\\\"done_when\\\":[{\\\"id\\\":\\\"G1\\\",\\\"text\\\":\\\"Requests over the limit get 429 with Retry-After\\\",\\\"short\\\":\\\"Over the limit\\\",\\\"check\\\":\\\"review\\\"}],\\\"plan\\\":[],\\\"questions\\\":[],\\\"first_try\\\":null}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-design\",\"status\":\"SUCCESS\",\"response\":\"{\\\"name\\\":\\\"rate-limit-the-api\\\",\\\"description\\\":\\\"Add per-key rate limiting to the API\\\",\\\"based_on\\\":\\\"fixed-phases\\\",\\\"why\\\":\\\"A security-labeled API feature: blind drafts and cross-judging fit it.\\\",\\\"params\\\":[],\\\"workflow\\\":null,\\\"done_when\\\":[{\\\"id\\\":\\\"G1\\\",\\\"text\\\":\\\"Requests over the limit get 429 with Retry-After\\\",\\\"short\\\":\\\"Over the limit\\\",\\\"check\\\":\\\"review\\\"}],\\\"plan\\\":[],\\\"questions\\\":[],\\\"first_try\\\":null}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
 [[rule.step]]
 exit = 0
 

@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::display_names::DisplayNames;
 use crate::meter::TokenPrice;
+use crate::names::ModelRef;
 use crate::overview::Tokens;
 
 /// Dollars per million tokens for input, output, and cached input. Anthropic's from its own
@@ -203,7 +205,7 @@ impl ListPrice {
 
 /// Every model's list price, so each has an API value: your own prices, then those the public
 /// model list gives, then the table built in, then the price of the newest model of its
-/// provider, and for a model none of them knows, its CLI's usual model's. A model that runs on
+/// provider, and for a model none of them knows, its CLI's default's. A model that runs on
 /// this computer costs nothing.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PriceList {
@@ -211,8 +213,8 @@ pub struct PriceList {
     public: BTreeMap<String, ListPrice>,
     /// CLIs and endpoints that run their models on this computer.
     local: BTreeSet<String>,
-    /// The model each CLI runs when a session names none, as the CLI's own list says.
-    defaults: BTreeMap<String, String>,
+    /// Which model a session that names none runs.
+    names: DisplayNames,
 }
 
 impl PriceList {
@@ -234,48 +236,64 @@ impl PriceList {
             yours: clean(yours),
             public: clean(public),
             local: local.into_iter().collect(),
-            defaults: BTreeMap::new(),
+            names: DisplayNames::default(),
         }
     }
 
     /// A session that names no model is priced as the model its CLI's own list says it runs,
-    /// as `(cli, model)`, rather than as the table's guess.
+    /// as `(cli, model)`.
     pub fn with_cli_defaults(
         mut self,
         defaults: impl IntoIterator<Item = (String, String)>,
     ) -> Self {
-        self.defaults = defaults.into_iter().collect();
+        self.names.defaults = defaults.into_iter().collect();
+        self
+    }
+
+    /// A session that names no model is priced as the model `names` says it runs
+    /// ([`DisplayNames::running`]): the one your settings give its CLI, else its CLI's default.
+    pub fn with_names(mut self, names: DisplayNames) -> Self {
+        self.names = names;
         self
     }
 
     /// The price of `model` as `agent` runs it, or when it names none, of the model the
-    /// agent's own list says it runs, else of its usual model.
+    /// session is named after. A model nobody prices is priced as the newest of its maker's,
+    /// else as its CLI's default.
     pub fn price(&self, agent: &str, model: Option<&str>) -> ListPrice {
         if self.local.contains(agent) {
             return ListPrice::FREE;
         }
-        let model = model
-            .or_else(|| self.defaults.get(agent).map(String::as_str))
-            .unwrap_or_else(|| usual_model(agent));
-        let model = bare(model);
-        let listed = |prices: &BTreeMap<String, ListPrice>| {
+        let named = model.map(str::trim).filter(|model| !model.is_empty());
+        let runs = |model: Option<&str>| {
+            self.names
+                .running(&ModelRef::new(agent, model.map(str::to_owned)))
+                .model
+                .map(|model| bare(&model))
+        };
+        let model = runs(named).unwrap_or_else(|| UNNAMED.to_owned());
+        let listed = |prices: &BTreeMap<String, ListPrice>, model: &str| {
             prices
                 .iter()
-                .find(|(id, _)| names_model(id, &model))
+                .find(|(id, _)| names_model(id, model))
                 .map(|(_, price)| *price)
         };
-        listed(&self.yours)
-            .or_else(|| listed(&self.public))
-            .or_else(|| ListPrice::builtin(&model))
-            .or_else(|| ListPrice::builtin(nearest(&model)?))
-            .or_else(|| ListPrice::builtin(usual_model(agent)))
+        let priced = |model: &str| {
+            listed(&self.yours, model)
+                .or_else(|| listed(&self.public, model))
+                .or_else(|| ListPrice::builtin(model))
+                .or_else(|| ListPrice::builtin(nearest(model)?))
+        };
+        priced(&model)
+            .or_else(|| priced(&runs(None)?))
+            .or_else(|| ListPrice::builtin(UNNAMED))
             .unwrap_or(ListPrice::FREE)
     }
 }
 
-/// The model a model nobody lists is priced as when its CLI is unknown too: the middle of
-/// the table.
-const MIDDLE: &str = "claude-sonnet-5-5";
+/// The model a session is priced as when nothing says which model it runs, nor its CLI's
+/// default: the middle of the table.
+const UNNAMED: &str = "claude-sonnet-5-5";
 
 /// `claude-opus-5-5` from `anthropic/claude-opus-5-5[1m]`: the id alone, lower case.
 fn bare(model: &str) -> String {
@@ -320,16 +338,6 @@ fn nearest(model: &str) -> Option<&'static str> {
     } else {
         return None;
     })
-}
-
-/// The model a CLI runs when nothing names one.
-fn usual_model(agent: &str) -> &'static str {
-    match agent {
-        "claude-code" => "claude-opus-5-5",
-        "codex" => "gpt-5.6-sol",
-        "antigravity-cli" => "gemini-3.6-pro",
-        _ => MIDDLE,
-    }
 }
 
 #[cfg(test)]
@@ -499,7 +507,8 @@ mod tests {
             value("claude-code", Some("claude-sonnet-5-5[1m]")),
             value("claude-code", Some("claude-sonnet-5-5"))
         );
-        // A model no list names takes its provider's newest price, then its CLI's usual one.
+        // A model no list names takes its provider's newest price, else its CLI's default's,
+        // else the middle of the table's.
         assert_eq!(
             value("claude-code", Some("claude-sonnet-6-1")),
             value("claude-code", Some("claude-sonnet-5-5"))
@@ -512,34 +521,67 @@ mod tests {
             value("antigravity-cli", Some("gemini-3.6-flash-thinking")),
             value("antigravity-cli", Some("gemini-3.6-flash"))
         );
-        assert_eq!(
-            value("codex", Some("unnamed")),
-            value("codex", Some("gpt-5.6-sol"))
-        );
-        assert_eq!(value("antigravity-cli", None), 2.0 + 12.0 + 0.2 + 2.0);
-        assert!(value("someone-else", Some("unnamed")) > 0.0);
+        let middle = value("claude-code", Some("claude-sonnet-5-5"));
+        assert_eq!(value("codex", Some("unnamed")), middle);
+        assert_eq!(value("codex", None), middle);
+        assert_eq!(value("antigravity-cli", None), middle);
+        assert_eq!(value("someone-else", Some("unnamed")), middle);
         assert_eq!(value("ollama", Some("llama3.2")), 0.0);
     }
 
-    /// agy no longer lists Gemini 3.6 Pro, so once its list is read a session that names no
-    /// model is priced as the model agy runs.
+    /// The model each CLI's recorded list runs when nothing names one: Codex's first by its
+    /// priority, agy's first line.
+    fn recorded_defaults() -> [(String, String); 2] {
+        let fixtures =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../registry/tests/fixtures");
+        let read = |file: &str| std::fs::read_to_string(fixtures.join(file)).unwrap();
+        let codex: serde_json::Value =
+            serde_json::from_str(&read("codex/debug-models.json")).unwrap();
+        let first = codex["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|model| model["visibility"] == "list")
+            .min_by_key(|model| model["priority"].as_i64())
+            .and_then(|model| model["slug"].as_str())
+            .unwrap()
+            .to_owned();
+        let agy: serde_json::Value = serde_json::from_str(&read("agy/models.json")).unwrap();
+        let line = agy["response"].as_str().unwrap().lines().next().unwrap();
+        let agy_first = line.split('\t').next().unwrap().to_owned();
+        [
+            ("codex".to_owned(), first),
+            ("antigravity-cli".to_owned(), agy_first),
+        ]
+    }
+
+    /// A session that names no model is priced as the model it is named after: the one your
+    /// settings give its CLI, else the one its CLI's list runs, as Codex's and agy's recorded
+    /// lists give them, never another maker's model.
     #[test]
-    fn a_session_naming_no_model_is_priced_as_its_clis_own_default() {
+    fn a_session_naming_no_model_is_priced_as_the_model_it_is_named_after() {
         let tokens = million_each();
         let table = PriceList::default();
-        let listed = PriceList::default().with_cli_defaults([(
-            "antigravity-cli".to_owned(),
-            "gemini-3.8-flash-high".to_owned(),
-        )]);
-        assert_eq!(
+        let defaults = recorded_defaults();
+        assert_eq!(defaults[0].1, "gpt-6-astra");
+        assert_eq!(defaults[1].1, "gemini-3.8-flash-high");
+        let listed = PriceList::default().with_cli_defaults(defaults.clone());
+        for (cli, model) in &defaults {
+            let names = DisplayNames {
+                defaults: defaults.iter().cloned().collect(),
+                ..DisplayNames::default()
+            };
+            let named = names.running(&ModelRef::new(cli.as_str(), None)).model;
+            assert_eq!(named.as_deref(), Some(model.as_str()));
+            assert_eq!(
+                listed.price(cli, None).value(&tokens),
+                table.price(cli, Some(model)).value(&tokens),
+                "{cli}"
+            );
+        }
+        assert_ne!(
             listed.price("antigravity-cli", None).value(&tokens),
-            table
-                .price("antigravity-cli", Some("gemini-3.8-flash"))
-                .value(&tokens)
-        );
-        assert_eq!(
-            listed.price("codex", None).value(&tokens),
-            table.price("codex", None).value(&tokens)
+            table.price("antigravity-cli", None).value(&tokens)
         );
         assert_eq!(
             listed
@@ -548,6 +590,16 @@ mod tests {
             table
                 .price("antigravity-cli", Some("gemini-3.6-pro"))
                 .value(&tokens)
+        );
+
+        let configured = PriceList::default().with_names(DisplayNames {
+            configured: [("codex".to_owned(), "gpt-6-luna".to_owned())].into(),
+            defaults: defaults.iter().cloned().collect(),
+            ..DisplayNames::default()
+        });
+        assert_eq!(
+            configured.price("codex", None).value(&tokens),
+            table.price("codex", Some("gpt-6-luna")).value(&tokens)
         );
     }
 

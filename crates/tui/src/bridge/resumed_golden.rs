@@ -13,7 +13,7 @@ use ratatui::text::Line;
 use time::macros::datetime;
 
 use super::Bridge;
-use super::transcript::picture_check::{Unlike, assert_matches, assert_rows_match};
+use super::transcript::picture_check::{assert_matches, assert_rows_match};
 use crate::format::WallClock;
 use crate::model::ViewModel;
 use crate::options::UiOptions;
@@ -31,9 +31,6 @@ const WIDTH: u16 = 118;
 /// The picture's rows up to and with the main agent's answer, which this test holds the screen
 /// to cell for cell. What the run printed after it is checked block by block below.
 const OWN_ROWS: usize = 11;
-
-/// The start header's ship keeps the app's own orange, where the picture paints it amber.
-const LOGO: &str = "the logo is in the app's own orange";
 
 /// As on macOS, where items start with Claude Code's `⏺`, as the picture draws them.
 fn theme() -> Theme {
@@ -185,8 +182,8 @@ const PARTS: [std::ops::Range<usize>; 6] = [12..15, 15..26, 26..27, 27..29, 29..
 const LEFT_OUT: [&str; 4] = [
     "✻ Sailed for 10s",
     "⏺ As you asked: For the main agent: try spec-first",
-    "✗ propose:p3 · OpenCode · 0s",
-    "✗ propose:p3 · opencode-acp · 0s",
+    "✘ propose:p3 · OpenCode · 0s",
+    "✘ propose:p3 · opencode-acp · 0s",
 ];
 
 /// The planner's calls print in its one row, between its header and its Done line. The picture
@@ -199,7 +196,7 @@ fn without_the_planners_calls(printed: Vec<Line<'static>>) -> (Vec<Line<'static>
         .position(|line| text(line).starts_with("⏺ plan:orchestrator · "))
         .expect("the planner's row");
     let done = (header + 1..printed.len())
-        .find(|&at| text(&printed[at]).trim_start().starts_with("Done · "))
+        .find(|&at| text(&printed[at]).trim_start().starts_with("Done ("))
         .expect("the planner's Done line");
     let calls: Vec<String> = printed[header + 1..done].iter().map(text).collect();
     let mut lines = printed;
@@ -230,68 +227,6 @@ fn without_the_planners_calls(printed: Vec<Line<'static>>) -> (Vec<Line<'static>
     (lines, calls.join("\n"))
 }
 
-/// A failed agent's row starts with the app's own `✗`, where the picture draws `✘`.
-const CROSS: &str = "a failed agent's row is marked ✗, as every failed agent's is";
-
-/// A Workflow call that returned has its `⏺` green, as Claude Code's own calls do, where the
-/// picture paints it plain.
-const RETURNED: &str = "a Workflow call that returned has its bullet green";
-
-/// An agent's model reads in its shade, as the council's rows draw it, where this picture
-/// draws it dim.
-const MODEL: &str = "an agent's model reads in its shade, as on every agent's row";
-
-/// A fallback that skips its retry names who steps in plain, its bullet warning, where the
-/// picture paints the words amber.
-const NO_RETRY: &str =
-    "a fallback that skips its retry names who steps in plain, as every such note does";
-
-/// The `❯` on your message's band is faint, as on every message of yours.
-const YOUR_MARK: &str = "the ❯ on your message's band is faint, as on every message of yours";
-
-/// The cells of the picture's `row` the screen draws otherwise, as row `at` of its part.
-fn unlike(row: &str, at: usize) -> Vec<Unlike> {
-    let mut unlike = Vec::new();
-    if let Some((head, _)) = row.split_once(" · no second try") {
-        unlike.push(Unlike {
-            row: at,
-            cols: (2, head.chars().count() - 1),
-            why: NO_RETRY,
-        });
-        return unlike;
-    }
-    if row.starts_with("⏺ Workflow(") {
-        unlike.push(Unlike {
-            row: at,
-            cols: (0, 0),
-            why: RETURNED,
-        });
-        return unlike;
-    }
-    if row.starts_with('✘') {
-        unlike.push(Unlike {
-            row: at,
-            cols: (0, 0),
-            why: CROSS,
-        });
-    }
-    let header = row
-        .get(row.char_indices().nth(2).map_or(0, |(i, _)| i)..)
-        .and_then(|rest| rest.split_once(" · "))
-        .filter(|(label, _)| label.contains(':') && !label.contains(' '));
-    if let Some((label, who)) = header
-        && let Some((model, _)) = who.split_once(" on ")
-    {
-        let start = 2 + label.chars().count() + " · ".chars().count();
-        unlike.push(Unlike {
-            row: at,
-            cols: (start, start + model.chars().count() - 1),
-            why: MODEL,
-        });
-    }
-    unlike
-}
-
 /// From the start header to the run's last try the drawing is the picture's: the Workflow line
 /// by the name the council's script reported, before the planner that wrote it; each agent by
 /// the model its command launched; the wait said once, with one line per try, as the record
@@ -319,28 +254,7 @@ fn a_resumed_conversation_is_drawn_as_it_printed_live() {
         &want[..OWN_ROWS].join("\n"),
         COLOURS,
         &theme(),
-        &[
-            Unlike {
-                row: 1,
-                cols: (0, 9),
-                why: LOGO,
-            },
-            Unlike {
-                row: 2,
-                cols: (0, 9),
-                why: LOGO,
-            },
-            Unlike {
-                row: 3,
-                cols: (0, 9),
-                why: LOGO,
-            },
-            Unlike {
-                row: 6,
-                cols: (0, 0),
-                why: YOUR_MARK,
-            },
-        ],
+        &[],
     );
     let rows: Vec<String> = printed
         .iter()
@@ -360,9 +274,6 @@ fn a_resumed_conversation_is_drawn_as_it_printed_live() {
                     rows.join("\n")
                 )
             });
-        let unlike: Vec<Unlike> = (part.start..part.end)
-            .flat_map(|row| unlike(want[row], row - part.start))
-            .collect();
         let end = at + part.len();
         assert_rows_match(
             "resumed_after",
@@ -370,7 +281,7 @@ fn a_resumed_conversation_is_drawn_as_it_printed_live() {
             (&picture, COLOURS),
             part,
             &theme(),
-            &unlike,
+            &[],
         );
         covered[at..end].fill(true);
         after = end;
@@ -489,7 +400,7 @@ fn a_run_that_ends_unshaped_prints_its_planner() {
     }
     let text = plain_text(&screen.printed());
     assert!(
-        planner_block(&text).contains("\n     Done · 5 tool uses"),
+        planner_block(&text).contains("\n     Done (5 tool uses"),
         "{text}"
     );
 }
@@ -542,7 +453,7 @@ fn an_agent_at_work_keeps_the_block_its_past_drew_once_the_run_attaches() {
     let text = plain_text(&screen.printed());
     let block = planner_block(&text);
     assert!(
-        block.ends_with("     Done · 5 tool uses · report ✓ · 31s · 34.6k tokens"),
+        block.ends_with("     Done (5 tool uses · 34.6k tokens · 31s) · report ✓"),
         "{text}"
     );
     assert_eq!(

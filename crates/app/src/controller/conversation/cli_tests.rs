@@ -23,7 +23,7 @@ const EXPORT: &str = "0a1b2c3d-2222-4aaa-8bbb-000000000002";
 const CODEX_INPUT: &str = "019a5770-e3f9-7f92-ab2b-5ba3b7602e8a";
 
 /// The adapters' recorded stores, moved to `repo` under `home`: `/work/shop` becomes `repo`.
-fn install_stores(home: &Path, repo: &Path) {
+pub(super) fn install_stores(home: &Path, repo: &Path) {
     let adapters = Path::new(env!("CARGO_MANIFEST_DIR")).join("../adapters");
     let repo_text = repo.to_str().unwrap();
     let folder: String = repo_text

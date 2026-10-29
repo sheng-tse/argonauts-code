@@ -4,7 +4,9 @@
 use std::fs;
 use std::path::Path;
 
-use argonauts_scenarios::{Scenario, WAIT, as_set_up, past_the_question_guard, scenario_file};
+use argonauts_scenarios::{
+    Scenario, WAIT, as_set_up, on_the_default_workflow, past_the_question_guard, scenario_file,
+};
 use argonauts_testkit::{FakeScenario, FakeStep, Key, Pty, Screen};
 use regex::Regex;
 
@@ -16,6 +18,7 @@ const BOTTOM_ROW: &str = r"(?m)^  ǁ supervised mode on";
 const TURN_END: &str = r"(?m)^✻ \w+ for \d";
 
 /// A global config means no guided setup; the scenario is about the run, not the first start.
+/// The workflow is only the default, so the rules leave this small fix to the main agent.
 /// The main agent names its model, as rows like `Haiku 5.5 on Claude Code · worker` show
 /// it, and since merging is automatic by default, this run's merge is set to wait for you.
 /// The request ends with the verdict, which a CLI that takes no tools keeps.
@@ -26,10 +29,10 @@ fn skip_setup(scenario: &Scenario) -> anyhow::Result<()> {
     }
     fs::write(
         config,
-        as_set_up(
+        as_set_up(&on_the_default_workflow(
             "crew.main = \"claude-code/haiku\"\n\n[ui]\ntheme = \"dark\"\n\n\
              [approvals.merge]\nmode = \"supervised\"\n\n[main_session]\ntools = false\n",
-        ),
+        )),
     )?;
     Ok(())
 }
@@ -66,17 +69,17 @@ fn ui_small_fix_looks_like_claude_code() -> anyhow::Result<()> {
 
     pty.send(FIX)?;
     pty.press(Key::Enter)?;
-    // The agent's row marks the start.
-    pty.wait_for(r"(?m)^[●⏺] build:\S+ · Haiku 5\.5 on Claude Code", WAIT)?;
+    // The agent's row marks the start, headed by its label and the task it works.
+    pty.wait_for(
+        r"(?m)^[●⏺] build:[^\s(]+\(.+\) · Haiku 5\.5 on Claude Code",
+        WAIT,
+    )?;
     scenario.shot(&pty, "small-fix-working")?;
 
     // The merge question needs you, so it takes the keys as it shows and stands in for the input
     // under its own rule, as Claude Code's prompts do.
     pty.wait_for(r"(?m)^◆ Merge", WAIT)?;
-    let question = pty.wait_for(
-        r"(?m)^  Enter to choose.* · Esc to carry on without me",
-        WAIT,
-    )?;
+    let question = pty.wait_for(r"(?m)^  Enter to choose.* · Esc back to the list", WAIT)?;
     scenario.shot(&pty, "small-fix-approval")?;
     let merge = row(&question, r"^◆ Merge").unwrap_or(0);
     let rule = row(&question, r"^─+$").unwrap_or(0);

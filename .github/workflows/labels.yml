@@ -1,0 +1,71 @@
+# Gives each pull request a `crate: <name>` label for each crate it changes, and takes the label off a crate a later
+# push no longer changes (packaging/bot/crate_labels.py). Only labels the repository already has are added: running
+# this workflow by hand makes the missing ones.
+#
+# It acts as the Argonauts Bot app, from the repository variable ARGONAUTS_BOT_APP_ID and the secret
+# ARGONAUTS_BOT_KEY, through a token made for each job alone. pull_request_target lets it label pull requests from
+# forks too. It learns which files changed from GitHub's list of them and never checks out or runs the pull
+# request's code: the checkout, this workflow and the script are the base branch's.
+name: Labels
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+
+permissions: {}
+
+# A newer push to the same pull request replaces the labelling of the one before.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Crates
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Make the bot's token
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ARGONAUTS_BOT_APP_ID }}
+          private-key: ${{ secrets.ARGONAUTS_BOT_KEY }}
+          permission-pull-requests: write
+      - name: Label the crates it changes
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 -I packaging/bot/crate_labels.py label
+
+  create:
+    name: Make the crate labels
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Make the bot's token
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ARGONAUTS_BOT_APP_ID }}
+          private-key: ${{ secrets.ARGONAUTS_BOT_KEY }}
+          permission-issues: write
+      - name: Make the label of each crate that has none
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 -I packaging/bot/crate_labels.py create

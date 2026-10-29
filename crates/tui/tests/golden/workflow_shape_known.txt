@@ -1,12 +1,12 @@
  0 to 14.6 s · Claude Code is still writing its script: no view and no row yet, only the working line
 ❯ Use a workflow for this, with Codex as the reviewer, and choose everything else yourself. Fix the …
 
-✻ Writing a workflow… (12s · ↓  2.2k tokens · esc to interrupt)
+✻ Writing a workflow… (12s · ↓  2.2k tokens)
 
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ autopilot on (shift+tab to cycle) · ? for shortcuts · ↓  to manage
+  ⏵⏵ autopilot on (shift+tab to cycle) · ? for shortcuts
 
    (no row: Enter, ctrl+t and /workflows say "The workflow is being written; it opens when its phases are known")
 
@@ -19,9 +19,9 @@
  Captain · Claude Code's workflow fix-money-rounding · Codex reviews, as you asked                   0/1 agents · 15s
 
  ╭ Phases ──────────┬ Build · 1 agent ──────────────────────────────────────────────────────────────────────────────╮
- │ ❯ 1 Build    0/1 │  ⏺ build:fix-money  Haiku 5.5 · 2.1k tok                                                   1s │
+ │ ❯ ⣾ Build    0/1 │  ⣾ build:fix-money  ◧◨ Haiku 5.5                                             2.1k tok      1s │
  │   2 Review       │                                                                                               │
- │   3 Final        │   Review and Final: Not started yet                                                           │
+ │   3 Final        │                                                                                               │
  │                  │                                                                                               │
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
 

@@ -1,0 +1,10 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Maker-checker  Redis bucket · ◧◨ Opus 5.5's task in the council Rate limit the API
+ A worker builds, a reviewer sends it back until it holds                                      1/2 agents · 6m40s
+
+ ╭ Phases ──────────┬ Review · 1 agent ─────────────────────────────────────────────────────────────────────────╮
+ │   ✔ Build    1/1 │  ⣾ Review · Redis bucket  ◧◨ 5.6 Luna                                  232.0k tok   3m20s │
+ │ ❯ ⣾ Review   0/1 │                                                                                           │
+ │                  │                                                                                           │
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back to the council · s save

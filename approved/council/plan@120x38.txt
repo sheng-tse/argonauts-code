@@ -1,0 +1,104 @@
+The Council conversation at 120 x 38 in a terminal that takes pictures: the plan and who does what, with its question; the bubbles are pictures under the text, so the cells hold the words alone
+screen 120x38
+at 0,0
+size 120x38
+terminal fg=#c8d3f5 bg=#222436
+text
+                                                                                   ￼￼✔  ￼￼✘  ￼￼✔
+     As note keeper I propose who does what. Where you said how, I kept it; any seat can
+     object, and you approve.
+
+      Task            Who                   How              Why                    Checked by
+      Redis bucket    ￼￼ Opus 5.5           Maker-checker    You asked              ￼￼
+      Plan limits     ￼￼ 5.6 Luna           Own session      You asked              ￼￼
+                      ✘  ￼￼ 3.8 Flash: every request reads this table, so Maker-checker
+      Memory store    ￼￼ Qwen3 Coder 30B    Own session      Small, one file        ￼￼
+      Route tests     ￼￼ 3.8 Flash          3 agents         You asked · 3 files    ￼￼
+      Where you said how, that binds: a seat may object, only you change it. For the
+      rest: small or one file, own session. Risky, like every request, money or logins,
+      Maker-checker. Parts that share no files, one agent each. Each task goes to the
+      seat whose idea it was; code picks a checker from another maker.
+￼￼    Only you see Checked by: the seats read "a fresh session that code picks".
+
+                Every seat signed both · ￼￼ 3.8 Flash objects to a way you asked for; only you change it
+
+◆ Approve this plan?
+  Approve with edits: change how any task is done, or who does it. Send back: the seats talk on.
+  ❯ 1. Approve the plan
+    2. Approve with edits
+    3. Send back
+    4. Run it as Captain
+    5. Abandon
+    6. Show the plan
+  Enter to choose · Tab to add a note · Esc to set aside
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts · ↓  to manage
+
+  ◆  Rate limit the API                    ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  4/4 · 5m10s · ↓  90.8k tokens
+    ⎿ ✔  ￼￼ Opus 5.5                       Wrote the plan              3m01s · ↓  29.0k tokens
+      ✔  ￼￼ 5.6 Luna                       Signed the plan             1m18s · ↓  16.9k tokens
+      ✔  ￼￼ 3.8 Flash                      Signed, 1 objection         2m44s · ↓  25.3k tokens
+      ✔  ￼￼ Qwen3 Coder 30B                Signed the plan             2m29s · ↓  19.6k tokens
+paint
+...................................................................................aab..ccd..eeb
+.....ff.ffff.ffffff.f.fffffff.fff.ffff.fffff.fffff.fff.ffff.ffff.f.ffff.fff.fff.ffff.fff
+.....fffffff.fff.fff.ffffffff
+
+......gggg............ggg...................ggg..............ggg....................ggggggg.gg
+......fffff.ffffff....hh.iiii.iii...........fffffffffffff....jjj.jjjjj..............aa
+......ffff.ffffff.....aa.kkk.kkkk...........fff.fffffff......jjj.jjjjj..............hh
+......................d..cc.lll.llllll.ggggg.ggggggg.ggggg.gggg.gggggg.gg.ggggggggggggg
+......ffffff.fffff....ee.mmmmm.mmmmm.mmm....fff.fffffff......ffffff.fff.ffff........cc
+......fffff.fffff.....cc.nnn.nnnnn..........f.ffffff.........jjj.jjjjj.f.f.fffff....ee
+......ggggg.ggg.gggg.gggg.gggg.gggggg.g.gggg.ggg.ggggggg.gggg.ggg.gggggg.ggg.ggg.ggg
+......ggggg.ggggg.gg.ggg.ggggg.ggg.gggggggg.gggggg.gggg.ggggg.gggggggg.ggggg.gg.ggggggg
+......gggggggggggggg.ggggg.gggg.ggggg.gg.gggggg.ggg.ggggg.ggggg.gggg.gggg.gggg.gg.ggg
+......gggg.ggggg.gggg.gg.gggg.gggg.ggggg.g.ggggggg.gggg.ggggggg.gggggg
+hh....oooo.ooo.ooo.ooooooo.ooo.ggg.ggggg.gggg.gg.ggggg.ggggggg.gggg.gggg.ggggggg
+
+................ggggg.gggg.gggggg.gggg.g.cc.ggg.ggggg.ggggggg.gg.g.ggg.ggg.ggggg.gggg.gggg.ggg.gggggg.gg
+
+p.qqqqqqq.qqqq.qqqqq
+..ggggggg.gggg.gggggg.gggggg.ggg.ggg.gggg.gg.ggggg.gg.ggg.gggg.ggg.gggg.ggggg.ggg.ggggg.gggg.ggg
+..r.rr.rrrrrrr.rrr.rrrr
+....ff.fffffff.ffff.fffff
+....ff.ffff.ffff
+....ff.fff.ff.ff.fffffff
+....ff.fffffff
+....ff.ffff.fff.ffff
+..ggggg.gg.gggggg.g.ggg.gg.ggg.g.gggg.g.ggg.gg.ggg.ggggg
+
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss.ooooooo.s
+f.ggggg.gg.ggg.gggggggg.g.g.ggggg.gg.ggggggg..gg.gggg.g.ggggggg.gg.gggg
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss
+..g.gggggggggg.gggg.gg.gggggggggg.gg.gggggg.g.g.ggg.ggggggggg.g.g..gg.gggggg
+
+..p..gggg.ggggg.ggg.ggg....................ffffffffffffffffffff..ggg.g.ggggg.g.g..ggggg.gggggg
+....g.b..hh.gggg.ggg.......................fffff.fff.ffff..............ggggg.g.g..ggggg.gggggg
+......b..aa.ggg.gggg.......................ffffff.fff.ffff.............ggggg.g.g..ggggg.gggggg
+......b..cc.ggg.ggggg......................fffffff.f.fffffffff.........ggggg.g.g..ggggg.gggggg
+......b..ee.ggggg.ggggg.ggg................ffffff.fff.ffff.............ggggg.g.g..ggggg.gggggg
+key
+. blank
+a logo=codex
+b fg=#4eba65  ; Success, CatAgents
+c logo=antigravity
+d fg=#ff6b80  ; Danger, ModeAutopilot
+e logo=ollama
+f fg=#c8d3f5  ; the terminal's own
+g fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+h logo=claudecode
+i fg=#f7a07f bold  ; CliClaude
+j fg=#0a84ff
+k fg=#6a9ee6 bold  ; CliCodex
+l fg=#6cd1cf  ; CliAgy
+m fg=#c27cb4 bold  ; CliOpenCode
+n fg=#6cd1cf bold  ; CliAgy
+o fg=#af87ff  ; Label, Ultracode
+p fg=#ffc107  ; Warn, ModeAuto, Tick
+q fg=#c8d3f5 bold  ; the terminal's own
+r fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+s fg=#888888  ; Rule

@@ -9,7 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 
 use super::*;
-use crate::bridge::transcript::picture_check::{Unlike, assert_matches};
+use crate::bridge::transcript::picture_check::assert_rows_match;
 use crate::model::Tone;
 use crate::render::Clock;
 use crate::text::plain_text;
@@ -57,56 +57,27 @@ fn input_rows(draft: &str) -> Vec<Line<'static>> {
     lines[rule..rule + 4].to_vec()
 }
 
+/// The picture's two inputs, each under its caption: a real command, then one that isn't. Its
+/// last part draws the other choice, a chip behind the command, which wasn't built.
 #[test]
 fn slash_commands_a_real_one_is_bold_and_an_unknown_one_says_so() {
-    let caption = |row| Unlike {
-        row,
-        cols: (0, usize::from(WIDTH) - 1),
-        why: "the picture's own caption, which the screen doesn't draw",
-    };
-    let rule = |row| Unlike {
-        row,
-        cols: (0, usize::from(WIDTH) - 1),
-        why: "the input's rules keep their own grey, a step brighter than the picture's",
-    };
-    let prompt = |row| Unlike {
-        row,
-        cols: (0, 0),
-        why: "the prompt is in the text color while the input has the keys",
-    };
-    let not_built = |row| Unlike {
-        row,
-        cols: (0, usize::from(WIDTH) - 1),
-        why: "the other choice, a chip behind the command, which wasn't picked",
-    };
-
-    let mut lines = vec![Line::default()];
-    lines.extend(input_rows("/workflow try spec-first "));
-    lines.extend([Line::default(), Line::default()]);
-    lines.extend(input_rows("/wokflow try spec-first add a burst limit"));
-    lines.extend(std::iter::repeat_n(Line::default(), 5));
-
-    assert_matches(
-        "slash_commands",
-        &lines,
+    let picture = (
         include_str!("../../tests/golden/bottom/slash_commands.txt"),
         include_str!("../../tests/golden/bottom/slash_commands.html"),
-        &theme(),
-        &[
-            caption(0),
-            rule(1),
-            prompt(2),
-            rule(3),
-            caption(6),
-            rule(7),
-            prompt(8),
-            rule(9),
-            caption(12),
-            not_built(13),
-            not_built(14),
-            not_built(15),
-        ],
     );
+    for (draft, rows) in [
+        ("/workflow try spec-first ", 1..5),
+        ("/wokflow try spec-first add a burst limit", 7..11),
+    ] {
+        assert_rows_match(
+            "slash_commands",
+            &input_rows(draft),
+            picture,
+            rows,
+            &theme(),
+            &[],
+        );
+    }
 }
 
 /// On a screen too narrow for the whole note after the draft, the row keeps why Enter does

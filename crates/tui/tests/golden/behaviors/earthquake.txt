@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
+
+                                                                    Every model
+                                                                    Nothing compared · ←  →  compares one
+                                                                    ●  ◧◨ 6.1 Sol           440
+                                                                    ●  ◧◨ Opus 5.5          405
+                                                                    ●  ◧◨ Qwen3 Coder 30B   125
+                                                                    ●  ◧◨ Haiku 5.5          20
+
+
+
+
+
+
+
+
+     Earthquake · ◧◨ Claude Code crashed 12 hours ago, ending a session on ‘asked another agent to review or judge’ · 2
+     sessions ended here because the CLI crashed
+  Label map · 990 actions in 31 runs and 48 conversations across 4 projects · last 30 days
+  Most common
+  Ran the test suite                 150    Edited a test file               70
+  Edited a source file               120    Returned its structured answer   70
+  Ran the test suite, which failed    95    Built the project                60
+
+
+
+
+   r to cycle dates · s this project · d summaries · tab groupings · ←  →  compare · t top view · esc back

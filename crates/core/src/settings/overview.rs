@@ -12,7 +12,7 @@ use crate::pricing::ListPrice;
 #[serde(default)]
 pub struct OverviewSettings {
     /// Each day of the year in the colour of `cli` (the CLI that ran most that day, the
-    /// default), `model` (the model that ran most, in its shade of its CLI's colour), or `one`
+    /// default), `model` (the model that ran most, in its CLI's colour), or `one`
     /// colour for every day. Darker is always less.
     pub year_colors: YearColors,
     /// Your own list prices by model id, in dollars per million tokens, such as

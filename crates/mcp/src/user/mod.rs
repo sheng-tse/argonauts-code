@@ -215,6 +215,7 @@ mod tests {
     use argonauts_core::names::{ApprovalId, MessageId, ModelRef, SessionKey};
     use argonauts_core::settings::agents::{McpSettings, Share, StartRuns};
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+    use argonauts_core::settings::asking::WhenDeclined;
     use argonauts_core::{RunId, Spend, TaskId};
     use rmcp::model::{ClientCapabilities, ClientConfig, ProtocolVersion};
     use rmcp::{ClientLifecycleMode, ClientServiceExt};
@@ -645,6 +646,7 @@ mod tests {
             evidence_sha256: EVIDENCE.to_owned(),
             mode: ApprovalMode::Supervised,
             decide_with: DecideWith::Rules,
+            when_declined: WhenDeclined::Decide,
             options: Vec::new(),
             free_text: FreeText::None,
             needs_you: true,

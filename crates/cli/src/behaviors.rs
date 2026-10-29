@@ -1,6 +1,7 @@
 //! `argonauts behaviors`: each model's behaviors from your run records, most distinctive
-//! first, or every agent session's actions written out for Hodoscope. With `--deep`, it updates
-//! the deeper Behaviors map instead, asking at the terminal where the tab would ask.
+//! first, or every agent session's actions written out for Hodoscope. With `--summaries`, it
+//! updates the Behaviors tab's Summaries instead, asking at the terminal where the tab would
+//! ask.
 
 use std::io::{BufRead as _, IsTerminal as _, Write as _};
 use std::path::Path;
@@ -14,7 +15,7 @@ use crate::args::BehaviorsArgs;
 use crate::usage::usage;
 
 pub async fn run(args: &BehaviorsArgs, set: &[String]) -> anyhow::Result<ExitCode> {
-    if !args.deep {
+    if !args.summaries {
         return ranked_or_exported(args);
     }
     let mut terminal = Shell::new();

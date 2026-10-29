@@ -1,6 +1,6 @@
 //! What counts as tightening a safety key, fixed in code and never judged by a model. A
 //! request may move a safety key only this way: toward asking you, a lower run limit (or a
-//! first one), no network, or Captain in a checked worktree.
+//! first one), no network, Captain in a checked worktree, or checks where none are set.
 
 use toml::Value;
 
@@ -27,6 +27,14 @@ pub fn tightens(key: &str, new: &Value, current: Option<&Value>) -> bool {
         ["sandbox", "network"] => new.as_bool() == Some(false),
         ["captain", "kind"] | ["captain_or_crew", "captain_kind"] => {
             new.as_str() == Some("checked")
+        }
+        // Checks where none are set only add something the work must pass. They run in each
+        // task's sandbox, so they can do nothing the run's agents couldn't, and checks you set
+        // are never replaced.
+        ["checks", "run"] => {
+            let none_set =
+                current.is_none_or(|current| current.as_array().is_some_and(Vec::is_empty));
+            none_set && new.as_array().is_some_and(|checks| !checks.is_empty())
         }
         _ => false,
     }
@@ -59,7 +67,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_five_tightenings_pass() {
+    fn only_the_six_tightenings_pass() {
         let supervised = text("supervised");
         let auto = text("auto");
         assert!(tightens("approvals.merge.mode", &supervised, Some(&auto)));
@@ -119,6 +127,19 @@ mod tests {
             &text("as_captain"),
             None
         ));
+        let tests = "run = [{ name = \"tests\", command = [\"python3\", \"-m\", \"unittest\"] }]"
+            .parse::<toml::Table>()
+            .unwrap()["run"]
+            .clone();
+        assert!(tightens("checks.run", &tests, None));
+        assert!(tightens(
+            "checks.run",
+            &tests,
+            Some(&Value::Array(Vec::new()))
+        ));
+        // Checks you set are never replaced, and an empty list sets nothing.
+        assert!(!tightens("checks.run", &tests, Some(&tests)));
+        assert!(!tightens("checks.run", &Value::Array(Vec::new()), None));
         for key in [
             "checks.run",
             "sandbox.mode",

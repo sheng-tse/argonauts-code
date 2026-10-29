@@ -157,7 +157,7 @@ mod tests {
     }
 
     fn council() -> WorkflowFile {
-        WorkflowFile::parse(crate::built_in("council").expect("ships"))
+        WorkflowFile::parse(crate::COUNCIL_STEPS)
             .expect("reads")
             .expect("has steps")
     }

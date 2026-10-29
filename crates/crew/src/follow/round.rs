@@ -119,6 +119,7 @@ async fn work(
                 git.reset_hard(&tree.path, &head).await?;
             }
             let plan = SessionPlan {
+                without_status: false,
                 at: None,
                 role: RoleName::Worker,
                 worker: builder.1.clone(),
@@ -190,6 +191,7 @@ async fn work(
             shown.push_str(&format!("\n{cut}\n"));
         }
         let plan = SessionPlan {
+            without_status: false,
             at: None,
             role: RoleName::Reviewer,
             worker: reviewer.worker.clone(),

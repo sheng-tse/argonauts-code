@@ -1,8 +1,8 @@
 //! The run review, after the run's workflow ends: Brier scores for predictions, one outcome record
 //! per task and one run line in the outcome log, the memory checks, accepted notes kept in the
-//! repo's state directory, at most one process change from `RunReview`, and then the evolution
-//! loop's turn. Each part checks the log first, so a run review re-entered after a crash repeats
-//! nothing. Notes, like goals and decisions, are Argonauts Code's own and never enter your
+//! repo's state directory, each council's maker lift and the names code hid from its seats, at
+//! most one process change from `RunReview`, and then the evolution loop's turn. Each part checks
+//! the log first, so a run review re-entered after a crash repeats nothing. Notes, like goals and decisions, are Argonauts Code's own and never enter your
 //! repository.
 
 use std::collections::BTreeSet;
@@ -136,6 +136,7 @@ pub async fn run(host: &Host) -> EngineResult<()> {
 
     scan_proposals(host)?;
     keep_notes(host)?;
+    crate::council::lift::review(host)?;
 
     if process_change_due(host, settings)? && !host.read(|state| state.run_review.has_candidate()) {
         propose(host, &facts, settings).await?;

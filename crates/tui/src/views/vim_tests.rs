@@ -283,12 +283,16 @@ fn config_editor_picks_with_vim_keys() {
     let vim = Driver::new(true);
     let mut view = AllSettingsView::new(vec![setting("ui.keys")]);
     vim.press(&mut view, 'l');
-    // The editor's values move with `j` and pick with `l`, then ask where to save it.
+    // The editor's values move with `j` and pick with `l`, which saves the value.
     vim.press(&mut view, 'j');
     let outcome = vim.press(&mut view, 'l');
-    assert!(matches!(outcome, ViewOutcome::Consumed), "{outcome:?}");
-    let text = vim.text(&mut view);
-    assert!(text.contains("Where to save it"), "{text}");
+    assert!(
+        matches!(
+            &outcome,
+            ViewOutcome::Send(UiCommand::SetSetting { key, scope: None, .. }) if key == "ui.keys"
+        ),
+        "{outcome:?}"
+    );
 }
 
 #[test]

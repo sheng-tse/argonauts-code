@@ -1,0 +1,29 @@
+# Set up with Captain in supervised mode and the Council drawings' four seats; /council switches.
+
+workflow = "captain"
+
+[crew]
+main = "claude-code"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]
+
+[approvals]
+start_mode = "supervised"
+
+[[council.seat]]
+model = "claude-code/claude-opus-5-5"
+
+[[council.seat]]
+model = "codex/gpt-5.6-luna"
+
+[[council.seat]]
+model = "antigravity-cli/gemini-3.8-flash"
+
+[[council.seat]]
+model = "opencode/ollama/qwen3-coder:30b"
+
+# The main session ends its reply with its verdict alone, which the fake CLIs' rules for these
+# drawings give; with its tools on it would answer through them instead.
+[main_session]
+tools = false

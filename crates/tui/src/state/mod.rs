@@ -37,14 +37,14 @@ use crate::theme::ColorEnv;
 
 pub use artifacts::{Artifacts, Published};
 pub use context::{ContextCount, ContextGrowth, LastStep};
-pub use conversation::{ConversationState, TurnRetry};
+pub use conversation::{ConversationState, MainStart, TurnRetry};
 pub use decisions::DecisionRecord;
 pub use deep::DeepUpdate;
 pub use goals::GoalBoard;
 pub use plan_usage::binding_reading;
 pub use run::{
-    AgentWait, CheckBrief, MergeTotals, OpenApproval, RunState, RunTotals, StepState, TaskRow,
-    WorkflowState, phase_at_work,
+    AgentWait, CheckBrief, MergeTotals, OpenApproval, RunState, RunTotals, SeatDoing, SeatNow,
+    StepState, Talk, TaskRow, WorkflowState, phase_at_work,
 };
 pub use session::{Doing, Retrying, SessionState, SessionStatus, ToolRecord, task_label};
 
@@ -169,8 +169,12 @@ pub enum Replay {
 /// What became of a setting change a view sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingOutcome {
-    /// Saved, with the value it now has.
-    Changed { key: String, value: String },
+    /// Saved, with the value it now has and where it went.
+    Changed {
+        key: String,
+        value: String,
+        scope: argonauts_core::settings::SettingScope,
+    },
     /// Its question was answered or set aside with nothing changed.
     NotChanged,
 }
@@ -312,10 +316,13 @@ impl AppState {
                 self.waiting
                     .retain(|waiting| *waiting != Waiting::Choice(id.clone()));
             }
-            AppEvent::SettingChanged { key, value, .. } => {
+            AppEvent::SettingChanged {
+                key, value, scope, ..
+            } => {
                 self.setting_outcomes.push(SettingOutcome::Changed {
                     key: key.clone(),
                     value: value.clone(),
+                    scope: *scope,
                 });
             }
             AppEvent::Narrator { line } => {
@@ -350,6 +357,11 @@ impl AppState {
             }
             // The conversation on screen changed: its own pages replace the last one's.
             AppEvent::ConversationResumed { artifacts, .. } => self.artifacts.resumed(artifacts),
+            AppEvent::MainStart {
+                start,
+                cli_window,
+                estimated,
+            } => self.conversation.started(start, *cli_window, *estimated),
             AppEvent::CliCommands { set } => self.cli_commands = Some(set.clone()),
             AppEvent::Names { names } => self.names = (**names).clone(),
             AppEvent::ReplayDone { run, .. } => {
@@ -376,6 +388,11 @@ impl AppState {
                     self.goals
                         .remember_agent(&view.run, &view.row, view.goal.as_deref());
                 }
+                ViewData::Context { view } | ViewData::ContextPrint { view } => {
+                    if let Some(main) = MainStart::of(view, self.conversation.main_start.as_ref()) {
+                        self.conversation.main_start = Some(main);
+                    }
+                }
                 _ => {}
             },
             AppEvent::Shell { event } => match event {
@@ -385,9 +402,11 @@ impl AppState {
             },
             AppEvent::TakeOver { .. }
             | AppEvent::RunInTerminal { .. }
+            | AppEvent::TurnsMadeInCli { .. }
             | AppEvent::Recap { .. }
             | AppEvent::CrewForRequest { .. }
             | AppEvent::RepoFiles { .. }
+            | AppEvent::WorkflowStatuses { .. }
             | AppEvent::Report { .. }
             | AppEvent::ReportSoFar { .. }
             | AppEvent::Switched { .. }
@@ -397,6 +416,7 @@ impl AppState {
             | AppEvent::Continued { .. }
             | AppEvent::Hint { .. }
             | AppEvent::SettingRefused { .. }
+            | AppEvent::CommandReplied { .. }
             | AppEvent::Updated { .. }
             | AppEvent::Exit => {}
             AppEvent::PullRequestFollowed { run, followed } => {

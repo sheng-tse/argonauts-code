@@ -19,13 +19,14 @@ portable-pty.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sysinfo.workspace = true
 tempfile.workspace = true
 time.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 toml.workspace = true
 vt100.workspace = true
-vte = "0.15"
+vte.workspace = true
 
 [dev-dependencies]
 argonauts-endpoints.workspace = true

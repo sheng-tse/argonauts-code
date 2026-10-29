@@ -59,6 +59,7 @@ fn spec(id: &str, depends_on: &[&str]) -> TaskSpec {
         limit: Default::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 

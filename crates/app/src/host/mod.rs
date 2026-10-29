@@ -772,6 +772,7 @@ fn describe(request: &ControlRequest) -> String {
         ControlRequest::StopSession { session, .. } => format!("Starting {session} over"),
         ControlRequest::SpotCheck { id, .. } => format!("Your spot check of {id}"),
         ControlRequest::Goal { .. } => "Your change to the goal".to_owned(),
+        ControlRequest::Council { .. } => "Your message to the council".to_owned(),
         _ => "A request".to_owned(),
     }
 }

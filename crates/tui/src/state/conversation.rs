@@ -1,10 +1,12 @@
 use argonauts_core::app::ConversationEvent;
+use argonauts_core::events::context::StartingCount;
 use argonauts_core::events::session::{
     CliWorkflowRun, SubagentKind, SubagentStatus, SubagentUpdate,
 };
-use argonauts_core::names::{ModelRef, TurnId};
+use argonauts_core::names::{ModelRef, SessionKey, TurnId};
 use argonauts_core::screen::{Drawn, ScreenChange};
-use argonauts_core::{AgentEvent, ErrorCategory, PluginOutputKind, TodoItem};
+use argonauts_core::views::{ContextRow, ContextView};
+use argonauts_core::{AgentEvent, ErrorCategory, PluginOutputKind, Spend, TodoItem};
 
 use super::context::{ContextCount, ContextGrowth, LastStep};
 use super::session::{Doing, ToolRecord, ends_a_retry};
@@ -47,6 +49,9 @@ pub struct ConversationState {
     pub context: Option<ContextCount>,
     /// What the conversation's turns add to its context, kept across turns as the count is.
     pub growth: ContextGrowth,
+    /// The main session's start, kept across turns, for what the band above the input draws
+    /// before its CLI counts it.
+    pub main_start: Option<MainStart>,
     /// Its session's last step, kept across turns as the count is.
     pub last_step: LastStep,
     /// The subagents the turn's CLI started, the latest update of each, in first-seen order.
@@ -65,6 +70,64 @@ pub struct ConversationState {
     pub retry: Option<TurnRetry>,
 }
 
+/// The main session's start as the controller last sent it or the Context tab had it, with
+/// the session's row as its events since have it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MainStart {
+    pub start: StartingCount,
+    /// None before the session starts.
+    pub row: Option<ContextRow>,
+    /// The window is the CLI's own figure, not our list's.
+    pub cli_window: bool,
+    /// The CLI works out how full the session is from its totals.
+    pub estimated: bool,
+}
+
+impl MainStart {
+    /// The start a Context view holds, with the main session's row there. Before that row,
+    /// whether the CLI estimates comes from `kept`, the start the screen had for the same CLI.
+    pub fn of(view: &ContextView, kept: Option<&MainStart>) -> Option<Self> {
+        let start = view.main_start.clone()?;
+        let row = view.rows.iter().find(|row| row.run.is_none()).cloned();
+        let estimated = match &row {
+            Some(row) => row.estimated,
+            None => kept.is_some_and(|kept| kept.estimated && kept.start.agent == start.agent),
+        };
+        Some(Self {
+            start,
+            row,
+            cli_window: (view.main_window.as_ref()).is_some_and(|window| window.cli.is_some()),
+            estimated,
+        })
+    }
+
+    /// As a turn of `worker` starts: a session with nothing said of it yet, where there was
+    /// none, until its CLI says how full it is.
+    fn loading(mut self, worker: &ModelRef) -> Self {
+        if self.row.is_none() {
+            self.row = Some(ContextRow {
+                run: None,
+                session: SessionKey::numbered(0),
+                label: "main".to_owned(),
+                worker: worker.clone(),
+                used: 0,
+                window: self.start.window,
+                cap: None,
+                tool_calls: 0,
+                spent: Spend::default(),
+                rotations: 0,
+                estimated: self.estimated,
+                counts: false,
+                categories: Vec::new(),
+                recorded: None,
+                ended: None,
+                answered_for: None,
+            });
+        }
+        self
+    }
+}
+
 /// One retry of the turn's request, as its CLI announced it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurnRetry {
@@ -75,6 +138,16 @@ pub struct TurnRetry {
 }
 
 impl ConversationState {
+    /// The main session's start, worked out before its CLI counts it. The session's row stays.
+    pub(super) fn started(&mut self, start: &StartingCount, cli_window: bool, estimated: bool) {
+        self.main_start = Some(MainStart {
+            start: start.clone(),
+            row: self.main_start.take().and_then(|main| main.row),
+            cli_window,
+            estimated,
+        });
+    }
+
     pub(super) fn apply(&mut self, event: &ConversationEvent) {
         match event {
             ConversationEvent::TurnStarted {
@@ -105,6 +178,7 @@ impl ConversationState {
                     } else {
                         LastStep::default()
                     },
+                    main_start: self.main_start.take().map(|main| main.loading(worker)),
                     ..Self::default()
                 };
                 // The bridge queued it while the last turn ran; now it's this turn's prompt.
@@ -275,7 +349,11 @@ impl ConversationState {
                     counted: crate::bottom::wall_now(),
                 });
             }
-            AgentEvent::ContextFill { used, .. } => {
+            AgentEvent::ContextFill { used, size, .. } => {
+                if let Some(row) = self.main_start.as_mut().and_then(|main| main.row.as_mut()) {
+                    row.used = *used;
+                    row.window = size.or(row.window);
+                }
                 self.growth.filled(*used);
                 self.last_step.at = Some(crate::bottom::wall_now());
             }

@@ -1,4 +1,4 @@
-//! The deeper map's own rows in the Behaviors tab while an update runs: the line under the
+//! Summaries' own rows in the Behaviors tab while an update runs: the line under the
 //! sub-tabs saying who summarizes, how far the update got, and the note under the map. The map
 //! that's made is drawn by the map's own view, as every map is.
 
@@ -11,10 +11,10 @@ use crate::theme::Role;
 /// The tab's margin, as the rows stand alone; the panel's inset is one of its cells.
 const MARGIN: &str = "  ";
 
-/// `Deeper map · 562 actions · summarizing with Qwen3 Coder 30B on Ollama`.
+/// `Summaries · 562 actions · summarizing with Qwen3 Coder 30B on Ollama`.
 pub fn summarizing(kit: &Kit<'_>, actions: usize, summarizer: &str) -> Line<'static> {
     Line::from(vec![kit.dim(format!(
-        "{MARGIN}Deeper map · {actions} actions · summarizing with {summarizer}"
+        "{MARGIN}Summaries · {actions} actions · summarizing with {summarizer}"
     ))])
 }
 

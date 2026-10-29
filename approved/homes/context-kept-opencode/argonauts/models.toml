@@ -1,0 +1,12 @@
+# qwen3-coder:30b-64k as `opencode models --verbose` lists it on Ollama.
+
+[[model]]
+id = "opencode/ollama/qwen3-coder:30b-64k"
+provider = "qwen"
+kind = "cli"
+access = "local"
+tools = true
+cost = { unit = "none" }
+launch = { oss = true, local_provider = "ollama" }
+name = "Qwen3 Coder 30B (64k)"
+context_window = 65536

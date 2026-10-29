@@ -7,6 +7,7 @@ pub mod agents;
 mod band;
 pub mod bottom_line;
 pub mod cli_workflow_run;
+pub mod council;
 #[cfg(test)]
 mod council_golden;
 mod ended;
@@ -29,6 +30,8 @@ mod shape_golden;
 pub mod status;
 pub mod tools;
 pub mod transcript;
+#[cfg(test)]
+mod workflow_lines_golden;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -179,6 +182,10 @@ pub struct TakeOverJob {
 pub struct TerminalJob {
     pub argv: Vec<String>,
     pub cwd: PathBuf,
+    pub env_remove: Vec<String>,
+    pub env_set: Vec<(String, String)>,
+    /// The app says what came back, so only a failure is the screen's to say.
+    pub quiet: bool,
 }
 
 #[derive(Debug)]
@@ -187,6 +194,7 @@ pub struct Bridge {
     settings: UiSettings,
     pub transcript: Transcript,
     pub agents: AgentBlocks,
+    pub council: council::CouncilBridge,
     pub questions: Questions,
     pub input: InputRouter,
     pub keys: KeyActions,
@@ -206,6 +214,7 @@ impl Bridge {
             settings: options.settings.clone(),
             transcript: Transcript::default(),
             agents: AgentBlocks::default(),
+            council: council::CouncilBridge::default(),
             questions: Questions::default(),
             input: InputRouter::new(options),
             keys: KeyActions::default(),
@@ -285,6 +294,7 @@ impl Bridge {
                 None => self.transcript.on_event(event, &mut cx),
             }
             self.agents.on_event(event, &mut cx);
+            self.council.on_event(event, &mut cx);
             self.questions.on_event(event, &mut cx);
             self.input.on_event(event, &mut cx);
             pull_request::on_event(event, &mut cx);
@@ -292,6 +302,7 @@ impl Bridge {
                 views::on_event(event, &mut cx, &self.refresh);
             }
             status::sync(&mut cx);
+            self.council.dress_working_line(&mut cx);
             panel::sync(&mut cx);
             band::sync(&mut cx);
         }
@@ -310,12 +321,21 @@ impl Bridge {
                 run: run.clone(),
             });
         }
-        if let AppEvent::RunInTerminal { argv, cwd } = event
+        if let AppEvent::RunInTerminal {
+            argv,
+            cwd,
+            env_remove,
+            env_set,
+            quiet,
+        } = event
             && !self.state.replaying()
         {
             out.run_in_terminal = Some(TerminalJob {
                 argv: argv.clone(),
                 cwd: cwd.clone(),
+                env_remove: env_remove.clone(),
+                env_set: env_set.clone(),
+                quiet: *quiet,
             });
         }
         if self.state.replaying() {
@@ -341,9 +361,11 @@ impl Bridge {
                 self.transcript.print_header(&mut cx);
             }
             let _taken = self.questions.on_action(action, &mut cx)
+                || self.council.on_action(action, &mut cx)
                 || self.input.on_action(action, &mut cx)
                 || self.keys.on_action(action, &mut cx);
             status::sync(&mut cx);
+            self.council.dress_working_line(&mut cx);
             panel::sync(&mut cx);
         }
         if let Some(refresh) = self.refresh.on_commands(&out.commands, now) {
@@ -1030,6 +1052,9 @@ mod view_answer_tests {
         let login = AppEvent::RunInTerminal {
             argv: vec!["codex".to_owned(), "login".to_owned()],
             cwd: PathBuf::from("/repo"),
+            env_remove: vec!["CLAUDECODE".to_owned()],
+            env_set: Vec::new(),
+            quiet: false,
         };
         let out = bridge.on_event(&mut model, &login, Instant::now());
         assert_eq!(
@@ -1037,6 +1062,9 @@ mod view_answer_tests {
             Some(TerminalJob {
                 argv: vec!["codex".to_owned(), "login".to_owned()],
                 cwd: PathBuf::from("/repo"),
+                env_remove: vec!["CLAUDECODE".to_owned()],
+                env_set: Vec::new(),
+                quiet: false,
             })
         );
         assert!(out.commands.is_empty(), "nothing goes back when it ends");

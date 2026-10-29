@@ -37,6 +37,9 @@ pub enum Trigger {
     ChangesRequestedAgain,
     /// Approved, or the judge settled on approve.
     Approved,
+    /// Nobody but its builder, or its builder's provider, may review it. It goes on
+    /// unreviewed, and the run's merge, which wants an approval, decides.
+    NobodyToReview,
     AffectedTestsFailed,
     /// Merged and tested.
     Merged,
@@ -80,6 +83,7 @@ pub const TABLE: &[(TaskState, Trigger, TaskState)] = &[
     (InReview, Trigger::ChangesRequested, Running),
     (InReview, Trigger::ChangesRequestedAgain, NeedsYou),
     (InReview, Trigger::Approved, Merging),
+    (InReview, Trigger::NobodyToReview, Merging),
     (InReview, Trigger::NewWorker, Running),
     (Merging, Trigger::AffectedTestsFailed, Running),
     (Merging, Trigger::Merged, Merged),
@@ -162,6 +166,7 @@ mod tests {
             (InReview, Trigger::ChangesRequested, Running),
             (InReview, Trigger::ChangesRequestedAgain, NeedsYou),
             (InReview, Trigger::Approved, Merging),
+            (InReview, Trigger::NobodyToReview, Merging),
             (InReview, Trigger::NewWorker, Running),
             (Merging, Trigger::AffectedTestsFailed, Running),
             (Merging, Trigger::Merged, Merged),

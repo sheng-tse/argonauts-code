@@ -427,3 +427,17 @@ fn the_app_can_run_the_screen_on_its_own_task() {
     let screen = run_app(io, options());
     is_send(&screen);
 }
+
+/// With `ui.logos = "off"` the terminal is neither asked whether it takes pictures nor sent
+/// any, but held for later; on, a terminal that takes placeholders is asked first.
+#[test]
+fn logos_off_ask_and_send_nothing_at_start() {
+    use argonauts_core::settings::ui::Logos;
+
+    use super::{LogosAtStart, logos_at_start};
+
+    assert_eq!(logos_at_start(Logos::Auto, true), LogosAtStart::Ask);
+    assert_eq!(logos_at_start(Logos::Off, true), LogosAtStart::Hold);
+    assert_eq!(logos_at_start(Logos::Auto, false), LogosAtStart::Nothing);
+    assert_eq!(logos_at_start(Logos::Off, false), LogosAtStart::Nothing);
+}

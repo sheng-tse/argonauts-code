@@ -1,6 +1,6 @@
 //! `~/.argonauts/update.json`: this install's rollout id, the highest manifest serial seen on
-//! each channel, when it last looked, and what it already told you. The rollout id is its own,
-//! never sent anywhere and not the usage reports' id.
+//! each channel, when it last looked and what that came to, and what it already told you. The
+//! rollout id is its own, never sent anywhere and not the usage reports' id.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -33,6 +33,42 @@ pub struct UpdateState {
     /// A release switched to in the background, which takes over at the next start.
     #[serde(default)]
     pub ready: Option<Version>,
+    /// What the last background look came to, which `argonauts doctor` shows. A kind of
+    /// outcome a later version adds reads as none, so it never costs the rest of the file.
+    #[serde(default, deserialize_with = "look_or_none")]
+    pub last: Option<Look>,
+}
+
+/// One background look for a new release, and what came of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Look {
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
+    pub outcome: Outcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Outcome {
+    /// Nothing newer, or a newer release held back from everyone.
+    UpToDate,
+    /// Newer, and the rollout reaches this install later.
+    Later { version: Version },
+    /// Newer, and put in place for the next start.
+    Ready { version: Version },
+    /// Newer, for you or this copy's package manager to install.
+    Out { version: Version },
+    /// Newer, and putting it in place failed, for `why`.
+    Failed { version: Version, why: String },
+    /// The manifest couldn't be read, for `why`.
+    Unread { why: String },
+}
+
+fn look_or_none<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Look>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 impl UpdateState {
@@ -92,6 +128,46 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn the_last_look_is_kept_and_an_unknown_one_costs_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update.json");
+        let mut state = UpdateState::load(&path);
+        state.last = Some(Look {
+            at: OffsetDateTime::UNIX_EPOCH,
+            outcome: Outcome::Failed {
+                version: Version::new(0, 2, 1),
+                why: "the download stopped at 61%".to_owned(),
+            },
+        });
+        state.save(&path).unwrap();
+        assert_eq!(UpdateState::load(&path), state);
+
+        let id = state.rollout_id().to_owned();
+        let text = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("\"failed\"", "\"kind_from_later\"");
+        std::fs::write(&path, text).unwrap();
+        let read = UpdateState::load(&path);
+        assert_eq!(read.last, None);
+        assert_eq!(read.rollout_id(), id, "the rest of the file still reads");
+    }
+
+    #[test]
+    fn a_file_from_before_the_last_look_was_kept_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update.json");
+        std::fs::write(
+            &path,
+            r#"{"rollout_id":"r-1","serials":{"stable":4},"checked":null,"out":"0.1.1"}"#,
+        )
+        .unwrap();
+        let state = UpdateState::load(&path);
+        assert_eq!(state.rollout_id(), "r-1");
+        assert_eq!(state.out, Some(Version::new(0, 1, 1)));
+        assert_eq!(state.last, None);
     }
 
     #[test]

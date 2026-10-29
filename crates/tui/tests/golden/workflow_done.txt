@@ -4,7 +4,7 @@
  ✔ Merged onto main · 3f9c2a1 · 4 files +52 −6
 
  ╭ Phases ──────────┬ Merge · 1 agent ──────────────────────────────────────────────────────────────────────────────╮
- │   ✔ Build    2/2 │  ✔ commit message  Opus 5.5 · 11.8k tok · given the diff, no tools                        19s │
+ │   ✔ Build    2/2 │  ✔ commit message  ◧◨ Opus 5.5                                              11.8k tok     19s │
  │   ✔ Review   2/2 │                                                                                               │
  │   ✔ Sign-off 1/1 │                                                                                               │
  │ ❯ ✔ Merge    1/1 │                                                                                               │

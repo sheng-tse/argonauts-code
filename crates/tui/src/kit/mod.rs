@@ -16,6 +16,7 @@ pub mod frame;
 pub mod header;
 pub mod legend;
 pub mod level;
+pub mod logo;
 pub mod state;
 pub mod words;
 

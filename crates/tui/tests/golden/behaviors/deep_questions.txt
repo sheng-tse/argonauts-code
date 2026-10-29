@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  ◆ Summarize your agents' actions?
+    Each action gets one line from a model, embedded and mapped beside the others. It runs in the background and keeps
+    every summary, so later runs only add their new actions.
+
+    ❯ 1. Everything: 562 actions in 6 projects             about 2 minutes with your local model
+      2. This project only: 124 actions in council         under a minute
+      3. The last 7 days: 301 actions                      about a minute
+      4. Not now
+
+    Enter to choose · Esc to keep the label map
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   ↑  ↓  choose · enter answer · esc back

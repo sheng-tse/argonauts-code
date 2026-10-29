@@ -8,10 +8,15 @@
 //! right = ["plan-usage"]
 //!
 //! [plan-usage]
-//! show    = "all"                  # all, main, near-limit
+//! show    = "main-and-most-used"   # main-and-most-used, all, main, near-limit
 //! windows = "both"                 # both (for the CLI in use), fullest, 5h, 7d
 //! as      = "used"                 # used, left
 //! resets  = "near-limit"           # near-limit, always, never
+//! holding-up = true                # a CLI joins while a running task waits on it
+//! clis = [                         # unset until /bottom-line saves your order
+//!   { cli = "claude-code", windows = "both" },
+//!   { cli = "codex" },
+//! ]
 //!
 //! [narrow]
 //! drop = ["spend", "branch"]       # what goes first on a narrow terminal
@@ -103,21 +108,70 @@ impl LineForm {
     ];
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PlanUsageLine {
     pub show: PlanUsageShow,
     pub windows: PlanUsageWindows,
     pub r#as: PlanUsageAs,
     pub resets: PlanUsageResets,
+    /// A CLI the line doesn't show joins it, with its reset time, while a running task waits
+    /// on it and it's out, down or at 90% of a window.
+    #[serde(rename = "holding-up", skip_serializing_if = "is_on")]
+    pub holding_up: bool,
+    /// The CLIs whose plan usage the line shows, in this order, as `/bottom-line` saves them
+    /// once you change the line there. Unset, the line picks them by `show`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clis: Option<Vec<LineCli>>,
+}
+
+impl Default for PlanUsageLine {
+    fn default() -> Self {
+        Self {
+            show: PlanUsageShow::default(),
+            windows: PlanUsageWindows::default(),
+            r#as: PlanUsageAs::default(),
+            resets: PlanUsageResets::default(),
+            holding_up: true,
+            clis: None,
+        }
+    }
+}
+
+/// Holding up is on unless you turn it off, so a file or a status names it only then.
+fn is_on(holding_up: &bool) -> bool {
+    *holding_up
+}
+
+/// One CLI on the line, in the order `clis` lists them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LineCli {
+    /// The CLI's id, such as `claude-code`, or an endpoint's, such as `openrouter`.
+    pub cli: String,
+    /// Its own windows, in place of `windows`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows: Option<PlanUsageWindows>,
+}
+
+impl LineCli {
+    pub fn new(cli: &str) -> Self {
+        Self {
+            cli: cli.to_owned(),
+            windows: None,
+        }
+    }
 }
 
 /// Which CLIs the line shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PlanUsageShow {
-    /// Every CLI in the crew.
+    /// The one the main session is on, then the one used most over the last 30 days, worked
+    /// out once when the app starts so the line doesn't shift under you.
     #[default]
+    MainAndMostUsed,
+    /// Every CLI in the crew.
     All,
     /// Only the one the main session is on.
     Main,
@@ -254,6 +308,17 @@ impl BottomLineSettings {
         if !seen.iter().any(|part| part == MODE) {
             self.left.insert(0, MODE.to_owned());
         }
+        if let Some(clis) = &mut self.plan_usage.clis {
+            let mut named: Vec<String> = Vec::new();
+            clis.retain_mut(|line_cli| {
+                line_cli.cli = line_cli.cli.trim().to_owned();
+                let fresh = !line_cli.cli.is_empty() && !named.contains(&line_cli.cli);
+                if fresh {
+                    named.push(line_cli.cli.clone());
+                }
+                fresh
+            });
+        }
         self
     }
 
@@ -298,7 +363,7 @@ left  = ["mode", "branch"]
 right = ["plan-usage", "spend"]
 
 [plan-usage]
-show    = "all"
+show    = "main-and-most-used"
 windows = "both"
 as      = "used"
 resets  = "near-limit"
@@ -323,8 +388,10 @@ show = "near-limit"
 windows = "7d"
 as = "left"
 resets = "never"
+holding-up = false
 "#;
         let settings = BottomLineSettings::from_toml(every_value).unwrap();
+        assert!(!settings.plan_usage.holding_up);
         assert_eq!(settings.form, LineForm::Gauges);
         assert_eq!(settings.plan_usage.show, PlanUsageShow::NearLimit);
         assert_eq!(settings.plan_usage.windows, PlanUsageWindows::SevenDays);
@@ -362,10 +429,11 @@ left  = ["mode", "artifact"]    # "mode" always stays: it tells you whether Argo
 right = ["plan-usage"]          # more for either side: branch · spend · context · tokens · awake · stats · checks, or a mod of yours
 
 [plan-usage]                    # how that mod draws when it sits on this line
-show    = "all"                 # all: every CLI in the crew · main: only the one in use · near-limit
+show    = "main-and-most-used"  # the one in use and the most used · all: every CLI in the crew · main: only the one in use · near-limit
 windows = "both"                # both (for the one in use) · fullest · 5h · 7d
 as      = "used"                # used · left
 resets  = "near-limit"          # near-limit · always · never
+holding-up = true               # a CLI joins while a running task waits on it: out, down or 90% used
 
 [narrow]
 drop = ["spend", "branch"]      # what goes first; then bars step down to compact, then gauges
@@ -387,6 +455,14 @@ drop = ["spend", "branch"]      # what goes first; then bars step down to compac
                 windows: PlanUsageWindows::FiveHours,
                 r#as: PlanUsageAs::Left,
                 resets: PlanUsageResets::Always,
+                holding_up: false,
+                clis: Some(vec![
+                    LineCli {
+                        cli: "codex".into(),
+                        windows: Some(PlanUsageWindows::Both),
+                    },
+                    LineCli::new("claude-code"),
+                ]),
             },
             narrow: NarrowLine {
                 drop: vec!["my-mod".into()],
@@ -397,6 +473,44 @@ drop = ["spend", "branch"]      # what goes first; then bars step down to compac
         assert!(written.contains("as = \"left\""), "{written}");
         assert!(written.contains("windows = \"5h\""), "{written}");
         assert_eq!(BottomLineSettings::from_toml(&written).unwrap(), settings);
+    }
+
+    #[test]
+    fn the_clis_are_unset_until_saved_and_then_kept_in_order_once_each() {
+        let defaults = BottomLineSettings::default();
+        assert_eq!(defaults.plan_usage.clis, None);
+        assert!(
+            !defaults.to_toml().contains("clis"),
+            "{}",
+            defaults.to_toml()
+        );
+
+        let saved = BottomLineSettings::from_toml(
+            r#"
+[plan-usage]
+clis = [
+  { cli = "codex", windows = "7d" },
+  { cli = " claude-code " },
+  { cli = "codex" },
+  { cli = "" },
+]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            saved.plan_usage.clis,
+            Some(vec![
+                LineCli {
+                    cli: "codex".into(),
+                    windows: Some(PlanUsageWindows::SevenDays),
+                },
+                LineCli::new("claude-code"),
+            ])
+        );
+        let unknown = "[plan-usage]\nclis = [{ cli = \"codex\", shown = true }]";
+        assert!(BottomLineSettings::from_toml(unknown).is_err());
+        let none = BottomLineSettings::from_toml("[plan-usage]\nclis = []").unwrap();
+        assert_eq!(none.plan_usage.clis, Some(Vec::new()));
     }
 
     #[test]

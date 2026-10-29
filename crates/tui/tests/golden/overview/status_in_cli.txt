@@ -1,0 +1,7 @@
+ Version         Argonauts Code 0.1.1
+ Conversation    conversation-004 · started 7:12 PM
+ Folder          ~/github/tasks-cli · git
+ Main session    Opus 5.5 on Claude Code · xhigh effort · 212k of 1M context
+ In Claude Code  claude --resume 00000000-0000-4000-8000-000000000001 · o opens it
+ Workflow        Captain · ultracode off · workflow size medium
+ Mode            Supervised

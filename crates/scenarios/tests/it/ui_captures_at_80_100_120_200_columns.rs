@@ -5,7 +5,9 @@
 use std::ffi::OsString;
 use std::fs;
 
-use argonauts_scenarios::{ROWS, Scenario, WAIT, as_set_up, past_the_question_guard};
+use argonauts_scenarios::{
+    ROWS, Scenario, WAIT, as_set_up, on_the_default_workflow, past_the_question_guard,
+};
 use argonauts_testkit::{Key, Pty, PtyCommand, Screen, argonauts_bin};
 use regex::Regex;
 
@@ -47,14 +49,15 @@ fn launch(scenario: &Scenario, look: &Look, cols: u16) -> anyhow::Result<Pty> {
         fs::create_dir_all(dir)?;
     }
     // Merging is automatic by default, and the approval state needs the merge to wait. The
-    // request ends with the verdict, which a CLI that takes no tools keeps.
+    // request ends with the verdict, which a CLI that takes no tools keeps. The workflow is
+    // only the default, so the rules leave the small request to the main agent.
     fs::write(
         &config,
-        as_set_up(&format!(
+        as_set_up(&on_the_default_workflow(&format!(
             "[ui]\ntheme = \"{}\"\n\n[approvals.merge]\nmode = \"supervised\"\n\n\
              [main_session]\ntools = false\n",
             look.theme
-        )),
+        ))),
     )?;
     let mut envs: Vec<(String, OsString)> = scenario.envs();
     if look.no_color {
@@ -143,7 +146,7 @@ fn capture(scenario: &Scenario, look: &Look, cols: u16) -> anyhow::Result<()> {
 
     pty.wait_for(r"(?m)^◆ Merge", WAIT)?;
     // The merge question needs you, so it takes the keys as it shows.
-    let screen = pty.wait_for(r"(?m)^  Enter to \w+.* · Esc to carry on without me", WAIT)?;
+    let screen = pty.wait_for(r"(?m)^  Enter to \w+.* · Esc back to the list", WAIT)?;
     check_with(&screen, cols, "approval", false);
     shot(&pty, "approval")?;
 

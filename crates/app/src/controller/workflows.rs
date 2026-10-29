@@ -19,8 +19,9 @@ use argonauts_core::input::{SHARED_COMMANDS, SLASH_COMMANDS, slash_spec};
 use argonauts_core::log::NoteLevel;
 use argonauts_core::names::{ChoiceId, ModelRef, WorkflowId};
 use argonauts_core::settings::crew::CrewRole;
+use argonauts_core::workflow_files;
 use argonauts_core::workflow_page::WorkflowChange;
-use argonauts_runner::{DryRun, Library, Loaded, Origin, Row, dry_run};
+use argonauts_runner::{DryRun, Library, LibraryError, Loaded, Origin, Row, dry_run};
 use unicode_width::UnicodeWidthStr;
 
 use super::cli_commands::CliCommands;
@@ -91,7 +92,8 @@ pub(crate) fn commands(ctx: &Ctx) -> Vec<CliCommand> {
             Some(CliCommand {
                 name: listed.name,
                 aliases: Vec::new(),
-                args: "<request>".to_owned(),
+                // Bare, it switches to the workflow; with words it runs that one request.
+                args: "[request]".to_owned(),
                 help: listed.about,
                 kind: CommandKind::Workflow,
                 source: CommandSource::Custom {
@@ -161,7 +163,9 @@ pub(crate) fn try_out(
     kept: &[argonauts_core::required::RequiredStep],
 ) -> anyhow::Result<Vec<Effect>> {
     let loaded = match library(ctx).load(name) {
-        Ok(loaded) => loaded,
+        Ok(loaded) => Some(loaded),
+        // A built-in that runs by phases of its own, as Council talks in its phases.
+        Err(err) if runs_by_its_phases(name, &err) => None,
         Err(err) => {
             ctx.notice(NoteLevel::Warn, err.to_string());
             return Ok(Vec::new());
@@ -171,7 +175,8 @@ pub(crate) fn try_out(
     let required = argonauts_crew::script::required::for_request(&library(ctx), kept, request);
     // The plan rows, then dim notes on what follows them.
     let (lines, notes): (Vec<String>, Vec<String>) = match &loaded {
-        Loaded::Steps(file) => {
+        None => (phases_of(name), vec![checks_then_merge(ctx)]),
+        Some(Loaded::Steps(file)) => {
             // A step you require shows where it would run, marked with a star.
             let file = required.added_to(file);
             let dry = dry_run(&file, &|role| role_models(ctx, role));
@@ -191,7 +196,7 @@ pub(crate) fn try_out(
             }
             (plan(ctx, &file, &dry), notes)
         }
-        Loaded::Script(script) => {
+        Some(Loaded::Script(script)) => {
             let mut lines = vec![script.meta.description.clone()];
             lines.extend(script.meta.phases.iter().enumerate().map(|(index, phase)| {
                 format!("{} {}  {}", index + 1, phase.name, phase.detail)
@@ -355,10 +360,7 @@ fn edit_with(
             ));
             ctx.notice(NoteLevel::Info, text);
             argv.push(path.display().to_string());
-            ctx.send(AppEvent::RunInTerminal {
-                argv,
-                cwd: ctx.env.repo_root.clone(),
-            });
+            ctx.send(AppEvent::run_in_terminal(argv, ctx.env.repo_root.clone()));
         }
         None => {
             text.push_str(
@@ -471,11 +473,38 @@ pub(crate) async fn run(
     workflow: &str,
     request: String,
 ) -> anyhow::Result<Vec<Effect>> {
-    if let Err(err) = library(ctx).load(workflow) {
+    if let Err(err) = library(ctx).load(workflow)
+        && !runs_by_its_phases(workflow, &err)
+    {
         ctx.notice(NoteLevel::Warn, err.to_string());
         return Ok(Vec::new());
     }
     conversation::start_with_workflow(ctx, conversation, request, workflow).await
+}
+
+/// A built-in's own phases as a try lists them: what it is for, then each phase with who does
+/// what in it.
+fn phases_of(workflow: &str) -> Vec<String> {
+    let Some(written) = workflow_files::with_phases()
+        .find(|(name, _)| *name == workflow)
+        .and_then(|(name, text)| workflow_files::phases(text, name).ok().flatten())
+    else {
+        return Vec::new();
+    };
+    let mut lines = vec![written.description.clone()];
+    lines.extend(written.phases.iter().enumerate().map(|(index, phase)| {
+        format!("{} {}  {}", index + 1, phase.name, phase.detail)
+            .trim_end()
+            .to_owned()
+    }));
+    lines
+}
+
+/// A built-in with phases of its own and no steps, as Council talks in its phases, runs a
+/// request by them. A file of yours that only sets settings has nothing to run by itself.
+fn runs_by_its_phases(workflow: &str, err: &LibraryError) -> bool {
+    matches!(err, LibraryError::NoSteps { .. })
+        && workflow_files::with_phases().any(|(name, _)| name == workflow)
 }
 
 /// `s` in the workflow view of a run whose steps the runner ran: the script the orchestrator
@@ -655,7 +684,7 @@ fn plan(ctx: &Ctx, file: &argonauts_runner::WorkflowFile, dry: &DryRun) -> Vec<S
                 .enumerate()
                 .map(|(at, worker)| {
                     // A worker that names no model runs its CLI's, which the plan names.
-                    let name = ctx.names.worker(&ctx.names.running(worker));
+                    let name = ctx.names.worker(worker);
                     if at + 1 < count {
                         format!("{name},")
                     } else {
@@ -905,7 +934,7 @@ mod tests {
             yours,
             [(
                 "spec-first",
-                "<request>",
+                "[request]",
                 "One line that says what this workflow is for."
             )]
         );
@@ -970,6 +999,30 @@ mod tests {
             AppEvent::ChoiceClosed { outcome, .. } => outcome,
             _ => unreachable!("only a closed choice ends the wait"),
         }
+    }
+
+    /// Council runs by phases of its own, so a try of it lists them, and nothing runs.
+    #[tokio::test]
+    async fn trying_council_lists_its_own_phases() {
+        let mut driver = TestDriver::start().await;
+        let (planned, question) = tried(&mut driver, "council", "add due dates").await;
+        assert_eq!(planned.title, "council for \"add due dates\"");
+        assert_eq!(question.title, "Run it now?");
+        assert!(
+            planned.lines[0].starts_with("No single planner"),
+            "{:?}",
+            planned.lines
+        );
+        assert!(
+            planned
+                .lines
+                .iter()
+                .any(|line| line.starts_with("1 Understand")),
+            "{:?}",
+            planned.lines
+        );
+        assert!(driver.conductor.starts().is_empty(), "nothing runs");
+        driver.exit().await;
     }
 
     #[tokio::test]
@@ -1044,7 +1097,7 @@ mod tests {
     #[tokio::test]
     async fn run_it_on_a_dry_run_runs_that_one_request_with_the_workflow() {
         let mut driver = TestDriver::start().await;
-        wrote(&mut driver, new("mine", Some("council"))).await;
+        wrote(&mut driver, new("mine", Some("maker-checker"))).await;
         let (planned, question) = tried(&mut driver, "mine", "add due dates").await;
         assert!(
             planned
@@ -1081,7 +1134,7 @@ mod tests {
     #[tokio::test]
     async fn a_workflows_own_command_runs_one_request_with_it() {
         let mut driver = TestDriver::start().await;
-        wrote(&mut driver, new("mine", Some("council"))).await;
+        wrote(&mut driver, new("mine", Some("maker-checker"))).await;
         driver
             .send(UiCommand::Slash {
                 command: SlashCommand::WorkflowRequest {
@@ -1140,7 +1193,7 @@ mod tests {
     #[tokio::test]
     async fn two_workflows_run_at_once_each_with_its_own_row() {
         let mut driver = TestDriver::start().await;
-        wrote(&mut driver, new("mine", Some("council"))).await;
+        wrote(&mut driver, new("mine", Some("maker-checker"))).await;
         wrote(&mut driver, new("other", Some("maker-checker"))).await;
         driver.send(ask("mine", "add due dates")).await;
         driver

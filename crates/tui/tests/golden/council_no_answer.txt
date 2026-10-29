@@ -1,38 +1,38 @@
- Council: the view when it's done, on Challenge, where OpenCode's challenger failed                                   
-                                                                                                                      
+ Council: the view when it's done, on Challenge, where OpenCode's challenger failed
+
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Per key rate limiter                                                                                                 
- Council · Give each X-Api-Key its own token bucket with one shared bucket for requests…  11/12 agents · 6m00s · done 
- ✔ Merged onto main · 7c41d09 · 2 files +30 −4                                                                        
-                                                                                                                      
- ╭ Phases ──────────────┬ Challenge · 4 agents ─────────────────────────────────────────────────────────────────────╮ 
- │   ✔ Propose      4/4 │  ✔ challenge:p0  Haiku 5.5 · 54.7k tok · against p1 and p2 · 6 points                 16s │ 
- │ ❯ ✗ Challenge    3/4 │  ✔ challenge:p1  GPT 6 Luna · 17.4k tok · against p0 · 3 points                        7s │ 
- │   ✔ Decide       1/1 │  ✔ challenge:p2  Gemini 3.8 Flash · 44.1k tok · against p0 and p1 · 5 points          22s │ 
- │   ✔ Build        1/1 │  ✗ challenge:p3  Gemma4 E2b · 85.6k tok · ended without an answer: it tried to ed…  2m49s │ 
- │   ✔ Cross-review 1/1 │                                                                                           │ 
- │   ✔ Sign-off     1/1 │                                                                                           │ 
- ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓  select · enter opens its agents · esc back · s save                                                              
-                                                                                                                      
- The same view on Propose, and on Sign-off:                                                                           
-                                                                                                                      
- ╭ Phases ──────────────┬ Propose · 4 agents ───────────────────────────────────────────────────────────────────────╮ 
- │ ❯ ✔ Propose      4/4 │  ✔ propose:p0  Haiku 5.5 · 58.0k tok · proposal ready                                 22s │ 
- │   ✗ Challenge    3/4 │  ✔ propose:p1  GPT 6 Luna · 16.1k tok · proposal ready                                 6s │ 
- │   ✔ Decide       1/1 │  ✔ propose:p2  Gemini 3.8 Flash · 102.1k tok · proposal ready                       1m40s │ 
- │   ✔ Build        1/1 │  ✔ propose:p3  Gemma4 E2b · 7.1k tok · proposal ready                                 26s │ 
- │   ✔ Cross-review 1/1 │                                                                                           │ 
- │   ✔ Sign-off     1/1 │                                                                                           │ 
- ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
-                                                                                                                      
- ╭ Phases ──────────────┬ Sign-off · 1 agent ───────────────────────────────────────────────────────────────────────╮ 
- │   ✔ Propose      4/4 │  ✔ sign-off:rate-limit-per-key  GPT 6 Luna · 18.1k tok · read the task's change        7s │ 
- │   ✗ Challenge    3/4 │                                                                                           │ 
- │   ✔ Decide       1/1 │                                                                                           │ 
- │   ✔ Build        1/1 │                                                                                           │ 
- │   ✔ Cross-review 1/1 │                                                                                           │ 
- │ ❯ ✔ Sign-off     1/1 │                                                                                           │ 
- ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯ 
-                                                                                                                      
-  ✔ Per key rate limiter  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱  11/12 · 6m00s · ↓  538.7k tokens · merged onto main                   
+ Per key rate limiter
+ Council · Give each X-Api-Key its own token bucket with one shared bucket for…           11/12 agents · 6m00s · done
+ ✔ Merged onto main · 7c41d09 · 2 files +30 −4
+
+ ╭ Phases ──────────────┬ Challenge · 4 agents ─────────────────────────────────────────────────────────────────────╮
+ │   ✔ Propose      4/4 │  ✔ challenge:p0  ◧◨ Haiku 5.5                                           54.7k tok     16s │
+ │ ❯ × Challenge    3/4 │  ✔ challenge:p1  ◧◨ 6 Luna                                              17.4k tok      7s │
+ │   ✔ Decide       1/1 │  ✔ challenge:p2  ◧◨ 3.8 Flash                                           44.1k tok     22s │
+ │   ✔ Build        1/1 │  × challenge:p3  ◧◨ Gemma4 E2B                                          85.6k tok   2m49s │
+ │   ✔ Cross-review 1/1 │                                                                                           │
+ │   ✔ Sign-off     1/1 │                                                                                           │
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  select · enter opens its agents · esc back · s save
+
+ The same view on Propose, and on Sign-off:
+
+ ╭ Phases ──────────────┬ Propose · 4 agents ───────────────────────────────────────────────────────────────────────╮
+ │ ❯ ✔ Propose      4/4 │  ✔ propose:p0  ◧◨ Haiku 5.5                                             58.0k tok     22s │
+ │   × Challenge    3/4 │  ✔ propose:p1  ◧◨ 6 Luna                                                16.1k tok      6s │
+ │   ✔ Decide       1/1 │  ✔ propose:p2  ◧◨ 3.8 Flash                                            102.1k tok   1m40s │
+ │   ✔ Build        1/1 │  ✔ propose:p3  ◧◨ Gemma4 E2B                                             7.1k tok     26s │
+ │   ✔ Cross-review 1/1 │                                                                                           │
+ │   ✔ Sign-off     1/1 │                                                                                           │
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ╭ Phases ──────────────┬ Sign-off · 1 agent ───────────────────────────────────────────────────────────────────────╮
+ │   ✔ Propose      4/4 │  ✔ sign-off:rate-limit-per-key  ◧◨ 6 Luna                               18.1k tok      7s │
+ │   × Challenge    3/4 │                                                                                           │
+ │   ✔ Decide       1/1 │                                                                                           │
+ │   ✔ Build        1/1 │                                                                                           │
+ │   ✔ Cross-review 1/1 │                                                                                           │
+ │ ❯ ✔ Sign-off     1/1 │                                                                                           │
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯
+
+  ✔ Per key rate limiter  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱  11/12 · 6m00s · ↓  538.7k tokens · merged onto main

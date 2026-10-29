@@ -35,6 +35,7 @@ fn reviewed(
                     comments: Vec::new(),
                     tamper_suspected: false,
                 },
+                picked_by: None,
             }),
         )
     }
@@ -155,6 +156,7 @@ fn a_run() -> Vec<RunEvent> {
                         reasons: Vec::new(),
                         required_changes: Vec::new(),
                     },
+                    picked_by: None,
                 }),
             )
         },
@@ -235,6 +237,7 @@ fn stats_sum_each_cli_model_and_role_with_the_conversation_turns() {
         let turn_took = TurnNote {
             conversation,
             took: 20,
+            billing: None,
         };
         usage.turn_ended(Path::new("/repo"), &main, &turn, turn_took, at);
     }
@@ -635,9 +638,23 @@ fn records_that_name_no_model_are_filed_under_the_clis_default() {
         }],
         ..CrewStats::default()
     };
+    let named = WorkRow {
+        model: Some("claude-opus-5-5".into()),
+        ..stats.work[0].clone()
+    };
+    let elsewhere = WorkRow {
+        agent: "opencode".into(),
+        ..stats.work[0].clone()
+    };
+    stats.work.extend([named, elsewhere]);
     let defaults = [("claude-code".to_owned(), "claude-haiku-5-5".to_owned())].into();
     name_unnamed_models(&mut stats, &defaults);
-    assert_eq!(stats.work[0].model.as_deref(), Some("claude-haiku-5-5"));
+    let models: Vec<Option<&str>> = stats.work.iter().map(|row| row.model.as_deref()).collect();
+    // A record's own model stands, and a CLI whose default nothing says keeps none.
+    assert_eq!(
+        models,
+        [Some("claude-haiku-5-5"), Some("claude-opus-5-5"), None]
+    );
 }
 
 /// A session of `worker` started under `key`, on `model` when its start names one.

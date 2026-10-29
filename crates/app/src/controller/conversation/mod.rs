@@ -41,6 +41,9 @@ mod excerpt;
 mod fork;
 mod goal;
 mod handover;
+pub(crate) mod in_cli;
+#[cfg(test)]
+mod in_cli_tests;
 mod keep;
 mod lifecycle;
 mod live;
@@ -67,6 +70,9 @@ mod run_worktree;
 mod shared_tests;
 mod side;
 mod standing;
+pub(crate) mod starting;
+#[cfg(test)]
+mod starting_tests;
 mod talk;
 #[cfg(test)]
 mod tests;
@@ -150,8 +156,6 @@ pub(crate) struct ConversationState {
     queued: VecDeque<(Queued, u32)>,
     /// Open `StartWork` questions.
     offers: HashMap<ChoiceId, Offer>,
-    /// Open "Keep this for later requests?" questions, each with what it would keep.
-    keeps: HashMap<ChoiceId, keep::Kept>,
     /// `!` commands run since the main agent's last turn, oldest first. Your next message takes
     /// them: to the main agent, or to the run going.
     ran: Vec<ShellRan>,
@@ -201,6 +205,11 @@ pub(crate) struct ConversationState {
     pictures: Vec<Picture>,
     /// The files Codex's edits change, read around each edit for its patch.
     edits: edits::Edits,
+    /// The request the main agent took alone while a crew workflow was only the default, which
+    /// a bare `/crew` hands to the crew. Your next request replaces it.
+    taken_alone: Option<String>,
+    /// The main session's start as last worked out for the Context tab.
+    start: starting::KeptStart,
 }
 
 struct Turn {
@@ -228,6 +237,8 @@ struct Turn {
     live: live::Live,
     /// The CLI's last count of the session's context, which the record keeps as the turn ends.
     counted: Option<Box<ContextUsage>>,
+    /// The turn starts its session afresh and its start isn't kept yet.
+    fresh_start: Option<starting::Fresh>,
     /// Its agent's CLI turned out signed out, so whoever carries it on says so.
     signed_out: Option<argonauts_core::app::SignedOut>,
 }
@@ -300,7 +311,6 @@ impl ConversationState {
             stopping: Vec::new(),
             queued: VecDeque::new(),
             offers: HashMap::new(),
-            keeps: HashMap::new(),
             ran: Vec::new(),
             last_shell: 0,
             shell_cutoff: None,
@@ -324,6 +334,8 @@ impl ConversationState {
             mcp_servers: None,
             pictures: Vec::new(),
             edits: edits::Edits::default(),
+            taken_alone: None,
+            start: starting::KeptStart::default(),
         }
     }
 
@@ -340,7 +352,8 @@ impl ConversationState {
             .iter()
             .filter_map(|turn| Some(Exchange::new(turn.request.clone(), turn.reply.as_ref()?)))
             .collect();
-        let context = past::recorded_row(&store, past);
+        let context =
+            past::recorded_row(&store, past).map(|row| starting::as_its_cli_says(ctx, row));
         Self {
             id,
             store,
@@ -350,7 +363,6 @@ impl ConversationState {
             stopping: Vec::new(),
             queued: VecDeque::new(),
             offers: HashMap::new(),
-            keeps: HashMap::new(),
             ran: Vec::new(),
             last_shell: 0,
             shell_cutoff: None,
@@ -374,6 +386,8 @@ impl ConversationState {
             mcp_servers: None,
             pictures: Vec::new(),
             edits: edits::Edits::default(),
+            taken_alone: None,
+            start: starting::KeptStart::default(),
         }
     }
 
@@ -519,11 +533,15 @@ impl ConversationState {
     /// The CLI its turns go to, such as `claude-code`: the agent's whose session it carries on,
     /// or the main agent's.
     pub(super) fn cli<'a>(&'a self, ctx: &'a Ctx) -> &'a str {
+        self.next_worker(ctx).agent.as_str()
+    }
+
+    /// The worker its next turn runs: the agent's whose session it carries on, or the main
+    /// agent.
+    pub(crate) fn next_worker<'a>(&'a self, ctx: &'a Ctx) -> &'a ModelRef {
         self.place
             .as_ref()
-            .map_or(ctx.settings().crew.main.agent.as_str(), |place| {
-                place.worker.agent.as_str()
-            })
+            .map_or(&ctx.settings().crew.main, |place| &place.worker)
     }
 
     /// Typed while a turn runs, to go out once it ends. A message typed again as it goes out
@@ -636,6 +654,7 @@ pub(crate) async fn resume(
     let who_takes_it = written_elsewhere
         .as_ref()
         .map(|writer| who_takes_it(ctx, writer, taken_over.is_some()));
+    let left = in_cli::left_off(&resumed.store);
     conversation.succeed(ctx, resumed);
     ctx.send(AppEvent::ConversationResumed {
         conversation: id,
@@ -645,6 +664,7 @@ pub(crate) async fn resume(
         artifacts: past::artifacts(&ctx.env.conversation_dir(), &past.summary.conversation),
     });
     redraw::conversation(ctx, &conversation.store, &past.runs);
+    in_cli::since_you_left(ctx, conversation, left).await;
     for text in where_it_works.into_iter().chain(who_takes_it) {
         ctx.notice(NoteLevel::Info, text);
     }
@@ -1266,6 +1286,12 @@ pub(crate) fn count_then_print(ctx: &Ctx, conversation: &mut ConversationState) 
     true
 }
 
+/// A fresh start of the main session is being kept, so the one the screen has may be out of
+/// date.
+pub(crate) fn start_kept_fresh(conversation: &ConversationState) -> bool {
+    conversation.start.kept_fresh()
+}
+
 /// Whether the rows `/context print` waits to print should print now: the count is in, the
 /// turn is over, or the session took too long to answer. True once.
 pub(crate) fn print_is_due(conversation: &mut ConversationState) -> bool {
@@ -1301,6 +1327,7 @@ pub(crate) async fn new_request(
     conversation: &mut ConversationState,
     text: String,
 ) -> anyhow::Result<Vec<Effect>> {
+    conversation.taken_alone = None;
     let code_reads_the_words = conversation.turn.is_none()
         && conversation.place.is_none()
         && !conversation.prefs.plan_first
@@ -1543,11 +1570,9 @@ fn takes_tools(ctx: &Ctx, conversation: &ConversationState) -> bool {
     if !ctx.settings().main_session.tools {
         return false;
     }
-    let worker = conversation
-        .place
-        .as_ref()
-        .map_or(&ctx.settings().crew.main, |place| &place.worker);
-    ctx.services.workers.takes_session_tools(worker)
+    ctx.services
+        .workers
+        .takes_session_tools(conversation.next_worker(ctx))
 }
 
 /// The main session is the CLI you chose: your message goes to it as you typed
@@ -1718,12 +1743,10 @@ pub(crate) fn reading_cli_command(
 }
 
 pub(crate) fn owns_choice(conversation: &ConversationState, id: &ChoiceId) -> bool {
-    offer::owns_choice(conversation, id)
-        || keep::owns(conversation, id)
-        || talk::owns(conversation, id)
+    offer::owns_choice(conversation, id) || talk::owns(conversation, id)
 }
 
-/// The `StartWork` choice, or where to keep what a request said "from now on".
+/// The `StartWork` choice, and the main agent's own questions.
 pub(crate) async fn answer_choice(
     ctx: &mut Ctx,
     conversation: &mut ConversationState,
@@ -1731,9 +1754,6 @@ pub(crate) async fn answer_choice(
     action: AnswerAction,
     text: Option<String>,
 ) -> anyhow::Result<Vec<Effect>> {
-    if keep::owns(conversation, &id) {
-        return keep::answer(ctx, conversation, id, action);
-    }
     if talk::owns(conversation, &id) {
         return talk::answer(ctx, conversation, id, action);
     }
@@ -1745,10 +1765,6 @@ pub(crate) fn set_aside(
     conversation: &mut ConversationState,
     id: ChoiceId,
 ) -> anyhow::Result<Vec<Effect>> {
-    if keep::owns(conversation, &id) {
-        keep::set_aside(ctx, conversation, id);
-        return Ok(Vec::new());
-    }
     if talk::owns(conversation, &id) {
         return Ok(talk::set_aside(ctx, conversation, id));
     }
@@ -1764,7 +1780,6 @@ pub(crate) fn autopilot_came_on(
     conversation: &mut ConversationState,
 ) -> anyhow::Result<Vec<Effect>> {
     direct::set_approval(conversation, ApprovalMode::Autopilot);
-    keep::settle_on_autopilot(ctx, conversation);
     let mut effects = talk::settle_on_autopilot(ctx, conversation);
     effects.extend(direct::settle_on_autopilot(ctx, conversation)?);
     effects.extend(offer::settle_on_autopilot(ctx, conversation));
@@ -1844,6 +1859,24 @@ pub(crate) async fn start_forced(
 /// While the turn's CLI runs subagents or workflows of its own, only the main agent's turn
 /// stops, as on Claude Code's screen: they go on, and the turn stays for them
 /// and for what you say next.
+/// A bare `/crew`, as the line under a change the main agent took alone offers it: that request
+/// goes to the crew, and the main agent's work on it stops. With none taken alone, it says what
+/// `/crew` takes.
+pub(crate) async fn crew_taken_alone(
+    ctx: &mut Ctx,
+    conversation: &mut ConversationState,
+) -> anyhow::Result<Vec<Effect>> {
+    let request = conversation.taken_alone.take().unwrap_or_default();
+    let working_on_it = conversation
+        .turn
+        .as_ref()
+        .is_some_and(|turn| !request.is_empty() && turn.text == request);
+    if working_on_it && let Some(id) = stop_turn(ctx, conversation) {
+        settle_mode(ctx, &id);
+    }
+    start_forced(ctx, conversation, RunMode::Crew, request).await
+}
+
 pub(crate) fn cancel_turn(
     ctx: &mut Ctx,
     conversation: &mut ConversationState,
@@ -2150,7 +2183,7 @@ fn send_queued(conversation: &mut ConversationState) -> Vec<Effect> {
                     command: SlashCommand::Captain { task },
                 },
                 Queued::Crew(task) => UiCommand::Slash {
-                    command: SlashCommand::Crew { task },
+                    command: SlashCommand::Crew { task: Some(task) },
                 },
                 Queued::Subagent { name, text } => UiCommand::MessageSubagent { name, text },
                 Queued::Workflow(task) => UiCommand::Slash {

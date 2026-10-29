@@ -1,0 +1,29 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                     Today  Week  Month  All
+  All CLIs   ◧◨ Claude Code   ◧◨ Codex   ◧◨ agy                                                      read live 8:12 PM · ctrl+r reads again
+
+ This conversation · $0.42
+
+ ╭───────────────────────────────────────────╮ ╭───────────────────────────────────────────╮ ╭───────────────────────────────────────────╮
+ │ ◧◨ Claude Code               Max · in use │ │ ◧◨ Codex                             Plus │ │ ◧◨ agy                                Pro │
+ │                                           │ │                                           │ │                                           │
+ │ session     ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ 14%   │ │ 5-hour      ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ 0%    │ │ Gemini 5h   ▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ 2%    │
+ │             resets in 2h 28m              │ │             resets in 4h 3m · Fri 12:15am │ │             resets in 1h 28m              │
+ │             today 10:40pm                 │ │                                           │ │             today 9:40pm                  │
+ │                                           │ │ weekly      ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ 1%    │ │                                           │
+ │ week        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ 21%   │ │             resets in 5d 15h              │ │ Gemini week ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ 1%    │
+ │             resets in 5d 2h               │ │             Wed Oct 14, 11:22am           │ │             resets in 6d 3h               │
+ │             Tue Oct 13, 10:00pm           │ │                                           │ │             Wed Oct 14, 10:52pm           │
+ │                                           │ │                                           │ │                                           │
+ │ Fable week  ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ 0%    │ │                                           │ │ Claude, GPT ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ 0%    │
+ │             resets in 5d 2h               │ │                                           │ │             5-hour · resets in 1h 28m     │
+ │             Tue Oct 13, 10:00pm           │ │                                           │ │             today 9:40pm                  │
+ │                                           │ │                                           │ │                                           │
+ │ extra       ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ 0%    │ │                                           │ │                                           │
+ │             $0 of $100 · resets in 23d    │ │                                           │ │                                           │
+ │             Sun Nov 1                     │ │                                           │ │                                           │
+ ╰───────────────────────────────────────────╯ ╰───────────────────────────────────────────╯ ╰───────────────────────────────────────────╯
+
+ Most of your usage · last 24h · 95% long context · 90% subagent-heavy · enter for more
+
+ r to cycle dates · tab · ←  →  tabs · ↓  CLIs · ctrl+r reads again · esc closes

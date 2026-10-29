@@ -3,7 +3,7 @@ use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::marks::{self, Join};
-use super::width::{ambiguous_width, spans_width, str_width};
+use super::width::{spans_width, str_width};
 
 /// Wraps `spans` to `width` columns. The first row starts with `first` and later rows with
 /// `rest`, so wrapped text lines up under the text instead of under a bullet. Leading spaces of
@@ -207,73 +207,7 @@ fn styled_row(cells: &[(&str, Style, usize)]) -> Vec<Span<'static>> {
     row
 }
 
-/// Cuts every line wider than `width` down to it, as a last guard so no renderer ever hands the
-/// terminal a row that would wrap on its own.
-pub fn fit_lines(lines: &mut [Line<'static>], width: usize) {
-    for line in lines.iter_mut() {
-        if spans_width(&line.spans) > width {
-            *line = truncate_line(line, width);
-        }
-    }
-}
-
-/// Cuts `spans` to at most `width` columns, ending with `…` when anything was cut. Where
-/// ambiguous glyphs take two cells, `…` is one of them, so the cut shows `...` instead, or
-/// nothing on a row too narrow for it.
-pub fn truncate_spans(spans: &[Span<'_>], width: usize) -> Vec<Span<'static>> {
-    if spans_width(spans) <= width {
-        return spans.iter().map(to_static_span).collect();
-    }
-    if width == 0 {
-        return Vec::new();
-    }
-    let mark = cut_mark(width);
-    let limit = width - str_width(mark);
-    let mut out: Vec<Span<'static>> = Vec::new();
-    let mut used = 0;
-    let mut last_style = Style::default();
-    'spans: for span in spans {
-        last_style = span.style;
-        let mut kept = String::new();
-        for grapheme in span.content.graphemes(true) {
-            let w = str_width(grapheme);
-            if used + w > limit {
-                if !kept.is_empty() {
-                    out.push(Span::styled(kept, span.style));
-                }
-                break 'spans;
-            }
-            used += w;
-            kept.push_str(grapheme);
-        }
-        if !kept.is_empty() {
-            out.push(Span::styled(kept, span.style));
-        }
-    }
-    if !mark.is_empty() {
-        out.push(Span::styled(mark, last_style));
-    }
-    out
-}
-
-/// What ends a row cut to `width` columns.
-fn cut_mark(width: usize) -> &'static str {
-    cut_mark_for(width, ambiguous_width())
-}
-
-fn cut_mark_for(width: usize, ambiguous: u8) -> &'static str {
-    match ambiguous {
-        2 if width > 3 => "...",
-        2 => "",
-        _ => "…",
-    }
-}
-
-pub fn truncate_line(line: &Line<'_>, width: usize) -> Line<'static> {
-    Line::from(truncate_spans(&line.spans, width)).style(line.style)
-}
-
-fn to_static_span(span: &Span<'_>) -> Span<'static> {
+pub(super) fn to_static_span(span: &Span<'_>) -> Span<'static> {
     Span::styled(span.content.to_string(), span.style)
 }
 
@@ -651,13 +585,6 @@ mod tests {
     }
 
     #[test]
-    fn fit_lines_cuts_only_what_is_too_wide() {
-        let mut lines = vec![Line::from("short"), Line::from("much too long")];
-        fit_lines(&mut lines, 6);
-        assert_eq!(plain_text(&lines), "short\nmuch …");
-    }
-
-    #[test]
     fn the_one_row_shortcut_matches_the_full_wrap() {
         let bold = Style::new().bold();
         let cases: Vec<Vec<Span<'static>>> = vec![
@@ -693,25 +620,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn truncation_adds_an_ellipsis() {
-        let spans = [Span::raw("hello "), Span::raw("world")];
-        let cut = truncate_spans(&spans, 8);
-        assert_eq!(Line::from(cut).to_string(), "hello w…");
-        assert_eq!(
-            Line::from(truncate_spans(&spans, 11)).to_string(),
-            "hello world"
-        );
-        assert!(truncate_spans(&spans, 0).is_empty());
-    }
-
-    #[test]
-    fn two_cell_ambiguous_glyphs_cut_with_dots() {
-        assert_eq!(cut_mark_for(40, 1), "…");
-        assert_eq!(cut_mark_for(40, 2), "...");
-        assert_eq!(cut_mark_for(3, 2), "");
-        assert_eq!(crate::text::width_with("...", 2), 3);
     }
 }

@@ -14,7 +14,7 @@ use crate::events::RunEvent;
 use crate::events::agent_status::RunSpend;
 use crate::events::approval::AnswerAction;
 use crate::events::run::{CaptainOrCrewDecision, CheckedInstruction, RunMode, StartsFrom};
-use crate::events::session::QueuedMessage;
+use crate::events::session::{Billing, QueuedMessage};
 use crate::events::task::TaskState;
 use crate::future::BoxFuture;
 use crate::input::MentionTarget;
@@ -301,8 +301,8 @@ pub struct UsageSummary {
     /// tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub argonauts: Option<crate::overview::ThroughArgonauts>,
-    /// Every model that has run here with its tokens in all, as the Overview has them, so a
-    /// model draws in the same color on every tab.
+    /// Every model in the order every tab colours them, settled once a day, as the Overview
+    /// has them, so a model draws in the same color on every tab.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub all_time_models: Vec<crate::overview::ModelTokens>,
 }
@@ -382,6 +382,10 @@ pub struct UsageShare {
     /// It ran on a server on this machine, which charges nothing and no plan covers.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub local: bool,
+    /// Who paid for it, as its sessions recorded when they started; `None` for spend recorded
+    /// before they said, which your settings mark as they stand now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<Billing>,
     /// What it spent on each day of this week that it spent anything, oldest first, whatever
     /// the period.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -592,6 +596,20 @@ pub trait ConductorApi: Send + Sync {
         Box::pin(async {
             Err(ApiError::NotNow(
                 "Argonauts Code can't change a goal".to_owned(),
+            ))
+        })
+    }
+    /// Writes to the council that sits in the run, to one of its seats alone, or has a seat
+    /// sit out or come back.
+    fn council(
+        &self,
+        run: &RunId,
+        action: crate::events::council::CouncilAction,
+    ) -> BoxFuture<'_, Result<(), ApiError>> {
+        let _ = (run, action);
+        Box::pin(async {
+            Err(ApiError::NotNow(
+                "Argonauts Code has no council to write to".to_owned(),
             ))
         })
     }

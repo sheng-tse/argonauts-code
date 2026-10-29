@@ -10,8 +10,7 @@ use argonauts_core::input::SlashCommand;
 use argonauts_core::model_picker::{EffortSlider, ModelsLevel};
 use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::registry::ModelRegistry as _;
-use argonauts_core::settings::ui::NarratorMode;
-use argonauts_core::settings::{SettingScope, Settings};
+use argonauts_core::settings::Settings;
 use argonauts_registry::models::discovery::{claude_code_entries, parse_model_pages};
 use argonauts_registry::models::{FileRegistry, ModelCache};
 use argonauts_testkit::{FakeDirectory, FakeRunner};
@@ -373,35 +372,6 @@ async fn effort_offers_the_levels_the_chosen_model_reports() {
     assert_eq!(levels, ["low", "medium", "high", "xhigh"]);
 }
 
-#[tokio::test]
-async fn the_scope_question_names_a_session_override_once() {
-    let mut fixture = Fixture::new(false, |_| {});
-    narrator_mode(&mut fixture.ctx, &mut fixture.state, NarratorMode::Live)
-        .await
-        .unwrap();
-    let id = fixture.ctx.next_choice_id();
-    let question = scope::scope_question(
-        &fixture.ctx,
-        id,
-        "ui.narrator",
-        "\"quiet\"",
-        SettingScope::Global,
-    );
-    let said = |text: &str| text.contains("override sets this until you quit");
-    assert_eq!(
-        question.body.iter().filter(|line| said(line)).count(),
-        1,
-        "{question:#?}"
-    );
-    assert!(
-        question
-            .options
-            .iter()
-            .all(|option| option.detail.as_deref().is_none_or(|detail| !said(detail))),
-        "{question:#?}"
-    );
-}
-
 /// Claude Code's own picker on 2026-10-01: Default with what it runs, the
 /// aliases on their own, then the models newest first with the catalog's words and levels.
 #[tokio::test]
@@ -697,6 +667,7 @@ fn conversation_turn<T>(
     let worker = fixture.ctx.settings().crew.main.clone();
     let launch = Launch {
         conversation: &conversation,
+        title: "",
         turn: &turn,
         step: &step,
         text: "what does main do?",

@@ -652,6 +652,7 @@ fn record_opened(
         evidence_sha256: sha256.to_owned(),
         mode,
         decide_with: configured.decide_with,
+        when_declined: host.settings().approvals.when_declined,
         options,
         free_text: request.free_text,
         // Only auto can settle it without you, and only for a kind your rules decide; the
@@ -788,11 +789,12 @@ fn spawn_policy(host: &Host, point: DecisionPoint, evidence: EvidencePacket) {
 }
 
 /// Your answer. Refused with the reason when the action wasn't offered, the evidence hash
-/// is different, or it was already decided. Esc is an answer too: [`decline`] takes an option in
-/// your place, so nothing waits forever. After it's recorded, `policy.user_decided` is called so
+/// is different, or it was already decided. Carry on without me is an answer too: [`decline`]
+/// takes an option in your place. After it's recorded, `policy.user_decided` is called so
 /// auto preview records can be scored.
 pub fn answer(host: &Host, answer: ApprovalAnswer) -> Result<(), String> {
-    // Esc: carry on without me. No question offers it, and it isn't bound to the evidence.
+    // Carry on without me, the last row of every question that waits on you: the engine takes
+    // an option in your place, so it isn't bound to the evidence.
     if answer.action == AnswerAction::CarryOn {
         return decline::left(host, &answer.id);
     }

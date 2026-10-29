@@ -8,6 +8,12 @@ beside it as <channel>.json.minisig. Only the maintainer's key signs it, on thei
         --previous-url https://argonauts-code.github.io/updates/v1/stable.json --out stable.json
     minisign -S -s <your key> -m stable.json -t "argonauts-code stable 0.1.1 serial 8"
 
+The model catalog `/model` reads once a day is served beside it as models.toml and wins over the copy an install
+shipped with, so each draft puts the release's own catalog (crates/registry/catalog/models.toml) beside the manifest,
+to sign with the same key:
+
+    minisign -S -s <your key> -m models.toml -t "argonauts-code models 0.1.1"
+
 DIR holds the release's files as dist made them: dist-manifest.json, each archive and its .sha256. The draft keeps
 the previous manifest's yanked list and min_version, and its serial is one more, since the self-updater refuses a
 manifest whose serial is lower than one it has seen. The rollout widens with the clock (10% for a day, then 50%,
@@ -29,6 +35,7 @@ CHANNELS = ("stable", "beta")
 DEFAULT_ROLLOUT = {"stable": [10, 50, 100], "beta": [100]}
 # The first public release: no install is older, so as a min_version it holds nobody back.
 FIRST_RELEASE = "0.1.0"
+CATALOG = pathlib.Path(__file__).resolve().parents[2] / "crates" / "registry" / "catalog" / "models.toml"
 
 
 class DraftError(Exception):
@@ -212,12 +219,15 @@ def main(argv=None, now=None):
     named = out.parent / "releases" / f"{manifest['version']}.json"
     named.parent.mkdir(parents=True, exist_ok=True)
     named.write_text(body)
+    catalog = out.parent / CATALOG.name
+    catalog.write_bytes(CATALOG.read_bytes())
     comment = f"argonauts-code {manifest['channel']} {manifest['version']} serial {manifest['serial']}"
     print(
         f"Drafted {out} and {named}: {manifest['version']} on {manifest['channel']}, serial "
-        f"{manifest['serial']}. Sign each with\n"
+        f"{manifest['serial']}, with the model catalog it ships as {catalog}. Sign each with\n"
         f"  minisign -S -s <your key> -m {out} -t \"{comment}\"\n"
         f"  minisign -S -s <your key> -m {named} -t \"{comment}\"\n"
+        f"  minisign -S -s <your key> -m {catalog} -t \"argonauts-code models {manifest['version']}\"\n"
         f"then publish them and their .minisig files under updates/v1/ on argonauts-code.github.io, "
         f"{named.name} in releases/.",
         file=sys.stderr,

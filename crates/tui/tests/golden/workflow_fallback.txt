@@ -1,11 +1,11 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Add due dates
- orchestrator workflow · add --due to the todo CLI, each part reviewed on another CLI              1/3 agents · 2m26s 
+ orchestrator workflow · add --due to the todo CLI, each part reviewed on another CLI              1/3 agents · 2m26s
  › Opus 5.5 on Claude Code is overloaded · fell back to Sonnet 5.5 on Claude Code, as same_cli asks
 
  ╭ Phases ──────────┬ Review · 1 agent ─────────────────────────────────────────────────────────────────────────────╮
- │   1 Build    1/2 │  ↷ review:due-tests  Sonnet 5.5 · 9.3k tok · for Opus 5.5 · overloaded                    38s │
- │ ❯ 2 Review   0/1 │                                                                                               │
+ │   ⣾ Build    1/2 │  ≈ review:due-tests  ◧◨ Sonnet 5.5                                           9.3k tok     38s │
+ │ ❯ ⣾ Review   0/1 │                                                                                               │
  │   3 Sign-off     │                                                                                               │
  │   4 Merge        │                                                                                               │
  ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯

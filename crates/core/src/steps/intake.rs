@@ -122,7 +122,7 @@ pub enum InstructionKind {
 pub enum InstructionScope {
     #[default]
     ThisRequest,
-    /// The request says to keep doing it, so a question asks where to save it.
+    /// The request says to keep doing it, so it saves where your changes go.
     FromNowOn,
 }
 

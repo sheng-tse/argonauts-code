@@ -86,6 +86,13 @@ class Draft(unittest.TestCase):
         self.assertEqual(json.loads(named.read_text()), manifest)
         self.assertIn(str(named), said)
 
+    def test_the_model_catalog_the_release_ships_goes_beside_its_manifest_to_sign(self):
+        code, _, said = self.run_draft()
+        self.assertEqual(code, 0, said)
+        catalog = self.folder / "models.toml"
+        self.assertEqual(catalog.read_bytes(), draft_manifest.CATALOG.read_bytes())
+        self.assertIn(f'-m {catalog} -t "argonauts-code models 0.1.1"', said)
+
     def test_a_stable_release_goes_on_beta_only_when_beta_offers_older(self):
         older = self.write_previous(channel="beta", version="0.1.1-beta.2")
         code, manifest, said = self.run_draft("--previous", older, "--if-newer", channel="beta")

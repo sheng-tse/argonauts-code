@@ -394,7 +394,7 @@ fn facts(point: &DecisionPoint, facts: &EvidenceFacts) -> Vec<String> {
     add("checks passed", facts.checks_passed.map(yes_no));
     add("reviews approved", facts.reviews_approved.map(yes_no));
     add(
-        "each task approved by a reviewer of another provider than its worker",
+        "each task approved by a reviewer of another provider than its worker, or one you chose",
         facts.reviewed_by_other_provider.map(yes_no),
     );
     add(

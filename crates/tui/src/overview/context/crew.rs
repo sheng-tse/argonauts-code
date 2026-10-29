@@ -18,9 +18,11 @@ use super::block::{self, Block, INDENT, Part};
 use super::lists::{branch, folded, title};
 use super::words::{cc_style, count, time_of};
 use crate::format::context_tokens;
-use crate::kit::{Drawn, Kit};
+use crate::kit::legend::{BEFORE_NUMBERS, BETWEEN_WORDS};
+use crate::kit::logo::{ModelLabel, NoPicture};
+use crate::kit::{Drawn, Kit, ljust, rjust};
 use crate::state::AppState;
-use crate::text::{sanitize_line, str_width, truncate_spans};
+use crate::text::{sanitize_line, spans_width, str_width, truncate_spans};
 
 /// What the screen knows of the crew's sessions beyond their rows: how much Argonauts Code
 /// sent each.
@@ -272,28 +274,38 @@ impl Crew<'_> {
                     .collect()
             })
             .collect();
-        let models: Vec<String> = self
+        // Where logos draw as pictures, each model has its logo before it.
+        let (models, logos): (Vec<String>, Vec<Vec<Span<'static>>>) = self
             .agents
             .iter()
             .map(|agent| {
-                on_cli(
-                    names,
-                    &agent.newest().unwrap_or_else(|| agent.last()).worker,
-                )
+                let worker = &agent.newest().unwrap_or_else(|| agent.last()).worker;
+                let label = ModelLabel::of(names, worker, kit.theme, NoPicture::Nothing);
+                let logo = label.logo.clone();
+                let model = label
+                    .beside_picture()
+                    .unwrap_or_else(|| on_cli(names, worker));
+                (model, logo)
             })
-            .collect();
+            .unzip();
+        let logo_cells = logos
+            .iter()
+            .map(|logo| spans_width(logo))
+            .max()
+            .unwrap_or(0);
         let label_cells = labels
             .iter()
             .map(|label| str_width(label))
             .max()
             .unwrap_or(0)
-            + 2;
+            + BETWEEN_WORDS;
         let mut model_cells = models
             .iter()
             .map(|model| str_width(model))
             .max()
             .unwrap_or(0)
-            + 2;
+            + BEFORE_NUMBERS
+            + logo_cells;
         // What the window holds and when it ended, or that it couldn't start.
         let tails: Vec<(Option<String>, String)> = self
             .agents
@@ -318,28 +330,31 @@ impl Crew<'_> {
             .map(|(used, said)| used.as_deref().map_or(0, str_width) + str_width(said))
             .max()
             .unwrap_or(0);
+        // What each window holds stands right-aligned, as a column of numbers does.
+        let used_cells = tails
+            .iter()
+            .filter_map(|(used, _)| used.as_deref().map(str_width))
+            .max()
+            .unwrap_or(0);
         if INDENT + BRANCH + label_cells + model_cells + widest_tail > width {
             model_cells = 0;
         }
-        let pad = |text: &str, cells: usize| {
-            format!(
-                "{text}{}",
-                " ".repeat(cells.saturating_sub(str_width(text)))
-            )
-        };
         (0..self.agents.len())
             .map(|at| {
                 let mut line = vec![
                     Span::raw(" ".repeat(INDENT)),
                     kit.dim(branch(at, self.agents.len())),
-                    Span::raw(pad(&labels[at], label_cells)),
+                    Span::raw(ljust(&labels[at], label_cells)),
                 ];
                 if model_cells > 0 {
-                    line.push(kit.dim(pad(&models[at], model_cells)));
+                    let logo = &logos[at];
+                    line.extend(logo.iter().cloned());
+                    let room = model_cells.saturating_sub(spans_width(logo));
+                    line.push(kit.dim(ljust(&models[at], room)));
                 }
                 let (used, said) = &tails[at];
                 if let Some(used) = used {
-                    line.push(Span::raw(used.clone()));
+                    line.push(Span::raw(rjust(used, used_cells)));
                 }
                 line.push(kit.dim(said.clone()));
                 line
@@ -418,7 +433,9 @@ pub(super) fn agent_block(
         .sum();
     let filled = Filled {
         row,
-        model: on_cli(names, &row.worker),
+        model: ModelLabel::of(names, &row.worker, kit.theme, NoPicture::Nothing)
+            .beside_picture()
+            .unwrap_or_else(|| on_cli(names, &row.worker)),
         sent: (sent > 0).then_some(sent),
         notes: history(agent, names),
     };
@@ -537,6 +554,7 @@ pub(super) fn row_usage(
     let block = Block {
         model: Some(filled.model.clone()),
         model_id: row.worker.model.as_deref(),
+        logo: Some(ModelLabel::of(names, &row.worker, kit.theme, NoPicture::Nothing).whose),
         used: row.used,
         window,
         percent: None,
@@ -547,6 +565,9 @@ pub(super) fn row_usage(
         grid: None,
         usage: None,
         notes,
+        parts_ours: false,
+        used_ours: row.estimated,
+        used_tail: String::new(),
     };
     block::rows(kit, &block, width)
 }

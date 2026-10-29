@@ -15,6 +15,7 @@ use argonauts_core::api::day_format;
 use argonauts_core::crew_stats::{
     CrewStats, Fallback, ModelDay, ReviewTally, StatsRole, TaskRecord, WorkRow,
 };
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::event::ErrorCategory;
 use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent};
 use argonauts_core::events::approval::ApprovalKind;
@@ -671,6 +672,7 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
             RunEventKind::Review(ReviewEvent::Settled {
                 judge: settled_by,
                 ruling,
+                ..
             }) => {
                 let back = ruling.verdict != ReviewVerdict::Approve;
                 let given = task.and_then(|task| checks.get(task));
@@ -1168,13 +1170,16 @@ pub(crate) fn stats(ledger: &WorkLedger, first: Option<Date>, usage: &[LedgerLin
     stats
 }
 
-/// Files each record that names no model under the model its CLI runs when none is named,
-/// so a turn recorded without one counts as that model's rather than as the CLI's.
+/// Files each record that names no model under `defaults`, the model each CLI runs when none
+/// is named, as [`DisplayNames::recorded`] names a past record, so a turn recorded without
+/// one counts as that model's rather than as the CLI's.
 pub(crate) fn name_unnamed_models(stats: &mut CrewStats, defaults: &BTreeMap<String, String>) {
+    let names = DisplayNames {
+        defaults: defaults.clone(),
+        ..DisplayNames::default()
+    };
     let named = |agent: &str, model: &mut Option<String>| {
-        if model.is_none() {
-            model.clone_from(&defaults.get(agent).cloned());
-        }
+        *model = names.recorded(agent, model.as_deref()).model;
     };
     for row in &mut stats.work {
         named(&row.agent, &mut row.model);

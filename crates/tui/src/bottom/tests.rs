@@ -349,7 +349,9 @@ fn next_change_is_none_when_nothing_moves() {
 #[test]
 fn the_run_rows_own_times_wake_the_screen() {
     let t0 = Instant::now();
-    let theme = theme();
+    // The mark holds still, so only the time moves.
+    let mut theme = theme();
+    theme.reduced_motion = true;
     let ctx = RenderCtx::new(80, &theme, Clock::new(t0, t0));
     let mut state = BottomState::new();
     let mut going = WorkflowRow::new("run-1", "add-due-dates", WorkflowRowState::Running);
@@ -365,6 +367,57 @@ fn the_run_rows_own_times_wake_the_screen() {
     ended.leaves_at = Some(t0 + Duration::from_secs(25));
     state.workflows.rows = vec![ended];
     assert_eq!(state.next_change(&ctx), Some(t0 + Duration::from_secs(25)));
+}
+
+/// A run's row says the mode, then what Enter does on it: answer the question it waits on,
+/// open its session, or open its workflow. The way back gives way first as the screen
+/// narrows, then how to pick another; what Enter does stays.
+#[test]
+fn a_run_rows_key_line_says_what_enter_does_on_it() {
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let t0 = Instant::now();
+    let mut state = BottomState::new();
+    let mut waits = WorkflowRow::new("run-02", "Fix the money", WorkflowRowState::NeedsYou);
+    waits.answers = Some(argonauts_core::names::ApprovalId::numbered(1));
+    let mut own = WorkflowRow::new("run-02#task-001", "Rounding", WorkflowRowState::Running);
+    own.session = Some(AgentRef {
+        run: Some("run-02".into()),
+        session: "s-001".into(),
+    });
+    state.workflows.rows = vec![
+        WorkflowRow::new("run-01", "Add due dates", WorkflowRowState::Running),
+        waits,
+        own,
+    ];
+    let keys = |state: &BottomState, width: u16| {
+        let text = plain_text(&render_at(state, width, t0, Duration::ZERO).lines);
+        text.lines()
+            .find(|line| line.contains("enter to"))
+            .map(|line| line.trim().to_owned())
+    };
+    state.focus_panel();
+    assert_eq!(
+        keys(&state, 120).as_deref(),
+        Some(
+            "ǁ supervised mode on · ↑ ↓  to pick another · enter to open its workflow · esc to go \
+             back to the input"
+        )
+    );
+    state.panel_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(
+        state.panel_selection(),
+        Some(PanelRowId::Run("run-02".into()))
+    );
+    assert_eq!(
+        keys(&state, 80).as_deref(),
+        Some("ǁ supervised mode on · ↑ ↓  to pick another · enter to answer")
+    );
+    state.panel_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(
+        keys(&state, 60).as_deref(),
+        Some("ǁ supervised mode on · enter to open its session")
+    );
 }
 
 #[test]

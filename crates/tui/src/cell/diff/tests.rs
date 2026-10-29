@@ -144,7 +144,7 @@ fn rows_have_a_gutter_a_marker_and_a_fill() {
     assert_eq!(lines[4].spans[1].style.bg, theme.style(Role::AddedRow).bg);
     assert_eq!(lines[4].spans[4].style.fg, theme.style(Role::DiffText).fg);
     assert_eq!(lines[1].style.bg, None);
-    assert_eq!(lines[1].spans[1].style, theme.style(Role::Dim));
+    assert_eq!(lines[1].spans[1].style, theme.style(Role::Text));
 }
 
 #[test]
@@ -237,10 +237,10 @@ fn hunks_are_separated_by_a_dim_gap() {
     let lines = render(&view, &theme, 40, 0);
     let gap = lines
         .iter()
-        .position(|line| plain_text(std::slice::from_ref(line)).trim() == "⋮");
+        .position(|line| plain_text(std::slice::from_ref(line)).trim() == "…");
     let gap = gap.expect("a gap row");
     assert_eq!(lines[gap].spans[1].style, theme.style(Role::Dim));
-    assert_eq!(plain_text(&lines[gap..=gap]), "  ⋮");
+    assert_eq!(plain_text(&lines[gap..=gap]), "  …");
 }
 
 #[test]
@@ -348,8 +348,8 @@ fn an_edit_shows_the_file_numbers_and_the_lines_around_it() {
         plain_text(&lines),
         " 10  /// The sum of the items.\n 11  fn total(items: &[u32]) -> u32 {\n 12      let sum = 0;\n 13 -    let count = 0;\n 13 +    let mut count = 0;\n 14      for item in items {\n 15          count += item;\n 16      }"
     );
-    // The context rows' numbers are dim, as Claude Code draws them.
-    assert_eq!(lines[0].spans[1].style, theme.style(Role::Dim));
+    // A context row's number is in the text's colour, its changed rows' in theirs.
+    assert_eq!(lines[0].spans[1].style, theme.style(Role::Text));
 }
 
 #[test]

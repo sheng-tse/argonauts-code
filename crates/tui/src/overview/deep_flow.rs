@@ -1,9 +1,10 @@
-//! `d` on the Behaviors map, from the key to the map it makes. With no deeper map kept, `d`
-//! asks the app what it can offer and opens the questions; their answer starts the update.
-//! With one kept, `d` on the label map switches to it, and on the deeper map goes back to the
-//! labels, or first asks whether to add the actions it doesn't have yet. While an update runs,
-//! the line under the sub-tabs says who summarizes, a line under it how far it got, `x` stops
-//! it, and Esc leaves it going in the background, as every panel's Esc does.
+//! `d` on the Behaviors map, from the key to the map it makes. With no Summaries kept, `d` asks
+//! the app what it can offer and opens the questions; their answer starts the update. With
+//! Summaries kept, `d` on the label map switches to them, and on Summaries goes back to the
+//! labels, or first asks whether to add the actions they don't have yet; with nothing to add
+//! them with, leaving that question shows the labels, so `d` is never a dead end. While an
+//! update runs, the line under the sub-tabs says who summarizes, a line under it how far it
+//! got, `x` stops it, and Esc leaves it going in the background, as every panel's Esc does.
 //!
 //! The map's own view holds one of these, tells it what the app reported, and draws what it
 //! gives back in its place.
@@ -22,10 +23,10 @@ use crate::state::DeepUpdate;
 /// The map on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shown {
-    /// The label map, and whether a deeper one is kept to switch to.
+    /// The label map, and whether Summaries are kept to switch to.
     Labels { kept: bool },
-    /// The deeper map, and the actions it has no summary of yet.
-    Deeper { unsummarized: usize },
+    /// Summaries, and the actions they have no summary of yet.
+    Summaries { unsummarized: usize },
 }
 
 /// What a key asks of the panel.
@@ -35,7 +36,7 @@ pub enum DeepKey {
     Ask(ViewRequest),
     /// Tell the app: start or stop an update.
     Send(UiCommand),
-    /// Show the label map or the deeper one.
+    /// Show the label map or Summaries.
     Show(BehaviorMap),
     /// Only the tab's own look changed.
     Moved,
@@ -66,9 +67,9 @@ impl DeepFlow {
     /// `d` on the map.
     pub fn d(&mut self, shown: Shown) -> DeepKey {
         match shown {
-            Shown::Labels { kept: true } => DeepKey::Show(BehaviorMap::Deeper),
-            Shown::Deeper { unsummarized: 0 } => DeepKey::Show(BehaviorMap::Labels),
-            Shown::Labels { kept: false } | Shown::Deeper { .. } => {
+            Shown::Labels { kept: true } => DeepKey::Show(BehaviorMap::Summaries),
+            Shown::Summaries { unsummarized: 0 } => DeepKey::Show(BehaviorMap::Labels),
+            Shown::Labels { kept: false } | Shown::Summaries { .. } => {
                 self.asked = Some(shown);
                 DeepKey::Ask(ViewRequest::DeepOffer)
             }
@@ -80,11 +81,10 @@ impl DeepFlow {
         let Some(shown) = self.asked.take() else {
             return;
         };
-        self.questions = match (shown, &offer.made_by) {
-            (Shown::Deeper { .. }, Some(_)) => Some(DeepQuestions::update(offer.clone())),
-            (Shown::Deeper { .. }, None) => None,
-            (Shown::Labels { .. }, _) => Some(DeepQuestions::new(offer.clone())),
-        };
+        self.questions = Some(match shown {
+            Shown::Summaries { .. } => DeepQuestions::update(offer.clone()),
+            Shown::Labels { .. } => DeepQuestions::new(offer.clone()),
+        });
     }
 
     /// The questions show in the tab's place.

@@ -163,14 +163,14 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     {
         critics.push(designated.clone());
     }
-    let plans = drafts::labeled(&latest.iter().collect::<Vec<_>>())?;
+    let plans = drafts::labeled_for_agents(host, &latest.iter().collect::<Vec<_>>())?;
     let steps: Vec<_> = disputed.iter().map(map::to_step_topic).collect();
     let goal = host.read(context::goal_brief);
     let asks = critics.iter().map(|critic| {
         let is_designated = designated.as_ref() == Some(critic);
         let input = CritiqueInput {
             goal: goal.clone(),
-            plans: plans.clone(),
+            plans: drafts::read_by(host.run_id(), &format!("critic {critic}"), &plans),
             disputed: steps.clone(),
             checklist: CHECKLIST.iter().map(|s| (*s).to_owned()).collect(),
             designated: is_designated,

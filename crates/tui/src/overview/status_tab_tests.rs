@@ -83,6 +83,7 @@ fn picture() -> StatusTabView {
             context_used: Some(212_000),
             context_window: Some(1_000_000),
         }),
+        in_cli: None,
         workflow: WorkflowSetup {
             name: "captain".to_owned(),
             ultracode: false,
@@ -281,7 +282,7 @@ fn status_draws_every_part_of_the_picture() {
     assert!(rows[1].contains("[Status]"), "{rows:#?}");
     for fact in [
         " Version         Argonauts Code 0.0.1",
-        " Conversation    conversation-014 · started 7:12pm",
+        " Conversation    conversation-014 · started 7:12 PM",
         " Folder          ~/workspace/rate-limiter-app · no git, workflows keep a hidden history",
         " Main session    Opus 5.5 on Claude Code · xhigh effort · 212k of 1M context",
         " Workflow        Captain · ultracode off · workflow size medium",
@@ -608,7 +609,8 @@ fn the_tab_draws_both_cards_as_their_pictures_have_them() {
 
 /// A screen two cells narrower than the pictures' still says everything: a long folder's
 /// history and the command that trims it take a row of their own, a CLI that needs an update
-/// keeps the command that updates it, and the health card's last column is whole.
+/// keeps the command that updates it, and the health card's last column is whole. Only the
+/// health card's reasons give way.
 #[test]
 fn a_screen_narrower_than_the_pictures_keeps_what_matters() {
     use crate::overview::health::tests as health;
@@ -637,7 +639,7 @@ fn a_screen_narrower_than_the_pictures_keeps_what_matters() {
         let found = rows.iter().position(|row| row.contains(text));
         found.unwrap_or_else(|| panic!("no {text}: {rows:#?}"))
     };
-    let setup = &rows[..at("◆ settings in effect")];
+    let setup = &rows[..at("CLI health")];
     assert!(!setup.iter().any(|row| row.contains('…')), "{setup:#?}");
 
     let folder = at(" Folder ");
@@ -911,4 +913,101 @@ fn tools_turned_off_say_by_which_key() {
         row(&rows, "tools for the main session").contains("off · main_session.tools = false"),
         "{rows:#?}"
     );
+}
+
+/// The tab in a terminal that draws logos: each CLI's logo in its dot's place on both cards, a
+/// provider's before its name, and the main session's before its model.
+#[test]
+fn the_tab_draws_logos_where_the_terminal_draws_pictures() {
+    use crate::kit::logo::golden::{count, pictured, with_stand_ins};
+    use crate::overview::golden::{Picture, Region, assert_matches, keep, theme};
+    use crate::overview::health::tests as health;
+    use crate::theme::Role;
+
+    let mut view = picture();
+    view.clis = pictured_clis();
+    view.health = health::picture_rows();
+    let theme = pictured(&theme());
+    let buf = screen(&mut tab(view), &state(), &theme, 120);
+    // Four CLIs on each card, two providers, and the main session.
+    assert_eq!(count(&buf), 11);
+    let shown = with_stand_ins(&buf);
+    keep("status_logos", &shown);
+    // The picture names the testing state's colour by the orange it shares.
+    let picture = Picture::load("status_logos").standing_for("--term-org", Role::Accent);
+    assert_matches(&picture, &shown, &Region::whole(&picture, (0, 0)), &theme);
+}
+
+/// The Status tab once the main session has a session in its CLI: the row says what to
+/// type there, and `o` opens it.
+#[test]
+fn the_main_sessions_cli_row_says_what_to_type_there() {
+    use argonauts_core::cli_sessions::{CliSessionRef, InItsCli};
+    use argonauts_core::names::{AgentId, ConversationId};
+
+    let id = "00000000-0000-4000-8000-000000000001";
+    let mut view = picture();
+    view.version = "0.1.1".to_owned();
+    view.conversation = Some(Conversation {
+        id: "conversation-004".to_owned(),
+        started: datetime!(2026-10-08 19:12 UTC),
+    });
+    view.folder = Folder {
+        shown: "~/github/tasks-cli".to_owned(),
+        git: true,
+        history_size: None,
+    };
+    view.in_cli = Some(InItsCli {
+        session: CliSessionRef {
+            agent_id: AgentId("claude-code".into()),
+            id: id.into(),
+        },
+        conversation: Some(ConversationId::numbered(4)),
+        cli: "Claude Code".to_owned(),
+        command: format!("claude --resume {id}"),
+        local_model: false,
+        also: None,
+        made_there: 0,
+    });
+    let names = sample::names();
+    let cards = super::StatusTabCards {
+        view: &view,
+        names: &names,
+        clock: crate::format::WallClock::pinned(datetime!(2026-10-08 20:00 UTC)),
+        mode: None,
+    };
+    let theme = crate::overview::golden::theme();
+    let kit = crate::kit::Kit::new(&theme);
+    let lines = cards.facts(&kit, 118).lines;
+    crate::bridge::transcript::picture_check::assert_matches(
+        "status_in_cli",
+        &lines,
+        include_str!("../../tests/golden/overview/status_in_cli.txt"),
+        include_str!("../../tests/golden/overview/status_in_cli.html"),
+        &theme,
+        &[],
+    );
+    let state = state();
+    let mut status = tab(view);
+    let opened = key(&mut status, &state, KeyCode::Char('o'));
+    assert!(
+        matches!(&opened, ViewOutcome::SendToConversation(UiCommand::OpenInItsCli { session, conversation: Some(conversation) }) if session.id == id && *conversation == ConversationId::numbered(4)),
+        "{opened:?}"
+    );
+}
+
+/// A provider OpenCode can use shows its host's logo, or where it is a model maker, the
+/// maker's own: OpenAI's, Mistral's, Moonshot AI's Kimi and Alibaba's Qwen.
+#[test]
+fn a_provider_shows_its_hosts_or_its_makers_logo() {
+    use argonauts_core::logos::LogoMark;
+
+    let mark = |name: &str| super::provider_logo(name).mark;
+    assert_eq!(mark("OpenRouter"), Some(LogoMark::OpenRouter));
+    assert_eq!(mark("Ollama"), Some(LogoMark::Ollama));
+    assert_eq!(mark("OpenAI"), Some(LogoMark::OpenAi));
+    assert_eq!(mark("Mistral"), Some(LogoMark::Mistral));
+    assert_eq!(mark("Moonshot AI"), Some(LogoMark::Kimi));
+    assert_eq!(mark("Alibaba"), Some(LogoMark::Qwen));
+    assert_eq!(mark("Example Cloud"), None);
 }

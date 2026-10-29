@@ -34,6 +34,7 @@ pub(crate) mod session;
 mod stopped_work;
 mod stuck;
 pub(crate) mod support;
+pub(crate) mod todos;
 
 /// The step input that asks for experiment tasks, which the judge step runs itself.
 pub const EXPERIMENTS: &str = "experiments";

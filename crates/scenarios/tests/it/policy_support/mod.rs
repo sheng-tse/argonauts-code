@@ -80,11 +80,13 @@ pub fn write_global_config(scenario: &Scenario, text: &str) -> anyhow::Result<()
     fs::write(&path, as_set_up(&text)).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Runs `argonauts setup` with each step's recommended answer, except that it makes
-/// `.argonauts/` now and trusts the repo's settings files if it asks: a repo set up so
-/// `argonauts mcp serve` takes it.
+/// Gives the repo its `.argonauts/` folder, then runs `argonauts setup` with each step's
+/// recommended answer, except that it trusts the repo's settings files if it asks: a repo set
+/// up so `argonauts mcp serve` takes it.
 pub fn trust_repo(scenario: &Scenario) -> anyhow::Result<()> {
-    const PICKS: [&str; 2] = ["Now", "Trust them"];
+    const PICKS: [&str; 1] = ["Trust them"];
+    let folder = scenario.repo.root().join(".argonauts");
+    fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
     let mut pty = scenario.launch(&["setup"])?;
     let deadline = argonauts_testkit::deadline::after(WAIT);
     let mut answered: Vec<ChoiceId> = Vec::new();

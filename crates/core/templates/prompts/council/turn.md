@@ -1,0 +1,2 @@
+{{lines}}
+Your move: {{move}}

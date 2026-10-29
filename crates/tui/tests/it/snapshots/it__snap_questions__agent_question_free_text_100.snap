@@ -1,5 +1,5 @@
 ---
-source: crates/tui/tests/snap_questions.rs
+source: crates/tui/tests/it/snap_questions.rs
 expression: shown
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -7,8 +7,10 @@ expression: shown
   Agent: build:fix-money · Haiku 4.5 on Claude Code
 
   Should totals round half to even, as the ledger does, or half up?
-  ❯ Type your answer
+  ❯ 1. Type my own answer
+    2. Carry on without me
+       build:fix-money decides and goes on; its pick is kept as an assumption to review
 
-  Enter to send · Esc to carry on without me · shift+tab to cycle modes
+  Enter to answer · Esc to close
 
   ǁ supervised mode on

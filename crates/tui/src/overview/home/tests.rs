@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use argonauts_core::app::{ViewData, ViewRequest};
 use argonauts_core::overview::{ImportStatus, OverviewData, OverviewPeriod};
+use argonauts_testkit::screen::REAL_SIZES;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Rect, Size};
@@ -35,6 +36,28 @@ fn tab(data: OverviewData) -> OverviewView {
         overview: Box::new(data)
     }));
     view
+}
+
+/// The panel on Behaviors' sub-tab, drawn from the shared crew shaped like a real machine's,
+/// with the app's state as it reads it. The map hasn't come in yet.
+fn crew_on_behaviors() -> (AppState, OverviewView) {
+    let crew = crate::overview::sample::crew_like();
+    let state = crew.state();
+    let mut view = OverviewView::new(Tab::Overview, UsageWatch::default())
+        .at(crew.now)
+        .with_period(crew.usage.period);
+    assert!(view.accept(&ViewData::Overview {
+        overview: Box::new(crew.overview)
+    }));
+    for code in [KeyCode::Down, KeyCode::Right, KeyCode::Right] {
+        key(&mut view, &state, code);
+    }
+    (state, view)
+}
+
+fn accept_the_map(view: &mut OverviewView) {
+    let map = crate::overview::stats::behaviors::sample::three_models().map;
+    assert!(view.accept(&ViewData::Behaviors { map: Box::new(map) }));
 }
 
 /// The panel's rows on a screen `width` by `height`.
@@ -199,7 +222,7 @@ fn the_sub_tabs_switch_between_overview_and_models() {
     let state = state();
     let mut view = tab(sample::models());
     let shown = rows(&mut view, &state, 118);
-    assert!(has(&shown, "favourite    Opus 5.5  46%"), "{shown:#?}");
+    assert!(has(&shown, "Favorite     Opus 5.5  46%"), "{shown:#?}");
     assert!(!has(&shown, "Tokens per Day"), "{shown:#?}");
     key(&mut view, &state, KeyCode::Down);
     key(&mut view, &state, KeyCode::Right);
@@ -214,7 +237,7 @@ fn the_sub_tabs_switch_between_overview_and_models() {
 }
 
 #[test]
-fn g_on_the_behaviors_sub_tab_groups_the_map_instead_of_going_to_the_top() {
+fn under_the_behaviors_sub_tab_tab_steps_the_groupings_and_g_never_groups() {
     use argonauts_core::behavior_map::Grouping;
 
     let state = state();
@@ -222,38 +245,150 @@ fn g_on_the_behaviors_sub_tab_groups_the_map_instead_of_going_to_the_top() {
     key(&mut view, &state, KeyCode::Down);
     key(&mut view, &state, KeyCode::Right);
     key(&mut view, &state, KeyCode::Right);
+    let map = crate::overview::stats::behaviors::sample::three_models().map;
+    assert!(view.accept(&ViewData::Behaviors { map: Box::new(map) }));
+    key(&mut view, &state, KeyCode::Down);
     for grouping in [Grouping::Model.step(1), Grouping::Model.step(2)] {
-        match key(&mut view, &state, KeyCode::Char('g')) {
+        match key(&mut view, &state, KeyCode::Tab) {
             ViewOutcome::Request(ViewRequest::Behaviors(request)) => {
                 assert_eq!(request.grouping, grouping);
             }
-            other => panic!("g asks for the map grouped the next way, not {other:?}"),
+            other => panic!("Tab asks for the map grouped the next way, not {other:?}"),
+        }
+    }
+    assert!(
+        !matches!(
+            key(&mut view, &state, KeyCode::Char('g')),
+            ViewOutcome::Request(_)
+        ),
+        "g is Home, never a grouping"
+    );
+}
+
+/// On Behaviors' sub-tab row the key line says how to get down to the map, before the way back
+/// up. The way out shows whole, and the keys before it give way from the last one back where
+/// the line doesn't fit.
+#[test]
+fn the_behaviors_sub_tab_row_says_how_to_get_down_to_the_map() {
+    let before_the_way_out = [
+        "r to cycle dates",
+        "s this project",
+        "d summaries",
+        super::DOWN_TO_THE_MAP,
+        "↑  tabs",
+        "ctrl+s to copy",
+    ];
+    let line = |kept: usize| {
+        let mut keys = before_the_way_out[..kept].to_vec();
+        keys.push("esc closes");
+        keys.join(" · ")
+    };
+    for size in REAL_SIZES {
+        let (state, mut view) = crew_on_behaviors();
+        let keys = |view: &mut OverviewView| {
+            rows_on(view, &state, size.cols, size.rows)
+                .last()
+                .map(|row| row.trim().to_owned())
+                .unwrap_or_default()
+        };
+        assert!(
+            !keys(&mut view).contains("groupings"),
+            "no map yet at {size}"
+        );
+        accept_the_map(&mut view);
+        let shown = keys(&mut view);
+        let kept = (0..=before_the_way_out.len())
+            .rev()
+            .find(|&kept| shown == line(kept))
+            .unwrap_or_else(|| panic!("at {size} the keys give way from the last: {shown:?}"));
+        // The approved drawings at 120 × 38 and 177 × 40 show every key.
+        if size.cols >= 120 {
+            assert_eq!(
+                kept,
+                before_the_way_out.len(),
+                "at {size} every key fits: {shown:?}"
+            );
         }
     }
 }
 
 #[test]
-fn going_into_the_behaviors_list_grows_the_panel_to_show_its_rows() {
+fn going_into_the_behaviors_list_keeps_its_rows_on_the_panel() {
+    for size in REAL_SIZES {
+        let (state, mut view) = crew_on_behaviors();
+        accept_the_map(&mut view);
+        let drawn = |view: &mut OverviewView| rows_on(view, &state, size.cols, size.rows);
+        let opened = drawn(&mut view);
+        for code in [KeyCode::Down, KeyCode::Down, KeyCode::Right] {
+            key(&mut view, &state, code);
+        }
+        let shown_compared = drawn(&mut view);
+        key(&mut view, &state, KeyCode::Down);
+        let listed = drawn(&mut view);
+        assert!(
+            has(&listed, "Lit: edited a source file"),
+            "at {size}: {listed:#?}"
+        );
+        assert!(
+            listed
+                .iter()
+                .any(|row| row.trim_start().starts_with("❯ Edited a source file")),
+            "the selected row shows at {size}: {listed:#?}"
+        );
+        // The lit line takes the pointer's place, so the list keeps every row it showed.
+        let list = |rows: &[String]| {
+            rows.iter()
+                .filter(|row| row.contains("(") && row.contains("others"))
+                .count()
+        };
+        assert!(list(&shown_compared) > 0, "at {size}: {shown_compared:#?}");
+        assert_eq!(
+            list(&listed),
+            list(&shown_compared),
+            "at {size}: {listed:#?}"
+        );
+        assert!(
+            listed.len() >= opened.len(),
+            "the panel never shrinks for the list at {size}"
+        );
+    }
+}
+
+/// Each model's card and its entry in the chart's legend open with the logo of whoever serves
+/// it, then its swatch and its name as it reads after the logo, as Stats names its models.
+#[test]
+fn the_models_cards_and_legend_carry_the_serving_logo() {
     let state = state();
-    let mut view = tab(sample::overview());
+    let mut view = tab(sample::models());
     key(&mut view, &state, KeyCode::Down);
     key(&mut view, &state, KeyCode::Right);
-    key(&mut view, &state, KeyCode::Right);
-    let map = crate::overview::stats::behaviors::sample::three_models().map;
-    assert!(view.accept(&ViewData::Behaviors { map: Box::new(map) }));
-    let opened = rows_on(&mut view, &state, 118, 50);
-    for code in [KeyCode::Down, KeyCode::Right, KeyCode::Down] {
-        key(&mut view, &state, code);
-    }
-    let listed = rows_on(&mut view, &state, 118, 50);
-    assert!(has(&listed, "lit: edited a source file"), "{listed:#?}");
+    let mut theme = plain();
+    theme.logo_pictures = true;
+    let ctx = ViewCtx {
+        theme: &theme,
+        state: &state,
+        now: Instant::now(),
+    };
+    let area = Rect::new(0, 0, 120, 40);
+    let mut buf = Buffer::empty(area);
+    view.render(area, &mut buf, &ctx);
+    let shown = crate::kit::logo::golden::with_stand_ins(&buf);
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| shown[(x, y)].symbol())
+                .collect::<String>()
+                .trim()
+                .to_owned()
+        })
+        .collect();
+    let has = |text: &str| rows.iter().any(|row| row.starts_with(text));
     assert!(
-        listed
-            .iter()
-            .any(|row| row.trim_start().starts_with("❯ edited a source file")),
-        "the selected row shows: {listed:#?}"
+        has("◧◨ █ Opus 5.5 · ◧◨ █ 5.6 · ◧◨ ▚ Sonnet 5.5"),
+        "{rows:#?}"
     );
-    assert!(listed.len() > opened.len(), "the panel grew for the list");
+    assert!(has("◧◨ █ Opus 5.5 (46.0%)"), "{rows:#?}");
+    assert!(has("◧◨ ▚ Sonnet 5.5 (13.0%)"), "{rows:#?}");
 }
 
 #[test]
@@ -411,13 +546,13 @@ fn a_narrow_panel_stacks_the_groups_and_the_bars_and_no_row_runs_past_it() {
                 }
             }
         }
-        // Three groups need 110 cells side by side. Under that each stands under the one
+        // Three groups need 113 cells side by side. Under that each stands under the one
         // before it, and each bar takes a row of its own with its legend under it.
         let shown = rows(&mut view, &state, 100);
         let at = |text: &str| shown.iter().position(|row| row.trim() == text);
         let (tokens, days) = (at("Tokens").expect("Tokens"), at("Days").expect("Days"));
         assert!(
-            shown[tokens + 1].contains("Argonauts Code  118.4b"),
+            shown[tokens + 1].contains("Argonauts Code   118.4b"),
             "{shown:#?}"
         );
         assert!(
@@ -425,22 +560,22 @@ fn a_narrow_panel_stacks_the_groups_and_the_bars_and_no_row_runs_past_it() {
             "{shown:#?}"
         );
         // Under one another the three groups' values start in one column.
-        assert!(shown[days + 1].contains("active          318       of 365"));
+        assert!(shown[days + 1].contains("Active           318       of 365"));
         let kind = shown
             .iter()
-            .position(|row| row.contains("by kind"))
-            .expect("by kind");
+            .position(|row| row.contains("By kind"))
+            .expect("By kind");
         let cli = shown
             .iter()
-            .position(|row| row.contains("by CLI"))
-            .expect("by CLI");
-        assert_eq!(cli, kind + 2, "{shown:#?}");
+            .position(|row| row.contains("By CLI"))
+            .expect("By CLI");
+        assert_eq!(cli, kind + 4, "{shown:#?}");
         assert!(
-            shown[kind + 1].contains("■ cache read 93%  ■ write 6%"),
+            shown[kind + 2].contains("▌ Cache read    93%      ▌ Write     6%"),
             "{shown:#?}"
         );
         assert!(
-            shown[cli + 1].contains("■ Claude 62%  ■ Codex 28%  ■ agy 10%"),
+            shown[cli + 2].contains("▌ Claude Code    62%      ▌ Codex    28%      ▌ agy    10%"),
             "{shown:#?}"
         );
         let bar = |row: usize| {
@@ -460,10 +595,10 @@ fn a_long_favourite_is_cut_in_its_column() {
     data.models[0].model = Some("gemini-3.6-flash-low-preview-experimental".to_owned());
     let mut view = tab(data);
     let shown = rows(&mut view, &state, 120);
-    let row = shown.iter().find(|row| row.contains("busiest"));
+    let row = shown.iter().find(|row| row.contains("Busiest"));
     let row = row.unwrap_or_else(|| panic!("{shown:#?}"));
     assert!(
-        row.contains("peak 9pm        favourite    Gemini 3.6 Flash L…"),
+        row.contains("peak 9pm        Favorite     Gemini 3.6 Flas…"),
         "{row}"
     );
     assert!(row.ends_with('…') && str_width(row) <= 118, "{row}");
@@ -488,15 +623,15 @@ fn claude_codes_own_count_comes_first_and_says_how_far_it_goes() {
     };
     let shown = numbers(sample::numbers());
     assert!(
-        shown[0].starts_with(" Claude Code     60.6b     as /stats counts "),
+        shown[0].starts_with(" Claude Code      60.6b     as /stats counts "),
         "{shown:#?}"
     );
     assert!(
-        shown[1].starts_with(" Argonauts Code  69.1b     + workflow agents "),
+        shown[1].starts_with(" Argonauts Code   69.1b     + workflow agents "),
         "{shown:#?}"
     );
     assert!(
-        shown[2].starts_with(" API value       ~$32,540 "),
+        shown[2].starts_with(" API value        ~$32,540 "),
         "{shown:#?}"
     );
 
@@ -507,22 +642,22 @@ fn claude_codes_own_count_comes_first_and_says_how_far_it_goes() {
     });
     let shown = numbers(stale);
     assert!(
-        shown[0].starts_with(" Claude Code     58.1b     /stats to Sep 23 "),
+        shown[0].starts_with(" Claude Code      58.1b     /stats to Sep 23 "),
         "{shown:#?}"
     );
 
     let shown = numbers(sample::overview());
     assert!(
-        shown[0].starts_with(" Argonauts Code  118.4b    "),
+        shown[0].starts_with(" Argonauts Code   118.4b    "),
         "{shown:#?}"
     );
     assert!(!shown[0].contains("workflow agents"), "{shown:#?}");
     assert!(
-        shown[1].starts_with(" API value       ~$9,640 "),
+        shown[1].starts_with(" API value        ~$9,640 "),
         "{shown:#?}"
     );
     assert!(
-        shown[2].trim_start().starts_with("busiest"),
+        shown[2].trim_start().starts_with("Busiest"),
         "the third row has no token: {shown:#?}"
     );
 }
@@ -539,14 +674,14 @@ fn ctrl_s_copies_the_sub_tab_without_the_folders() {
     let ViewOutcome::Copy(text) = outcome else {
         panic!("{outcome:?}");
     };
-    assert!(text.contains("Argonauts Code  118.4b"), "{text}");
-    assert!(text.contains("favourite       Opus 5.5  46%"), "{text}");
+    assert!(text.contains("Argonauts Code   118.4b"), "{text}");
+    assert!(text.contains("Favorite         Opus 5.5  46%"), "{text}");
     assert!(
-        text.contains("by kind: cache read 93%, write 6%, output <1%, input 1%"),
+        text.contains("By kind: Cache read 93%, Write 6%, Output <1%, Input 1%"),
         "{text}"
     );
     assert!(
-        text.contains("by CLI: Claude 62%, Codex 28%, agy 10%"),
+        text.contains("By CLI: Claude Code 62%, Codex 28%, agy 10%"),
         "{text}"
     );
     assert!(!text.contains('━'), "a bar says nothing as text: {text}");

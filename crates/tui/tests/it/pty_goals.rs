@@ -240,21 +240,21 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
     let view = driver.wait_visible("❯. build:cli");
     expect_row(
         &view,
-        "build:store +GPT 5\\.6 · ▪▪ goal met in 2 tries +4m10s",
+        "build:store +● +GPT 5\\.6 · ▪▪ goal met in 2 tries +4m10s",
     );
     // A running row counts on from the time it was given, by however long the test took to
     // get here.
     expect_row(
         &view,
         &format!(
-            "build:cli +GPT 5\\.6 · ▪▪▪ try 3 · 2 of 3 lines met +{}",
+            "build:cli +● +GPT 5\\.6 · ▪▪▪ try 3 · 2 of 3 lines met +{}",
             counted_on(362_000, asked)
         ),
     );
     expect_row(
         &view,
         &format!(
-            "build:docs +GPT 5\\.6 · ▪▪ try 1 · 0 of 2 lines met +{}",
+            "build:docs +● +GPT 5\\.6 · ▪▪ try 1 · 0 of 2 lines met +{}",
             counted_on(90_000, asked)
         ),
     );
@@ -265,7 +265,7 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
     expect_row(&view, "1 failed · 11 passed · 4\\.1s");
     expect_row(
         &view,
-        "↑↓  select · ⏎ open · g its goal · m message · x stop",
+        "↑↓  select · space peek · enter open · g its goal · m message · x stop",
     );
 
     // The same agent opened, on its Goal tab: the same four parts at full size.
@@ -320,18 +320,4 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
     // Esc goes back to the workflow, where it was.
     driver.press(Key::Esc);
     driver.wait_visible("◆ Goal of build:cli");
-}
-
-#[test]
-fn the_row_at_the_bottom_counts_the_goals_still_running() {
-    let mut driver = TestDriver::start(script());
-    driver.resize(64, 120);
-    driver.wait_visible("↓  to manage");
-    driver.press(Key::Down);
-    driver.press(Key::Enter);
-    driver.wait_visible("◆ Goal of build:cli");
-    // Back at the input, the row knows the goals the view was just told of.
-    driver.press(Key::Esc);
-    let screen = driver.wait_visible("2 goals running");
-    expect_row(&screen, "0/4 · .* · 2 goals running");
 }

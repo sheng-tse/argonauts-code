@@ -306,7 +306,7 @@ fn a_wide_panel_draws_the_three_cards_side_by_side_as_the_picture() {
     let rows = rows(&mut usage_view(), &state, 140);
     assert!(rows[1].ends_with("Today  Week  Month  All"), "{rows:#?}");
     assert!(
-        rows[2].ends_with("read live 8:12pm · ctrl+r reads again"),
+        rows[2].ends_with("read live 8:12 PM · ctrl+r reads again"),
         "{rows:#?}"
     );
     assert!(
@@ -505,7 +505,9 @@ fn a_read_that_failed_says_so_and_its_page_says_why() {
     let mut view = usage_view();
     let cards = rows(&mut view, &state, 140);
     let failed = find(&cards, "Failed to load usage data: Codex couldn't");
-    let kept = find(&cards, "last read today 8:12pm for me@example.com");
+    // The card is narrow, so the account wraps to the row under the time.
+    let kept = find(&cards, "last read today 8:12 PM for");
+    assert!(cards[kept + 1].contains("me@example.com"), "{cards:#?}");
     assert!(kept > failed, "{cards:#?}");
 
     key(&mut view, &state, KeyCode::Down);
@@ -522,7 +524,7 @@ fn a_read_that_failed_says_so_and_its_page_says_why() {
         page[said + 1].contains("network policy is unavailable"),
         "{page:#?}"
     );
-    find(&page, " last read today 8:12pm for me@example.com");
+    find(&page, " last read today 8:12 PM for me@example.com");
 }
 
 /// A window whose reset has passed starts again from nothing, so the share read before it
@@ -610,4 +612,44 @@ fn a_read_on_its_way_and_no_reading_say_so() {
     );
     find(&rows, "reading live…");
     find(&rows, "no live reading yet");
+}
+
+fn screen_in(view: &mut OverviewView, state: &AppState, width: u16, theme: &Theme) -> Buffer {
+    let ctx = ViewCtx {
+        theme,
+        state,
+        now: Instant::now(),
+    };
+    let height = view.dock_height(Size::new(width, 80), &ctx).unwrap_or(40);
+    let area = Rect::new(0, 0, width, height);
+    let mut buf = Buffer::empty(area);
+    view.render(area, &mut buf, &ctx);
+    buf
+}
+
+/// Where the terminal draws logos, each CLI's sub-tab has its logo before its name, and each
+/// card and each CLI's page has it in the dot's place.
+#[test]
+fn the_tab_and_a_clis_page_draw_each_clis_logo() {
+    use crate::kit::logo::golden::{count, pictured, with_stand_ins};
+    use crate::overview::golden::{Picture, Region, assert_matches, keep, theme};
+
+    let theme = pictured(&theme());
+    let state = state();
+    let mut view = usage_view();
+    let tab = screen_in(&mut view, &state, 140, &theme);
+    let clis = state.usage.as_ref().map_or(0, |usage| usage.plans.len());
+    assert_eq!(count(&tab), clis * 2, "a sub-tab and a card each");
+    let shown = with_stand_ins(&tab);
+    keep("usage_logos", &shown);
+    let picture = Picture::load("usage_logos");
+    assert_matches(&picture, &shown, &Region::whole(&picture, (0, 0)), &theme);
+
+    key(&mut view, &state, KeyCode::Down);
+    key(&mut view, &state, KeyCode::Right);
+    let page = screen_in(&mut view, &state, 100, &theme);
+    let shown = with_stand_ins(&page);
+    keep("usage_page_logos", &shown);
+    let picture = Picture::load("usage_page_logos");
+    assert_matches(&picture, &shown, &Region::whole(&picture, (0, 0)), &theme);
 }

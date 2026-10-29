@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
-use crate::controller::test_support::{CliOptions, TestDriver, max_wait};
+use crate::controller::test_support::{CliOptions, TestDriver, max_wait, on_the_default_workflow};
 
 use super::direct_outside_tests::written_by;
 
@@ -1129,9 +1129,9 @@ async fn in_captain_a_workflow_with_codex_as_the_reviewer_starts_with_codex_revi
     driver.exit().await;
 }
 
-/// Inside a crew workflow, a Captain the Captain-or-crew rules pick is checked by default. With
-/// `captain_or_crew.captain_kind = "direct"` the session that planned it goes ahead in your
-/// checkout.
+/// Inside a crew workflow that is only the default, a Captain the Captain-or-crew rules pick is
+/// checked by default. With `captain_or_crew.captain_kind = "direct"` the session that planned it
+/// goes ahead in your checkout.
 #[tokio::test]
 async fn a_captain_the_rules_pick_runs_direct_only_when_its_kind_says_so() {
     let small = json!({
@@ -1151,11 +1151,13 @@ async fn a_captain_the_rules_pick_runs_direct_only_when_its_kind_says_so() {
         }))
         .with_cli_session("estimate-1")
     };
-    let styled = |config: &'static str| CliOptions {
-        prepare: Some(Box::new(move |repo: &argonauts_testkit::TempRepo| {
-            std::fs::write(repo.global_config(), config).unwrap();
-        })),
-        ..CliOptions::default()
+    let styled = |config: &'static str| {
+        on_the_default_workflow(CliOptions {
+            prepare: Some(Box::new(move |repo: &argonauts_testkit::TempRepo| {
+                std::fs::write(repo.global_config(), config).unwrap();
+            })),
+            ..CliOptions::default()
+        })
     };
 
     let mut driver =
@@ -1192,7 +1194,7 @@ async fn a_captain_the_rules_pick_runs_direct_only_when_its_kind_says_so() {
         }) if captain_or_crew.captain == Some(argonauts_core::settings::protocol::CaptainKind::Direct)
     )));
 
-    let mut driver = TestDriver::start().await;
+    let mut driver = TestDriver::start_with(on_the_default_workflow(CliOptions::default())).await;
     driver.agent.push(change());
     driver.submit(TASK).await;
     driver.until(turn_ended).await;

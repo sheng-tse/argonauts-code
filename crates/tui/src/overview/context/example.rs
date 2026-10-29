@@ -7,6 +7,7 @@ use argonauts_core::Spend;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::context::{
     ContextCategory, ContextCell, ContextKind, ContextSkill, ContextSkills, ContextUsage, McpTool,
+    MemoryFile,
 };
 use argonauts_core::events::session::{
     InputPart, InputPartKind, LaunchRecord, PromptVia, SessionInput,
@@ -139,6 +140,133 @@ pub fn after_the_run() -> Example {
         counted: now() - time::Duration::seconds(6),
     });
     example
+}
+
+/// The main session alone, as Claude Code 2.1.311 counted it on Opus 5.5 at its start.
+pub fn claude_code_alone() -> Example {
+    let usage = claude_code_usage();
+    let main = ContextRow {
+        run: None,
+        session: SessionKey::numbered(100),
+        label: "main".to_owned(),
+        worker: model("claude-code/claude-opus-5-5"),
+        used: usage.total_tokens,
+        window: Some(usage.window),
+        cap: None,
+        tool_calls: 0,
+        spent: Spend::default(),
+        rotations: 0,
+        estimated: false,
+        counts: true,
+        categories: Vec::new(),
+        recorded: None,
+        ended: None,
+        answered_for: None,
+    };
+    Example {
+        count: Some(ContextCount {
+            usage,
+            counted: now() - time::Duration::seconds(6),
+        }),
+        view: ContextView::of(vec![main]),
+        names: crate::overview::sample::names(),
+        places: Places {
+            folder: Some("/home/you/rate-limiter".to_owned()),
+            home: Some("/home/you".to_owned()),
+        },
+        now: now(),
+        tie_breakers: Vec::new(),
+        prompts: Vec::new(),
+    }
+}
+
+/// Claude Code's count of a fresh session: every category it lists, with no grid of its own,
+/// so the tab lays the grid out by Claude Code's rule.
+fn claude_code_usage() -> ContextUsage {
+    let category = |name: &str, tokens: u64, color: &str, kind| ContextCategory {
+        name: name.to_owned(),
+        tokens,
+        color: color.to_owned(),
+        kind,
+    };
+    let mut categories = vec![
+        category("System prompt", 4_380, "promptBorder", ContextKind::Used),
+        category("System tools", 19_380, "inactive", ContextKind::Used),
+        category(
+            "MCP tools",
+            705,
+            "cyan_FOR_SUBAGENTS_ONLY",
+            ContextKind::Used,
+        ),
+        category(
+            "MCP server instructions",
+            960,
+            "green_FOR_SUBAGENTS_ONLY",
+            ContextKind::Used,
+        ),
+        category("Memory files", 503, "claude", ContextKind::Used),
+        category("Skills", 6_360, "warning", ContextKind::Used),
+        category(
+            "Messages",
+            10,
+            "purple_FOR_SUBAGENTS_ONLY",
+            ContextKind::Used,
+        ),
+    ];
+    let total: u64 = categories.iter().map(|part| part.tokens).sum();
+    categories.push(category(
+        "Autocompact buffer",
+        33_000,
+        "inactive",
+        ContextKind::Buffer,
+    ));
+    categories.push(category(
+        "Free space",
+        1_000_000 - total - 33_000,
+        "promptBorder",
+        ContextKind::Free,
+    ));
+    // 237 tools, of which those loaded hold 705 tokens.
+    let mcp_tools = (0..237)
+        .map(|at| McpTool {
+            name: format!("mcp__crm__tool_{at}"),
+            server: "crm".to_owned(),
+            tokens: if at < 5 { 141 } else { 120 },
+            loaded: at < 5,
+        })
+        .collect();
+    let skill = |tokens| ContextSkill {
+        name: "skill".to_owned(),
+        source: "built-in".to_owned(),
+        plugin: None,
+        tokens,
+    };
+    let mut items = vec![skill(6_360 - 32 * 190)];
+    items.extend((0..32).map(|_| skill(190)));
+    ContextUsage {
+        categories,
+        total_tokens: total,
+        window: 1_000_000,
+        raw_window: 1_000_000,
+        percentage: 3,
+        model: Some("claude-opus-5-5".to_owned()),
+        auto_compact: true,
+        auto_compact_threshold: Some(967_000),
+        auto_compact_source: "settings".to_owned(),
+        memory_files: vec![MemoryFile {
+            path: "/home/you/rate-limiter/CLAUDE.md".to_owned(),
+            scope: "Project".to_owned(),
+            tokens: 503,
+        }],
+        mcp_tools,
+        skills: Some(ContextSkills {
+            total: 33,
+            included: 33,
+            tokens: 6_360,
+            items,
+        }),
+        ..ContextUsage::default()
+    }
 }
 
 /// The same run where the request went straight to it, with no session of the conversation.

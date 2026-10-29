@@ -145,6 +145,8 @@ mod tests {
             ok,
             behavior: Behavior::One(Label::GitHistory),
             ended: Some(SessionEnded::Failed),
+            ended_at: Some(datetime!(2026-10-20 12:31 UTC)),
+            settled_at: None,
             input,
             conversation: false,
             note: None,
@@ -235,6 +237,8 @@ mod tests {
             task: None,
             outcome: None,
             ended: None,
+            ended_at: None,
+            settled_at: None,
             conversation: true,
             ..action(
                 session,

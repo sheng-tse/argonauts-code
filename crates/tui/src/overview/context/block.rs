@@ -1,21 +1,26 @@
-//! The block Claude Code's `/context` prints for one session: its 20 by 10 grid on the left,
-//! and on the right the model, its id, how much of the window is used, then what fills it,
-//! with the free space and the room held back for compacting.
+//! The block Claude Code's `/context` prints for one session: its grid on the left, and two
+//! blanks after it the model, its id, how much of the window is used, then what fills it, with
+//! the free space and the room held back for compacting.
 
 use argonauts_core::events::context::{ContextCell, ContextKind, ContextUsage};
-use ratatui::style::Style;
+use argonauts_core::logos::Logo;
+use argonauts_core::window_size;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use super::words::{self, cc_style};
-use crate::format;
+use crate::format::{self, Figures};
+use crate::kit::context::claude_code_free;
+use crate::kit::logo::logo_before;
 use crate::kit::{Drawn, Kit};
 use crate::text::str_width;
 use crate::theme::Role;
 
 /// Where the block's rows start, under Claude Code's `⎿`.
 pub(super) const INDENT: usize = 5;
-/// Where the column beside the grid starts.
-const RIGHT: usize = 45;
+/// Blanks between the grid's last cell and the column beside it, wherever the grid ends, as
+/// Claude Code 2.1.311 draws a 20-wide grid.
+const BESIDE_GAP: usize = 2;
 /// The grid's cells a row, and its rows.
 const ACROSS: usize = 20;
 const DOWN: usize = 10;
@@ -34,6 +39,8 @@ pub(super) struct Block<'a> {
     /// The model's name, and how its CLI calls it.
     pub model: Option<String>,
     pub model_id: Option<&'a str>,
+    /// Whoever serves the model, whose logo goes before its name where one draws.
+    pub logo: Option<Logo>,
     pub used: u64,
     pub window: u64,
     /// `used` of the window in whole percent, where the CLI said it.
@@ -48,52 +55,75 @@ pub(super) struct Block<'a> {
     pub usage: Option<&'a ContextUsage>,
     /// Lines under the parts, after a blank one, that run on below the grid.
     pub notes: Vec<String>,
+    /// The parts are our count, each marked `~`.
+    pub parts_ours: bool,
+    /// How full it is, and so what is free, is our count too.
+    pub used_ours: bool,
+    /// Dim words after how full it is, such as ` · from your last session`.
+    pub used_tail: String,
 }
 
 /// The block's rows, starting at the grid's first.
 pub(super) fn rows(kit: &Kit<'_>, block: &Block<'_>, width: usize) -> Drawn {
     let window = block.window.max(1);
-    let percent = block
-        .percent
-        .unwrap_or_else(|| (block.used as f64 / window as f64 * 100.0).round() as u64);
+    let percent = match block.percent {
+        Some(percent) => Figures::Table.share(percent, 100),
+        None => Figures::Table.share(block.used, window),
+    };
     let mut right: Vec<Vec<Span<'static>>> = Vec::new();
-    right.push(vec![Span::raw(block.model.clone().unwrap_or_default())]);
+    let mut model = block
+        .logo
+        .as_ref()
+        .map(|logo| logo_before(logo, kit.theme))
+        .unwrap_or_default();
+    model.push(Span::raw(block.model.clone().unwrap_or_default()));
+    right.push(model);
     right.push(vec![kit.dim(block.model_id.unwrap_or_default().to_owned())]);
-    right.push(vec![kit.dim(format!(
-        "{}/{} tokens ({percent}%)",
-        format::context_tokens(block.used),
+    let (ours, used_ours) = (mark(block.parts_ours), mark(block.used_ours));
+    let count = |tokens: u64| beside(tokens, block.window);
+    let window_words = if binary(block.window) {
+        format::window(block.window)
+    } else {
         format::context_tokens(block.window)
+    };
+    right.push(vec![kit.dim(format!(
+        "{used_ours}{}/{window_words} tokens ({percent}){}",
+        count(block.used),
+        block.used_tail
     ))]);
     right.push(Vec::new());
-    right.push(vec![kit.dim(block.heading.clone())]);
+    right.push(vec![Span::styled(
+        block.heading.clone(),
+        kit.fg(Role::Dim).add_modifier(Modifier::ITALIC),
+    )]);
     let glyphs = Glyphs::for_kit(kit);
     for part in &block.parts {
         right.push(vec![
             Span::styled(format!("{} ", glyphs.whole), part.style),
             Span::raw(format!("{}: ", part.name)),
             kit.dim(format!(
-                "{} tokens ({})",
-                format::context_tokens(part.tokens),
+                "{ours}{} tokens ({})",
+                count(part.tokens),
                 words::share(part.tokens, window)
             )),
         ]);
     }
     right.push(vec![
-        Span::styled(format!("{} ", glyphs.free), kit.fg(Role::Faint)),
+        Span::styled(format!("{} ", glyphs.free), claude_code_free(kit, false)),
         Span::raw("Free space: "),
         kit.dim(format!(
-            "{} ({})",
-            format::context_tokens(block.free),
+            "{used_ours}{} ({})",
+            count(block.free),
             words::share(block.free, window)
         )),
     ]);
     if block.buffer > 0 {
         right.push(vec![
-            Span::styled(format!("{} ", glyphs.held), kit.fg(Role::Dim)),
+            Span::styled(format!("{} ", glyphs.held), claude_code_free(kit, true)),
             Span::raw("Autocompact buffer: "),
             kit.dim(format!(
-                "{} tokens ({})",
-                format::context_tokens(block.buffer),
+                "{used_ours}{} tokens ({})",
+                count(block.buffer),
                 words::share(block.buffer, window)
             )),
         ]);
@@ -107,6 +137,16 @@ pub(super) fn rows(kit: &Kit<'_>, block: &Block<'_>, width: usize) -> Drawn {
         Some(cells) => drawn_grid(kit, cells, block.usage),
         None => worked_out_grid(kit, block),
     };
+    let grid_cells = grid
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|span| str_width(&span.content))
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0);
+    let beside_at = INDENT + grid_cells + BESIDE_GAP;
     let mut drawn = Drawn::new();
     // Too narrow for the column beside the grid: it goes under it, whole.
     let widest = right
@@ -118,7 +158,7 @@ pub(super) fn rows(kit: &Kit<'_>, block: &Block<'_>, width: usize) -> Drawn {
         })
         .max()
         .unwrap_or(0);
-    if width < RIGHT + widest {
+    if width < beside_at + widest {
         for row in grid {
             drawn.push(indented(INDENT, row));
         }
@@ -139,12 +179,32 @@ pub(super) fn rows(kit: &Kit<'_>, block: &Block<'_>, width: usize) -> Drawn {
             line.extend(row.iter().cloned());
         }
         if let Some(beside) = right.get(at).filter(|beside| !beside.is_empty()) {
-            line.push(Span::raw(" ".repeat(RIGHT.saturating_sub(cells))));
+            line.push(Span::raw(" ".repeat(beside_at.saturating_sub(cells))));
             line.extend(beside.iter().cloned());
         }
         drawn.push(line);
     }
     drawn
+}
+
+/// `~` before a count that is ours.
+pub(super) fn mark(ours: bool) -> &'static str {
+    if ours { "~" } else { "" }
+}
+
+/// Whether the window counts in 1,024s, as 65,536 does.
+fn binary(window: u64) -> bool {
+    window_size::window_divisor(window) == 1_024
+}
+
+/// A count as Claude Code writes it, except beside a window counted in 1,024s, where it
+/// counts as the card does (9.3k of 64k), so the two never disagree.
+pub(super) fn beside(tokens: u64, window: u64) -> String {
+    if binary(window) {
+        format::tokens_beside(tokens, window)
+    } else {
+        format::context_tokens(tokens)
+    }
 }
 
 fn indented(by: usize, mut line: Vec<Span<'static>>) -> Vec<Span<'static>> {
@@ -173,8 +233,8 @@ fn drawn_grid(
             let mut spans = Vec::with_capacity(row.len() * 2);
             for cell in row {
                 let (glyph, style) = match kind(cell) {
-                    ContextKind::Free => (glyphs.free, kit.fg(Role::Faint)),
-                    ContextKind::Buffer => (glyphs.held, kit.fg(Role::Dim)),
+                    ContextKind::Free => (glyphs.free, claude_code_free(kit, false)),
+                    ContextKind::Buffer => (glyphs.held, claude_code_free(kit, true)),
                     _ if cell.fullness >= WHOLE_FROM => (glyphs.whole, cc_style(kit, &cell.color)),
                     _ => (glyphs.part, cc_style(kit, &cell.color)),
                 };
@@ -187,24 +247,37 @@ fn drawn_grid(
 }
 
 /// The grid by Claude Code's rule where its CLI drew none: each part takes its share of the
-/// 200 cells and at least one, in order, the room held back comes last, and the rest is free.
+/// 200 cells and at least one, in order, each cell whole when the part fills 70% of it or more,
+/// the room held back comes last, and the rest is free.
 fn worked_out_grid(kit: &Kit<'_>, block: &Block<'_>) -> Vec<Vec<Span<'static>>> {
     let glyphs = Glyphs::for_kit(kit);
     let total = ACROSS * DOWN;
     let cell = block.window.max(1) as f64 / total as f64;
     let mut cells: Vec<(&'static str, Style)> = Vec::with_capacity(total);
     for part in &block.parts {
-        let n = ((part.tokens as f64 / cell).round() as usize).max(1);
-        cells.extend(std::iter::repeat_n((glyphs.whole, part.style), n));
+        let exact = part.tokens as f64 / cell;
+        let n = (exact.round() as usize).max(1);
+        cells.extend((0..n).map(|at| {
+            let fullness = (exact - at as f64).clamp(0.0, 1.0);
+            let glyph = if fullness >= WHOLE_FROM {
+                glyphs.whole
+            } else {
+                glyphs.part
+            };
+            (glyph, part.style)
+        }));
     }
     let held = (block.buffer as f64 / cell).round() as usize;
     cells.truncate(total.saturating_sub(held));
     let free = total.saturating_sub(cells.len() + held);
     cells.extend(std::iter::repeat_n(
-        (glyphs.free, kit.fg(Role::Faint)),
+        (glyphs.free, claude_code_free(kit, false)),
         free,
     ));
-    cells.extend(std::iter::repeat_n((glyphs.held, kit.fg(Role::Dim)), held));
+    cells.extend(std::iter::repeat_n(
+        (glyphs.held, claude_code_free(kit, true)),
+        held,
+    ));
     cells
         .chunks(ACROSS)
         .map(|row| {
@@ -293,6 +366,7 @@ mod tests {
         Block {
             model: Some("Opus 5.5".to_owned()),
             model_id: Some("claude-opus-5-5"),
+            logo: None,
             used,
             window: 1_000_000,
             percent: None,
@@ -310,6 +384,9 @@ mod tests {
             grid: None,
             usage: None,
             notes: Vec::new(),
+            parts_ours: false,
+            used_ours: false,
+            used_tail: String::new(),
         }
     }
 
@@ -335,7 +412,9 @@ mod tests {
             .filter(|ch| *ch != ' ')
             .collect();
         assert_eq!(cells.chars().count(), 200);
-        assert_eq!(cells.chars().filter(|ch| *ch == '\u{26C1}').count(), 1 + 30);
+        // The prompt's 1k fills a fifth of its one cell, which draws as part full.
+        assert_eq!(cells.chars().filter(|ch| *ch == '\u{26C0}').count(), 1);
+        assert_eq!(cells.chars().filter(|ch| *ch == '\u{26C1}').count(), 30);
         assert_eq!(cells.chars().filter(|ch| *ch == '\u{26DD}').count(), 7);
         assert!(cells.ends_with(&"\u{26DD}".repeat(7)));
     }

@@ -1,5 +1,5 @@
-//! Nowhere in the panel does a number or a name touch a bar: every tab, drawn at 80, 100 and
-//! 140 columns from numbers that fill windows to 0%, 100% and 105% and names that fill their
+//! Nowhere in the panel does a number or a name touch a bar: every tab, drawn at every real
+//! size from numbers that fill windows to 0%, 100% and 105% and names that fill their
 //! columns, keeps a blank cell between any bar or squares and the text beside them.
 
 use std::sync::Arc;
@@ -8,8 +8,9 @@ use std::time::Instant;
 use argonauts_core::api::UsageSummary;
 use argonauts_core::app::ViewData;
 use argonauts_core::plan_usage::LiveWindow;
+use argonauts_testkit::screen::{REAL_SIZES, Size};
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Rect, Size};
+use ratatui::layout::{Rect, Size as Room};
 
 use super::golden::theme;
 use super::{OverviewView, Tab, UsageWatch, sample};
@@ -53,7 +54,7 @@ fn state() -> AppState {
     state
 }
 
-fn drawn(tab: Tab, state: &AppState, width: u16) -> Vec<String> {
+fn drawn(tab: Tab, state: &AppState, size: Size) -> Vec<String> {
     let theme = theme();
     let ctx = ViewCtx {
         theme: &theme,
@@ -70,8 +71,9 @@ fn drawn(tab: Tab, state: &AppState, width: u16) -> Vec<String> {
     view.accept(&ViewData::Overview {
         overview: Box::new(super::home::sample::overview()),
     });
-    let height = view.dock_height(Size::new(width, 200), &ctx).unwrap_or(200);
-    let area = Rect::new(0, 0, width, height);
+    let room = Room::new(size.cols, size.rows);
+    let height = view.dock_height(room, &ctx).unwrap_or(size.rows);
+    let area = Rect::new(0, 0, size.cols, height);
     let mut buf = Buffer::empty(area);
     view.render(area, &mut buf, &ctx);
     crate::views::dock::lines(&buf)
@@ -81,14 +83,14 @@ fn drawn(tab: Tab, state: &AppState, width: u16) -> Vec<String> {
 }
 
 #[test]
-fn no_number_or_name_touches_a_bar_on_any_tab_at_any_width() {
+fn no_number_or_name_touches_a_bar_on_any_tab_at_every_real_size() {
     let state = state();
     let mut touching = Vec::new();
     for tab in Tab::ALL {
-        for width in [80, 100, 140] {
-            for row in drawn(tab, &state, width) {
+        for size in REAL_SIZES {
+            for row in drawn(tab, &state, size) {
                 if let Some(column) = touching_bar(&row) {
-                    touching.push(format!("{tab:?} at {width}, column {column}: {row}"));
+                    touching.push(format!("{tab:?} at {size}, column {column}: {row}"));
                 }
             }
         }
@@ -116,7 +118,7 @@ fn crowded() -> AppState {
 }
 
 /// The Stats tab after `keys`, as every sub-view and every opened row or card draws it.
-fn drawn_after(state: &AppState, width: u16, keys: &[KeyCode]) -> Vec<String> {
+fn drawn_after(state: &AppState, size: Size, keys: &[KeyCode]) -> Vec<String> {
     let theme = theme();
     let ctx = ViewCtx {
         theme: &theme,
@@ -142,8 +144,9 @@ fn drawn_after(state: &AppState, width: u16, keys: &[KeyCode]) -> Vec<String> {
         }
         view.handle_key(crossterm::event::KeyEvent::from(*key), &ctx);
     }
-    let height = view.dock_height(Size::new(width, 200), &ctx).unwrap_or(200);
-    let area = Rect::new(0, 0, width, height);
+    let room = Room::new(size.cols, size.rows);
+    let height = view.dock_height(room, &ctx).unwrap_or(size.rows);
+    let area = Rect::new(0, 0, size.cols, height);
     let mut buf = Buffer::empty(area);
     view.render(area, &mut buf, &ctx);
     crate::views::dock::lines(&buf)
@@ -174,8 +177,8 @@ fn no_number_or_name_touches_a_bar_in_any_stats_view_opened_or_not() {
     ];
     let mut touching = Vec::new();
     for (name, keys) in &views {
-        for width in [80, 100, 118, 140] {
-            let rows = drawn_after(&state, width, keys);
+        for size in REAL_SIZES {
+            let rows = drawn_after(&state, size, keys);
             if name.ends_with("opened") {
                 // A CLI and a role say so; a model says the roles it worked as.
                 let opened = rows
@@ -183,14 +186,14 @@ fn no_number_or_name_touches_a_bar_in_any_stats_view_opened_or_not() {
                     .any(|row| row.contains("opened with enter") || row.contains(" · as "));
                 assert!(
                     opened,
-                    "{name} at {width} opens something:\n{}",
+                    "{name} at {size} opens something:\n{}",
                     rows.join("\n")
                 );
             }
             for row in rows {
                 let at = touching_bar(&row).or_else(|| square_touching(&row));
                 if let Some(column) = at {
-                    touching.push(format!("{name} at {width}, column {column}: {row}"));
+                    touching.push(format!("{name} at {size}, column {column}: {row}"));
                 }
             }
         }

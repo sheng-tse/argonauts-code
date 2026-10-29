@@ -1,14 +1,14 @@
 ---
-source: crates/tui/tests/snap_transcript.rs
+source: crates/tui/tests/it/snap_transcript.rs
 expression: text(&lines)
 ---
-● Set approvals.merge.mode = auto · this project · was supervised
+● Set approvals.merge.mode = auto · this project (.argonauts/config.toml)
 
-● Set agents.codex.effort = high · just you
+● Set agents.codex.effort = high · just you (.argonauts/config.local.toml)
 
 ● Reset ui.theme · everywhere · now dark
 
 ● Reset narrator.model · this session · now unset
-  ⎿  Set model to Opus 5.5 · just you · was Claude Code's default
-  ⎿  Set effort to high · just you
-  ⎿  Set reviewer's model to GPT 6 Sol · everywhere · was Opus
+  ⎿  Set model to Opus 5.5 · just you (.argonauts/config.local.toml)
+  ⎿  Set effort to high · just you (.argonauts/config.local.toml)
+  ⎿  Set reviewer's model to GPT 6 Sol · everywhere (~/.argonauts/config.toml)

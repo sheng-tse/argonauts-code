@@ -4,7 +4,7 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ⏵⏵ autopilot on (shift+tab to cycle) · ? for shortcuts · ↓  to manage
 
-  ◯ Fix the money rounding  ▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  2/5 · 1m40s · ↓  31.0k tokens
+  ⣾  Fix the money rounding                ▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  2/5 · 1m40s · ↓  31k tokens
   $ npm test -- --watch  · shell · 3m02s
 
  j j: forward again, down to the newest, blank line
@@ -13,16 +13,16 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ⏵⏵ autopilot on (shift+tab to cycle) · ? for shortcuts · ↓  to manage
 
-  ◯ Fix the money rounding  ▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  2/5 · 1m40s · ↓  31.0k tokens
+  ⣾  Fix the money rounding                ▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  2/5 · 1m40s · ↓  31k tokens
   $ npm test -- --watch  · shell · 3m02s
 
  j once more: into the bottom list, exactly like ↓  (k from its top comes back up)
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯ 
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ autopilot on (shift+tab to cycle) · ? for shortcuts · ↓  to manage
+  ⏵⏵ autopilot on · ↑ ↓  to pick another · enter to open its workflow · esc to go back to the input
 
-❯ ◯ Fix the money rounding  ▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  2/5 · 1m40s · ↓  31.0k tokens
+❯ ⣾  Fix the money rounding                ▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  2/5 · 1m40s · ↓  31k tokens
   $ npm test -- --watch  · shell · 3m02s
 
  j: the next row
@@ -31,6 +31,6 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ⏵⏵ autopilot on (shift+tab to cycle) · ? for shortcuts · ↓  to manage
 
-  ◯ Fix the money rounding  ▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  2/5 · 1m40s · ↓  31.0k tokens
+  ⣾  Fix the money rounding                ▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  2/5 · 1m40s · ↓  31k tokens
 ❯ $ npm test -- --watch  · shell · 3m02s
 

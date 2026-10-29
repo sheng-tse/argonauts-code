@@ -1,0 +1,38 @@
+   seat whose idea it was; code picks a checker from another maker.                                                     
+   Only you see Checked by: the seats read "a fresh session that code picks".                                           
+                                                                                                                        
+── Every seat signed both · ●  Gemini 3.8 Flash objects to a way you asked for; only you change it ──────────────────── 
+                                                                                                                        
+── 10:51 AM · You approved the plan · Plan limits stays as you asked ────────────────────────────────────────────────── 
+                                                                                                                        
+── ●  Opus 5.5 started a workflow: Maker-checker ────────────────────────────────────────────────────────────────────── 
+                                                                                                                        
+●  Opus 5.5                                                                                                             
+   Maker-checker  Redis bucket                                                                                          
+   ✔  Build ●  Opus 5.5 ── ○  Review ●  GPT 5.6 Luna, new session ── until it holds                                     
+   ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 steps · 3m36s · ↓  402k tokens                                                             
+                                                                                                                        
+●  GPT 5.6 Luna                                                                                                         
+   Own session  Plan limits                                                                                             
+   ⏺  Bash(npm run migrate:new add_rate_limit_to_plans)                                                                 
+   ▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/5 to-dos · 3m36s · ↓  171k tokens                                                            
+                                                                                                                        
+── ●  Gemini 3.8 Flash started 3 agents ─────────────────────────────────────────────────────────────────────────────── 
+                                                                                                                        
+●  Gemini 3.8 Flash                                                                                                     
+   3 agents  Route tests                                                                                  enter to open 
+   ○  ●  Orders routes    ○  ●  Users routes    ○  ●  Import routes                                                     
+   ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/3 agents · 1m04s · ↓  52k tokens                                                             
+                                                                                                                        
+✻ Rowing… (11m 2s · ↓  1.2M tokens · 0/4 tasks)                                                                         
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task                                                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on · ↑ ↓  to pick another · enter to open its agents · esc to go back to the input                  
+                                                                                                                        
+  ⣾  Rate limit the API                    ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/4 · 11m02s · ↓  1.2M tokens                          
+    ⎿ ⣾  ●  Redis bucket     Maker-checker ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 ·  3m36s · ↓  402k tokens                          
+      ⣾  ●  Plan limits      Own session   ▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/5 ·  3m36s · ↓  171k tokens                          
+      ⣾  ●  Memory store     Own session   Write(src/rate/memory-s…     3m36s · ↓  120k tokens                          
+      ⣾  ●  Route tests      3 agents      ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/3 ·  1m04s · ↓   52k tokens                          

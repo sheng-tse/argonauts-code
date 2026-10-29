@@ -30,6 +30,7 @@ mod repo_files;
 mod run_command;
 mod run_files;
 pub mod self_update;
+mod session_id;
 mod setup;
 mod startup;
 mod telemetry;
@@ -65,6 +66,7 @@ pub use learning::shell::{LearningShell, ShellOutput, learning, learning_proposa
 pub use live_registry::{LiveRunHost, live_run_hosts};
 pub use mods::doctor_problems as mod_problems;
 pub use run_command::{RunCommand, RunCommandExit, run_command};
+pub use session_id::{FoundSession, find_session};
 pub use startup::welcome;
 pub use telemetry::{TelemetryAction, count_crashes, telemetry};
 
@@ -92,7 +94,7 @@ pub enum FirstView {
     Attach(RunId),
     /// Carries on this earlier conversation, as `argonauts resume conversation-<n>` does.
     PastConversation(ConversationId),
-    /// Carries on the main agent CLI's own session, as `argonauts resume codex:<id>` does.
+    /// Carries on a CLI's own session, as `argonauts resume codex:<id>` does.
     CliSession(CliSessionRef),
     /// Carries on an agent's session from a run, as `argonauts resume run-<n>/s-<n>` does.
     Agent(AgentSessionRef),

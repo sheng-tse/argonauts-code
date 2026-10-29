@@ -83,6 +83,7 @@ pub(crate) fn task_spec(id: &str, depends_on: &[&str], worker: Option<&str>) -> 
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 

@@ -2,11 +2,13 @@
 //! `/rewind`'s checkpoints by number, `s` after `/status` for the narrator's summary, `l` after
 //! a workflow for the library, and the library's files by number, with `c`, `C`, or `d` before
 //! it to copy one, copy it to the repo, or diff it with the built-in. `a` after the default
-//! agent's `/effort` flips Ultracode, which the slider does with Tab. Any other line drops the
-//! offer and means what it always does.
+//! agent's `/effort` flips Ultracode, which the slider does with Tab. After the Behaviors world,
+//! `n` and `p` step from place to place on it, where the full screen points. Any other line
+//! drops the offer and means what it always does.
 
 use argonauts_core::TaskId;
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::input::{SlashCommand, WorkflowAction};
 use argonauts_core::views::WorkflowFile;
 
@@ -21,6 +23,12 @@ pub(super) enum Offer {
     Library(Vec<WorkflowFile>),
     /// The main agent's effort was read out with Ultracode, which is on when `true`.
     Ultracode(bool),
+    /// The Behaviors world was read out: each place on it, as the pointer's line reads it, and
+    /// the one read last.
+    Places {
+        places: Vec<Vec<String>>,
+        at: Option<usize>,
+    },
 }
 
 /// What a line taken by an offer comes to.
@@ -28,11 +36,17 @@ pub(super) enum Offer {
 pub(super) struct Taken {
     pub lines: Vec<String>,
     pub command: Option<UiCommand>,
+    /// What the next line is offered after this one, as when a step leaves the next to take.
+    pub again: Option<Offer>,
 }
 
 impl Offer {
-    pub fn for_view(data: &ViewData) -> Option<Self> {
+    pub fn for_view(data: &ViewData, names: &DisplayNames) -> Option<Self> {
         match data {
+            ViewData::Behaviors { map } => {
+                let places = crate::overview::world_places(map, names);
+                (!places.is_empty()).then_some(Self::Places { places, at: None })
+            }
             ViewData::Checkpoints { checkpoints, .. } if !checkpoints.is_empty() => {
                 Some(Self::Checkpoints(
                     checkpoints
@@ -68,6 +82,9 @@ impl Offer {
             }
             Self::Ultracode(false) => "ultracode: type a to turn it on.",
             Self::Ultracode(true) => "ultracode: type a to turn it off.",
+            Self::Places { .. } => {
+                "behaviors: type n for the next place on the world and p for the one before."
+            }
         }
     }
 
@@ -89,6 +106,29 @@ impl Offer {
                 }),
                 ..Taken::default()
             }),
+            Self::Places { places, at } => {
+                let count = places.len();
+                let next = match (line, *at) {
+                    ("n", None) => 0,
+                    ("p", None) => count.checked_sub(1)?,
+                    ("n", Some(at)) => (at + 1) % count,
+                    ("p", Some(at)) => (at + count - 1) % count,
+                    _ => return None,
+                };
+                let lines = places
+                    .get(next)?
+                    .iter()
+                    .map(|said| format!("place {} of {count}: {said}", next + 1))
+                    .collect();
+                Some(Taken {
+                    lines,
+                    command: None,
+                    again: Some(Self::Places {
+                        places: places.clone(),
+                        at: Some(next),
+                    }),
+                })
+            }
             Self::Workflow => (line == "l").then(|| Taken {
                 command: Some(UiCommand::Request {
                     view: ViewRequest::WorkflowLibrary,
@@ -126,7 +166,7 @@ impl Offer {
                                 format!("workflow {}: {}", row.name, sanitize_line(text).trim_end())
                             })
                             .collect(),
-                        command: None,
+                        ..Taken::default()
                     },
                 })
             }
@@ -171,7 +211,7 @@ mod tests {
 
     #[test]
     fn a_number_picks_a_checkpoint_and_anything_else_is_left_alone() {
-        let offer = Offer::for_view(&checkpoints()).unwrap();
+        let offer = Offer::for_view(&checkpoints(), &DisplayNames::default()).unwrap();
         let taken = offer.take(" 2 ").unwrap();
         assert!(matches!(
             taken.command,
@@ -196,7 +236,7 @@ mod tests {
             }
         };
         for on in [false, true] {
-            let offer = Offer::for_view(&view(on)).unwrap();
+            let offer = Offer::for_view(&view(on), &DisplayNames::default()).unwrap();
             assert!(
                 offer.hint().contains("type a to turn it"),
                 "{}",
@@ -224,7 +264,51 @@ mod tests {
                 "Haiku 4.5",
             ),
         };
-        assert_eq!(Offer::for_view(&without), None);
+        assert_eq!(Offer::for_view(&without, &DisplayNames::default()), None);
+    }
+
+    /// After the Behaviors world, n and p step from place to place on it, each line the place's
+    /// own, round from the last back to the first; any other line drops the offer.
+    #[test]
+    fn n_and_p_step_from_place_to_place_on_the_world() {
+        use crate::world::map::fields::crews::Key;
+
+        let map = crate::overview::stats::behaviors::crews::map(Key::R);
+        let names = DisplayNames::default();
+        let places = crate::overview::world_places(&map, &names);
+        assert!(places.len() > 3, "{places:#?}");
+        let view = ViewData::Behaviors { map: Box::new(map) };
+        let offer = Offer::for_view(&view, &names).unwrap();
+        assert!(
+            offer.hint().contains("type n for the next place"),
+            "{}",
+            offer.hint()
+        );
+        let read = |place: usize| -> Vec<String> {
+            places[place]
+                .iter()
+                .map(|said| format!("place {} of {}: {said}", place + 1, places.len()))
+                .collect()
+        };
+        let first = offer.take(" n ").unwrap();
+        assert_eq!(first.lines, read(0));
+        let again = first.again.unwrap();
+        let second = again.take("n").unwrap();
+        assert_eq!(second.lines, read(1));
+        let back = second.again.unwrap().take("p").unwrap();
+        assert_eq!(back.lines, read(0));
+        let round = back.again.unwrap().take("p").unwrap();
+        assert_eq!(
+            round.lines,
+            read(places.len() - 1),
+            "p from the first goes round"
+        );
+        assert!(again.take("hello").is_none());
+        assert!(again.take("next").is_none());
+        let empty = ViewData::Behaviors {
+            map: Box::default(),
+        };
+        assert_eq!(Offer::for_view(&empty, &names), None, "no world, no places");
     }
 
     #[test]
@@ -233,13 +317,14 @@ mod tests {
             run: Some(RunId::new("run-01").unwrap()),
             ..StatusSummary::default()
         };
-        let offer = Offer::for_view(&ViewData::Status { summary }).unwrap();
+        let offer =
+            Offer::for_view(&ViewData::Status { summary }, &DisplayNames::default()).unwrap();
         assert_eq!(offer.take("s").unwrap().command, Some(UiCommand::Summary));
         assert!(offer.take("so what").is_none());
         let none = ViewData::Status {
             summary: StatusSummary::default(),
         };
-        assert!(Offer::for_view(&none).is_none());
+        assert!(Offer::for_view(&none, &DisplayNames::default()).is_none());
     }
 
     #[test]
@@ -254,10 +339,13 @@ mod tests {
             in_use: true,
             problem: None,
         };
-        let offer = Offer::for_view(&ViewData::WorkflowLibrary {
-            workflows: vec![file],
-            refresh: false,
-        })
+        let offer = Offer::for_view(
+            &ViewData::WorkflowLibrary {
+                workflows: vec![file],
+                refresh: false,
+            },
+            &DisplayNames::default(),
+        )
         .unwrap();
         assert_eq!(
             offer.take("1").unwrap().lines,

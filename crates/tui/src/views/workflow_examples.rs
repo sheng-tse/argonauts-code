@@ -164,9 +164,271 @@ pub(crate) fn running() -> WorkflowData {
     )
 }
 
+/// Two models OpenCode runs, which keep the names its own list gives them.
+pub(crate) const QWEN: &str = "opencode/ollama/qwen3-coder:30b";
+pub(crate) const NEMOTRON: &str = "opencode/opencode/nemotron-3.5-super-vl-free";
+
+/// The names OpenCode's own list gives [`QWEN`] and [`NEMOTRON`].
+pub(crate) fn opencode_names(names: &mut argonauts_core::display_names::DisplayNames) {
+    for (id, name) in [
+        (QWEN, "Qwen3 Coder 30B (64k)"),
+        (NEMOTRON, "Nemotron 3.5 Super VL Free"),
+    ] {
+        let mut entry = argonauts_core::model_catalog::CatalogEntry::new(worker(id));
+        entry.name = Some(name.to_owned());
+        names.catalog.models.push(entry);
+    }
+}
+
+/// Review at work on five parts, one of each state: approved, sent back, at work, failed on a
+/// local model, and one still waiting for a free model.
+pub(crate) fn every_mark() -> WorkflowData {
+    let builds = vec![
+        noted(
+            agent(1, "build:due-flag", SONNET, RowStatus::Done, 57_800, 160),
+            "passed",
+            Tone::Good,
+        ),
+        noted(
+            agent(2, "build:due-tests", GPT, RowStatus::Done, 30_300, 62),
+            "passed",
+            Tone::Good,
+        ),
+    ];
+    let mut reviews = reviews();
+    reviews.extend([
+        WorkflowRow::Agent(agent(
+            5,
+            "review:due-parse",
+            SONNET,
+            RowStatus::Running,
+            9_300,
+            38,
+        )),
+        noted(
+            agent(6, "review:due-store", QWEN, RowStatus::Failed, 102_400, 123),
+            "failed · the model stopped answering",
+            Tone::Bad,
+        ),
+        WorkflowRow::Agent(agent(
+            7,
+            "review:due-docs",
+            NEMOTRON,
+            RowStatus::Waiting,
+            0,
+            0,
+        )),
+    ]);
+    let data = workflow(
+        (4, 7),
+        252,
+        vec![
+            phase("Build", RowStatus::Done, Some((2, 2)), builds),
+            phase("Review", RowStatus::Running, Some((2, 5)), reviews),
+            not_started("Sign-off"),
+            not_started("Merge"),
+        ],
+    );
+    says(
+        data,
+        StatusKind::Note,
+        "review: GPT 5.6 Luna sent build:due-flag back; round 2 is under way",
+        Tone::Plain,
+    )
+}
+
+pub(crate) const HAIKU: &str = "claude-code/claude-haiku-5-5";
+
+/// A run whose builder asked you how totals round, and whose other builder works on.
+pub(crate) fn fix_money() -> WorkflowData {
+    let builds = vec![
+        WorkflowRow::Agent(agent(
+            1,
+            "build:fix-money",
+            HAIKU,
+            RowStatus::NeedsYou,
+            12_600,
+            72,
+        )),
+        WorkflowRow::Agent(agent(
+            2,
+            "build:ledger-tests",
+            SONNET,
+            RowStatus::Running,
+            9_300,
+            38,
+        )),
+    ];
+    let mut data = workflow(
+        (0, 2),
+        185,
+        vec![
+            phase("Build", RowStatus::NeedsYou, Some((0, 2)), builds),
+            not_started("Review"),
+            not_started("Sign-off"),
+            not_started("Merge"),
+        ],
+    );
+    data.name = "Fix the money rounding".to_owned();
+    data.description =
+        "totals round as the ledger does, each part reviewed on another CLI".to_owned();
+    says(
+        data,
+        StatusKind::NeedsYou,
+        "Question from build:fix-money",
+        Tone::Plain,
+    )
+}
+
+/// The question [`fix_money`]'s first builder asked.
+pub(crate) fn fix_money_question() -> argonauts_core::events::approval::ApprovalOpened {
+    use argonauts_core::events::approval::{
+        AnswerAction, AnswerOption, ApprovalKind, ApprovalOpened, ApprovalPacket, FreeText,
+        QuestionPacket,
+    };
+    use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+    use argonauts_core::settings::asking::WhenDeclined;
+
+    let text = "Should totals round half to even, as the ledger does, or half up?";
+    let answer = |key: char, label: &str| AnswerOption {
+        key,
+        label: label.to_owned(),
+        action: AnswerAction::Choose {
+            value: label.to_owned(),
+        },
+        recommended: false,
+        detail: None,
+    };
+    ApprovalOpened {
+        id: argonauts_core::names::ApprovalId::numbered(1),
+        kind: ApprovalKind::Question,
+        title: "build:fix-money asks how totals round".to_owned(),
+        task: None,
+        packet: ApprovalPacket::Question(QuestionPacket {
+            from: worker(HAIKU),
+            task: argonauts_core::TaskId::new("fix-money").expect("a task id"),
+            text: text.to_owned(),
+            options: vec!["Half to even".to_owned(), "Half up".to_owned()],
+        }),
+        evidence_sha256: "0".repeat(64),
+        mode: ApprovalMode::Supervised,
+        decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
+        options: vec![answer('a', "Half to even"), answer('b', "Half up")],
+        free_text: FreeText::Answer,
+        needs_you: true,
+    }
+}
+
+/// A run whose two builders on Claude Code wait for it to come back, while the third, on Codex,
+/// works on.
+pub(crate) fn cache_rates() -> WorkflowData {
+    let builds = vec![
+        WorkflowRow::Agent(agent(
+            1,
+            "build:rate-cache",
+            OPUS,
+            RowStatus::Paused,
+            18_400,
+            41,
+        )),
+        WorkflowRow::Agent(agent(
+            2,
+            "build:cache-expiry",
+            SONNET,
+            RowStatus::Paused,
+            7_000,
+            22,
+        )),
+        WorkflowRow::Agent(agent(
+            3,
+            "build:cache-tests",
+            LUNA,
+            RowStatus::Running,
+            6_000,
+            62,
+        )),
+    ];
+    let mut data = workflow(
+        (0, 3),
+        62,
+        vec![
+            phase("Build", RowStatus::Running, Some((0, 3)), builds),
+            not_started("Review"),
+            not_started("Merge"),
+        ],
+    );
+    data.name = "Cache exchange rates".to_owned();
+    data.description = "cache the rates for an hour, each part reviewed on another CLI".to_owned();
+    let waits = StatusLine::new(
+        StatusKind::NeedsYou,
+        "Claude Code is down · 2 tasks wait for it",
+    )
+    .counting("tried again in", 288_000);
+    data.status_lines = vec![waits];
+    data
+}
+
+/// The question Claude Code being down asks in [`cache_rates`], its options in the order the
+/// run gives them.
+pub(crate) fn cache_rates_down() -> argonauts_core::events::approval::ApprovalOpened {
+    use argonauts_core::events::approval::{
+        AgentDownPacket, AnswerAction, AnswerOption, ApprovalKind, ApprovalOpened, ApprovalPacket,
+        FreeText, PausedTask,
+    };
+    use argonauts_core::names::{AgentId, RoleName};
+    use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+    use argonauts_core::settings::asking::WhenDeclined;
+
+    let paused = |task: &str, title: &str| PausedTask {
+        task: argonauts_core::TaskId::new(task).expect("a task id"),
+        title: title.to_owned(),
+        role: RoleName::Worker,
+    };
+    let answer = |key: char, label: &str, action: AnswerAction| AnswerOption {
+        key,
+        label: label.to_owned(),
+        action,
+        recommended: false,
+        detail: None,
+    };
+    ApprovalOpened {
+        id: argonauts_core::names::ApprovalId::numbered(1),
+        kind: ApprovalKind::AgentDown,
+        title: "Claude Code is down · 2 tasks wait for it".to_owned(),
+        task: None,
+        packet: ApprovalPacket::AgentDown(AgentDownPacket {
+            agent_id: AgentId("claude-code".into()),
+            evidence: "overload errors on 3 sessions in 2 min".to_owned(),
+            test_at: Some(time::macros::datetime!(2026-10-10 14:40 UTC)),
+            paused: vec![
+                paused("rate-cache", "Cache the rates"),
+                paused("cache-expiry", "Expire the cache after an hour"),
+            ],
+            fits_all: None,
+            kept_by: None,
+        }),
+        evidence_sha256: "0".repeat(64),
+        mode: ApprovalMode::Supervised,
+        decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
+        options: vec![
+            answer(
+                'a',
+                "One agent for every paused task",
+                AnswerAction::OneForAll,
+            ),
+            answer('e', "Choose per task", AnswerAction::PerTask),
+            answer('w', "Wait for Claude Code", AnswerAction::Wait),
+        ],
+        free_text: FreeText::Guidance,
+        needs_you: true,
+    }
+}
+
 /// The run of Claude Code's own picture of its workflow view: Scaffold, Build and Merge done,
 /// Look at three of its four agents, and Build's three agents.
-pub(crate) fn ui_kit() -> WorkflowData {
+pub(crate) fn todo_tui() -> WorkflowData {
     let builders = [
         "build:a-terminal-bottom",
         "build:b-history-cells",
@@ -205,10 +467,10 @@ pub(crate) fn ui_kit() -> WorkflowData {
             phase("Look", RowStatus::Running, Some((3, 4)), Vec::new()),
         ],
     );
-    data.name = "argonauts-ui-kit".to_owned();
+    data.name = "todo-tui".to_owned();
     data.description =
-        "Build a standalone Rust UI kit prototype that matches the user's Claude Code \
-                        screenshot (inline conversation, cells, bottom region, agent"
+        "Build a terminal todo app with an inline task list, a history of what changed, the \
+                        bottom input, the reminders panel, and"
             .to_owned();
     data.notes = Vec::new();
     data

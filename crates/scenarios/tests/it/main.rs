@@ -16,6 +16,7 @@ mod agents_opencode_owns_task;
 mod agents_scenario_files;
 mod app_approvals;
 mod app_conversation;
+mod app_drawings;
 mod app_first_run;
 mod app_helpers;
 mod app_main_session;

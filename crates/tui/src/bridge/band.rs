@@ -10,7 +10,7 @@ use argonauts_core::settings::ui::{ContextDetail as Wanted, ModName, ModWidth};
 
 use crate::bottom::{PinnedRun, wall_now};
 use crate::kit::ContextCard;
-use crate::overview::{conversation_context, session_context};
+use crate::overview::{ContextPrinted, conversation_context, session_context};
 use crate::state::AppState;
 
 use super::Cx;
@@ -90,11 +90,15 @@ pub fn sync(cx: &mut Cx<'_>) {
     }
 }
 
-/// The conversation's context by category where its CLI has counted it, and otherwise the
-/// fullest session of the run the screen follows.
+/// The conversation's context by category where its CLI has counted it, else the main
+/// session's start, before that count and for a CLI that says only how full it is, and
+/// otherwise the fullest session of the run the screen follows.
 fn context_card(state: &AppState) -> Option<ContextCard> {
     if let Some(breakdown) = &state.conversation.context {
         return Some(conversation_context(breakdown));
+    }
+    if let Some(card) = ContextPrinted::started_card(state) {
+        return Some(card);
     }
     let run = state.followed_run()?;
     let share = |session: &&crate::state::SessionState| session.context?.of_cap();
@@ -166,6 +170,103 @@ mod tests {
         // Unpinned, nothing about the run is kept for the band.
         bridge.on_event(&mut model, &pinning(&[ModName::Spend]), now);
         assert_eq!(model.bottom.band.run, None);
+    }
+
+    /// Codex's start as the controller sends it, before its session starts and before the
+    /// Context tab first opens.
+    fn codex_start() -> AppEvent {
+        use argonauts_core::events::context::{
+            FirstCount, StartHolds, StartPart, StartedFrom, StartingCount,
+        };
+
+        let start = StartingCount {
+            agent: "codex".to_owned(),
+            model: Some("gpt-6-luna".to_owned()),
+            window: Some(372_000),
+            buffer: 0,
+            parts: vec![
+                StartPart::holding(StartHolds::OwnPromptAndTools, 15_236, "promptBorder"),
+                StartPart::holding(StartHolds::InstructionFiles, 1_200, "claude"),
+            ],
+            files: Vec::new(),
+            tools: None,
+            from: StartedFrom::LastSession,
+            first_count: Some(FirstCount::Turn),
+        };
+        AppEvent::MainStart {
+            start: Box::new(start),
+            cli_window: false,
+            estimated: true,
+        }
+    }
+
+    fn conversation(event: argonauts_core::app::ConversationEvent) -> AppEvent {
+        AppEvent::Conversation { event }
+    }
+
+    /// The card above the input draws the main session's start before its CLI's first count,
+    /// while the CLI loads, and for Codex, which says only how full the session is, once it
+    /// has said: as an estimate, though the Context tab opened before the session started.
+    #[test]
+    fn the_context_card_draws_the_start_before_loading_and_for_codex() {
+        use argonauts_core::AgentEvent;
+        use argonauts_core::app::{ConversationEvent, ViewData};
+        use argonauts_core::names::{ModelRef, TurnId};
+        use argonauts_core::views::ContextView;
+
+        let mut bridge = Bridge::new(&UiOptions::default());
+        let mut model = ViewModel::default();
+        let now = Instant::now();
+        bridge.on_event(&mut model, &pinning(&[ModName::Context]), now);
+        assert_eq!(model.bottom.band.context, None, "nothing kept yet");
+
+        bridge.on_event(&mut model, &codex_start(), now);
+        let card = model.bottom.band.context.clone().expect("the start's card");
+        let before = card.before.expect("a card before the count");
+        assert_eq!((card.used, before.loading), (Some(16_436), false));
+
+        let AppEvent::MainStart { start, .. } = codex_start() else {
+            unreachable!()
+        };
+        let tab = ContextView {
+            main_start: Some(*start),
+            ..ContextView::default()
+        };
+        let opened = AppEvent::View {
+            data: Box::new(ViewData::Context { view: tab }),
+        };
+        bridge.on_event(&mut model, &opened, now);
+
+        let turn = TurnId::numbered(1);
+        let started = ConversationEvent::TurnStarted {
+            turn: turn.clone(),
+            text: "hi".to_owned(),
+            worker: ModelRef::new("codex", Some("gpt-6-luna".to_owned())),
+            read_only: true,
+            commit: String::new(),
+            uncommitted: Vec::new(),
+            settings_sha256: None,
+            continues: false,
+        };
+        bridge.on_event(&mut model, &conversation(started), now);
+        let card = model.bottom.band.context.clone().expect("the loading card");
+        assert!(card.before.is_some_and(|before| before.loading), "{card:?}");
+
+        let fill = ConversationEvent::Agent {
+            turn,
+            event: AgentEvent::ContextFill {
+                used: 30_500,
+                size: None,
+                sent: None,
+            },
+        };
+        bridge.on_event(&mut model, &conversation(fill), now);
+        let card = model.bottom.band.context.clone().expect("Codex's card");
+        assert_eq!((card.used, card.before), (Some(30_500), None));
+        assert!(
+            card.used_estimated,
+            "Codex works its fill out from its totals"
+        );
     }
 
     #[test]

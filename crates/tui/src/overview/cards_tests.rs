@@ -31,6 +31,7 @@ fn the_tokens_card_says_a_local_server_reports_no_cache() {
         },
         pays_per_token: false,
         local: true,
+        billing: None,
         this_week: Vec::new(),
     };
     usage
@@ -83,7 +84,7 @@ fn plan_usage_has_a_row_for_each_window_grouped_by_cli() {
     );
     let claude = &rows[3];
     assert!(
-        claude.starts_with(" │ Claude Code  Max    5-hour   ━"),
+        claude.starts_with(" │ Claude Code    Max     5-hour   ━"),
         "{claude}"
     );
     assert!(
@@ -92,7 +93,7 @@ fn plan_usage_has_a_row_for_each_window_grouped_by_cli() {
     );
     let week = &rows[4];
     assert!(
-        week.starts_with(" │                     week     ━"),
+        week.starts_with(" │                        week     ━"),
         "{week}"
     );
     assert!(
@@ -101,19 +102,19 @@ fn plan_usage_has_a_row_for_each_window_grouped_by_cli() {
     );
     let codex = &rows[6];
     assert!(
-        codex.starts_with(" │ Codex        Plus   5-hour"),
+        codex.starts_with(" │ Codex          Plus    5-hour"),
         "{codex}"
     );
     assert!(codex.contains(" 92%   resets in 1h 15m"), "{codex}");
     assert!(rows[7].contains(" 41%   resets in 3d 20h"), "{rows:#?}");
     assert!(
         rows[9].contains(
-            "│ agy          Pro    out until Tue 3:45pm · its tasks moved to GPT 5.6 on Codex"
+            "│ agy            Pro     out until Tue 3:45pm · its tasks moved to GPT 5.6 on Codex"
         ),
         "{rows:#?}"
     );
     assert!(
-        rows[11].contains("│ OpenRouter          pays per token, so there is no plan to track"),
+        rows[11].contains("│ OpenRouter             pays per token, so there is no plan to track"),
         "{rows:#?}"
     );
     // Every row's bar, share and reset words start in the same column.
@@ -179,8 +180,8 @@ fn a_narrow_card_gives_up_the_reset_words_then_the_plan_and_keeps_every_window()
     assert!(
         narrowest
             .iter()
-            .any(|row| row.contains("│ Claude      5-hour")),
-        "then the plan goes and the names shorten: {narrowest:#?}"
+            .any(|row| row.contains("│ Claude Code    5-hour")),
+        "then the plan goes, and every CLI keeps its whole name: {narrowest:#?}"
     );
     assert!(!narrowest.iter().any(|row| row.contains("Plus")));
     let wider = self::rows(&sample::usage(), UsageCard::PlanUsage, Form::Compact, 86);
@@ -216,9 +217,9 @@ fn spend_names_who_spent_what_and_tokens_what_they_were() {
     assert!(spend[1].ends_with("~$1.86 · no limit set │"), "{spend:#?}");
     let models = spend[5..].join("\n");
     for part in [
-        "■ Opus 5.5            Claude Code   ~$1.12   60%",
-        "■ GPT 5.6             Codex         $0.62    33%",
-        "■ Gemini 3.6 Flash    agy           ~$0.12   6%",
+        "██  Opus 5.5            Claude Code   ~$1.12   60%",
+        "██  GPT 5.6             Codex          $0.62   33%",
+        "██  Gemini 3.6 Flash    agy           ~$0.12    6%",
     ] {
         assert!(models.contains(part), "{part}: {models}");
     }
@@ -250,9 +251,10 @@ fn a_spend_limit_is_what_the_bar_counts_toward() {
         spend[1].ends_with("~$1.86 of $5.00 today  [37%] │"),
         "{spend:#?}"
     );
+    // The models' textures, then the track's line.
     let bar = &spend[2];
-    let filled = bar.chars().filter(|c| *c == '█').count();
-    let cells = bar.chars().filter(|c| matches!(c, '█' | '░')).count();
+    let filled = bar.chars().filter(|c| "█▓▒░".contains(*c)).count();
+    let cells = filled + bar.chars().filter(|c| "━═─╌".contains(*c)).count();
     assert!(filled * 100 / cells.max(1) < 45, "{bar}");
 }
 
@@ -429,12 +431,12 @@ fn a_cli_with_no_reading_says_so_in_its_row() {
     let rows = rows(&usage, UsageCard::PlanUsage, Form::Compact, 110);
     assert!(
         rows.iter()
-            .any(|row| row.contains("│ Claude Code  no reading yet")),
+            .any(|row| row.contains("│ Claude Code    no reading yet")),
         "{rows:#?}"
     );
     assert!(
         rows.iter()
-            .any(|row| row.contains("│ Codex        no reading yet")),
+            .any(|row| row.contains("│ Codex          no reading yet")),
         "{rows:#?}"
     );
 }
@@ -451,13 +453,13 @@ fn before_any_reading_the_card_says_so() {
 }
 
 #[test]
-fn opencode_is_green_and_a_model_on_a_server_pink() {
+fn opencode_is_magenta_and_a_model_on_a_server_grey() {
     let theme = Theme::dark().with_level(ColorLevel::TrueColor);
-    assert_eq!(cli_role("opencode"), Role::AgentGreen);
+    assert_eq!(Role::for_cli("opencode"), Role::CliOpenCode);
     assert_eq!(
-        theme.style(cli_role("opencode")).fg,
-        Some(ratatui::style::Color::Rgb(0x4a, 0xde, 0x80))
+        theme.style(Role::for_cli("opencode")).fg,
+        Some(ratatui::style::Color::Rgb(0xc2, 0x7c, 0xb4))
     );
-    assert_eq!(cli_role("ollama"), Role::AgentPink);
-    assert_eq!(cli_role("claude-code"), Role::CliClaude);
+    assert_eq!(Role::for_cli("ollama"), Role::CatOther);
+    assert_eq!(Role::for_cli("claude-code"), Role::CliClaude);
 }

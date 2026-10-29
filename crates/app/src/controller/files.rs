@@ -418,7 +418,11 @@ mod tests {
         let council = files.iter().find(|file| file.name == "council").unwrap();
         assert_eq!(council.origin, WorkflowOrigin::BuiltIn);
         assert!(council.in_use);
-        assert!(council.text.contains("[[step]]"), "{}", council.text);
+        assert!(
+            council.text.contains("kind  = \"talk\""),
+            "{}",
+            council.text
+        );
         // The fixed phases the engine keeps for itself are no workflow of their own.
         assert!(!files.iter().any(|file| file.name == "script"), "{files:?}");
         assert!(files.iter().all(|file| !file.source.ends_with(".yaml")));

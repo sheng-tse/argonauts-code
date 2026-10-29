@@ -1,27 +1,33 @@
-  GPT 6 Luna · read git history, alone or beside other commands · 9 times                                             
-                                                                                                                      
-    build:per-api-key      20261020-123036  git status --porcelain=v1 && git show HEAD:ratelimit/bucket.…             
-  ❯ build:per-api-key      20261020-123036  git show --stat --oneline ef3f187 && git show ef3f187 -- rat…             
-    build:per-api-key      20261020-123036  "git status --short && git diff -- ratelimit/bucket.py ratel…             
-    build:per-api-key      20261020-123036  "git status --short && git log -1 --oneline && sed -n '1,240…             
-    build:per-api-key      20261017-071701  tmpdir=$(mktemp -d) && cp -R ratelimit tests "$tmpdir"/ && g…             
-                                                                                                                      
-  r to cycle dates · g group · s this project · d deeper map · ↑  ↓  example · enter opens it · esc back              
-                                                                                                                      
- Enter on the second:                                                                                                 
-                                                                                                                      
-  build:per-api-key · GPT 6 Luna on Codex · builder · in the run's worktree                                           
-  run-20261020-123036-4e50 · council repo · spec-first · 8:32 AM · its action 3 of 6                                  
-                                                                                                                      
-  What it did                                                                                                         
-    read git history: git show --stat --oneline ef3f187 && git show ef3f187                                           
-                                                                                                                      
-  Why it's on the map                                                                                                 
-    GPT 6 Luna read git history in 13.6% of its actions (9 of 66); the other models in 1.8% (9 of 496).               
-                                                                                                                      
-  What the run shows                                                                                                  
-    ef3f187 is cap-bucket-refills' commit. This task started without it, so it read the change from                   
-    history and copied it in, and review sent the copy back for its scope.                                            
-                                                                                                                      
-                                                                                                                      
-  r to cycle dates · g group · s this project · ←  →  example · o opens the run · c copies the action · esc back      
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  build:per-api-key · ◧◨ GPT 6 Luna on Codex · builder · in the run's worktree
+  run-20261020-123036-4e50 · council project · spec-first · 8:32 AM · its action 3 of 6
+
+  What it did
+    read git history: git show --stat --oneline ef3f187 && git show ef3f187
+
+  Why it's on the map
+    GPT 6 Luna read git history in 13.6% of its actions (9 of 66); the other models in 1.8% (9 of 496).
+
+  What the run shows
+    ef3f187 is cap-bucket-refills' commit. This task started without it, so it read the change from
+    history and copied it in, and review sent the copy back for its scope.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   r to cycle dates · s this project · ←  →  example · o opens the run · c copies the action · esc back

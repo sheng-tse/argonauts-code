@@ -8,11 +8,13 @@ use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::agent_status::FallbackPlan;
 use argonauts_core::events::approval::{
     AnswerAction, AnswerOption, ApprovalKind, ApprovalOpened, ApprovalPacket, ChangeRequestPacket,
-    FreeText, GoalChangePacket, GoalPacket, LimitPacket, MergePacket, OriginalReturnedPacket,
-    PlanPacket, QuestionPacket, StuckPacket, TakeOverReturnPacket,
+    CouncilPacket, CouncilQuestion, FreeText, GoalChangePacket, GoalPacket, LimitPacket,
+    MergePacket, OriginalReturnedPacket, PlanPacket, QuestionPacket, StuckPacket,
+    TakeOverReturnPacket,
 };
 use argonauts_core::events::run::Party;
 use argonauts_core::names::ModelRef;
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::fallback::FallbackStrategy;
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::judgment::ReviewVerdict;
@@ -22,7 +24,9 @@ use time::UtcOffset;
 
 use super::options::{first_recommended, question_options};
 use super::words;
-use crate::bottom::{OptionKind, QuestionAgent, QuestionChip, QuestionOption, QuestionPrompt};
+use crate::bottom::{
+    BACK_HINT, CARRY_ON, OptionKind, QuestionAgent, QuestionChip, QuestionOption, QuestionPrompt,
+};
 use crate::format;
 use crate::state::RunState;
 
@@ -88,14 +92,135 @@ pub fn approval_question_local(
             original_returned_question(&mut question, back, names)
         }
         ApprovalPacket::SecondAgent(second) => question.question = Some(second.text.clone()),
+        ApprovalPacket::Council(council) => {
+            question.question = Some(council_text(council, offset));
+            backed_sides(&mut question, council, run, names);
+        }
         ApprovalPacket::WorkflowPromotion(_) => {}
     }
     // A title that asks the question already needn't ask it again.
     if question.question.as_deref() == Some(opened.title.trim()) {
         question.question = None;
     }
+    // Esc goes back to the list and the question waits; whoever asked decides in your place
+    // only when you say so, on the last row.
+    question.esc_hint = BACK_HINT.to_owned();
+    if carries_on(opened) {
+        let asker = question.agent.as_ref().map(|agent| agent.name.clone());
+        question.options.push(
+            QuestionOption::new(CARRY_ON)
+                .with_description(carry_on_words(opened, asker.as_deref())),
+        );
+    }
     crate::views::issues::shape_approval(&mut question, opened);
     question
+}
+
+/// The council's question, with the time you wrote the private words a held message repeats
+/// in your zone, which the engine leaves out.
+fn council_text(council: &CouncilPacket, offset: UtcOffset) -> String {
+    match &council.about {
+        CouncilQuestion::Held {
+            why: Some(why),
+            wrote_at: Some(at),
+            ..
+        } => why.question_text(Some(&words::clock(*at, offset))),
+        CouncilQuestion::HeldPlan {
+            why: Some(why),
+            wrote_at: Some(at),
+            ..
+        } => why.plan_question_text(Some(&words::clock(*at, offset))),
+        _ => council.text.clone(),
+    }
+}
+
+/// The seats that back each side of a point left open, after the side's label, as the run's
+/// talk last listed them.
+fn backed_sides(
+    question: &mut QuestionPrompt,
+    council: &CouncilPacket,
+    run: Option<&RunState>,
+    names: &DisplayNames,
+) {
+    let CouncilQuestion::Point { point } = council.about else {
+        return;
+    };
+    let Some(talk) = run
+        .and_then(|run| run.talk.as_ref())
+        .filter(|talk| talk.step == council.talk)
+    else {
+        return;
+    };
+    let sides = talk
+        .sides(point)
+        .iter()
+        .filter(|side| !side.words.is_empty());
+    for (option, side) in question.options.iter_mut().zip(sides) {
+        option.seats = side
+            .backers
+            .iter()
+            .filter_map(|seat| talk.seat(seat))
+            .map(|seat| crate::council::Face::of_seat(seat, names))
+            .collect();
+    }
+}
+
+/// Whether a run's question offers Carry on without me. The draft pull request's doesn't,
+/// since its yes posts on GitHub as you and waits for your own answer.
+pub fn carries_on(opened: &ApprovalOpened) -> bool {
+    !crate::views::issues::waits_for_you(opened)
+}
+
+/// The answer Carry on without me sends: the engine takes an option in your place, as
+/// `approvals.when_declined` says, and records it as yours to review.
+pub fn carry_on_answer() -> AnswerOption {
+    AnswerOption {
+        key: '0',
+        label: CARRY_ON.to_owned(),
+        action: AnswerAction::CarryOn,
+        recommended: false,
+        detail: None,
+    }
+}
+
+/// What carrying on without you does, on its own row under its option, so it starts with a
+/// capital unless it starts with the asking agent's name, which keeps its own spelling: as
+/// `approvals.when_declined` said when the question opened. With `decide`, an agent's question
+/// goes back to the agent, a CLI that is down or a goal's questions to the main agent, a plan
+/// or a goal goes ahead as written, and anything else ends that part safely with its work
+/// kept. With `stop`, the part ends: an agent's question tells its agent to stop and report.
+fn carry_on_words(opened: &ApprovalOpened, asker: Option<&str>) -> String {
+    const KEPT: &str = "kept as an assumption to review";
+    let asker = asker.unwrap_or("The agent");
+    if opened.when_declined == WhenDeclined::Stop {
+        return match &opened.packet {
+            ApprovalPacket::Question(_) => {
+                format!("{asker} stops and reports what is done and what is left")
+            }
+            _ => "This part ends here with its work kept; the closing answer says why".to_owned(),
+        };
+    }
+    match &opened.packet {
+        ApprovalPacket::Question(_) => format!("{asker} decides and goes on; its pick is {KEPT}"),
+        ApprovalPacket::AgentDown(_) => {
+            format!("The main agent picks for each task and goes on; {KEPT}")
+        }
+        ApprovalPacket::Understand(_) => format!("The main agent decides and goes on; {KEPT}"),
+        ApprovalPacket::Plan(_) => {
+            "The plan goes ahead as written; the merge still asks you".to_owned()
+        }
+        // A council's own question, as its other options word theirs.
+        ApprovalPacket::Council(council) => match council.about {
+            CouncilQuestion::Held { .. } => "The seat says it again without your words".to_owned(),
+            CouncilQuestion::HeldPlan { .. } => {
+                "The note keeper writes the plan again without your words".to_owned()
+            }
+            CouncilQuestion::Point { .. } => {
+                "The point goes the side most of the seats back".to_owned()
+            }
+        },
+        _ => "This part ends safely with its work kept, so nothing merges without you".to_owned(),
+    }
 }
 
 /// The event's title, except that a question names who asks it as the rest of the app names

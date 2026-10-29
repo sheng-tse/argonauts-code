@@ -69,6 +69,8 @@ fn crew() -> anyhow::Result<Crew> {
         worker_workflows: false,
         merger: Vec::new(),
         orchestrator_context: Default::default(),
+        orchestrator_picks: Default::default(),
+        ways: Default::default(),
     };
     crew.settings.workflow = "orchestrator".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;

@@ -1,0 +1,38 @@
+          ▐▌ 5.6 Luna moved to one shared bucket · its reason came from you, in private · 5 of 6 points agreed          
+                                                                                                                        
+     Opus 5.5 · 2                                                                                                       
+   ╭─ ▐▌ I now back one shared bucket for calls with no key                                                             
+                                                                                                                        
+     One shared bucket is one bucket a single script can use up. If the reason isn't in                                 
+▐2   the repo or the talk, the council can't weigh it. What is it?                                                      
+                                                                                                                        
+     5.6 Luna · held back: no seat has read it                                                                          
+   ╭─ ▐2 If the reason isn't in the repo or the talk                                                                    
+                                                                                                                        
+     A customer depends on it. Acme's contract promises their old SDK keeps working until                               
+▐▌   March, and it calls /v1/status with no key.                                                                        
+                                                                                                                        
+✻ Parleying… (4m 31s · ↓  76k of 200k tokens · 3/4 seats agree)                                                         
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ GPT 5.6 Luna's message repeats your private words                                                                     
+                                                                                                                        
+  17 words in a row match what you wrote to it in private at 10:46 AM. The talk goes on without it.                     
+  ❯ 1. Ask GPT 5.6 Luna to say it without your words                                                                    
+       It gets one more try, told only that it repeated what you wrote to it                                               
+    2. Share your private message with the council                                                                      
+       Every seat reads it, and it binds them like anything you write to the council                                    
+    3. Send it as written: the seats read these words, not your message                                                 
+    4. Drop it: no seat ever reads it                                                                                   
+    5. Carry on without me                                                                                              
+       The seat says it again without your words                                                                        
+                                                                                                                        
+  Enter to choose · Tab to add a note · Esc back to the list · shift+tab to cycle modes                                 
+                                                                                                                        
+  ǁ supervised mode on                                                                                                  
+                                                                                                                        
+  ◆  Rate limit the API                    ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱  3/4 · 4m31s · ↓  94.2k tokens                          
+    ⎿ ✔  ▐1 Opus 5.5 · 1                   Backs all 6 points          2m31s · ↓    24k tokens                          
+      ○  ▐2 Opus 5.5 · 2                   Backs 5 of 6 points         2m49s · ↓  25.1k tokens                          
+      ◆  ▐▌ 5.6 Luna                       Backs all 6, held for you   2m19s · ↓  27.9k tokens                          
+      ✔  ▐▌ 3.8 Flash                      Backs all 6 points          1m41s · ↓  17.2k tokens                          

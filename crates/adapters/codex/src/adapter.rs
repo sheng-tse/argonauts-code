@@ -1,8 +1,9 @@
 use std::path::Path;
 
+use argonauts_core::adapter::{CitationForm, IdentityMarks};
 use argonauts_core::app::UltraColour;
 use argonauts_core::cli_commands::{BuiltinCommand, CliCommand};
-use argonauts_core::cli_sessions::{CliScan, CliSession, CliTurn};
+use argonauts_core::cli_sessions::{CliScan, CliSession, CliTurn, ResumeCommand, resume_facts};
 use argonauts_core::keywords::Keyword;
 use argonauts_core::limits::{PlanUsageAnswer, PlanUsageReading};
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
@@ -63,6 +64,10 @@ const STARTUP_MESSAGE: argonauts_core::adapter::StartupMessage =
     };
 
 impl Adapter for CodexAdapter {
+    fn first_count(&self) -> Option<argonauts_core::events::context::FirstCount> {
+        Some(argonauts_core::events::context::FirstCount::Turn)
+    }
+
     fn id(&self) -> &'static str {
         ID
     }
@@ -164,14 +169,34 @@ impl Adapter for CodexAdapter {
         tweaks::user_hooks_off()
     }
 
+    /// The tools its events name, the rows its screen draws, its home folder, and the way it
+    /// cites a file's lines.
+    fn identity_marks(&self) -> IdentityMarks {
+        IdentityMarks {
+            tool_names: &[
+                "shell",
+                "exec_command",
+                "apply_patch",
+                "update_plan",
+                "spawn_agent",
+                "wait",
+                "close_agent",
+                "web_search",
+                "view_image",
+            ],
+            row_marks: &["• Ran", "• Edited", "• Explored", "• Updated Plan", "└"],
+            home_folders: &["~/.codex"],
+            citation: Some(CitationForm {
+                open: "【F:",
+                lines: "†L",
+                close: "】",
+            }),
+        }
+    }
+
     /// Codex reads the project's AGENTS.md into every session, `exec` too.
     fn instruction_files(&self, workdir: &Path, _isolated: bool) -> Vec<String> {
-        let name = "AGENTS.md";
-        if workdir.join(name).is_file() {
-            vec![name.to_owned()]
-        } else {
-            Vec::new()
-        }
+        argonauts_core::adapter::agents_md(workdir)
     }
 
     /// Opens exec sessions too, by id. Names would match only interactive sessions. A local
@@ -190,6 +215,31 @@ impl Adapter for CodexAdapter {
             .map(|name| (*name).to_owned())
             .collect();
         Some(spec)
+    }
+
+    /// `codex resume <id>`, with a local model's flags, or Codex would carry it on with its
+    /// hosted model.
+    fn resume_command(&self, req: &SessionRequest) -> Option<ResumeCommand> {
+        let id = flag_value("session id", req.resume_session.as_deref()?.trim()).ok()?;
+        let local = if resume_facts::CODEX_LOCAL_NEEDS_FLAGS {
+            command::local_mode_args(req).ok()?
+        } else {
+            Vec::new()
+        };
+        let mut words = vec![self.binary().to_owned(), "resume".to_owned()];
+        words.extend(local.iter().cloned());
+        words.push(id.to_owned());
+        Some(ResumeCommand {
+            words,
+            local_model: !local.is_empty(),
+            from_any_folder: false,
+            also: resume_facts::CODEX_LISTS_EXEC_SESSIONS
+                .then(|| "pick it in codex resume --include-non-interactive".to_owned()),
+        })
+    }
+
+    fn lists_sessions(&self) -> bool {
+        true
     }
 
     fn cli_sessions(&self, scan: &CliScan, limit: usize) -> anyhow::Result<Vec<CliSession>> {
@@ -316,6 +366,8 @@ mod tests {
                 "--skip-git-repo-check",
                 "--model",
                 "gpt-6-luna",
+                "--disable",
+                "memories",
                 "-",
             ]
         );
@@ -690,6 +742,18 @@ mod tests {
         );
     }
 
+    /// A run's session, a council's seats and checks among them, keeps no memory; the session
+    /// you talk to keeps yours.
+    #[test]
+    fn a_runs_session_keeps_no_memory() {
+        for role in [SessionRole::ReadOnly, SessionRole::Build] {
+            let args = command(&request(role)).args;
+            assert_eq!(value_after(&args, "--disable"), "memories", "{role:?}");
+        }
+        let yours = command(&request(SessionRole::Direct)).args;
+        assert!(!yours.iter().any(|arg| arg == "memories"), "{yours:?}");
+    }
+
     #[test]
     fn user_hooks_are_off_through_the_hooks_feature() {
         let tweak = CodexAdapter.user_hooks_off();
@@ -856,7 +920,7 @@ mod tests {
             launch: Some(LaunchHints {
                 oss: true,
                 local_provider: Some("ollama".to_owned()),
-                provider_model: Some("qwen3-coder:30b-64k".to_owned()),
+                provider_model: Some("qwen3-coder:30b".to_owned()),
             }),
             ..SessionRequest::reopening("0199a213", Path::new("/work/tree"))
         };
@@ -871,7 +935,7 @@ mod tests {
                 "--local-provider",
                 "ollama",
                 "--model",
-                "qwen3-coder:30b-64k",
+                "qwen3-coder:30b",
                 "0199a213"
             ]
         );
@@ -882,6 +946,28 @@ mod tests {
         };
         let spec = CodexAdapter::new().interactive_resume(&hosted).unwrap();
         assert_eq!(spec.args, ["resume", "--cd", "/work/tree", "0199a213"]);
+
+        // What you type in the folder: the local model's flags again, and no --cd.
+        let typed = CodexAdapter::new().resume_command(&req).unwrap();
+        assert_eq!(
+            typed.words,
+            [
+                "codex",
+                "resume",
+                "--oss",
+                "--local-provider",
+                "ollama",
+                "--model",
+                "qwen3-coder:30b",
+                "0199a213"
+            ]
+        );
+        assert!(typed.local_model && !typed.from_any_folder);
+        let typed = CodexAdapter::new().resume_command(&hosted).unwrap();
+        assert_eq!(typed.words, ["codex", "resume", "0199a213"]);
+        assert!(!typed.local_model);
+        let flag = SessionRequest::reopening("--last", Path::new("/w"));
+        assert!(CodexAdapter::new().resume_command(&flag).is_none());
     }
 
     #[test]
@@ -955,5 +1041,60 @@ mod tests {
                 spec.env_remove
             );
         }
+    }
+}
+
+/// Every tool its recorded output names is one of its marks, so a relayed message never names
+/// one in its own words.
+#[cfg(test)]
+mod identity_tests {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use argonauts_core::Adapter;
+
+    use super::*;
+
+    const AFTER: &str = r#""type":"collab_tool_call""#;
+    const THEN: &str = r#""tool":""#;
+
+    /// The names that follow `after` in every recorded fixture, up to the next quote.
+    fn recorded(after: &str, then: &str) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        let mut dirs = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for piece in text.split(after).skip(1) {
+                    let Some(at) = piece.find(then).filter(|at| *at < 160) else {
+                        continue;
+                    };
+                    if let Some(name) = piece[at + then.len()..].split('"').next() {
+                        names.insert(name.to_owned());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn every_tool_its_output_names_is_one_of_its_marks() {
+        let marks = CodexAdapter::new().identity_marks();
+        let recorded = recorded(AFTER, THEN);
+        assert!(!recorded.is_empty(), "the fixtures name tools");
+        let unmarked: Vec<&String> = recorded
+            .iter()
+            .filter(|name| !name.starts_with("mcp__") && !marks.tool_names.contains(&name.as_str()))
+            .collect();
+        assert!(unmarked.is_empty(), "{unmarked:?}");
+        assert!(!marks.home_folders.is_empty());
     }
 }

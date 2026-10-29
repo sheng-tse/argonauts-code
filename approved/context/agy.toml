@@ -1,0 +1,10 @@
+# agy still loading: the session starts and says nothing, as context/agy-loading draws it.
+# agy reads its prompt from the first line on stdin. These rules come before the default fake
+# agents'.
+
+[[rule]]
+argv0 = "agy"
+prompt_contains = 'Look at the README'
+stdin_prompt = "line"
+[[rule.step]]
+hang = true

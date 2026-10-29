@@ -1,15 +1,15 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Ship the 0.3 release                                                                                                 
- release workflow · your file .argonauts/workflows/release.js                                      4/6 agents · 2m10s 
- › check: lint, a workflow of its own, runs Rust then Docs                                                            
-                                                                                                                      
- ╭ Phases ──────────┬ Check · 4 agents ─────────────────────────────────────────────────────────────────────────────╮ 
- │   ✔ Build    2/2 │  ✔ check:types         Haiku 5.5 · 8.2k tok · passed                                      22s │ 
- │ ❯ 2 Check    2/4 │  ▾ lint                workflow · 1/3 agents                                              31s │ 
- │   3 Merge        │    ✔ Rust    1/1                                                                              │ 
- │                  │      ✔ lint:clippy     Haiku 5.5 · 5.1k tok · 2 fixed                                     19s │ 
- │                  │    2 Docs    0/2                                                                              │ 
- │                  │      ⏺ lint:readme     GPT 6 Luna · 3.0k tok                                               8s │ 
- │                  │      ◌ lint:changelog  Haiku 5.5 · queued                                                     │ 
- ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save                                  
+ Ship the 0.3 release
+ release workflow · your file .argonauts/workflows/release.js                                      4/6 agents · 2m10s
+ › check: lint, a workflow of its own, runs Rust then Docs
+
+ ╭ Phases ──────────┬ Check · 4 agents ─────────────────────────────────────────────────────────────────────────────╮
+ │   ✔ Build    2/2 │  ✔ check:types         ◧◨ Haiku 5.5                                          8.2k tok     22s │
+ │ ❯ ⣾ Check    2/4 │  ▾ lint                workflow · 1/3 agents                                              31s │
+ │   3 Merge        │    ✔ Rust    1/1                                                                              │
+ │                  │      ✔ lint:clippy     ◧◨ Haiku 5.5                                          5.1k tok     19s │
+ │                  │    2 Docs    0/2                                                                              │
+ │                  │      ⣾ lint:readme     ◧◨ 6 Luna                                             3.0k tok      8s │
+ │                  │      · lint:changelog  ◧◨ Haiku 5.5                                                           │
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save

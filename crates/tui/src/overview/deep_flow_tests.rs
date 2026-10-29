@@ -33,7 +33,7 @@ fn picture_rows(text: &str, rows: std::ops::Range<usize>) -> Vec<String> {
 
 fn made_by(new_actions: usize) -> MadeBy {
     MadeBy {
-        model: "ollama/qwen3-coder:30b-64k".parse().unwrap(),
+        model: "ollama/qwen3-coder:30b".parse().unwrap(),
         name: "Qwen3 Coder 30B on Ollama".to_owned(),
         actions: 562,
         new_actions,
@@ -72,14 +72,14 @@ fn started() -> (DeepFlow, DeepKey) {
 }
 
 #[test]
-fn d_with_no_deeper_map_asks_then_starts_with_the_answers() {
+fn d_with_no_summaries_asks_then_starts_with_the_answers() {
     let (flow, answer) = started();
     assert_eq!(
         answer,
         DeepKey::Send(UiCommand::DeepStart {
             start: DeepStart {
                 scope: DeepScope::Everything,
-                summarizer: "ollama/qwen3-coder:30b-64k".parse().unwrap(),
+                summarizer: "ollama/qwen3-coder:30b".parse().unwrap(),
                 download_embedder: true,
                 redo: false,
             }
@@ -94,11 +94,12 @@ fn while_it_runs_the_tab_says_who_summarizes_and_how_far_as_its_picture_shows() 
     let (mut flow, _) = started();
     let theme = theme();
     let kit = Kit::new(&theme);
-    let picture = include_str!("../../tests/golden/overview/choose_running.txt");
+    // The whole screen's picture, which the tab's own golden draws cell for cell.
+    let picture = include_str!("../../tests/golden/behaviors/deep_running.txt");
     // Before the first request is back, none of the scope's actions is done, and the offer
     // says how long they take.
     let first = rows(flow.above_map(&kit).unwrap());
-    assert_eq!(first[0], picture_rows(picture, 3..4)[0]);
+    assert_eq!(first[0], picture_rows(picture, 5..6)[0]);
     assert_eq!(
         first[2],
         "  ✻  Summarizing…  0 of 562 · about 2 min left · esc keeps it going in the background · \
@@ -115,11 +116,15 @@ fn while_it_runs_the_tab_says_who_summarizes_and_how_far_as_its_picture_shows() 
     flow.sync(&running(312, 562, Some(50)));
     assert_eq!(
         rows(flow.above_map(&kit).unwrap()),
-        picture_rows(picture, 3..6)
+        picture_rows(picture, 5..8)
     );
     let under = rows(vec![flow.under_map(&kit).unwrap()]);
-    let last = picture.lines().rev().find(|row| !row.trim().is_empty());
-    assert_eq!(under[0], last.unwrap().trim_end());
+    assert!(under[0].contains("The dots arrive as their summaries do"));
+    assert!(
+        picture.lines().any(|row| row.trim_end() == under[0]),
+        "{}",
+        under[0]
+    );
 }
 
 #[test]
@@ -160,26 +165,26 @@ fn once_it_ends_the_tab_is_the_map_again() {
 }
 
 #[test]
-fn d_on_the_label_map_switches_to_a_kept_deeper_one() {
+fn d_on_the_label_map_switches_to_kept_summaries() {
     let mut flow = DeepFlow::default();
     assert_eq!(
         flow.d(Shown::Labels { kept: true }),
-        DeepKey::Show(BehaviorMap::Deeper)
+        DeepKey::Show(BehaviorMap::Summaries)
     );
 }
 
 #[test]
-fn d_on_the_deeper_map_offers_its_new_actions_or_goes_back() {
+fn d_on_summaries_offers_their_new_actions_or_goes_back() {
     let mut offer = page_offer();
     offer.made_by = Some(made_by(37));
     let mut flow = DeepFlow::default();
-    let shown = Shown::Deeper { unsummarized: 37 };
+    let shown = Shown::Summaries { unsummarized: 37 };
     assert_eq!(flow.d(shown), DeepKey::Ask(ViewRequest::DeepOffer));
     flow.accept(&offer);
     let theme = theme();
     let kit = Kit::new(&theme);
     let text = rows(flow.questions(&kit, usize::from(WIDTH)).unwrap());
-    assert_eq!(text[0], "  ◆ Update the deeper map?");
+    assert_eq!(text[0], "  ◆ Update Summaries?");
     assert!(
         text.iter()
             .any(|row| row.contains("1. Update: 37 new actions, about 5 seconds")),
@@ -191,7 +196,7 @@ fn d_on_the_deeper_map_offers_its_new_actions_or_goes_back() {
         Some(DeepKey::Send(UiCommand::DeepStart {
             start: DeepStart {
                 scope: DeepScope::Everything,
-                summarizer: "ollama/qwen3-coder:30b-64k".parse().unwrap(),
+                summarizer: "ollama/qwen3-coder:30b".parse().unwrap(),
                 download_embedder: false,
                 redo: false,
             }
@@ -212,10 +217,32 @@ fn d_on_the_deeper_map_offers_its_new_actions_or_goes_back() {
     // With nothing new, d goes straight back to the labels.
     let mut flow = DeepFlow::default();
     assert_eq!(
-        flow.d(Shown::Deeper { unsummarized: 0 }),
+        flow.d(Shown::Summaries { unsummarized: 0 }),
         DeepKey::Show(BehaviorMap::Labels)
     );
     assert!(!flow.asking());
+}
+
+/// With actions waiting but nothing to add them with, no model to summarize or no word of who
+/// made the map, d on Summaries still goes back to the labels.
+#[test]
+fn d_on_summaries_with_nothing_to_update_them_with_goes_back_to_the_labels() {
+    let mut no_model = page_offer();
+    no_model.made_by = Some(made_by(37));
+    no_model.summarizers.clear();
+    let mut unknown_maker = page_offer();
+    unknown_maker.made_by = None;
+    for offer in [no_model, unknown_maker] {
+        let mut flow = DeepFlow::default();
+        flow.d(Shown::Summaries { unsummarized: 37 });
+        flow.accept(&offer);
+        assert!(flow.asking(), "the questions say why: {offer:?}");
+        assert_eq!(
+            flow.key(KeyCode::Esc),
+            Some(DeepKey::Show(BehaviorMap::Labels)),
+            "{offer:?}"
+        );
+    }
 }
 
 #[test]
@@ -227,7 +254,7 @@ fn a_hosted_maps_update_asks_from_the_start() {
         ..made_by(37)
     });
     let mut flow = DeepFlow::default();
-    flow.d(Shown::Deeper { unsummarized: 37 });
+    flow.d(Shown::Summaries { unsummarized: 37 });
     flow.accept(&offer);
     assert_eq!(flow.key(KeyCode::Enter), Some(DeepKey::Moved));
     let theme = theme();

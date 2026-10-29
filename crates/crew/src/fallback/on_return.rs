@@ -13,6 +13,7 @@
 //! Nothing here is held in memory: what to do is worked out again from the log and the health
 //! board at every safe point, so a choice survives a crash, and applying it twice is harmless.
 
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::approval::{
     AnswerAction, ApprovalKind, ApprovalPacket, FreeText, OriginalReturnedPacket,
@@ -107,14 +108,14 @@ impl Choice {
 /// task whose own model is still out waits for that model.
 pub async fn agent_back(host: &Host, agent_id: &AgentId) -> EngineResult<()> {
     reopen_merge(host, agent_id)?;
-    let who = agent_label(agent_id);
+    let who = DisplayNames::default().cli(&agent_id.0);
     originals_back(host, &who, |original| original.agent_id() == *agent_id).await
 }
 
 /// One model is back while its CLI went on working: the same for the tasks that fell back
 /// from that model, wherever they went, another model of its own CLI included.
 pub async fn model_back(host: &Host, model: &ModelRef) -> EngineResult<()> {
-    let who = argonauts_core::display_names::DisplayNames::default().worker(model);
+    let who = DisplayNames::default().worker(model);
     originals_back(host, &who, |original| original == model).await
 }
 
@@ -168,7 +169,11 @@ fn reopen_merge(host: &Host, agent_id: &AgentId) -> EngineResult<()> {
         waits.then(|| open.opened.id.clone())
     });
     match waiting {
-        Some(id) => approvals::withdraw(host, &id, &format!("{} is back", agent_label(agent_id))),
+        Some(id) => approvals::withdraw(
+            host,
+            &id,
+            &format!("{} is back", DisplayNames::default().cli(&agent_id.0)),
+        ),
         None => Ok(()),
     }
 }
@@ -447,19 +452,6 @@ fn notice(host: &Host, task: &TaskId, back: &Returning, who: &str) -> EngineResu
     Ok(())
 }
 
-/// How an agent is named in a sentence, the way the screen names it elsewhere. Unknown ids stay
-/// as they are.
-pub fn agent_label(agent_id: &AgentId) -> String {
-    match agent_id.0.as_str() {
-        "claude-code" | "claude" => "Claude Code".to_owned(),
-        "codex" => "Codex".to_owned(),
-        "opencode" => "OpenCode".to_owned(),
-        "openrouter" => "OpenRouter".to_owned(),
-        "ollama" => "Ollama".to_owned(),
-        other => other.to_owned(),
-    }
-}
-
 /// Opens the "original is back" question without holding up the caller, which is the engine's
 /// loop. Your answer applies at once when the task is at rest, else at its next safe point.
 fn ask_in_background(host: &Host, task: &TaskId, since: u32) {
@@ -539,7 +531,7 @@ pub(crate) async fn request(
         kind: ApprovalKind::OriginalReturned,
         title: format!(
             "{} is back · {}",
-            agent_label(&back.original.agent_id()),
+            DisplayNames::default().cli(&back.original.agent_id().0),
             host.read(|state| crate::labels::task_label(state, task))
         ),
         task: Some(task.clone()),

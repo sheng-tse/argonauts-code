@@ -3,9 +3,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::app::{AppEvent, CrewRow, HeaderAndBottomLine};
+use argonauts_core::app::{AppEvent, CommandReply, CrewRow, HeaderAndBottomLine};
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::log::{NO_LONGER_OFFERS, NO_SECOND_TRY, SAME_CLI_IS_ON};
+use argonauts_core::log::{
+    COULDNT_UPDATE_TO, DOING_THIS_ALONE, NO_LONGER_OFFERS, NO_SECOND_TRY, SAME_CLI_IS_ON,
+};
 use argonauts_core::names::{ConversationId, ModelRef};
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::SettingScope;
@@ -13,8 +15,8 @@ use argonauts_core::settings::Settings;
 use argonauts_core::{Note, NoteLevel};
 
 use crate::cell::{
-    AgentReady, Cell, CrewForRequest, HungLine, Notice, Recap, ResultLine, SessionHeader, Tone,
-    UserMessage,
+    AgentReady, Cell, CrewForRequest, DetailLogo, HungLine, Notice, Recap, ResultLine,
+    SessionHeader, Tone, Trailing, UserMessage,
 };
 use crate::format;
 use crate::history::CellId;
@@ -213,6 +215,12 @@ impl Items {
         if text.is_empty() {
             return;
         }
+        // The offer under the reply is there at every verbosity, since it says how to have the
+        // crew do what the main agent took alone.
+        if let Some(offer) = offer(level, text) {
+            emit(cx, offer);
+            return;
+        }
         let tone = match level {
             NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet if quiet(cx) => return,
             // Rows are there to be read, so the line over them isn't dimmed away.
@@ -226,7 +234,8 @@ impl Items {
             }
             NoteLevel::Error => Tone::Error,
         };
-        // A fallback that skips the retry: who steps in, plain, and why there's no retry, dim.
+        // A fallback that skips the retry: who steps in, in the warning's tone, and why there's
+        // no retry, dim.
         let fallback = text
             .strip_suffix(NO_SECOND_TRY)
             .and_then(|head| head.strip_suffix(" · "))
@@ -234,10 +243,20 @@ impl Items {
         // A model that runs in place of one its CLI dropped: the mark warns, the words read
         // plain.
         let in_place = level == NoteLevel::Warn && text.contains(NO_LONGER_OFFERS);
-        let mut notice = match fallback {
-            Some(head) => Notice::plain_with_after(tone, head, NO_SECOND_TRY),
-            None if in_place => Notice::plain_with_after(tone, text, ""),
-            None => Notice::new(tone, text),
+        // An update that failed: the mark warns, the words read plain and the command to try
+        // again reads as code.
+        let update_failed = text
+            .rsplit_once(" · ")
+            .filter(|_| level == NoteLevel::Warn && text.starts_with(COULDNT_UPDATE_TO));
+        let mut notice = match (fallback, update_failed) {
+            (Some(head), _) => Notice {
+                decided: Some(NO_SECOND_TRY.to_owned()),
+                ..Notice::new(tone, head)
+            },
+            (None, Some((why, command))) => Notice::plain_with_after(tone, format!("{why} · "), "")
+                .with_trailing([Trailing::Code(command.to_owned())]),
+            (None, None) if in_place => Notice::plain_with_after(tone, text, ""),
+            (None, None) => Notice::new(tone, text),
         };
         match level {
             NoteLevel::Aside => notice = notice.with_glyph(ASIDE),
@@ -260,12 +279,30 @@ impl Items {
     }
 }
 
+/// The line that says the main agent takes a change alone, as the offer it is: its words dim
+/// and the command after its last ` · ` in the text color.
+fn offer(level: NoteLevel, text: &str) -> Option<Notice> {
+    if level != NoteLevel::Info || !text.starts_with(DOING_THIS_ALONE) {
+        return None;
+    }
+    let (why, rest) = text.rsplit_once(" · ")?;
+    let (command, after) = rest.split_once(' ').unwrap_or((rest, ""));
+    command.starts_with('/').then(|| {
+        let after = if after.is_empty() {
+            String::new()
+        } else {
+            format!(" {after}")
+        };
+        Notice::offer(format!("{why} · "), command, after)
+    })
+}
+
 impl Items {
     /// A command's findings, such as `/doctor`'s: the title, then one dim line each under `⎿`.
     /// You asked for it, so it prints even at `quiet`. The report filling in under the same
     /// title becomes this one where it stands.
     pub(super) fn report(&mut self, title: &str, lines: &[String], cx: &mut Cx<'_>) {
-        let notice = report_notice(title, lines);
+        let notice = report_notice(title, lines, &cx.state.names);
         match self.growing.take_if(|(growing, _)| growing == title) {
             Some((_, id)) => {
                 if let Some(cell) = cx.model.history.active_mut(id) {
@@ -280,7 +317,7 @@ impl Items {
     /// A report still filling in, such as `/update`'s as each CLI is done: live, its rows
     /// added where it stands until the whole report comes.
     pub(super) fn report_so_far(&mut self, title: &str, lines: &[String], cx: &mut Cx<'_>) {
-        let notice = report_notice(title, lines);
+        let notice = report_notice(title, lines, &cx.state.names);
         match &self.growing {
             Some((growing, id)) if growing == title => {
                 if let Some(cell) = cx.model.history.active_mut(*id) {
@@ -295,12 +332,59 @@ impl Items {
     }
 }
 
-fn report_notice(title: &str, lines: &[String]) -> Notice {
+/// A report's rows under its title. A row that starts with a CLI's or a host's name and a
+/// column's blanks, as `/update` and `/doctor` write theirs, has its logo before the name.
+fn report_notice(title: &str, lines: &[String], names: &DisplayNames) -> Notice {
     let mut notice = Notice::new(Tone::Normal, title.trim());
-    for line in lines {
+    for (row, line) in lines.iter().enumerate() {
+        notice.detail_logos.extend(detail_logo(row, line, names));
         notice = notice.with_detail(line.trim_end());
     }
+    // Argonauts Code's own row keeps the logo's cells blank where the rest have logos, so the
+    // names line up.
+    if !notice.detail_logos.is_empty() {
+        let own = "Argonauts Code";
+        for (row, line) in lines.iter().enumerate() {
+            if line
+                .strip_prefix(own)
+                .is_some_and(|rest| rest.starts_with("   "))
+            {
+                notice.detail_logos.push(DetailLogo {
+                    row,
+                    logo: None,
+                    name: own.len(),
+                });
+            }
+        }
+    }
     notice
+}
+
+/// The agents a report's row may start with that have logos of their own.
+const WITH_LOGOS: [&str; 6] = [
+    "claude-code",
+    "codex",
+    "antigravity-cli",
+    "opencode",
+    "openrouter",
+    "ollama",
+];
+
+fn detail_logo(row: usize, line: &str, names: &DisplayNames) -> Option<DetailLogo> {
+    WITH_LOGOS.iter().find_map(|agent| {
+        let name = names.cli(agent);
+        let rest = line.strip_prefix(name.as_str())?;
+        // A column's blanks after the name, or its version, as the doctor writes it, so a
+        // sentence that starts with the name gets none.
+        let version = rest
+            .strip_prefix(' ')
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+        (rest.starts_with("   ") || version).then(|| DetailLogo {
+            row,
+            logo: Some(argonauts_core::logos::logo_for(agent, None)),
+            name: name.len(),
+        })
+    })
 }
 
 /// A switch you flipped, such as `/awake`: what's on, how to undo it, and what it can't do.
@@ -371,28 +455,64 @@ pub(super) fn continued(text: &str, cx: &mut Cx<'_>) {
     }
 }
 
-/// `● Set approvals.merge.mode = auto · this project · was supervised`, or after a reset
-/// `● Reset ui.theme · everywhere · now dark`. A model or an effort, as `/model` and `/effort`
-/// set them, reads like Claude Code's `⎿  Set model to Opus 5.5`.
-pub(super) fn setting_changed(
-    key: &str,
-    value: &str,
-    scope: SettingScope,
-    previous: Option<&str>,
-    reset: bool,
-    cx: &mut Cx<'_>,
-) {
+/// A setting saved or reset, as `SettingChanged` tells it.
+pub(super) struct Changed<'a> {
+    pub key: &'a str,
+    pub value: &'a str,
+    pub scope: SettingScope,
+    pub previous: Option<&'a str>,
+    pub reset: bool,
+    pub why: Option<&'a str>,
+    pub kept: bool,
+}
+
+/// `● Set approvals.merge.mode = auto · this project (.argonauts/config.toml)`, or after a
+/// reset `● Reset ui.theme · everywhere · now dark`. A model or an effort, as `/model` and
+/// `/effort` set them, reads like Claude Code's `⎿  Set model to Opus 5.5`. Each says where it
+/// went, and why when that isn't where your changes usually go. One your own words kept, as
+/// "keep these checks" does, reads `⎿  Kept checks.run · just you (…)` under your message.
+pub(super) fn setting_changed(changed: Changed<'_>, cx: &mut Cx<'_>) {
+    let Changed {
+        key,
+        value,
+        scope,
+        previous,
+        reset,
+        why,
+        kept,
+    } = changed;
     // The view that saved it says so itself when it closes.
     if !reset && cx.model.said_by_view.remove(key) {
+        return;
+    }
+    let saved = Saved {
+        scope,
+        why,
+        previous,
+    };
+    // Your own words kept it, so the line under your message says so and where it went.
+    if kept && !reset {
+        let line = format!("Kept {key} {}", saved.after(None));
+        replied(ResultLine::new(Tone::Dim, line), cx);
         return;
     }
     // `/config key=value`, as Claude Code's says it: the key, its value, and the file.
     if !reset && let Some((_, typed)) = cx.model.typed_config.take_if(|(typed, _)| typed == key) {
         let shown = format::setting_value(value);
-        let line = format!("Set {key} to {shown} ({})", scope_file(scope));
+        let mut line = format!("Set {key} to {shown} ({})", typed_place(scope));
+        if let Some(why) = why {
+            line.push_str(&format!(", {why}"));
+        }
         emit(cx, UserMessage::command(typed));
         replied(ResultLine::new(Tone::Dim, line), cx);
         return;
+    }
+    // A workflow's command, as typed, goes over the line its switch leaves.
+    if key == "workflow"
+        && !reset
+        && let Some(typed) = cx.model.typed_workflow.take()
+    {
+        emit(cx, UserMessage::command(typed));
     }
     let words = Words {
         picked: &cx.state.model_words,
@@ -400,8 +520,7 @@ pub(super) fn setting_changed(
     };
     // The running answer keeps the model, effort and workflow it started with.
     let next_request = applies_at_next_request(key) && cx.model.is_working();
-    if !reset && let Some(line) = command_result(key, value, scope, previous, &words, next_request)
-    {
+    if !reset && let Some(line) = command_result(key, value, &saved, &words, next_request) {
         replied(line, cx);
         return;
     }
@@ -410,22 +529,63 @@ pub(super) fn setting_changed(
     let text = if reset {
         format!("Reset {key} · {} · now {value}", scope_words(scope))
     } else {
-        let mut text = format!("Set {key} = {value} · {}", scope_words(scope));
-        if let Some(previous) = previous {
-            let previous = format::setting_value(previous);
-            let previous = if previous.is_empty() {
-                "unset"
+        let was = previous.map(|previous| {
+            let words = format::setting_value(previous);
+            if words.is_empty() {
+                "unset".to_owned()
             } else {
-                &previous
-            };
-            text.push_str(&format!(" · was {previous}"));
-        }
+                words
+            }
+        });
+        let mut text = format!("Set {key} = {value} {}", saved.after(was));
         if next_request {
             text.push_str(NEXT_REQUEST);
         }
         text
     };
     emit(cx, Notice::new(Tone::Success, text));
+}
+
+/// A line a command left that changed nothing, under the command when it was a workflow's:
+/// `⎿  Council is the workflow already · Opus 5.5 and Codex propose`.
+pub(super) fn command_replied(reply: &CommandReply, cx: &mut Cx<'_>) {
+    if let Some(typed) = cx.model.typed_workflow.take() {
+        emit(cx, UserMessage::command(typed));
+    }
+    replied(ResultLine::of_reply(reply), cx);
+}
+
+/// Where a change went, as the line after it ends: `· everywhere (~/.argonauts/config.toml)`,
+/// with why when a layer above moved it there, or `· this session · was high`, since a change
+/// for this session goes back to that when you quit.
+struct Saved<'a> {
+    scope: SettingScope,
+    why: Option<&'a str>,
+    previous: Option<&'a str>,
+}
+
+impl Saved<'_> {
+    /// The words after the value, `was` the previous value in the line's own words, said for a
+    /// change for this session.
+    fn after(&self, was: Option<String>) -> String {
+        let was = was.filter(|_| self.scope == SettingScope::Session);
+        self.after_saying(was)
+    }
+
+    /// [`after`](Self::after), saying what it was whatever the scope.
+    fn after_saying(&self, was: Option<String>) -> String {
+        let mut after = format!("· {}", scope_words(self.scope));
+        if let Some(file) = scope_file(self.scope) {
+            after.push_str(&format!(" ({file})"));
+        }
+        if let Some(why) = self.why {
+            after.push_str(&format!(", {why}"));
+        }
+        if let Some(was) = was.filter(|was| !was.is_empty()) {
+            after.push_str(&format!(" · was {was}"));
+        }
+        after
+    }
 }
 
 /// `/config key=value` left as it was: why, in the error colour under the command as typed,
@@ -450,12 +610,20 @@ fn replied(line: ResultLine, cx: &mut Cx<'_>) {
 }
 
 /// Where a scope saves, as `/config key=value` names it.
-fn scope_file(scope: SettingScope) -> &'static str {
+fn typed_place(scope: SettingScope) -> String {
+    match scope_file(scope) {
+        Some(file) => format!("in {file}"),
+        None => "for this session".to_owned(),
+    }
+}
+
+/// The file a scope saves into, as the line after a change names it.
+fn scope_file(scope: SettingScope) -> Option<&'static str> {
     match scope {
-        SettingScope::Global => "in ~/.argonauts/config.toml",
-        SettingScope::Project => "in .argonauts/config.toml",
-        SettingScope::ProjectLocal => "in .argonauts/config.local.toml",
-        SettingScope::Session => "for this session",
+        SettingScope::Global => Some("~/.argonauts/config.toml"),
+        SettingScope::Project => Some(".argonauts/config.toml"),
+        SettingScope::ProjectLocal => Some(".argonauts/config.local.toml"),
+        SettingScope::Session => None,
     }
 }
 
@@ -474,23 +642,25 @@ fn applies_at_next_request(key: &str) -> bool {
         || (key.starts_with("roles.") && key.ends_with(".effort"))
 }
 
-/// `⎿  Set model to Opus 5.5 · just you · was Claude Code's default`, the value by its display
+/// `⎿  Set model to Opus 5.5 · everywhere (~/.argonauts/config.toml)`, the value by its display
 /// name in the accent color, for the keys `/model` and `/effort` write. Ultracode reads
 /// `⎿  Turned Ultracode on · just you`.
 fn command_result(
     key: &str,
     value: &str,
-    scope: SettingScope,
-    previous: Option<&str>,
+    saved: &Saved<'_>,
     names: &Words<'_>,
     next_request: bool,
 ) -> Option<ResultLine> {
+    if key == "workflow" {
+        return Some(switched_workflow(value, saved, next_request));
+    }
     let (name, model) = match model_role(key) {
         Some(None) => ("model".to_owned(), true),
         Some(Some(role)) => (format!("{}'s model", role.as_str()), true),
         None if key == Settings::ULTRACODE => {
             let on = if value.trim() == "true" { "on" } else { "off" };
-            let after = format!("· {}", scope_words(scope));
+            let after = saved.after(None);
             return Some(ResultLine::valued("Turned Ultracode", on).with_after(after));
         }
         None => {
@@ -513,22 +683,51 @@ fn command_result(
     if shown.is_empty() {
         return None;
     }
-    let mut was = previous.map(words).filter(|previous| !previous.is_empty());
-    // The main model on another CLI moves the conversation there, so both sides name their CLI.
-    if model_role(key) == Some(None)
-        && let Some((now_cli, was_cli)) = cli_moved(value, previous, names.names)
-    {
-        shown = on_cli(by_its_model(shown, &now_cli), &now_cli);
-        was = was.map(|was| on_cli(by_its_model(was, &was_cli), &was_cli));
-    }
-    let mut after = format!("· {}", scope_words(scope));
-    if let Some(previous) = was {
-        after.push_str(&format!(" · was {previous}"));
-    }
+    let previous = saved.previous;
+    let was = previous.map(words).filter(|previous| !previous.is_empty());
+    // The main model on another CLI moves the conversation there, so both sides name their CLI,
+    // whatever the scope.
+    let mut after = match cli_moved(value, previous, names.names) {
+        Some((now_cli, was_cli)) if model_role(key) == Some(None) => {
+            shown = on_cli(by_its_model(shown, &now_cli), &now_cli);
+            saved.after_saying(was.map(|was| on_cli(by_its_model(was, &was_cli), &was_cli)))
+        }
+        _ => saved.after(was),
+    };
     if next_request {
         after.push_str(NEXT_REQUEST);
     }
     Some(ResultLine::valued(format!("Set {name} to"), shown).with_after(after))
+}
+
+/// `⎿  Switched to Council · everywhere (~/.argonauts/config.toml) · was Captain`, the line a
+/// workflow's command or `/workflow <name>` leaves, with why when a layer above moved it. Saved
+/// while it was already the workflow, as its setup sheet does, it reads `Set up Council · just
+/// you (.argonauts/config.local.toml)`.
+fn switched_workflow(value: &str, saved: &Saved<'_>, next_request: bool) -> ResultLine {
+    let now = workflow_title(value);
+    let was = saved
+        .previous
+        .map(workflow_title)
+        .filter(|was| !was.is_empty());
+    let mut text = match &was {
+        Some(was) if *was == now => format!("Set up {now} {}", saved.after_saying(None)),
+        _ => format!("Switched to {now} {}", saved.after_saying(was)),
+    };
+    if next_request {
+        text.push_str(NEXT_REQUEST);
+    }
+    ResultLine::new(Tone::Normal, text)
+}
+
+/// `Council` for the TOML text `"council"`.
+fn workflow_title(toml: &str) -> String {
+    let name = format::setting_value(toml);
+    let mut chars = name.trim().chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// How a result line names models: as the model list named the one you picked, else by the
@@ -610,5 +809,67 @@ pub(super) fn scope_words(scope: SettingScope) -> &'static str {
         SettingScope::ProjectLocal => "just you",
         SettingScope::Project => "this project",
         SettingScope::Global => "everywhere",
+    }
+}
+
+#[cfg(test)]
+#[path = "report_logos_tests.rs"]
+mod report_logos_tests;
+
+#[cfg(test)]
+mod offer_tests {
+    use std::time::Instant;
+
+    use argonauts_core::NoteLevel;
+    use argonauts_core::app::AppEvent;
+    use argonauts_core::settings::ui::{UiSettings, Verbosity};
+
+    use super::super::Transcript;
+    use crate::bridge::{Cx, Effects};
+    use crate::model::ViewModel;
+    use crate::render::{Clock, RenderCtx};
+    use crate::state::AppState;
+    use crate::text::plain_text;
+    use crate::theme::{Glyphs, Theme};
+
+    const ALONE: &str =
+        "Doing this alone: about 1 file, and the repo has tests · /crew to have Council do it";
+
+    fn printed(verbosity: Verbosity, text: &str) -> String {
+        let mut model = ViewModel::default();
+        let state = AppState::default();
+        let settings = UiSettings {
+            verbosity,
+            ..UiSettings::default()
+        };
+        let mut out = Effects::default();
+        let mut cx = Cx {
+            model: &mut model,
+            state: &state,
+            settings: &settings,
+            now: Instant::now(),
+            out: &mut out,
+        };
+        let notice = AppEvent::Notice {
+            level: NoteLevel::Info,
+            text: text.to_owned(),
+        };
+        Transcript::default().on_event(&notice, &mut cx);
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(120, &theme, Clock::still(Instant::now()));
+        plain_text(&model.history.drain_printable(&ctx))
+    }
+
+    #[test]
+    fn the_alone_line_is_an_offer_at_every_verbosity() {
+        for verbosity in [Verbosity::Full, Verbosity::Quiet] {
+            assert_eq!(
+                printed(verbosity, ALONE).trim(),
+                format!("◆ {ALONE}"),
+                "{verbosity:?}"
+            );
+        }
+        assert_eq!(printed(Verbosity::Quiet, "Kept the plan").trim(), "");
     }
 }

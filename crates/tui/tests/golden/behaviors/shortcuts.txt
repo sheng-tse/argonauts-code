@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
+
+                                                                    Every model
+                                                                    Nothing compared · ←  →  compares one
+                                                                    ●  ◧◨ Haiku 5.5   406
+                                                                    ●  ◧◨ 6 Luna       66
+                                                                    ●  ◧◨ 5.6 Luna     49
+                                                                    ●  ◧◨ Haiku 4.5    22
+                                                                    ●  ◧◨ 3.8 Flash    19
+
+
+
+
+
+
+
+  Point at anything on the map to see what it is.
+
+  1 2 3 for map, planet, universe    ↓  for the list               r to cycle dates
+  + - to zoom in or out              g G for the first and last    shift + r for the period before
+  scroll to zoom                     esc to go back                s for this project
+  tab to step groupings              t to lay the map flat         d to switch labels and summaries
+  ←  →  to compare                   m to hide nature
+
+
+
+
+   r to cycle dates · s this project · d summaries · tab groupings · ←  →  compare · t top view · esc back

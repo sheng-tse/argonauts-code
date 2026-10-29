@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
+
+                                                                    Every maker
+                                                                    562 actions · ←  →  picks one, enter goes in
+                                                                       ◧◨ Anthropic                                428
+                                                                       ◧◨ OpenAI                                   115
+                                                                       ◧◨ Google                                    19
+
+
+
+
+
+
+
+
+
+  Point at a galaxy, a star or a point to see what it is.
+
+  1 2 3 for map, planet, universe    enter to go in                shift + r for the period before
+  + - to zoom in or out              g G for the first and last    s for this project
+  scroll to zoom                     esc to go back                d to switch labels and summaries
+  ←  →  to pick a galaxy             r to cycle dates
+
+
+
+
+
+   r to cycle dates · ←  →  pick a galaxy · enter go in · scroll in or out · esc back to the map

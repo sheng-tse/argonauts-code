@@ -1,31 +1,27 @@
-//! One CLI on the bottom line: its dot, its name, and its plan windows as bars, cells or words.
+//! One CLI on the bottom line: its logo, or its dot and name, and its plan windows as bars,
+//! cells or words.
 
+use argonauts_core::display_names;
 use argonauts_core::settings::bottom_line::LineForm;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use super::fit::{Fine, Second, Shape};
 use super::{CliState, CliUse, WindowUse};
-use crate::kit::{Kit, bars, merge};
+use crate::kit::logo::logo_picture;
+use crate::kit::{Kit, bars};
 use crate::theme::Role;
 
 /// A window's bar.
 const BAR_CELLS: usize = 6;
 
-/// A bar on the line: the lower half of each cell, so a row of them reads as marks beside
-/// their numbers and not as blocks, with its edge to half a cell. Without color or block
-/// glyphs it is the kit's meter, which has a form for both.
+/// The cells a percentage takes after a bar, right-aligned, so `5%` and `100%` end in one
+/// column.
+const PERCENT_CELLS: usize = 4;
+
+/// A bar on the line: the kit's window meter in whole cells, six cells wide.
 pub(super) fn small_bar(kit: &Kit<'_>, share: f64, fill: Role) -> Vec<Span<'static>> {
-    if !kit.has_color() || kit.theme.glyphs.is_ascii() {
-        return bars::block_meter(kit, share, BAR_CELLS, fill, Role::BarTrack);
-    }
-    let halves = (share.clamp(0.0, 1.0) * (BAR_CELLS * 2) as f64).round() as usize;
-    let cell = |at: usize| match halves.saturating_sub(at * 2) {
-        0 => Span::styled("▄", kit.fg(Role::BarTrack)),
-        1 => Span::styled("▖", kit.fg(fill)),
-        _ => Span::styled("▄", kit.fg(fill)),
-    };
-    merge((0..BAR_CELLS).map(cell).collect())
+    bars::whole_window_meter(kit, share, BAR_CELLS, fill)
 }
 
 pub(super) struct Look<'a> {
@@ -36,6 +32,18 @@ pub(super) struct Look<'a> {
 
 pub(super) fn draw(cli: &CliUse, shape: &Shape, look: &Look<'_>) -> Vec<Span<'static>> {
     Chip { cli, shape, look }.draw()
+}
+
+/// What follows a chip's head with all the room it wants: its windows' labels, bars and
+/// numbers, or the words of a CLI that needs you.
+pub(super) fn meters(cli: &CliUse, look: &Look<'_>) -> Vec<Span<'static>> {
+    let shape = Shape::default();
+    Chip {
+        cli,
+        shape: &shape,
+        look,
+    }
+    .body(Fine::Bar)
 }
 
 struct Chip<'a> {
@@ -57,44 +65,79 @@ impl Chip<'_> {
             self.shape.fine
         };
         let mut spans = self.head(fine);
-        let more = match &cli.state {
+        join(&mut spans, self.body(fine));
+        spans
+    }
+
+    fn body(&self, fine: Fine) -> Vec<Span<'static>> {
+        match &self.cli.state {
             CliState::Down => vec![self.kit().span("down", Role::Danger)],
             CliState::WrappingUp => vec![self.kit().span("wrapping up", Role::Warn)],
             CliState::NearLimit => vec![self.kit().span("near limit", Role::Warn)],
-            CliState::Out { until } => self.out(until.as_deref()),
+            // When it's back stands in for a bar, which would only say it's full.
+            CliState::Out { until } => vec![
+                self.kit()
+                    .span(self.out_words(until.as_deref()), Role::Danger),
+            ],
             CliState::Fine if fine >= Fine::Name => Vec::new(),
             CliState::Fine => match self.look.form {
                 LineForm::Gauges => self.gauges(),
                 LineForm::Compact => self.compact(fine),
                 _ => self.bars(fine),
             },
-        };
-        join(&mut spans, more);
-        spans
+        }
     }
 
     fn kit(&self) -> &Kit<'_> {
         self.look.kit
     }
 
-    /// The dot in the CLI's color, filled for the one in use, and its name unless a narrow
-    /// terminal took it.
+    /// The CLI's logo where the terminal draws logos, which names it by itself. Elsewhere the
+    /// dot in its color, filled for the one in use, and its name, or two letters where a narrow
+    /// terminal took the name: never the dot alone.
     fn head(&self, fine: Fine) -> Vec<Span<'static>> {
         let cli = self.cli;
         let kit = self.kit();
-        let ascii = kit.theme.glyphs.is_ascii();
-        let dot = match (cli.main, ascii) {
+        if let Some(logo) = &cli.logo {
+            let picture = logo_picture(logo, kit.theme);
+            if !picture.is_empty() {
+                return picture;
+            }
+        }
+        let mut spans = vec![self.dot()];
+        let name = if fine < Fine::Dot && !self.shape.names_gone {
+            Some(cli.name.clone())
+        } else {
+            self.letters()
+        };
+        if let Some(name) = name {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(name, self.name_style()));
+        }
+        spans
+    }
+
+    /// Two capitals for the CLI where its name has no room, `CX` beside `○`; `None` only past
+    /// every other step, a CLI that is fine first, so its dot stands alone.
+    fn letters(&self) -> Option<String> {
+        let cli = self.cli;
+        let fine = cli.state == CliState::Fine && !cli.main;
+        if self.shape.letters_gone || (self.shape.fine_letters_gone && fine) {
+            return None;
+        }
+        let id = cli.logo.as_ref().map_or("", |logo| logo.agent.0.as_str());
+        Some(display_names::letters(id, &cli.name))
+    }
+
+    fn dot(&self) -> Span<'static> {
+        let kit = self.kit();
+        let dot = match (self.cli.main, kit.theme.glyphs.is_ascii()) {
             (true, false) => "●",
             (false, false) => "○",
             (true, true) => "*",
             (false, true) => "o",
         };
-        let mut spans = vec![Span::styled(dot, kit.fg(cli.color))];
-        if fine < Fine::Dot && !self.shape.names_gone {
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(cli.name.clone(), self.name_style()));
-        }
-        spans
+        Span::styled(dot, kit.fg(self.cli.color))
     }
 
     fn name_style(&self) -> Style {
@@ -140,14 +183,37 @@ impl Chip<'_> {
         Span::styled(format!("{percent}%{unit}"), self.number_style(window.near))
     }
 
+    /// [`Self::percent`] after a bar or a cell, right-aligned in four cells: ` 56%`.
+    fn percent_after_bar(&self, window: &WindowUse) -> Vec<Span<'static>> {
+        let percent = self.percent(window);
+        let digits = percent.content.split(' ').next().unwrap_or_default();
+        let pad = PERCENT_CELLS.saturating_sub(digits.chars().count());
+        if pad == 0 {
+            return vec![percent];
+        }
+        vec![Span::raw(" ".repeat(pad)), percent]
+    }
+
     fn bar(&self, window: &WindowUse) -> Vec<Span<'static>> {
         small_bar(self.kit(), self.shown(window), self.fill(window))
     }
 
-    /// One cell for a window, an eighth of a cell per eighth used and never empty.
-    fn cell(&self, window: &WindowUse) -> Span<'static> {
+    /// A window's bar as one cell, drawn as the bar's own cells are: filled for any use.
+    fn cell(&self, window: &WindowUse) -> Vec<Span<'static>> {
+        bars::whole_window_meter(self.kit(), self.shown(window), 1, self.fill(window))
+    }
+
+    /// A gauge's cell for a window, an eighth of a cell per eighth used and never empty.
+    fn gauge(&self, window: &WindowUse) -> Span<'static> {
         let kit = self.kit();
         Span::styled(level(kit, self.shown(window)), kit.fg(self.fill(window)))
+    }
+
+    /// Whether the bars have gone, leaving the numbers: every CLI's last of all, and before
+    /// that those of a CLI at 90% that isn't the one in use.
+    fn bar_gone(&self) -> bool {
+        let near = !self.cli.main && self.cli.needs_you();
+        self.shape.main_bar_gone || (near && self.shape.near_bar_gone)
     }
 
     /// `resets 4:40pm`, then `4:40pm`, then nothing, and how old the reading is while there's
@@ -169,8 +235,8 @@ impl Chip<'_> {
         spans
     }
 
-    /// `5h ██████ 93% resets 4:40pm 7d ███▍   56%` for the CLI in use or one near its limit,
-    /// `7d ▋      11%` for another. The fuller window is never given up.
+    /// `5h ▄▄▄▄▄▄  93% resets 4:40pm  7d ▄▄▄▁▁▁  56%` for the CLI in use or one near its
+    /// limit, `7d ▄▁▁▁▁▁  11%` for another. The fuller window is never given up.
     fn bars(&self, fine: Fine) -> Vec<Span<'static>> {
         let cli = self.cli;
         let kit = self.kit();
@@ -179,7 +245,9 @@ impl Chip<'_> {
         };
         if fine == Fine::Cell {
             let window = &cli.windows[fuller];
-            return vec![self.cell(window), Span::raw(" "), self.percent(window)];
+            let mut spans = self.cell(window);
+            join(&mut spans, self.percent_after_bar(window));
+            return spans;
         }
         let mut spans = Vec::new();
         for (at, window) in cli.windows.iter().enumerate() {
@@ -189,19 +257,29 @@ impl Chip<'_> {
                 (true, Second::Gone) => continue,
                 (true, Second::Cell) => {
                     one.push(kit.dim(window.label.clone()));
-                    join(&mut one, vec![self.cell(window)]);
+                    join(&mut one, self.cell(window));
+                    join(&mut one, self.percent_after_bar(window));
                 }
-                _ if self.shape.main_bar_gone => {}
+                _ if self.bar_gone() => one.push(self.percent(window)),
                 _ => {
                     one.push(kit.dim(window.label.clone()));
                     join(&mut one, self.bar(window));
+                    join(&mut one, self.percent_after_bar(window));
                 }
             }
-            join(&mut one, vec![self.percent(window)]);
             join(&mut one, self.after_number(window));
-            join(&mut spans, one);
+            self.join_window(&mut spans, one);
         }
         spans
+    }
+
+    /// Adds a window after the one before it, two columns on, as far apart as the parts on the
+    /// right, and one where the chips have closed up.
+    fn join_window(&self, spans: &mut Vec<Span<'static>>, window: Vec<Span<'static>>) {
+        if !spans.is_empty() && !self.shape.tight {
+            spans.push(Span::raw(" "));
+        }
+        join(spans, window);
     }
 
     /// One bar, the fuller window, with no label: `██████ 56%`.
@@ -210,11 +288,13 @@ impl Chip<'_> {
             return self.note();
         };
         let mut spans = match fine {
-            _ if self.shape.main_bar_gone => Vec::new(),
-            Fine::Cell => vec![self.cell(window)],
+            _ if self.bar_gone() => vec![self.percent(window)],
+            Fine::Cell => self.cell(window),
             _ => self.bar(window),
         };
-        join(&mut spans, vec![self.percent(window)]);
+        if !self.bar_gone() {
+            join(&mut spans, self.percent_after_bar(window));
+        }
         join(&mut spans, self.after_number(window));
         spans
     }
@@ -239,7 +319,7 @@ impl Chip<'_> {
             .map(|at| &cli.windows[at])
             .collect();
         let mut spans: Vec<Span<'static>> =
-            windows.iter().map(|window| self.cell(window)).collect();
+            windows.iter().map(|window| self.gauge(window)).collect();
         for window in windows.iter().filter(|window| window.near) {
             join(&mut spans, vec![self.percent(window)]);
             join(&mut spans, self.after_number(window));
@@ -251,23 +331,6 @@ impl Chip<'_> {
         {
             join(&mut spans, vec![self.kit().dim(format!("{age} ago"))]);
         }
-        spans
-    }
-
-    /// A red bar while there's room, and when it comes back: `out until Tue 3:45pm`, then
-    /// `out · Tue 3:45pm`, then `out`.
-    fn out(&self, until: Option<&str>) -> Vec<Span<'static>> {
-        let kit = self.kit();
-        let shape = self.shape;
-        let mut spans = Vec::new();
-        let drawn_as_bars = matches!(self.look.form, LineForm::Fit | LineForm::Bars);
-        if drawn_as_bars && !shape.out_bar_gone {
-            spans = small_bar(kit, 1.0, Role::Danger);
-        }
-        join(
-            &mut spans,
-            vec![kit.span(self.out_words(until), Role::Danger)],
-        );
         spans
     }
 
@@ -288,7 +351,7 @@ impl Chip<'_> {
         }
     }
 
-    /// Today's line: `● Claude 5h 1% · 7d 56% used`, bold for the CLI in use and dim for the
+    /// Today's line: `● Claude Code 5h 1% · 7d 56% used`, bold for the CLI in use and dim for the
     /// others, with no bars at all. A CLI that isn't in use has no dot until its name goes.
     fn as_text(&self) -> Vec<Span<'static>> {
         let cli = self.cli;
@@ -315,16 +378,19 @@ impl Chip<'_> {
         let mut text = String::new();
         if named {
             text.push_str(&cli.name);
+        } else if let Some(letters) = self.letters() {
+            // Where its name gave way, two letters stand beside the dot.
+            text.push_str(&letters);
         }
         if !words.is_empty() {
-            if named {
+            if !text.is_empty() {
                 text.push(' ');
             }
             text.push_str(&words);
         }
         let mut spans = Vec::new();
         if cli.main || !named {
-            let dot = self.head(Fine::Dot).remove(0);
+            let dot = self.dot();
             spans.push(if cli.main {
                 Span::styled(dot.content, style)
             } else {

@@ -11,6 +11,7 @@ mod tweaks;
 
 use std::path::Path;
 
+use argonauts_core::adapter::IdentityMarks;
 use argonauts_core::keywords::Keyword;
 use argonauts_core::limits::{PlanUsageAnswer, PlanUsageReading};
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
@@ -74,6 +75,10 @@ const STARTUP_MESSAGE: argonauts_core::adapter::StartupMessage =
     };
 
 impl Adapter for AntigravityCli {
+    fn first_count(&self) -> Option<argonauts_core::events::context::FirstCount> {
+        Some(argonauts_core::events::context::FirstCount::Step)
+    }
+
     fn id(&self) -> &'static str {
         ADAPTER_ID
     }
@@ -170,14 +175,42 @@ impl Adapter for AntigravityCli {
         command::interactive_resume_command(self.binary(), session_id, &req.workdir)
     }
 
+    /// The tools its stream names and its home folder.
+    fn identity_marks(&self) -> IdentityMarks {
+        IdentityMarks {
+            tool_names: &[
+                "run_command",
+                "view_file",
+                "find_by_name",
+                "write_to_file",
+                "write_file",
+                "invoke_subagent",
+                "finish",
+            ],
+            row_marks: &[],
+            home_folders: &["~/.gemini"],
+            citation: None,
+        }
+    }
+
+    /// `agy --conversation <id>`, in the folder it ran in.
+    fn resume_command(
+        &self,
+        req: &SessionRequest,
+    ) -> Option<argonauts_core::cli_sessions::ResumeCommand> {
+        let spec = self.interactive_resume(req)?;
+        Some(argonauts_core::cli_sessions::ResumeCommand {
+            words: std::iter::once(spec.program).chain(spec.args).collect(),
+            local_model: false,
+            from_any_folder: false,
+            also: argonauts_core::cli_sessions::resume_facts::AGY_LISTS_IT
+                .then(|| "pick it in agy's own list".to_owned()),
+        })
+    }
+
     /// agy reads the project's AGENTS.md as its rules.
     fn instruction_files(&self, workdir: &Path, _isolated: bool) -> Vec<String> {
-        let name = "AGENTS.md";
-        if workdir.join(name).is_file() {
-            vec![name.to_owned()]
-        } else {
-            Vec::new()
-        }
+        argonauts_core::adapter::agents_md(workdir)
     }
 
     /// agy also runs Claude and GPT-OSS models. The registry maps those model ids to their
@@ -392,6 +425,14 @@ mod tests {
         assert_eq!(spec.program, "agy");
         assert_eq!(spec.args, ["--conversation", "055a398f"]);
         assert_eq!(spec.cwd, PathBuf::from("/work/task-001"));
+        let typed = AntigravityCli
+            .resume_command(&SessionRequest::reopening(
+                "055a398f",
+                Path::new("/work/task-001"),
+            ))
+            .unwrap();
+        assert_eq!(typed.words, ["agy", "--conversation", "055a398f"]);
+        assert!(!typed.from_any_folder);
     }
 
     #[test]
@@ -446,5 +487,60 @@ mod tests {
                 spec.env_remove
             );
         }
+    }
+}
+
+/// Every tool its recorded output names is one of its marks, so a relayed message never names
+/// one in its own words.
+#[cfg(test)]
+mod identity_tests {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use argonauts_core::Adapter;
+
+    use super::*;
+
+    const AFTER: &str = r#""tool_name""#;
+    const THEN: &str = r#":""#;
+
+    /// The names that follow `after` in every recorded fixture, up to the next quote.
+    fn recorded(after: &str, then: &str) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        let mut dirs = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for piece in text.split(after).skip(1) {
+                    let Some(at) = piece.find(then).filter(|at| *at < 160) else {
+                        continue;
+                    };
+                    if let Some(name) = piece[at + then.len()..].split('"').next() {
+                        names.insert(name.to_owned());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn every_tool_its_output_names_is_one_of_its_marks() {
+        let marks = AntigravityCli::new().identity_marks();
+        let recorded = recorded(AFTER, THEN);
+        assert!(!recorded.is_empty(), "the fixtures name tools");
+        let unmarked: Vec<&String> = recorded
+            .iter()
+            .filter(|name| !name.starts_with("mcp__") && !marks.tool_names.contains(&name.as_str()))
+            .collect();
+        assert!(unmarked.is_empty(), "{unmarked:?}");
+        assert!(!marks.home_folders.is_empty());
     }
 }

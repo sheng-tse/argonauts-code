@@ -55,8 +55,10 @@ const NO_GIT_TOLD: &str = "told-no-git";
 
 pub(crate) async fn run(mut options: InteractiveOptions, first: FirstView) -> anyhow::Result<()> {
     let mut first = first;
+    // A hold `/awake` asked for lasts across `/cd` and ends when the app does.
+    let awake = crate::keep_awake::YourHold::default();
     // `/cd` closes the screen and asks for it to open again in another repo.
-    while let Some(repo) = run_once(&options, first).await? {
+    while let Some(repo) = run_once(&options, first, &awake).await? {
         std::env::set_current_dir(&repo)
             .with_context(|| format!("moving to {}", repo.display()))?;
         options.repo = Some(repo);
@@ -70,6 +72,7 @@ pub(crate) async fn run(mut options: InteractiveOptions, first: FirstView) -> an
 async fn run_once(
     options: &InteractiveOptions,
     first: FirstView,
+    awake: &crate::keep_awake::YourHold,
 ) -> anyhow::Result<Option<PathBuf>> {
     let opened = std::time::Instant::now();
     let env = AppEnv::discover(options.repo.as_deref())?;
@@ -88,6 +91,8 @@ async fn run_once(
     let mut ui = UiOptions::from_settings(&settings.settings().ui);
     ui.history_file = Some(history_file_in(&env.state_dir));
     ui.ultracode_trigger = settings.settings().workflows.ultracode_trigger;
+    ui.ask_for_pictures = settings.settings().behaviors.view
+        == argonauts_core::settings::behaviors::BehaviorView::World;
     let screen_reader =
         options.screen_reader || settings.settings().ui.screen_reader || !env.interactive;
     // `argonauts run` attaches to the run it just started and never opens the setup.
@@ -116,7 +121,7 @@ async fn run_once(
         Outbox::new(out, Arc::new(trace)),
         internal,
     );
-    ctx.awake = crate::keep_awake::KeepAwake::system();
+    ctx.awake = crate::keep_awake::KeepAwake::system().sharing(awake.clone());
     let reopen = ctx.reopen();
 
     let (commands, commands_rx) = mpsc::channel(COMMAND_QUEUE);
@@ -520,7 +525,8 @@ fn tracked_local_notice(env: &AppEnv) -> Option<(NoteLevel, String)> {
 }
 
 /// Said the first time the app opens in a folder with no git, since it works differently
-/// there: nothing is committed, and a workflow's branches live under Argonauts Code's home.
+/// there: nothing is committed, and the history Captain and the workflows keep lives under
+/// Argonauts Code's home.
 fn no_git_notice(env: &AppEnv) -> Option<(NoteLevel, String)> {
     if env.git() != FolderGit::Off || !first_time(&env.state_dir, NO_GIT_TOLD) {
         return None;
@@ -528,8 +534,8 @@ fn no_git_notice(env: &AppEnv) -> Option<(NoteLevel, String)> {
     Some((
         NoteLevel::Aside,
         format!(
-            "This folder has no git. Captain and the conversation work as they are. Workflows keep \
-             their own history in {}, and your folder stays as it is.",
+            "This folder has no git. Captain and the workflows keep their own history in {}, so \
+             /rewind works, and your folder stays as it is.",
             env.display(env.paths.home())
         ),
     ))
@@ -994,7 +1000,7 @@ mod tests {
             })),
             ..CliOptions::default()
         });
-        assert_eq!(parts.ctx.settings.settings().workflow, "captain");
+        assert_eq!(parts.ctx.settings.settings().workflow, "council");
         let notices = start_notices(&parts.ctx);
         let named: Vec<&str> = notices
             .iter()

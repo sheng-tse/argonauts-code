@@ -45,8 +45,14 @@ pub struct WorkingLine {
     /// With `ui.tips`, a tip for this stretch of work, drawn as `⎿ Tip: …` where no next task
     /// takes the place.
     pub tip: Option<&'static str>,
+    /// The work's own words for the row under the line, where no next task takes it, ahead of
+    /// the tip: a council's "Still open: …".
+    pub note: Option<String>,
     pub started_at: Instant,
     pub tokens_down: u64,
+    /// The most tokens the work may take, written after its own as `of 200k`: a council talk's
+    /// limit.
+    pub tokens_limit: Option<u64>,
     pub activity: Activity,
     /// Whether the parentheses say what the agent is doing. Several agents at once leave it
     /// out, since the words would jump from one to the next, while what they do between them
@@ -148,8 +154,10 @@ impl WorkingLine {
             task: None,
             next: None,
             tip: None,
+            note: None,
             started_at,
             tokens_down: 0,
+            tokens_limit: None,
             activity: Activity::None,
             says_activity: true,
             effort: None,
@@ -253,14 +261,15 @@ impl WorkingLine {
             .as_deref()
             .map(|next| sanitize_line(next).trim().to_owned())
             .filter(|next| !next.is_empty());
-        let words = match (next, self.tip) {
-            (Some(next), _) => format!("Next: {next}"),
-            (None, Some(tip)) => format!("Tip: {tip}"),
-            (None, None) => return None,
+        let words = match (next, &self.note, self.tip) {
+            (Some(next), _, _) => format!("Next: {next}"),
+            (None, Some(note), _) => note.clone(),
+            (None, None, Some(tip)) => format!("Tip: {tip}"),
+            (None, None, None) => return None,
         };
         let dim = ctx.theme.style(Role::Dim);
         let line = Line::from(vec![
-            Span::styled(format!("  {} ", ctx.theme.glyphs.result), dim),
+            Span::styled(format!("  {}  ", ctx.theme.glyphs.result), dim),
             Span::styled(words, dim),
         ]);
         Some(truncate_line(&line, usize::from(ctx.width)))
@@ -305,8 +314,12 @@ impl WorkingLine {
             ));
         }
         if self.tokens_down > 0 {
+            let limit = self
+                .tokens_limit
+                .map(|limit| format!(" of {}", format::tokens(limit)))
+                .unwrap_or_default();
             parts.push(format!(
-                "{}{}{} tokens",
+                "{}{}{}{limit} tokens",
                 theme.glyphs.tokens,
                 crate::theme::glyphs::gap_after(theme.glyphs.tokens),
                 format::tokens(self.tokens_down)
@@ -747,7 +760,7 @@ mod tests {
         let ctx = RenderCtx::new(60, &theme, Clock::new(t0, t0 + Duration::from_secs(3)));
         assert_eq!(
             plain_text(&line.lines(&ctx)),
-            "✼ Add the due date column… (3s)\n  ⎿ Next: Run the tests"
+            "✼ Add the due date column… (3s)\n  ⎿  Next: Run the tests"
         );
         let next = &line.lines(&ctx)[1];
         assert!(
@@ -779,7 +792,7 @@ mod tests {
         let ctx = RenderCtx::new(60, &theme, Clock::new(t0, t0 + Duration::from_secs(3)));
         assert_eq!(
             plain_text(&line.lines(&ctx)),
-            "✼ Rowing… (3s)\n  ⎿ Tip: Ctrl+O shows the whole transcript"
+            "✼ Rowing… (3s)\n  ⎿  Tip: Ctrl+O shows the whole transcript"
         );
         assert!(
             line.lines(&ctx)[1]
@@ -790,7 +803,7 @@ mod tests {
         line.next = Some("Run the tests".into());
         assert_eq!(
             plain_text(&line.lines(&ctx)),
-            "✼ Rowing… (3s)\n  ⎿ Next: Run the tests"
+            "✼ Rowing… (3s)\n  ⎿  Next: Run the tests"
         );
     }
 

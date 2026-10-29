@@ -1,12 +1,11 @@
 //! The Config tab: Claude Code's friendly list of settings with a search box over it, and
 //! Argonauts Code's own rows after Claude Code's. Each row changes in place, as Claude Code's
-//! do, and a personal row saves at once to your global file. A row that changes safety or what
-//! the team shares asks where to save, and a value that a project file, the workflow, or
-//! `--set` holds says so and opens All settings, where it can be changed where it lives.
+//! do, and saves at once where your changes go, as every change does. A value that a project
+//! file, the workflow, or `--set` holds says so and opens All settings, where it can be changed
+//! where it lives.
 //!
-//! A row that asks where steps in place like any other, then asks where to save over the rows.
-//! Its change waits for the app, which may ask whether to change a safety setting while the
-//! tab stays up, and Esc says it only once it is saved.
+//! A row that changes safety steps in place like any other, and its change waits for the app,
+//! which may ask whether to make it while the tab stays up; Esc says it only once it is saved.
 //!
 //! Nothing prints while the tab is open. Esc leaves one line under the command that opened
 //! it, `Set Editor mode to vim`, or `Config dialog dismissed` when nothing changed.
@@ -24,21 +23,19 @@ use argonauts_core::deep_map::DeepOffer;
 use argonauts_core::input::{ParsedInput, parse_input};
 use argonauts_core::names::ModelRef;
 use argonauts_core::settings::behaviors::{AUTO, WORD_VECTORS};
+use argonauts_core::settings::layer;
 use argonauts_core::settings::mods::ModPlace;
 use argonauts_core::settings::mods::builtin;
 use argonauts_core::settings::mods::view::ModRowKind;
 use argonauts_core::settings::ui::ModName;
-use argonauts_core::settings::{SettingScope, asks_where, layer};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::bottom::Picker;
 use crate::format;
 use crate::state::{AppState, SettingOutcome};
 use crate::views::ViewOutcome;
 use crate::views::list;
 use crate::views::settings::all_settings::AllSettingsView;
 use crate::views::settings::words::row_value_words;
-use crate::views::settings::{edit_key, flow};
 
 pub use draw::{body_rows, draw};
 use picks::{Picked, Picking};
@@ -81,10 +78,7 @@ pub struct ConfigTab {
     opened_by: Option<String>,
     /// The approval mode now, which Last used brings back at the next start.
     mode_now: Option<String>,
-    /// Where to save a change to a row that asks, over the rows, with the row and its value.
-    editor: Option<(Picker, &'static Row, String)>,
-    /// Changes sent from rows that ask where, until the app saves them or leaves them as they
-    /// were.
+    /// Safety changes sent from rows, until the app saves them or leaves them as they were.
     waiting: Vec<Waiting>,
     /// How many of the state's setting outcomes the tab has read, once it has looked.
     outcomes_read: Option<usize>,
@@ -95,7 +89,7 @@ pub struct ConfigTab {
     picked_names: Vec<(String, String)>,
 }
 
-/// A change sent from a row that asks where, waiting for the app's word.
+/// A change sent from a row that changes safety, waiting for the app's word.
 #[derive(Debug, Clone)]
 struct Waiting {
     label: &'static str,
@@ -127,14 +121,12 @@ impl Shown<'_> {
             .or_else(|| rows::described(self.row.key, self.value()))
     }
 
-    /// Where a higher layer holds the value of a row that saves at once to your global file,
-    /// which a save there wouldn't change. The rows that ask where to save, and the pickers the
-    /// links open, save where the value lives.
+    /// Where a layer above your global file holds the value of a row that changes in place.
+    /// Such a row opens All settings, whose pick saves where the change takes effect.
     fn held_by(&self) -> Option<&'static str> {
         let setting = self.setting?;
-        let at_once = matches!(self.row.control, Control::Toggle(_) | Control::Choice(_))
-            && !asks_where(&setting.key, setting.safety);
-        at_once.then(|| held_by(&setting.layer)).flatten()
+        let in_place = matches!(self.row.control, Control::Toggle(_) | Control::Choice(_));
+        in_place.then(|| held_by(&setting.layer)).flatten()
     }
 }
 
@@ -276,9 +268,6 @@ impl ConfigTab {
     /// from the search box does to go up to the tabs.
     pub fn key(&mut self, key: KeyEvent, state: &AppState) -> Option<ViewOutcome> {
         self.read_outcomes(state);
-        if self.editor.is_some() {
-            return Some(self.editor_key(key, state));
-        }
         if self.picking.is_some() {
             return Some(self.picking_key(key, state));
         }
@@ -444,8 +433,8 @@ impl ConfigTab {
             (Control::AllSettings, ..) => {
                 ViewOutcome::Open(Box::new(AllSettingsView::new(self.settings.clone())))
             }
-            // Typed values, and values a higher layer holds, change in All settings, which
-            // asks where to save.
+            // Typed values, and values a higher layer holds, change in All settings, where the
+            // value lives.
             (_, _, Some(setting)) => self.at_key(&setting.key),
             _ => ViewOutcome::Consumed,
         }
@@ -459,8 +448,9 @@ impl ConfigTab {
         )))
     }
 
-    /// Saves `value` for the row: at once to your global file for a personal key, or after
-    /// the question of where for one that changes safety or what the team shares.
+    /// Saves `value` for the row at once, where your changes go, and the row shows it now. A
+    /// safety change waits for the app's word, since you may decline it when asked, which
+    /// puts the old value back; any other joins Esc's line at once.
     fn save(
         &mut self,
         row: &'static Row,
@@ -468,17 +458,9 @@ impl ConfigTab {
         value: String,
         state: &AppState,
     ) -> ViewOutcome {
-        if asks_where(&setting.key, setting.safety) {
-            let mut editor = flow::scope_picker(setting.clone(), value.clone());
-            editor.vim = list::vim(state);
-            self.editor = Some((editor, row, value));
-            return ViewOutcome::Consumed;
-        }
         let key = setting.key.clone();
-        if let Some(&at) = self.by_key.get(&key) {
-            self.settings[at].value = value.clone();
-            self.settings[at].layer = layer::GLOBAL.to_owned();
-        }
+        let was = setting.value.clone();
+        self.set_value(&key, &value);
         let words = self.words(
             &Shown {
                 row,
@@ -486,53 +468,22 @@ impl ConfigTab {
             },
             state,
         );
-        self.note(row.label, &words);
+        if setting.safety {
+            self.waiting.push(Waiting {
+                label: row.label,
+                key: key.clone(),
+                value: value.clone(),
+                words,
+                was,
+            });
+        } else {
+            self.note(row.label, &words);
+        }
         ViewOutcome::SaveQuietly(UiCommand::SetSetting {
             key,
             value,
-            scope: SettingScope::Global,
+            scope: None,
         })
-    }
-
-    /// A key while the question of where to save shows. Its answer sends the change, which
-    /// waits for the app's word; Esc and ← leave the row as it was.
-    fn editor_key(&mut self, key: KeyEvent, state: &AppState) -> ViewOutcome {
-        let Some((editor, row, value)) = self.editor.take() else {
-            return ViewOutcome::Consumed;
-        };
-        let mut open = Some(editor);
-        let outcome = edit_key(&mut open, key).unwrap_or(ViewOutcome::Consumed);
-        if let Some(editor) = open {
-            self.editor = Some((editor, row, value));
-        }
-        match outcome {
-            ViewOutcome::Send(command @ UiCommand::SetSetting { .. }) => {
-                if let UiCommand::SetSetting { key, value, .. } = &command {
-                    let was = self
-                        .setting(key)
-                        .map(|setting| setting.value.clone())
-                        .unwrap_or_default();
-                    self.set_value(key, value);
-                    let words = self.words(
-                        &Shown {
-                            row,
-                            setting: self.setting(key),
-                        },
-                        state,
-                    );
-                    self.waiting.push(Waiting {
-                        label: row.label,
-                        key: key.clone(),
-                        value: value.clone(),
-                        words,
-                        was,
-                    });
-                }
-                ViewOutcome::SaveQuietly(command)
-            }
-            ViewOutcome::Ignored => ViewOutcome::Consumed,
-            outcome => outcome,
-        }
     }
 
     /// A key while a Behaviors row's picker shows. A pick saves as the row's other changes do;
@@ -565,11 +516,6 @@ impl ConfigTab {
         }
     }
 
-    /// The question of where to save a row's change, while it shows.
-    pub fn editor(&self) -> Option<&Picker> {
-        self.editor.as_ref().map(|(editor, ..)| editor)
-    }
-
     /// Whether a change waits for the app's word, which may come as a question the tab stays
     /// up over.
     pub fn waits(&self) -> bool {
@@ -584,7 +530,10 @@ impl ConfigTab {
         self.outcomes_read = Some(all.len());
         for outcome in all.get(read..).unwrap_or_default() {
             match outcome {
-                SettingOutcome::Changed { key, value } => {
+                SettingOutcome::Changed { key, value, scope } => {
+                    if let Some(&at) = self.by_key.get(key.as_str()) {
+                        self.settings[at].layer = scope.layer().to_owned();
+                    }
                     let saved = self
                         .waiting
                         .iter()

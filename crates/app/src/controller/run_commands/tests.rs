@@ -19,6 +19,7 @@ use argonauts_core::input::SlashCommand;
 use argonauts_core::layout::run_files;
 use argonauts_core::names::{ApprovalId, MessageId, ModelRef, RoleName, SessionKey};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::fallback::FallbackMode;
 use argonauts_core::views::{ContextRow, ContextView};
 use argonauts_core::{AgentEvent, NoteLevel, RunId, Spend, TaskId};
@@ -30,9 +31,9 @@ use super::{guidance, mention, take_back};
 use crate::FirstView;
 use crate::ancestry::Processes;
 use crate::client::test_support::{agent, run_started, session_started, usage, write_journal};
+use crate::controller::Opening;
 use crate::controller::runs::rig::{Rig, event, finished, question, run_id, waiting};
 use crate::controller::test_support::{ApprovalCall, Call, CliOptions, TestDriver};
-use crate::controller::{Opening, ScopeRequest};
 use crate::live_registry::{LiveRunHost, register};
 
 fn attach_to(run: &str, interactive: bool) -> CliOptions {
@@ -456,6 +457,45 @@ async fn running_a_goals_checks_now_goes_to_the_run() {
     driver.exit().await;
 }
 
+/// What you write to the council goes to the run on screen as the council's own action, with
+/// the message it replies to and the seats it names.
+#[tokio::test]
+async fn what_you_write_to_the_council_goes_to_the_run_on_screen() {
+    use argonauts_core::events::council::CouncilAction;
+    use argonauts_core::names::{MessageId, SeatId};
+
+    let write = CouncilAction::Write {
+        text: "Seat 2, why a bucket?".to_owned(),
+        reply_to: Some(MessageId::numbered(4)),
+        mentions: vec![SeatId::numbered(2)],
+        points: Vec::new(),
+    };
+    let mut driver = TestDriver::start_with(attach_to("run-001", true)).await;
+    driver
+        .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
+        .await;
+    driver
+        .send(UiCommand::Council {
+            run: None,
+            action: write.clone(),
+        })
+        .await;
+    let sent = Call::Council {
+        run: run_id("run-001"),
+        action: write,
+    };
+    let deadline = tokio::time::Instant::now() + crate::controller::test_support::max_wait();
+    while !driver.conductor.calls().contains(&sent) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{:#?}",
+            driver.conductor.calls()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    driver.exit().await;
+}
+
 fn fallback_opened(id: &ApprovalId, task: &TaskId, stopped: &ModelRef) -> RunEventKind {
     let plan = FallbackPlan {
         task: task.clone(),
@@ -480,6 +520,7 @@ fn fallback_opened(id: &ApprovalId, task: &TaskId, stopped: &ModelRef) -> RunEve
         evidence_sha256: "e".repeat(64),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options: Vec::new(),
         free_text: FreeText::None,
         needs_you: true,
@@ -488,7 +529,7 @@ fn fallback_opened(id: &ApprovalId, task: &TaskId, stopped: &ModelRef) -> RunEve
 }
 
 #[test]
-fn a_remembered_fallback_pick_asks_where_to_save_the_rule() {
+fn a_remembered_fallback_pick_is_the_rule_for_its_role_and_agent() {
     let run = run_id("run-001");
     let task = TaskId::new("task-002").expect("a task id");
     let id = ApprovalId::numbered(4);
@@ -534,22 +575,21 @@ fn a_remembered_fallback_pick_asks_where_to_save_the_rule() {
             RunEventKind::Approval(ApprovalEvent::Decided(decided)),
         ),
     ];
-    let expected = ScopeRequest {
-        key: "fallback.reviewer.replace.claude-code.with".to_owned(),
-        value: "[\"codex/gpt-5\"]".to_owned(),
-        command: "fallback".to_owned(),
-    };
-    assert_eq!(fallback_rule(&events, &id, None), Some(expected.clone()));
+    let expected = (
+        "fallback.reviewer.replace.claude-code.with".to_owned(),
+        "[\"codex/gpt-5\"]".to_owned(),
+    );
+    assert_eq!(fallback_rule(&events, &id, None), Some(expected));
     let other = ModelRef::new("antigravity-cli", None);
-    let answered = fallback_rule(&events, &id, Some(other)).expect("a rule");
-    assert_eq!(answered.value, "[\"antigravity-cli\"]");
+    let (_, answered) = fallback_rule(&events, &id, Some(other)).expect("a rule");
+    assert_eq!(answered, "[\"antigravity-cli\"]");
     assert_eq!(
         fallback_rule(&events[..1], &id, None),
         None,
         "no fallback question"
     );
-    let worker = fallback_rule(&events[1..], &id, None).expect("a rule");
-    assert_eq!(worker.key, "fallback.worker.replace.claude-code.with");
+    let (worker, _) = fallback_rule(&events[1..], &id, None).expect("a rule");
+    assert_eq!(worker, "fallback.worker.replace.claude-code.with");
 }
 
 #[test]
@@ -571,7 +611,7 @@ fn where_are_we_is_a_status_question() {
 }
 
 #[tokio::test]
-async fn a_fallback_answer_with_remember_saves_the_rule_where_you_say() {
+async fn a_fallback_answer_with_remember_saves_the_rule_where_your_changes_go() {
     let mut driver = TestDriver::start_with(attach_to("run-001", true)).await;
     driver
         .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
@@ -611,42 +651,6 @@ async fn a_fallback_answer_with_remember_saves_the_rule_where_you_say() {
             remember: true,
         })
         .await;
-    let AppEvent::Choice { choice } = driver
-        .until(|event| matches!(event, AppEvent::Choice { .. }))
-        .await
-    else {
-        unreachable!()
-    };
-    assert_eq!(choice.kind, ChoiceKind::SettingScope);
-    assert_eq!(
-        choice.body.first().map(String::as_str),
-        Some("fallback.worker.replace.claude-code.with = [\"codex/gpt-5\"]"),
-        "{choice:?}"
-    );
-    let sent = driver.approvals.calls();
-    assert!(
-        matches!(&sent[..], [ApprovalCall::Answer { answer, .. }]
-            if answer.action == AnswerAction::Candidate { worker: pick.clone() }),
-        "the pick goes to the engine before the rule is saved: {sent:?}"
-    );
-
-    let project = choice
-        .options
-        .iter()
-        .find(|option| option.key == 'p')
-        .expect("a project option");
-    driver
-        .send(UiCommand::Answer {
-            to: AnswerTarget::Choice {
-                id: choice.id.clone(),
-            },
-            action: project.action.clone(),
-            text: None,
-            evidence_sha256: None,
-            tasks: Vec::new(),
-            remember: false,
-        })
-        .await;
     let changed = driver
         .until(|event| matches!(event, AppEvent::SettingChanged { .. }))
         .await;
@@ -660,8 +664,14 @@ async fn a_fallback_answer_with_remember_saves_the_rule_where_you_say() {
             "[\"codex/gpt-5\"]"
         )
     );
-    let text = std::fs::read_to_string(driver.env.project_config()).expect("the project file");
-    let written = toml::Value::Table(text.parse().expect("the project file is TOML"));
+    let sent = driver.approvals.calls();
+    assert!(
+        matches!(&sent[..], [ApprovalCall::Answer { answer, .. }]
+            if answer.action == AnswerAction::Candidate { worker: pick.clone() }),
+        "the pick goes to the engine before the rule is saved: {sent:?}"
+    );
+    let text = std::fs::read_to_string(driver.env.global_config()).expect("your global file");
+    let written = toml::Value::Table(text.parse().expect("your global file is TOML"));
     let with = ["fallback", "worker", "replace", "claude-code", "with"]
         .iter()
         .try_fold(&written, |node, part| node.get(part));
@@ -792,9 +802,14 @@ async fn giving_a_task_to_the_worker_it_has_starts_it_over() {
 }
 
 async fn context_view(rig: &mut Rig, conversation: &ContextRow) -> ContextView {
-    super::context(&mut rig.ctx, &mut rig.runs, Some(conversation.clone()))
-        .await
-        .expect("/context");
+    super::context(
+        &mut rig.ctx,
+        &mut rig.runs,
+        Some(conversation.clone()),
+        None,
+    )
+    .await
+    .expect("/context");
     let AppEvent::View { data } = rig
         .until(|event| matches!(event, AppEvent::View { .. }))
         .await

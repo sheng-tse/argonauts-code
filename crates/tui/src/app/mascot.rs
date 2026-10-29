@@ -44,6 +44,19 @@ pub(super) struct HeaderMascot {
     /// What the full screen sends with its next frame before it places the picture, such as
     /// the frames to keep.
     waiting: Vec<u8>,
+    /// Inline, after a resize: the picture goes in the header's cells again on the next frame,
+    /// drawn anew when the cell size changed.
+    again: Option<Again>,
+    /// Reads the cell size the terminal reports now.
+    measure: fn() -> Option<(u16, u16)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Again {
+    /// The same pictures, placed again.
+    Place,
+    /// New pictures, for a new cell size.
+    Redraw,
 }
 
 impl Default for HeaderMascot {
@@ -58,6 +71,13 @@ impl Default for HeaderMascot {
             placed: None,
             resend: false,
             waiting: Vec::new(),
+            again: None,
+            // The crate's own tests never read the terminal they run in.
+            measure: if cfg!(test) {
+                || None
+            } else {
+                crate::terminal::setup::cell_size
+            },
         }
     }
 }
@@ -74,6 +94,11 @@ impl HeaderMascot {
 pub(super) type Placing = Option<(Option<Position>, Vec<u8>)>;
 
 impl<W: Write> Ui<W> {
+    /// The terminal's cell in pixels, where it said, which pictures sent now are drawn for.
+    pub(super) fn picture_cell(&self) -> Option<(u16, u16)> {
+        self.mascot.cell
+    }
+
     /// The terminal takes pictures through `graphics`, at `cell` pixels a cell, so the header's
     /// mascot is drawn as one where `ui.mascot` lets it.
     pub fn use_pictures(&mut self, graphics: Option<Graphics>, cell: Option<(u16, u16)>) {
@@ -82,18 +107,76 @@ impl<W: Write> Ui<W> {
         self.fit_mascot_to_theme();
     }
 
-    /// After a resize, the cell size the terminal reports now, such as after the font grew:
-    /// pictures sent from now on take it. One it can't tell leaves the last. The full screen
-    /// places its picture again.
+    /// After any resize, even one that keeps the columns and rows, as a font size change can:
+    /// the cell size the terminal reports now, which pictures sent from now on take (one it
+    /// can't tell leaves the last), and the picture taken off and placed again where the
+    /// header's cells are now, drawn anew for a new cell size. The full screen places it as it
+    /// draws the next frame; inline, it goes back while the header's rows still show.
     pub(super) fn measure_cells(&mut self) {
-        self.mascot.placed = None;
         if self.mascot.graphics.is_none() {
             return;
         }
-        if let Some(cell) = crate::terminal::setup::cell_size() {
+        let measured = (self.mascot.measure)().filter(|(width, height)| *width > 0 && *height > 0);
+        let redraw = measured.is_some_and(|cell| Some(cell) != self.mascot.cell);
+        if let Some(cell) = measured {
             self.mascot.cell = Some(cell);
             self.fit_mascot_to_theme();
         }
+        if self.scrollback.is_none() {
+            // iTerm2 draws its picture into the cells, which the terminal moves with the text.
+            let kitty = self
+                .mascot
+                .sent
+                .as_ref()
+                .is_some_and(|sent| sent.graphics == Graphics::Kitty);
+            self.mascot.again = kitty.then_some(if redraw { Again::Redraw } else { Again::Place });
+            return;
+        }
+        // The terminal may still show it where the header's cells were.
+        if self.mascot.placed.take().is_some()
+            && let Some(sent) = &self.mascot.sent
+        {
+            let hidden = sent.hide();
+            self.mascot.waiting.extend(hidden);
+        }
+        if redraw && self.mascot.sent.is_some() {
+            self.forget_mascot();
+            self.mascot.resend = self.mascot.shown.is_some();
+        }
+    }
+
+    /// Lets a test say what cell size the terminal reports.
+    #[cfg(test)]
+    pub(super) fn measure_cells_with(&mut self, measure: fn() -> Option<(u16, u16)>) {
+        self.mascot.measure = measure;
+    }
+
+    /// Inline, on the first frame after a resize: the picture in the header's cells again,
+    /// while its rows show. True when something went out.
+    fn place_mascot_again(&mut self, now: Instant) -> bool {
+        let Some(again) = self.mascot.again.take() else {
+            return false;
+        };
+        if !self.terminal.marked_on_screen() || !self.theme.mascot_pictures {
+            return false;
+        }
+        let column = u16::try_from(MARK_COL).unwrap_or(0);
+        if again == Again::Redraw {
+            let (mascot, look, since) = match self.mascot.shown {
+                Some(shown) => shown,
+                None => return false,
+            };
+            self.show_mascot(now, true);
+            // Its frames still count from when the header printed.
+            self.mascot.shown = Some((mascot, look, since));
+            return true;
+        }
+        let frame = self.mascot_frame(now).map_or(0, |(_, frame, _)| frame);
+        let Some(escapes) = self.mascot.sent.as_mut().and_then(|sent| sent.place(frame)) else {
+            return false;
+        };
+        self.terminal.send_on_marked(FIRST_ROW, column, escapes);
+        true
     }
 
     /// How the terminal takes pictures and the pixels a cell, when it takes them.
@@ -325,8 +408,12 @@ impl<W: Write> Ui<W> {
         }
     }
 
-    /// Swaps in the frame due now, as a picture or as block cells. True when something went out.
+    /// Swaps in the frame due now, as a picture or as block cells, or after a resize puts the
+    /// picture in the header's cells again. True when something went out.
     pub(super) fn animate_mascot(&mut self, now: Instant) -> bool {
+        if self.place_mascot_again(now) {
+            return true;
+        }
         let Some((_, frame, _)) = self.mascot_frame(now) else {
             return false;
         };

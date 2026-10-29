@@ -1,18 +1,22 @@
- ╭ Final · 2 agents ──┬ review:final ───────────────────────────────────────────────────────────────────────────────╮ 
- │ ❯ ✔ review:final   │ ✔ Done · GPT 6 Luna on Codex · reviewer · read-only                                         │ 
- │   ⏺ sign-off:money │ 16.8k tok · 1 tool call · 4s                                                                │ 
- │                    │                                                                                             │ 
- │                    │ Asked for by Claude Code · its agent review:final, on Haiku 5.5                             │ 
- │                    │   it gave Codex the change, waited, and passed the verdict back · 12.3k tok · 8s            │ 
- │                    │ Prompt · 152 lines · ⏎ expand                                                               │ 
- │                    │   Review build:fix-money's change, as fixed by fix:review-findings, against your request.   │ 
- │                    │   … 151 more lines: your request, the test run, the change and the earlier finding          │ 
- │                    │ Earlier findings · review:money, round 1 · answered by fix:review-findings                  │ 
- │                    │   blocking  invoice/money.py  "-$1.50" read as +150 cents                                   │ 
- │                    │             answer: "-$1.50" was already right; "$-1.50" read as -50 cents, now fixed       │ 
- │                    │ Activity · 1 tool call                                                                      │ 
- │                    │   ⏺ the verdict below · no command run: the test run came with the prompt                   │ 
- │                    │ Outcome · approved · 1 note                                                                 │ 
- │                    │   note      invoice/money.py  "1.234" becomes 1234 cents, not 123; beyond your request      │ 
- ╰────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓  agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save                     
+ ╭ Final · 2 agents ──┬ review:final ───────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ ✔ review:final   │ ✔ Done · GPT 6 Luna on Codex · reviewer · read-only                                         │
+ │   ⣾ sign-off:money │ 16.8k tok · 1 tool call · 4s                                                                │
+ │                    │                                                                                             │
+ │                    │ Asked for by Claude Code · its agent review:final, on Haiku 5.5                             │
+ │                    │   it gave Codex the change, waited, and passed the verdict back · 12.3k tok · 8s            │
+ │                    │                                                                                             │
+ │                    │ Prompt · 152 lines · ⏎ expand                                                               │
+ │                    │   Review build:fix-money's change, as fixed by fix:review-findings, against your request.   │
+ │                    │   … 151 more lines: your request, the test run, the change and the earlier finding          │
+ │                    │                                                                                             │
+ │                    │ Earlier findings · review:money, round 1 · answered by fix:review-findings                  │
+ │                    │   blocking  invoice/money.py  "-$1.50" read as +150 cents                                   │
+ │                    │             answer: "-$1.50" was already right; "$-1.50" read as -50 cents, now fixed       │
+ │                    │                                                                                             │
+ │                    │ Activity · 1 tool call                                                                      │
+ │                    │   ⏺ the verdict below · no command run: the test run came with the prompt                   │
+ │                    │                                                                                             │
+ │                    │ Outcome · approved · 1 note                                                                 │
+ │                    │   note      invoice/money.py  "1.234" becomes 1234 cents, not 123; beyond your request      │
+ ╰────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  agent · j/k scroll · ⏎ expand · m message · p pause · esc back · s save

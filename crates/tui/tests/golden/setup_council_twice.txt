@@ -1,0 +1,25 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Set up Council
+  Each seat answers alone first, then they talk until every seat agrees, then they split the work.
+  Seats see each other only as Seat letters, never a name, a maker or a CLI. You see real names.
+
+    Seat                 ▐1 Opus 5.5 · 1       Note keeper    Proposes, lists the points, writes the plan        Ready
+  ❯ Seat                 ▐2 Opus 5.5 · 2     ‹ Skeptic ›      Argues against where most seats lean               Ready
+    Seat                 ▐▌ 5.6 Luna           Proposer       Says what it thinks is right                       Ready
+    Seat                 ▐▌ 3.8 Flash          Checker        Checks each task in a fresh session                Ready
+                         ○  Add one            Up to 6, the same model again too · next ready: ▐▌ Qwen3 Coder 30B
+    Checks               ▐▌ 3.8 Flash, the checker seat       Another maker for every task, fresh each time      Ready
+
+    How tasks are done   Picked per task, from what you allow
+                         ●  Own session
+                         ●  Workflows    Any     or a list: Maker-checker, Spec-first, …
+                         ●  Agents       Up to 4
+
+  Opus 5.5 sits twice: two sessions that share nothing, not even memory. You see them as Opus 5.5 · 1 and · 2.
+  The skeptic answers alone first, like every seat. In the talk it argues the other side; its own stance counts.
+  The seats are told which seat is the skeptic, and never which model runs any seat.
+  Each check is a fresh session: the plan and the change, never the talk, never who made it. Another maker first.
+  The note keeper picks a way for each task from these and gives its reason in a few words.
+  A list of workflows means any of them. A way you ask for in your prompt, or pick at the plan, decides that task.
+
+  space adds or drops · tab to the next column · ←  →  to change · ↑  ↓  to move · enter to switch · esc to leave it

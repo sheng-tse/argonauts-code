@@ -57,6 +57,33 @@ jobs:
       - name: The update keys are real minisign keys
         if: ${{ env.TAG != 'dry-run' }}
         run: python3 packaging/updates/check_keys.py
+      # The short install address serves a copy of packaging/install.sh from the Pages site, which a release doesn't
+      # update, so a copy left behind would install otherwise than the release says. Until the copy is there, the
+      # README names the release's own address.
+      - name: The installer the short address serves is packaging/install.sh
+        if: ${{ env.TAG != 'dry-run' }}
+        env:
+          SHORT: https://argonauts-code.github.io/install.sh
+        run: |
+          set -eu
+          served="$RUNNER_TEMP/served-install.sh"
+          status=$(curl --proto '=https' --tlsv1.2 -sSL -o "$served" -w '%{http_code}' "$SHORT")
+          case "$status" in
+            200) ;;
+            404)
+              echo "::warning::${SHORT} isn't served yet, so the README's install address stays the release's"
+              exit 0
+              ;;
+            *)
+              echo "::error::${SHORT} answered ${status}"
+              exit 1
+              ;;
+          esac
+          if ! cmp -s "$served" packaging/install.sh; then
+            echo "::error::${SHORT} isn't the same as packaging/install.sh: copy it to the Pages site"
+            diff -u "$served" packaging/install.sh || true
+            exit 1
+          fi
       - name: The third-party notices match Cargo.lock
         run: |
           set -eu

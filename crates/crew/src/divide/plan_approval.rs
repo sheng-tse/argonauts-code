@@ -2,28 +2,38 @@
 //! without a winner go to the pick question first. "Run it as Captain" switches to the Captain
 //! workflow your `captain` settings pick, whose `build` makes the Captain task; "send back"
 //! re-plans with your note; approve with edits records your note as a decision and adds it to every
-//! task prompt, and a note that changes a worker, a task's paths, or a limit line goes through the
-//! graph validator.
+//! task prompt, and a note that changes a worker, a task's paths, a way, or a limit line goes
+//! through the graph validator.
+//!
+//! Before the plan is shown each task gets its way: the one your request names for it, else the
+//! plan's, else the rule of thumb's. Work starts only once the plan holds every way you asked
+//! for; approved again unchanged, it goes ahead with a warning that says what it lacks. A plan
+//! that breaks a way you asked for asks you in supervised and auto mode, and on autopilot is
+//! approved as it stands in your place, with one line that says what it lacks.
 
 use argonauts_core::PhaseStatus;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::approval::{
     AnswerAction, AnswerOption, ApprovalKind, ApprovalPacket, FreeText, PlanPacket, QuestionPacket,
+    WayObjection, WaysOffer,
 };
+use argonauts_core::events::council::{CouncilMessage, PointState, Speaker, TextPart};
 use argonauts_core::events::plan::{DivideEvent, LimitPlan, TaskGraph};
 use argonauts_core::events::run::{PhaseChange, RunOutcome, RunPhase};
-use argonauts_core::events::task::{TaskEvent, TaskKind, TaskState};
+use argonauts_core::events::task::{TaskEvent, TaskKind, TaskSpec, TaskState, Way};
 use argonauts_core::events::workflow::StepEnd;
-use argonauts_core::names::{ApprovalId, DecisionId, ModelRef};
+use argonauts_core::names::{ApprovalId, DecisionId, ModelRef, SeatId};
 use argonauts_core::policy::{EvidenceDocument, EvidenceFacts, EvidenceSubject};
 use argonauts_core::workflow::WorkflowRef;
-use argonauts_core::{Note, NoteLevel};
+use argonauts_core::{Note, NoteLevel, TaskId};
 
 use super::{Division, assign, dependencies, edits, limit_lines, paths, pick, plan_facts};
-use crate::approvals::{self, ApprovalRequest, options};
+use crate::approvals::{self, ApprovalRequest, autopilot, options};
+use crate::council::ways;
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::state::ids::IdKind;
+use crate::understand::round;
 use crate::workflow::{Flow, StepCall, StepDone, runner};
 use crate::{plan, roles};
 
@@ -34,6 +44,11 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     pick::pick_if_tied(host, call).await?;
     let division = super::division(host, call).await?;
     let mut graph = division.graph.clone();
+    let asked = asked_ways(host);
+    let way_lines = settle_ways(host, &mut graph, &asked);
+    // What the plan lacked of your ways when you were last told, so the same answer twice goes
+    // ahead instead of reopening forever.
+    let mut warned: Vec<String> = Vec::new();
     let limit = division.limit.clone();
     let new_dependencies = &division.plan.new_dependencies;
     let dependency_problem = dependencies::problem(&host.repo().root, new_dependencies)?;
@@ -45,17 +60,42 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         let unlisted =
             dependencies::unlisted(new_dependencies, &settings.limits.dependency_allowlist);
         let blocking = blocking(&division.broken, &unlisted);
+        let owed = ways_owed(host, &graph, &asked, &[]);
+        let ways_flags: Vec<String> = way_lines
+            .iter()
+            .chain(&owed)
+            .cloned()
+            .chain(same_maker_ask(host, &graph))
+            .chain(last_round(host, call))
+            .collect();
         let shown = Shown {
             division: &division,
             graph: &graph,
             limit: &limit,
             blocking: &blocking,
+            ways: &ways_flags,
             reopened: &reopened,
             dependency_problem: dependency_problem.as_deref(),
             subject: subject.as_ref(),
         };
         let request = request(host, call, &shown);
-        let decided = approvals::open_and_wait(host, request).await?;
+        // A way you asked for that the plan breaks is yours to settle, so neither your rules nor
+        // the judge do. On autopilot nothing waits for you: the plan is shown and approved as it
+        // stands at once, unless something blocks approving it, which autopilot settles as it
+        // settles any plan.
+        let on_autopilot = autopilot::applies_now(host, ApprovalKind::Plan)
+            && !autopilot::kept_for_you(settings, ApprovalKind::Plan);
+        let because = "the plan breaks a way you asked for".to_owned();
+        let decided = if owed.is_empty() || (on_autopilot && !blocking.is_empty()) {
+            approvals::open_and_wait(host, request).await?
+        } else if on_autopilot {
+            autopilot::open_and_settle(host, request, AnswerAction::Approve, because)?;
+            went_ahead_on_autopilot(host, &owed)?;
+            approve(host, call, &graph, &division, dependency_problem.as_deref()).await?;
+            return finish(host, &graph, "Plan approved on autopilot");
+        } else {
+            approvals::open_and_wait_yours(host, request, because).await?
+        };
         if last.as_ref() == Some(&decided.id) {
             return Err(EngineError::Refused(format!(
                 "The plan approval {} couldn't be reopened after: {}",
@@ -66,15 +106,33 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         last = Some(decided.id.clone());
         match verdict(&decided.action, decided.text.as_deref(), &blocking) {
             Verdict::Approve => {
+                if !owed.is_empty() && owed != warned {
+                    reopened.push(format!("Before work starts: {}", owed.join(" ")));
+                    warned = owed;
+                    continue;
+                }
+                went_ahead_without(host, &owed)?;
                 approve(host, call, &graph, &division, dependency_problem.as_deref()).await?;
                 return finish(host, &graph, "Plan approved");
             }
             Verdict::ApproveWithEdits(note) => {
                 let provider = |worker: &ModelRef| roles::provider(host, worker);
-                let edited = edits::parse(&note)
-                    .and_then(|parsed| edits::apply(&graph, &limit, &parsed, settings, &provider));
+                let offer = ways::offer_for(host);
+                let edited = edits::parse(&note).and_then(|parsed| {
+                    edits::apply(&graph, &limit, &parsed, settings, &provider, &offer)
+                });
                 match edited {
                     Ok(edited) => {
+                        let set_by_you: Vec<TaskId> =
+                            edited.ways.iter().map(|(task, _)| task.clone()).collect();
+                        let owed = ways_owed(host, &edited.graph, &asked, &set_by_you);
+                        if !owed.is_empty() && owed != warned {
+                            reopened
+                                .push(format!("Your edits weren't applied: {}", owed.join(" ")));
+                            warned = owed;
+                            continue;
+                        }
+                        went_ahead_without(host, &owed)?;
                         record_edits(host, &note, &edited).await?;
                         graph = edited.graph;
                         approve(host, call, &graph, &division, dependency_problem.as_deref())
@@ -203,6 +261,8 @@ struct Shown<'a> {
     graph: &'a TaskGraph,
     limit: &'a LimitPlan,
     blocking: &'a [String],
+    /// What code changed of the plan's ways, and what the plan lacks of yours.
+    ways: &'a [String],
     /// Why it opened again, one reason per reopening. They're part of the evidence, so each
     /// reopening is an approval of its own.
     reopened: &'a [String],
@@ -235,6 +295,7 @@ fn request(host: &Host, call: &StepCall, shown: &Shown) -> ApprovalRequest {
         graph,
         limit,
         blocking,
+        ways: way_flags,
         reopened,
         dependency_problem,
         subject,
@@ -242,7 +303,7 @@ fn request(host: &Host, call: &StepCall, shown: &Shown) -> ApprovalRequest {
     let settled = roles::tasks::settled(host);
     let settings = &*settled;
     let review = plan_facts::review(host);
-    let (decisions, workers) = host.read(|state| {
+    let (decisions, mut workers) = host.read(|state| {
         let workers: Vec<String> = state
             .divide
             .workers
@@ -251,7 +312,9 @@ fn request(host: &Host, call: &StepCall, shown: &Shown) -> ApprovalRequest {
             .collect();
         (state.plan.decisions.clone(), workers)
     });
+    workers.extend(how_each_is_done(host, graph));
     let mut flags = blocking.to_vec();
+    flags.extend(way_flags.iter().cloned());
     flags.extend(review.flags());
     if let Some(problem) = dependency_problem {
         flags.push(dependency_flag(&division.plan.new_dependencies, problem));
@@ -314,6 +377,9 @@ fn request(host: &Host, call: &StepCall, shown: &Shown) -> ApprovalRequest {
         new_dependencies: division.plan.new_dependencies.clone(),
         flags,
         workflow: host.read(super::workflow_plan::plan_workflow),
+        seats: crate::council::talk::folder::planned(host, &graph.tasks),
+        objections: objections(host, &graph.tasks),
+        offer: offer(host, &graph.tasks),
     };
     ApprovalRequest {
         at: Some(call.at.clone()),
@@ -328,6 +394,211 @@ fn request(host: &Host, call: &StepCall, shown: &Shown) -> ApprovalRequest {
         free_text: FreeText::Edits,
         authors: vec![division.plan_author.clone(), division.divided_by.clone()],
     }
+}
+
+/// What Approve with edits offers the tasks, once any of them has a way.
+fn offer(host: &Host, tasks: &[TaskSpec]) -> Option<WaysOffer> {
+    if tasks.iter().all(|task| task.way.is_none()) {
+        return None;
+    }
+    let offer = ways::offer_for(host);
+    Some(WaysOffer {
+        ways: offer.ways().to_vec(),
+        not_offered: offer.not_offered_line(),
+    })
+}
+
+/// The ways you asked for, read with the workflows a task could run: in your request, and in
+/// your messages and points to the council. A seat you name for the work does it.
+fn asked_ways(host: &Host) -> Vec<ways::Asked> {
+    // A run always starts with its request; without one, nothing was asked.
+    let request = host.read(round::request).unwrap_or_default();
+    let workflows = ways::workflows_for(host);
+    let mut asked = ways::asked_in(&request, &workflows);
+    let Some(council) = host.read(|state| state.councils.newest().cloned()) else {
+        return asked;
+    };
+    let Ok(relay) = crate::council::deliver::relay_for(host, &council) else {
+        return asked;
+    };
+    let names = |seat: &SeatId| {
+        crate::council::seats::find(relay.seating(), seat)
+            .map(|seat| crate::council::seats::name(seat, &Default::default()))
+            .unwrap_or_default()
+    };
+    // Your points from the request bind already, as the request's own ways.
+    let from_request: Vec<String> = asked
+        .iter()
+        .map(|asked| relay.yours_held(&asked.clause))
+        .collect();
+    let mut yours: Vec<String> = council
+        .points
+        .iter()
+        .filter(|point| point.state == PointState::Yours && !from_request.contains(&point.words))
+        .map(|point| crate::council::relay::draw_markers(&point.words, names))
+        .collect();
+    yours.extend(
+        council
+            .messages
+            .iter()
+            .filter(|said| {
+                said.message.from == Speaker::You
+                    && !council.private_words.contains_key(&said.message.id)
+            })
+            .map(|said| said.message.words(names)),
+    );
+    for text in yours {
+        for more in ways::asked_in(&text, &workflows) {
+            if !asked
+                .iter()
+                .any(|known| known.way == more.way && known.about == more.about)
+            {
+                asked.push(more);
+            }
+        }
+    }
+    for wanted in &mut asked {
+        let mut named: Vec<SeatId> = Vec::new();
+        for part in relay.from_you(&wanted.clause).unwrap_or_default() {
+            if let TextPart::Seat(seat) = part
+                && !named.contains(&seat)
+            {
+                named.push(seat);
+            }
+        }
+        if let [seat] = named.as_slice() {
+            wanted.who =
+                crate::council::seats::find(relay.seating(), seat).map(|seat| seat.model.clone());
+        }
+    }
+    asked
+}
+
+/// Gives each task its way before the plan is shown: the one your request names for it, else
+/// the plan's when the setup allows it, else the rule of thumb's. Returns what code changed.
+fn settle_ways(host: &Host, graph: &mut TaskGraph, asked: &[ways::Asked]) -> Vec<String> {
+    ways::attach(&mut graph.tasks, asked);
+    let mut lines = ways::unmark(&mut graph.tasks, asked);
+    lines.extend(ways::settle(&mut graph.tasks, &ways::offer_for(host)));
+    lines
+}
+
+/// What the plan lacks before work starts: a way you asked for that no task is done by, a
+/// task whose agents its paths can't split between, a workflow one task can't follow, and a
+/// council's checker of the worker's own maker while another maker could check.
+fn ways_owed(
+    host: &Host,
+    graph: &TaskGraph,
+    asked: &[ways::Asked],
+    set_by_you: &[TaskId],
+) -> Vec<String> {
+    let provider = |worker: &ModelRef| roles::provider(host, worker);
+    let mut owed = ways::check(&graph.tasks, asked, set_by_you);
+    owed.extend(graph.tasks.iter().filter_map(ways::agents_misfit));
+    for task in &graph.tasks {
+        if let Some(Way::Workflow { name }) = task.way.as_ref().map(|way| &way.how)
+            && let Err(why) = ways::steps_of(host, name.as_str())
+        {
+            owed.push(format!("{}: {why}", task.title));
+        }
+    }
+    owed.extend(edits::same_maker_checks(
+        &graph.tasks,
+        host.settings(),
+        &provider,
+    ));
+    owed
+}
+
+/// In the planning loop's last round the question has no send back, so it says why.
+fn last_round(host: &Host, call: &StepCall) -> Option<String> {
+    host.read(|state| crate::workflow::kinds::in_last_loop_round(state, &call.at))
+        .then(|| {
+            "This is the last round of planning, so the plan can't be sent back again: approve it \
+             or stop."
+                .to_owned()
+        })
+}
+
+/// With `council.same_model_check = "ask"`, the plan's approval asks you once whether a fresh
+/// session of the model that made a task may check it, for every task no other maker can.
+fn same_maker_ask(host: &Host, graph: &TaskGraph) -> Option<String> {
+    if !ways::asks_first(host.settings()) {
+        return None;
+    }
+    let titles: Vec<&str> = graph
+        .tasks
+        .iter()
+        .filter(|task| ways::checked_by_its_own_model(host, task))
+        .map(|task| task.title.as_str())
+        .collect();
+    let (last, rest) = titles.split_last()?;
+    let tasks = match rest {
+        [] => (*last).to_owned(),
+        rest => format!("{} and {last}", rest.join(", ")),
+    };
+    Some(format!(
+        "Same maker: no other maker is set up, so a fresh session of the model that made it \
+         checks {tasks}. Approving the plan lets it."
+    ))
+}
+
+/// You approved a plan that lacks some of what you asked for, after being told: the run says
+/// so once more as it goes ahead.
+fn went_ahead_without(host: &Host, owed: &[String]) -> EngineResult<()> {
+    if owed.is_empty() {
+        return Ok(());
+    }
+    host.record(
+        None,
+        None,
+        RunEventKind::Note(Note {
+            level: NoteLevel::Warn,
+            text: format!("The plan went ahead as approved: {}", owed.join(" ")),
+        }),
+    )?;
+    Ok(())
+}
+
+/// Autopilot went ahead with a plan that lacks some of what you asked for: the one line that
+/// says so, in place of the question.
+fn went_ahead_on_autopilot(host: &Host, owed: &[String]) -> EngineResult<()> {
+    host.record(
+        None,
+        None,
+        RunEventKind::Note(Note {
+            level: NoteLevel::Warn,
+            text: on_autopilot_line(owed),
+        }),
+    )?;
+    Ok(())
+}
+
+fn on_autopilot_line(owed: &[String]) -> String {
+    format!(
+        "Autopilot approved the plan instead of asking you, though it breaks a way you asked \
+         for. {}",
+        owed.join(" ")
+    )
+}
+
+/// One line per task on how it is done and why: "Redis bucket is done by Maker-checker: You
+/// asked".
+fn how_each_is_done(host: &Host, graph: &TaskGraph) -> Vec<String> {
+    let offer = ways::offer_for(host);
+    graph
+        .tasks
+        .iter()
+        .filter_map(|task| {
+            let way = task.way.as_ref()?;
+            Some(format!(
+                "{} is done {}: {}",
+                task.title,
+                ways::done_by(&way.how),
+                ways::why(task, &offer, None)
+            ))
+        })
+        .collect()
 }
 
 fn dependency_flag(packages: &[String], problem: &str) -> String {
@@ -352,14 +623,25 @@ async fn approve(
         if host.read(|state| state.tasks.by_id.contains_key(&task.id)) {
             continue;
         }
-        let created = TaskEvent::Created(Box::new(task.clone()));
-        host.record(Some(&task.id), None, RunEventKind::Task(created))?;
+        // A task for agents tells its own session which part is its, and one done by a workflow
+        // says how many steps its row counts.
+        let mut task = task.clone();
+        if let Some(way) = task.way.as_mut()
+            && let Way::Workflow { name } = &way.how
+        {
+            way.steps = ways::steps_of(host, name.as_str())
+                .ok()
+                .map(|steps| u32::try_from(steps.len()).unwrap_or(u32::MAX));
+        }
+        let id = task.id.clone();
+        let created = TaskEvent::Created(Box::new(ways::briefed(task)));
+        host.record(Some(&id), None, RunEventKind::Task(created))?;
         let waiting = TaskEvent::State {
             from: None,
             to: TaskState::Waiting,
             reason: "created from the approved plan".to_owned(),
         };
-        host.record(Some(&task.id), None, RunEventKind::Task(waiting))?;
+        host.record(Some(&id), None, RunEventKind::Task(waiting))?;
     }
     let packages = &division.plan.new_dependencies;
     if packages.is_empty() || dependencies_added(host, packages) {
@@ -453,7 +735,9 @@ const WITHOUT_THEM: &str = "Go on without them";
 async fn record_edits(host: &Host, note: &str, edited: &edits::Edited) -> EngineResult<()> {
     // The record takes the next number itself; this one only fills the field.
     let next = DecisionId::numbered(host.read(|state| state.ids.last(IdKind::Decision)) + 1);
-    plan::decisions::record(host, edits::decision(next, note)).await?;
+    let mut ways = edits::way_lines(edited);
+    ways.extend(objection_lines(host, &edited.graph.tasks));
+    plan::decisions::record(host, edits::decision(next, note, &ways)).await?;
     let algorithm = host.settings().routing.algorithm;
     for task in edited.graph.tasks.iter() {
         if edited.workers.contains(&task.id)
@@ -484,6 +768,40 @@ async fn record_edits(host: &Host, note: &str, edited: &edits::Edited) -> Engine
     let event = DivideEvent::Graph(edited.graph.clone());
     host.record(None, None, RunEventKind::Divide(event))?;
     Ok(())
+}
+
+/// Each seat's objection to a way you asked for that the plan still holds, from the council
+/// whose plan this is.
+fn objections(host: &Host, tasks: &[TaskSpec]) -> Vec<WayObjection> {
+    let workflows = ways::workflows_for(host);
+    with_talk(host, |talk| ways::objections(tasks, talk, &workflows))
+}
+
+/// The decision record's line for each of those: "… A seat objected: … · yours stands".
+fn objection_lines(host: &Host, tasks: &[TaskSpec]) -> Vec<String> {
+    let workflows = ways::workflows_for(host);
+    with_talk(host, |talk| ways::objection_lines(tasks, talk, &workflows))
+}
+
+/// What `read` finds in the talk of the council whose plan this is; nothing when no council
+/// talked.
+fn with_talk<T: Default>(host: &Host, read: impl FnOnce(&ways::Talk<'_>) -> T) -> T {
+    host.read(|state| {
+        let Some(council) = state.councils.newest() else {
+            return T::default();
+        };
+        let said: Vec<&CouncilMessage> =
+            council.messages.iter().map(|said| &said.message).collect();
+        let seats: Vec<SeatId> = council.seats().iter().map(|seat| seat.id.clone()).collect();
+        let stance_of = |seat: &SeatId, point: u32| council.stances.of(seat, point);
+        let talk = ways::Talk {
+            points: &council.points,
+            said: &said,
+            seats: &seats,
+            stance_of: &stance_of,
+        };
+        read(&talk)
+    })
 }
 
 fn finish(host: &Host, graph: &TaskGraph, what: &str) -> EngineResult<StepDone> {
@@ -558,6 +876,18 @@ mod tests {
         assert_eq!(
             verdict(&AnswerAction::Approve, None, &blocked),
             Verdict::Approve
+        );
+    }
+
+    #[test]
+    fn the_autopilot_line_says_what_the_plan_lacks() {
+        let owed = vec![
+            "store: Plan-first can't do one task: its Plan step is the orchestrator's.".to_owned(),
+        ];
+        assert_eq!(
+            on_autopilot_line(&owed),
+            "Autopilot approved the plan instead of asking you, though it breaks a way you asked \
+             for. store: Plan-first can't do one task: its Plan step is the orchestrator's."
         );
     }
 

@@ -67,6 +67,8 @@ pub enum Action {
     AboveInputFocus,
     /// Hides or shows the band above the input, for this session.
     AboveInputToggle,
+    /// In a settings picker, picks as Enter does and keeps the pick for this session only.
+    SaveForSession,
     /// Shows or hides one mod above the input.
     Mod(ModName),
 }
@@ -96,6 +98,7 @@ impl Action {
             Action::OpenArtifact,
             Action::AboveInputFocus,
             Action::AboveInputToggle,
+            Action::SaveForSession,
         ]
         .into_iter()
         .chain(ModName::ALL.map(Action::Mod))
@@ -125,6 +128,7 @@ impl Action {
             Action::OpenArtifact => "open_artifact",
             Action::AboveInputFocus => "above_input_focus",
             Action::AboveInputToggle => "above_input_toggle",
+            Action::SaveForSession => "save_for_session",
             Action::Mod(the_mod) => mod_action(the_mod),
         }
     }
@@ -158,6 +162,7 @@ impl Action {
             Action::OpenArtifact => "open the most recent artifact in the browser",
             Action::AboveInputFocus => "move to the mods and the notice above the input",
             Action::AboveInputToggle => "hide or show everything above the input",
+            Action::SaveForSession => "in a settings picker, keep the pick for this session only",
             Action::Mod(the_mod) => {
                 let words = the_mod.name().replace('-', " ");
                 return format!("show or hide {words} above the input");
@@ -184,14 +189,15 @@ impl Action {
             Action::HistorySearch => Some("for history"),
             Action::TakeBack => Some("to edit queued"),
             Action::FocusQuestion => Some("to answer"),
-            // Shown where they work, under your queued messages, in the agent list, and above
-            // the input.
+            // Shown where they work, under your queued messages, in the agent list, above the
+            // input, and under a settings picker.
             Action::SendNow
             | Action::WorkflowKeywordToggle
             | Action::StopAgents
             | Action::OpenArtifact
             | Action::AboveInputFocus
             | Action::AboveInputToggle
+            | Action::SaveForSession
             | Action::Mod(_) => None,
         }
     }
@@ -200,10 +206,15 @@ impl Action {
     fn layers(self) -> &'static [Layer] {
         match self {
             Action::Submit | Action::Newline | Action::HistorySearch => &[Layer::Composer],
-            Action::Shortcuts => &[Layer::Popup],
+            Action::Shortcuts | Action::SaveForSession => &[Layer::Popup],
             Action::Transcript => &[Layer::Overlay, Layer::Global],
             _ => &[Layer::Global],
         }
+    }
+
+    /// The first key it comes bound to, if any.
+    pub fn default_key(self) -> Option<&'static str> {
+        self.defaults().first().copied()
     }
 
     fn defaults(self) -> &'static [&'static str] {
@@ -229,6 +240,7 @@ impl Action {
             Action::OpenArtifact => &["ctrl+]"],
             Action::AboveInputFocus => &["ctrl+x tab"],
             Action::AboveInputToggle => &["ctrl+x ctrl+a"],
+            Action::SaveForSession => &["ctrl+s"],
             Action::Mod(ModName::Context) => &["ctrl+x c"],
             Action::Mod(ModName::PlanUsage) => &["ctrl+x q"],
             Action::Mod(ModName::RunLimits) => &["ctrl+x b"],
@@ -857,6 +869,26 @@ mod tests {
         assert_eq!(
             keymap.chord_actions(Layer::Global, "ctrl+x", &plain('s')),
             [Action::Mod(ModName::Sessions)]
+        );
+    }
+
+    /// A settings picker's pick for this session only takes ctrl+s, and `save_for_session`
+    /// rebinds it.
+    #[test]
+    fn saving_for_this_session_is_ctrl_s_and_rebinds() {
+        let ctrl = |c| key(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.actions_for(Layer::Popup, &ctrl('s')),
+            [Action::SaveForSession]
+        );
+        let overrides = BTreeMap::from([("save_for_session".to_owned(), "ctrl+l".to_owned())]);
+        let keymap = Keymap::from_settings(&overrides).unwrap();
+        assert_eq!(keymap.keys(Action::SaveForSession), ["ctrl+l"]);
+        assert!(keymap.actions_for(Layer::Popup, &ctrl('s')).is_empty());
+        assert_eq!(
+            keymap.actions_for(Layer::Popup, &ctrl('l')),
+            [Action::SaveForSession]
         );
     }
 

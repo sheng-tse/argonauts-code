@@ -178,13 +178,16 @@ fn print_with_link<W: Write>(writer: &mut W, text: &str) -> io::Result<()> {
 
 /// Counts only what [`write_line`] prints.
 pub(super) fn physical_rows(line: &Line<'_>, width: u16) -> u16 {
-    let columns: usize = line
-        .spans
+    let rows = columns(line).max(1).div_ceil(usize::from(width.max(1)));
+    u16::try_from(rows).unwrap_or(u16::MAX)
+}
+
+/// The columns [`write_line`] prints `line` across, before it wraps.
+pub(super) fn columns(line: &Line<'_>) -> usize {
+    line.spans
         .iter()
         .map(|span| printable(&span.content).width())
-        .sum();
-    let rows = columns.max(1).div_ceil(usize::from(width.max(1)));
-    u16::try_from(rows).unwrap_or(u16::MAX)
+        .sum()
 }
 
 /// `text` without control characters, which would move the cursor or restyle the terminal.

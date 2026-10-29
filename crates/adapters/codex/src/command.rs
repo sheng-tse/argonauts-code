@@ -185,6 +185,10 @@ fn launch_tweak_args(req: &SessionRequest) -> Vec<String> {
     if req.user_hooks_off {
         args.extend(tweaks::user_hooks_off().args);
     }
+    // The session you talk to keeps your memory.
+    if req.role != SessionRole::Direct {
+        args.extend(tweaks::memories_off());
+    }
     args
 }
 

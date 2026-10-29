@@ -25,6 +25,7 @@ use argonauts_core::log::NoteLevel;
 use argonauts_core::names::{ApprovalId, ModelRef, WorkflowId};
 use argonauts_core::session_runner::SessionRunner;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::protocol::UnderstandWhen;
 use argonauts_core::settings::workflows::OrchestratorDesigns;
 use argonauts_core::steps::StepName;
@@ -988,6 +989,7 @@ fn plan_answered(action: AnswerAction) -> Vec<RunEventKind> {
         evidence_sha256: "e".repeat(64),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options: Vec::new(),
         free_text: FreeText::Guidance,
         needs_you: true,

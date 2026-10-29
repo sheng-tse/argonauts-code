@@ -1,0 +1,8 @@
+# Set up with Council, and agy to talk to.
+workflow = "council"
+
+[crew]
+main = "antigravity-cli"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]

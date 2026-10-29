@@ -1,4 +1,4 @@
-//! An update of the deeper map, and opening it. An update prunes what deleted runs left,
+//! An update of Summaries, and opening it. An update prunes what deleted runs left,
 //! summarizes only actions without a summary, embeds only summaries without a vector, and
 //! places only the new dots, the old ones staying where they were. The dots are placed as the
 //! summaries come, a share at a time, so the map fills in while it goes. Opening reads what's
@@ -337,7 +337,7 @@ async fn model_vectors(
     Ok((vectors, embedded))
 }
 
-/// The deeper map's side of the tab: what it opens with, and what `d` and the command run,
+/// Summaries' side of the tab: what it opens with, and what `d` and the command run,
 /// with the summarizer and embedder chosen for this map.
 pub(crate) struct Deep<'a> {
     pub store: &'a Store,

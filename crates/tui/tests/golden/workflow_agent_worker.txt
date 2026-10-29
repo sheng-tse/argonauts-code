@@ -1,17 +1,20 @@
  ╭ Build · 2 agents ───┬ build:due-flag ────────────────────────────────────────────────────────────────────────────╮
- │ ❯ ⏺ build:due-flag  │ ⏺ Running · Sonnet 5.5 on Claude Code · worker · worktree · round 2 (sent back)            │
+ │ ❯ ⣾ build:due-flag  │ ⣾ Running · Sonnet 5.5 on Claude Code · worker · worktree · round 2 (sent back)            │
  │   ✔ build:due-tests │ 57.8k tok · 23 tool calls · 2m 40s · context 31% of 200k                                   │
  │                     │                                                                                            │
  │                     │ Prompt · 9 lines · ⏎ expand                                                                │
  │                     │   Add --due <date> to todo add, and show the date in todo list.                            │
  │                     │   … 8 more lines                                                                           │
+ │                     │                                                                                            │
  │                     │ Findings to fix · from review:due-flag, round 1                                            │
- │                     │   high  src/cli.js:42  --due with no date isn't rejected                                   │
- │                     │   low   src/cli.js:12  --help doesn't mention --due                                        │
+ │                     │   blocking  src/cli.js:42  --due with no date isn't rejected                               │
+ │                     │   note      src/cli.js:12  --help doesn't mention --due                                    │
+ │                     │                                                                                            │
  │                     │ Activity · last 3 of 23 tool calls · ⏎ expand                                              │
  │                     │   ⏺ Read(src/cli.js)                                                                       │
  │                     │   ⏺ Edit(src/cli.js)                                                                       │
  │                     │   ⏺ Bash(npm test) · running                                                               │
+ │                     │                                                                                            │
  │                     │ Outcome                                                                                    │
  │                     │   Still running…                                                                           │
  ╰─────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯

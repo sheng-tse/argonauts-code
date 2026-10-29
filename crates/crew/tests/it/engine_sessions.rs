@@ -10,11 +10,12 @@ use serde_json::json;
 use argonauts_core::LimitDimension;
 use argonauts_core::event::AgentEvent;
 use argonauts_core::events::run::{Party, ResumeCause, RunLifecycle, RunMode, RunResumed};
-use argonauts_core::events::session::{EndReason, LimitEvent, SessionEvent};
+use argonauts_core::events::session::{Billing, EndReason, LimitEvent, SessionEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::meter::{MeterAction, MeterLimit, Spend, SpendStatus};
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::names::{ModelRef, RoleName, SeatId};
 use argonauts_core::registry::ModelEntry;
+use argonauts_core::session::AuthMode;
 use argonauts_core::session_runner::{Access, RunnerEvent, SessionControl};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::roles::RoleSettings;
@@ -53,6 +54,7 @@ fn read_ask(role: RoleName, worker: &ModelRef, slot: u32) -> Ask<ReadInput> {
 
 fn plan(worker: &ModelRef, access: Access, host: &Host) -> SessionPlan {
     SessionPlan {
+        without_status: false,
         at: None,
         role: RoleName::Consultant,
         worker: worker.clone(),
@@ -196,6 +198,55 @@ async fn lifetime_run_reuses_session() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Two seats of one model in one folder are two sessions: each carries on its own, and the log
+/// says which seat each speaks for.
+#[tokio::test]
+async fn each_seat_carries_on_its_own_session_and_never_another_seats() -> anyhow::Result<()> {
+    let mut crew = Crew::new()?;
+    let worker = crew.worker("claude-code/opus", "anthropic");
+    let reference: ModelRef = "claude-code/opus".parse()?;
+    script(
+        &worker,
+        vec![reading("one"), reading("two"), reading("three")],
+    );
+    let (host, _) = crew.host(RunMode::Captain)?;
+    let seat_ask = |seat: u32, slot: u32| {
+        let mut ask = read_ask(RoleName::Reader, &reference, slot);
+        ask.seat = Some(SeatId::numbered(seat));
+        ask
+    };
+    host.ask::<Read>(seat_ask(1, 0)).await?;
+    host.ask::<Read>(seat_ask(2, 1)).await?;
+    host.ask::<Read>(seat_ask(1, 2)).await?;
+    let specs = worker.specs();
+    assert_eq!(specs[0].resume, None);
+    assert_eq!(
+        specs[1].resume, None,
+        "the second seat of the same model starts a session of its own"
+    );
+    assert_eq!(
+        specs[2].resume.as_deref(),
+        Some("fake-session"),
+        "the first seat carries on its own"
+    );
+    assert!(
+        specs
+            .iter()
+            .all(|spec| spec.lifetime == SessionLifetime::Seat)
+    );
+    let seats: Vec<Option<SeatId>> = host.read(|state| {
+        state
+            .sessions
+            .in_order()
+            .iter()
+            .map(|session| session.started.seat.clone())
+            .collect()
+    });
+    let one = Some(SeatId::numbered(1));
+    assert_eq!(seats, [one.clone(), Some(SeatId::numbered(2)), one]);
+    Ok(())
+}
+
 #[tokio::test]
 async fn building_sessions_wait_for_the_approved_goal() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
@@ -258,6 +309,48 @@ async fn a_started_session_is_pumped_into_the_log() -> anyhow::Result<()> {
     assert_eq!(replayed.key, key);
     assert_eq!(replayed.ended().await?, end);
     assert_eq!(worker.specs().len(), 1);
+    Ok(())
+}
+
+/// Each session's start keeps who pays for its tokens, as the settings had it then: the plan
+/// a CLI signed in to, or the key it was given.
+#[tokio::test]
+async fn a_session_start_records_who_pays_for_it() -> anyhow::Result<()> {
+    let mut crew = Crew::new()?;
+    let on_plan = crew.worker("codex/gpt-x", "openai");
+    let on_key = crew.worker("claude-code/sonnet", "anthropic");
+    crew.settings
+        .agents
+        .entry("claude-code".to_owned())
+        .or_default()
+        .auth = AuthMode::ApiKey;
+    on_plan.push(FakeSession::completed("all done"));
+    on_key.push(FakeSession::completed("all done"));
+    let (host, sink) = crew.host(RunMode::Captain)?;
+    for worker in ["codex/gpt-x", "claude-code/sonnet"] {
+        let running = host
+            .start(plan(&worker.parse()?, Access::ReadOnly, &host))
+            .await?;
+        running.ended().await?;
+    }
+
+    let billed: Vec<(String, Option<Billing>)> = sink
+        .events()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Session(SessionEvent::Started(started)) => {
+                Some((started.worker.agent.clone(), started.billing))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        billed,
+        [
+            ("codex".to_owned(), Some(Billing::Plan)),
+            ("claude-code".to_owned(), Some(Billing::Paid)),
+        ]
+    );
     Ok(())
 }
 

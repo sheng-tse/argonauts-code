@@ -3,6 +3,7 @@
 
 mod accept;
 pub mod acp;
+pub mod approved;
 pub mod bins;
 pub mod deadline;
 pub mod fake_clis;
@@ -16,6 +17,7 @@ pub mod pty;
 pub mod repo;
 pub mod runner;
 pub mod scenario;
+pub mod screen;
 pub mod script;
 pub mod services;
 pub mod trace;

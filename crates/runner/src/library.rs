@@ -240,11 +240,10 @@ impl Library {
     }
 }
 
-/// The text of a built-in workflow that has steps.
+/// A built-in workflow's file by name, one of phases alone among them: Council talks in its
+/// phases, so it has no steps, yet it is there to copy and to name.
 pub fn built_in(name: &str) -> Option<&'static str> {
-    built_ins()
-        .find(|(built_in, _)| *built_in == name)
-        .map(|(_, text)| text)
+    argonauts_core::workflow_files::built_in(name)
 }
 
 /// A workflow's name is a command, so it is lowercase letters, digits and dashes, and never a
@@ -418,25 +417,25 @@ mod tests {
         let mut library = library(dir.path());
         let project = library.project.clone().unwrap();
         fs::create_dir_all(&project).unwrap();
-        let council = project.join("council.toml");
+        let mine = project.join("maker-checker.toml");
         fs::write(
-            &council,
-            "name = \"council\"\n[[step]]\nname = \"Do\"\nrole = \"worker\"\n",
+            &mine,
+            "name = \"maker-checker\"\n[[step]]\nname = \"Do\"\nrole = \"worker\"\n",
         )
         .unwrap();
         assert_eq!(
-            library.find("council").map(|found| found.0),
+            library.find("maker-checker").map(|found| found.0),
             Some(Origin::Project)
         );
-        library.waiting = vec![council];
-        assert_eq!(library.find("council"), Some((Origin::BuiltIn, None)));
+        library.waiting = vec![mine];
+        assert_eq!(library.find("maker-checker"), Some((Origin::BuiltIn, None)));
         let listed = library.list();
-        let council: Vec<&Listed> = listed
+        let kept: Vec<&Listed> = listed
             .iter()
-            .filter(|listed| listed.name == "council")
+            .filter(|listed| listed.name == "maker-checker")
             .collect();
-        assert_eq!(council.len(), 1);
-        assert_eq!(council[0].origin, Origin::BuiltIn);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].origin, Origin::BuiltIn);
     }
 
     #[test]
@@ -454,10 +453,16 @@ mod tests {
         }
         let listed = Library::default().list();
         let names: Vec<&str> = listed.iter().map(|listed| listed.name.as_str()).collect();
+        assert_eq!(names, ["orchestrator", "maker-checker", "best-of-n"]);
+        // Council talks in its phases, so it has no steps to list, yet it is there by name.
         assert_eq!(
-            names,
-            ["council", "orchestrator", "maker-checker", "best-of-n"]
+            Library::default().find("council"),
+            Some((Origin::BuiltIn, None))
         );
+        assert!(matches!(
+            Library::default().load("council"),
+            Err(LibraryError::NoSteps { .. })
+        ));
     }
 
     #[test]
@@ -525,21 +530,32 @@ mod tests {
         let dir = tempfile::tempdir().expect("a folder");
         let library = library(dir.path());
         library
-            .create("my-council", Some("council"), &[])
+            .create("my-checker", Some("maker-checker"), &[])
             .expect("writes");
-        let Loaded::Steps(file) = library.load("my-council").expect("loads") else {
+        let Loaded::Steps(file) = library.load("my-checker").expect("loads") else {
             panic!("a file of steps");
         };
-        assert_eq!(file.name, "my-council");
-        assert_eq!(file.steps.len(), 6);
+        assert_eq!(file.name, "my-checker");
+        assert_eq!(file.steps.len(), 2);
         // The copy is the whole workflow: its phases come with its steps, under the new name.
+        let written = dir.path().join("repo/.argonauts/workflows/my-checker.toml");
+        let text = fs::read_to_string(written).expect("reads");
+        let phases = argonauts_core::workflow_files::phases(&text, "the-file")
+            .expect("reads")
+            .expect("has phases");
+        assert_eq!(phases.name, "my-checker");
+        assert_eq!(phases.phases.len(), 3);
+        // A council of your own talks in its phases like the built-in.
+        library
+            .create("my-council", Some("council"), &[])
+            .expect("writes");
         let written = dir.path().join("repo/.argonauts/workflows/my-council.toml");
         let text = fs::read_to_string(written).expect("reads");
         let phases = argonauts_core::workflow_files::phases(&text, "the-file")
             .expect("reads")
             .expect("has phases");
         assert_eq!(phases.name, "my-council");
-        assert_eq!(phases.phases.len(), 4);
+        assert_eq!(phases.phases[1].name, "Talk");
         let unknown = library
             .create("other", Some("no-such-workflow"), &[])
             .unwrap_err();

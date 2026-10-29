@@ -2,20 +2,18 @@
 //! a committed local file, and the conversation message when a task needs you.
 
 use crate::app_support;
-use std::thread;
-use std::time::Duration;
 
 use anyhow::Context as _;
 use app_support::*;
-use argonauts_core::app::{AppEvent, ChoiceKind};
-use argonauts_scenarios::{Scenario, as_set_up};
+use argonauts_core::app::AppEvent;
+use argonauts_scenarios::{Scenario, WAIT, as_set_up};
 use argonauts_testkit::Pty;
 
-/// Starts the app on a fresh trace and gives it a moment for its start-up notices.
+/// Starts the app on a fresh trace, through its start-up notices.
 fn restart(scenario: &Scenario, name: &str) -> anyhow::Result<Pty> {
     rotate_trace(scenario, name)?;
     let pty = start(scenario)?;
-    thread::sleep(Duration::from_secs(1));
+    wait_start_through(scenario)?;
     Ok(pty)
 }
 
@@ -137,30 +135,11 @@ fn app_committed_local_file_warned() -> anyhow::Result<()> {
     let local_before = read(&project_local_config(&scenario))?;
 
     let mut pty = start(&scenario)?;
-    submit(&mut pty, "/effort high")?;
-    let question = wait_shown_choice(&scenario, &pty, ChoiceKind::SettingScope)?;
-    let said = format!(
-        "{}\n{}\n{}",
-        question.title,
-        question.body.join("\n"),
-        question
-            .options
-            .iter()
-            .filter_map(|o| o.detail.clone())
-            .collect::<Vec<_>>()
-            .join("\n")
-    )
-    .to_lowercase();
-    assert!(
-        said.contains("team") || said.contains("tracked") || said.contains("commit"),
-        "no warning that git tracks the local file:\n{said}"
-    );
+    submit(&mut pty, "/effort high --local")?;
+    wait_setting_changed(&scenario, "roles.main.effort", 1)?;
+    pty.wait_for("though git tracks it", WAIT)?;
+    assert_ne!(read(&project_local_config(&scenario))?, local_before);
     scenario.shot(&pty, "app_committed_local_file_warned")?;
-
-    // Esc cancels the change.
-    pty.press(argonauts_testkit::Key::Esc)?;
-    wait_choice_closed(&scenario, &question.id)?;
-    assert_eq!(read(&project_local_config(&scenario))?, local_before);
     Ok(())
 }
 

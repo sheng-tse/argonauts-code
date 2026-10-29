@@ -16,14 +16,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 use argonauts_core::app::{AppEvent, ViewData};
+use argonauts_core::meter::who_pays;
 use argonauts_core::overview::{ModelTokens, OverviewPeriod};
 use argonauts_core::pricing::{ListPrice, PriceList};
 use argonauts_core::registry::default_run;
 use argonauts_core::runtimes::RUNTIMES;
 use argonauts_core::settings::endpoints::endpoint_settings;
+use argonauts_core::settings::ui::PaidByPlace;
 use argonauts_core::{NoteLevel, Paths};
 use argonauts_tui::format::WallClock;
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 
 pub(crate) use self::build::Sources;
 pub(crate) use self::build::through_argonauts;
@@ -66,6 +68,12 @@ pub(crate) async fn view(
         .map(|id| (id, ctx.names.cli(id)))
         .collect();
     let colors = ctx.settings().overview.year_colors;
+    let paying = ctx
+        .settings()
+        .ui
+        .paid_by
+        .contains(&PaidByPlace::Usage)
+        .then(|| ctx.settings().clone());
     let prices = price_list(ctx);
     let spelling = ctx.names.names();
     let data = tokio::task::spawn_blocking(move || {
@@ -87,6 +95,10 @@ pub(crate) async fn view(
         let mut data = build::overview(&sources, period, today, status, colors, &|id| {
             names.get(id).cloned().unwrap_or_else(|| id.to_owned())
         });
+        if let Some(settings) = &paying {
+            let pays = |agent: &str, model: Option<&str>| who_pays(settings, agent, model);
+            data.who_paid = Some(build::who_paid(&sources, period, today, &pays));
+        }
         data.found = import::found_line(data.found.take(), &state);
         // Claude Code's own count is read only once you said yes to reading its folder.
         if state.import == Some(true) {
@@ -138,16 +150,20 @@ fn answered(store: &Store, yes: bool) -> std::io::Result<()> {
     store.save_state(&state)
 }
 
-/// Every model that has run here with its tokens in all, from every line of the usage
-/// ledger in `usage_dir` and the import beside it: the list the Overview's numbers carry,
-/// for the other tabs.
-pub(crate) fn all_time_models(usage_dir: &Path, lines: &[LedgerLine]) -> Vec<ModelTokens> {
+/// The models in the order every tab colours them, as of `today` on `clock`, from every line
+/// of the usage ledger in `usage_dir` and the import beside it (see [`build::ranked_models`]).
+pub(crate) fn all_time_models(
+    usage_dir: &Path,
+    lines: &[LedgerLine],
+    clock: &WallClock,
+    today: Date,
+) -> Vec<ModelTokens> {
     let store = Store::at(&usage_dir.join(IMPORTED));
     let records = match store.state().import {
         Some(true) => store.records(),
         _ => Arc::new(Vec::new()),
     };
-    build::all_time_models(&records, lines)
+    build::ranked_models(&records, lines, clock, today)
 }
 
 /// Every line of the usage ledger and the work ledger.

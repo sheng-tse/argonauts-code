@@ -11,6 +11,7 @@ use std::io::{self, BufWriter, Write};
 use std::time::Duration;
 
 use argonauts_core::app::{AppEvent, UiCommand};
+use argonauts_core::settings::ui::Logos;
 use crossterm::event::Event;
 use futures::Stream;
 use ratatui::layout::Position;
@@ -18,12 +19,13 @@ use tokio::sync::mpsc;
 
 use crate::UiOptions;
 use crate::format::WallClock;
-use crate::mascot::Graphics;
+use crate::kit::logo;
+use crate::mascot::{Graphics, placeholder};
 use crate::state::TerminalInfo;
 use crate::terminal::InlineTerminal;
 use crate::terminal::setup::{
     TerminalModes, install_panic_hook, probe_background, probe_cell_size, probe_cursor,
-    probe_pixel_mouse,
+    probe_graphics, probe_pixel_mouse,
 };
 use crate::text::set_ambiguous_width;
 use crate::theme::ColorEnv;
@@ -59,8 +61,14 @@ pub async fn run_app(io: AppIo, options: UiOptions) -> anyhow::Result<()> {
     let mut modes = TerminalModes::enable()?;
     install_panic_hook();
     let background = probe_background(BACKGROUND_WAIT);
+    // `behaviors.view = "world"` asks a terminal its variables don't name whether it takes
+    // pictures; one that left the background's question unanswered isn't asked.
+    let graphics = Graphics::detect_or_ask(
+        |name| std::env::var(name).ok(),
+        options.ask_for_pictures && background.is_some(),
+        || probe_graphics(BACKGROUND_WAIT),
+    );
     // Only a terminal that draws pictures is asked how big its cells are, for the mascot's.
-    let graphics = Graphics::from_process();
     let cell = graphics.and_then(|_| probe_cell_size(BACKGROUND_WAIT));
     // Only a terminal that takes the kitty protocol's pictures may report the mouse in pixels,
     // and it's asked, since its variables may have come from another terminal. One that left
@@ -68,6 +76,17 @@ pub async fn run_app(io: AppIo, options: UiOptions) -> anyhow::Result<()> {
     let pixel_mouse = matches!(graphics, Some(Graphics::Kitty))
         && background.is_some()
         && probe_pixel_mouse(BACKGROUND_WAIT);
+    // Logos are pictures only in a terminal that draws placeholders and says it takes pictures.
+    // One that does gets them on each screen before the first frame drawn there, and the palette
+    // built next draws them. With `ui.logos = "off"` the terminal isn't asked and nothing goes
+    // out, as one that takes the question badly needs; turning logos on later sends them then.
+    let takes_logos =
+        placeholder::terminal_draws_them(|name| std::env::var(name).ok()) && background.is_some();
+    match logos_at_start(options.settings.logos, takes_logos) {
+        LogosAtStart::Ask if probe_graphics(BACKGROUND_WAIT) => logo::set_takes_logos(true),
+        LogosAtStart::Hold => logo::hold_for_later(),
+        _ => {}
+    }
     let (screen, cursor) = match probe_cursor() {
         Ok(found) => found,
         Err(error) => {
@@ -84,6 +103,27 @@ pub async fn run_app(io: AppIo, options: UiOptions) -> anyhow::Result<()> {
     screen.use_pictures(graphics, cell);
     screen.use_pixel_mouse(pixel_mouse);
     screen.run(TerminalKeys::new()).await
+}
+
+/// What becomes of the logos' pictures as the app starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogosAtStart {
+    /// Ask the terminal whether it takes pictures, and give them to it if it does.
+    Ask,
+    /// `ui.logos` is off: ask nothing and send nothing, until logos are turned on.
+    Hold,
+    /// The terminal can't draw them.
+    Nothing,
+}
+
+/// [`LogosAtStart`] for `ui.logos` set to `logos`, in a terminal that `takes` the logos'
+/// placeholders and answered the background's question.
+fn logos_at_start(logos: Logos, takes: bool) -> LogosAtStart {
+    match (logos, takes) {
+        (_, false) => LogosAtStart::Nothing,
+        (Logos::Auto, true) => LogosAtStart::Ask,
+        (Logos::Off, true) => LogosAtStart::Hold,
+    }
 }
 
 /// The next Ctrl+C, terminate, or hangup, for what the app still waits on after [`run_app`]

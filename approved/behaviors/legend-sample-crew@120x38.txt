@@ -1,0 +1,45 @@
+Behaviors, the label map: the legend beside the map, every model of the colours sample crew, nothing compared
+screen 120x38
+at ?,?
+size 50x12
+terminal fg=#c8d3f5 bg=#222436
+text
+Every model
+Nothing compared · h  l  compares one
+●  ￼￼ Haiku 5.5               467
+●  ￼￼ 6.1 Sol                  80
+●  ￼￼ 6 Luna                   67
+●  ￼￼ Opus 5.5                 63
+●  ￼￼ Qwen3 Coder 30B (64k)    52
+●  ￼￼ 6 Astra                  36
+●  ￼￼ Sonnet 5.5               30
+●  ￼￼ Haiku 4.5                22
+●  ￼￼ 3.8 Flash (Low)          19
+↓  5 more below
+paint
+aaaaa.aaaaa
+bbbbbbb.bbbbbbbb.b.b..b..bbbbbbbb.bbb
+c..dd.eeeee.eee...............bbb
+f..gg.eee.eee..................bb
+f..gg.e.eeee...................bb
+c..dd.eeee.eee.................bb
+h..ii.eeeee.eeeee.eee.eeeee....bb
+f..gg.e.eeeee..................bb
+c..dd.eeeeee.eee...............bb
+j..dd.eeeee.eee................bb
+k..ll.eee.eeeee.eeeee..........bb
+b..b.bbbb.bbbbb
+key
+. blank
+a fg=#c8d3f5 bold  ; the terminal's own
+b fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+c fg=#f7a07f  ; CliClaude
+d logo=claudecode
+e fg=#c8d3f5  ; the terminal's own
+f fg=#6a9ee6  ; CliCodex
+g logo=codex
+h fg=#c27cb4  ; CliOpenCode
+i logo=ollama
+j fg=#8a8fa8  ; CatOther
+k fg=#6cd1cf  ; CliAgy
+l logo=antigravity

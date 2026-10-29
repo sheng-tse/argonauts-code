@@ -9,6 +9,7 @@ use std::ops::Range;
 use ratatui::text::Line;
 
 use crate::cell::{AssistantMessage, Cell, HistoryCell, SessionHeader};
+use crate::council::picture::Picture;
 use crate::markdown::stream::MarkdownStream;
 use crate::render::RenderCtx;
 
@@ -56,6 +57,12 @@ pub struct History {
     committed: usize,
     /// Where the last drain started the screen over, as a row of the rows it returned.
     started_over: Option<usize>,
+    /// The terminal's cell in pixels while it draws pictures under the words, so the cells that
+    /// bring one hand it over as they print.
+    pictures_at: Option<(u16, u16)>,
+    /// The pictures the last drains printed, each with its cell's rows among the rows they
+    /// returned.
+    picture_rows: Vec<(Range<usize>, Picture)>,
 }
 
 #[derive(Debug)]
@@ -235,6 +242,18 @@ impl History {
     /// prompts, never a command's echo, each with its words.
     pub fn take_prompt_rows(&mut self) -> Vec<(Range<usize>, String)> {
         std::mem::take(&mut self.prompt_rows)
+    }
+
+    /// Cells print with the pictures under their words from now on, for a terminal whose
+    /// cells are `cell` pixels; `None` prints the words alone.
+    pub fn draw_pictures_under(&mut self, cell: Option<(u16, u16)>) {
+        self.pictures_at = cell;
+    }
+
+    /// The pictures the rows of the last [`drain_printable`](Self::drain_printable) go under,
+    /// each with its cell's rows.
+    pub fn take_picture_rows(&mut self) -> Vec<(Range<usize>, Picture)> {
+        std::mem::take(&mut self.picture_rows)
     }
 
     /// The changed header's rows, to print over the old ones.
@@ -452,7 +471,11 @@ impl History {
                         _ => None,
                     };
                     let (rows, continues) = (cell.lines(ctx), cell.continues_previous());
+                    let picture = self.pictures_at.and_then(|at| cell.picture_under(ctx, at));
                     let printed = self.print(&mut out, rows, continues);
+                    if let (Some(picture), Some(rows)) = (picture, printed.clone()) {
+                        self.picture_rows.push((rows, picture));
+                    }
                     if let (Some(text), Some(rows)) = (prompt, printed.clone()) {
                         self.prompt_rows.push((rows, text));
                     }
@@ -510,6 +533,7 @@ impl History {
         self.header_rows = None;
         self.header_redrawn = None;
         self.prompt_rows.retain(|(rows, _)| rows.start >= at);
+        self.picture_rows.retain(|(rows, _)| rows.start >= at);
     }
 
     /// Where `rows` went in `out`, after any blank row put before them.

@@ -10,23 +10,24 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context as _, bail};
 use argonauts_core::api::{
-    PlanUsage, RunProgress, RunSummary, TaskBrief, UsagePeriod, UsageSummary,
+    PlanUsage, RunProgress, RunSummary, TaskBrief, UsagePeriod, UsageShare, UsageSummary,
 };
 use argonauts_core::app::{AppEvent, PlanUsageChip, SettingRow, ViewData};
+use argonauts_core::events::session::Billing;
 use argonauts_core::events::task::TaskState;
 use argonauts_core::limits::{
     HealthBoard, HealthState, PlanUsageBoard, PlanUsageReading, PlanUsageStatus,
 };
+use argonauts_core::meter::{runs_here, who_pays};
 use argonauts_core::names::AgentId;
 use argonauts_core::names::ModelRef;
 use argonauts_core::plan_usage::LiveUsage;
 use argonauts_core::session_runner::RunnerDirectory;
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::endpoints::endpoint_settings;
 use argonauts_core::settings::fallback::FallbackEntry;
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit, SpendLimits};
 use argonauts_core::settings::stats::{STATS_FILE, StatsPeriod, StatsSettings};
-use argonauts_core::{AuthMode, NoteLevel, RunId, Spend};
+use argonauts_core::{NoteLevel, RunId, Spend};
 use time::{Duration, OffsetDateTime};
 
 use super::header_and_bottom_line::plan_usage_chips;
@@ -229,11 +230,7 @@ async fn usage_summary(
     let runs = listed.as_deref().unwrap_or_default();
     let span = (period, ctx.settings().periods.week_starts);
     let mut summary = usage_ledger::summary(&ledger, span, local_day(now), runs, plan_windows);
-    for share in &mut summary.by_agent {
-        share.local = runs_locally(settings, &share.agent_id, share.model.as_deref());
-        share.pays_per_token =
-            !share.local && pays_per_token(settings, &AgentId(share.agent_id.clone()));
-    }
+    mark_who_paid(settings, &mut summary.by_agent);
     if let Some(stats) = &mut summary.stats {
         let clis: Vec<String> = stats.work.iter().map(|row| row.agent.clone()).collect();
         let defaults = super::names::cli_defaults(ctx, clis.iter().map(String::as_str));
@@ -386,8 +383,8 @@ fn plan_usage_cards(
         let local = crew
             .iter()
             .filter(|other| other.agent == worker.agent)
-            .all(|other| runs_locally(settings, &other.agent, other.model.as_deref()));
-        let pays_per_token = !local && pays_per_token(settings, &agent_id);
+            .all(|other| runs_here(settings, &other.agent, other.model.as_deref()));
+        let pays_per_token = !local && !on_a_plan(settings, &agent_id);
         // Only the CLI's own live reading of the account signed in now. One a failed read or
         // a sign-in has cast doubt on is kept apart, to be drawn as from before.
         let kept = plan_usage
@@ -436,29 +433,32 @@ fn plan_usage_cards(
     plans
 }
 
-/// The agent bills for each token: an endpoint, or a CLI signed in with an API key. A server
-/// on this machine never does.
-fn pays_per_token(settings: &Settings, agent_id: &AgentId) -> bool {
-    let local = endpoint_settings(settings, &agent_id.0).is_some_and(|endpoint| endpoint.local);
-    !local && (settings.endpoints.contains_key(&agent_id.0) || bills_api_key(settings, agent_id))
+/// The agent's own account is on a plan, whose windows a live read can show. An endpoint, the
+/// known ones included, and a CLI signed in with an API key bill by use instead, and a server
+/// on this machine bills nothing.
+fn on_a_plan(settings: &Settings, agent_id: &AgentId) -> bool {
+    who_pays(settings, &agent_id.0, None) == Billing::Plan
 }
 
-/// The model runs on a server on this machine: an endpoint marked local, or a CLI's model
-/// whose route names one, as `ollama/qwen3-coder:30b` does on OpenCode.
-fn runs_locally(settings: &Settings, agent: &str, model: Option<&str>) -> bool {
-    let local = |id: &str| endpoint_settings(settings, id).is_some_and(|endpoint| endpoint.local);
-    let routed = model
-        .and_then(|model| model.split_once('/'))
-        .is_some_and(|(provider, _)| local(provider));
-    local(agent) || routed
-}
-
-/// The CLI bills an API key rather than a plan, so there's no plan to read.
-fn bills_api_key(settings: &Settings, agent_id: &AgentId) -> bool {
-    settings
-        .agents
-        .get(&agent_id.0)
-        .is_some_and(|agent| agent.auth == AuthMode::ApiKey)
+/// Marks each share as run on this machine, charged by use, or neither, inside a plan: as its
+/// sessions recorded who paid, and for spend recorded before they said, by the rule a run's end
+/// line and the Overview split their tokens with, from your settings as they stand.
+fn mark_who_paid(settings: &Settings, shares: &mut [UsageShare]) {
+    for share in shares {
+        let model = share.model.as_deref();
+        let here = runs_here(settings, &share.agent_id, model);
+        (share.local, share.pays_per_token) = match share.billing {
+            Some(Billing::Paid) => (false, true),
+            Some(Billing::Plan) => (false, false),
+            Some(Billing::Free) => (here, false),
+            // A free variant through a key, as OpenRouter's `:free` models, costs nothing, but
+            // no plan covers it either.
+            None => (
+                here,
+                !here && who_pays(settings, &share.agent_id, model) != Billing::Plan,
+            ),
+        };
+    }
 }
 
 /// Shorter windows first: the five-hour one, a day's, the week's, then anything else.
@@ -546,8 +546,7 @@ pub(crate) fn read_plan_usage(ctx: &Ctx) {
     let mut crew = vec![settings.crew.main.clone()];
     crew.extend(settings.crew.members());
     for worker in &crew {
-        let agent_id = worker.agent_id();
-        if !settings.endpoints.contains_key(&agent_id.0) && !bills_api_key(settings, &agent_id) {
+        if on_a_plan(settings, &worker.agent_id()) {
             read_live_for(ctx, worker);
         }
     }
@@ -562,9 +561,9 @@ pub(crate) fn live_readers(ctx: &Ctx) -> Vec<ModelRef> {
     let mut readers: Vec<ModelRef> = Vec::new();
     for worker in crew {
         let agent_id = worker.agent_id();
-        let paid =
-            settings.endpoints.contains_key(&agent_id.0) || bills_api_key(settings, &agent_id);
-        if !paid && !readers.iter().any(|known| known.agent_id() == agent_id) {
+        if on_a_plan(settings, &agent_id)
+            && !readers.iter().any(|known| known.agent_id() == agent_id)
+        {
             readers.push(worker);
         }
     }
@@ -771,10 +770,7 @@ pub(crate) fn login(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .push((argv.clone(), worker));
-    ctx.send(AppEvent::RunInTerminal {
-        argv,
-        cwd: ctx.env.repo_root.clone(),
-    });
+    ctx.send(AppEvent::run_in_terminal(argv, ctx.env.repo_root.clone()));
     Ok(Vec::new())
 }
 
@@ -841,6 +837,7 @@ pub(crate) fn feedback(ctx: &mut Ctx, text: Option<String>) -> anyhow::Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use argonauts_core::AuthMode;
     use argonauts_core::limits::{PlanUsageReading, PlanUsageSource};
     use argonauts_core::names::AgentId;
     use argonauts_core::settings::crew::CrewSettings;
@@ -1472,11 +1469,67 @@ mod tests {
         assert!(claude.pays_per_token);
         assert!(claude.windows.is_empty() && claude.live.is_none() && claude.last.is_none());
         // What it spends is charged, which the spend card tells from spend inside a plan.
-        assert!(pays_per_token(
+        let mut shares = [share("claude-code", None), share("codex", None)];
+        mark_who_paid(&settings, &mut shares);
+        assert!(shares[0].pays_per_token && !shares[1].pays_per_token);
+    }
+
+    /// The known OpenRouter endpoint bills its key with no table of yours, as a run's end line
+    /// counts it, and a free variant through it costs nothing but no plan covers it either.
+    #[test]
+    fn the_known_openrouter_endpoint_pays_per_token_without_a_table() {
+        use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
+        let mut settings = Settings::default();
+        settings.crew.main = ModelRef::new("openrouter", Some("example/model-a".into()));
+        let plans = plans_of(
             &settings,
-            &AgentId("claude-code".to_owned())
-        ));
-        assert!(!pays_per_token(&settings, &AgentId("codex".to_owned())));
+            &MemoryPlanUsageBoard::default(),
+            &MemoryHealthBoard::default(),
+        );
+        let openrouter = plans
+            .iter()
+            .find(|plan| plan.agent == "openrouter")
+            .unwrap();
+        assert!(openrouter.pays_per_token && !openrouter.local);
+        let mut shares = [share("openrouter", Some("example/model-a:free"))];
+        mark_who_paid(&settings, &mut shares);
+        assert!(shares[0].pays_per_token && !shares[0].local);
+    }
+
+    /// A share whose sessions recorded who paid keeps it whatever your settings say now: a
+    /// key you used before signing in to a plan stays charged, and plan use stays in the plan.
+    #[test]
+    fn a_share_keeps_who_its_sessions_said_paid() {
+        let settings = Settings::default();
+        let billed = |billing| UsageShare {
+            billing: Some(billing),
+            ..share("codex", Some("gpt-6-luna"))
+        };
+        let mut shares = [
+            billed(Billing::Paid),
+            billed(Billing::Plan),
+            share("codex", Some("gpt-6-luna")),
+        ];
+        mark_who_paid(&settings, &mut shares);
+        let marks: Vec<(bool, bool)> = shares
+            .iter()
+            .map(|share| (share.local, share.pays_per_token))
+            .collect();
+        // Charged as recorded, inside the plan as recorded, then as the settings say today.
+        assert_eq!(marks, [(false, true), (false, false), (false, false)]);
+    }
+
+    fn share(agent: &str, model: Option<&str>) -> UsageShare {
+        UsageShare {
+            agent: agent.to_owned(),
+            model: model.map(str::to_owned),
+            agent_id: agent.to_owned(),
+            spent: Spend::default(),
+            pays_per_token: false,
+            local: false,
+            billing: None,
+            this_week: Vec::new(),
+        }
     }
 
     /// A model on a server on this machine charges nothing and no plan covers it: OpenCode on
@@ -1486,7 +1539,7 @@ mod tests {
         use argonauts_core::settings::agents::EndpointSettings;
         use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
         let mut settings = Settings::default();
-        settings.crew.main = ModelRef::new("opencode", Some("ollama/qwen3-coder:30b-64k".into()));
+        settings.crew.main = ModelRef::new("opencode", Some("ollama/qwen3-coder:30b".into()));
         settings.endpoints.insert(
             "ollama".into(),
             EndpointSettings {
@@ -1501,19 +1554,22 @@ mod tests {
         );
         let opencode = plans.iter().find(|plan| plan.agent == "opencode").unwrap();
         assert!(opencode.local && !opencode.pays_per_token);
-        assert!(!pays_per_token(&settings, &AgentId("ollama".to_owned())));
-        assert!(runs_locally(&settings, "ollama", Some("gemma3:12b-32k")));
-        assert!(runs_locally(
-            &settings,
-            "opencode",
-            Some("ollama/qwen3-coder:30b-64k")
-        ));
-        assert!(!runs_locally(
-            &settings,
-            "opencode",
-            Some("openrouter/qwen3-coder")
-        ));
-        assert!(!runs_locally(&settings, "codex", Some("gpt-6-luna")));
+        let mut shares = [
+            share("ollama", Some("gemma3:12b")),
+            share("opencode", Some("ollama/qwen3-coder:30b")),
+            share("opencode", Some("openrouter/qwen3-coder")),
+            share("codex", Some("gpt-6-luna")),
+        ];
+        mark_who_paid(&settings, &mut shares);
+        let marks: Vec<(bool, bool)> = shares
+            .iter()
+            .map(|share| (share.local, share.pays_per_token))
+            .collect();
+        // On this machine twice, then through OpenRouter's key, then inside Codex's plan.
+        assert_eq!(
+            marks,
+            [(true, false), (true, false), (false, true), (false, false)]
+        );
     }
 
     /// A CLI's probe is registered when its worker is built, so a live read on a fresh start,

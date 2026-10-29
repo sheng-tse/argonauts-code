@@ -9,8 +9,9 @@ use argonauts_core::app::{AppEvent, AppMode, ChoiceKind, ConversationEvent, Turn
 use argonauts_core::events::run::{RunLifecycle, RunMode};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::input::SlashCommand;
-use argonauts_scenarios::{Scenario, WAIT};
+use argonauts_scenarios::{Scenario, WAIT, as_set_up, on_the_default_workflow};
 use argonauts_testkit::Key;
+use argonauts_testkit::approved::{self, Drawn};
 use regex::Regex;
 
 /// The turn end, whichever done word the app picked, such as `✻ Sailed for 3s`.
@@ -237,7 +238,7 @@ fn app_routes_input_by_mode() -> anyhow::Result<()> {
 
 #[test]
 fn app_change_request_picks_captain_or_crew() -> anyhow::Result<()> {
-    let scenario = scenario()?;
+    let scenario = scenario_on_the_default()?;
     let mut pty = start(&scenario)?;
     submit(&mut pty, requests::SMALL_FIX)?;
 
@@ -275,7 +276,7 @@ fn app_change_request_picks_captain_or_crew() -> anyhow::Result<()> {
 
 #[test]
 fn app_unclear_offers_captain_crew_no() -> anyhow::Result<()> {
-    let scenario = scenario()?;
+    let scenario = scenario_on_the_default()?;
     let mut pty = start(&scenario)?;
     submit(&mut pty, requests::UNCLEAR_SMALL)?;
 
@@ -446,8 +447,7 @@ fn app_conversation_turn_records_settings_hash() -> anyhow::Result<()> {
     assert!(first.chars().all(|c| c.is_ascii_hexdigit()), "{first}");
     assert_eq!(turns[1].settings_sha256.as_deref(), Some(first.as_str()));
 
-    submit(&mut pty, "/effort high")?;
-    answer_scope(&scenario, &mut pty, 's', None)?;
+    submit(&mut pty, "/effort high --session")?;
     wait_setting_changed(&scenario, "roles.main.effort", 1)?;
     submit(&mut pty, "and once more")?;
     wait_turns_finished(&scenario, 3)?;
@@ -517,7 +517,7 @@ fn app_cancel_turn_kills_agent_process() -> anyhow::Result<()> {
 
 #[test]
 fn app_uncommitted_left_out_and_said() -> anyhow::Result<()> {
-    let scenario = scenario()?;
+    let scenario = scenario_on_the_default()?;
     scenario.repo.write("notes.txt", "scratch notes\n")?;
     scenario
         .repo
@@ -564,9 +564,9 @@ fn app_uncommitted_left_out_and_said() -> anyhow::Result<()> {
 
 #[test]
 fn app_include_uncommitted_setting() -> anyhow::Result<()> {
-    let scenario = scenario_with(&format!(
+    let scenario = scenario_with(&on_the_default_workflow(&format!(
         "{GLOBAL_CONFIG}\n[intake]\ninclude_uncommitted = true\n"
-    ))?;
+    )))?;
     scenario.repo.write("notes.txt", "scratch notes\n")?;
     let mut pty = start(&scenario)?;
     submit(&mut pty, requests::SMALL_FIX)?;
@@ -598,7 +598,7 @@ fn app_include_uncommitted_setting() -> anyhow::Result<()> {
 
 #[test]
 fn app_rules_pick_crew_by_labels() -> anyhow::Result<()> {
-    let scenario = scenario()?;
+    let scenario = scenario_on_the_default()?;
     let mut pty = start(&scenario)?;
     submit(&mut pty, requests::LABELED_TASK)?;
 
@@ -684,5 +684,71 @@ fn app_watching_costs_no_tokens() -> anyhow::Result<()> {
     let journal: Vec<RunEvent> = run_events(&waiting.dir)?;
     assert_eq!(journal.len(), journal_before, "watching wrote to the run");
     scenario.shot(&pty, "app_watching_costs_no_tokens")?;
+    Ok(())
+}
+
+/// The request the main agent takes alone on the default workflow, in your checkout.
+const ALONE_REQUEST: &str = "Make the rate limiter per API key, so one busy key can't block the others. Keep the tests passing.";
+
+/// The fake CLI rules for the request above, as the drawings of the main agent working alone
+/// read them: it looks around, takes the change alone and makes it in your checkout, where it
+/// goes on working after its edit, so the screen holds still for its drawing.
+const ALONE_RULES: &str = "conversation/alone.toml";
+
+/// [`AGENTS`] with the rules in [`ALONE_RULES`] first, in `dir`, which the fakes read it from
+/// while the scenario runs.
+fn scenario_working_alone(dir: &tempfile::TempDir) -> anyhow::Result<Scenario> {
+    let agents = std::fs::read_to_string(argonauts_scenarios::scenario_file(AGENTS))?;
+    let first_rule = agents
+        .find("\n[[rule]]")
+        .ok_or_else(|| anyhow::anyhow!("{AGENTS} has no rules"))?;
+    let (head, rules) = agents.split_at(first_rule);
+    let alone = std::fs::read_to_string(approved::dir().join(ALONE_RULES))?;
+    let file = dir.path().join("agents.toml");
+    std::fs::write(&file, format!("{head}\n{alone}{rules}"))?;
+    let scenario = Scenario::from_file(&file)?;
+    let config = format!("{GLOBAL_CONFIG}\n[captain_or_crew]\ncaptain_kind = \"direct\"\n");
+    std::fs::write(
+        scenario.repo.global_config(),
+        as_set_up(&on_the_default_workflow(&config)),
+    )?;
+    Ok(scenario)
+}
+
+/// `drawn` with the bullet Claude Code draws off macOS, which the drawings draw: on macOS the app
+/// starts items with `⏺`, as Claude Code does there.
+fn drawn_as_off_macos(mut drawn: Drawn) -> Drawn {
+    for row in 0..drawn.rows() {
+        for col in 0..drawn.cols() {
+            let cell = drawn.cell_mut(row, col);
+            if cell.text == "⏺" {
+                cell.text = "●".to_owned();
+            }
+        }
+    }
+    drawn
+}
+
+/// On the default workflow a small change is the main agent's, and the `◆` line right under its
+/// reply says so and offers the crew, as its drawing shows it at both sizes.
+#[test]
+fn app_default_workflow_says_when_the_main_agent_works_alone() -> anyhow::Result<()> {
+    for (rows, cols) in [(38, 120), (40, 177)] {
+        let dir = tempfile::tempdir()?;
+        let scenario = scenario_working_alone(&dir)?;
+        let mut pty = scenario.launch_sized(&[], rows, cols)?;
+        wait_ready(&scenario, &pty)?;
+        submit(&mut pty, ALONE_REQUEST)?;
+        pty.wait_for_visible("Added 16 lines", WAIT)?;
+        scenario.shot(
+            &pty,
+            &format!("app_default_workflow_alone_at_{cols}x{rows}"),
+        )?;
+        let drawn = drawn_as_off_macos(Drawn::capture(&pty, cols, rows)?);
+        approved::assert_matches(
+            &format!("conversation/council-default-alone@{cols}x{rows}.txt"),
+            &drawn,
+        );
+    }
     Ok(())
 }

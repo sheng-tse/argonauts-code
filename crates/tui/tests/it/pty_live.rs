@@ -114,7 +114,7 @@ fn live_region_keeps_its_order() {
     driver.wait_visible("◆");
     // The question takes the keys, so guiding the run hands it on first.
     past_the_question_guard();
-    driver.press(Key::Esc);
+    carry_on(&mut driver);
     driver.wait_visible("◆ Question left to the agent · you, ");
     driver.submit("keep the CSV path");
     driver.wait_visible("keep the CSV path");
@@ -243,22 +243,22 @@ fn bottom_line_changed_agent_plan_usage_spend() {
         "plan_chips": [chip("Claude", Some(plan_usage("claude-code", 0.71)), "healthy"),
                    chip("Codex", Some(plan_usage("codex", 0.38)), "healthy"),
                    chip("agy", None, "healthy")],
-        "spent": spend(9000, 0.21), "line": line_with_spend()}));
+        "spent": spend(9000, 0.21),
+        "line": {"settings": {"right": ["plan-usage", "spend"], "plan-usage": {"show": "all"}}}}));
     let driver = TestDriver::launch(Script::idle().at(0, status))
         .size(ROWS, 200)
         .start();
     // The rule names the model, so the bottom line never does. It marks the CLI in use, and
     // keeps a CLI nothing was read for yet by its name.
-    let chips =
-        r"^  ǁ supervised mode on .*  ● Claude 5h .{6} 71%  ○ Codex 5h .{6} 38%  ○ agy  \$0\.21$";
+    let chips = r"^  ǁ supervised mode on .*  ● Claude 5h .{6}  71%   ○ Codex 5h .{6}  38%   ○ agy  \$0\.21$";
     let screen = driver.wait_visible(chips);
     let status = expect_row(&screen, chips);
     assert_eq!(
         status + 1 + blank_rows_at_bottom(&screen),
         screen.visible.len()
     );
-    let rule = expect_row(&screen, "^─+ Council · Opus ─$");
-    assert!(screen.visible[rule].ends_with(" Council · Opus ─"));
+    let rule = expect_row(&screen, "^─+ council ─$");
+    assert!(screen.visible[rule].ends_with(" council ─"));
 }
 
 #[test]
@@ -269,11 +269,12 @@ fn bottom_line_plan_usage_chips() {
     let status = status_with(json!({
         "plan_chips": [chip("Claude", Some(out), "healthy"),
                    chip("Codex", Some(plan_usage("codex", 0.38)), "down"),
-                   chip("agy", None, "healthy")]}));
+                   chip("agy", None, "healthy")],
+        "line": {"settings": {"plan-usage": {"show": "all"}}}}));
     let driver = TestDriver::launch(Script::idle().at(0, status))
         .size(ROWS, 200)
         .start();
-    let out_until = r"● Claude .{6} out until (\w{3} )?\d{1,2}:\d{2}[ap]m  ○ Codex down  ○ agy$";
+    let out_until = r"● Claude out until (\w{3} )?\d{1,2}:\d{2}[ap]m   ○ Codex down   ○ agy$";
     let screen = driver.wait_visible(out_until);
     let row = &screen.visible[expect_row(&screen, out_until)];
     // agy's plan usage isn't known yet, and it still has its place by name.
@@ -290,7 +291,7 @@ fn bottom_line_plan_usage_chips() {
         .size(ROWS, 200)
         .start();
     // From 90% the window shows when it resets.
-    let near = r"● Claude 5h .{6} 92% resets (\w{3} )?\d{1,2}:\d{2}[ap]m  ○ Codex 5h .{6} 38%$";
+    let near = r"● Claude 5h .{6}  92% resets (\w{3} )?\d{1,2}:\d{2}[ap]m   ○ Codex 5h .{6}  38%$";
     let screen = driver.wait_visible(near);
     assert!(row_of(&screen, near).is_some());
 }
@@ -311,10 +312,10 @@ fn the_bottom_line_names_the_workflow_under_way() {
         script = script.at(0, run.task_state(agent, Some("running"), "merged"));
     }
     let driver = TestDriver::launch(script).size(ROWS, 120).start();
-    let screen = driver.wait_visible(r"  add-json-flag .{6} 3/5  ● Claude 5h .{6} 71%");
+    let screen = driver.wait_visible(r"  add-json-flag .{6} 3/5  ● Claude 5h .{6}  71%");
     assert!(
-        row_of(&screen, "▄▄▄▖▄▄ 3/5").is_some(),
-        "a small bar, three fifths full: {:?}",
+        row_of(&screen, "▄▄▄▄▁▁ 3/5").is_some(),
+        "a small bar, three fifths full to the nearest cell: {:?}",
         screen.visible
     );
 }

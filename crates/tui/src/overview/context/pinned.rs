@@ -1,5 +1,6 @@
-//! The context card pinned above the input: the conversation's context as one bar by
-//! category, or a run session's as used and free.
+//! The context card, above the input and at the end of the Context tab: the conversation's
+//! context as one bar by its CLI's categories, in Claude Code's names and colours, or a run
+//! session's as used and free.
 
 use argonauts_core::events::context::{ContextCategory, ContextKind};
 
@@ -50,31 +51,13 @@ pub fn session_use(subject: String, used: u64, cap: u64, window: Option<u64>) ->
     }
 }
 
-/// The used rows as the bar's parts, in the CLI's order. The bar has one part for MCP, so the
-/// servers' instructions count with their tools, and a row with no part of its own is `other`.
+/// The used rows as the bar's parts, in the CLI's order, its names and its colours.
 fn parts(categories: &[ContextCategory]) -> Vec<ContextPart> {
-    let mut parts: Vec<ContextPart> = Vec::new();
-    for row in categories
+    categories
         .iter()
         .filter(|row| row.kind == ContextKind::Used && row.tokens > 0)
-    {
-        // Claude Code 2.1.296's names for its rows.
-        let (name, role) = match row.name.as_str() {
-            "System prompt" => ("system prompt", Role::CatSystem),
-            "System tools" => ("tools", Role::CatTools),
-            "MCP tools" | "MCP server instructions" => ("mcp tools", Role::CatMcp),
-            "Custom agents" => ("agents", Role::CatAgents),
-            "Memory files" => ("memory files", Role::CatMemory),
-            "Skills" => ("skills", Role::CatSkills),
-            "Messages" => ("messages", Role::CatMessages),
-            _ => ("other", Role::CatOther),
-        };
-        match parts.iter_mut().find(|part| part.name == name) {
-            Some(part) => part.tokens = Some(part.tokens.unwrap_or(0) + row.tokens),
-            None => parts.push(ContextPart::new(name, role, Some(row.tokens))),
-        }
-    }
-    parts
+        .map(|row| ContextPart::named(row.name.clone(), row.color.clone(), Some(row.tokens)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -102,15 +85,19 @@ mod tests {
         assert_eq!(
             parts,
             [
-                ("system prompt", Some(6_888)),
-                ("tools", Some(15_135)),
-                // The servers' instructions count with their tools.
-                ("mcp tools", Some(2_952)),
-                ("agents", Some(648)),
-                ("memory files", Some(3_686)),
-                ("skills", Some(710)),
-                ("messages", Some(719_981)),
+                ("System prompt", Some(6_888)),
+                ("System tools", Some(15_135)),
+                ("MCP tools", Some(2_540)),
+                ("MCP server instructions", Some(412)),
+                ("Custom agents", Some(648)),
+                ("Memory files", Some(3_686)),
+                ("Skills", Some(710)),
+                ("Messages", Some(719_981)),
             ]
+        );
+        assert_eq!(
+            card.parts[0].paint,
+            crate::kit::context::Paint::Named("promptBorder".to_owned())
         );
         assert_eq!((card.used, card.window), (Some(750_000), Some(1_000_000)));
         assert_eq!(

@@ -526,8 +526,8 @@ pub enum Party {
     /// Autopilot, in your place: nothing waits for you there, so what your rules and the
     /// judge couldn't settle takes its safe option.
     Autopilot,
-    /// You pressed Esc on it, which means "carry on without me": the option was
-    /// taken in your place, as `approvals.when_declined` says.
+    /// You picked "Carry on without me" on it: the option was taken in your place, as
+    /// `approvals.when_declined` says.
     Declined,
     /// Argonauts Code itself, by a fixed rule.
     ArgonautsCode,

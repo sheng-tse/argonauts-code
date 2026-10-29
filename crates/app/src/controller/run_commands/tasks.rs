@@ -14,7 +14,7 @@ use super::views::run_events;
 use super::{Handled, NO_APPROVALS, on_screen};
 use crate::choices;
 use crate::controller::runs::{RunChoice, RunsState};
-use crate::controller::{Ctx, Effect, ScopeRequest};
+use crate::controller::{Ctx, Effect};
 use crate::views;
 
 /// From a picker: within the role's rules, else a confirm and `Approvals::reassign_overriding`.
@@ -202,16 +202,17 @@ pub(super) fn remember(
         );
         return Ok(Vec::new());
     };
-    Ok(vec![Effect::AskScope(Box::new(rule))])
+    Ok(vec![Effect::SaveChanges { pairs: vec![rule] }])
 }
 
 /// `roles.<role>.fallback.replace.<agent>.with = [pick]` for the stopped worker's role and
-/// agent. Only the `with` list changes, so the table's strategy and `on_return` stay.
+/// agent, as the key and its TOML value. Only the `with` list changes, so the table's strategy
+/// and `on_return` stay.
 pub(super) fn fallback_rule(
     events: &[RunEvent],
     id: &ApprovalId,
     pick: Option<ModelRef>,
-) -> Option<ScopeRequest> {
+) -> Option<(String, String)> {
     let plan = events.iter().find_map(|event| match &event.kind {
         RunEventKind::Approval(ApprovalEvent::Opened(opened)) if &opened.id == id => {
             match &opened.packet {
@@ -229,11 +230,7 @@ pub(super) fn fallback_rule(
         plan.stopped.agent_id()
     );
     let value = toml::Value::Array(vec![toml::Value::String(pick.to_string())]).to_string();
-    Some(ScopeRequest {
-        key,
-        value,
-        command: "fallback".to_owned(),
-    })
+    Some((key, value))
 }
 
 fn recorded_pick(events: &[RunEvent], id: &ApprovalId) -> Option<ModelRef> {

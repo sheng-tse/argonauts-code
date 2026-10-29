@@ -1,11 +1,12 @@
 //! Checks on how names are tied together, which a word list can't see: a key spelled unlike
 //! its field, a slash command unlike its variant, a template without its file, a role outside
-//! the one list, a recordings folder named by version.
+//! the one list, a recordings folder named by version, a dependency a member names its own way.
 
 use std::collections::BTreeSet;
 
 use argonauts_core::names::RoleName;
 use regex::Regex;
+use toml::de::{DeTable, DeValue};
 
 use super::report::Place;
 use super::table::{self, Table};
@@ -323,6 +324,81 @@ pub fn roles(files: &[File]) -> Vec<Place> {
         }
     }
     places
+}
+
+/// Every dependency of a member is named in the root manifest's `[workspace.dependencies]`,
+/// with its features there. A feature one member adds builds the dependency one way when that
+/// member is in a build and another way when it isn't, and rebuilds everything above it.
+pub fn member_dependencies(files: &[File]) -> Vec<Place> {
+    const ROOT: &str = "Cargo.toml";
+    let root: toml::Table = text_in(files, ROOT)
+        .parse()
+        .unwrap_or_else(|err| panic!("{ROOT}: {err}"));
+    let members = root
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .unwrap_or_else(|| panic!("{ROOT}: no [workspace] members"));
+    let mut places = Vec::new();
+    for member in members.iter().filter_map(toml::Value::as_str) {
+        let path = format!("{member}/Cargo.toml");
+        let text = text_in(files, &path);
+        let manifest = DeTable::parse(text)
+            .unwrap_or_else(|err| panic!("{path}: {err}"))
+            .into_inner();
+        for table in dependency_tables(&manifest) {
+            for (name, spec) in table.iter() {
+                let Some(fix) = how_to_inherit(name.get_ref(), spec.get_ref()) else {
+                    continue;
+                };
+                let line = text[..name.span().start].matches('\n').count() + 1;
+                places.push(Place::new(&path, Some(line), name.get_ref(), &fix));
+            }
+        }
+    }
+    places.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
+    places
+}
+
+/// A manifest's dependency tables, its targets' among them.
+fn dependency_tables<'t, 'i>(manifest: &'t DeTable<'i>) -> Vec<&'t DeTable<'i>> {
+    const KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+    let targets = manifest
+        .get("target")
+        .and_then(|targets| as_table(targets.get_ref()))
+        .into_iter()
+        .flat_map(|targets| targets.values())
+        .filter_map(|target| as_table(target.get_ref()));
+    std::iter::once(manifest)
+        .chain(targets)
+        .flat_map(|table| KINDS.iter().filter_map(|kind| table.get(*kind)))
+        .filter_map(|table| as_table(table.get_ref()))
+        .collect()
+}
+
+fn as_table<'t, 'i>(value: &'t DeValue<'i>) -> Option<&'t DeTable<'i>> {
+    match value {
+        DeValue::Table(table) => Some(table),
+        _ => None,
+    }
+}
+
+/// What a member's dependency should say instead, or `None` when it takes it all from the
+/// workspace.
+fn how_to_inherit(name: &str, spec: &DeValue) -> Option<String> {
+    let spec = as_table(spec);
+    let inherits = spec
+        .and_then(|spec| spec.get("workspace"))
+        .is_some_and(|workspace| matches!(workspace.get_ref(), DeValue::Boolean(true)));
+    if !inherits {
+        return Some(format!(
+            "{name}.workspace = true, with its version in the root Cargo.toml"
+        ));
+    }
+    let adds_features = ["features", "default-features", "default_features"]
+        .iter()
+        .any(|key| spec.is_some_and(|spec| spec.contains_key(*key)));
+    adds_features.then(|| "its features in the root Cargo.toml, for every member".to_owned())
 }
 
 fn text_in<'f>(files: &'f [File], path: &str) -> &'f str {

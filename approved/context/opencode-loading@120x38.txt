@@ -1,0 +1,80 @@
+Context, OpenCode the main session while it loads: the tab as it first shows
+screen 120x38
+at ?,0
+size 120x26
+terminal fg=#c8d3f5 bg=#222436
+text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats
+ What fills each session's context                                                                  1 session · loading
+
+     Context Usage
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   ￼￼ Qwen3 Coder 30B (64k)
+     ⛁ ⛁ ⛁ ⛀ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ollama/qwen3-coder:30b-64k
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~8.7k/64k tokens (14%) · from your last session
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ OpenCode's own prompt and tools: ~7.6k tokens (11.8%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Instruction files: ~1.2k tokens (1.8%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free space: ~55.3k (86.4%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   OpenCode is loading.
+                                               OpenCode's own count replaces it when its first step ends.
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ◆ context                                                          ~8.7k of 64k · from your last session  loading  │
+ │              ▌ ▋                                                                                                   │
+ │                                                                                                                    │
+ │ ▌ OpenCode's own prompt and tools    ~7.6k  11.8%      ▌ Instruction files   ~1.2k  1.8%                           │
+ │ ▌ Free space                        ~55.3k  86.4%                                                                  │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ tab · ←  →  tabs · ↓  into the list · enter opens one · esc closes this · the answer keeps running
+paint
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+.bbbbbbbb...cccccccc....cccccc....cccccc....ccccc...deeeeeeed...cccccc....ccccc
+.ffff.fffff.ffff.fffffffff.fffffff..................................................................f.fffffff.f.fffffff
+
+.....bbbbbbb.bbbbb
+.....g.g.g.g.g.g.g.g.g.g.g.g.g.g.g.g.g.g.g.g...hh.ccccc.ccccc.ccc.ccccc
+.....g.g.g.g.i.i.i.i.f.f.f.f.f.f.f.f.f.f.f.f...ffffffffffffffffffffffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...fffffffff.ffffff.fffff.f.ffff.ffff.ffff.fffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...jjjjjjjjj.jjjjj.jj.jjjjjjjj
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...g.cccccccccc.ccc.cccccc.ccc.cccccc.fffff.ffffff.fffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...i.ccccccccccc.cccccc.fffff.ffffff.ffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...f.cccc.cccccc.ffffff.fffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...ffffffff.ff.ffffffff
+...............................................ffffffffff.fff.fffff.ffffffff.ff.ffff.fff.fffff.ffff.fffff
+
+.kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
+.k.l.mmmmmmm..........................................................mmmmm.ff.fff.f.ffff.ffff.ffff.fffffff..fffffff..k
+.k.nnnnnnnnnnnnnopqrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr.k
+.k....................................................................................................................k
+.k.g.cccccccccc.ccc.cccccc.ccc.ccccc....mmmmm..fffff......i.ccccccccccc.ccccc...mmmmm..ffff...........................k
+.k.s.cccc.ccccc........................mmmmmm..fffff..................................................................k
+.kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
+
+.fff.f.f..f..ffff.f.f..ffff.fff.ffff.f.fffff.fffff.fff.f.fff.ffffff.ffff.f.fff.ffffff.fffff.fffffff
+key
+. blank
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+b fg=#c8d3f5 bold  ; the terminal's own
+c fg=#c8d3f5  ; the terminal's own
+d bg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+e fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp
+f fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+g fg=#888888  ; Rule
+h logo=ollama
+i fg=#d77757
+j fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment
+k fg=#4f5468  ; ModBorder
+l fg=#e6a23c  ; Accent, CatBrief
+m fg=#ffffff bold  ; Bright
+n bg=#888888  ; Rule
+o fg=#888888 bg=#d77757  ; Rule
+p bg=#d77757
+q fg=#d77757 bg=#3a3f55  ; on CatFree
+r bg=#3a3f55  ; CatFree
+s fg=#3a3f55  ; CatFree

@@ -8,10 +8,12 @@ use argonauts_core::NoteLevel;
 use argonauts_core::Spend;
 use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, SignedOut, TurnReply};
 use argonauts_core::event::{AgentEvent, ErrorCategory};
+use argonauts_core::events::context::{ContextDetail, StartingCount};
 use argonauts_core::events::run::{CaptainOrCrewDecision, RunMode};
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::limits::lost_to_the_network;
 use argonauts_core::names::{ModelRef, SessionKey, TurnId};
+use argonauts_core::prompt_parts::approx_tokens;
 use argonauts_core::screen::{Drawn, ScreenChange};
 use argonauts_core::session_runner::RunnerEvent;
 use argonauts_core::steps::intake::{ChangeEstimate, Instruction};
@@ -24,11 +26,14 @@ use super::excerpt::Exchange;
 use super::live::{self, Heard};
 use super::mirror;
 use super::offer::offer_to_start;
+use super::starting;
 use super::{
     ConversationState, Turn, agent, direct, emit, goal, handover, keep, planned, run_request,
     run_worktree, send_queued, settle_mode, side, styled,
 };
-use crate::controller::captain_or_crew::{Reading, Requested, read_answer, read_reply_with};
+use crate::controller::captain_or_crew::{
+    Reading, Requested, alone_line, read_answer, read_reply_with, workflow_chosen,
+};
 use crate::controller::instructions::{self, Command, Roster};
 use crate::controller::recap::{self, recap_from_turn};
 use crate::controller::shell;
@@ -279,6 +284,10 @@ fn try_turn(
                 (Some(session.cli_session.clone()), session.fork)
             }),
     };
+    // Whether its start is still to keep, and from which of its CLI's readings.
+    let fresh_start = resume
+        .is_none()
+        .then(|| starting::Fresh::of(ctx, &worker.agent));
     // A reviewer judges the changes alone, as a run's reviewers do, and a CLI command must
     // be the whole prompt, or the CLI won't read it as one.
     let excerpt = if resume.is_none() && !reviewing && !carrying && !step.main_agent_only() {
@@ -352,6 +361,7 @@ fn try_turn(
         ctx,
         Launch {
             conversation: &conversation.id,
+            title: &conversation.title,
             turn: &id,
             step: &step,
             text: &text,
@@ -412,6 +422,7 @@ fn try_turn(
         outside: reach,
         live: live::Live::new(control, plain_reply),
         counted: None,
+        fresh_start,
         signed_out: None,
     });
     if let (Some(turn), Some(detail)) = (&conversation.turn, conversation.context_watch) {
@@ -518,6 +529,16 @@ pub(super) fn on_event(
                     _ => {}
                 }
             }
+            if let Some(fresh) = turn.fresh_start.as_mut().filter(|_| !own) {
+                // Its count by category comes only when asked, and the start waits for it.
+                if fresh.heard(&event) {
+                    turn.live.ask_context(ContextDetail::Summary);
+                }
+                let fresh = fresh.clone();
+                if keep_start(ctx, turn, &fresh, &folder, &event, &mut conversation.start) {
+                    turn.fresh_start = None;
+                }
+            }
             if let AgentEvent::ContextBreakdown { usage } = &event
                 && !own
             {
@@ -551,6 +572,58 @@ pub(super) fn on_event(
         }
         RunnerEvent::Session(_) | RunnerEvent::AgentStatus(_) => {}
     }
+}
+
+/// Keeps what a fresh session held at its start, from its CLI's first count: by category for
+/// a CLI that counts, or from its first reading for one that says only how full it is. Whether
+/// that count has come. The files are read and written on a blocking task, which `start` waits
+/// for before it is worked out again.
+fn keep_start(
+    ctx: &mut Ctx,
+    turn: &Turn,
+    fresh: &starting::Fresh,
+    folder: &std::path::Path,
+    event: &AgentEvent,
+    start: &mut starting::KeptStart,
+) -> bool {
+    let worker = fresh.named(&turn.worker);
+    let work: Box<dyn FnOnce() -> Option<StartingCount> + Send> = match (fresh.reading, event) {
+        (starting::Reading::ByCategory, AgentEvent::ContextBreakdown { usage }) => {
+            let start = starting::of_breakdown(&worker, usage, fresh.first_count);
+            Box::new(move || Some(start))
+        }
+        (starting::Reading::HowFull, AgentEvent::ContextFill { size, sent, .. }) => {
+            let window = size.or_else(|| starting::window_of(ctx, &worker));
+            let sent = sent.unwrap_or_else(|| approx_tokens(&turn.text));
+            let Some(fill) = fresh.first_fill(window, sent) else {
+                return true;
+            };
+            let (names, depth) = starting::instruction_files(ctx, &worker.agent, folder);
+            let folder = folder.to_path_buf();
+            let first_count = fresh.first_count;
+            let worker = worker.clone();
+            Box::new(move || {
+                let (files, _) = starting::read_files(&names, depth, &folder);
+                starting::of_first_fill(&worker, files, fill, first_count)
+            })
+        }
+        _ => return false,
+    };
+    let path = ctx.env.paths.session_starts();
+    let kept_as = turn.worker.clone();
+    let out = ctx.out.clone();
+    start.keeping(tokio::task::spawn_blocking(move || {
+        let Some(start) = work() else {
+            return;
+        };
+        if let Err(err) = starting::keep(&path, &kept_as, start) {
+            out.send(AppEvent::Notice {
+                level: NoteLevel::Warn,
+                text: format!("The Context tab couldn't keep this session's start: {err:#}"),
+            });
+        }
+    }));
+    true
 }
 
 /// A dim line of what the turn's last event did, when it did something worth one.
@@ -675,9 +748,15 @@ pub(super) fn on_done(
         && let Some(row) = conversation.context.as_mut()
     {
         row.spent = plus(&row.spent, &end.spend);
+        let worker = &row.worker;
         let turn = TurnNote {
             conversation: Some(conversation.id.as_str()),
             took: end.duration_ms / 1000,
+            billing: Some(argonauts_core::meter::who_pays(
+                ctx.settings(),
+                &worker.agent,
+                worker.model.as_deref(),
+            )),
         };
         UsageLedger::new(&ctx.env.paths).turn_ended(
             &ctx.env.repo_root,
@@ -749,7 +828,8 @@ pub(super) fn on_done(
                     command.as_ref(),
                 )
             };
-            read_reply_with(&outcome, ctx.settings(), Some(&store), &check)
+            let chosen = workflow_chosen(&ctx.settings);
+            read_reply_with(&outcome, ctx.settings(), chosen, Some(&store), &check)
         }
         step if step.plain_reply() => read_agent_reply(&outcome).map(|r| (r, Requested::default())),
         _ => read_answer(&outcome).map(|r| (r, Requested::default())),
@@ -974,12 +1054,30 @@ fn finish(
             elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         },
     );
+    // The rules left the change to the main agent while a crew workflow is only the default:
+    // the app says so, and how to have the workflow do it.
+    if may_start
+        && let TurnReply::Change {
+            estimate,
+            captain_or_crew,
+            ..
+        } = &reply
+        && let Some(line) = alone_line(
+            ctx.settings(),
+            workflow_chosen(&ctx.settings),
+            estimate,
+            captain_or_crew,
+        )
+    {
+        conversation.taken_alone = Some(turn.text.clone());
+        ctx.notice(NoteLevel::Info, line);
+    }
     match offer {
         Some((estimate, would_pick)) => {
             let started = offer_to_start(ctx, conversation, &turn, estimate, would_pick, requested);
             effects.extend(started);
         }
-        None => keep::offer(ctx, conversation, &requested.applied),
+        None => keep::offer(ctx, &requested.applied),
     }
     effects.extend(side::after(ctx, conversation, &turn.step, &reply));
     // A direct turn's answer already says what changed, so no recap repeats it.

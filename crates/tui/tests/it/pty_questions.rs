@@ -4,13 +4,14 @@
 
 use crate::pty_support;
 use argonauts_core::app::AppEvent;
+use argonauts_testkit::screen::{Grid, Look, REAL_SIZES, Size, laws};
 use pty_support::*;
 use serde_json::{Value, json};
 
 const MERGE_QUESTION: &str = "◆ Merge";
 /// The question's own key line while it has the keys.
 const QUESTION_KEYS: &str =
-    "^  Enter to choose.* · Esc to carry on without me( · shift\\+tab to cycle modes)?$";
+    "^  Enter to choose.* · Esc back to the list( · shift\\+tab to cycle modes)?$";
 
 /// The question has the keys and stands in for the input, whose rules are gone.
 fn question_holds_keys(driver: &TestDriver) {
@@ -74,18 +75,23 @@ fn letters_typed_at_a_question_do_nothing() {
     driver.wait_visible("❯ 2\\. Open a pull request");
     driver.assert_no_command("answer");
 
-    // Passed on, it leaves the screen, a line says who decides now, and the input takes
+    // Carried on, it leaves the screen, a line says who decides now, and the input takes
     // typing again.
     past_the_question_guard();
-    driver.press(Key::Esc);
+    carry_on(&mut driver);
     driver.wait_visible("◆ Merge approval left to the main agent · you, ");
     driver.wait_gone("2\\. Open a pull request");
-    assert_eq!(
-        driver.wait_command("set_aside")["to"],
-        approval_target("approval-001")
-    );
+    let answer = driver.wait_command("answer");
+    assert_eq!(answer["to"], approval_target("approval-001"));
+    assert_eq!(answer["action"]["action"], "carry_on");
+    // What's typed then goes to the input, and answers nothing more.
     driver.submit("keep the CSV path");
-    driver.assert_no_command("answer");
+    let answers = driver
+        .command_types()
+        .iter()
+        .filter(|kind| *kind == "answer")
+        .count();
+    assert_eq!(answers, 1, "{:?}", driver.command_types());
 }
 
 #[test]
@@ -110,7 +116,7 @@ fn own_answer_option_opens_line_in_question() {
         screen.visible_text()
     );
     assert!(
-        !screen.visible_text().contains("Council · Haiku ─"),
+        !screen.visible_text().contains(" council ─"),
         "the input is hidden while the question has the keys:\n{}",
         screen.visible_text()
     );
@@ -282,7 +288,7 @@ fn esc_hands_the_question_on_leaves_the_run_going_and_stops_a_pausing_one_now() 
     let script = Script::idle()
         .all(0, events)
         .at(0, question)
-        .await_command("set_aside")
+        .await_command("answer")
         .at(0, left)
         .await_command("pause")
         .at(0, mode_pausing(RUN))
@@ -292,13 +298,12 @@ fn esc_hands_the_question_on_leaves_the_run_going_and_stops_a_pausing_one_now() 
     let mut driver = TestDriver::start(script);
     driver.wait_visible("Keep a CSV fallback\\?");
     past_the_question_guard();
-    driver.press(Key::Esc);
+    carry_on(&mut driver);
     driver.wait_visible("◆ Question left to the agent · you, ");
     driver.wait_gone("Keep a CSV fallback\\?");
-    assert_eq!(
-        driver.wait_command("set_aside")["to"],
-        approval_target("approval-001")
-    );
+    let answer = driver.wait_command("answer");
+    assert_eq!(answer["to"], approval_target("approval-001"));
+    assert_eq!(answer["action"]["action"], "carry_on");
     // The engine's decision closes it, so nothing is left under "needs you".
     driver.wait_gone("needs you");
     driver.assert_no_command("pause");
@@ -314,7 +319,7 @@ fn esc_hands_the_question_on_leaves_the_run_going_and_stops_a_pausing_one_now() 
     driver.wait_visible("Pausing… \\(esc again to stop now\\)");
     // The first Esc gives the list's keys back to the input, and the next stops the run now.
     driver.press(Key::Esc);
-    driver.wait_gone("enter to view");
+    driver.wait_gone("enter to open its workflow");
     driver.press(Key::Esc);
     assert_eq!(driver.wait_command("pause")["now"], true);
     let pauses = driver
@@ -325,28 +330,39 @@ fn esc_hands_the_question_on_leaves_the_run_going_and_stops_a_pausing_one_now() 
     assert_eq!(pauses, 2);
 }
 
-/// What `/templates` asks once it has listed them: seventeen names, each with its kind.
+/// The templates `/templates` lists: seventeen names, each with its kind.
+const TEMPLATES: [(&str, &str); 17] = [
+    ("Council", "workflow · in use"),
+    ("Orchestrator", "workflow"),
+    ("Spec-first", "workflow"),
+    ("Maker-checker", "workflow"),
+    ("Best-of-n", "workflow"),
+    ("Draft-and-vote", "workflow"),
+    ("Ablate-no-blind", "workflow"),
+    ("Ablate-no-anonymize", "workflow"),
+    ("Ablate-no-critique", "workflow"),
+    ("Ablate-fixed-roles", "workflow"),
+    ("Ablate-same-provider", "workflow"),
+    ("Ablate-no-experiments", "workflow"),
+    ("main", "prompts"),
+    ("orchestrator", "prompts"),
+    ("workers", "prompts"),
+    ("reviewers", "prompts"),
+    ("judge", "prompts"),
+];
+
+/// The templates as the question lists them, numbered.
+fn listed_templates() -> Vec<String> {
+    TEMPLATES
+        .iter()
+        .zip(1..)
+        .map(|((name, _), number)| format!("{:<4}{name}", format!("{number}.")))
+        .collect()
+}
+
+/// What `/templates` asks once it has listed them.
 fn which_template() -> AppEvent {
-    const NAMES: [(&str, &str); 17] = [
-        ("Council", "workflow · in use"),
-        ("Orchestrator", "workflow"),
-        ("Spec-first", "workflow"),
-        ("Maker-checker", "workflow"),
-        ("Best-of-n", "workflow"),
-        ("Draft-and-vote", "workflow"),
-        ("Ablate-no-blind", "workflow"),
-        ("Ablate-no-anonymize", "workflow"),
-        ("Ablate-no-critique", "workflow"),
-        ("Ablate-fixed-roles", "workflow"),
-        ("Ablate-same-provider", "workflow"),
-        ("Ablate-no-experiments", "workflow"),
-        ("main", "prompts"),
-        ("orchestrator", "prompts"),
-        ("workers", "prompts"),
-        ("reviewers", "prompts"),
-        ("judge", "prompts"),
-    ];
-    let options = NAMES
+    let options = TEMPLATES
         .iter()
         .zip("123456789abcdfghi".chars())
         .map(|((name, kind), key)| {
@@ -358,18 +374,27 @@ fn which_template() -> AppEvent {
     choice("ch-001", "templates", "Copy which one?", &[], options)
 }
 
+/// The app at `size` asking which template to copy.
+fn asking_which_template(size: Size) -> TestDriver {
+    let script = Script::new()
+        .at(0, welcome())
+        .at(0, which_template())
+        .await_command("answer")
+        .at(0, choice_closed("ch-001", "Copying Ablate-same-provider."));
+    TestDriver::launch(script)
+        .size(size.rows, size.cols)
+        .start()
+}
+
 /// A question with more names than it lists at once keeps its title, its pointer and its
 /// keys on the screen, on a small terminal and a larger one, and going down past the last
 /// name shown brings the next ones up.
 #[test]
 fn a_long_list_of_options_scrolls_under_its_title_and_over_its_keys() {
-    for (rows, cols) in [(24, 80), (32, 100)] {
-        let script = Script::new()
-            .at(0, welcome())
-            .at(0, which_template())
-            .await_command("answer")
-            .at(0, choice_closed("ch-001", "Copying Ablate-same-provider."));
-        let mut driver = TestDriver::launch(script).size(rows, cols).start();
+    let listed = listed_templates();
+    for size in REAL_SIZES {
+        let (rows, cols) = (size.rows, size.cols);
+        let mut driver = asking_which_template(size);
         let screen = driver.wait_visible("❯ 1\\.  Council +workflow · in use");
         let at = |screen: &Screen, pattern: &str| expect_row(screen, pattern);
         let title = at(&screen, "^◆ Copy which one\\?$");
@@ -383,6 +408,9 @@ fn a_long_list_of_options_scrolls_under_its_title_and_over_its_keys() {
         assert_eq!(keys, title + 13, "{rows}x{cols}");
         assert_eq!(row_of(&screen, "11\\. Ablate-same-provider"), None);
         assert_frames(&screen, cols);
+        let grid = Grid::from_text(cols, &screen.visible);
+        let look = Look::new().selected("1.  Council").list(&listed);
+        laws::assert_kept(&grid, &look, &format!("the question at {size}"));
 
         // The question stands in for the input.
         driver.wait_gone(TOP_RULE);
@@ -409,6 +437,27 @@ fn a_long_list_of_options_scrolls_under_its_title_and_over_its_keys() {
             json!({"action": "choose", "value": "Ablate-same-provider"})
         );
         driver.wait_gone("Enter to choose");
+    }
+}
+
+/// Ten names down the long question, past the first ones it shows, the screen still keeps the
+/// laws, and says which of the names it shows.
+#[test]
+fn a_long_list_of_options_keeps_the_screen_laws_scrolled_down() {
+    let listed = listed_templates();
+    for size in REAL_SIZES {
+        let mut driver = asking_which_template(size);
+        driver.wait_visible("❯ 1\\.  Council +workflow · in use");
+        driver.wait_gone(TOP_RULE);
+        for _ in 0..10 {
+            driver.press(Key::Down);
+        }
+        let screen = driver.wait_visible("❯ 11\\. Ablate-same-provider +workflow$");
+        let grid = Grid::from_text(size.cols, &screen.visible);
+        let look = Look::new()
+            .selected("11. Ablate-same-provider")
+            .list(&listed);
+        laws::assert_kept(&grid, &look, &format!("the question at {size}, ten down"));
     }
 }
 

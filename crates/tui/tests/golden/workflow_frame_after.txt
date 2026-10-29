@@ -1,11 +1,11 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- argonauts-ui-kit                                                                                                     
- Build a standalone Rust UI kit prototype that matches the user's Claude Code screenshot (inline…  8/9 agents · 2h47m 
-                                                                                                                      
- ╭ Phases ──────────┬ Build · 3 agents ─────────────────────────────────────────────────────────────────────────────╮ 
- │   ✔ Scaffold 1/1 │ ❯✔ build:a-terminal-bottom Opus 5.5                                                           │ 
- │   ✔ Build    3/3 │  ✔ build:b-history-cells   Opus 5.5                                                           │ 
- │   ✔ Merge    1/1 │  ✔ build:c-demo-tests      Opus 5.5                                                           │ 
- │   4 Look     3/4 │                                                                                               │ 
- ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓  select · ⏎ open · m message · x stop · r restart · p pause · f filter · esc back · s save                        
+ todo-tui        
+ Build a terminal todo app with an inline task list, a history of what changed, the bottom…        8/9 agents · 2h47m
+
+ ╭ Phases ──────────┬ Build · 3 agents ─────────────────────────────────────────────────────────────────────────────╮
+ │   ✔ Scaffold 1/1 │ ❯✔ build:a-terminal-bottom  ◧◨ Opus 5.5                                                    0s │
+ │   ✔ Build    3/3 │  ✔ build:b-history-cells    ◧◨ Opus 5.5                                                    0s │
+ │   ✔ Merge    1/1 │  ✔ build:c-demo-tests       ◧◨ Opus 5.5                                                    0s │
+ │   ⣾ Look     3/4 │                                                                                               │
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  select · space peek · enter open · m message · x stop · r restart · p pause · esc back · s save

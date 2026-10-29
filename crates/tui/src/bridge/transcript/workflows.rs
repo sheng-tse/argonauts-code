@@ -1,5 +1,5 @@
 //! A crew run's workflow in the conversation, as Claude Code prints its own Workflow call:
-//! `● Workflow(<name> · <kind> workflow)` with `Running in background · /workflows to monitor
+//! `● Workflow(<name> · <workflow>)` with `Running in background · /workflows to monitor
 //! and save` under it when it starts, a line when the main agent adds a phase, and the same
 //! call with `✔ Completed in 6m 20s · 6 agents · 177k tokens · merged onto main` when it ends,
 //! or `✘ Stopped in` as the run ended.
@@ -72,6 +72,7 @@ pub(super) fn declared(
         in_use,
         based_on,
         reviewers_asked: story.reviewers_asked.clone(),
+        checks_picked: story.checks_picked.clone(),
         captain: false,
         reported: None,
     };
@@ -170,6 +171,8 @@ pub(super) struct Start {
     based_on: Option<String>,
     /// The reviewers your words named, by name.
     reviewers_asked: Option<String>,
+    /// The checks the main agent picked for the run, and where they run.
+    checks_picked: Option<String>,
     /// Whether the task's own CLI runs it as its workflow, as Claude Code's own does.
     captain: bool,
     /// The name its script gave the workflow in its first report, which the run then goes by.
@@ -188,8 +191,8 @@ impl Start {
         argonauts_core::text::title_words(&sanitize_line(name))
     }
 
-    /// The run's name and what kind of workflow it is, as its view's header says them: `Add
-    /// due dates · orchestrator workflow`.
+    /// The run's name and the workflow it runs, by the workflow's shown name: `Add due dates ·
+    /// Orchestrator`.
     fn title(&self) -> String {
         let kind = if self.captain {
             Some(" · Captain".to_owned())
@@ -197,12 +200,12 @@ impl Start {
             self.based_on
                 .as_deref()
                 .or(self.in_use.as_deref())
-                .map(|kind| format!(" · {}", argonauts_core::text::workflow_kind(kind)))
+                .map(|kind| format!(" · {}", argonauts_core::text::shown_name(kind)))
         };
         format!("{}{}", self.name(), kind.unwrap_or_default())
     }
 
-    /// `● Workflow(<name> · <kind> workflow)`, and under it that it runs in the background and
+    /// `● Workflow(<name> · <workflow>)`, and under it that it runs in the background and
     /// what opens it. What your own words asked of it follows on lines of their own.
     fn item(&self, report: Option<&WorkflowReport>) -> ToolCall {
         let mut call =
@@ -218,8 +221,54 @@ impl Start {
         if let Some(names) = &self.reviewers_asked {
             call.push(ToolItem::text(format!("reviewers: {names} (you asked)")));
         }
+        if let Some(checks) = &self.checks_picked {
+            call.push(ToolItem::text(format!("checks: {checks}")));
+        }
         call
     }
+}
+
+/// The checks the main agent picked when it started the run, which hold for that run alone, as
+/// "tests (python3 -m unittest -q), picked by the main agent for this run · on each task and on
+/// the merge". Checks the request layer set are the main agent's, since your words never set
+/// them; the merge runs them too unless `checks.full_suite` names its own.
+pub(super) fn checks_picked(started: &RunStarted) -> Option<String> {
+    let picked = started
+        .overrides
+        .iter()
+        .any(|set| set.key == "checks.run" && set.from == "request");
+    if !picked {
+        return None;
+    }
+    let checks = &started.settings["checks"];
+    let named: Vec<String> = checks["run"]
+        .as_array()?
+        .iter()
+        .filter_map(|check| {
+            let name = sanitize_line(check["name"].as_str()?.trim()).into_owned();
+            let command: Vec<&str> = check["command"]
+                .as_array()?
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect();
+            Some(format!("{name} ({})", sanitize_line(&command.join(" "))))
+        })
+        .collect();
+    if named.is_empty() {
+        return None;
+    }
+    let suite_of_its_own = checks["full_suite"]
+        .as_array()
+        .is_some_and(|suite| !suite.is_empty());
+    let runs_on = if suite_of_its_own {
+        "on each task"
+    } else {
+        "on each task and on the merge"
+    };
+    Some(format!(
+        "{}, picked by the main agent for this run · {runs_on}",
+        named.join(", ")
+    ))
 }
 
 /// The reviewers a run's request named, as "GPT 5.6 Luna on Codex", when it asked for them:
@@ -236,7 +285,7 @@ pub(super) fn reviewers_asked(started: &RunStarted, names: &DisplayNames) -> Opt
         .as_array()?
         .iter()
         .filter_map(|worker| worker.as_str()?.parse::<ModelRef>().ok())
-        .map(|worker| names.worker(&names.running(&worker)))
+        .map(|worker| names.worker(&worker))
         .collect();
     (!reviewers.is_empty()).then(|| reviewers.join(", "))
 }
@@ -261,7 +310,7 @@ pub(super) fn phase_added(title: &str, why: &str, story: &RunStory, cx: &mut Cx<
     emit(cx, call);
 }
 
-/// `● Workflow(<name> · <kind> workflow)` again, with `✔ Completed in 6m 20s · 6 agents · 177k
+/// `● Workflow(<name> · <workflow>)` again, with `✔ Completed in 6m 20s · 6 agents · 177k
 /// tokens` under it as Claude Code's call returns, and how the run ended after them, before
 /// the run's own end. It ends as the run's panel row does, so a stopped run's workflow reads
 /// `✘ Stopped in`, never completed. A failed run is one block, "The run failed", so its workflow
@@ -343,6 +392,7 @@ mod tests {
             in_use: None,
             based_on: Some("orchestrator".to_owned()),
             reviewers_asked: None,
+            checks_picked: None,
             captain: false,
             reported: None,
         }
@@ -380,9 +430,7 @@ mod tests {
     }
 
     /// The fork picture's Workflow call is the same under either start: the run's words and its
-    /// workflow, and where to watch it. The picture names the workflow `Orchestrator`, as a
-    /// Captain task's call says `Captain`; the call names it `orchestrator workflow`, as the
-    /// workflow transcript's picture has it.
+    /// workflow, and where to watch it.
     #[test]
     fn the_fork_starts_workflow_call_reads_as_its_picture() {
         let theme = on_macos();
@@ -390,7 +438,6 @@ mod tests {
         let mut picture = picture!("fork_start");
         for row in [7, 36] {
             picture.recolour(row, 0, theme.style(Role::Success).fg);
-            picture.reword(row, "· Orchestrator)", "· orchestrator workflow)");
         }
         let started = buffer_of(&start().item(None).lines(&ctx), 118);
         picture.assert_drawn(7..9, &started, 0);

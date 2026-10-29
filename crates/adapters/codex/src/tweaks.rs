@@ -87,6 +87,14 @@ pub fn user_hooks_off() -> LaunchTweak {
     }
 }
 
+/// A run's session keeps no memory of its own, so nothing one council's seat noticed reaches
+/// the next council, and a worker leaves none behind. `memories` is a feature flag beside
+/// `hooks` and `multi_agent` (0.158.0 to 0.163.0), and turning it off stops Codex from both
+/// writing and reading memories.
+pub fn memories_off() -> Vec<String> {
+    vec!["--disable".to_owned(), "memories".to_owned()]
+}
+
 /// What a read-only session that must not fan out, such as a judge, gets on top of
 /// [`no_subagents`]: the documented `[agents]` switch.
 pub fn read_only_no_subagents() -> Vec<String> {

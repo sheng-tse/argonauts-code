@@ -1,7 +1,7 @@
 //! All settings, `/config all` or `/config <key>`: every key, searchable and grouped by section,
 //! with its value, the layer it came from in words, its description, and a mark on safety keys.
-//! Enter edits a key: its values or a typed line, then where to save it, with Reset where the
-//! layer allows.
+//! Enter edits a key: its values or a typed line, saved where your changes go, with Reset where
+//! the layer allows.
 
 use argonauts_core::app::{ConfigEntry, SettingRow, ViewData};
 use argonauts_core::settings::layer;
@@ -55,7 +55,7 @@ impl AllSettingsView {
     }
 
     /// Every key, searched for `key` with the pointer on it, as Config opens a value you type or
-    /// one a higher layer holds. Enter edits it there and asks where to save.
+    /// one a higher layer holds. Enter edits it there.
     pub fn at_key(rows: Vec<SettingRow>, key: &str) -> Self {
         let mut view = Self::new(rows);
         view.filter = key.to_owned();

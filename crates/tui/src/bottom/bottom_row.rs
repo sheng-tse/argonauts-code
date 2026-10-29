@@ -151,6 +151,11 @@ pub struct ModeState<'a> {
     /// The agent panel has rows.
     pub panel: bool,
     pub panel_focused: bool,
+    /// The keys of what is picked, such as a council message, after the mode in place of the
+    /// other hints.
+    pub picked_keys: Option<&'a str>,
+    /// What Enter does on the run's row picked in the panel, such as `enter to answer`.
+    pub row_enter: Option<&'a str>,
     /// A question has the keys.
     pub question_focused: bool,
     /// The input is in shell mode, which takes the approval mode's place.
@@ -183,6 +188,7 @@ impl BottomRow {
             span: Span::styled(text.to_owned(), style),
             gives,
             short: None,
+            short_when: Give::ShortPieces,
         };
         let mut pieces = Vec::new();
         // A hint such as "Press Ctrl-C again to exit" or "Pasting…" takes the whole line, the
@@ -221,6 +227,20 @@ impl BottomRow {
         if state.question_focused {
             return (ModePieces(pieces), None);
         }
+        // On a run's row, what Enter does stays longest: the way back goes first, then how to
+        // pick another.
+        if let Some(enter) = state.row_enter.filter(|_| state.panel_focused) {
+            let arrow = "↓";
+            let arrows = format!(
+                "↑ {arrow}{}to pick another",
+                crate::theme::glyphs::gap_after(arrow)
+            );
+            pieces.push(words(Joiner::Dot, &arrows, dim, Some(Give::CycleHint)));
+            pieces.push(words(Joiner::Dot, enter, dim, None));
+            let back = "esc to go back to the input";
+            pieces.push(words(Joiner::Dot, back, dim, Some(Give::FooterHint)));
+            return (ModePieces(pieces), None);
+        }
         // Claude Code leaves this off for its default mode, which hides how to leave it.
         pieces.push(words(
             Joiner::Space,
@@ -231,6 +251,18 @@ impl BottomRow {
         if state.panel_focused {
             let keys = "enter to open · x to stop · esc to go back";
             pieces.push(words(Joiner::Dot, keys, dim, None));
+            return (ModePieces(pieces), None);
+        }
+        if let Some(keys) = state.picked_keys {
+            for key in keys.split(" · ") {
+                pieces.push(ModePiece::Words {
+                    joiner: Joiner::Dot,
+                    span: Span::styled(key.to_owned(), dim),
+                    gives: None,
+                    short: short_key(key).map(|short| Span::styled(short, dim)),
+                    short_when: Give::ShortKeys,
+                });
+            }
             return (ModePieces(pieces), None);
         }
         // Esc in INSERT or VISUAL only goes back to NORMAL, so its hint waits until then.
@@ -253,6 +285,7 @@ impl BottomRow {
                 short: Some(self.short_arrow_hint(ctx, state.pinned_questions)),
                 span: arrow,
                 gives: None,
+                short_when: Give::ShortPieces,
             });
         }
         if state.panel {
@@ -333,6 +366,18 @@ impl BottomRow {
             theme.style(Role::Dim),
         )
     }
+}
+
+/// A picked message's or task's key in fewer words, for a narrow line: `↑ ↓  to pick`,
+/// `enter to open`, `esc to go back`. `None` for a key with no shorter way to say it.
+fn short_key(key: &str) -> Option<String> {
+    if let Some(pick) = key.strip_suffix(" another") {
+        return Some(pick.to_owned());
+    }
+    if key.starts_with("enter to open ") {
+        return Some("enter to open".to_owned());
+    }
+    key.strip_suffix(" to the input").map(str::to_owned)
 }
 
 #[cfg(test)]

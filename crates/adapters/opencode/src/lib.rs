@@ -14,9 +14,10 @@ mod sessions;
 mod test_script;
 mod user_config;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use argonauts_core::adapter::IdentityMarks;
 use argonauts_core::confine::Confine;
 use argonauts_core::keywords::Keyword;
 use argonauts_core::{
@@ -74,12 +75,46 @@ impl OpenCodeAdapter {
 }
 
 impl Adapter for OpenCodeAdapter {
+    fn first_count(&self) -> Option<argonauts_core::events::context::FirstCount> {
+        Some(argonauts_core::events::context::FirstCount::Step)
+    }
+
     fn id(&self) -> &'static str {
         ID
     }
 
     fn display_name(&self) -> &'static str {
         "OpenCode"
+    }
+
+    /// OpenCode reads the project's AGENTS.md as its rules, `run` too.
+    fn instruction_files(&self, workdir: &Path, _isolated: bool) -> Vec<String> {
+        argonauts_core::adapter::agents_md(workdir)
+    }
+
+    /// The tools its events name and its home folder.
+    fn identity_marks(&self) -> IdentityMarks {
+        IdentityMarks {
+            tool_names: &[
+                "bash",
+                "execute",
+                "read",
+                "edit",
+                "write",
+                "patch",
+                "glob",
+                "grep",
+                "list",
+                "todowrite",
+                "todoread",
+                "webfetch",
+                "task",
+                "question",
+            ],
+            row_marks: &[],
+            home_folders: &["~/.config/opencode"],
+            citation: None,
+        }
     }
 
     fn binary(&self) -> &'static str {
@@ -115,6 +150,10 @@ impl Adapter for OpenCodeAdapter {
         command::config_query(req, &self.local_urls)
     }
 
+    fn lists_sessions(&self) -> bool {
+        true
+    }
+
     /// From `opencode session list` on a private server, in this folder's project.
     fn cli_sessions(
         &self,
@@ -137,6 +176,26 @@ impl Adapter for OpenCodeAdapter {
     fn interactive_resume(&self, req: &SessionRequest) -> Option<CommandSpec> {
         let config_files = user_config::config_files(&req.workdir, |name| std::env::var(name).ok());
         command::take_over(req, &config_files, &self.local_urls)
+    }
+
+    /// `opencode -s <id>` in the repo. Take-over's own flags keep its server private, which
+    /// OpenCode's screen opened by hand doesn't need.
+    fn resume_command(
+        &self,
+        req: &SessionRequest,
+    ) -> Option<argonauts_core::cli_sessions::ResumeCommand> {
+        let id = req
+            .resume_session
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| argonauts_core::cli_sessions::is_session_id(id))?;
+        Some(argonauts_core::cli_sessions::ResumeCommand {
+            words: vec![self.binary().to_owned(), "-s".to_owned(), id.to_owned()],
+            local_model: false,
+            from_any_folder: false,
+            also: argonauts_core::cli_sessions::resume_facts::OPENCODE_LISTS_IT
+                .then(|| "pick it in OpenCode's own list".to_owned()),
+        })
     }
 
     fn keywords(&self) -> &'static [Keyword] {
@@ -232,6 +291,26 @@ mod tests {
     }
 
     #[test]
+    fn its_own_screen_carries_a_session_on_by_its_id() {
+        let req = SessionRequest::reopening("ses_abc123", std::path::Path::new("/work/repo"));
+        let typed = OpenCodeAdapter::new().resume_command(&req).unwrap();
+        assert_eq!(typed.words, ["opencode", "-s", "ses_abc123"]);
+        assert!(!typed.from_any_folder);
+        let flag = SessionRequest::reopening("--continue", std::path::Path::new("/work/repo"));
+        assert!(OpenCodeAdapter::new().resume_command(&flag).is_none());
+    }
+
+    #[test]
+    fn opencode_loads_agents_md_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = OpenCodeAdapter::new();
+        assert!(adapter.instruction_files(dir.path(), false).is_empty());
+        std::fs::write(dir.path().join("AGENTS.md"), "x").unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "x").unwrap();
+        assert_eq!(adapter.instruction_files(dir.path(), true), ["AGENTS.md"]);
+    }
+
+    #[test]
     fn read_only_is_left_to_the_worktree() {
         let adapter = OpenCodeAdapter::new();
         assert_eq!(adapter.id(), "opencode");
@@ -248,5 +327,60 @@ mod tests {
             adapter.parse_version("opencode 1.18.33").as_deref(),
             Some("1.18.33")
         );
+    }
+}
+
+/// Every tool its recorded output names is one of its marks, so a relayed message never names
+/// one in its own words.
+#[cfg(test)]
+mod identity_tests {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use argonauts_core::Adapter;
+
+    use super::*;
+
+    const AFTER: &str = r#""type":"tool_use""#;
+    const THEN: &str = r#""tool":""#;
+
+    /// The names that follow `after` in every recorded fixture, up to the next quote.
+    fn recorded(after: &str, then: &str) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        let mut dirs = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for piece in text.split(after).skip(1) {
+                    let Some(at) = piece.find(then).filter(|at| *at < 160) else {
+                        continue;
+                    };
+                    if let Some(name) = piece[at + then.len()..].split('"').next() {
+                        names.insert(name.to_owned());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn every_tool_its_output_names_is_one_of_its_marks() {
+        let marks = OpenCodeAdapter::new().identity_marks();
+        let recorded = recorded(AFTER, THEN);
+        assert!(!recorded.is_empty(), "the fixtures name tools");
+        let unmarked: Vec<&String> = recorded
+            .iter()
+            .filter(|name| !name.starts_with("mcp__") && !marks.tool_names.contains(&name.as_str()))
+            .collect();
+        assert!(unmarked.is_empty(), "{unmarked:?}");
+        assert!(!marks.home_folders.is_empty());
     }
 }

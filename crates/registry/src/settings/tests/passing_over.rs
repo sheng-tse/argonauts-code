@@ -135,7 +135,7 @@ fn a_workflow_with_no_such_name_runs_the_default_one_with_one_notice() {
     let repo = Repo::new();
     repo.project("workflow = \"no-such-workflow\"\n");
     let resolved = resolve(&repo.forgiving()).unwrap();
-    assert_eq!(resolved.settings.workflow, "captain");
+    assert_eq!(resolved.settings.workflow, "council");
     let named: Vec<&SettingsWarning> = resolved
         .warnings
         .iter()

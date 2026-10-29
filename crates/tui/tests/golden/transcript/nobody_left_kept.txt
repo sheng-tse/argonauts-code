@@ -1,0 +1,2 @@
+● Autopilot answered "Merge this run into main?" with "Keep the branch" instead of asking you, since nobody but its
+  builder is left to review task-001.

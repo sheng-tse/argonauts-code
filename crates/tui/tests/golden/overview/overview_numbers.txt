@@ -1,8 +1,10 @@
-Tokens                                       Days                                   Sessions
+Tokens                                          Days                                   Sessions
 
-Claude Code     60.6b     as /stats counts   active       122       of 147          sessions     384       
-Argonauts Code  69.1b     + workflow agents  streak       20 days   longest 41      longest      57d 23h   
-API value       ~$32,540                     busiest      Aug 28    peak 9pm        favourite    Opus 5.5  61%
+Claude Code      60.6b     as /stats counts     Active       122       of 147          Sessions     384
+Argonauts Code   69.1b     + workflow agents    Streak       20 days   longest 41      Longest      57d 23h
+API value        ~$32,540                       Busiest      Aug 28    peak 9pm        Favorite     Opus 5.5  61%
 
-by kind  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   by CLI  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-         ■ cache read 97%  ■ write 2%  ■ output <1%  ■ input <1%                ■ Claude 88%  ■ Codex 12%  ■ agy <1%
+By kind    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    By CLI   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+           ▌ Cache read    97%      ▌ Write     2%                    ▌ ◧◨ Claude Code    88%      ▌ ◧◨ Codex    12%
+           ▌ Output        <1%      ▌ Input    <1%                    ▌ ◧◨ agy            <1%

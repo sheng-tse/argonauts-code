@@ -1,0 +1,38 @@
+▐1 Opus 5.5 · 1 · keeps the notes · in the council Rate limit the API                  12 turns · 1m 58s · 18.9k tokens 
+   Claude Code session 1a2b3c4d · carry it on in Claude Code with claude --resume 1a2b3c4d-6e7f-4a8b-9c0d-1e2f3a4b5c6d  
+   Only you see this key: Seat D is this seat · K is ▐2 Opus 5.5 · 2 · M is ▐▌ 5.6 Luna · W is ▐▌ 3.8 Flash             
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+❯ From the council · The user: Add rate limiting to the public API, so one noisy client can't slow down everyone else   
+⏺ A token bucket per API key, in Redis, with limits from the key's plan. The middleware sits after auth.                
+  … +11 lines (ctrl+o to expand)                                                                                        
+                                                                                                                        
+❯ From the council · First answers from Seat M, Seat W and Seat K, in an order drawn for you. Your move: write the      
+  notes.                                                                                                                
+⏺ Notes · 6 points from 4 answers: 3 agreed, 3 open                                                                     
+  … +8 lines (ctrl+o to expand)                                                                                         
+                                                                                                                        
+❯ From the council · Seat K, replying to you ("A token bucket per API key, in Redis"): A bucket needs a burst size, and 
+  nobody here has picked one. A window counter is one INCR and one EXPIRE. I ran both with [hidden]'s shell tool: the   
+  bucket's Lua script takes 0.4 ms a call, the counter 0.2 ms. Your move: react with a stance on each point it touches. 
+⏺ ✘  4: a window counter lets a client send twice its limit at a window's edge                                          
+                                                                                                                        
+❯ From the user, privately: Our biggest customer sends 500 calls at once at the top of each hour. Does the     10:44 AM 
+  burst cover that?                                                                                                     
+⏺ Yes: the pro plan's limit is 600, so a burst at the plan's limit covers 500 at once. In the council I'll argue from   
+  the plan, not from what you told me.                                                                                  
+                                                                                                                        
+❯ From the council · Tapbacks on Seat K's message: Seat M ✘  · Seat W ✘  · yours ✘  · Your move: write your message.    
+⏺ The burst is the key's plan limit, so there is nothing new to pick. And 0.2 ms saved doesn't pay for a client sending 
+  twice its limit at a window's edge: test/edge.test.ts fails with the counter and passes with the bucket. @Seat M,     
+  does your script take the burst from the plan?                                                                        
+                                                                                                                        
+❯ From the council · Tapbacks on your message: Seat K ✔  · Seat M ✔  · Seat W ✔                                         
+❯ From the council · Point 4 agreed: a token bucket · 4 of 6 points agreed · Seat M is writing. Your move: nothing yet. 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+──────────────────────────────────────────────────────────────────────────────────────────── ▐1 Opus 5.5 · 1 · private ─
+❯ Only Opus 5.5 · 1 sees what you write here · it reads seat names as its own letters                                   
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  esc to go back to the talk · o to carry it on in Claude Code · ↑  to pick a message, s to share it with the council   

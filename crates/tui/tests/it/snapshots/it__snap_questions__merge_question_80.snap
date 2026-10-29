@@ -1,5 +1,5 @@
 ---
-source: crates/tui/tests/snap_questions.rs
+source: crates/tui/tests/it/snap_questions.rs
 expression: text(&lines)
 ---
 ● Merge the run into main
@@ -23,5 +23,7 @@ expression: text(&lines)
     4. Keep the branch
     5. Abandon the run
     6. Show the diff
+    7. Carry on without me
+       This part ends safely with its work kept, so nothing merges without you
 
-  Enter to choose · Tab to add a note · Esc to carry on without me
+  Enter to choose · Tab to add a note · Esc back to the list

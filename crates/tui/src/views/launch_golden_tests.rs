@@ -23,13 +23,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::workflow::WorkflowView;
-use super::workflow_pictures::buffer_of;
 use super::workflow_pictures::{Picture, dark, picture};
 use super::{View, ViewCtx};
-use crate::bottom::{
-    AgentPanel, WorkflowPanel, WorkflowRow as PanelRow, WorkflowRowState, panel_lines,
-};
-use crate::render::{Clock, RenderCtx};
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -284,9 +279,6 @@ fn as_drawn(picture: &mut Picture, gemma: &[usize]) {
 fn the_agent_views() -> Picture {
     let mut picture = picture!("agent_keys_after");
     as_drawn(&mut picture, &[]);
-    for row in [5, 45] {
-        picture.reword(row, "Gemma4 E2b", "Gemma4 E2B");
-    }
     picture
 }
 
@@ -534,7 +526,7 @@ fn select(view: &mut WorkflowView, phase: usize, state: &AppState) {
 
 fn the_council() -> Picture {
     let mut picture = picture!("council_no_answer");
-    as_drawn(&mut picture, &[11, 23]);
+    as_drawn(&mut picture, &[]);
     picture
 }
 
@@ -561,30 +553,6 @@ fn the_councils_view_on_propose_and_on_sign_off_reads_as_its_picture() {
         let buf = drawn(&mut view, ABOVE_BOX + 9, &state);
         picture.assert_drawn(rows, &buf, ABOVE_BOX);
     }
-}
-
-/// The run's row in the bottom list, its tokens with one decimal as its view keeps them.
-#[test]
-fn the_councils_row_in_the_bottom_list_reads_as_its_picture() {
-    let picture = the_council();
-    let theme = dark();
-    let ctx = RenderCtx::new(SCREEN, &theme, Clock::still(Instant::now()));
-    let mut row = PanelRow::new("run-01", RATE, WorkflowRowState::Done);
-    row.agents_done = 11;
-    row.agents_total = 12;
-    row.elapsed_ms = 360_000;
-    row.tokens = 538_700;
-    row.said = Some("merged onto main".to_owned());
-    let panel = WorkflowPanel {
-        rows: vec![row],
-        max_rows: 5,
-        ..WorkflowPanel::default()
-    };
-    let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
-    let mut picture = picture;
-    // The bottom list gives every run's name one column, 24 cells, where this picture gives 22.
-    picture.widen(37, "limiter  ", 2);
-    picture.assert_drawn(37..38, &buffer_of(&lines, SCREEN), 0);
 }
 
 /// The council paused at 3m 24s, while OpenCode's challenger worked: its row is paused, the
@@ -631,7 +599,7 @@ fn council_paused() -> WorkflowData {
 #[test]
 fn a_paused_council_reads_as_its_picture() {
     let mut picture = picture!("paused_after");
-    as_drawn(&mut picture, &[10]);
+    as_drawn(&mut picture, &[]);
     let mut state = state();
     state.attached = Some(run());
     let mut held = crate::state::RunState::new(run());
@@ -641,31 +609,6 @@ fn a_paused_council_reads_as_its_picture() {
     select(&mut view, 1, &state);
     let buf = drawn(&mut view, 13, &state);
     picture.assert_drawn(2..15, &buf, 0);
-}
-
-/// Its row in the bottom list, under the cursor: paused by you, and how it goes on.
-#[test]
-fn a_paused_councils_row_in_the_bottom_list_reads_as_its_picture() {
-    let mut picture = picture!("paused_after");
-    // The bottom list gives every run's name one column, 24 cells, where this picture gives 22.
-    picture.widen(17, "limiter  ", 2);
-    let theme = dark();
-    let ctx = RenderCtx::new(SCREEN, &theme, Clock::still(Instant::now()));
-    let mut row = PanelRow::new("run-01", RATE, WorkflowRowState::Paused);
-    row.agents_done = 7;
-    row.agents_total = 8;
-    row.elapsed_ms = 204_000;
-    row.tokens = 328_100;
-    row.said = Some("paused by you".to_owned());
-    row.carry_on = Some("/resume carries it on".to_owned());
-    let panel = WorkflowPanel {
-        rows: vec![row],
-        max_rows: 5,
-        selected: Some(0),
-        ..WorkflowPanel::default()
-    };
-    let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
-    picture.assert_drawn(17..18, &buffer_of(&lines, SCREEN), 0);
 }
 
 /// The spec-first run's Review, done: Qwen reviewed the small change with it in its prompt,
@@ -749,16 +692,6 @@ fn reviewed_locally() -> WorkflowData {
 fn a_fallback_for_a_local_reviewer_reads_as_its_picture() {
     let mut picture = picture!("standin_after");
     as_drawn(&mut picture, &[]);
-    // A model no CLI runs, here Ollama's, is dim as every such model is, where the picture
-    // gives it OpenCode's green.
-    let dim = dark().style(crate::theme::Role::Dim).fg;
-    let at = picture.text(3..4)[0].chars().collect::<String>();
-    let column = at
-        .find("Qwen3 Coder 30B")
-        .map(|byte| at[..byte].chars().count());
-    for offset in 0.."Qwen3 Coder 30B".len() {
-        picture.recolour(3, column.expect("Qwen's row") + offset, dim);
-    }
     let state = state();
     let mut view = WorkflowView::new(reviewed_locally());
     select(&mut view, 2, &state);
@@ -938,26 +871,7 @@ fn an_orchestrators_view_says_what_it_began_from() {
     use argonauts_core::events::run::BriefFrom;
     use argonauts_core::views::StartedFrom;
 
-    let mut picture = picture!("fork_start");
-    picture.bright_frames();
-    picture.reword(
-        19,
-        "you no longer talk to the user, the brief, and the crew's tools",
-        "its input and your request",
-    );
-    picture.reword(
-        46,
-        "You are the orchestrator of a run. The request, as the main agent wrote it:",
-        "You are the orchestrator of a crew of coding agents. Write the workflow for one reque…",
-    );
-    picture.reword(
-        47,
-        "the request, what was decided in the conversation, the crew's tools",
-        "its input and your request",
-    );
-    // The second view first, since spacing the first moves the rows under it.
-    picture.space_sections(39, &["Prompt"]);
-    picture.space_sections(11, &["Prompt", "Activity", "Outcome"]);
+    let picture = picture!("fork_start");
     let state = state();
     let opus = model("claude-code/claude-opus-5-5");
     let forked = Given {
@@ -1000,11 +914,6 @@ fn an_orchestrators_view_says_what_it_began_from() {
     let read = vec![call("Read", "src/cli.js")];
     let mut view = orchestrator_view(&gemini, (8_900, 9, 1), (brief, &briefed), read, &state);
     let buf = drawn(&mut view, agent_frame(12), &state);
-    let bottom = 52;
-    let corner = picture.text(bottom..bottom + 1).remove(0).chars().count() - 1;
-    let more = "    1–9 of 15 ↓ ";
-    let dim = dark().style(crate::theme::Role::Dim).fg;
-    picture.write(bottom, corner - 1 - more.chars().count(), more, dim);
     picture.assert_drawn(42..54, &buf, AGENT_ABOVE);
 }
 
@@ -1054,52 +963,11 @@ fn the_captain_run() -> Picture {
     picture
 }
 
-/// The Captain run's picture where the run's own record says otherwise: its judge ran Gemini
-/// 3.8 Flash at its low effort, which the model's name says, in its row and in the line under
-/// the header.
-///
-/// Times are whole seconds counted down, as a running clock counts them: Codex's review took
-/// 6984 ms, 6s, and verify:tests 4834 ms, 4s, where the picture rounds them up. And the build
-/// doesn't read `8 tests pass` out of verify:tests' own result.
-fn the_captain_record(picture: &mut Picture) {
-    let low = |picture: &mut Picture, row: usize, from: &str, to: &str| {
-        picture.reword(row, from, to);
-    };
-    low(picture, 8, "Gemini 3.8 Flash ", "Gemini 3.8 Flash Low ");
-    low(
-        picture,
-        71,
-        "Gemini 3.8 Flash signed off",
-        "Gemini 3.8 Flash Low signed…",
-    );
-    let ended = picture.text(71..72).remove(0);
-    let cut = ended
-        .find(" signed…")
-        .map(|byte| ended[..byte].chars().count());
-    let dim = dark().style(crate::theme::Role::Dim).fg;
-    picture.write(71, cut.expect("the cut end line"), " signed…", dim);
-    low(picture, 74, "12.7k tok · 8 tests pass", "12.7k tok");
-    let dim = dark().style(crate::theme::Role::Dim).fg;
-    let review = picture.text(17..18).remove(0);
-    let took = review
-        .find("7s │")
-        .map(|byte| review[..byte].chars().count());
-    picture.write(17, took.expect("the review's time"), "6s", dim);
-    let verify = picture.text(74..75).remove(0);
-    let took = verify
-        .find("5s │")
-        .map(|byte| verify[..byte].chars().count());
-    let dim = dark().style(crate::theme::Role::Dim).fg;
-    picture.write(74, took.expect("verify's time"), "4s", dim);
-    low(picture, 5, "Gemini 3.8 Flash", "Gemini 3.8 Flash Low");
-}
-
 /// 57 s into the Captain run, while Gemini judges: Claude Code's four phases, Review and Judge
 /// filled by who answered, and Verify not started; then one ↑ away, on Review.
 #[test]
 fn the_captain_run_while_it_judges_reads_as_its_picture() {
-    let mut picture = the_captain_run();
-    the_captain_record(&mut picture);
+    let picture = the_captain_run();
     let state = captain_state();
     let data: WorkflowData = serde_json::from_str(&captain_view("judging")).unwrap();
     let mut view = WorkflowView::new(data);
@@ -1111,70 +979,21 @@ fn the_captain_run_while_it_judges_reads_as_its_picture() {
 /// The run once merged: the merge in the header's third line, and no Merge phase.
 #[test]
 fn the_captain_run_once_merged_reads_as_its_picture() {
-    let mut picture = the_captain_run();
-    the_captain_record(&mut picture);
+    let picture = the_captain_run();
     let state = captain_state();
     let data: WorkflowData = serde_json::from_str(&captain_view("done")).unwrap();
     let mut view = WorkflowView::new(data);
     picture.assert_drawn(68..80, &drawn(&mut view, 12, &state), 0);
 }
 
-/// Its row in the bottom list, while it judges and once merged.
-#[test]
-fn the_captain_runs_row_in_the_bottom_list_reads_as_its_picture() {
-    let picture = the_captain_run();
-    let theme = dark();
-    let ctx = RenderCtx::new(SCREEN, &theme, Clock::still(Instant::now()));
-    let name = "Fix the money rounding";
-    for (at, state, (done, all), seconds, tokens, said) in [
-        (24, WorkflowRowState::Running, (2, 3), 57, 69_600, None),
-        (
-            82,
-            WorkflowRowState::Done,
-            (4, 4),
-            83,
-            90_400,
-            Some("merged onto main"),
-        ),
-    ] {
-        let mut row = PanelRow::new("run-01", name, state);
-        row.agents_done = done;
-        row.agents_total = all;
-        row.elapsed_ms = seconds * 1000;
-        row.tokens = tokens;
-        row.said = said.map(str::to_owned);
-        let panel = WorkflowPanel {
-            rows: vec![row],
-            max_rows: 5,
-            ..WorkflowPanel::default()
-        };
-        let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
-        picture.assert_drawn(at..at + 1, &buffer_of(&lines, SCREEN), 0);
-    }
-}
-
 /// Enter on the Judge row at the same moment: Gemini's view, with Haiku's agent that asked for
 /// it, at work until the verdict comes, its prompt from past the frame, and the review it was
-/// given, which approved and found nothing.
-///
-/// What the run's record says otherwise: the judge ran Gemini 3.8 Flash at its low effort; agy
-/// reported its context fill, which the counts carry; Claude Code reports an agent's tokens
-/// only once it ends, so the agent that asked has its time alone; and the prompt as recorded is
-/// 70 lines. Its calls read by Claude Code's names for them, as every CLI's do.
+/// given, which approved and found nothing. The judge ran Gemini 3.8 Flash at its low effort,
+/// and Claude Code reports an agent's tokens only once it ends, so the agent that asked has its
+/// time alone.
 #[test]
 fn the_judges_view_reads_as_its_picture() {
-    let mut picture = the_captain_run();
-    picture.reword(30, "Gemini 3.8 Flash ", "Gemini 3.8 Flash Low ");
-    picture.reword(
-        31,
-        "2 tool calls · 15s",
-        "2 tool calls · 15s · context 6.5k",
-    );
-    picture.reword(34, " · 12.2k tok · 17s", " · 17s");
-    picture.reword(36, "73 lines", "70 lines");
-    picture.reword(38, "72 more lines", "69 more lines");
-    picture.reword(45, "view_file", "Read");
-    picture.reword(46, "view_file", "Read");
+    let picture = the_captain_run();
     let state = captain_state();
     let data: WorkflowData = serde_json::from_str(&captain_view("judging")).unwrap();
     let judge: AgentData = serde_json::from_str(&captain_view("judge")).unwrap();

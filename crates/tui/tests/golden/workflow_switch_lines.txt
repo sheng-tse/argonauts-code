@@ -1,0 +1,14 @@
+❯ /council
+  ⎿  Switched to Council · everywhere (~/.argonauts/config.toml) · was Captain
+
+❯ /council
+  ⎿  Switched to Council · just you (.argonauts/config.local.toml), since the team's file sets the workflow
+
+❯ /council
+  ⎿  Switched to Council · everywhere (~/.argonauts/config.toml) · was Captain · applies at the next request
+
+❯ /council --session
+  ⎿  Switched to Council · this session · was Captain
+
+❯ /council
+  ⎿  Council is the workflow already · Opus 5.5, GPT 5.6 and Gemini 3.6 propose

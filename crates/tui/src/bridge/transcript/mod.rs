@@ -9,6 +9,8 @@ mod autopilot_picture_tests;
 #[cfg(test)]
 mod awake_picture_tests;
 mod checks;
+#[cfg(test)]
+mod checks_picked_tests;
 mod conversation;
 #[cfg(test)]
 mod crew_start_tests;
@@ -19,6 +21,8 @@ mod lifecycle;
 mod live_pictures_tests;
 #[cfg(test)]
 mod live_rows_tests;
+#[cfg(test)]
+mod made_in_cli_picture_tests;
 mod milestones;
 pub(crate) mod own_calls;
 #[cfg(test)]
@@ -42,6 +46,8 @@ mod templates_picture_tests;
 #[cfg(test)]
 mod tests;
 mod tries;
+#[cfg(test)]
+mod update_failed_picture_tests;
 mod workflows;
 #[cfg(test)]
 mod working_line_picture_tests;
@@ -110,6 +116,7 @@ impl Transcript {
             AppEvent::ConversationResumed { turns, .. } => {
                 replay::conversation_resumed(turns, cx);
             }
+            AppEvent::TurnsMadeInCli { said, turns } => replay::made_in_cli(said, turns, cx),
             AppEvent::Report { title, lines } => self.items.report(title, lines, cx),
             AppEvent::ReportSoFar { title, lines } => {
                 self.items.report_so_far(title, lines, cx);
@@ -150,8 +157,22 @@ impl Transcript {
                 scope,
                 previous,
                 reset,
-            } => items::setting_changed(key, value, *scope, previous.as_deref(), *reset, cx),
+                why,
+                kept,
+            } => items::setting_changed(
+                items::Changed {
+                    key,
+                    value,
+                    scope: *scope,
+                    previous: previous.as_deref(),
+                    reset: *reset,
+                    why: why.as_deref(),
+                    kept: *kept,
+                },
+                cx,
+            ),
             AppEvent::SettingRefused { key, why } => items::setting_refused(key, why, cx),
+            AppEvent::CommandReplied { reply } => items::command_replied(reply, cx),
             AppEvent::Notice { level, text } => self.items.notice(*level, text, cx),
             AppEvent::CrewForRequest { rows } => items::crew_for_request(rows, cx),
             AppEvent::Narrator { line } => items::narrator(line, cx),

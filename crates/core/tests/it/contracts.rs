@@ -155,7 +155,8 @@ fn every_event_kind() -> Vec<Value> {
             json!({"event": "opened", "id": "approval-003", "kind": kind,
             "title": "Approval · run-01", "task": "task-002", "packet": packet,
             "evidence_sha256": "e3b0", "mode": "supervised", "decide_with": "rules",
-            "options": options, "free_text": free_text, "needs_you": true}),
+            "when_declined": "decide", "options": options, "free_text": free_text,
+            "needs_you": true}),
         )
     };
     let option = |key: &str, label: &str, action: Value| json!({"key": key, "label": label, "action": action, "recommended": false, "detail": null});
@@ -1059,6 +1060,24 @@ fn narrator_line() -> Value {
     json!({"ts": "2026-09-29T12:00:00Z", "run": "run-01",
            "kind": {"kind": "answer", "question": "why Redis?"},
            "text": "Counters survive restarts.", "model": "ollama/qwen3", "spend": spend()})
+}
+
+/// An approval recorded before it said what Carry on without me does reads as `decide`, which
+/// was the only behavior then.
+#[test]
+fn an_older_approval_reads_as_deciding_when_declined() {
+    use argonauts_core::events::approval::ApprovalOpened;
+    use argonauts_core::settings::asking::WhenDeclined;
+
+    let opened: ApprovalOpened = serde_json::from_value(json!({"id": "approval-003",
+        "kind": "stuck", "title": "Redis store is stuck", "task": "task-002",
+        "packet": {"kind": "stuck", "task": "task-002", "title": "Redis store",
+                   "state": "needs_you", "tries": ["codex: checks failed"],
+                   "last_failure": "tests failed"},
+        "evidence_sha256": "e3b0", "mode": "supervised", "decide_with": "rules",
+        "options": [], "free_text": "none", "needs_you": true}))
+    .unwrap();
+    assert_eq!(opened.when_declined, WhenDeclined::Decide);
 }
 
 /// A welcome from an app that predates the header's agent and effort still reads.

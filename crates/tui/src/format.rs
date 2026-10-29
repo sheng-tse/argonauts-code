@@ -8,13 +8,16 @@ use argonauts_core::display_names::DisplayNames;
 use time::{OffsetDateTime, UtcOffset};
 
 mod clock;
+pub mod figures;
 mod numbers;
 mod resets;
 
 pub use clock::{on_24_hours, set_clock, twenty_four_hours};
+pub use figures::Figures;
 pub use numbers::{
     Formats, PlanUsageWords, TokenUnit, UNKNOWN, duration_slot, multiplier, percent, plan_usage,
-    stale, tokens, tokens_as, tokens_as_claude_code, tokens_beside, tokens_of_window, window,
+    stale, tokens, tokens_as, tokens_as_claude_code, tokens_beside, tokens_in_tenths,
+    tokens_of_window, window,
 };
 pub use resets::{ClockStyle, ResetStyle, countdown, reset_time, resets};
 

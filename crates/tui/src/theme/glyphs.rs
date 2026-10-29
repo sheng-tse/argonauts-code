@@ -94,7 +94,7 @@ impl Glyphs {
         quote: "▎",
         tree_mid: "├",
         tree_end: "└",
-        hunk_gap: "⋮",
+        hunk_gap: "…",
         ready: "✓",
         not_ready: "✗",
         checkbox_off: "☐",

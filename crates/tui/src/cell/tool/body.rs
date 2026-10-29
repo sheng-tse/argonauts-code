@@ -506,7 +506,8 @@ fn todo_look(state: TodoState, theme: &Theme) -> (&'static str, Style, Style) {
     }
 }
 
-/// A path like `src/app.rs` or `/tmp/x/y` is not a command.
+/// A command takes the code colour with the numbers and flags right after it, its arguments:
+/// `/issue 42 --all-comments`. A path like `src/app.rs` or `/tmp/x/y` is not a command.
 fn slash_commands(text: &str, style: Style, code: Style) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut push = |piece: &str, style: Style| {
@@ -519,22 +520,37 @@ fn slash_commands(text: &str, style: Style, code: Style) -> Vec<Span<'static>> {
         }
     };
     let mut rest = text;
+    // Whether the last word was a command or one of its arguments, with nothing after it.
+    let mut in_command = false;
     while !rest.is_empty() {
-        let word_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-        let (word, after) = rest.split_at(word_end);
-        match command_in(word) {
-            Some((start, end)) => {
+        let space_end = rest
+            .find(|c: char| !c.is_whitespace())
+            .unwrap_or(rest.len());
+        let (space, after_space) = rest.split_at(space_end);
+        let word_end = after_space
+            .find(char::is_whitespace)
+            .unwrap_or(after_space.len());
+        let (word, after) = after_space.split_at(word_end);
+        let found = match argument_in(word).filter(|_| in_command) {
+            Some(end) => Some((0, end, space)),
+            None => command_in(word).map(|(start, end)| (start, end, "")),
+        };
+        match found {
+            Some((start, end, joined)) => {
+                push(&space[..space.len() - joined.len()], style);
+                push(joined, code);
                 push(&word[..start], style);
                 push(&word[start..end], code);
                 push(&word[end..], style);
+                in_command = end == word.len();
             }
-            None => push(word, style),
+            None => {
+                push(space, style);
+                push(word, style);
+                in_command = false;
+            }
         }
-        let space_end = after
-            .find(|c: char| !c.is_whitespace())
-            .unwrap_or(after.len());
-        push(&after[..space_end], style);
-        rest = &after[space_end..];
+        rest = after;
     }
     if spans.is_empty() {
         spans.push(Span::styled(String::new(), style));
@@ -559,6 +575,21 @@ fn command_in(word: &str) -> Option<(usize, usize)> {
     plain.then_some((start, start + core.len()))
 }
 
+/// Where a command's argument ends inside one word, before any closing punctuation: a number
+/// such as `42`, or a flag such as `--all-comments`.
+fn argument_in(word: &str) -> Option<usize> {
+    let core = word.trim_end_matches([')', ']', ',', '.', ':', ';']);
+    let number = !core.is_empty() && core.chars().all(|c| c.is_ascii_digit());
+    let flag = core
+        .trim_start_matches('-')
+        .starts_with(|c: char| c.is_ascii_alphabetic())
+        && core.starts_with('-')
+        && core
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=');
+    (number || flag).then_some(core.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +612,27 @@ mod tests {
                 (" to monitor (".to_owned(), false),
                 ("/config".to_owned(), true),
                 (")".to_owned(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_commands_numbers_and_flags_take_its_colour() {
+        assert_eq!(
+            pieces("comments by others (/issue 42 --all-comments reads them) · 3 left"),
+            [
+                ("comments by others (".to_owned(), false),
+                ("/issue 42 --all-comments".to_owned(), true),
+                (" reads them) · 3 left".to_owned(), false),
+            ]
+        );
+        assert_eq!(
+            pieces("/workflows to monitor, /resume 2."),
+            [
+                ("/workflows".to_owned(), true),
+                (" to monitor, ".to_owned(), false),
+                ("/resume 2".to_owned(), true),
+                (".".to_owned(), false),
             ]
         );
     }

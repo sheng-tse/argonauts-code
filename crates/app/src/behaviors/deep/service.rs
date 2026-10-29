@@ -1,4 +1,4 @@
-//! The deeper map as the Behaviors tab and `argonauts behaviors --deep` use it: what `d` asks,
+//! Summaries as the Behaviors tab and `argonauts behaviors --summaries` use them: what `d` asks,
 //! the kept map, and an update with the answers. Only an update calls a model.
 
 use std::path::PathBuf;
@@ -33,7 +33,7 @@ use super::update::{Before, Deep, EmbedWith, before};
 use crate::host::clis::RepoModels;
 use crate::host::services::{SettingsSource, directory};
 
-/// The deeper map for your settings, over every project's records.
+/// Summaries for your settings, over every project's records.
 pub struct DeepMaps {
     paths: Paths,
     settings: Settings,
@@ -230,7 +230,7 @@ impl DeepMaps {
             && !start.redo
         {
             anyhow::bail!(
-                "the deeper map's {actions} actions were summarized by {made_by}; summarizing \
+                "Summaries of {actions} actions were written by {made_by}; summarizing \
                  them again with {} asks first",
                 chosen.name
             );
@@ -435,7 +435,7 @@ impl DeepMaps {
     }
 }
 
-/// What happened to the deeper map after a run.
+/// What happened to Summaries after a run.
 #[derive(Debug)]
 pub(crate) enum AfterRun {
     /// Nothing: the setting is off, there's no map, or its summarizer isn't on this machine.

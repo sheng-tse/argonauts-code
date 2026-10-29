@@ -365,16 +365,16 @@ fn a_finished_session_folds_into_one_line() {
     let theme = theme();
     let mut session = session();
     session.finish(true);
-    let summary = session.summarized(Some("18.1k tokens · 4m 12s"));
+    let summary = session.summarized_with("18.1k tokens · 4m 12s", Some("report ✓"));
     assert_eq!(
         text(&summary.lines(&ctx(&theme, 80))),
-        "● Opus 5.5 on Claude Code · worker · task-002 (Add the JSON writer)\n  ⎿  Done · 4 tool uses · 18.1k tokens · 4m 12s"
+        "● Opus 5.5 on Claude Code · worker · task-002 (Add the JSON writer)\n  ⎿  Done (4 tool uses · 18.1k tokens · 4m 12s) · report ✓"
     );
     let failed = ToolCall::described(ToolKind::Agent, "x")
         .with_state(ToolState::Failed)
         .with_item(ToolItem::Call(ToolCall::call(ToolKind::Other, "A", "")))
         .summarized(None);
-    assert_eq!(failed.body, vec![ToolItem::text("Failed · 1 tool use")]);
+    assert_eq!(failed.body, vec![ToolItem::text("Failed (1 tool use)")]);
 }
 
 #[test]
@@ -565,10 +565,10 @@ fn a_summarized_session_prints_one_line_and_shows_whole_in_the_overlay() {
     .with_stamp("10:58 AM codex/gpt-5.6")
     .with_item(ToolItem::text("Read src/cli.rs (96 lines)"))
     .with_state(ToolState::Done);
-    let summary = session.summarized(Some("12.9k tokens · 3m 41s"));
+    let summary = session.summarized_with("12.9k tokens · 3m 41s", None);
     assert_eq!(
         text(&summary.lines(&ctx(&theme, 80))),
-        "● GPT-5.6 on Codex · worker · task-003 (Wire --json into the CLI)\n  ⎿  Done · 0 tool uses · 12.9k tokens · 3m 41s"
+        "● GPT-5.6 on Codex · worker · task-003 (Wire --json into the CLI)\n  ⎿  Done (0 tool uses · 12.9k tokens · 3m 41s)"
     );
     let overlay = ctx(&theme, 80).with_expanded(true);
     let whole = text(&summary.lines(&overlay));
@@ -577,6 +577,112 @@ fn a_summarized_session_prints_one_line_and_shows_whole_in_the_overlay() {
     let stamp = whole.lines().next().unwrap();
     assert!(stamp.ends_with("10:58 AM codex/gpt-5.6"), "{stamp:?}");
     assert_eq!(stamp.chars().count(), 73);
+}
+
+/// Who runs `model` on Codex at `place` among its models, as the bridge names them.
+fn on_codex(model: &str, place: u8) -> ModelShade {
+    ModelShade {
+        cli: Role::CliCodex,
+        place,
+        logo: argonauts_core::logos::logo_for("codex", Some("gpt-6-luna")),
+        model: Some(model.to_owned()),
+        on: "Codex".to_owned(),
+    }
+}
+
+/// A labelled agent reads as Claude Code heads its agents: the label bold with its task in
+/// parentheses, then who runs it, dim but for the model in its CLI's hue; its Done line has
+/// the counts in parentheses in Claude Code's order, then what it gave.
+#[test]
+fn a_labelled_agent_reads_as_claude_code_heads_its_agents() {
+    let theme = theme();
+    let mut call = ToolCall::agent(
+        "review:due-tests",
+        None,
+        "GPT 6 Luna on Codex",
+        "test --due",
+    )
+    .with_model(on_codex("GPT 6 Luna", 0));
+    call.finish(true);
+    let row = call.summarized_with("54.6k tokens · 21s", Some("report ✓"));
+    let lines = row.lines(&ctx(&theme, 120));
+    assert_eq!(
+        text(&lines),
+        "● review:due-tests(test --due) · GPT 6 Luna on Codex\n  ⎿  Done (0 tool uses · 54.6k tokens · 21s) · report ✓"
+    );
+    let span = |needle: &str| {
+        lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content == needle)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {needle:?} in {:?}", lines[0]))
+    };
+    assert!(
+        span("review:due-tests")
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD)
+    );
+    assert!(
+        !span("test --due")
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD)
+    );
+    assert_eq!(span("GPT 6 Luna").style.fg, theme.style(Role::CliCodex).fg);
+    assert_eq!(span(" on Codex").style.fg, theme.style(Role::Dim).fg);
+    assert_eq!(span(" · ").style.fg, theme.style(Role::Dim).fg);
+    assert_eq!(
+        row.title.plain(),
+        "review:due-tests(test --due) · GPT 6 Luna on Codex"
+    );
+
+    // A CLI's fourth model reads in the grey of the rest.
+    let fourth = ToolCall::agent("build:due-flag", None, "GPT 5.6 Terra on Codex", "")
+        .with_model(on_codex("GPT 5.6 Terra", 3));
+    let lines = fourth.lines(&ctx(&theme, 120));
+    let terra = lines[0]
+        .spans
+        .iter()
+        .find(|span| span.content == "GPT 5.6 Terra");
+    assert_eq!(
+        terra.map(|span| span.style.fg),
+        Some(theme.style(Role::CatOther).fg)
+    );
+    assert!(!text(&lines).contains('('), "{}", text(&lines));
+}
+
+/// Where the serving logo's picture draws, it stands before the model's name, which then drops
+/// its maker's word.
+#[test]
+fn a_labelled_agent_carries_the_serving_logo() {
+    let mut theme = theme();
+    theme.logo_pictures = true;
+    let call = ToolCall::agent(
+        "review:due-tests",
+        None,
+        "GPT 6 Luna on Codex",
+        "test --due",
+    )
+    .with_model(on_codex("GPT 6 Luna", 0));
+    let line = &call.lines(&ctx(&theme, 120))[0];
+    let at = line
+        .spans
+        .iter()
+        .position(|span| span.content.starts_with('\u{10EEEE}'))
+        .expect("the logo's cells");
+    let after: Vec<&str> = line.spans[at + 1..]
+        .iter()
+        .take(3)
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert_eq!(after, [" ", "6 Luna", " on Codex"]);
+    assert_eq!(line.spans[at - 1].content, " · ");
+    assert_eq!(
+        spans_width(&line.spans),
+        str_width("● review:due-tests(test --due) · ") + 2 + 1 + str_width("6 Luna on Codex")
+    );
 }
 
 #[test]

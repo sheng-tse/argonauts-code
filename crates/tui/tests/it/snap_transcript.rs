@@ -279,6 +279,9 @@ fn task_row(n: u32, title: &str, worker: ModelRef, diff: Option<DiffStat>) -> Ta
         reviews: 0,
         waiting_on_agent: None,
         item: None,
+        way: None,
+        todos: None,
+        reviewers: 0,
     }
 }
 
@@ -415,6 +418,8 @@ fn setting_changed_line() {
                 scope,
                 previous: previous.map(Into::into),
                 reset,
+                why: None,
+                kept: false,
             }
         };
         let value = text.map(|text| format!("\"{text}\""));
@@ -544,6 +549,7 @@ fn task_spec(n: u32, title: &str) -> TaskSpec {
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 

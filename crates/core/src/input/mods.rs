@@ -167,9 +167,10 @@ fn names(mods: &[ModName]) -> String {
     toml::Value::Array(words).to_string()
 }
 
-const SCOPE_FLAGS: &str = "--global, --project, or --local";
+/// The flags every command that saves a change takes, [`super::SCOPE_FLAGS`], in words.
+const SCOPE_FLAGS: &str = "--session, --local, --project, or --global";
 
-/// Takes `--global`, `--project`, or `--local` out of `words`.
+/// Takes `--session`, `--local`, `--project`, or `--global` out of `words`.
 fn take_scope(name: &str, words: &mut Vec<&str>) -> Result<Option<SettingScope>, InputError> {
     let mut scope = None;
     let mut rest = Vec::with_capacity(words.len());
@@ -178,7 +179,7 @@ fn take_scope(name: &str, words: &mut Vec<&str>) -> Result<Option<SettingScope>,
             rest.push(word);
             continue;
         }
-        let picked = SettingScope::from_flag(word)
+        let picked = super::scope_of_flag(word)
             .ok_or_else(|| bad(name, format!("{word} isn't a flag; use {SCOPE_FLAGS}")))?;
         if scope.replace(picked).is_some() {
             return Err(bad(name, format!("pick one of {SCOPE_FLAGS}")));
@@ -563,15 +564,15 @@ mod tests {
         assert_eq!(problem("/status print pin"), "use print or pin, not both");
         assert_eq!(
             problem("/status print --global"),
-            "--global, --project, or --local go with pin"
+            "--session, --local, --project, or --global go with pin"
         );
         assert_eq!(
             problem("/context pin --global --local"),
-            "pick one of --global, --project, or --local"
+            "pick one of --session, --local, --project, or --global"
         );
         assert_eq!(
             problem("/usage pin --everywhere"),
-            "--everywhere isn't a flag; use --global, --project, or --local"
+            "--everywhere isn't a flag; use --session, --local, --project, or --global"
         );
     }
 
@@ -714,7 +715,8 @@ mod tests {
         assert_eq!(parsed("/unpin checks"), file("checks", &["unpin"]));
         assert_eq!(
             problem("/mods checks --project"),
-            "checks is a file, which its page saves; --global, --project, or --local don't apply"
+            "checks is a file, which its page saves; --session, --local, --project, or --global \
+             don't apply"
         );
         // The whole band still hides and shows.
         assert_eq!(
@@ -748,7 +750,19 @@ mod tests {
         assert!(problem("/mods plan-usage sparkle").starts_with("after the mod, use a place"));
         assert_eq!(
             problem("/mods plan-usage --project"),
-            "--global, --project, or --local go with a change"
+            "--session, --local, --project, or --global go with a change"
+        );
+    }
+
+    /// The words name the same flags the settings commands take.
+    #[test]
+    fn the_flags_in_words_are_the_settings_commands_flags() {
+        for (flag, _) in super::super::SCOPE_FLAGS {
+            assert!(SCOPE_FLAGS.contains(flag), "{flag}");
+        }
+        assert_eq!(
+            SCOPE_FLAGS.matches("--").count(),
+            super::super::SCOPE_FLAGS.len()
         );
     }
 
@@ -770,6 +784,16 @@ mod tests {
                     change: ModPlaceChange::Hide { place: above }
                 },
                 scope: Some(SettingScope::ProjectLocal)
+            })
+        );
+        assert_eq!(
+            parsed("/pin context --session"),
+            Ok(SlashCommand::Mods {
+                action: ModsAction::Change {
+                    the_mod: ModName::Context,
+                    change: ModPlaceChange::Show { place: above }
+                },
+                scope: Some(SettingScope::Session)
             })
         );
         assert_eq!(problem("/pin"), "needs a mod, such as /pin context");

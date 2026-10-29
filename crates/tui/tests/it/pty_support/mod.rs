@@ -33,3 +33,18 @@ pub fn past_the_question_guard() {
         argonauts_tui::bottom::QUESTION_GUARD + std::time::Duration::from_millis(100),
     );
 }
+
+/// Picks a run's question's last row, Carry on without me, by the number it shows: whoever
+/// asked then decides and goes on.
+pub fn carry_on(driver: &mut TestDriver) {
+    let shown = driver.wait_visible(r"[0-9]\. Carry on without me");
+    let row = shown.visible_text();
+    let number = row
+        .lines()
+        .find_map(|line| {
+            let (before, _) = line.split_once(". Carry on without me")?;
+            before.chars().last().filter(char::is_ascii_digit)
+        })
+        .expect("Carry on without me's number");
+    driver.press(Key::Char(number));
+}

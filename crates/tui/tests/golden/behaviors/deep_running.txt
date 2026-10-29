@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  Summaries · 562 actions · summarizing with Qwen3 Coder 30B on Ollama
+
+  ✻  Summarizing…  312 of 562 · about 50 s left · esc keeps it going in the background · x stops it
+
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
+
+                                                                    Comparing ◧◨ 6 Luna
+                                                                    With the rest, on the land:
+                                                                    Red where it does more, blue where less
+                                                                       Much more 2x as often or more
+                                                                       More      1.25x to 2x
+                                                                       Less      0.5x to 0.8x
+                                                                       Much less 0.5x or less
+                                                                       Untinted  About the same, or too few
+
+                                                                    ○  ◧◨ Haiku 5.5   406
+                                                                    ●  ◧◨ 6 Luna       66
+                                                                    ○  ◧◨ 5.6 Luna     49
+                                                                    ↓  2 more below
+
+  Point at anything on the map to see what it is.
+
+  Label map · 562 actions in 19 runs across 6 projects · last 30 days
+  The dots arrive as their summaries do; the list fills in when it's done.
+
+
+
+   r to cycle dates · s this project · x stops it · tab groupings · ←  →  compare · t top view · esc back

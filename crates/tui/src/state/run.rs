@@ -12,7 +12,9 @@ use argonauts_core::events::run::{
 };
 use argonauts_core::events::session::{CliWorkflowRun, QueuedMessage, SessionEvent};
 use argonauts_core::events::shared::BlackboardEvent;
-use argonauts_core::events::task::{CheckOutcome, TaskEvent, TaskSpec, TaskState, TryCause};
+use argonauts_core::events::task::{
+    CheckOutcome, TaskEvent, TaskSpec, TaskState, TaskWay, TryCause,
+};
 use argonauts_core::events::workflow::{StepEnd, WorkflowEvent};
 use argonauts_core::events::{DivideEvent, MergeEvent, ReviewEvent, RunEvent, RunEventKind};
 use argonauts_core::fallback::QualityDebt;
@@ -28,6 +30,10 @@ use time::OffsetDateTime;
 use super::decisions::{DecisionRecord, Decisions};
 use super::reported::StepWorkflows;
 use super::session::{SessionState, SessionStatus};
+
+mod talk;
+
+pub use talk::{SeatDoing, SeatNow, Talk};
 
 #[derive(Debug, Clone)]
 pub struct RunState {
@@ -95,6 +101,8 @@ pub struct RunState {
     pub updated: Option<OffsetDateTime>,
     /// The pull request it opened, as the app's newest look at GitHub found it.
     pub followed: Option<argonauts_core::app::FollowedPullRequest>,
+    /// Its latest council's talk, which its row counts until it has tasks.
+    pub talk: Option<Talk>,
 }
 
 impl RunState {
@@ -158,6 +166,7 @@ impl RunState {
             summary: None,
             updated: None,
             followed: None,
+            talk: None,
         }
     }
 
@@ -458,6 +467,10 @@ impl RunState {
             | RunEventKind::RunReview(_)
             | RunEventKind::Note(_)
             | RunEventKind::AgentStatus(_) => None,
+            RunEventKind::Council(council) => {
+                Talk::follow(&mut self.talk, council);
+                None
+            }
             RunEventKind::Divide(divide) => {
                 self.apply_divide(divide);
                 None
@@ -685,9 +698,13 @@ impl RunState {
             .or_insert_with(|| TaskRow::new(spec.id.clone(), &spec.title));
         task.title.clone_from(&spec.title);
         task.item.clone_from(&spec.item);
+        if spec.way.is_some() {
+            task.way.clone_from(&spec.way);
+        }
         if spec.worker.is_some() {
             task.worker.clone_from(&spec.worker);
         }
+        task.reviewers = u32::try_from(spec.reviewers.len()).unwrap_or(u32::MAX);
     }
 
     /// What a task goes by in the conversation and the panel: its worker's label, such as
@@ -742,6 +759,7 @@ impl RunState {
             TaskEvent::CheckpointTagged { n, .. } => task.checkpoints = task.checkpoints.max(*n),
             TaskEvent::QualityDebt(debt) => task.debt.push(debt.clone()),
             TaskEvent::DebtCleared { .. } => task.debt.clear(),
+            TaskEvent::Todos { done, total } => task.todos = Some((*done, *total)),
             TaskEvent::Worktree { .. }
             | TaskEvent::Committed(_)
             | TaskEvent::Reported(_)
@@ -799,7 +817,7 @@ impl RunState {
             SessionEvent::CliSession { id, .. } => session.cli_session = Some(id.clone()),
             SessionEvent::FileDiff(diff) => session.apply_diff(diff),
             SessionEvent::Ended(end) => session.end(end, at),
-            SessionEvent::Limit(_) => {}
+            SessionEvent::Limit(_) | SessionEvent::CarryOn(_) => {}
             SessionEvent::Started(_) | SessionEvent::Queued(_) | SessionEvent::Delivered { .. } => {
             }
         }
@@ -1028,6 +1046,12 @@ pub struct TaskRow {
     pub waiting_on_agent: Option<AgentWait>,
     /// The one-token name its labels use, such as `flag` in `build:flag`.
     pub item: Option<String>,
+    /// How it is done, as its plan says. `None` in a record from before ways were kept.
+    pub way: Option<TaskWay>,
+    /// Its session's to-do list, done of total, as the crew last counted it.
+    pub todos: Option<(u32, u32)>,
+    /// The reviewers its plan gave it, each a session of the review that follows its build.
+    pub reviewers: u32,
 }
 
 impl TaskRow {
@@ -1047,6 +1071,9 @@ impl TaskRow {
             last_check: None,
             reviews: 0,
             waiting_on_agent: None,
+            way: None,
+            todos: None,
+            reviewers: 0,
         }
     }
 

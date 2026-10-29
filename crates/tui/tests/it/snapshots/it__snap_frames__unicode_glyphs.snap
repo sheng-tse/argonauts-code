@@ -43,7 +43,7 @@ todo_done        ☒        1 1
 quote            ▎        1 2
 tree_mid         ├        1 2
 tree_end         └        1 2
-hunk_gap         ⋮        1 1
+hunk_gap         …        1 2
 ready            ✓        1 1
 not_ready        ✗        1 1
 checkbox_off     ☐        1 1

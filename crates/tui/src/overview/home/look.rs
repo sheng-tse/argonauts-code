@@ -1,17 +1,17 @@
 //! How the Overview writes its numbers and picks its colours: big token counts, amounts that
-//! share one unit, dollars with thousands, dates, each CLI's word and colour, and each model's
-//! shade of its CLI's colour.
+//! share one unit, dollars with thousands, dates, each CLI's word and hue, and the colour each
+//! model takes from its CLI's.
 
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::overview::OverviewData;
 use ratatui::style::Style;
+use ratatui::text::Span;
 use time::{Date, Month};
 
 use crate::format::thousands;
 use crate::kit::Kit;
-use crate::overview::cards::cli_role;
-use crate::overview::shades::{ModelColors, shade};
-use crate::theme::{Role, Theme};
+use crate::overview::shades::ModelColors;
+use crate::theme::Role;
 
 /// `812`, `12.3k`, `4.5M`, `118.4b`, `3b`: one decimal, dropped when it's nought.
 pub fn big(count: u64) -> String {
@@ -155,20 +155,9 @@ pub fn since_word(day: Date, today: Date) -> String {
     }
 }
 
-/// How a CLI is named on the Overview: agy is `agy`, as its command is.
+/// How a CLI is named on the Overview: its whole name, `Claude Code`, `agy`.
 pub fn cli_word(names: &DisplayNames, agent: &str) -> String {
-    match agent {
-        "antigravity-cli" => "agy".to_owned(),
-        _ => names.cli(agent),
-    }
-}
-
-/// A CLI where room is short, as in a legend: `Claude`, `Codex`, `agy`.
-pub fn cli_short(names: &DisplayNames, agent: &str) -> String {
-    match agent {
-        "claude-code" => "Claude".to_owned(),
-        _ => cli_word(names, agent),
-    }
+    names.cli(agent)
 }
 
 /// An hour of the day on a 12-hour clock: `9pm`, `12am`.
@@ -187,42 +176,38 @@ pub fn model_word(names: &DisplayNames, agent: &str, model: Option<&str>) -> Str
         .unwrap_or_else(|| format!("{} default", cli_word(names, agent)))
 }
 
-/// The colour a CLI keeps everywhere: its own for the three it knows, else its agent colour.
-fn cli_colour(agent: &str) -> Role {
-    match Role::for_cli(agent) {
-        Role::CatOther => cli_role(agent),
-        role => role,
-    }
-}
-
-/// Each CLI's colour as text, from the theme even where the palette has none.
+/// Each CLI's hue as text.
 pub fn cli_style(kit: &Kit<'_>, agent: &str) -> Style {
-    let role = cli_colour(agent);
-    let own = kit.fg(role);
-    if own.fg.is_some() {
-        return own;
-    }
-    match Theme::for_brightness(kit.theme.brightness).color(role) {
-        Some(color) if kit.has_color() => Style::new().fg(color),
-        _ => own,
-    }
+    kit.fg(Role::for_cli(agent))
 }
 
-/// The colour a model draws in: its CLI's own for the model that has run the most on it,
-/// then the CLI's other shades, whatever the period.
+/// The colour a model draws in, whatever the period: its CLI's hue for the three that have
+/// run the most on it, and the grey of the rest after them.
 pub fn model_style(
     kit: &Kit<'_>,
     shades: &ModelColors<'_>,
     agent: &str,
     model: Option<&str>,
 ) -> Style {
-    match shades.place(agent, model) {
-        0 => cli_style(kit, agent),
-        nth => shade(kit, cli_colour(agent), nth),
-    }
+    shades.style(kit, agent, model)
 }
 
-/// Which shade each of the Overview's models takes.
+/// A model's swatch before its name: a cell of its texture in its colour, then a blank. A
+/// CLI's models share its hue, so the texture is what tells them apart.
+pub fn model_swatch(
+    kit: &Kit<'_>,
+    shades: &ModelColors<'_>,
+    agent: &str,
+    model: Option<&str>,
+) -> Span<'static> {
+    let texture = shades.texture(kit, agent, model);
+    Span::styled(
+        format!("{texture} "),
+        model_style(kit, shades, agent, model),
+    )
+}
+
+/// Which place each of the Overview's models takes among its CLI's.
 pub fn model_colors<'a>(data: &OverviewData, names: &'a DisplayNames) -> ModelColors<'a> {
     let shown = data.models.iter();
     ModelColors::new(&data.all_time_models, names)

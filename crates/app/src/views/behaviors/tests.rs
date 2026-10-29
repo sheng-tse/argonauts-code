@@ -1,5 +1,6 @@
 use argonauts_core::behavior_map::{Grouping, MapRequest};
 use argonauts_core::behaviors::LABELS;
+use argonauts_core::crew_stats::{CrewStats, TaskRecord};
 use argonauts_core::display_names::DisplayNames;
 use serde_json::{Value, json};
 use time::macros::datetime;
@@ -20,6 +21,7 @@ fn place_of(words: &str) -> (f64, f64) {
 fn action(n: usize, cli: &str, model: &str, tool: &str, input: Value) -> Recorded {
     Recorded {
         key: format!("council-0123456789ab/run-1/s-{n}/call-{n}"),
+        session: format!("council-0123456789ab/run-1/s-{n}"),
         run: Some("run-1".to_owned()),
         cli: cli.to_owned(),
         model: Some(model.to_owned()),
@@ -39,8 +41,12 @@ fn action(n: usize, cli: &str, model: &str, tool: &str, input: Value) -> Recorde
             root: None,
         }),
         what: input_words(&input),
+        failed: false,
         in_task: true,
         outcome: None,
+        settled_at: None,
+        ended: None,
+        ended_at: None,
         place: None,
         run_shows: None,
     }
@@ -196,7 +202,7 @@ fn each_group_is_compared_with_the_rest_and_a_small_one_says_why_it_has_no_overl
 }
 
 #[test]
-fn the_deeper_maps_list_is_in_farthest_point_order_each_row_lighting_its_neighbours() {
+fn the_summaries_list_is_in_farthest_point_order_each_row_lighting_its_neighbours() {
     let mut map = build(
         &records(),
         request(Grouping::Model),
@@ -221,6 +227,88 @@ fn the_deeper_maps_list_is_in_farthest_point_order_each_row_lighting_its_neighbo
         map.comparisons[2].rows.is_empty(),
         "a small group has no ranking"
     );
+}
+
+/// Codex records no model for a session on its default. Its actions count as that model's, as
+/// Stats files the same sessions, in the groups, the hover lines and the world's stars alike,
+/// and never as a model called Codex.
+#[test]
+fn an_action_that_names_no_model_counts_as_its_clis_default() {
+    use argonauts_tui::format::WallClock;
+
+    let names = DisplayNames {
+        defaults: [("codex".to_owned(), "gpt-6-luna".to_owned())].into(),
+        ..DisplayNames::default()
+    };
+    let mut records = records();
+    let codex = records.actions.iter_mut().filter(|a| a.cli == "codex");
+    for action in codex.take(4) {
+        action.model = None;
+    }
+    super::spell_models(&mut records.actions, &names);
+
+    let map = build(&records, request(Grouping::Model), &names);
+    let groups: Vec<(&str, usize)> = map
+        .groups
+        .iter()
+        .map(|group| (group.name.as_str(), group.actions))
+        .collect();
+    assert_eq!(
+        groups,
+        [
+            ("Haiku 5.5", 20),
+            ("GPT 6 Luna", 10),
+            ("Gemini 3.8 Flash", 3)
+        ]
+    );
+    let codex = map.actions.iter().filter(|a| a.cli == "Codex");
+    assert!(codex.clone().count() == 10 && codex.clone().all(|a| a.model == "GPT 6 Luna"));
+
+    let end = datetime!(2026-10-21 00:00 UTC);
+    let all_time = super::world::Period::new(end, None, WallClock::pinned(end));
+    let world = super::world::facts(&records.actions, &all_time, &names, None);
+    let stars: Vec<(&str, &str)> = world
+        .models
+        .iter()
+        .map(|star| (star.agent.as_str(), star.model.as_str()))
+        .filter(|(agent, _)| *agent == "codex")
+        .collect();
+    assert_eq!(stars, [("codex", "gpt-6-luna")]);
+
+    // Stats files a turn that named no model under the same model.
+    let mut stats = CrewStats {
+        tasks: vec![TaskRecord {
+            agent: "codex".to_owned(),
+            model: None,
+            kind: None,
+            sent_back: 0,
+            reasons: Vec::new(),
+            merged: true,
+            reviewed: true,
+        }],
+        ..CrewStats::default()
+    };
+    crate::work_ledger::name_unnamed_models(&mut stats, &names.defaults);
+    assert_eq!(stats.tasks[0].model.as_deref(), Some("gpt-6-luna"));
+}
+
+/// With no default known for its CLI, an action that names no model keeps none, and its
+/// group reads as the CLI alone.
+#[test]
+fn an_action_whose_clis_default_nobody_knows_reads_as_the_cli() {
+    let mut records = records();
+    for action in records.actions.iter_mut().filter(|a| a.cli == "codex") {
+        action.model = None;
+    }
+    super::spell_models(&mut records.actions, &DisplayNames::default());
+    assert!(
+        records
+            .actions
+            .iter()
+            .all(|a| a.cli != "codex" || a.model.is_none())
+    );
+    let map = build(&records, request(Grouping::Model), &DisplayNames::default());
+    assert!(map.groups.iter().any(|group| group.name == "Codex"));
 }
 
 #[test]
@@ -248,6 +336,60 @@ fn the_groups_follow_the_grouping() {
         names,
         ["not finished", "merged", "in conversation", "no task"]
     );
+}
+
+/// A dot keeps whether its call failed and what became of its work, which the world reads.
+#[test]
+fn a_dot_says_whether_it_failed_and_how_its_work_ended() {
+    use argonauts_core::behavior_map::ActionOutcome;
+
+    let mut records = records();
+    records.actions[0].failed = true;
+    records.actions[0].outcome = Some(Outcome::SentBack);
+    records.actions[1].outcome = Some(Outcome::Dropped);
+    let map = build(&records, request(Grouping::Model), &DisplayNames::default());
+    let first: Vec<_> = map
+        .actions
+        .iter()
+        .take(3)
+        .map(|action| (action.failed, action.outcome))
+        .collect();
+    assert_eq!(
+        first,
+        [
+            (true, Some(ActionOutcome::SentBack)),
+            (false, Some(ActionOutcome::Dropped)),
+            (false, None)
+        ]
+    );
+}
+
+/// The map shows the period's actions, counting only the runs and conversations they came
+/// from, while the world reads every action recorded.
+#[test]
+fn the_period_s_records_count_their_own_runs_and_conversations() {
+    use crate::behaviors::actions::Action;
+
+    let at = |day: u8| time::Date::from_calendar_date(2026, time::Month::October, day).unwrap();
+    let mut actions = Vec::new();
+    for (run, day, conversation) in [
+        ("run-1", 3, false),
+        ("run-2", 20, false),
+        ("conversation-1", 21, true),
+    ] {
+        actions.push(Action {
+            run: run.to_owned(),
+            at: at(day).midnight().assume_utc(),
+            conversation,
+            ..Action::sample()
+        });
+    }
+    let all = super::read::of_actions(actions);
+    assert_eq!((all.runs, all.conversations), (2, 1));
+    let since = all.since(Some(at(10).midnight().assume_utc()));
+    assert_eq!(since.actions.len(), 2);
+    assert_eq!((since.runs, since.conversations), (1, 1));
+    assert_eq!(all.since(None), all);
 }
 
 #[test]
@@ -518,7 +660,7 @@ fn the_label_list_labels_each_action_at_its_place_with_y_up() {
 }
 
 #[test]
-fn the_deeper_map_places_each_summarized_action_by_its_summary_and_marks_what_labels_only_group() {
+fn summaries_place_each_summarized_action_by_its_summary_and_marks_what_labels_only_group() {
     use crate::behaviors::deep::places::{KeptPlace, KeptPlaces};
 
     let records = records();
@@ -540,7 +682,7 @@ fn the_deeper_map_places_each_summarized_action_by_its_summary_and_marks_what_la
             (recorded.key.clone(), place)
         }),
     );
-    let map = super::build_deeper(
+    let map = super::build_summaries(
         &records,
         request(Grouping::Model),
         &DisplayNames::default(),
@@ -580,4 +722,38 @@ fn the_deeper_map_places_each_summarized_action_by_its_summary_and_marks_what_la
         "{marked:?}"
     );
     assert!(marked.iter().any(|(_, new)| *new), "{marked:?}");
+}
+
+mod setting {
+    use argonauts_core::app::{AppEvent, UiCommand, ViewData, ViewRequest};
+    use argonauts_core::behavior_map::MapRequest;
+    use argonauts_core::settings::behaviors::BehaviorView;
+
+    use crate::controller::test_support::{CliOptions, TestDriver};
+
+    #[tokio::test]
+    async fn the_map_carries_the_view_the_settings_ask_for() {
+        let mut driver = TestDriver::start_with(CliOptions {
+            flags: vec![r#"behaviors.view="braille""#.to_owned()],
+            ..CliOptions::default()
+        })
+        .await;
+        driver
+            .send(UiCommand::Request {
+                view: ViewRequest::Behaviors(MapRequest::default()),
+            })
+            .await;
+        let shown = driver
+            .until(|event| {
+                matches!(event, AppEvent::View { data } if matches!(**data, ViewData::Behaviors { .. }))
+            })
+            .await;
+        let AppEvent::View { data } = shown else {
+            unreachable!()
+        };
+        let ViewData::Behaviors { map } = *data else {
+            unreachable!()
+        };
+        assert_eq!(map.view, BehaviorView::Braille);
+    }
 }

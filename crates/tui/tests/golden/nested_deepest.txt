@@ -1,43 +1,45 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Add due dates                                                                                                        
- orchestrator workflow · add --due to the todo CLI, each part reviewed on another CLI              5/7 agents · 3m17s 
- › add-due-flag, build:due-flag's workflow, started date-cases from its Check phase                                   
-                                                                                                                      
- ╭ Phases ──────────┬ Build · 7 agents ─────────────────────────────────────────────────────────────────────────────╮ 
- │ ❯ 1 Build    5/7 │  ⏺ build:due-flag         Sonnet 5.5 · 22.4k tok                                        3m05s │ 
- │   2 Review       │    ▾ add-due-flag         Claude Code's workflow · 4/5 agents                           2m23s │ 
- │   3 Sign-off     │      ✔ Write   2/2                                                                            │ 
- │   4 Merge        │        ✔ write:add        Sonnet 5.5 · 12.1k tok                                          41s │ 
- │                  │        ✔ write:list       Sonnet 5.5 · 9.6k tok                                           38s │ 
- │                  │      2 Check   2/3                                                                            │ 
- │                  │        ✔ check:dates      Haiku 5.5 · 6.8k tok                                            31s │ 
- │                  │        ▾ date-cases       Claude Code's workflow · 1/2 agents                             22s │ 
- │                  │          ✔ case:leap-day  Haiku 5.5 · 3.9k tok                                            14s │ 
- │                  │          ⏺ case:bad-date  Haiku 5.5 · 2.7k tok                                             9s │ 
- │                  │  ✔ build:due-tests        GPT 5.6 · 30.3k tok · passed                                  1m02s │ 
- │                  │                                                                                               │ 
- │                  │   two levels inside the run is the deepest: date-cases' agents can't start a workflow         │ 
- ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save                                  
-                                                                                                                      
-  its rows in the bottom list                                                                                         
-  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  5/7 · 3m17s · ↓  101k tokens                                        
-    ⎿ ◯ add-due-flag        ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱  4/5 · 2m23s · ↓  35.1k tokens · run by build:due-flag               
-        ⎿ ◯ date-cases      ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 22s · ↓  6.6k tokens                                          
-                                                                                                                      
-                                                                                                                      
- Enter on Build, then on case:bad-date, opens its view, which says in words how deep it is                            
- ╭ Build · 7 agents ─────────┬ case:bad-date ───────────────────────────────────────────────────────────────────────╮ 
- │   ⏺ build:due-flag        │ ⏺ Running · Haiku 5.5 on Claude Code · two levels inside the run                     │ 
- │     ▾ add-due-flag        │ in date-cases, which build:due-flag's workflow add-due-flag started                  │ 
- │       ✔ Write   2/2       │ 2.7k tok · 2 tool calls · 9s                                                         │ 
- │         ✔ write:add       │                                                                                      │ 
- │         ✔ write:list      │ Prompt · shortened by Claude Code · ⏎ expand                                         │ 
- │       2 Check   2/3       │   Try todo add with --due 2026-02-30 and --due soon; both must be refused.           │ 
- │         ✔ check:dates     │ Activity · 2 tool calls · Claude Code names only the last                            │ 
- │         ▾ date-cases      │   ⏺ Bash(node src/cli.js add x --due 2026-02-30) · running                           │ 
- │           ✔ case:leap-day │ Outcome                                                                              │ 
- │ ❯         ⏺ case:bad-date │   Still running…                                                                     │ 
- │   ✔ build:due-tests       │                                                                                      │ 
- ╰───────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────╯ 
- ↑↓  agent · j/k scroll · ⏎ expand · esc back · to message or stop it, select build:due-flag                          
+ Add due dates
+ orchestrator workflow · add --due to the todo CLI, each part reviewed on another CLI              5/7 agents · 3m17s
+ › add-due-flag, build:due-flag's workflow, started date-cases from its Check phase
+
+ ╭ Phases ──────────┬ Build · 7 agents ─────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ ⣾ Build    5/7 │  ⣾ build:due-flag         ◧◨ Sonnet 5.5                                     22.4k tok   3m05s │
+ │   2 Review       │    ▾ add-due-flag         Claude Code's workflow · 4/5 agents                           2m23s │
+ │   3 Sign-off     │      ✔ Write   2/2                                                                            │
+ │   4 Merge        │        ✔ write:add        ◧◨ Sonnet 5.5                                     12.1k tok     41s │
+ │                  │        ✔ write:list       ◧◨ Sonnet 5.5                                      9.6k tok     38s │
+ │                  │      2 Check   2/3                                                                            │
+ │                  │        ✔ check:dates      ◧◨ Haiku 5.5                                       6.8k tok     31s │
+ │                  │        ▾ date-cases       Claude Code's workflow · 1/2 agents                             22s │
+ │                  │          ✔ case:leap-day  ◧◨ Haiku 5.5                                       3.9k tok     14s │
+ │                  │          ⣾ case:bad-date  ◧◨ Haiku 5.5                                       2.7k tok      9s │
+ │                  │  ✔ build:due-tests        ◧◨ 5.6                                            30.3k tok   1m02s │
+ │                  │                                                                                               │
+ │                  │   two levels inside the run is the deepest: date-cases' agents can't start a workflow         │
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  select · enter opens its agents · x stop workflow · p pause · esc back · s save
+
+  its rows in the bottom list
+  ◯ Add due dates           ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  5/7 · 3m17s · ↓  101k tokens
+    ⎿ ◯ add-due-flag        ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱  4/5 · 2m23s · ↓  35.1k tokens · run by build:due-flag
+        ⎿ ◯ date-cases      ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 22s · ↓  6.6k tokens
+
+
+ Enter on Build, then on case:bad-date, opens its view, which says in words how deep it is
+ ╭ Build · 7 agents ─────────┬ case:bad-date ───────────────────────────────────────────────────────────────────────╮
+ │   ⣾ build:due-flag        │ ⣾ Running · Haiku 5.5 on Claude Code · two levels inside the run                     │
+ │     ▾ add-due-flag        │ in date-cases, which build:due-flag's workflow add-due-flag started                  │
+ │       ✔ Write   2/2       │ 2.7k tok · 2 tool calls · 9s                                                         │
+ │         ✔ write:add       │                                                                                      │
+ │         ✔ write:list      │ Prompt · shortened by Claude Code · ⏎ expand                                         │
+ │       2 Check   2/3       │   Try todo add with --due 2026-02-30 and --due soon; both must be refused.           │
+ │         ✔ check:dates     │                                                                                      │
+ │         ▾ date-cases      │ Activity · 2 tool calls · Claude Code names only the last                            │
+ │           ✔ case:leap-day │   ⏺ Bash(node src/cli.js add x --due 2026-02-30) · running                           │
+ │ ❯         ⣾ case:bad-date │                                                                                      │
+ │   ✔ build:due-tests       │ Outcome                                                                              │
+ │                           │   Still running…                                                                     │
+ │                           │                                                                                      │
+ ╰───────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  agent · j/k scroll · ⏎ expand · esc back · to message or stop it, select build:due-flag

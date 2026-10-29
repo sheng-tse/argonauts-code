@@ -1,36 +1,36 @@
-<div class="scroll"><pre class="term grid"><span style="color:var(--term-fg)"> ╭</span><span style="color:var(--term-faint)"> </span><span style="color:var(--term-fg)">Review · 2 agents</span><span style="color:var(--term-fg)"> ───┬</span><span style="color:var(--term-faint)"> </span><span style="color:var(--term-fg)">review:due-flag</span><span style="color:var(--term-fg)"> ──────────────────────────────────────────────────────────────────────────╮</span> 
-<span style="color:var(--term-fg)"> │ </span>  <span style="color:var(--term-grn)">✔ </span>review:due-tests<span style="color:var(--term-fg)"> │ </span><span style="color:var(--term-amb)">↷ </span>Running · <span style="color:#93e8f3">Gemini 3.8 Flash</span><span style="color:var(--term-dim)"> on agy · reviewer · read-only</span>                   <span style="color:var(--term-fg)">             │</span> 
-<span style="color:var(--term-fg)"> │ </span><span style="color:#b1b9f9">❯ </span><span style="color:var(--term-amb)">↷ </span><span style="color:#b1b9f9">review:due-flag</span> <span style="color:var(--term-fg)"> │ </span><span style="color:var(--term-dim)">9.1k tok · 3 tool calls · 12s</span>                                                            <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span>                                                                                         <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span>Fallback for <span style="color:#2e5fc0">GPT 5.6 Luna</span> on Codex, which crashed twice as it started                    <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span><span style="color:var(--term-dim)">  Codex: &quot;Failed to synchronize managed preferences&quot;</span>                                     <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span><span style="color:var(--term-dim)">  agy isn't build:due-flag's provider, so the review stays independent</span>       <span style="color:var(--term-fg)">             │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span>Prompt · 6 lines · ⏎ expand                                                              <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span><span style="color:var(--term-dim)">  Review build:due-flag&#x27;s change: the --due flag on todo add and todo list.</span>              <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span><span style="color:var(--term-dim)">  … 5 more lines</span>                                                                         <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span>Activity · last 3 of 3 tool calls · ⏎ expand                                             <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span><span style="color:var(--term-grn)">  ⏺ </span>Read(src/cli.js)                                                                     <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span><span style="color:var(--term-grn)">  ⏺ </span>Read(test/cli.test.js)                                                               <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span><span style="color:#505050">  ⏺ </span>Bash(npm test -- --grep due)<span style="color:var(--term-dim)"> · running</span>                                               <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span>Outcome                                                                                  <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> │ </span>                    <span style="color:var(--term-fg)"> │ </span><span style="color:var(--term-dim)">  Still running…</span>                                                                         <span style="color:var(--term-fg)"> │</span> 
-<span style="color:var(--term-fg)"> ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯</span> 
- <span style="color:var(--term-dim)">↑↓  agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save</span>                     
-                                                                                                                      
-<span style="color:var(--term-dim)">  the same place in review:due-tests&#x27; view, a fallback on the same CLI</span>                                                
-    <span style="color:var(--term-amb)">↷ </span>Running · <span style="color:#b4472a">Sonnet 5.5</span><span style="color:var(--term-dim)"> on Claude Code · reviewer · read-only</span>                                                      
+<div class="scroll"><pre class="term grid"> ╭ Review · 2 agents ───┬ review:due-flag ──────────────────────────────────────────────────────────────────────────╮
+ │   <span style="color:#4eba65">✔ </span>review:due-tests │ <span style="color:#ffc107">≈ </span>Running · <span style="color:#6cd1cf">Gemini 3.8 Flash</span><span style="color:#999999"> on agy · reviewer · read-only</span>                                │
+ │ <span style="color:#b1b9f9">❯ </span><span style="color:#ffc107">≈ </span><span style="color:#b1b9f9">review:due-flag</span>  │ <span style="color:#999999">9.1k tok · 3 tool calls · 12s</span>                                                             │
+ │                      │                                                                                           │
+ │                      │ In place of <span style="color:#6a9ee6">GPT 5.6 Luna</span>, which crashed twice as it started                               │
+ │                      │ <span style="color:#999999">  Codex: "Failed to synchronize managed preferences"</span>                                      │
+ │                      │ <span style="color:#999999">  agy isn't build:due-flag's provider, so the review stays independent</span>                    │
+ │                      │                                                                                           │
+ │                      │ Prompt · 6 lines · ⏎ expand                                                               │
+ │                      │   <span style="color:#999999">Review build:due-flag's change: the --due flag on todo add and todo list.</span>               │
+ │                      │ <span style="color:#999999">  … 5 more lines</span>                                                                          │
+ │                      │                                                                                           │
+ │                      │ Activity · 3 tool calls                                                                   │
+ │                      │ <span style="color:#4eba65">  ⏺ </span>Read(src/cli.js)                                                                      │
+ │                      │ <span style="color:#4eba65">  ⏺ </span>Read(test/cli.test.js)                                                                │
+ │                      │ <span style="color:#505050">  ⏺ </span>Bash(npm test -- --grep due)<span style="color:#999999"> · running</span>                                                │
+ │                      │                                                                                           │
+ │                      │ Outcome                                                                                   │
+ │                      │ <span style="color:#999999">  Still running…</span>                                                                          │
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯
+ <span style="color:#999999">↑↓  agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save</span>
     <span style="color:var(--term-dim)">9.3k tok · 5 tool calls · 38s</span>                                                                                     
-    Fallback for <span style="color:#e08a66">Opus 5.5</span>, which was overloaded                                                                       
-    <span style="color:var(--term-dim)">  only Opus 5.5 is out, so Claude Code&#x27;s next model takes it</span>                                                      
+    Fallback for <span style="color:#f7a07f">Opus 5.5</span>, which was overloaded                                                                       
+    <span style="color:var(--term-dim)">  only Opus 5.5 is out, so Claude Code's next model takes it</span>                                                      
                                                                                                                       
-<span style="color:var(--term-dim)">  in Captain&#x27;s review:final view, a hand-over by design, so no Fallback section</span>                                       
-    <span style="color:var(--term-grn)">✔ </span>Done · <span style="color:#2e5fc0">GPT 6 Luna</span><span style="color:var(--term-dim)"> on Codex · reviewer · read-only</span>                                                               
+<span style="color:var(--term-dim)">  in Captain's review:final view, a hand-over by design, so no Fallback section</span>                                       
+    <span style="color:var(--term-grn)">✔ </span>Done · <span style="color:#6a9ee6">GPT 6 Luna</span><span style="color:var(--term-dim)"> on Codex · reviewer · read-only</span>                                                               
     <span style="color:var(--term-dim)">16.8k tok · 1 tool call · 4s</span>                                                                                      
-    Asked for by Claude Code · its agent review:final, on <span style="color:#f3b27a">Haiku 5.5</span>                                                   
+    Asked for by Claude Code · its agent review:final, on <span style="color:#f7a07f">Haiku 5.5</span>                                                   
     <span style="color:var(--term-dim)">  it gave Codex the change, waited, and passed the verdict back · 12.3k tok · 8s</span>                                  
                                                                                                                       
-<span style="color:var(--term-dim)">  in the left-out seat&#x27;s view, where nothing ran, so there are no numbers</span>                                             
-    <span style="color:#505050">✘ </span>Left out · <span style="color:var(--term-dim)">Gemini 3.8 Flash</span><span style="color:var(--term-dim)"> on agy · proposer</span>                                                                   
-    Left out, because agy is signed out                                                                               
-    <span style="color:var(--term-dim)">  a council can do without one proposal, so it goes on with two</span>                                                   
-    <span style="color:var(--term-dim)">  sign in to agy and the next run asks it again</span>                                                                   </pre></div>
+<span style="color:var(--term-dim)">  in the left-out seat's view, where nothing ran, so there are no numbers</span>                                             
+    <span style="color:#505050">× </span>Left out · <span style="color:#999999">Gemini 3.8 Flash on agy · proposer</span>
+    Left out, because agy is signed out
+    <span style="color:#999999">  a council can do without one proposal, so it goes on with two</span>
+    <span style="color:#999999">  sign in to agy and the next run asks it again</span></pre></div>

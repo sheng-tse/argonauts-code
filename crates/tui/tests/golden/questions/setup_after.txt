@@ -3,7 +3,7 @@
 
   ▗███▖▐▀▖ Argonauts Code v0.0.1
   ▐▝█▘▙▟   Claude Code · Opus 5.5 with xhigh effort · Captain
-  ▞▐ ▌▚    ~/github/argonauts-code
+  ▞▐ ▌▚    ~/code/tasks-cli       
 
 
 ❯ /setup

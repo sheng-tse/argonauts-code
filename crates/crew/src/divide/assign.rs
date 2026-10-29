@@ -103,19 +103,24 @@ pub fn assign(mut tasks: Vec<TaskSpec>, crew: &Crew, rng: &mut StdRng) -> Assign
                 labels: crew.labels,
                 touches_protected: touches(&task.owned_paths, crew.protected),
             };
-            let choice = router::route_task(
-                algorithm,
-                &candidates,
-                &to_route,
-                &settings.routing,
-                rng,
-                routed,
-                &mut so_far,
-            )
-            .map(|(choice, draw)| {
-                draws.extend(draw);
-                choice
-            });
+            // With the orchestrator picking, each task takes the best by its own order.
+            let choice = if settings.crew.orchestrator_picks.worker {
+                router::pick(&candidates)
+            } else {
+                router::route_task(
+                    algorithm,
+                    &candidates,
+                    &to_route,
+                    &settings.routing,
+                    rng,
+                    routed,
+                    &mut so_far,
+                )
+                .map(|(choice, draw)| {
+                    draws.extend(draw);
+                    choice
+                })
+            };
             routed += 1;
             if settings.divide.single_worker {
                 single.clone_from(&choice);
@@ -421,6 +426,42 @@ mod tests {
             critical_path: Vec::new(),
         };
         assert!(shortfalls(&graph, &settings).is_empty());
+    }
+
+    #[test]
+    fn with_the_orchestrator_picking_each_task_takes_the_best_by_its_order() {
+        let mut settings = settings();
+        settings.crew.orchestrator_picks.worker = true;
+        let assignment = assigned(&settings, 7);
+        assert_eq!(assignment, assigned(&settings, 99), "no draw decides it");
+        // Chores rotate and acceptance tests go to a reviewer of the task they test, as before.
+        let tests: Vec<&TaskId> = assignment
+            .tasks
+            .iter()
+            .filter(|task| is_test(task))
+            .map(|task| &task.id)
+            .collect();
+        let built: Vec<&Pick> = assignment
+            .picks
+            .iter()
+            .filter(|pick| pick.algorithm != RoutingAlgorithm::RoundRobin)
+            .filter(|pick| !tests.contains(&&pick.task))
+            .collect();
+        assert!(!built.is_empty());
+        for pick in built {
+            assert_eq!(
+                pick.choice.worker,
+                worker("claude-code/opus"),
+                "{}",
+                pick.task
+            );
+            assert!(
+                pick.choice.reason.starts_with("the orchestrator's pick"),
+                "{}",
+                pick.choice.reason
+            );
+        }
+        assert!(assignment.draws.is_empty());
     }
 
     #[test]

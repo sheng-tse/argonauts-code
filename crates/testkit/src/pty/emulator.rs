@@ -9,8 +9,14 @@
 //! Like those terminals, it shows a frame the app wraps in a synchronized update
 //! (`CSI ? 2026 h` … `CSI ? 2026 l`) only once the frame is whole, so a test never reads one
 //! half drawn, however long the app stalls in the middle of it.
+//!
+//! A terminal set to take pictures keeps the kitty protocol's pictures as Ghostty does, one store
+//! for each screen (see [`super::pictures`]).
 
 use std::collections::VecDeque;
+
+use super::pictures::{Pictures, Stores};
+use crate::screen::Grid;
 
 pub(super) struct Emulator {
     parser: vt100::Parser,
@@ -26,15 +32,18 @@ pub(super) struct Emulator {
     printed: u16,
     /// What the screen showed when an unfinished synchronized update began.
     held: Option<Held>,
+    pictures: Pictures,
 }
 
 struct Held {
     screen: vt100::Screen,
     /// Rows the update has pushed into the scrollback so far, shown once it ends.
     pushed: usize,
+    /// The pictures each screen held then, which the screen shown draws from.
+    stores: Stores,
 }
 
-/// What a byte does, as far as scrolling cares.
+/// What a byte does, as far as scrolling, whole frames and pictures care.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
     Print,
@@ -46,14 +55,27 @@ enum Action {
     Region(u16, u16),
     /// `ESC c`.
     Reset,
-    /// `CSI ? 2026 h` begins a synchronized update and `CSI ? 2026 l` ends it.
-    Synchronized(bool),
+    /// `CSI 2 J`, which clears the screen whole.
+    Clear,
+    /// `CSI ? … h` or `l` with the modes that matter here: `CSI ? 2026 h` begins a
+    /// synchronized update and `CSI ? 2026 l` ends it, and `CSI ? 1049 h` enters the alternate
+    /// screen, clearing it.
+    Modes {
+        on: bool,
+        synchronized: bool,
+        alternate: bool,
+    },
+    /// The `\` that ends a kitty graphics command.
+    Graphics,
     /// Anything else, which may move the cursor.
     Other,
 }
 
 /// The private mode of synchronized updates.
 const SYNCHRONIZED: u16 = 2026;
+/// The private mode of the alternate screen that clears it on the way in, and with it the
+/// screen's pictures.
+const ALTERNATE_CLEARED: u16 = 1049;
 
 #[derive(Default)]
 struct Spy {
@@ -89,8 +111,22 @@ impl vte::Perform for Spy {
                 let top = next();
                 Action::Region(top, next())
             }
-            ([b'?'], 'h' | 'l') if numbers.any(|mode| mode == SYNCHRONIZED) => {
-                Action::Synchronized(action == 'h')
+            ([], 'J') if next() == 2 => Action::Clear,
+            ([b'?'], 'h' | 'l') => {
+                let (mut synchronized, mut alternate) = (false, false);
+                for mode in numbers {
+                    synchronized |= mode == SYNCHRONIZED;
+                    alternate |= mode == ALTERNATE_CLEARED;
+                }
+                if synchronized || alternate {
+                    Action::Modes {
+                        on: action == 'h',
+                        synchronized,
+                        alternate,
+                    }
+                } else {
+                    Action::Other
+                }
             }
             _ => Action::Other,
         });
@@ -125,7 +161,14 @@ impl Emulator {
             cursor: None,
             printed: 0,
             held: None,
+            pictures: Pictures::default(),
         }
+    }
+
+    /// A terminal that keeps the kitty protocol's pictures, as Ghostty and kitty do.
+    pub(super) fn takes_pictures(mut self) -> Self {
+        self.pictures = Pictures::taking();
+        self
     }
 
     /// The screen as the program has drawn it so far, which is where the cursor is.
@@ -139,6 +182,32 @@ impl Emulator {
         self.held
             .as_ref()
             .map_or(self.parser.screen(), |held| &held.screen)
+    }
+
+    /// The cells a person would see, a placeholder showing its picture when the stores the shown
+    /// screen draws from hold it.
+    pub(super) fn cells(&self) -> Grid {
+        let screen = self.shown();
+        let stores = self.shown_stores();
+        let alternate = screen.alternate_screen();
+        Grid::read(screen, &|id| self.pictures.shows(stores, alternate, id))
+    }
+
+    /// What keeps a picture the program meant to show from showing, one line each: placeholders
+    /// on the shown screen whose picture it doesn't hold, and placements that found no picture.
+    pub(super) fn picture_problems(&self) -> Vec<String> {
+        self.pictures.problems(&self.cells(), self.shown_stores())
+    }
+
+    /// Whether a placement found no picture, which no later output makes right.
+    pub(super) fn misplaced_a_picture(&self) -> bool {
+        self.pictures.misplaced_any()
+    }
+
+    fn shown_stores(&self) -> &Stores {
+        self.held
+            .as_ref()
+            .map_or(self.pictures.stores(), |held| &held.stores)
     }
 
     /// The scrollback a person would see, oldest first, trailing spaces trimmed. Rows an
@@ -177,7 +246,12 @@ impl Emulator {
         for at in 0..bytes.len() {
             let mut spy = Spy::default();
             self.spy.advance(&mut spy, &bytes[at..=at]);
-            let Some(action) = spy.action else {
+            let action = if self.pictures.scan(bytes[at]) {
+                Some(Action::Graphics)
+            } else {
+                spy.action
+            };
+            let Some(action) = action else {
                 continue;
             };
             match action {
@@ -232,14 +306,29 @@ impl Emulator {
                 self.region = (0, rows.saturating_sub(1));
                 self.scrollback.clear();
                 self.held = None;
+                self.pictures.empty(false);
+                self.pictures.empty(true);
             }
-            Action::Synchronized(true) if self.held.is_none() => {
-                self.held = Some(Held {
-                    screen: screen.clone(),
-                    pushed: 0,
-                });
+            Action::Clear => self.pictures.empty(screen.alternate_screen()),
+            Action::Modes {
+                on,
+                synchronized,
+                alternate,
+            } => {
+                if synchronized && !on {
+                    self.held = None;
+                } else if synchronized && self.held.is_none() {
+                    self.held = Some(Held {
+                        screen: screen.clone(),
+                        pushed: 0,
+                        stores: self.pictures.stores().clone(),
+                    });
+                }
+                if alternate && on {
+                    self.pictures.empty(true);
+                }
             }
-            Action::Synchronized(false) => self.held = None,
+            Action::Graphics => self.pictures.run(screen.alternate_screen()),
             _ => {}
         }
         self.parser.process(&[byte]);

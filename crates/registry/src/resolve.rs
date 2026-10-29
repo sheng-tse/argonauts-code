@@ -28,7 +28,7 @@ use crate::settings::passing_over::{
     PassedOver, Stop, drop_odd_keys, from_a_file, narrowed, refused_alone,
 };
 use crate::settings::plain;
-use crate::settings::renamed;
+use crate::settings::renamed::{self, OldKey};
 use crate::settings::roles::fill_fresh_sessions;
 use crate::settings::set_by::SetBy;
 use crate::settings::validate::{Context, type_error, type_message, validate};
@@ -95,7 +95,7 @@ fn resolve_once(
     let mut limit_units = LimitUnits::default();
     let mut warnings: Vec<SettingsWarning> = Vec::new();
     // The old names each file still uses, which the start offers to rename.
-    let mut renamed_keys: BTreeMap<String, (String, PathBuf)> = BTreeMap::new();
+    let mut renamed_keys: BTreeMap<String, (OldKey, PathBuf)> = BTreeMap::new();
 
     // Each project file is trusted on its own, so a safety key you saved just for yourself
     // applies even while the shared file waits for your trust.
@@ -295,12 +295,16 @@ fn resolve_once(
             .keys()
             .filter(|(key, _)| !known.contains(key) && !named.contains(key))
             .map(|(key, source)| match renamed_keys.get(key) {
-                Some((new, file)) => SettingsWarning::new(
+                Some((OldKey::Renamed(new), file)) => SettingsWarning::new(
                     WarningAbout::Renamed { file: file.clone() },
                     format!(
                         "{key} in {source} is a name that changed, now {new}, so it is skipped \
                          until the file says {new}"
                     ),
+                ),
+                Some((OldKey::Retired(why), file)) => SettingsWarning::new(
+                    WarningAbout::Renamed { file: file.clone() },
+                    format!("{key} in {source} is skipped: {why}"),
                 ),
                 None => SettingsWarning::new(
                     WarningAbout::Unknown {
@@ -423,8 +427,8 @@ fn read_file_layer(
         .collect();
     for key in global_only {
         let why = format!(
-            "{key} in {source} can only be set in your global config, since it names a program \
-             for Argonauts Code to run"
+            "{key} in {source} can only be set in your global config, since {}",
+            argonauts_core::settings::global_only_because(&key)
         );
         if strict {
             return Err(SettingsError::Refused(why));
@@ -1082,27 +1086,16 @@ mod tests {
     }
 
     #[test]
-    fn with_nothing_set_captain_runs_on_the_built_in_settings() {
+    fn with_nothing_set_council_runs_on_the_built_in_settings() {
         let resolved = resolve(&SettingsSources::default()).unwrap();
-        let defaults = Settings::default();
-        let captain = Settings {
+        let council = Settings {
             workflow: DEFAULT_WORKFLOW.to_owned(),
-            captain_or_crew: argonauts_core::settings::protocol::CaptainOrCrewSettings {
-                force: Some(argonauts_core::settings::protocol::ForcedMode::Captain),
-                ..defaults.captain_or_crew.clone()
-            },
-            ..defaults
+            ..Settings::default()
         };
-        assert_eq!(resolved.settings, captain);
-        let overridden: Vec<&str> = resolved.overrides.iter().map(|o| o.key.as_str()).collect();
-        assert_eq!(overridden, ["captain_or_crew.force"]);
+        assert_eq!(resolved.settings, council);
+        assert!(resolved.overrides.is_empty(), "{:?}", resolved.overrides);
         assert!(resolved.warnings.is_empty());
-        assert!(
-            resolved
-                .entries
-                .iter()
-                .all(|entry| entry.layer == BUILT_IN || entry.key == "captain_or_crew.force")
-        );
+        assert!(resolved.entries.iter().all(|entry| entry.layer == BUILT_IN));
         assert_eq!(resolved.sha256.len(), 64);
         let again = resolve(&SettingsSources::default()).unwrap();
         assert_eq!(again.sha256, resolved.sha256);
@@ -1205,6 +1198,27 @@ mod tests {
         .unwrap();
         assert_eq!(resolved.warnings.len(), 1, "{:?}", resolved.warnings);
         assert!(resolved.warnings[0].contains("ui.narrattor"));
+    }
+
+    #[test]
+    fn a_key_that_is_gone_is_said_once_with_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = write(
+            dir.path(),
+            "config.toml",
+            "[ui.panel]\nbar = \"tasks\"\nmax_rows = 3\n",
+        );
+        let resolved = resolve(&SettingsSources {
+            global: Some(global.clone()),
+            ..SettingsSources::default()
+        })
+        .unwrap();
+        assert_eq!(resolved.settings.ui.panel.max_rows, 3);
+        assert_eq!(resolved.warnings.len(), 1, "{:?}", resolved.warnings);
+        let warning = &resolved.warnings[0];
+        assert_eq!(warning.about, WarningAbout::Renamed { file: global });
+        assert!(warning.text.starts_with("ui.panel.bar in "), "{warning:?}");
+        assert!(warning.text.contains("what sits under it"), "{warning:?}");
     }
 
     #[test]
@@ -1542,7 +1556,7 @@ mod tests {
         let local = write(
             dir.path(),
             "local.toml",
-            "[ui]\nmotion = \"normal\"\n[sandbox]\nagents_see_other_worktrees = true\n",
+            "[ui]\nmotion = \"full\"\n[sandbox]\nagents_see_other_worktrees = true\n",
         );
         let sources = SettingsSources {
             global: Some(global),
@@ -1640,15 +1654,9 @@ mod tests {
             .map(|o| (o.key.as_str(), o.value.as_str(), o.from.as_str()))
             .collect();
         // A cleared key the built-ins leave unset matches them, so it's not an override, and
-        // the built-ins set no limit at all. Captain, which runs when nothing names a
-        // workflow, sets its own key.
-        assert_eq!(
-            overridden,
-            [
-                ("captain_or_crew.force", "\"captain\"", WORKFLOW),
-                ("limits.per_task_tokens", "5000", FLAG)
-            ]
-        );
+        // the built-ins set no limit at all. Council, which runs when nothing names a
+        // workflow, sets no key of its own.
+        assert_eq!(overridden, [("limits.per_task_tokens", "5000", FLAG)]);
         assert_eq!(resolved.settings.limits.spend.per_task_usd, None);
 
         let global = write(dir.path(), "global.toml", "[limits]\nrun_minutes = 30.0\n");
@@ -1790,6 +1798,40 @@ mod tests {
         let next = resolve(&request(&[])).unwrap();
         assert_eq!(next.settings.limits.spend.spend_per_run, Some(20.0));
         assert!(next.overrides.iter().all(|record| record.from != "request"));
+    }
+
+    /// Checks a request names hold for its run where none are set, and never take the place of
+    /// checks a layer set.
+    #[test]
+    fn a_request_names_checks_only_where_none_are_set() {
+        let picked = "checks.run=[{name=\"tests\",command=[\"python3\",\"-m\",\"unittest\"]}]";
+        let sources = |overrides: &[&str]| SettingsSources {
+            overrides: overrides.iter().map(|flag| (*flag).to_owned()).collect(),
+            interactive: true,
+            request: vec![picked.to_owned()],
+            ..SettingsSources::default()
+        };
+        let resolved = resolve(&sources(&[])).unwrap();
+        assert_eq!(
+            resolved.settings.checks.run[0].command,
+            ["python3", "-m", "unittest"]
+        );
+        assert!(
+            resolved
+                .overrides
+                .iter()
+                .any(|record| record.key == "checks.run" && record.from == "request"),
+            "{:?}",
+            resolved.overrides
+        );
+        let refused = resolve(&sources(&[
+            "checks.run=[{name=\"lint\",command=[\"ruff\",\"check\"]}]",
+        ]))
+        .unwrap_err();
+        assert!(
+            matches!(&refused, SettingsError::Refused(message) if message.contains("only make it stricter")),
+            "{refused:?}"
+        );
     }
 
     #[test]

@@ -1,0 +1,41 @@
+# The main agent takes the rate limiter change alone, as conversation/council-default-alone
+# draws it: it looks around, says the change is small, then makes the edit in your checkout
+# and goes on working, so the screen holds still. These rules come before the default fake
+# agents' rules, which play every other request.
+
+[[rule]]
+argv0 = "claude"
+prompt_contains = 'Go ahead'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-alone","cwd":".","tools":["Read","Edit","Bash"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+write = { path = "ratelimit/bucket.py", content = "class Buckets:\n    def __init__(self, rate, burst):\n        self.rate = rate\n        self.burst = burst\n        self.by_key = {}\n\n    def bucket(self, key):\n        if key not in self.by_key:\n            self.by_key[key] = Bucket(self.rate, self.burst)\n        return self.by_key[key]\n\n    def take(self, key):\n        return self.bucket(key).take()\n\n\nbuckets = Buckets(10, 20)\n" }
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-alone","message":{"id":"msg-alone-edit","content":[{"type":"tool_use","id":"toolu_alone_edit","name":"Edit","input":{"file_path":"ratelimit/bucket.py","old_string":"","new_string":"class Buckets:"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-alone","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_alone_edit","content":"The file ratelimit/bucket.py has been updated successfully."}]},"tool_use_result":{"filePath":"ratelimit/bucket.py","oldString":"","newString":"class Buckets:","originalFile":"","structuredPatch":[{"oldStart":1,"oldLines":0,"newStart":1,"newLines":16,"lines":["+class Buckets:","+    def __init__(self, rate, burst):","+        self.rate = rate","+        self.burst = burst","+        self.by_key = {}","+","+    def bucket(self, key):","+        if key not in self.by_key:","+            self.by_key[key] = Bucket(self.rate, self.burst)","+        return self.by_key[key]","+","+    def take(self, key):","+        return self.bucket(key).take()","+","+","+buckets = Buckets(10, 20)"]}],"userModified":false,"replaceAll":false}}'
+[[rule.step]]
+hang = true
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'Make the rate limiter per API key'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-alone","cwd":".","tools":["Read","Grep","Glob","Bash"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-alone","message":{"id":"msg-alone-ls","content":[{"type":"tool_use","id":"toolu_alone_ls","name":"Bash","input":{"command":"git ls-files && wc -l …"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-alone","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_alone_ls","content":"README.md · ratelimit/__init__.py · …"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-alone","message":{"id":"msg-alone-read","content":[{"type":"tool_use","id":"toolu_alone_read","name":"Read","input":{"file_path":"ratelimit/api.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-alone","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_alone_read","content":"     1→from .bucket import Bucket\n     2→\n     3→bucket = Bucket(10, 20)\n     4→\n     5→\n     6→def allow(request):\n     7→    return bucket.take()\n     8→\n     9→\n    10→def limits():\n    11→    return bucket.rate, bucket.burst\n    12→\n"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-alone","message":{"id":"msg-alone","content":[{"type":"text","text":"This is a small change, so I will make it myself."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-alone","result":"This is a small change, so I will make it myself.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"This is a small change, so I\u0027ll make it myself. One bucket per key, made the first time that key is seen.","estimate":{"task_type":"bugfix","summary":"One bucket per API key","files_likely":["ratelimit/bucket.py"],"file_count":1,"risk_labels":[],"tests_exist":true,"unknowns":[]}}}'
+[[rule.step]]
+exit = 0

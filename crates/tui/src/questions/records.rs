@@ -8,6 +8,7 @@ use argonauts_core::events::approval::{
 };
 use argonauts_core::events::run::Party;
 use argonauts_core::hidden_git::MergedInto;
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::{RunId, TaskId};
 use ratatui::text::{Line, Span};
 use time::{OffsetDateTime, UtcOffset};
@@ -54,10 +55,11 @@ pub fn record(
     if let Some(at) = at {
         who.push_str(&format!(", {}", words::clock(at, offset)));
     }
-    // Esc: "carry on without me". What the agent was told isn't your words, so it isn't quoted.
+    // Carry on without me. What the agent was told isn't your words, so it isn't quoted.
     if decided.by == Party::Declined {
-        let left = match opened.kind {
-            ApprovalKind::Question | ApprovalKind::Understand => {
+        let left = match (opened.kind, opened.when_declined) {
+            (ApprovalKind::Question, WhenDeclined::Stop) => STOPS.to_owned(),
+            (ApprovalKind::Question | ApprovalKind::Understand, WhenDeclined::Decide) => {
                 "Question left to the agent".to_owned()
             }
             _ => format!(
@@ -188,21 +190,35 @@ pub fn outcome(
             }
             _ => format!("{task} keeps its worker"),
         },
-        // Esc is never recorded as itself: the option taken in your place is.
+        // Carry on without me is never recorded as itself: the option taken in your place is.
         (A::CarryOn, _) => format!("Left {title} without you"),
     }
 }
 
-/// Esc on a question or an approval a run waits on: who decides it now, and when you said
-/// so. An agent's own question goes back to that agent, and the rest to the main agent. The
-/// `◆` stays dim, since nothing is settled yet.
-pub fn passed_on_cell(kind: ApprovalKind, at: OffsetDateTime, offset: UtcOffset) -> Cell {
+/// What an agent's question left with `approvals.when_declined` set to `stop` says.
+const STOPS: &str = "Question left, so its agent stops and reports";
+
+/// Carry on without me on a question or an approval a run waits on: what happens now, as
+/// `when` says, and when you said so. With `decide`, an agent's own question goes back to that
+/// agent and the rest to the main agent. With `stop`, that part ends. The `◆` stays dim, since
+/// nothing is settled yet.
+pub fn passed_on_cell(
+    kind: ApprovalKind,
+    when: WhenDeclined,
+    at: OffsetDateTime,
+    offset: UtcOffset,
+) -> Cell {
     let what = match kind {
-        ApprovalKind::Question => "Question left to the agent".to_owned(),
-        ApprovalKind::Understand => "Goal question left to the main agent".to_owned(),
-        ApprovalKind::Plan => "Plan approval left to the main agent".to_owned(),
-        ApprovalKind::Merge => "Merge approval left to the main agent".to_owned(),
-        _ => "Question left to the main agent".to_owned(),
+        ApprovalKind::Understand => "Goal question",
+        ApprovalKind::Plan => "Plan approval",
+        ApprovalKind::Merge => "Merge approval",
+        _ => "Question",
+    };
+    let what = match (kind, when) {
+        (ApprovalKind::Question, WhenDeclined::Decide) => format!("{what} left to the agent"),
+        (_, WhenDeclined::Decide) => format!("{what} left to the main agent"),
+        (ApprovalKind::Question, WhenDeclined::Stop) => STOPS.to_owned(),
+        (_, WhenDeclined::Stop) => format!("{what} left, so that part ends"),
     };
     Cell::Notice(Notice {
         tone: Tone::Dim,

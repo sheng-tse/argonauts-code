@@ -1,11 +1,13 @@
 //! The rows of the workflow view, laid out as Claude Code's workflow detail view lays them out.
 //! A phase is its cursor, its number or mark, its name, and `done/total`. An agent is its
-//! pointer, its state glyph, its label, `model · stats`, and its time at the right edge. A step
-//! Argonauts Code runs itself, a check or the merge, is a row of the same shape with the
-//! command or `git` where the model would be.
+//! pointer, its mark, its label, its CLI's logo with the model, then its tokens and its time at
+//! the right edge. A step Argonauts Code runs itself, a check or the merge, is a row of the same
+//! shape with the command or `git` where the model would be.
 //!
-//! Argonauts Code adds one thing to a row: words after the stats, such as `approved`,
-//! `sent it back · 2 findings`, or `for Opus 5.5 · overloaded` on a fallback.
+//! A row's state is its mark alone, each state its own shape: what an agent gave, such as a
+//! review's verdict and its findings, is for the agent's own view to say.
+
+use std::time::Duration;
 
 use argonauts_core::RunId;
 use argonauts_core::agent_goal::AgentGoal;
@@ -14,13 +16,14 @@ use argonauts_core::settings::ui::CliInternals;
 use argonauts_core::views::{
     AgentRow, PhaseRow, RowStatus, Tone, WorkflowRow, WorkflowView as WorkflowData,
 };
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::kit::State;
-use crate::overview::shades::ModelColors;
+use crate::kit::logo::{ModelLabel, NoPicture};
+use crate::kit::{Kit, State};
+use crate::overview::shades::{ModelColors, shade};
 use crate::text::{sanitize_line, spans_width, str_width, truncate_spans};
-use crate::theme::{Brightness, Role, Theme};
+use crate::theme::{Role, Theme};
 
 use super::ViewCtx;
 use super::agent::{cli_internals, review_needed_by, review_needed_words};
@@ -47,21 +50,51 @@ const LABEL_GAP: usize = 2;
 /// The cells a time can take, which a narrow pane keeps free before it gives the label more.
 const TIME_SLOT: usize = panes::ELAPSED_SLOT;
 
-/// A row's state glyph and the role it draws in: `✔` done, `✘` failed, a grey `✘` skipped, a
-/// grey `⏺` running, `◌` queued or not started. A fallback at work draws `↷`, and a paused
-/// agent `◌`, both in the warning color.
+/// A row's mark and the role it draws in, each state its own shape so colour is never alone:
+/// `✔` done, `×` failed, a dim `–` for one that never ran, the turning `⣾` at work, `≈` for a
+/// fallback at work, `‖` paused, `◌` not started yet, `·` started and waiting its turn for a
+/// slot, and `◆` waiting for you. A review that sent
+/// the work back draws `«`, which [`Cells::of`] picks from its verdict.
 pub(super) fn glyph(status: RowStatus, fallback: bool, theme: &Theme) -> (&'static str, Role) {
     let ascii = theme.glyphs.is_ascii();
     let pick = |unicode: &'static str, plain: &'static str| if ascii { plain } else { unicode };
     match status {
         RowStatus::Done => (pick("✔", "*"), Role::StateDone),
-        RowStatus::Failed => (pick("✘", "x"), Role::StateFailed),
-        RowStatus::Skipped => (pick("✘", "x"), Role::Faint),
-        RowStatus::Running if fallback => (pick("↷", "~"), Role::Warn),
-        RowStatus::Running => (pick("⏺", ">"), Role::Faint),
-        RowStatus::Paused => (pick("◌", "o"), Role::Warn),
-        RowStatus::Waiting | RowStatus::Queued => (pick("◌", "o"), Role::Faint),
+        RowStatus::Failed => (pick("×", "x"), Role::StateFailed),
+        RowStatus::Skipped => (pick("–", "-"), Role::Dim),
+        RowStatus::Running if fallback => (pick("≈", "~"), Role::Warn),
+        RowStatus::Running => (pick(TURNING[0], ">"), Role::StateWorking),
+        RowStatus::Paused => (pick("‖", "="), Role::Text),
+        RowStatus::Waiting => (pick("◌", "o"), Role::StateWaiting),
+        RowStatus::Queued => (pick("·", "_"), Role::StateWaiting),
         RowStatus::NeedsYou => states::mark(State::NeedsYou, theme),
+    }
+}
+
+/// The frames of the mark at work, turning as Claude Code's braille spinners turn.
+const TURNING: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+
+/// How long each frame of the turning mark shows.
+pub(super) const TURN_PERIOD: Duration = Duration::from_millis(120);
+
+/// The turning mark's frame `ms` after the view first showed, or its first frame where motion
+/// is reduced or the glyphs are plain.
+pub(super) fn turned(mark: &'static str, ms: u64, theme: &Theme) -> &'static str {
+    if mark != TURNING[0] || theme.reduced_motion {
+        return mark;
+    }
+    let period = TURN_PERIOD.as_millis() as u64;
+    TURNING[(ms / period) as usize % TURNING.len()]
+}
+
+/// A done review's mark from its verdict's tone: `«` for one that sent the work back, `×` for
+/// one that rejected it.
+fn verdict_mark(tone: Tone, theme: &Theme) -> Option<(&'static str, Role)> {
+    let ascii = theme.glyphs.is_ascii();
+    match tone {
+        Tone::Warn => Some((if ascii { "<" } else { "«" }, Role::Warn)),
+        Tone::Bad => Some((if ascii { "x" } else { "×" }, Role::StateFailed)),
+        _ => None,
     }
 }
 
@@ -146,20 +179,22 @@ impl PhaseColumns {
         widest.clamp(LEAST_PHASES, MOST_PHASES)
     }
 
-    /// Every phase numbered from 1 in subtle grey, with `✔` or `✘` in the number's place once
-    /// it ended. The selected phase's name and count are in the accent color, with `❯` while
-    /// the phases have the keys. A phase with no agents yet is dim. Across the whole box, as a
-    /// narrow screen draws them, the counts stand at its far end.
+    /// Every phase numbered from 1, with its state's mark in the number's place once it has
+    /// one: the turning `⣾` while its agents work, `‖` while they are held, `◆` while it waits
+    /// for you, `✔` or `×` once it ended. Names, numbers and counts are in the text colour; the selected phase has `❯` while
+    /// the phases have the keys. Across the whole box, as a narrow screen draws them, the counts
+    /// stand at its far end. `turn_ms` is how long the view has shown, which turns the mark.
     pub(super) fn lines(
         &self,
         data: &WorkflowData,
         (selected, focused): (usize, bool),
         width: usize,
         whole_box: bool,
+        turn_ms: u64,
         theme: &Theme,
     ) -> Vec<Line<'static>> {
         let marks = Marks::for_theme(theme);
-        let accent = theme.style(Role::Question);
+        let text = theme.style(Role::Text);
         // The counts stand right-aligned in one column after every phase's name, eight cells at
         // least, as Claude Code lays its phases out, so a count never moves when another phase
         // gets its first agent. A narrow pane cuts the names before the counts, and drops the
@@ -178,23 +213,21 @@ impl PhaseColumns {
             .iter()
             .enumerate()
             .map(|(i, phase)| {
-                let picked = i == selected;
-                let (mark, mark_role) = match phase.status {
-                    RowStatus::Done | RowStatus::Failed | RowStatus::NeedsYou => {
-                        let (mark, role) = glyph(phase.status, false, theme);
-                        (mark.to_owned(), role)
+                let shown = match phase.status {
+                    RowStatus::Running if turns(phase) => Some(RowStatus::Running),
+                    RowStatus::Running => Some(RowStatus::Paused),
+                    RowStatus::Done | RowStatus::Failed | RowStatus::NeedsYou => Some(phase.status),
+                    _ => None,
+                };
+                let (mark, mark_role) = match shown {
+                    Some(status) => {
+                        let (mark, role) = glyph(status, false, theme);
+                        (turned(mark, turn_ms, theme).to_owned(), role)
                     }
-                    _ => ((i + 1).to_string(), Role::Faint),
+                    None => ((i + 1).to_string(), Role::Text),
                 };
-                let words = if picked {
-                    accent
-                } else if phase.status == RowStatus::Waiting && phase.count.is_none() {
-                    theme.style(Role::Dim)
-                } else {
-                    theme.style(Role::Text)
-                };
-                let cursor = if picked && focused {
-                    Span::styled(format!("{} ", marks.selected), accent)
+                let cursor = if i == selected && focused {
+                    Span::styled(format!("{} ", marks.selected), theme.style(Role::Question))
                 } else {
                     Span::raw("  ")
                 };
@@ -216,17 +249,25 @@ impl PhaseColumns {
                 }
                 let name = cut(sanitize_line(&phase.name).trim(), name_width);
                 if show_count && phase.count.is_some() {
-                    spans.push(Span::styled(left(&name, column), words));
+                    spans.push(Span::styled(left(&name, column), text));
                     spans.push(Span::raw(" "));
                     let count = format!("{:>width$}", phase_count(phase), width = self.count);
-                    spans.push(Span::styled(count, words));
+                    spans.push(Span::styled(count, text));
                 } else {
-                    spans.push(Span::styled(name, words));
+                    spans.push(Span::styled(name, text));
                 }
                 Line::from(spans)
             })
             .collect()
     }
+}
+
+/// Whether a phase's mark turns: one of its rows is at work, or it runs with none of them held,
+/// as between a review's rounds. A phase whose work is all held, as when its CLI is down, is
+/// paused.
+pub(super) fn turns(phase: &PhaseRow) -> bool {
+    let any = |status: RowStatus| phase.rows.iter().any(|row| row_status(row) == status);
+    any(RowStatus::Running) || (phase.status == RowStatus::Running && !any(RowStatus::Paused))
 }
 
 /// A phase's `done/total`, or nothing before it has agents, so no phase reads `0/0`.
@@ -242,9 +283,11 @@ pub(super) struct Cells {
     glyph: &'static str,
     glyph_role: Role,
     label: String,
-    /// Whether the label is dim: a row at work, whose glyph is the grey one, and an agent the
-    /// run went on without once it wasn't needed.
+    /// Whether the label is dim: an agent the run went on without once it wasn't needed.
     dim_label: bool,
+    /// The logo of whoever serves the model and the blank after it, drawn before it. `None`
+    /// where the model's place holds something else, such as a command or a workflow inside.
+    logo: Option<Vec<Span<'static>>>,
     /// The model, a command such as `npm test`, `git`, or `workflow`.
     model: String,
     model_style: Style,
@@ -254,25 +297,27 @@ pub(super) struct Cells {
     /// What the model's place gives way to in a row too narrow for it: a workflow inside
     /// keeps its count of agents and lets go of whose it is.
     short_model: Option<String>,
-    /// A square per line of the agent's goal, before the stats. Empty without a goal.
+    /// A square per line of the agent's goal, before the words after the model. Empty
+    /// without a goal.
     squares: Vec<Span<'static>>,
-    /// What follows the model, each after a dim ` · `: the tokens, a state word as Claude
-    /// Code has them, and the words Argonauts Code adds, each with how long it holds.
+    /// What follows the model, each after a dim ` · `: what no mark can say, such as where a
+    /// goal stands, a command's result or its subagents, each with how long it holds.
     stats: Vec<(Span<'static>, Holds)>,
+    /// `18.4k tok` at the right, before the time. Empty when it has none.
+    tokens: String,
     /// Empty for a row that hasn't started.
     time: String,
 }
 
-/// How long a stat holds in a row too long for its pane: the counts give way first, then what
-/// an agent runs beside its job, and the words that say how it stands hold longest.
+/// How long a stat holds in a row too long for its pane: what an agent runs beside its job
+/// gives way first, and the words that say how it stands hold longest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Holds {
-    /// Its tokens and spend.
+    /// Its spend.
     Least,
     /// Its subagents and the page it published.
     Longer,
-    /// Its state word or verdict, whom it stands in for, why it was left out, where its goal
-    /// stands, and a command's result.
+    /// Where its goal stands, whose review it needs, and a command's result.
     Longest,
 }
 
@@ -286,12 +331,11 @@ impl Cells {
     }
 }
 
-/// What a row is drawn from beside itself: its run, its workflow's models, and the screen.
+/// What a row is drawn from beside itself: its run, whose workflow it is, and the screen.
 pub(super) struct Around<'a> {
     pub run: &'a RunId,
     /// The CLI whose own workflow this is, such as `claude-code`, when it is one.
     pub own_cli: Option<&'a str>,
-    pub models: &'a Models,
     /// Milliseconds since the data was first drawn, which a running row's time adds.
     pub ticking: u64,
     pub ctx: &'a ViewCtx<'a>,
@@ -309,24 +353,28 @@ impl Cells {
             WorkflowRow::Command(command) => (command.status, command.elapsed_ms),
         };
         let not_needed = matches!(row, WorkflowRow::Agent(agent) if agent.not_needed);
+        let left_out = matches!(row, WorkflowRow::Agent(agent) if agent.left_out);
         let (glyph, glyph_role) = match row {
-            // A job left out never ran: a grey cross.
-            WorkflowRow::Agent(agent) if agent.left_out => {
-                (glyph(RowStatus::Failed, false, theme).0, Role::Faint)
+            // A job left out or not needed never ran to an end of its own: a grey dash.
+            WorkflowRow::Agent(_) if left_out || not_needed => {
+                glyph(RowStatus::Skipped, false, theme)
             }
-            // Neither done nor failed: a grey dash.
-            WorkflowRow::Agent(_) if not_needed => {
-                (if theme.glyphs.is_ascii() { "-" } else { "–" }, Role::Faint)
+            WorkflowRow::Agent(agent) => {
+                let sent_back = agent
+                    .note
+                    .as_ref()
+                    .filter(|_| agent.status == RowStatus::Done)
+                    .and_then(|note| verdict_mark(note.tone, theme));
+                sent_back.unwrap_or_else(|| glyph(status, agent.fallback_for.is_some(), theme))
             }
-            WorkflowRow::Agent(agent) => glyph(status, agent.fallback_for.is_some(), theme),
             WorkflowRow::Workflow(nested) => workflow_outline::mark(nested, false, theme),
             WorkflowRow::Command(_) => glyph(status, false, theme),
         };
+        let glyph = turned(glyph, around.ticking, theme);
         // A role that answered for an agent still passing its answer on shows its own time,
         // which no longer grows.
         let answer_in =
             matches!(row, WorkflowRow::Agent(agent) if agent.answered && agent.note.is_some());
-        let left_out = matches!(row, WorkflowRow::Agent(agent) if agent.left_out);
         let time = match status {
             _ if left_out || not_needed => String::new(),
             RowStatus::Waiting | RowStatus::Queued => String::new(),
@@ -342,40 +390,24 @@ impl Cells {
         };
         let mut stats = Vec::new();
         let mut squares = Vec::new();
+        let mut tokens = String::new();
+        let mut logo = None;
         let (model, model_style) = match row {
-            // The model it was meant for, dim, and why it was left out, with no numbers.
-            WorkflowRow::Agent(agent) if agent.left_out => {
-                let why = agent
-                    .note
-                    .as_ref()
-                    .map(|note| sanitize_line(note.text.trim()).into_owned())
-                    .filter(|why| !why.is_empty());
-                let said = match why {
-                    Some(why) => format!("left out · {why}"),
-                    None => "left out".to_owned(),
-                };
-                stats.push((Span::styled(said, dim), Holds::Longest));
-                (sanitize_line(&names.short(&agent.worker)).into_owned(), dim)
-            }
             // Why it wasn't needed, dim, in its model's place, with no numbers.
             WorkflowRow::Agent(agent) if not_needed => {
                 let why = agent.note.as_ref().map_or("", |note| note.text.trim());
                 (sanitize_line(why).into_owned(), dim)
             }
             WorkflowRow::Agent(agent) => {
-                // An agent on a goal says where the goal stands, where its tokens would be.
-                match goal {
-                    Some(goal) => {
-                        squares = goal_panel::squares(goal, theme);
-                        stats.push((
-                            Span::styled(goal_panel::row_words(goal), dim),
-                            Holds::Longest,
-                        ));
-                    }
-                    None if agent.tokens > 0 => {
-                        stats.push((Span::styled(panes::tokens(agent.tokens), dim), Holds::Least));
-                    }
-                    None => {}
+                // An agent on a goal says where the goal stands after its model.
+                if let Some(goal) = goal {
+                    squares = goal_panel::squares(goal, theme);
+                    stats.push((
+                        Span::styled(goal_panel::row_words(goal), dim),
+                        Holds::Longest,
+                    ));
+                } else if agent.tokens > 0 && !left_out {
+                    tokens = panes::tokens(agent.tokens);
                 }
                 // `ui.workflow.row_cost` is the only way a row shows spend.
                 let priced = ctx.state.ui.as_ref().is_some_and(|ui| ui.workflow.row_cost);
@@ -383,15 +415,17 @@ impl Cells {
                     stats.push((Span::styled(spend, dim), Holds::Least));
                 }
                 stats.extend(agent_words(agent, around.run, ctx));
-                // The model alone: a row names its CLI only inside another CLI's workflow,
-                // after the model, never because the model is from elsewhere.
-                let named = names
-                    .model(&agent.worker.agent, agent.worker.model.as_deref())
-                    .unwrap_or_else(|| names.cli(&agent.worker.agent));
-                (
-                    sanitize_line(&named).into_owned(),
-                    around.models.style(&agent.worker, ctx),
-                )
+                let worker = &agent.worker;
+                let label = ModelLabel::of(names, worker, theme, NoPicture::Dot);
+                logo = Some(label.logo);
+                let named = label.name;
+                // The model it was meant for, when it was left out, is dim.
+                let style = if left_out {
+                    dim
+                } else {
+                    theme.style(Role::Text)
+                };
+                (sanitize_line(&named).into_owned(), style)
             }
             WorkflowRow::Workflow(nested) => {
                 (workflow_outline::whose(nested, &|cli| names.cli(cli)), dim)
@@ -422,90 +456,39 @@ impl Cells {
         Self {
             glyph,
             glyph_role,
-            dim_label: not_needed || (status == RowStatus::Running && glyph_role == Role::Faint),
+            dim_label: not_needed,
             label: row_label(row),
+            logo,
             model,
             model_style,
             model_cli,
             short_model,
             squares,
             stats,
+            tokens,
             time,
         }
     }
 }
 
-/// The fewest cells a row's last words take to be cut to, ` · ` and `…` among them.
-const CUT_WORDS: usize = 16;
-
-/// What follows an agent's tokens: Claude Code's own state words, then what Argonauts Code
-/// adds, a fallback's reason or the row's note first, each with how long it holds.
+/// What follows an agent's model that no mark says: the earlier tries of a step, whose review
+/// it still needs, its subagents and the page it published. Its verdict, its state and whose
+/// place it took are the mark's, and the peek's.
 fn agent_words(agent: &AgentRow, run: &RunId, ctx: &ViewCtx<'_>) -> Vec<(Span<'static>, Holds)> {
     let theme = ctx.theme;
     let names = &ctx.state.names;
     let dim = theme.style(Role::Dim);
     let mut words = Vec::new();
-    // Claude Code's word for the state, unless Argonauts Code says more of it below.
-    let said = agent.note.is_some() || agent.fallback_for.is_some();
-    match agent.status {
-        RowStatus::Queued => words.push(Span::styled("queued", dim)),
-        RowStatus::Skipped if !said => words.push(Span::styled("skipped", dim)),
-        RowStatus::Failed if !said => words.push(Span::styled("failed", dim)),
-        _ => {}
-    }
-    let note = agent
-        .note
-        .as_ref()
-        .map(|note| (sanitize_line(note.text.trim()).into_owned(), note.tone))
-        .filter(|(text, _)| !text.is_empty());
-    match (&agent.fallback_for, note) {
-        // While it works the fallback says why the model it takes over from couldn't; once it
-        // answers, its verdict comes first, and whose place it took after.
-        (Some(first), Some((verdict, tone))) if agent.status == RowStatus::Done => {
-            let first = sanitize_line(&names.short(first)).into_owned();
-            words.push(Span::styled(verdict, theme.style(tone_role(tone))));
-            let then = agent.note.iter().flat_map(|note| &note.then);
-            for more in then.map(|more| sanitize_line(more.trim()).into_owned()) {
-                if !more.is_empty() {
-                    words.push(Span::styled(more, dim));
-                }
-            }
-            words.push(Span::styled(
-                format!("in place of {first}"),
-                theme.style(Role::Warn),
-            ));
-        }
-        (Some(first), note) => {
-            let mut text = format!("in place of {}", sanitize_line(&names.short(first)));
-            if let Some((why, _)) = note {
-                text.push_str(&format!(" · {why}"));
-            }
-            words.push(Span::styled(text, theme.style(Role::Warn)));
-        }
-        (None, Some((text, tone))) => {
-            words.push(Span::styled(text, theme.style(tone_role(tone))));
-            let then = agent.note.iter().flat_map(|note| &note.then);
-            for more in then.map(|more| sanitize_line(more.trim()).into_owned()) {
-                if !more.is_empty() {
-                    words.push(Span::styled(more, dim));
-                }
-            }
-        }
-        (None, None) => {
-            // A step tried more than once says so here, where nothing else does.
-            if let Some(tried) = workflow_tries::summary(agent, names) {
-                words.push(Span::styled(tried, dim));
-            }
-        }
+    if agent.note.is_none()
+        && agent.fallback_for.is_none()
+        && let Some(tried) = workflow_tries::summary(agent, names)
+    {
+        words.push((Span::styled(tried, dim), Holds::Longer));
     }
     if let Some(by) = review_needed_by(ctx, &agent.session) {
-        words.push(review_needed_words(&by, names, theme));
+        words.push((review_needed_words(&by, names, theme), Holds::Longest));
     }
     // `ui.panel.agent_internals = hidden` leaves out what the agent runs inside an agent.
-    let mut words: Vec<(Span<'static>, Holds)> = words
-        .into_iter()
-        .map(|word| (word, Holds::Longest))
-        .collect();
     if agent.subagents > 0 && cli_internals(ctx) != CliInternals::Hidden {
         let subagents = format!("+{}", panes::count(agent.subagents as usize, "subagent"));
         words.push((Span::styled(subagents, dim), Holds::Longer));
@@ -544,14 +527,22 @@ pub(super) fn label_width(phase: &PhaseRow) -> usize {
     workflow_outline::label_column(std::slice::from_ref(phase)).min(MAX_LABEL)
 }
 
-/// The agents pane's columns, as Claude Code's rows: a pointer, the glyph, the label padded to
-/// the label column, the model, ` · ` before each stat, and the time flush right. A row too
-/// long for the pane loses its stats by how long each holds, then its model.
+/// The agents pane's columns: a pointer, the mark, the label padded to the label column, the
+/// logo with the model, then the tokens and the time together at the right edge, each
+/// right-aligned in its own column so they line up down the pane. A row too long for its pane
+/// lets go of the words after its model, then its tokens, and only then cuts its model, at a
+/// word.
 pub(super) struct RowColumns {
     width: usize,
     slot: usize,
     label: usize,
 }
+
+/// Blank cells between the tokens and the time's slot, and at least as many before the tokens.
+const TOKENS_GAP: usize = 2;
+
+/// The fewest cells a row's last words take to be cut to, ` · ` and `…` among them.
+const CUT_WORDS: usize = 16;
 
 impl RowColumns {
     /// Columns for a pane `width` cells wide, whose labels are at most `label` cells.
@@ -581,16 +572,12 @@ impl RowColumns {
     ) -> Line<'static> {
         let label = self.label.saturating_sub(indent);
         let marks = Marks::for_theme(theme);
-        let accent = theme.style(Role::Question);
         let dim = theme.style(Role::Dim);
-        let label_style = match (selected, cells.dim_label) {
-            (true, _) => accent,
-            (false, true) => dim,
-            (false, false) => theme.style(Role::Text),
-        };
+        let text = theme.style(Role::Text);
+        let label_style = if cells.dim_label { dim } else { text };
         let mut spans = vec![
             if selected {
-                Span::styled(marks.selected.to_owned(), accent)
+                Span::styled(marks.selected.to_owned(), theme.style(Role::Question))
             } else {
                 Span::raw(" ")
             },
@@ -603,109 +590,126 @@ impl RowColumns {
             Span::styled(left(&cut(&cells.label, label), label), label_style),
             Span::raw(" ".repeat(LABEL_GAP)),
         ];
-        // The time ends at the pane's edge, and the stats keep one blank cell before it.
-        let time = cells.time.clone();
-        let fixed = spans_width(&spans)
-            + if time.is_empty() {
-                0
-            } else {
-                1 + str_width(&time)
-            };
-        // `cut` gives one stat shorter words in place of its own.
-        let rest = |model: &str, shown: &[bool], cut: Option<(usize, &str)>| {
-            let mut rest = vec![Span::styled(model.to_owned(), cells.model_style)];
+        let logo: Vec<Span<'static>> = cells.logo.clone().unwrap_or_default();
+        // The model and the words after it, each after a dim ` · `; `cut` gives one stat
+        // shorter words in place of its own.
+        let middle = |model: &str, shown: &[bool], cut: Option<(usize, &str)>| {
+            let mut middle = logo.clone();
+            middle.push(Span::styled(model.to_owned(), cells.model_style));
             if let Some(on) = &cells.model_cli {
-                rest.push(Span::styled(on.clone(), dim));
+                middle.push(Span::styled(on.clone(), dim));
             }
             for (at, ((stat, _), shown)) in cells.stats.iter().zip(shown).enumerate() {
                 if !shown {
                     continue;
                 }
                 // The squares stand before a goal's words, where the first ` · ` ends.
-                rest.push(Span::styled(" · ", dim));
+                middle.push(Span::styled(" · ", dim));
                 if at == 0 && !cells.squares.is_empty() {
-                    rest.extend(cells.squares.iter().cloned());
-                    rest.push(Span::raw(" "));
+                    middle.extend(cells.squares.iter().cloned());
+                    middle.push(Span::raw(" "));
                 }
                 match cut {
                     Some((cut_at, words)) if cut_at == at => {
-                        rest.push(Span::styled(words.to_owned(), stat.style));
+                        middle.push(Span::styled(words.to_owned(), stat.style));
                     }
-                    _ => rest.push(stat.clone()),
+                    _ => middle.push(stat.clone()),
                 }
             }
-            rest
+            middle
         };
-        // A row too long for the pane shows whole stats only, those that hold longest first,
-        // each kind from the left, so a stat that holds less never takes the place of one that
-        // holds more. Then it lets go of what its model's place can do without, and only then
-        // cuts what is left at a word. Where no word that says how the agent stands fits whole,
-        // the first is kept to be cut, as a goal's squares keep its words.
-        let room = self.width.saturating_sub(fixed);
-        let mut shown = vec![false; cells.stats.len()];
-        // A goal's words stay with its squares, to be cut after them.
-        let mut forced = (!cells.squares.is_empty() && !shown.is_empty()).then_some(0);
-        if let Some(at) = forced {
-            shown[at] = true;
-        }
-        let mut cut_short = false;
-        let mut order: Vec<usize> = (0..cells.stats.len()).collect();
-        order.sort_by_key(|&at| (std::cmp::Reverse(cells.stats[at].1), at));
-        for at in order {
-            if shown[at] {
-                continue;
+        // The time ends at the pane's edge in a slot every row keeps, and the tokens end two
+        // cells before it.
+        let room = self.width.saturating_sub(spans_width(&spans) + TIME_SLOT);
+        let tokens_room = if cells.tokens.is_empty() {
+            0
+        } else {
+            str_width(&cells.tokens) + 2 * TOKENS_GAP
+        };
+        // Whole stats only, those that hold longest first, each kind from the left, so a stat
+        // that holds less never takes the place of one that holds more.
+        let fill = |room: usize| {
+            let mut shown = vec![false; cells.stats.len()];
+            let mut order: Vec<usize> = (0..cells.stats.len()).collect();
+            order.sort_by_key(|&at| (std::cmp::Reverse(cells.stats[at].1), at));
+            for at in order {
+                shown[at] = true;
+                if spans_width(&middle(&cells.model, &shown, None)) > room {
+                    shown[at] = false;
+                }
             }
-            shown[at] = true;
-            if spans_width(&rest(&cells.model, &shown, None)) > room {
-                shown[at] = false;
-            }
-        }
-        if !shown.contains(&true) {
-            forced = cells
+            shown
+        };
+        let every_longest = |shown: &[bool]| {
+            cells
                 .stats
                 .iter()
-                .position(|(_, holds)| *holds == Holds::Longest);
-            if let Some(at) = forced {
-                shown[at] = true;
-            }
-        } else if let Some(at) =
-            (0..cells.stats.len()).find(|&at| !shown[at] && cells.stats[at].1 == Holds::Longest)
+                .zip(shown)
+                .all(|((_, holds), shown)| *shown || *holds != Holds::Longest)
+        };
+        // The tokens go first when what the row says doesn't fit beside them.
+        let mut with_tokens = tokens_room > 0;
+        let mut shown = fill(room.saturating_sub(tokens_room));
+        let model_fits = |room: usize| str_width(&cells.model) + spans_width(&logo) <= room;
+        if with_tokens && (!every_longest(&shown) || !model_fits(room.saturating_sub(tokens_room)))
         {
-            // What the agent's state is, such as why it failed or whose place it took, is cut
-            // at the pane's edge where it doesn't fit whole, as Claude Code cuts a row, so long
-            // as a few of its words can show. A cut row keeps two blank cells before its time.
-            let used = spans_width(&rest(&cells.model, &shown, None));
-            if room.saturating_sub(used) >= CUT_WORDS {
-                shown[at] = true;
-                cut_short = true;
-            }
+            with_tokens = false;
+            shown = fill(room);
         }
-        let mut model = cells.model.as_str();
-        let mut kept = rest(model, &shown, None);
-        if let Some(short) = cells.short_model.as_deref()
-            && spans_width(&kept) > room
-        {
-            model = short;
-            kept = rest(model, &shown, None);
-        }
-        // What was kept to be cut ends at its last whole word.
-        if let Some(at) = forced.filter(|_| spans_width(&kept) > room) {
-            let text = cells.stats[at].0.content.as_ref();
-            let others = spans_width(&kept) - str_width(text);
-            let words = cut_stat(text, room.saturating_sub(others));
-            kept = rest(model, &shown, Some((at, &words)));
-        }
-        let room = if cut_short && !time.is_empty() {
-            room.saturating_sub(1)
+        let room = if with_tokens {
+            room.saturating_sub(tokens_room)
         } else {
             room
         };
+        // A goal's words stay with its squares, and where no word that says how a row stands
+        // fits whole, the first is kept to be cut at a word, so long as a few of its words can
+        // show.
+        let mut forced = (!cells.squares.is_empty() && !shown.is_empty()).then_some(0);
+        if forced.is_none()
+            && let Some(at) =
+                (0..cells.stats.len()).find(|&at| !shown[at] && cells.stats[at].1 == Holds::Longest)
+        {
+            let used = spans_width(&middle(&cells.model, &shown, None));
+            if room.saturating_sub(used) >= CUT_WORDS {
+                forced = Some(at);
+            }
+        }
+        if let Some(at) = forced {
+            shown[at] = true;
+        }
+        let mut model = cells.model.clone();
+        let mut kept = middle(&model, &shown, None);
+        if let Some(short) = cells.short_model.as_deref()
+            && spans_width(&kept) > room
+        {
+            model = short.to_owned();
+            kept = middle(&model, &shown, None);
+        }
+        if let Some(at) = forced.filter(|_| spans_width(&kept) > room) {
+            let words = cells.stats[at].0.content.as_ref();
+            let others = spans_width(&kept) - str_width(words);
+            let words = cut_stat(words, room.saturating_sub(others));
+            kept = middle(&model, &shown, Some((at, &words)));
+        }
+        // What still doesn't fit is the model's, cut at its last whole word.
+        if spans_width(&kept) > room {
+            let others = spans_width(&kept) - str_width(&model);
+            model = cut_at_word(&model, room.saturating_sub(others));
+            kept = middle(&model, &shown, None);
+        }
         spans.extend(truncate_spans(&kept, room));
-        if !time.is_empty() {
-            let used = spans_width(&spans);
-            let gap = self.width.saturating_sub(used + str_width(&time));
+        if with_tokens {
+            let right = self.width.saturating_sub(TIME_SLOT + TOKENS_GAP);
+            let gap = right.saturating_sub(spans_width(&spans) + str_width(&cells.tokens));
             spans.push(Span::raw(" ".repeat(gap)));
-            spans.push(Span::styled(time, dim));
+            spans.push(Span::styled(cells.tokens.clone(), text));
+        }
+        if !cells.time.is_empty() {
+            let gap = self
+                .width
+                .saturating_sub(spans_width(&spans) + str_width(&cells.time));
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.push(Span::styled(cells.time.clone(), text));
         }
         Line::from(spans)
     }
@@ -729,13 +733,6 @@ fn ranked<'a>(ctx: &ViewCtx<'a>) -> &'a [argonauts_core::overview::ModelTokens] 
         .as_ref()
         .map_or(&[][..], |usage| usage.all_time_models.as_slice())
 }
-
-/// The shades a CLI's models take on a dark screen after the CLI's own color.
-const CLI_SHADES: [(Role, [u32; 3]); 3] = [
-    (Role::CliClaude, [0xb4472a, 0xf3b27a, 0xf8dccb]),
-    (Role::CliCodex, [0x2e5fc0, 0xa8cdff, 0x3fc4f0]),
-    (Role::CliAgy, [0x1b8a9c, 0x93e8f3, 0x4fe0c0]),
-];
 
 /// The models a workflow's rows name, a fallback's first model among them, each with its place
 /// among its CLI's models: the place it has on every other tab, the one that ran the most tokens
@@ -790,49 +787,15 @@ impl Models {
         }
     }
 
-    /// Each model that did a row's job, by name, with the style its row draws it in, for the
-    /// lines that name them. The model a fallback was meant for isn't one.
-    pub(super) fn named(&self, data: &WorkflowData, ctx: &ViewCtx<'_>) -> Vec<(String, Style)> {
-        let mut named: Vec<(String, Style)> = Vec::new();
-        let agents = data
-            .phases
-            .iter()
-            .flat_map(|phase| &phase.rows)
-            .filter_map(|row| match row {
-                WorkflowRow::Agent(agent) => Some(agent),
-                _ => None,
-            });
-        for agent in agents {
-            let name = ctx.state.names.short(&agent.worker);
-            if !named.iter().any(|(known, _)| *known == name) {
-                named.push((name, self.style(&agent.worker, ctx)));
-            }
-        }
-        named
-    }
-
-    /// The color a model's name draws in: its CLI's own for the first of the CLI's models, and
-    /// a shade of it for each one after, so two models of one CLI read apart.
+    /// The color a model's name draws in, as on every tab: its CLI's hue for the CLI's three
+    /// models that ran the most, and the grey of the rest after them. Its name tells it from
+    /// the CLI's others.
     pub(super) fn style(&self, worker: &ModelRef, ctx: &ViewCtx<'_>) -> Style {
-        let theme = ctx.theme;
         let role = Role::for_cli(&worker.agent);
         if role == Role::CatOther {
-            return theme.style(Role::Dim);
+            return ctx.theme.style(Role::Dim);
         }
-        let own = theme.style(role);
-        let nth = self.place(worker, ctx);
-        let shades = CLI_SHADES
-            .iter()
-            .find(|(cli, _)| *cli == role)
-            .map(|(_, shades)| shades);
-        match (nth, shades) {
-            (0, _) | (_, None) => own,
-            _ if theme.brightness != Brightness::Dark || !theme.has_color() => own,
-            (nth, Some(shades)) => {
-                let [_, r, g, b] = shades[(nth - 1) % shades.len()].to_be_bytes();
-                own.fg(Color::Rgb(r, g, b))
-            }
-        }
+        shade(&Kit::new(ctx.theme), role, self.place(worker, ctx))
     }
 }
 
@@ -894,13 +857,15 @@ mod tests {
     use super::{Cells, Holds, RowColumns, phase_size, scroll_mark};
     use crate::theme::{Glyphs, Role, Theme};
 
-    /// A row's cells: its label, its model, and its stats, each with how long it holds.
-    fn cells(glyph: &'static str, label: &str, model: &str, stats: &[(&str, Holds)]) -> Cells {
+    /// A row's cells: its label, its model, its stats, each with how long it holds, and its
+    /// tokens.
+    fn cells(label: &str, model: &str, stats: &[(&str, Holds)], tokens: &str) -> Cells {
         Cells {
-            glyph,
-            glyph_role: Role::Dim,
+            glyph: "✔",
+            glyph_role: Role::StateDone,
             label: label.to_owned(),
             dim_label: false,
+            logo: None,
             model: model.to_owned(),
             model_style: Default::default(),
             model_cli: None,
@@ -910,6 +875,7 @@ mod tests {
                 .iter()
                 .map(|(text, holds)| (Span::raw((*text).to_owned()), *holds))
                 .collect(),
+            tokens: tokens.to_owned(),
             time: "31m45s".to_owned(),
         }
     }
@@ -924,67 +890,60 @@ mod tests {
             .collect()
     }
 
-    /// In the agents pane of an 80-column screen, 49 cells wide, a row too long for it gives up
-    /// its counts before what it is there to say: a failed row keeps its state word, a moved row
-    /// whom it stands in for, and what an agent runs beside its job goes before either. In a
-    /// narrower pane a count that fits where nothing that holds longer does still shows. What
-    /// nothing else can make room for is cut at a word.
+    /// In the agents pane of an 80-column screen, 49 cells wide, a row keeps its mark, its label
+    /// and its time. What it runs beside its job gives way first, then its tokens, and only then
+    /// is its model cut, at a word.
     #[test]
-    fn at_80_columns_a_row_keeps_what_it_says_over_its_counts() {
-        let failed = cells(
-            "✘",
+    fn at_80_columns_a_row_lets_go_of_its_tokens_before_its_model() {
+        let local = cells(
             "build:d-plain-mode",
-            "GPT 5.6",
-            &[("95.2k tok", Holds::Least), ("failed", Holds::Longest)],
+            "Qwen3 Coder 30B (64k)",
+            &[],
+            "102.4k tok",
         );
-        let row = drawn(&failed, 49);
-        assert!(row.contains("GPT 5.6 · failed "), "{row:?}");
-        assert!(!row.contains("tok"), "{row:?}");
-
-        let moved = cells(
-            "↷",
-            "worker · task-002",
-            "GPT 5.6",
-            &[
-                ("181k tok", Holds::Least),
-                ("for Opus", Holds::Longest),
-                ("+2 subagents", Holds::Longer),
-            ],
+        assert_eq!(
+            drawn(&local, 49),
+            " ✔ build:d-plain-mode  Qwen3 Coder 30B…    31m45s"
         );
-        let row = drawn(&moved, 49);
-        assert!(row.contains("GPT 5.6 · for Opus "), "{row:?}");
+        let row = drawn(&local, 63);
         assert!(
-            !row.contains("tok") && !row.contains("subagents"),
+            row.contains("Qwen3 Coder 30B (64k) ") && !row.contains("tok"),
             "{row:?}"
         );
-        // With room for one more, the subagents come before the tokens.
-        let row = drawn(&moved, 64);
+        let row = drawn(&local, 70);
         assert!(
-            row.contains("GPT 5.6 · for Opus · +2 subagents "),
+            row.contains("Qwen3 Coder 30B (64k) ") && row.ends_with(" 102.4k tok  31m45s"),
             "{row:?}"
         );
 
         let counted = cells(
-            "✔",
             "worker · task-001",
-            "Opus",
-            &[("402k tok", Holds::Least), ("+3 subagents", Holds::Longer)],
+            "Opus 5.5",
+            &[("+3 subagents", Holds::Longer)],
+            "402k tok",
         );
         let row = drawn(&counted, 49);
-        assert!(row.contains("Opus · +3 subagents "), "{row:?}");
-        let row = drawn(&counted, 45);
-        assert!(row.contains("Opus · 402k tok "), "{row:?}");
-
-        let left_out = cells(
-            "✘",
-            "review:security",
-            "Gemini 3.6",
-            &[("left out · its CLI can't start here", Holds::Longest)],
+        assert!(
+            row.contains("Opus 5.5 ") && row.contains("402k tok"),
+            "{row:?}"
         );
-        let row = drawn(&left_out, 49);
-        assert!(row.contains("Gemini 3.6 · left… "), "{row:?}");
-        let row = drawn(&left_out, 56);
-        assert!(row.contains("Gemini 3.6 · left out… "), "{row:?}");
+        assert!(!row.contains("subagents"), "{row:?}");
+        let row = drawn(&counted, 64);
+        assert!(row.contains("Opus 5.5 · +3 subagents "), "{row:?}");
+
+        // What says how a row stands keeps its place over the tokens.
+        let owed = cells(
+            "build:due-flag",
+            "Sonnet 5.5",
+            &[("needs a review by Opus 5.5", Holds::Longest)],
+            "44.0k tok",
+        );
+        let row = drawn(&owed, 70);
+        assert!(
+            row.contains("Sonnet 5.5 · needs a review by Opus 5.5 "),
+            "{row:?}"
+        );
+        assert!(!row.contains("tok"), "{row:?}");
     }
 
     /// A pane's title counts the agents of a workflow inside, a CLI's own among them, as its

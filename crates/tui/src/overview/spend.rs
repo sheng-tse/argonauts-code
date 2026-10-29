@@ -1,114 +1,172 @@
 //! The spend card: what the period spent, one row a model. A model recorded under several
 //! names is one row, and spend recorded with no model goes to the model its CLI runs when
 //! none is named, so no model shows twice and no CLI stands in a row by itself. A thin bar of
-//! the models' shares, a blank row, then each model's spend, share, tokens, what it did and
-//! what it spent on each day of this week; under them, how much ran inside a plan and how
-//! much was charged to an API key.
-
-use std::collections::BTreeMap;
+//! the models' shares, a blank row, then a table of each model, the CLI it ran on, its spend,
+//! share and tokens, and what it spent on each day of this week; under them, how much ran
+//! inside a plan and how much was charged to an API key.
+//!
+//! Each column is as wide as its longest entry or its head, with the room between columns
+//! the shared legend keeps, and every figure is written as Stats writes it.
 
 use argonauts_core::Spend;
 use argonauts_core::api::{UsagePeriod, UsageSummary};
-use argonauts_core::crew_stats::StatsRole;
 use argonauts_core::display_names::DisplayNames;
 use ratatui::style::Style;
 use ratatui::text::Span;
 use time::{Date, Duration};
 
 use super::cards::period_words;
-use super::home::look::{Unit, cli_word};
 use super::shades::{ModelColors, shown_as};
-use super::stats::draw;
-use crate::format;
+use super::stats::draw::{self, Fill};
+use super::stats::letter;
+use crate::format::{self, Figures};
+use crate::kit::legend::{self, BEFORE_NUMBERS, BEFORE_SHARE, BETWEEN_WORDS, SHARE_CELLS};
+use crate::kit::logo::{ModelLabel, NoPicture};
 use crate::kit::{Badge, Drawn, Kit, Level, fit, spread};
-use crate::text::{spans_width, truncate_spans};
+use crate::text::{At, cut_spans, spans_width, str_width, truncate_spans};
 use crate::theme::Role;
 
 /// From this share of the day's limit on, the spend shows amber.
 const NEAR_LIMIT: f64 = 0.9;
 /// How a row with no model reads where nothing says which one its CLI runs.
 const DEFAULT_MODEL: &str = "default model";
-/// The fewest cells the model's column keeps: its square and a few letters of its name.
-const LEAST_MODEL: usize = 8;
+/// The fewest cells the model's column keeps: a few letters of its name.
+const LEAST_MODEL: usize = 6;
+/// The swatch's cells, in the model's shape.
+const SWATCH: usize = 2;
+/// Blanks after the swatch.
+const AFTER_SWATCH: usize = 2;
+/// A day's cells in the week's column, where its bar runs across in half cells.
+const DAY_CELLS: usize = 3;
+/// A day's cells where the card is too narrow for [`DAY_CELLS`].
+const NARROW_DAY_CELLS: usize = 1;
+/// Said once, in the week's column, while no model spent anything this week.
+const NOTHING_THIS_WEEK: &str = "nothing spent this week";
 
-/// The card's columns, left to right.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Column {
-    Model,
-    On,
-    Spend,
-    Share,
-    Tokens,
-    Did,
-    Week,
+/// The cells of the week's column with days `day` cells wide, a blank apart.
+fn week_cells(day: usize) -> usize {
+    7 * day + 6
 }
 
-impl Column {
-    const ALL: [Column; 7] = [
-        Column::Model,
-        Column::On,
-        Column::Spend,
-        Column::Share,
-        Column::Tokens,
-        Column::Did,
-        Column::Week,
-    ];
+/// The blanks before the week's column with days `day` cells wide: a column of bars' room,
+/// and more where a day's letter, which sits in the middle of its day, would stand nearer the
+/// tokens than a column of words may.
+fn before_week(day: usize) -> usize {
+    BEFORE_NUMBERS.max(BETWEEN_WORDS.saturating_sub(day / 2))
+}
 
-    /// What a narrow card gives up, the first first. The model and its spend stay.
-    const GIVES_WAY: [Column; 5] = [
-        Column::Week,
-        Column::Did,
-        Column::On,
-        Column::Tokens,
-        Column::Share,
-    ];
+/// Where the table's columns fall, each as wide as its longest entry or its head. A column
+/// that has given way to a narrow card is `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Layout {
+    name: usize,
+    /// The logo's cells and the blank after them, or none where logos draw no picture.
+    logo: usize,
+    on: Option<usize>,
+    spend: usize,
+    share: bool,
+    tokens: Option<usize>,
+    /// Each day's cells.
+    day: Option<usize>,
+}
 
-    /// The column's slot in cells, the blanks before the next column included. Slots are
-    /// fixed, so a number changing never moves a column.
-    fn slot(self) -> usize {
-        match self {
-            Column::Model => 22,
-            Column::On => 14,
-            Column::Spend => 9,
-            Column::Share => 7,
-            Column::Tokens => 11,
-            Column::Did => 26,
-            Column::Week => 16,
+impl Layout {
+    fn width(&self) -> usize {
+        let mut cells = SWATCH + AFTER_SWATCH + self.name;
+        if let Some(on) = self.on {
+            cells += BETWEEN_WORDS + self.logo + on;
         }
+        cells += BEFORE_NUMBERS + self.spend;
+        if self.share {
+            cells += BEFORE_SHARE + SHARE_CELLS;
+        }
+        if let Some(tokens) = self.tokens {
+            cells += BEFORE_NUMBERS + tokens;
+        }
+        if let Some(day) = self.day {
+            cells += before_week(day) + week_cells(day);
+        }
+        cells
     }
 
-    fn head(self) -> &'static str {
-        match self {
-            Column::Model => "model",
-            Column::On => "on",
-            Column::Spend => "spend",
-            Column::Share => "share",
-            Column::Tokens => "tokens",
-            Column::Did => "did",
-            Column::Week => "a day, this week",
-        }
-    }
-
-    /// The columns that fit in `width` cells, each with its cells. Where even the model and
-    /// its spend don't fit, the model's name gives way.
-    fn fitting(width: usize) -> Vec<(Column, usize)> {
-        let mut columns = Column::ALL.to_vec();
-        let cells = |columns: &[Column]| columns.iter().map(|column| column.slot()).sum::<usize>();
-        for gone in Column::GIVES_WAY {
-            if cells(&columns) <= width {
-                break;
+    /// The layout that fits in `width` cells: the days narrow to one cell first, then the
+    /// columns give way, the week first, then the CLI, the tokens and the share. Where even
+    /// the model and its spend don't fit, the model's name is cut.
+    fn fitting(self, width: usize) -> Self {
+        let gives_way: [fn(&mut Self); 5] = [
+            |layout| layout.day = Some(NARROW_DAY_CELLS),
+            |layout| layout.day = None,
+            |layout| layout.on = None,
+            |layout| layout.tokens = None,
+            |layout| layout.share = false,
+        ];
+        let mut layout = self;
+        for give_way in gives_way {
+            if layout.width() <= width {
+                return layout;
             }
-            columns.retain(|column| *column != gone);
+            give_way(&mut layout);
         }
-        let over = cells(&columns).saturating_sub(width);
-        columns
-            .into_iter()
-            .map(|column| match column {
-                Column::Model => (column, column.slot().saturating_sub(over).max(LEAST_MODEL)),
-                column => (column, column.slot()),
-            })
-            .collect()
+        let over = layout.width().saturating_sub(width);
+        layout.name = layout.name.saturating_sub(over).max(LEAST_MODEL);
+        layout
     }
+}
+
+/// What each column of a line holds.
+#[derive(Debug, Default)]
+struct Cells {
+    swatch: Vec<Span<'static>>,
+    name: Vec<Span<'static>>,
+    logo: Vec<Span<'static>>,
+    on: Vec<Span<'static>>,
+    spend: Vec<Span<'static>>,
+    share: Vec<Span<'static>>,
+    tokens: Vec<Span<'static>>,
+    week: Vec<Span<'static>>,
+}
+
+/// `cells` laid out in `layout`'s columns: words to the left of theirs, numbers to the
+/// right, and the room between them the shared rule's.
+fn line(layout: &Layout, cells: Cells) -> Vec<Span<'static>> {
+    let blank = |cells: usize| Span::raw(" ".repeat(cells));
+    let mut out = fit(cells.swatch, SWATCH);
+    out.push(blank(AFTER_SWATCH));
+    out.extend(fit(
+        cut_spans(&cells.name, layout.name, At::Word),
+        layout.name,
+    ));
+    if let Some(on) = layout.on {
+        out.push(blank(BETWEEN_WORDS));
+        out.extend(fit(cells.logo, layout.logo));
+        out.extend(fit(cut_spans(&cells.on, on, At::Word), on));
+    }
+    out.push(blank(BEFORE_NUMBERS));
+    out.extend(right(cells.spend, layout.spend));
+    if layout.share {
+        out.push(blank(BEFORE_SHARE));
+        out.extend(right(cells.share, SHARE_CELLS));
+    }
+    if let Some(tokens) = layout.tokens {
+        out.push(blank(BEFORE_NUMBERS));
+        out.extend(right(cells.tokens, tokens));
+    }
+    if let Some(day) = layout.day.filter(|_| !cells.week.is_empty()) {
+        out.push(blank(before_week(day)));
+        out.extend(cut_spans(&cells.week, week_cells(day), At::Word));
+    }
+    out
+}
+
+/// `spans` right-aligned in `cells`.
+fn right(spans: Vec<Span<'static>>, cells: usize) -> Vec<Span<'static>> {
+    let used = spans_width(&spans);
+    if used > cells {
+        return truncate_spans(&spans, cells);
+    }
+    let mut out = vec![Span::raw(" ".repeat(cells - used))];
+    out.extend(spans);
+    out
 }
 
 /// One model's row.
@@ -126,8 +184,6 @@ struct Row {
     local: bool,
     /// What it spent on each day of this week, in the units of [`units`].
     week: [u64; 7],
-    /// The pieces of work it did, by role.
-    did: BTreeMap<StatsRole, u32>,
 }
 
 impl Row {
@@ -138,39 +194,12 @@ impl Row {
         for (day, spent) in self.week.iter_mut().zip(more.week) {
             *day += spent;
         }
-        for (role, done) in &more.did {
-            *self.did.entry(*role).or_default() += done;
-        }
-    }
-
-    /// `3 tasks · 13 reviews`.
-    fn did_words(&self) -> String {
-        StatsRole::BY_WORK
-            .into_iter()
-            .filter_map(|role| {
-                let done = self.did.get(&role).copied().filter(|done| *done > 0)?;
-                Some(match done {
-                    1 => format!("1 {}", role.unit()),
-                    done => format!("{done} {}s", role.unit()),
-                })
-            })
-            .collect::<Vec<_>>()
-            .join(" · ")
     }
 }
 
 /// Dollars as a whole number a bar can share out: ten-thousandths.
 fn units(usd: f64) -> u64 {
     (usd.max(0.0) * 10_000.0).round() as u64
-}
-
-/// `$0.26`, and `$0` for nothing.
-fn dollars(usd: f64) -> String {
-    if usd == 0.0 {
-        "$0".to_owned()
-    } else {
-        format::usd(usd)
-    }
 }
 
 /// What the card draws from.
@@ -219,7 +248,6 @@ impl SpendCard<'_> {
                     pays_per_token: false,
                     local: true,
                     week: [0; 7],
-                    did: BTreeMap::new(),
                 });
                 rows.len() - 1
             })
@@ -237,14 +265,6 @@ impl SpendCard<'_> {
                 }
             }
         }
-        // Work counts for the models that spent in the period, which are the card's rows.
-        let spenders = rows.len();
-        let work = self.usage.stats.iter().flat_map(|stats| &stats.work);
-        for work in work.filter(|work| work.done > 0) {
-            let at = row_of(&mut rows, &work.agent, work.model.as_deref());
-            *rows[at].did.entry(work.role).or_default() += work.done;
-        }
-        rows.truncate(spenders);
         fold_unnamed(&mut rows);
         rows.sort_by(|a, b| b.spent.cost_usd.total_cmp(&a.spent.cost_usd));
         rows
@@ -342,13 +362,24 @@ impl SpendCard<'_> {
     pub fn body(&self, kit: &Kit<'_>, width: usize, full: bool) -> Drawn {
         let rows = self.rows();
         let shown = rows.iter();
-        let shades = ModelColors::new(&self.usage.all_time_models, self.names)
-            .with(shown.map(|row| (row.agent.as_str(), row.model.as_deref())));
-        let styles: Vec<Style> = rows
+        let shades = ModelColors::for_screen(
+            &self.usage.all_time_models,
+            self.names,
+            shown.map(|row| (row.agent.as_str(), row.model.as_deref())),
+        );
+        let fills: Vec<Fill> = rows
             .iter()
-            .map(|row| shades.style(kit, &row.agent, row.model.as_deref()))
+            .map(|row| {
+                let (agent, model) = (row.agent.as_str(), row.model.as_deref());
+                let style = shades.style(kit, agent, model);
+                Fill::model(kit, style, shades.place(agent, model))
+            })
             .collect();
-        let bar = self.bar(kit, &rows, &styles, width);
+        let halves: Vec<Option<&'static str>> = rows
+            .iter()
+            .map(|row| shades.half_texture(kit, &row.agent, row.model.as_deref()))
+            .collect();
+        let bar = self.bar(kit, &rows, &fills, width);
         let mut body = Drawn::new();
         if !full {
             body.push(bar);
@@ -360,34 +391,32 @@ impl SpendCard<'_> {
             return body;
         }
         body.push(Vec::new());
-        for line in self.table(kit, &rows, &styles, width) {
+        for line in self.table(kit, &rows, &fills, &halves, width) {
             body.push(line);
         }
         body.push(Vec::new());
-        body.push(truncate_spans(&self.billing(kit, &rows), width));
+        body.push(self.billing(kit, &rows, width));
         body
     }
 
-    /// Each model's share of the spend. Against a limit for the day, today's bar is the
-    /// limit, and what's unspent stays track.
-    fn bar(
-        &self,
-        kit: &Kit<'_>,
-        rows: &[Row],
-        styles: &[Style],
-        width: usize,
-    ) -> Vec<Span<'static>> {
-        let mut parts: Vec<(u64, Style)> = rows
+    /// Each model's share of the spend, in its texture. Against a limit for the day, today's
+    /// bar is the limit, and what's unspent stays track.
+    fn bar(&self, kit: &Kit<'_>, rows: &[Row], fills: &[Fill], width: usize) -> Vec<Span<'static>> {
+        let mut parts: Vec<(u64, Fill)> = rows
             .iter()
-            .zip(styles)
-            .map(|(row, style)| (units(row.spent.cost_usd), *style))
+            .zip(fills)
+            .map(|(row, fill)| (units(row.spent.cost_usd), *fill))
             .collect();
         let spent: u64 = parts.iter().map(|(spent, _)| spent).sum();
         let limit = self.usage.spend_limit.map(units).unwrap_or(0);
         if self.usage.period == UsagePeriod::Today && limit > spent {
-            parts.push((limit - spent, kit.fg(Role::Faint)));
+            parts.push((limit - spent, kit.fg(Role::Faint).into()));
         }
         draw::stacked(kit, &parts, width)
+    }
+
+    fn tokens(&self, count: u64) -> String {
+        Figures::for_tokens_of(self.usage.total.total_tokens()).tokens(count)
     }
 
     /// The column heads, then a row a model.
@@ -395,43 +424,128 @@ impl SpendCard<'_> {
         &self,
         kit: &Kit<'_>,
         rows: &[Row],
-        styles: &[Style],
+        fills: &[Fill],
+        halves: &[Option<&'static str>],
         width: usize,
     ) -> Vec<Vec<Span<'static>>> {
-        let columns = Column::fitting(width);
-        let total = self.usage.total.cost_usd;
-        let tokens = |row: &Row| row.spent.total_tokens();
-        let unit = Unit::for_largest(rows.iter().map(tokens).max().unwrap_or(0));
+        let total = units(self.usage.total.cost_usd);
+        let tokens = |row: &Row| self.tokens(row.spent.total_tokens());
+        let local = |row: &Row| row.local && row.spent.cost_usd == 0.0;
+        let spend = |row: &Row| {
+            if local(row) {
+                "local".to_owned()
+            } else {
+                format::spend(&row.spent)
+            }
+        };
+        let on = |row: &Row| ModelLabel::cli(self.names, &row.agent, kit.theme, NoPicture::Nothing);
+        let widest = |head: &str, of: &dyn Fn(&Row) -> usize| {
+            rows.iter().map(of).max().unwrap_or(0).max(str_width(head))
+        };
+        let layout = Layout {
+            name: widest("model", &|row| str_width(&row.name)),
+            logo: rows
+                .iter()
+                .map(|row| spans_width(&on(row).logo))
+                .max()
+                .unwrap_or(0),
+            on: Some(widest("on", &|row| str_width(&on(row).name))),
+            spend: widest("spend", &|row| str_width(&spend(row))),
+            share: true,
+            tokens: Some(widest("tokens", &|row| str_width(&tokens(row)))),
+            day: Some(DAY_CELLS),
+        }
+        .fitting(width);
         // One scale for every model's days, so the rows compare.
         let fullest_day = rows.iter().flat_map(|row| row.week).max().unwrap_or(0);
-        let mut lines = vec![line(&columns, |column| vec![kit.dim(column.head())])];
-        for (row, style) in rows.iter().zip(styles) {
-            lines.push(line(&columns, |column| match column {
-                Column::Model => {
-                    let mut cell = draw::swatch(kit, *style);
-                    cell.push(Span::raw(row.name.clone()));
-                    cell
+        let mut lines = vec![line(
+            &layout,
+            Cells {
+                name: vec![kit.dim("model")],
+                logo: Vec::new(),
+                on: vec![kit.dim("on")],
+                spend: vec![kit.dim("spend")],
+                tokens: vec![kit.dim("tokens")],
+                week: layout
+                    .day
+                    .map(|day| self.letters(kit, day))
+                    .unwrap_or_default(),
+                ..Cells::default()
+            },
+        )];
+        for (at, (row, fill)) in rows.iter().zip(fills).enumerate() {
+            let shape = fill.texture.unwrap_or(kit.glyphs.used);
+            let week = match layout.day {
+                Some(_) if fullest_day == 0 && at == 0 => vec![kit.dim(NOTHING_THIS_WEEK)],
+                Some(_) if fullest_day == 0 => Vec::new(),
+                Some(day) => {
+                    let look = DayLook {
+                        shape,
+                        half: halves.get(at).copied().flatten(),
+                        style: fill.style,
+                        cells: day,
+                    };
+                    self.week(kit, row, fullest_day, look)
                 }
-                Column::On => vec![kit.dim(cli_word(self.names, &row.agent))],
-                Column::Spend if row.local && row.spent.cost_usd == 0.0 => {
-                    vec![kit.dim("local")]
-                }
-                Column::Spend => vec![kit.strong(format::spend(&row.spent))],
-                Column::Share if total > 0.0 => {
-                    vec![kit.dim(format::percent(row.spent.cost_usd / total))]
-                }
-                Column::Share => Vec::new(),
-                Column::Tokens => vec![Span::raw(unit.write(tokens(row)))],
-                Column::Did => vec![kit.dim(row.did_words())],
-                Column::Week => self.week(kit, row, fullest_day, *style),
-            }));
+                None => Vec::new(),
+            };
+            let label = on(row);
+            lines.push(line(
+                &layout,
+                Cells {
+                    swatch: vec![Span::styled(shape.repeat(SWATCH), fill.style)],
+                    name: vec![Span::raw(row.name.clone())],
+                    logo: label.logo,
+                    on: vec![kit.dim(label.name)],
+                    spend: vec![if local(row) {
+                        kit.dim(spend(row))
+                    } else {
+                        kit.strong(spend(row))
+                    }],
+                    share: if total > 0 {
+                        vec![kit.dim(legend::share(units(row.spent.cost_usd), total))]
+                    } else {
+                        Vec::new()
+                    },
+                    tokens: vec![Span::raw(tokens(row))],
+                    week,
+                },
+            ));
         }
         lines
     }
 
-    /// A small bar for each day of this week, a blank cell apart: the lowest on the grey
-    /// track for a day with no spend, and nothing for a day still ahead.
-    fn week(&self, kit: &Kit<'_>, row: &Row, fullest_day: u64, style: Style) -> Vec<Span<'static>> {
+    /// `S   M   T   W   T   F   S`: each day's letter over the middle of its cells, today's
+    /// in the accent.
+    fn letters(&self, kit: &Kit<'_>, day: usize) -> Vec<Span<'static>> {
+        let (first, today) = (self.week_start(), self.today());
+        let mut out = Vec::new();
+        let mut used = 0;
+        for at in 0..7 {
+            let date = first + Duration::days(at as i64);
+            let middle = at * (day + 1) + day / 2;
+            out.push(Span::raw(" ".repeat(middle - used)));
+            let letter = letter(date.weekday()).to_string();
+            out.push(if date == today {
+                Span::styled(letter, kit.bold(Role::Accent))
+            } else {
+                kit.dim(letter)
+            });
+            used = middle + 1;
+        }
+        out.push(Span::raw(" ".repeat(week_cells(day) - used)));
+        out
+    }
+
+    /// A bar for each day of this week, a blank cell apart, running across the day's cells in
+    /// the model's shape: a day with no spend on the faint line, and a day still ahead blank.
+    fn week(
+        &self,
+        kit: &Kit<'_>,
+        row: &Row,
+        fullest_day: u64,
+        look: DayLook,
+    ) -> Vec<Span<'static>> {
         let (first, today) = (self.week_start(), self.today());
         let mut cells = Vec::new();
         for (at, spent) in row.week.iter().enumerate() {
@@ -439,70 +553,84 @@ impl SpendCard<'_> {
                 cells.push(Span::raw(" "));
             }
             let ahead = first + Duration::days(at as i64) > today;
-            let day = (!ahead).then_some(*spent);
-            cells.extend(draw::spark(kit, &[day], fullest_day, style));
+            cells.extend(match (ahead, *spent) {
+                (true, _) => vec![Span::raw(" ".repeat(look.cells))],
+                (false, 0) => {
+                    let line = kit.glyphs.columns[0].repeat(look.cells);
+                    vec![Span::styled(line, kit.fg(Role::Faint))]
+                }
+                (false, spent) => look.bar(spent, fullest_day),
+            });
         }
         cells
     }
 
-    /// `on plans $0.26 (inside Max and Plus, not charged) · on API keys $0`, then `local $0`
-    /// where a model ran on this machine, and what `~` means where a number carries it.
-    fn billing(&self, kit: &Kit<'_>, rows: &[Row]) -> Vec<Span<'static>> {
-        let sum = |charged: bool| -> f64 {
-            let rows = rows
-                .iter()
-                .filter(|row| !row.local && row.pays_per_token == charged);
-            rows.map(|row| row.spent.cost_usd).sum()
+    /// `on plans ~$0.26 (inside your plans, not charged) · on API keys $0.00`, then
+    /// `local $0.00` where a model ran on this machine, and what `~` means where a number
+    /// carries it, cut to `width`.
+    fn billing(&self, kit: &Kit<'_>, rows: &[Row], width: usize) -> Vec<Span<'static>> {
+        let sum = |keep: &dyn Fn(&Row) -> bool| -> Spend {
+            let kept = rows.iter().filter(|row| keep(row));
+            kept.fold(Spend::default(), |sum, row| sum.plus(&row.spent))
         };
-        let (on_plans, on_keys) = (sum(false), sum(true));
-        let inside = if on_plans > 0.0 {
-            format!(" (inside {}, not charged)", self.plans_of(rows))
+        let on_plans = sum(&|row| !row.local && !row.pays_per_token);
+        let on_keys = sum(&|row| !row.local && row.pays_per_token);
+        let inside = if on_plans.cost_usd > 0.0 {
+            " (inside your plans, not charged)"
         } else {
-            String::new()
+            ""
         };
         let mut line = vec![
             kit.dim("on plans "),
-            kit.strong(dollars(on_plans)),
+            kit.strong(format::spend(&on_plans)),
             kit.dim(format!("{inside} · on API keys ")),
-            kit.strong(dollars(on_keys)),
+            kit.strong(format::spend(&on_keys)),
         ];
         if rows.iter().any(|row| row.local) {
-            let local: f64 = rows
-                .iter()
-                .filter(|row| row.local)
-                .map(|row| row.spent.cost_usd)
-                .sum();
             line.push(kit.dim(" · local "));
-            line.push(kit.strong(dollars(local)));
+            line.push(kit.strong(format::spend(&sum(&|row| row.local))));
         }
         let estimated = |row: &Row| row.spent.cost_estimated && row.spent.cost_usd > 0.0;
         if rows.iter().any(estimated) {
-            line.push(kit.dim(" · ~ is an estimate at list prices"));
+            line.push(kit.dim(" · ~ estimated at list prices"));
         }
-        line
+        truncate_spans(&line, width)
     }
+}
 
-    /// `Max and Plus`: the plans the rows' CLIs are on, or `your plans` where one has no name.
-    fn plans_of(&self, rows: &[Row]) -> String {
-        let mut plans: Vec<&str> = Vec::new();
-        let mut agents: Vec<&str> = Vec::new();
-        for row in rows.iter().filter(|row| !row.pays_per_token && !row.local) {
-            if agents.contains(&row.agent.as_str()) {
-                continue;
-            }
-            agents.push(&row.agent);
-            let plan = self.usage.plans.iter().find(|plan| plan.agent == row.agent);
-            match plan.and_then(|plan| plan.plan.as_deref()) {
-                Some(name) if !plans.contains(&name) => plans.push(name),
-                Some(_) => {}
-                None => return "your plans".to_owned(),
-            }
+/// How a row's days draw: its model's shape, the left half of it a bar can end in, its
+/// colour, and each day's cells.
+#[derive(Debug, Clone, Copy)]
+struct DayLook {
+    shape: &'static str,
+    half: Option<&'static str>,
+    style: Style,
+    cells: usize,
+}
+
+impl DayLook {
+    /// A day that spent `spent` of the week's fullest `top`, in half cells across the day's
+    /// cells, at least one half for any spend.
+    fn bar(&self, spent: u64, top: u64) -> Vec<Span<'static>> {
+        let most = 2 * self.cells as u64;
+        let halves = (spent.saturating_mul(most) + top / 2) / top.max(1);
+        let mut halves = halves.clamp(1, most) as usize;
+        // A shape with no half rounds up to a whole cell.
+        if self.half.is_none() && halves % 2 == 1 {
+            halves += 1;
         }
-        match plans.split_last() {
-            Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-            Some((only, _)) => (*only).to_owned(),
-            None => "your plans".to_owned(),
+        let mut out = Vec::new();
+        if halves >= 2 {
+            out.push(Span::styled(self.shape.repeat(halves / 2), self.style));
         }
+        if let Some(half) = self.half.filter(|_| halves % 2 == 1) {
+            out.push(Span::styled(half, self.style));
+        }
+        let drawn = halves.div_ceil(2);
+        if drawn < self.cells {
+            out.push(Span::raw(" ".repeat(self.cells - drawn)));
+        }
+        out
     }
 }
 
@@ -520,23 +648,6 @@ fn fold_unnamed(rows: &mut Vec<Row>) {
             }),
         }
     }
-}
-
-/// Each column's cell in its cells, with a blank kept before the next column.
-fn line(
-    columns: &[(Column, usize)],
-    cell: impl Fn(Column) -> Vec<Span<'static>>,
-) -> Vec<Span<'static>> {
-    let mut out = Vec::new();
-    for (at, (column, cells)) in columns.iter().enumerate() {
-        if at + 1 == columns.len() {
-            out.extend(truncate_spans(&cell(*column), *cells));
-        } else {
-            out.extend(fit(cell(*column), cells.saturating_sub(1)));
-            out.push(Span::raw(" "));
-        }
-    }
-    out
 }
 
 #[cfg(test)]

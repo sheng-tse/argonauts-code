@@ -28,9 +28,10 @@ const MODELS_TEXT: &str = include_str!("../../../../tests/golden/home/ours_model
 const MODELS_COLOURS: &str = include_str!("../../../../tests/golden/home/ours_models.html");
 
 /// The panel's width for the pictures' 118 cells, and its height: its rule, then the
-/// picture's 31 rows.
+/// Models picture's 31 rows, or the Overview picture's 33.
 const WIDTH: u16 = 120;
 const HEIGHT: u16 = 32;
+const OVERVIEW_HEIGHT: u16 = 34;
 
 /// A day's strength in the picture, as its quarter: `25%` is the quietest.
 fn strength(fg: &str) -> Option<usize> {
@@ -215,21 +216,21 @@ fn the_overview_sub_tab_matches_its_picture() {
     let state = state();
     let mut view = tab(sample::numbers());
     key(&mut view, &state, crossterm::event::KeyCode::Down);
-    let buf = render(&mut view, &state, HEIGHT);
+    let buf = render(&mut view, &state, OVERVIEW_HEIGHT);
     Screen {
         text: OVERVIEW_TEXT,
         colours: OVERVIEW_COLOURS,
         days: 5..=11,
-        colours_elsewhere: 17..25,
+        colours_elsewhere: 17..27,
         instead: &[
             (
-                26,
+                28,
                 "Your input and output are ~7087x the tokens in Animal Farm",
                 "the picture's ~920x of A Game of Thrones can't come from 69.1M in and 207.3M \
                  out, and the fact is picked by the day, as Claude Code picks one at random",
             ),
             (
-                28,
+                30,
                 "Stats from the last 147 days · imported: Claude Code since Oct 2025, Codex since \
                  Feb, agy since Jun",
                 "the numbers above it count 147 days, where the picture's last row was drawn \
@@ -242,33 +243,88 @@ fn the_overview_sub_tab_matches_its_picture() {
 
 /// The three groups and the two bars from the numbers picture's example, at its 116 cells,
 /// every cell with its colour. The page names the kinds of tokens by its faint, blue and
-/// orange, which here are the tokens' own colours. The picture writes the app's name in full,
-/// which it was first drawn without: the Tokens group's values and notes and the whole Days
-/// group stand three cells further right for it, and Sessions where it was.
+/// orange, which here are the tokens' own colours. The Tokens group's values stand three
+/// cells after its longest label, the app's name in full, and the Days group four after its
+/// longest note.
 #[test]
 fn the_numbers_match_their_picture() {
-    use crate::overview::golden::{self, Picture, Region};
+    numbers_match("overview_numbers", &sample::numbers());
+}
+
+/// Where some of the period's tokens were free or paid, a third bar says who paid, under the
+/// kinds' bar and as wide, with what the paid part cost after its legend.
+#[test]
+fn who_paid_matches_its_picture() {
+    numbers_match("overview_numbers_who_paid", &sample::numbers_who_paid());
+}
+
+/// The numbers card drawn from `data` at its picture's width, in a terminal that draws logos,
+/// against the picture `name`. Each CLI on the By CLI row has its logo, which the picture
+/// writes as its stand-ins.
+fn numbers_match(name: &str, data: &argonauts_core::overview::OverviewData) {
+    use crate::kit::logo::golden::{count, pictured, with_stand_ins};
+    use crate::overview::golden::{self, Picture, Region, keep};
     use crate::overview::home::numbers::Numbers;
 
-    let picture = Picture::load("overview_numbers")
+    let picture = Picture::load(name)
         .standing_for("--term-faint", Role::TokensCached)
         .standing_for("--term-blu", Role::TokensInput)
         .standing_for("--term-org", Role::TokensOutput);
-    let theme = golden::theme();
+    let theme = pictured(&golden::theme());
+    let names = crate::overview::sample::names();
+    let numbers = Numbers {
+        data,
+        names: &names,
+    };
+    let drawn = numbers.block(&Kit::new(&theme), picture.width());
+    let area = Rect::new(0, 0, picture.width() as u16, drawn.lines.len() as u16);
+    let mut buf = Buffer::empty(area);
+    for (y, line) in drawn.lines.iter().enumerate() {
+        buf.set_line(0, y as u16, line, area.width);
+    }
+    assert_eq!(count(&buf), 3, "a logo for each CLI");
+    let shown = with_stand_ins(&buf);
+    keep(name, &shown);
+    assert_eq!(drawn.lines.len(), picture.rows.len());
+    golden::assert_matches(&picture, &shown, &Region::whole(&picture, (0, 0)), &theme);
+}
+
+/// Each CLI in the By CLI legend keys its part of the bar with a swatch in its colour, then
+/// has its logo where the terminal draws one, then its whole name.
+#[test]
+fn the_by_cli_legend_keys_each_cli_by_its_colour_then_its_logo() {
+    use crate::overview::home::numbers::Numbers;
+
     let names = crate::overview::sample::names();
     let data = sample::numbers();
     let numbers = Numbers {
         data: &data,
         names: &names,
     };
-    let drawn = numbers.block(&Kit::new(&theme), picture.width());
-    assert_eq!(drawn.lines.len(), picture.rows.len());
-    let area = Rect::new(0, 0, picture.width() as u16, drawn.lines.len() as u16);
-    let mut buf = Buffer::empty(area);
-    for (y, line) in drawn.lines.iter().enumerate() {
-        buf.set_line(0, y as u16, line, area.width);
-    }
-    golden::assert_matches(&picture, &buf, &Region::whole(&picture, (0, 0)), &theme);
+    let rows = |theme: &Theme| {
+        let drawn = numbers.block(&Kit::new(theme), 116);
+        let lines = crate::kit::logo::golden::lines_with_stand_ins(&drawn.lines);
+        crate::text::plain_text(&lines)
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let plain = theme();
+    let without = rows(&plain);
+    let pictured = rows(&crate::kit::logo::golden::pictured(&plain));
+    let legend = |rows: &[String]| rows[rows.len() - 2..].join("\n");
+    let without = legend(&without);
+    assert!(
+        without.contains("▌ Claude Code    88%      ▌ Codex    12%"),
+        "{without}"
+    );
+    assert!(without.ends_with("▌ agy            <1%"), "{without}");
+    let pictured = legend(&pictured);
+    assert!(
+        pictured.contains("▌ ◧◨ Claude Code    88%      ▌ ◧◨ Codex    12%"),
+        "{pictured}"
+    );
+    assert!(pictured.ends_with("▌ ◧◨ agy            <1%"), "{pictured}");
 }
 
 /// A font that draws a square or a bar wider than its cell runs it into whatever touches it,
@@ -280,16 +336,17 @@ fn no_word_touches_a_bar_or_a_square_of_the_numbers() {
 
     let theme = theme();
     let names = crate::overview::sample::names();
-    let data = sample::numbers();
-    let numbers = Numbers {
-        data: &data,
-        names: &names,
-    };
-    for width in [116, 100, 80, 60, 40, 24] {
-        let drawn = numbers.block(&Kit::new(&theme), width);
-        for row in crate::text::plain_text(&drawn.lines).lines() {
-            assert_eq!(touching_bar(row), None, "{width}: {row:?}");
-            assert!(crate::text::str_width(row) <= width, "{width}: {row:?}");
+    for data in [sample::numbers(), sample::numbers_who_paid()] {
+        let numbers = Numbers {
+            data: &data,
+            names: &names,
+        };
+        for width in [116, 100, 80, 60, 40, 24] {
+            let drawn = numbers.block(&Kit::new(&theme), width);
+            for row in crate::text::plain_text(&drawn.lines).lines() {
+                assert_eq!(touching_bar(row), None, "{width}: {row:?}");
+                assert!(crate::text::str_width(row) <= width, "{width}: {row:?}");
+            }
         }
     }
 }
@@ -399,8 +456,8 @@ fn in_the_models_the_chosen_sub_tab_stays_filled() {
         &render(&mut view, &state, HEIGHT),
         0..3,
     );
-    key(&mut view, &state, KeyCode::Tab);
     key(&mut view, &state, KeyCode::BackTab);
+    key(&mut view, &state, KeyCode::Tab);
     assert_eq!(
         view.level(),
         Level::Cards,

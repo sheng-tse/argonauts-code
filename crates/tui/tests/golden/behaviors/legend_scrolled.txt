@@ -1,29 +1,27 @@
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
 
-  Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
 
-  What your agents did, from 75 actions in 19 runs across 6 projects · Argonauts' labels
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
 
-                                                                    Comparing Qwen3 Coder 30B
-                                                                    with the other models
-                                                                    red: Coder does this more
-                                                                    blue: Coder does this less
+                                                                    Comparing ◧◨ Qwen3 Coder 30B
+                                                                    With the rest, on the land:
+                                                                    Red where it does more, blue where less
+                                                                       Much more 2x as often or more
+                                                                       More      1.25x to 2x
+                                                                       Less      0.5x to 0.8x
+                                                                       Much less 0.5x or less
+                                                                       Untinted  About the same, or too few
 
-                                                                    3 more above
-                                                                    ○ Haiku 4.5           9
-                                                                    ○ Gemini 3.8 Flash    8
-                                                                    ○ Sonnet 5            7
-                                                                    ○ Opus 5.5            6
-                                                                    ○ GPT 6               5
-                                                                    ● Qwen3 Coder 30B     4
-                                                                    ○ Gemma 3 12B         3
+                                                                    ↑  7 more above
+                                                                    ○  ◧◨ 6                  5
+                                                                    ●  ◧◨ Qwen3 Coder 30B    4
+                                                                    ○  ◧◨ Gemma 3 12B        3
 
+  Point at anything on the map to see what it is.
 
-
-
-
-
+  Label map · 75 actions in 19 runs across 6 projects
 
 
 
@@ -32,9 +30,4 @@
 
 
 
-
-
-
-
-
-   r to cycle dates · g group · s this project · d deeper map · ←  →  compare · ↓  the list · esc back
+   r to cycle dates · s this project · d summaries · tab groupings · ←  →  compare · t top view · esc back

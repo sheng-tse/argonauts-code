@@ -14,7 +14,7 @@ use argonauts_core::events::RunEventKind;
 use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
 use argonauts_core::events::plan::{DivideEvent, LimitPlan, TaskGraph};
 use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::events::task::{TaskKind, TaskSpec};
+use argonauts_core::events::task::{TaskKind, TaskSpec, TaskWay};
 use argonauts_core::limits::{HealthState, PlanUsageStatus};
 use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::Settings;
@@ -191,7 +191,7 @@ pub async fn division(host: &Host, call: &StepCall) -> EngineResult<Division> {
     let protected = forbidden_paths(settings);
     let assignment = {
         let workers = |task_type: &str| {
-            roles::candidates(settings, RoleName::Worker)
+            worker_pool(host)
                 .into_iter()
                 .map(|model| candidate(host, model, task_type, book.as_ref()))
                 .collect()
@@ -248,6 +248,20 @@ pub async fn division(host: &Host, call: &StepCall) -> EngineResult<Division> {
         None,
         RunEventKind::Divide(DivideEvent::Limit(limit.clone())),
     )?;
+    // A task the plan gave no way gets the rule of thumb's, from the ways the setup offers, so
+    // the run's record says from the graph on how each task runs. The plan approval then puts
+    // the ways your request names in their place.
+    let offer = crate::council::ways::offer_for(host);
+    for task in &mut tasks {
+        if task.way.is_none() {
+            let how = crate::council::ways::propose(task, &offer).way;
+            task.way = Some(TaskWay {
+                how,
+                asked_by_you: false,
+                steps: None,
+            });
+        }
+    }
     let graph = TaskGraph {
         critical_path: tie_breaker::critical_path(&tasks),
         tasks,
@@ -664,6 +678,40 @@ fn with_limits(
         task.limit = limit_lines::task_limit(past, &host.settings().limits.spend);
     }
     Ok(tasks)
+}
+
+/// Who may build a task: the workers' list, or with the orchestrator picking, every member of
+/// the crew that's set up here, then anything else that is.
+pub(crate) fn worker_pool(host: &Host) -> Vec<ModelRef> {
+    let settings = host.settings();
+    if !settings.crew.orchestrator_picks.worker {
+        return roles::candidates(settings, RoleName::Worker);
+    }
+    let available = host.services().workers.available();
+    let mut pool: Vec<ModelRef> = Vec::new();
+    let members = settings
+        .crew
+        .members()
+        .into_iter()
+        .chain(std::iter::once(settings.crew.main.clone()))
+        .filter(|model| available.contains(model));
+    for model in members.chain(available.iter().cloned()) {
+        if !pool.contains(&model) {
+            pool.push(model);
+        }
+    }
+    pool
+}
+
+/// `pool` in the orchestrator's order for a task of `task_type`, as [`router::pick_order`]
+/// ranks it from each model's record, plan and cost now.
+pub(crate) fn picked_order(host: &Host, pool: Vec<ModelRef>, task_type: &str) -> Vec<ModelRef> {
+    let book = track_records(host);
+    let candidates: Vec<router::Candidate> = pool
+        .into_iter()
+        .map(|model| candidate(host, model, task_type, book.as_ref()))
+        .collect();
+    router::pick_order(&candidates)
 }
 
 pub(crate) fn candidate(

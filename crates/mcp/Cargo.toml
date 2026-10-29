@@ -28,6 +28,5 @@ tokio.workspace = true
 
 [dev-dependencies]
 argonauts-testkit.workspace = true
-rmcp = { workspace = true, features = ["client"] }
 tempfile.workspace = true
 tokio.workspace = true

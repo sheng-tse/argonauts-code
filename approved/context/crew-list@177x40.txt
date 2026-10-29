@@ -1,0 +1,22 @@
+Context, the crew's list opened: the rows, the same at either size
+screen 177x40
+at ?,?
+size 120x4
+terminal fg=#c8d3f5 bg=#222436
+text
+     Crew agents · the run at work, Make the rate limiter per API key
+     ├ plan                        ￼￼ Haiku 5.5     13.3k/1m (1%) · ended 8:30 AM
+     ├ build:per-api-key           ￼￼ 6 Luna      30.5k/872k (3%) · at work
+     └ build:cap-bucket-refills    ￼￼ Haiku 5.5       21k/1m (2%) · at work
+paint
+.....aaaa.aaaaaa.b.bbb.bbb.bb.bbbbb.bbbb.bbb.bbbb.bbbbbbb.bbb.bbb.bbb
+.....b.cccc........................dd.bbbbb.bbb.....cccccccc.cccc.b.bbbbb.bbbb.bb
+.....b.ccccccccccccccccc...........ee.b.bbbb......cccccccccc.cccc.b.bb.bbbb
+.....b.cccccccccccccccccccccccc....dd.bbbbb.bbb.......cccccc.cccc.b.bb.bbbb
+key
+. blank
+a fg=#c8d3f5 bold  ; the terminal's own
+b fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+c fg=#c8d3f5  ; the terminal's own
+d logo=claudecode
+e logo=codex

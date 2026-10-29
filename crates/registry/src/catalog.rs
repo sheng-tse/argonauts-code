@@ -27,6 +27,8 @@ const EVERYWHERE: &[&str] = &[
     "agents.*.auth",
     "agents.*.binary",
     "endpoints.*",
+    "save_changes_to",
+    "behaviors.view",
     "ui.*",
     "narrator.*",
     "notifications.*",
@@ -1085,8 +1087,10 @@ fn named() -> Vec<SettingMeta> {
         ),
         words(
             "ui.motion",
-            "Reduced keeps spinners still and streams text a line at a time",
-            &["normal", "reduced"],
+            "How much moves: full, everything; reduced keeps spinners still, streams text a \
+             line at a time and draws each of the world's motions as a still sign; off also \
+             skips the frames in between when you act",
+            &["full", "reduced", "off"],
         ),
         words(
             "ui.screen",
@@ -1306,6 +1310,134 @@ fn later_keys() -> Vec<SettingMeta> {
         meta(
             "notifications.conversation.on",
             "What sends a message: needs_you, finished, agent_down",
+            &[],
+        ),
+        // Where changes save, the pictures, and Council
+        words(
+            "save_changes_to",
+            "Where a change you make in the app is saved: everywhere, your global file; \
+             just_you, this project's file for you alone; this_project, the file your team \
+             shares; or this_session. Only your global file may set it",
+            &["everywhere", "just_you", "this_project", "this_session"],
+        ),
+        words(
+            "behaviors.view",
+            "How Behaviors draws its map: auto draws the world where the terminal shows \
+             pictures and the braille map elsewhere; world also asks a terminal that doesn't say \
+             it shows pictures, and braille always draws the braille map",
+            &["auto", "world", "braille"],
+        ),
+        words(
+            "ui.logos",
+            "Each CLI's and model's logo before its name where the terminal draws pictures in \
+             its cells, the coloured dot elsewhere; off keeps the dot everywhere",
+            &["auto", "off"],
+        ),
+        meta(
+            "ui.paid_by",
+            "Where free and paid tokens show beside the plan's: end_line, under a run's end \
+             line, and usage, as a who-paid bar in Overview's Tokens. [] shows them nowhere",
+            &[],
+        ),
+        words(
+            "ui.council_view",
+            "How Council's talk shows: as messages in bubbles, or as a transcript with one \
+             block per message",
+            &["messages", "transcript"],
+        ),
+        words(
+            "ui.bubbles",
+            "How Council's bubbles are drawn: auto rounds them as pictures under the text where \
+             the terminal can and shows the transcript elsewhere; blocks draws them in block \
+             cells; plain fills nothing in",
+            &["auto", "blocks", "plain"],
+        ),
+        meta(
+            "crew.orchestrator_picks.worker",
+            "The orchestrator picks a ready model to build each task, by past results on that \
+             kind of task, plan left, then cost, instead of the worker list",
+            BOOL,
+        ),
+        meta(
+            "crew.orchestrator_picks.reviewer",
+            "The orchestrator picks each task's reviewers the same way, never its worker and \
+             never from its provider, instead of the reviewer list",
+            BOOL,
+        ),
+        meta(
+            "crew.ways.own_session",
+            "The orchestrator may have a task done in one session, by the model that takes it",
+            BOOL,
+        ),
+        meta(
+            "crew.ways.workflows",
+            "The workflows the orchestrator may have a task run: \"any\", or a list of names. \
+             [] keeps workflows out of every plan",
+            &[],
+        ),
+        meta(
+            "crew.ways.agents",
+            "The most agents the orchestrator may have one task start at once, 2 to 4, or 0 for \
+             none",
+            &["0", "2", "3", "4"],
+        ),
+        meta(
+            "council.seat",
+            "The seats in order, each a model and its role: proposer, skeptic or checker. A \
+             model may sit more than once, each seat its own session. Unset, each of the \
+             crew's workers sits once as a proposer",
+            &[],
+        ),
+        meta(
+            "council.ways.own_session",
+            "The note keeper may have a task done in one session, by the model that takes it",
+            BOOL,
+        ),
+        meta(
+            "council.ways.workflows",
+            "The workflows the note keeper may have a task run: \"any\", or a list of names. \
+             [] keeps workflows out of every plan",
+            &[],
+        ),
+        meta(
+            "council.ways.agents",
+            "The most agents the note keeper may have one task start at once, 2 to 4, or 0 for \
+             none",
+            &["0", "2", "3", "4"],
+        ),
+        words(
+            "council.same_model_check",
+            "When no other maker is set up to check a task, a fresh session of the same model \
+             checks it, marked Same maker; ask asks you once per council first",
+            &["allow", "ask"],
+        ),
+        words(
+            "council.when_you_write",
+            "When you write while a model is writing: it finishes its message, then reads \
+             yours, or restart starts it again with yours",
+            &["finish", "restart"],
+        ),
+        words(
+            "council.unsettled",
+            "Who settles the points left open when a talk stops without agreement: you, or a \
+             vote of the council. Autopilot always votes",
+            &["you", "vote"],
+        ),
+        meta(
+            "council.stop_after.messages_that_move_nobody",
+            "A talk stops without agreement after this many messages in a row that change \
+             nobody's stance",
+            &[],
+        ),
+        meta(
+            "council.stop_after.tokens",
+            "A talk stops without agreement once it has spent this many tokens, every model's \
+             together",
+            &[],
+        ),
+        meta(
+            "council.stop_after.working_time",
+            "A talk stops without agreement after this much working time, such as \"15m\"",
             &[],
         ),
     ]
@@ -1553,7 +1685,12 @@ mod tests {
             "endpoints.*.base_url" => "\"http://localhost:11434/v1\"",
             "endpoints.*.api_key_env" => "\"OLLAMA_API_KEY\"",
             "approvals.judge.model_rules" => "\"approval-rules.md\"",
-            "limits.run_tokens" | "limits.per_task_tokens" => "200000",
+            "limits.run_tokens" | "limits.per_task_tokens" | "council.stop_after.tokens" => {
+                "200000"
+            }
+            "crew.ways.workflows" | "council.ways.workflows" => "[\"maker-checker\"]",
+            "council.seat" => "[{ model = \"codex\", role = \"skeptic\" }]",
+            "ui.paid_by" => "[\"end_line\"]",
             "approvals.rules.merge.max_changed_lines"
             | "approvals.rules.stuck.max_extra_tries"
             | "fallback.together"
@@ -1565,7 +1702,8 @@ mod tests {
             | "workflows.max_depth"
             | "ui.panel.max_rows"
             | "mcp.runs_per_day"
-            | "switch.recent" => "2",
+            | "switch.recent"
+            | "council.stop_after.messages_that_move_nobody" => "2",
             "limits.protected_paths" | "limits.dependency_allowlist" => "[\"docs/**\"]",
             "approvals.refuse_ancestor_env" => "[\"OTHER_AGENT_SHELL\"]",
             "notifications.conversation.command" => "[\"/usr/local/bin/send-message\", \"{text}\"]",
@@ -1580,7 +1718,8 @@ mod tests {
             | "fallback.*.retry.wait"
             | "fallback.retry.wait"
             | "evolution.propose_timeout"
-            | "mcp.run_limit" => "\"30s\"",
+            | "mcp.run_limit"
+            | "council.stop_after.working_time" => "\"30s\"",
             "narrator.spend_cap" => "\"0.50 usd\"",
             "ui.accent" => "\"#d4a017\"",
             "ui.keymap.*" => "\"ctrl+left\"",
@@ -1703,9 +1842,31 @@ mod tests {
             "roles.*.sandbox.network",
             "roles.*.sandbox.agents_see_other_worktrees",
             "roles.*.sandbox.agents_commit",
+            "save_changes_to",
+            "behaviors.view",
+            "ui.logos",
+            "ui.paid_by",
+            "ui.council_view",
+            "ui.bubbles",
+            "crew.orchestrator_picks.worker",
+            "crew.orchestrator_picks.reviewer",
+            "crew.ways.own_session",
+            "crew.ways.workflows",
+            "crew.ways.agents",
+            "council.seat",
+            "council.ways.own_session",
+            "council.ways.workflows",
+            "council.ways.agents",
+            "council.same_model_check",
+            "council.when_you_write",
+            "council.unsettled",
+            "council.stop_after.messages_that_move_nobody",
+            "council.stop_after.tokens",
+            "council.stop_after.working_time",
         ] {
             assert!(keys.contains(key), "{key}");
         }
+        assert!(!keys.contains("ui.panel.bar"), "a key that is gone");
         assert!(!keys.iter().any(|key| key.contains("claude-code")));
 
         for meta in &catalog {
@@ -1741,6 +1902,24 @@ mod tests {
             ["\"captain\"", "\"crew\""]
         );
         assert_eq!(allowed("ui.ambiguous_width"), ["1", "2"]);
+        assert_eq!(allowed("ui.motion"), ["\"full\"", "\"reduced\"", "\"off\""]);
+        assert_eq!(allowed("council.ways.agents"), ["0", "2", "3", "4"]);
+        assert_eq!(
+            allowed("save_changes_to"),
+            [
+                "\"everywhere\"",
+                "\"just_you\"",
+                "\"this_project\"",
+                "\"this_session\""
+            ]
+        );
+        for open in [
+            "crew.ways.workflows",
+            "ui.paid_by",
+            "council.stop_after.tokens",
+        ] {
+            assert!(allowed(open).is_empty(), "{open}");
+        }
         assert_eq!(
             allowed("fallback.worker.replace.codex.on_return"),
             [
@@ -1818,6 +1997,10 @@ mod tests {
         for key in [
             "workflow",
             "crew.worker",
+            "crew.ways.agents",
+            "crew.orchestrator_picks.reviewer",
+            "council.same_model_check",
+            "council.stop_after.tokens",
             "approvals.merge.mode",
             "limits.spend_per_run",
             "fallback.worker.mode",
@@ -1838,6 +2021,10 @@ mod tests {
             "notifications.os",
             "limits.spend_per_day",
             "limits.auto_merges_per_day",
+            "save_changes_to",
+            "behaviors.view",
+            "ui.logos",
+            "ui.council_view",
         ] {
             assert_eq!(scope(key), Some(SettingScope::Global), "{key}");
         }

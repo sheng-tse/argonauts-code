@@ -159,15 +159,12 @@ mod tests {
     #[test]
     fn working_line_while_claude_code_retries_reads_as_its_picture() {
         use crate::bottom::WorkingLine;
-        use crate::bridge::transcript::picture_check::{Unlike, assert_rows_match};
+        use crate::bridge::transcript::picture_check::assert_rows_match;
         use crate::render::{Clock, RenderCtx};
         use crate::theme::{Glyphs, Theme};
 
         const WIDTH: u16 = 118;
         const ROW: usize = 45;
-        const ESC: &str = " · esc to interrupt)";
-        const BEFORE_ESC: &str =
-            "✻ API error · Retrying in 8s · attempt 4/10 (41s · ↓  2.2k tokens";
 
         let mut theme = Theme::dark();
         theme.glyphs = Glyphs::UNICODE;
@@ -188,7 +185,6 @@ mod tests {
             .lines()
             .map(str::trim_end)
             .collect();
-        let esc_from = BEFORE_ESC.chars().count();
         assert_rows_match(
             "network_after",
             &[line.line(&ctx)],
@@ -198,12 +194,7 @@ mod tests {
             ),
             ROW..ROW + 1,
             &theme,
-            &[Unlike {
-                row: 0,
-                cols: (esc_from, esc_from + ESC.chars().count() - 1),
-                why: "the parentheses close after the tokens: esc to interrupt is on the bottom \
-                      line, as on Claude Code's own screen",
-            }],
+            &[],
         );
     }
 

@@ -41,6 +41,7 @@ impl<W: Write> Ui<W> {
     pub fn handle_event(&mut self, event: Event, now: Instant) -> Vec<UiAction> {
         self.settle_question_keys(now);
         if self.views.is_empty() {
+            self.notice_for_map(&event, now);
             if let Some(actions) = self.selection_key(&event) {
                 return actions;
             }
@@ -147,6 +148,10 @@ impl<W: Write> Ui<W> {
 
     /// `cursor` is where the terminal reports its cursor now, if the host could ask. Terminals
     /// that rewrap scrollback move the live region with it, and the cursor tells by how much.
+    ///
+    /// Every resize counts, even one that keeps the columns and rows, since a font size change
+    /// can: the cell size is read again, the pictures come off and go back where their cells
+    /// are now, and a frame is drawn at once.
     pub fn resize(&mut self, size: Size, cursor: Option<Position>) {
         // Resizing only records the new size, so it has nothing to fail on.
         let _ = self.terminal.resize(size, cursor);
@@ -195,6 +200,9 @@ impl<W: Write> Ui<W> {
             if !self.picker_key(key, actions) {
                 self.quit_key(key, now, actions);
             }
+            return;
+        }
+        if self.council_key(key, actions) {
             return;
         }
         if self.chord_key(key, now, actions)
@@ -558,7 +566,17 @@ impl<W: Write> Ui<W> {
         let Some(picker) = self.model.bottom.picker.as_mut() else {
             return false;
         };
-        match picker.handle_key(key) {
+        // A settings picker keeps a pick made with this key for this session only; any other
+        // picker takes the key as its own.
+        let for_session = self
+            .keymap
+            .actions_for(Layer::Popup, &key)
+            .contains(&Action::SaveForSession);
+        let event = match for_session.then(|| picker.pick_for_session()) {
+            Some(PickerEvent::Unhandled) | None => picker.handle_key(key),
+            Some(event) => event,
+        };
+        match event {
             PickerEvent::Unhandled => return false,
             event => actions.push(UiAction::Picker(event)),
         }

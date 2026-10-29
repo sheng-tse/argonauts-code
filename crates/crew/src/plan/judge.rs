@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use futures::future::join_all;
 
+use argonauts_core::RunId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::plan::{JudgingResult, PlanEvent, PlanTally};
 use argonauts_core::names::{ModelRef, PlanLabel, RoleName};
@@ -42,7 +43,7 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         return Ok(StepDone::skipped("Fewer than two plans to judge"));
     }
     let reports = experiments::run(host, call).await?;
-    let plans = drafts::labeled(&latest.iter().collect::<Vec<_>>())?;
+    let plans = drafts::labeled_for_agents(host, &latest.iter().collect::<Vec<_>>())?;
     let flags = scan_plans(host, &plans)?;
     let provider = providers(host);
     let authors: Authors = latest
@@ -294,21 +295,22 @@ async fn score(
     let provider = providers(host);
     let mut asks = Vec::new();
     for (judge, _, shown) in panels {
-        let mut shown = shown.clone();
         if shown.is_empty() {
             continue;
         }
+        let drawn = order_for(host.run_id(), judge, shown);
         for order in orders {
             if done.contains(&(judge.clone(), *order)) {
                 continue;
             }
+            let mut plans = drawn.clone();
             if *order == 1 {
-                shown.reverse();
+                plans.reverse();
             }
             let input = JudgeInput {
                 goal: goal.clone(),
                 rubric: rubric_of(host),
-                plans: shown.clone(),
+                plans,
                 experiments: reports.to_vec(),
             };
             let mut ask = Ask::new(
@@ -374,6 +376,11 @@ async fn score(
     Ok(())
 }
 
+/// The plans `judge` reads, in an order drawn for it as a judge.
+fn order_for(run: &RunId, judge: &ModelRef, shown: &[LabeledPlan]) -> Vec<LabeledPlan> {
+    drafts::read_by(run, &format!("judge {judge}"), shown)
+}
+
 fn recorded_scores(host: &Host) -> Vec<Score> {
     host.read(|state| {
         let round = state.plan.current_round();
@@ -400,4 +407,59 @@ fn rubric_of(host: &Host) -> Vec<argonauts_core::steps::plan::RubricCriterion> {
         host,
         crate::prompts::plan::RUBRIC,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    fn plans() -> Vec<LabeledPlan> {
+        (1..=4)
+            .map(|label| LabeledPlan {
+                label,
+                text: format!("Plan {label}'s approach."),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_judge_reads_the_plans_in_an_order_drawn_for_it() {
+        let run = RunId::new("run-01").unwrap();
+        let shown = plans();
+        let judges: Vec<ModelRef> = [
+            "codex/gpt-5.6",
+            "antigravity-cli/gemini-3.8-flash",
+            "claude-code/opus",
+            "opencode/ollama/qwen3-coder:30b",
+        ]
+        .iter()
+        .map(|judge| judge.parse().unwrap())
+        .collect();
+        let orders: BTreeSet<Vec<PlanLabel>> = judges
+            .iter()
+            .map(|judge| {
+                let drawn = order_for(&run, judge, &shown);
+                assert_eq!(drawn.len(), shown.len());
+                assert_eq!(
+                    order_for(&run, judge, &shown),
+                    drawn,
+                    "the same again on resume"
+                );
+                drawn.iter().map(|plan| plan.label).collect()
+            })
+            .collect();
+        assert!(
+            orders.len() > 1,
+            "judges read the plans in different orders"
+        );
+        let other_run = RunId::new("run-02").unwrap();
+        assert!(
+            judges
+                .iter()
+                .any(|judge| order_for(&other_run, judge, &shown) != order_for(&run, judge, &shown)),
+            "another run, other orders"
+        );
+    }
 }

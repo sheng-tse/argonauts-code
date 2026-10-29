@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+                                     ⠈⠉                             Every model                                Actions
+                                           ⡀ ⣀ ⡀                    Nothing compared · ←  →  compares one
+    ⣀⡄ ⢀                                ⡨⣸⣼⣕⣿⣶⣧⣔⢅
+  ⠆          ⠐  ⣠⣦⣶⣦⡆⠄                   ⠁⠊⠓⠙⠉⠝⠈  ⡀                 ● Haiku 5.5                                    406
+              ⡀ ⠈⠙⠙⠉⠃⠈                                              ● GPT 6 Luna                                    66
+          ⢀       ⠈                       ⡀                   ⡀     ● GPT 5.6 Luna                                  49
+      ⢀⣦⣤⣤⡀                      ⠒                          ⢲⣵⣶⣵⣧⣗  ● Haiku 4.5                                     22
+       ⠉⠉⠁                                                   ⠈⠙⠈⠈   ● Gemini 3.8 Flash                              19
+
+                       ⢀⢀        ⠣ ⠐⠂
+                       ⠁⠐⠄⡠⡄⢂    ⣍⢉⡒
+                        ⠴⠠⢒⠄ ⠐⢀ ⡈                ⠐⠉⠚⠓
+                            ⠒ ⡀⠠⠥⢂⠈
+
+  Point at a dot to see the action under it
+
+
+  1 2 3 for map, planet, universe    ←  →  to compare              r to cycle dates
+  + - to zoom in or out              ↓  for the list               shift + r for the period before
+  scroll to zoom                     g G for the first and last    s for this project
+  tab to step groupings              esc to go back                d to switch labels and summaries
+
+
+
+
+
+
+   r to cycle dates · s this project · d summaries · tab grouping · ←  →  compare · ↓  the list · esc back

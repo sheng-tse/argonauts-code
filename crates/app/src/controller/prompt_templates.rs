@@ -743,9 +743,9 @@ mod tests {
         assert!(dir.join("review/review.md").is_file());
     }
 
-    /// `/prompts writer judge built-in` asks where to keep it, like any setting.
+    /// `/prompts writer judge built-in` saves at once where your changes go, like any setting.
     #[tokio::test]
-    async fn picking_a_writer_asks_where_to_keep_it() {
+    async fn picking_a_writer_saves_it_at_once() {
         let mut driver = TestDriver::start().await;
         driver
             .send(UiCommand::Slash {
@@ -757,13 +757,23 @@ mod tests {
                 },
             })
             .await;
-        let asked = driver
-            .until(|event| matches!(event, AppEvent::Choice { .. } | AppEvent::Notice { .. }))
+        let saved = driver
+            .until(|event| {
+                matches!(
+                    event,
+                    AppEvent::SettingChanged { .. }
+                        | AppEvent::Choice { .. }
+                        | AppEvent::Notice { .. }
+                )
+            })
             .await;
-        let AppEvent::Choice { choice } = asked else {
-            panic!("no question: {asked:?}");
+        let AppEvent::SettingChanged { key, value, .. } = saved else {
+            panic!("not saved: {saved:?}");
         };
-        assert_eq!(choice.body[0], "prompts.judge.writer = \"built-in\"");
+        assert_eq!(
+            (key.as_str(), value.as_str()),
+            ("prompts.judge.writer", "\"built-in\"")
+        );
     }
 
     #[test]

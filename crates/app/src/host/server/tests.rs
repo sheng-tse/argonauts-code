@@ -50,6 +50,7 @@ pub(crate) fn command_name(command: &EngineCommand) -> &'static str {
         EngineCommand::SpotCheck { .. } => "spot_check",
         EngineCommand::ProposeWorkflowChange { .. } => "propose_workflow_change",
         EngineCommand::Goal { .. } => "goal",
+        EngineCommand::Council { .. } => "council",
     }
 }
 
@@ -63,7 +64,8 @@ pub(crate) fn answer_command(command: EngineCommand, log: &Log) {
         | EngineCommand::Reassign { reply, .. }
         | EngineCommand::Rewind { reply, .. }
         | EngineCommand::SpotCheck { reply, .. }
-        | EngineCommand::Goal { reply, .. } => {
+        | EngineCommand::Goal { reply, .. }
+        | EngineCommand::Council { reply, .. } => {
             let _ = reply.send(Ok(()));
         }
         EngineCommand::Mention { reply, .. } | EngineCommand::Guidance { reply, .. } => {
@@ -723,4 +725,22 @@ async fn a_waiting_run_wakes_for_the_last_turns_diff() {
         ["diff"],
         "only an engine diffs the last turn"
     );
+}
+
+/// What you write to a council reaches the run as a council command. It carries no token: it
+/// is a message, not an approval.
+#[tokio::test]
+async fn a_council_message_reaches_the_run_as_one() {
+    let fixture = Fixture::new(false, test_markers());
+    let write = ControlRequest::Council {
+        action: argonauts_core::events::council::CouncilAction::Write {
+            text: "Keep /health open.".to_owned(),
+            reply_to: None,
+            mentions: Vec::new(),
+            points: Vec::new(),
+        },
+    };
+    let clean = Origin::Peer { pid: Some(32) };
+    assert_eq!(apply(&fixture.state, write, clean).await, ControlReply::Ok);
+    assert_eq!(fixture.log(), ["council"]);
 }

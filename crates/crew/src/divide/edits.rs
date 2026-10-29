@@ -6,20 +6,24 @@
 //! task-002 reviewers agy, claude-code/opus
 //! task-002 paths src/store/**, src/cache.rs
 //! task-002 limit 4.5
+//! task-002 way maker-checker
 //! limit tasks 0.45
 //! ```
 //!
+//! A way line is what ←/→ at the approval writes: `own session`, a workflow's name, or `3
+//! agents`, from the ways the setup allows. A way you set binds, as one your request names.
 //! An edited graph goes through the same rules as a proposal, so an edit that breaks one
 //! reopens the approval with the reason.
 
 use argonauts_core::TaskId;
 use argonauts_core::events::plan::{DesignDecision, LimitPlan, TaskGraph};
-use argonauts_core::events::task::{TaskKind, TaskSpec};
+use argonauts_core::events::task::{TaskKind, TaskSpec, TaskWay, Way};
 use argonauts_core::names::{DecisionId, ModelRef, RoleName};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::limit::{LimitAmount, LimitLineKind, LimitUnit};
 
 use super::{graph, limit_lines};
+use crate::council::ways::{self, Offer, Setup};
 use crate::roles;
 
 /// Its title gives the record's file name, `D-NNN-your-edits.md`.
@@ -43,6 +47,10 @@ pub enum Edit {
         task: TaskId,
         amount: f64,
     },
+    Way {
+        task: TaskId,
+        way: Way,
+    },
     Line {
         line: LimitLineKind,
         share: f64,
@@ -56,6 +64,8 @@ pub struct Edited {
     pub limit: LimitPlan,
     pub workers: Vec<TaskId>,
     pub reviewers: Vec<TaskId>,
+    /// Each task whose way you changed, with the way it had before.
+    pub ways: Vec<(TaskId, Option<Way>)>,
     pub limit_changed: bool,
 }
 
@@ -82,7 +92,10 @@ pub fn parse(note: &str) -> Result<Vec<Edit>, String> {
             continue;
         }
         if !looks_like_task(first)
-            || !matches!(keyword.as_str(), "worker" | "reviewers" | "paths" | "limit")
+            || !matches!(
+                keyword.as_str(),
+                "worker" | "reviewers" | "paths" | "limit" | "way"
+            )
         {
             continue;
         }
@@ -103,6 +116,10 @@ pub fn parse(note: &str) -> Result<Vec<Edit>, String> {
                 task,
                 paths: list(rest),
             },
+            "way" => Edit::Way {
+                task,
+                way: ways::parse(rest).map_err(|why| format!("\"{line}\": {why}"))?,
+            },
             _ => Edit::TaskLimit {
                 task,
                 amount: number(rest, line)?,
@@ -113,18 +130,20 @@ pub fn parse(note: &str) -> Result<Vec<Edit>, String> {
     Ok(edits)
 }
 
-/// Applies the edits and checks the result like a proposal. `Err` is the reason to reopen the
-/// approval with.
+/// Applies the edits and checks the result like a proposal. A way must be one `offer` holds.
+/// `Err` is the reason to reopen the approval with.
 pub fn apply(
     graph: &TaskGraph,
     limit: &LimitPlan,
     edits: &[Edit],
     settings: &Settings,
     provider: &dyn Fn(&ModelRef) -> String,
+    offer: &Offer,
 ) -> Result<Edited, String> {
     let mut tasks = graph.tasks.clone();
     let mut limit = limit.clone();
     let (mut workers, mut reviewers, mut limit_changed) = (Vec::new(), Vec::new(), false);
+    let mut changed_ways: Vec<(TaskId, Option<Way>)> = Vec::new();
     let worker_pool = roles::candidates(settings, RoleName::Worker);
     let reviewer_pool = roles::candidates(settings, RoleName::Reviewer);
     for edit in edits {
@@ -151,6 +170,24 @@ pub fn apply(
             }
             Edit::Paths { task, paths } => {
                 find(&mut tasks, task)?.owned_paths.clone_from(paths);
+            }
+            Edit::Way { task, way } => {
+                let spec = find(&mut tasks, task)?;
+                let had = spec.way.as_ref().map(|way| way.how.clone());
+                if had.as_ref() == Some(way) {
+                    continue;
+                }
+                if let Some(refusal) = offer.refusal(way) {
+                    return Err(refusal);
+                }
+                spec.way = Some(TaskWay {
+                    how: way.clone(),
+                    asked_by_you: true,
+                    steps: None,
+                });
+                if !changed_ways.iter().any(|(changed, _)| changed == task) {
+                    changed_ways.push((task.clone(), had));
+                }
             }
             Edit::TaskLimit { task, amount } => {
                 if !amount.is_finite() || *amount <= 0.0 {
@@ -186,6 +223,13 @@ pub fn apply(
     follow_reviewers(&mut tasks, &reviewers, &workers);
     let mut broken = graph::rules(&tasks, settings);
     broken.extend(conflicts(&tasks, settings, provider));
+    broken.extend(same_maker_checks(&tasks, settings, provider));
+    broken.extend(
+        changed_ways
+            .iter()
+            .filter_map(|(id, _)| tasks.iter().find(|task| &task.id == id))
+            .filter_map(ways::agents_misfit),
+    );
     if limit_changed && let Err(reason) = limit_lines::check(&limit) {
         broken.push(reason);
     }
@@ -200,17 +244,24 @@ pub fn apply(
         limit,
         workers,
         reviewers,
+        ways: changed_ways,
         limit_changed,
     })
 }
 
-/// The decision record for an approval with edits.
-pub fn decision(id: DecisionId, note: &str) -> DesignDecision {
+/// The decision record for an approval with edits. `ways` says each way you changed, and what
+/// it was.
+pub fn decision(id: DecisionId, note: &str, ways: &[String]) -> DesignDecision {
+    let mut rationale = "You approved the plan with these edits at the plan approval.".to_owned();
+    for line in ways {
+        rationale.push(' ');
+        rationale.push_str(line);
+    }
     DesignDecision {
         id,
         title: DECISION_TITLE.to_owned(),
         choice: note.trim().to_owned(),
-        rationale: "You approved the plan with these edits at the plan approval.".to_owned(),
+        rationale,
         alternatives: Vec::new(),
         path: None,
     }
@@ -234,12 +285,64 @@ fn follow_reviewers(tasks: &mut [TaskSpec], reviewed: &[TaskId], owned: &[TaskId
     }
 }
 
+/// One line per way changed, for the decision record: "You changed how Memory store is done:
+/// by Maker-checker, where the note keeper had it in its own session."
+pub fn way_lines(edited: &Edited) -> Vec<String> {
+    edited
+        .ways
+        .iter()
+        .filter_map(|(id, had)| {
+            let task = edited.graph.tasks.iter().find(|task| &task.id == id)?;
+            let now = ways::done_by(&task.way.as_ref()?.how);
+            Some(match had {
+                Some(had) => format!(
+                    "You changed how {} is done: {now}, where the note keeper had it {}.",
+                    task.title,
+                    ways::done_by(had)
+                ),
+                None => format!("You set how {} is done: {now}.", task.title),
+            })
+        })
+        .collect()
+}
+
+/// A council's checker comes from another maker whenever one is set up to check: one line
+/// for each reviewer of a task that is its worker's maker while another maker could check.
+/// With one maker set up, a fresh session of it checks, marked Same maker.
+pub fn same_maker_checks(
+    tasks: &[TaskSpec],
+    settings: &Settings,
+    provider: &dyn Fn(&ModelRef) -> String,
+) -> Vec<String> {
+    if Setup::of(settings) != Setup::Council {
+        return Vec::new();
+    }
+    let checkers = roles::candidates(settings, RoleName::Reviewer);
+    let mut broken = Vec::new();
+    for task in tasks {
+        let Some(worker) = &task.worker else { continue };
+        let maker = provider(worker);
+        if !checkers.iter().any(|checker| provider(checker) != maker) {
+            continue;
+        }
+        for reviewer in task.reviewers.iter().filter(|r| provider(r) == maker) {
+            broken.push(format!(
+                "{reviewer} is the same maker as {worker}, {}'s worker, and another maker is \
+                 set up to check it.",
+                task.id
+            ));
+        }
+    }
+    broken
+}
+
 fn conflicts(
     tasks: &[TaskSpec],
     settings: &Settings,
     provider: &dyn Fn(&ModelRef) -> String,
 ) -> Vec<String> {
     let mut broken = Vec::new();
+    let council = Setup::of(settings) == Setup::Council;
     for task in tasks {
         let Some(worker) = &task.worker else { continue };
         for reviewer in &task.reviewers {
@@ -247,7 +350,10 @@ fn conflicts(
                 roles::conflict(RoleName::Reviewer, reviewer, Some(worker), provider)
             {
                 broken.push(format!("{reason} ({}).", task.id));
-            } else if settings.review.other_provider && provider(reviewer) == provider(worker) {
+            } else if !council
+                && settings.review.other_provider
+                && provider(reviewer) == provider(worker)
+            {
                 broken.push(format!(
                     "{reviewer} is in the same provider as {worker}, {}'s worker.",
                     task.id
@@ -336,6 +442,7 @@ mod tests {
             limit: TaskLimit::default(),
             predictions: None,
             item: None,
+            way: None,
         }
     }
 
@@ -414,11 +521,24 @@ mod tests {
         assert!(parse("task-001 limit lots").is_err());
     }
 
+    fn offer(settings: &Settings) -> Offer {
+        Offer::for_run(settings, &ways::task_workflows([]))
+    }
+
     #[test]
     fn edits_are_checked_like_a_proposal() {
         let (graph, limit, settings) = fixture();
-        let try_edit =
-            |note: &str| apply(&graph, &limit, &parse(note).unwrap(), &settings, &provider);
+        let offer = offer(&settings);
+        let try_edit = |note: &str| {
+            apply(
+                &graph,
+                &limit,
+                &parse(note).unwrap(),
+                &settings,
+                &provider,
+                &offer,
+            )
+        };
 
         // The test task follows its task's new reviewer, and then needs another reviewer.
         let reason = try_edit("task-001 reviewers agy").unwrap_err();
@@ -481,9 +601,144 @@ mod tests {
 
     #[test]
     fn plan_edits_become_a_decision_titled_your_edits() {
-        let record = decision(DecisionId::numbered(4), "  task-001 worker agy\n");
+        let record = decision(DecisionId::numbered(4), "  task-001 worker agy\n", &[]);
         assert_eq!(record.title, "Your edits");
         assert_eq!(record.choice, "task-001 worker agy");
         assert_eq!(record.id.as_str(), "D-004");
+        let changed = vec!["You set how task-001 is done: by 2 agents.".to_owned()];
+        let record = decision(DecisionId::numbered(5), "task-001 way 2 agents", &changed);
+        assert_eq!(
+            record.rationale,
+            "You approved the plan with these edits at the plan approval. You set how task-001 \
+             is done: by 2 agents."
+        );
+    }
+
+    #[test]
+    fn a_way_line_parses_as_the_arrows_write_it() {
+        let edits =
+            parse("task-001 way maker-checker\ntask-001 way: 3 agents\nWay to go.").unwrap();
+        assert_eq!(
+            edits,
+            [
+                Edit::Way {
+                    task: TaskId::numbered(1),
+                    way: Way::Workflow {
+                        name: argonauts_core::workflow::WorkflowRef::new("maker-checker")
+                    }
+                },
+                Edit::Way {
+                    task: TaskId::numbered(1),
+                    way: Way::Agents { count: 3 }
+                },
+            ]
+        );
+        let reason = parse("task-001 way 9 agents").unwrap_err();
+        assert_eq!(
+            reason,
+            "\"task-001 way 9 agents\": \"9 agents\": a task starts 2 to 4 agents."
+        );
+    }
+
+    #[test]
+    fn a_way_you_set_binds_and_comes_from_what_the_setup_allows() {
+        let (mut graph, limit, mut settings) = fixture();
+        graph.tasks[1].owned_paths = vec!["src/store/a.rs".to_owned(), "src/store/b.rs".to_owned()];
+        graph.tasks[1].way = Some(TaskWay {
+            how: Way::OwnSession,
+            asked_by_you: false,
+            steps: None,
+        });
+        settings.workflow = "orchestrator".to_owned();
+        settings.crew.ways.workflows =
+            argonauts_core::settings::ways::WorkflowsAllowed::These(vec!["maker-checker".into()]);
+        let offer = offer(&settings);
+        let try_edit = |graph: &TaskGraph, note: &str| {
+            apply(
+                graph,
+                &limit,
+                &parse(note).unwrap(),
+                &settings,
+                &provider,
+                &offer,
+            )
+        };
+
+        let edited = try_edit(&graph, "task-001 way 2 agents").unwrap();
+        assert_eq!(
+            edited.graph.tasks[1].way,
+            Some(TaskWay {
+                how: Way::Agents { count: 2 },
+                asked_by_you: true,
+                steps: None,
+            })
+        );
+        assert_eq!(edited.ways, [(TaskId::numbered(1), Some(Way::OwnSession))]);
+        assert_eq!(
+            way_lines(&edited),
+            [
+                "You changed how task-001 is done: by 2 agents, where the note keeper had it in \
+              its own session."
+            ]
+        );
+        // Going back to the way it had changes nothing.
+        let same = try_edit(&graph, "task-001 way own session").unwrap();
+        assert!(same.ways.is_empty());
+        assert_eq!(same.graph.tasks[1].way, graph.tasks[1].way);
+
+        assert_eq!(
+            try_edit(&graph, "task-001 way best-of-n").unwrap_err(),
+            "Best-of-n is off in the orchestrator's setup. Set up Orchestrator changes it."
+        );
+        assert_eq!(
+            try_edit(&graph, "task-001 way 3 agents").unwrap_err(),
+            "task-001 can't take 3 agents: its paths make 2 parts that share no files."
+        );
+        // A paths edit first makes room for more agents.
+        let edited = try_edit(
+            &graph,
+            "task-001 paths src/store/a.rs, src/store/b.rs, src/store/c.rs\ntask-001 way 3 agents",
+        )
+        .unwrap();
+        assert_eq!(
+            edited.graph.tasks[1].way.as_ref().map(|way| &way.how),
+            Some(&Way::Agents { count: 3 })
+        );
+    }
+
+    #[test]
+    fn a_councils_checker_comes_from_another_maker_when_one_is_set_up() {
+        let (mut graph, limit, mut settings) = fixture();
+        settings.crew = vec![
+            worker("claude-code/opus"),
+            worker("claude-code/sonnet"),
+            worker("codex"),
+        ]
+        .into();
+        graph.tasks.retain(|task| task.kind == TaskKind::Build);
+        graph.tasks[0].worker = Some(worker("claude-code/opus"));
+        graph.tasks[0].reviewers = vec![worker("codex")];
+        settings.workflow = "orchestrator".to_owned();
+        settings.review.other_provider = false;
+        let note = parse("task-001 reviewers claude-code/sonnet").unwrap();
+        let orchestrated = offer(&settings);
+        let edited = apply(&graph, &limit, &note, &settings, &provider, &orchestrated);
+        assert!(edited.is_ok(), "{edited:?}");
+
+        settings.workflow = "council".to_owned();
+        let council = offer(&settings);
+        let reason = apply(&graph, &limit, &note, &settings, &provider, &council).unwrap_err();
+        assert_eq!(
+            reason,
+            "claude-code/sonnet is the same maker as claude-code/opus, task-001's worker, and \
+             another maker is set up to check it."
+        );
+
+        // With one maker set up, a fresh session of the same maker checks, even where reviews
+        // otherwise come from another provider.
+        settings.review.other_provider = true;
+        settings.crew = vec![worker("claude-code/opus"), worker("claude-code/sonnet")].into();
+        let edited = apply(&graph, &limit, &note, &settings, &provider, &council);
+        assert!(edited.is_ok(), "{edited:?}");
     }
 }

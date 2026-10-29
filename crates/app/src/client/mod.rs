@@ -23,6 +23,7 @@ use argonauts_core::api::{
     RunSummary, StartRun, StatusSummary, SteerAck,
 };
 use argonauts_core::control::{ClientKind, ControlRequest};
+use argonauts_core::events::council::CouncilAction;
 use argonauts_core::events::goal::GoalAction;
 use argonauts_core::events::session::QueuedMessage;
 use argonauts_core::future::BoxFuture;
@@ -322,6 +323,15 @@ impl ConductorApi for Client {
         let run = run.clone();
         Box::pin(async move {
             control::call(self, &run, ControlRequest::Goal { action })
+                .await?
+                .ok()
+        })
+    }
+
+    fn council(&self, run: &RunId, action: CouncilAction) -> BoxFuture<'_, Result<(), ApiError>> {
+        let run = run.clone();
+        Box::pin(async move {
+            control::call(self, &run, ControlRequest::Council { action })
                 .await?
                 .ok()
         })

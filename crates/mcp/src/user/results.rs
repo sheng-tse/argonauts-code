@@ -230,6 +230,7 @@ fn event_names(kind: &RunEventKind) -> (&'static str, Option<String>) {
         Kind::RunReview(inner) => ("run_review", inner_tag(inner)),
         Kind::Note(_) => ("note", None),
         Kind::Workflow(inner) => ("workflow", inner_tag(inner)),
+        Kind::Council(inner) => ("council", inner_tag(&inner.kind)),
     }
 }
 

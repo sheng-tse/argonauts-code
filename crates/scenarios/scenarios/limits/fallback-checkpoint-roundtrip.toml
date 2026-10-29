@@ -1,4 +1,4 @@
-# The fake Claude Code hits its usage limit, which resets in 20 seconds. Codex takes the
+# The fake Claude Code hits its usage limit, which resets in 6 seconds. Codex takes the
 # task and commits; Claude Code comes back and reviews Codex's work, which clears the debt.
 
 [version]

@@ -1,0 +1,13 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Codex
+  The model the main agent runs on Codex. Model lists refreshed just now.
+
+  ❯ 1. Default ✓      GPT 5.6 Luna
+    2. GPT 5.6 Luna   ~1% of plan usage a task
+    3. GPT 5.6        ~1% of plan usage a task
+    4. GPT 5.6 Mini   ~1% of plan usage a task
+    5. Other model…   type any model name it takes
+
+  ○ Effort not supported for Default
+
+  Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back

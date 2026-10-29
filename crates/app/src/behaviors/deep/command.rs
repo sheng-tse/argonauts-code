@@ -1,4 +1,4 @@
-//! `argonauts behaviors --deep [--since <period>]`: an update of the deeper map from a shell,
+//! `argonauts behaviors --summaries [--since <period>]`: an update of Summaries from a shell,
 //! with the summarizer and embedder the settings give, asking at the terminal where the tab
 //! would ask. Ctrl+C stops it between requests, keeping every summary it wrote.
 
@@ -25,7 +25,7 @@ pub trait DeepTerminal: Send {
     fn ask(&mut self, question: &[String]) -> Option<bool>;
 }
 
-/// Updates the deeper map. `Ok(false)` when it stopped or the summarizer failed, with every
+/// Updates Summaries. `Ok(false)` when it stopped or the summarizer failed, with every
 /// summary it wrote kept.
 pub async fn behaviors_deep(
     since: Option<BehaviorPeriod>,
@@ -75,7 +75,7 @@ pub async fn behaviors_deep(
             .map_or_else(|| made_by.to_string(), |kept| kept.name.clone());
         let question = vec![
             format!(
-                "The deeper map was made by {made_by}. One map never mixes two summarizers, so \
+                "Summaries were made by {made_by}. One map never mixes two summarizers, so \
                  its {actions} actions would be summarized again with {}; the summaries \
                  already written are kept.",
                 chosen.name
@@ -126,7 +126,7 @@ pub async fn behaviors_deep(
     };
     let done = maps.update(&start, &stop, &mut progress, &mut || {}).await;
     ctrl_c.abort();
-    let done = done.context("keeping the deeper map")?;
+    let done = done.context("keeping Summaries")?;
     for line in done_words(&done, started.elapsed()) {
         terminal.line(&line);
     }
@@ -255,7 +255,7 @@ pub(crate) fn done_words(done: &DeepDone, took: Duration) -> Vec<String> {
         None => {}
     }
     lines.push(format!(
-        "The deeper map has {} dots, {} of them new. d in Overview › Behaviors shows it.",
+        "Summaries place {} dots, {} of them new. d in Overview › Behaviors shows them.",
         done.placed, done.new_places
     ));
     lines
@@ -350,7 +350,7 @@ mod tests {
             done_words(&done, Duration::from_secs(110)),
             [
                 "Done in 1 min 50 s: 480 summarized now, 82 like an identical action, 0 already done.",
-                "The deeper map has 562 dots, 562 of them new. d in Overview › Behaviors shows it.",
+                "Summaries place 562 dots, 562 of them new. d in Overview › Behaviors shows them.",
             ]
         );
         let stopped = DeepDone {

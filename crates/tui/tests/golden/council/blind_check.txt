@@ -1,0 +1,38 @@
+                                                                          ▐2✔  ▐▌✔  ▐▌✔                                 
+     Who does what: each task goes to the seat whose idea it was.                                                       
+                                                                                                                        
+      Task            Who                How              Checked by                                                    
+      Redis bucket    ▐1 Opus 5.5 · 1    Maker-checker    ▐▌ 3.8 Flash, fresh session                                   
+      Plan limits     ▐▌ 5.6 Luna        Own session      ▐▌ 3.8 Flash, fresh session                                   
+      Route tests     ▐2 Opus 5.5 · 2    3 agents         ▐▌ 3.8 Flash, fresh session                                   
+▐1    Only you see Checked by: the seats read "a fresh session that code picks".                                        
+                                                                                                                        
+                     10:51 AM · You approved the plan · 3 tasks · Gemini 3.8 Flash checks each one                      
+                                                                                                                        
+                                   ▐1 Opus 5.5 · 1 started a workflow: Maker-checker                                    
+                                                                                                                        
+                                     ▐2 Opus 5.5 · 2 started 3 agents: Route tests                                      
+                                                                                                                        
+                                  ▐▌ 5.6 Luna works on Plan limits in its own session                                   
+                                                                                                                        
+     Opus 5.5 · 1                                                                                                       
+                                                                                                                        
+▐1   Redis bucket is made: one Lua script, 6 files changed, 14 tests pass.                                              
+                                                                                                                        
+                   ✔  ▐▌ 3.8 Flash checked Redis bucket without knowing who made it, and accepted it                    
+                                                                                                                        
+               It read the plan, the task, the change and the test output · not the talk, not who made it               
+                                                                                                                        
+✻ Rowing… (9m 12s · ↓  1.1M tokens · 1/3 tasks)                                                                         
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task                                                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on · ↑ ↓  to pick another · enter to open its session · esc to go back to the input                 
+                                                                                                                        
+  ⣾  Rate limit the API                    ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/3 · 9m12s · ↓  1.1M tokens                           
+    ⎿ ✔  ▐1 Redis bucket     Maker-checker ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  2/2 · 6m40s · ↓  612k tokens                           
+        ⎿ ✔  ▐1 Build                      Done, 6 files changed       3m20s · ↓  380k tokens                           
+❯         ✔  ▐▌ Review                     Accepted, blind             3m20s · ↓  232k tokens                           
+      ⣾  ▐▌ Plan limits      Own session   ▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱  3/5 · 9m12s · ↓  288k tokens                           
+      ⣾  ▐2 Route tests      3 agents      ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  1/3 · 5m30s · ↓  164k tokens                           

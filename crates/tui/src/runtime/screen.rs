@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::io::{self, Write};
-use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::task::Poll;
 use std::time::{Duration, Instant};
@@ -14,7 +13,7 @@ use argonauts_core::settings::ui::{ScreenMode, TakeOverWhere};
 use crossterm::event::Event;
 use futures::StreamExt;
 use ratatui::layout::Size;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{Interval, MissedTickBehavior};
 
 use super::AppIo;
@@ -37,6 +36,7 @@ use crate::terminal::InlineTerminal;
 use crate::terminal::setup::TerminalModes;
 use crate::theme::ColorEnv;
 use crate::views::crew::AgentPanelView;
+use crate::world::deliver::worker::arrivals;
 
 /// How long a notice from the loop stays on the bottom line.
 const NOTICE_FOR: Duration = Duration::from_secs(5);
@@ -87,6 +87,9 @@ pub(super) struct Screen<W: Write> {
     terminals: gone::Terminals,
     /// The terminal went away, so nothing is written to it again.
     gone: bool,
+    /// Changes as each picture drawn or packed off the frame arrives, so the frame that shows it
+    /// is drawn then, and none before.
+    arrived: watch::Receiver<u64>,
 }
 
 impl<W: Write> Screen<W> {
@@ -138,6 +141,7 @@ impl<W: Write> Screen<W> {
             gone_check: None,
             terminals: gone::Terminals::default(),
             gone: false,
+            arrived: arrivals(),
         };
         screen.refresh_keymap();
         screen
@@ -146,6 +150,11 @@ impl<W: Write> Screen<W> {
     /// The terminal draws pictures through `graphics`, at `cell` pixels a cell.
     pub(super) fn use_pictures(&mut self, graphics: Option<Graphics>, cell: Option<(u16, u16)>) {
         self.ui.use_pictures(graphics, cell);
+        let under_text = graphics == Some(Graphics::Kitty)
+            && cell.is_some()
+            && crate::council::place::under_text(|name| std::env::var(name).ok());
+        self.ui.draw_pictures_under_text(under_text);
+        self.bridge.council.under_text = under_text;
     }
 
     /// The terminal said it reports the mouse in pixels when asked.
@@ -280,6 +289,7 @@ impl<W: Write> Screen<W> {
                     }
                 }
                 Some(returned) = self.returns.recv() => self.on_returned(returned).await,
+                Ok(()) = self.arrived.changed() => self.ui.pictures_arrived(),
                 () = tokio::time::sleep_until(sleep_until), if wake.is_some() => {}
                 () = tick(&mut self.size_poll), if self.size_poll.is_some() => self.check_size(),
                 () = tick(&mut self.gone_check), if self.gone_check.is_some() => {
@@ -493,7 +503,14 @@ impl<W: Write> Screen<W> {
             }
             TakeOverPlan::Here { argv, cwd, notice } => {
                 let program = argv.first().cloned().unwrap_or_default();
-                let exit_code = match self.handed_over(keys, run_here(argv, cwd)).await? {
+                let here = TerminalJob {
+                    argv,
+                    cwd,
+                    env_remove: Vec::new(),
+                    env_set: Vec::new(),
+                    quiet: false,
+                };
+                let exit_code = match self.handed_over(keys, run_here(here)).await? {
                     Ok(status) => status.code(),
                     Err(error) => {
                         self.report(format!("Couldn't start {program}: {error}"), Tone::Error);
@@ -527,9 +544,11 @@ impl<W: Write> Screen<W> {
     ) -> anyhow::Result<()> {
         let shown = job.argv.join(" ");
         let argv = job.argv.clone();
-        let ran = self.handed_over(keys, run_here(job.argv, job.cwd)).await?;
+        let quiet = job.quiet;
+        let ran = self.handed_over(keys, run_here(job)).await?;
         self.send(UiCommand::TerminalReturned { argv }).await;
         match ran {
+            Ok(status) if status.success() && quiet => {}
             Ok(status) if status.success() => {
                 self.report(format!("Back from `{shown}`."), Tone::Dim);
             }
@@ -711,15 +730,18 @@ fn open_in_browser(url: &str) -> bool {
         .is_ok()
 }
 
-async fn run_here(argv: Vec<String>, cwd: PathBuf) -> io::Result<ExitStatus> {
-    let (program, args) = argv
+async fn run_here(job: TerminalJob) -> io::Result<ExitStatus> {
+    let (program, args) = job
+        .argv
         .split_first()
         .ok_or_else(|| io::Error::other("the session has no command"))?;
-    tokio::process::Command::new(program)
-        .args(args)
-        .current_dir(cwd)
-        .status()
-        .await
+    let mut command = tokio::process::Command::new(program);
+    command.args(args).current_dir(&job.cwd);
+    for name in &job.env_remove {
+        command.env_remove(name);
+    }
+    command.envs(job.env_set.iter().map(|(name, value)| (name, value)));
+    command.status().await
 }
 
 /// SIGTERM, SIGHUP, and SIGINT close the app the way `/exit` does, so the terminal gets its

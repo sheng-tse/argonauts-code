@@ -1,0 +1,25 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Cache exchange rates
+ orchestrator workflow · cache the rates for an hour, each part reviewed on another CLI        0/3 agents · 1m02s
+ ◆ Claude Code is down · 2 tasks wait for it · tried again in 4m48s
+
+ ╭ Phases ──────────┬ Build · 3 agents ──────────────────────────────────────────────────────────────────────────╮
+ │   ⣾ Build    0/3 │ ❯‖ build:rate-cache          Opus 5.5                                    18.4k tok     41s │
+ │   2 Review       │  ‖ build:cache-expiry        Sonnet 5.5                                   7.0k tok     22s │
+ │   3 Merge        │  ⣾ build:cache-tests         5.6 Luna                                     6.0k tok   1m02s │
+ ╰──────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Claude Code is down
+  overload errors on 3 sessions in 2 min
+  Two tasks wait for it, their work so far kept.
+
+  ❯ 1. One agent for every paused task
+    2. Choose per task
+       an agent for each, from every installed CLI
+    3. Wait for Claude Code
+       tried again at 2:40 PM
+    4. Carry on without me
+       The main agent picks for each task and goes on; kept as an assumption to review
+
+  ⣾  Add due dates           ━━━━━━━━━━──────────   2/4    4m12s   128k
+  ◆  Cache exchange rates    ────────────────────   0/3    1m02s  31.4k

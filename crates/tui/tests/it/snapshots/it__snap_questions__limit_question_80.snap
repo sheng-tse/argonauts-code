@@ -1,5 +1,5 @@
 ---
-source: crates/tui/tests/snap_questions.rs
+source: crates/tui/tests/it/snap_questions.rs
 expression: text(&lines)
 ---
 ────────────────────────────────────────────────────────────────────────────────
@@ -12,5 +12,7 @@ expression: text(&lines)
     3. Take over myself
     4. Stop and ask me
     5. Show the details
+    6. Carry on without me
+       This part ends safely with its work kept, so nothing merges without you
 
-  Enter to choose · Tab to add a note · Esc to carry on without me
+  Enter to choose · Tab to add a note · Esc back to the list

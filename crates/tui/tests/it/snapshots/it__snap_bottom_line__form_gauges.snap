@@ -1,39 +1,39 @@
 ---
-source: crates/tui/tests/snap_bottom_line.rs
+source: crates/tui/tests/it/snap_bottom_line.rs
 expression: both
 ---
 healthy
 200 columns
-  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                                                                                                                ● Claude ▁▅  ○ Codex ▁▁  ○ agy ▁▕
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                                                                                                         ● Claude Code ▁▅   ○ Codex ▁▁   ○ agy ▁▕
 150 columns
-  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                                                              ● Claude ▁▅  ○ Codex ▁▁  ○ agy ▁▕
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                                                       ● Claude Code ▁▅   ○ Codex ▁▁   ○ agy ▁▕
 120 columns
-  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                                ● Claude ▁▅  ○ Codex ▁▁  ○ agy ▁▕
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                         ● Claude Code ▁▅   ○ Codex ▁▁   ○ agy ▁▕
 100 columns
-  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts            ● Claude ▁▅  ○ Codex ▁▁  ○ agy ▁▕
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts     ● Claude Code ▁▅   ○ Codex ▁▁   ○ agy ▁▕
  80 columns
-  ⏵⏵ auto mode on (shift+tab to cycle)          ● Claude ▁▅  ○ Codex ▁▁  ○ agy ▁▕
+  ⏵⏵ auto mode on (shift+tab to cycle)   ● Claude Code ▁▅   ○ Codex ▁▁   ○ agy ▁▕
  60 columns
-  ⏵⏵ auto mode on           ● Claude ▁▅  ○ Codex ▁▁  ○ agy ▁▕
+  ⏵⏵ auto mode on    ● Claude Code ▁▅   ○ Codex ▁▁   ○ agy ▁▕
  40 columns
-  ⏵⏵    ● Claude ▁▅  ○ Codex ▁▁  ○ agy ▁▕
+  ⏵⏵  ● Claude Code ▁▅   ○ Codex   ○ agy▕
  20 columns
-  ⏵⏵     ● 56%  ○  ○▕
+  ⏵⏵    ● CC 56% ○ ○▕
 
 near a limit and out
 200 columns
-  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                                                                           ● Claude █▅ 93% resets 4:40pm  ○ Codex ▁▁  ○ agy out until Tue 3:45pm▕
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                                                                    ● Claude Code █▅ 93% resets 4:40pm   ○ Codex ▁▁   ○ agy out until Tue 3:45pm▕
 150 columns
-  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                         ● Claude █▅ 93% resets 4:40pm  ○ Codex ▁▁  ○ agy out until Tue 3:45pm▕
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                  ● Claude Code █▅ 93% resets 4:40pm   ○ Codex ▁▁   ○ agy out until Tue 3:45pm▕
 120 columns
-  ⏵⏵ auto mode on (shift+tab to cycle)             ● Claude █▅ 93% resets 4:40pm  ○ Codex ▁▁  ○ agy out until Tue 3:45pm▕
+  ⏵⏵ auto mode on (shift+tab to cycle)      ● Claude Code █▅ 93% resets 4:40pm   ○ Codex ▁▁   ○ agy out until Tue 3:45pm▕
 100 columns
-  ⏵⏵ auto mode on              ● Claude █▅ 93% resets 4:40pm  ○ Codex ▁▁  ○ agy out until Tue 3:45pm▕
+  ⏵⏵ auto mode on       ● Claude Code █▅ 93% resets 4:40pm   ○ Codex ▁▁   ○ agy out until Tue 3:45pm▕
  80 columns
-  ⏵⏵ auto  ● Claude █▅ 93% resets 4:40pm  ○ Codex ▁▁  ○ agy out until Tue 3:45pm▕
+  ⏵⏵           ● Claude Code █▅ 93% 4:40pm   ○ Codex ▁▁   ○ agy out · Tue 3:45pm▕
  60 columns
-  ⏵⏵           ● Claude █▅ 93% 4:40pm  ○ Codex ▁▁  ○ agy out▕
+  ⏵⏵    ● Claude Code █▅ 93% 4:40pm   ○ Codex ▁▁   ○ agy out▕
  40 columns
-  ⏵⏵ ● Claude █ 93% 4:40pm  ○  ○ agy out▕
+  ⏵⏵          ● CC 93%   ○ CX   ○ AG out▕
  20 columns
-  ⏵⏵ ● 93%  ○  ○ out▕
+  ⏵⏵   ● 93% ○ ○ out▕

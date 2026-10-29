@@ -122,6 +122,9 @@ pub async fn request_showing(host: &Host, call: &StepCall, shown: Shown) -> Appr
         new_dependencies: Vec::new(),
         flags: review.flags(),
         workflow: shown.workflow,
+        seats: Vec::new(),
+        objections: Vec::new(),
+        offer: None,
     };
     ApprovalRequest {
         at: Some(call.at.clone()),

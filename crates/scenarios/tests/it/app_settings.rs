@@ -17,7 +17,7 @@ use argonauts_testkit::{Key, Pty};
 
 const KEPT_COMMENT: &str = "# Written by the scenario test, kept through every change.";
 
-/// A setting given as a command's argument, saved everywhere.
+/// A setting given as a command's argument, saved at once where your changes go: everywhere.
 struct ArgumentCase {
     line: &'static str,
     key: &'static str,
@@ -26,17 +26,10 @@ struct ArgumentCase {
 }
 
 impl ArgumentCase {
-    /// `/config key value` saves a key of yours at once, to your global file, as Claude Code's
-    /// `/config` does. Every other argument, and a key that changes safety or what the team
-    /// shares, asks where to save it.
-    fn saves_at_once(&self) -> bool {
-        self.line.starts_with("/config ") && !argonauts_core::settings::asks_where(self.key, false)
-    }
-
-    /// The line the change prints: one saved at once says it as Claude Code's `/config` does,
-    /// the key, its value and the file.
+    /// The line the change prints: `/config key value` says it as Claude Code's `/config` does,
+    /// the key, its value and where it went.
     fn changed_line(&self) -> String {
-        if self.saves_at_once() {
+        if self.line.starts_with("/config ") {
             format!("⎿  Set {} to", regex::escape(self.key))
         } else {
             changed_line(self.key)
@@ -44,7 +37,7 @@ impl ArgumentCase {
     }
 }
 
-const ARGUMENT_CASES: [ArgumentCase; 12] = [
+const ARGUMENT_CASES: [ArgumentCase; 11] = [
     ArgumentCase {
         line: "/model reviewer codex",
         key: "roles.reviewer.models",
@@ -64,11 +57,6 @@ const ARGUMENT_CASES: [ArgumentCase; 12] = [
         line: "/config agents.codex.effort low",
         key: "agents.codex.effort",
         value: "\"low\"",
-    },
-    ArgumentCase {
-        line: "/workflow captain",
-        key: "workflow",
-        value: "\"captain\"",
     },
     ArgumentCase {
         line: "/approvals merge.mode auto_preview",
@@ -198,14 +186,49 @@ fn scope_changes(scenario: &Scenario) -> anyhow::Result<Vec<(String, SettingScop
 }
 
 /// The line a change leaves: what `/model` and `/effort` set reads like Claude Code's
-/// `⎿  Set model to Opus 5.5`, and any other key by name.
+/// `⎿  Set model to Opus 5.5`, a workflow `⎿  Switched to Council`, and any other key by name.
 fn changed_line(key: &str) -> String {
     match key {
         "crew.main" => "⎿  Set model to".to_owned(),
+        "workflow" => "⎿  (Switched to|Set up)".to_owned(),
         "roles.main.effort" => "⎿  Set effort to".to_owned(),
         "roles.reviewer.models" => "⎿  Set reviewer's model to".to_owned(),
         key => format!("[●⏺] Set {}", regex::escape(key)),
     }
+}
+
+/// Each setup sheet the app sent, in order.
+fn setup_sheets(
+    scenario: &Scenario,
+) -> anyhow::Result<Vec<argonauts_core::setup_sheet::SetupSheet>> {
+    Ok(events(scenario)?
+        .into_iter()
+        .filter_map(|event| match event {
+            AppEvent::View { data } => match *data {
+                ViewData::SetupSheet { sheet } => Some(*sheet),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect())
+}
+
+/// Presses ← on the row the pointer starts on, what needs you, until the sheet says Enter can
+/// switch, then Enter.
+fn make_the_sheet_ready(scenario: &Scenario, pty: &mut Pty) -> anyhow::Result<()> {
+    for _ in 0..12 {
+        let sheets = setup_sheets(scenario)?;
+        if sheets.last().is_some_and(|sheet| sheet.ready) {
+            settled(pty)?;
+            return pty.press(Key::Enter);
+        }
+        settled(pty)?;
+        pty.press(Key::Left)?;
+        wait_until("the sheet drawn again", || {
+            Ok((setup_sheets(scenario)?.len() > sheets.len()).then_some(()))
+        })?;
+    }
+    anyhow::bail!("the sheet never became ready")
 }
 
 fn snapshot(files: &[PathBuf]) -> Vec<Option<String>> {
@@ -231,10 +254,6 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
     for case in &ARGUMENT_CASES {
         let before = setting_changes(&scenario)?.len();
         submit(&mut pty, case.line)?;
-        if !case.saves_at_once() {
-            answer_scope(&scenario, &mut pty, 'e', None)
-                .with_context(|| format!("{}:\n{}", case.line, pty.screen().text()))?;
-        }
         let (key, value) = next_change(&scenario, &mut pty, before)
             .with_context(|| format!("{}:\n{}", case.line, pty.screen().text()))?;
         assert_eq!(key, case.key, "{}", case.line);
@@ -263,6 +282,7 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
             .iter()
             .filter(|event| is_picker_for(command)(event))
             .count();
+        let sheets_before = setup_sheets(&scenario)?.len();
         // Bare, `/config` opens Claude Code's shorter list on the Config tab; every key, with
         // its picker, is All settings, which `/config all` opens.
         let typed = match command {
@@ -298,7 +318,7 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
             pickers.last(),
             Some(AppEvent::View { data }) if matches!(data.as_ref(), ViewData::Effort { .. })
         );
-        // The first row, another value, then where to save it. `/model` opens a level down, on
+        // The first row, then another value, which saves it. `/model` opens a level down, on
         // the main agent's CLIs, so there it's another CLI, `/limits` opened on a limit's
         // values from its tab, and `/effort`'s slider moves to another level. Model lists come
         // a moment later, so each key waits for the rows before it.
@@ -319,50 +339,21 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
             pty.press(Key::Enter)?;
             settled(&pty)?;
         }
-        // Where to save it: the app asks, the picker lists the places, or nothing is asked for
-        // a reset, which leaves the layer the value was set in.
-        let asked = wait_until("where to save it", || {
-            if setting_changes(&scenario)?.len() > before {
-                return Ok(Some(None));
-            }
-            let by_app = open_choices(&scenario)?
-                .iter()
-                .any(|c| c.kind == ChoiceKind::SettingScope);
-            if by_app {
-                return Ok(Some(Some(true)));
-            }
-            let listed = pty.screen().visible_text().contains("Just this session");
-            Ok(listed.then_some(Some(false)))
-        })
-        .with_context(|| format!("/{command}:\n{}", pty.screen().text()))?;
-        match asked {
-            Some(true) => answer_scope(&scenario, &mut pty, 'e', None)?,
-            // Everywhere, the fourth place to save it.
-            Some(false) => pty.press(Key::Char('4'))?,
-            None => {}
-        }
-        // orchestrator waits for who orchestrates: the first CLI, at its pointed model.
-        let orchestrator = wait_until("the change or who orchestrates", || {
+        // A workflow that isn't ready opens its setup sheet: ← on the step that needs you until
+        // Enter can switch.
+        let sheet = wait_until("the change or the setup sheet", || {
             let confirm = open_choices(&scenario)?
                 .iter()
                 .any(|c| c.kind == ChoiceKind::ConfirmSafetySetting);
             if confirm || setting_changes(&scenario)?.len() > before {
                 return Ok(Some(false));
             }
-            let asked = pty
-                .screen()
-                .visible_text()
-                .contains("Model for orchestrator");
-            Ok(asked.then_some(true))
+            Ok((setup_sheets(&scenario)?.len() > sheets_before).then_some(true))
         })
         .with_context(|| format!("/{command}:\n{}", pty.screen().text()))?;
-        if orchestrator {
-            settled(&pty)?;
-            pty.press(Key::Enter)?;
-            settled(&pty)?;
-            if on_models_level(&pty) {
-                pty.press(Key::Enter)?;
-            }
+        if sheet {
+            make_the_sheet_ready(&scenario, &mut pty)
+                .with_context(|| format!("/{command}:\n{}", pty.screen().text()))?;
         }
         let (key, value) = next_change(&scenario, &mut pty, before)
             .with_context(|| format!("/{command}:\n{}", pty.screen().text()))?;
@@ -381,6 +372,15 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
             &format!("{}|[●⏺] Reset {}", changed_line(&key), regex::escape(&key)),
             WAIT,
         )?;
+        // The sheet saves the steps it set up in the same write, and only the workflow's line
+        // says so, so the file says what the run should see now.
+        if sheet {
+            for entry in toml_entries(&text) {
+                if let Some(value) = last.get_mut(&entry.key) {
+                    *value = entry.value;
+                }
+            }
+        }
         // A full-screen view such as /config stays open after an edit; Esc goes back to the
         // conversation.
         if !pty.screen().visible_text().contains("shift+tab to cycle") {
@@ -464,22 +464,20 @@ fn app_effort_offers_only_supported_levels() -> anyhow::Result<()> {
         );
     }
     assert!(
-        !open_choices(&scenario)?
-            .iter()
-            .any(|c| c.kind == ChoiceKind::SettingScope),
-        "an unsupported level got the scope question"
+        open_choices(&scenario)?.is_empty(),
+        "an unsupported level asked something"
     );
     assert_eq!(setting_changes(&scenario)?.len(), changes_before);
     scenario.shot(&pty, "app_effort_offers_only_supported_levels")?;
     Ok(())
 }
 
-/// Ultracode from `/effort`: Tab flips it beside the slider, Enter asks where to
-/// save it, and only `ultracode` is written. The input rule's label then shows it.
+/// Ultracode from `/effort`: Tab flips it beside the slider, Enter saves it where your
+/// changes go, and only `ultracode` is written. The input rule's label then shows it.
 #[test]
 fn app_effort_tab_turns_ultracode_on() -> anyhow::Result<()> {
     let scenario = scenario()?;
-    let local = project_local_config(&scenario);
+    let global = scenario.repo.global_config();
     let mut pty = start(&scenario)?;
 
     submit(&mut pty, "/effort")?;
@@ -488,10 +486,9 @@ fn app_effort_tab_turns_ultracode_on() -> anyhow::Result<()> {
     pty.wait_for("Ultracode: a workflow for every real request", WAIT)?;
     scenario.shot(&pty, "app_effort_tab_turns_ultracode_on_slider")?;
     pty.press(Key::Enter)?;
-    answer_scope(&scenario, &mut pty, 'm', None)?;
     let value = wait_setting_changed(&scenario, "ultracode", 1)?;
     assert!(same_toml(&value, "true"), "{value}");
-    let file = read(&local)?;
+    let file = read(&global)?;
     assert!(
         same_toml(&toml_value(&file, "ultracode").unwrap_or_default(), "true"),
         "{file}"
@@ -500,7 +497,7 @@ fn app_effort_tab_turns_ultracode_on() -> anyhow::Result<()> {
         !file.contains("effort"),
         "the level it left alone stays unset:\n{file}"
     );
-    pty.wait_for("Turned Ultracode on · just you", WAIT)?;
+    pty.wait_for("Turned Ultracode on · everywhere", WAIT)?;
     // The rule's own tag, at its far right after the workflow and the model.
     pty.wait_for("  ultracode ─", WAIT)?;
     scenario.shot(&pty, "app_effort_tab_turns_ultracode_on")?;
@@ -526,10 +523,9 @@ fn app_effort_offers_ultracode_on_a_model_without_levels() -> anyhow::Result<()>
         "app_effort_offers_ultracode_on_a_model_without_levels",
     )?;
     pty.press(Key::Enter)?;
-    answer_scope(&scenario, &mut pty, 'm', None)?;
     let value = wait_setting_changed(&scenario, "ultracode", 1)?;
     assert!(same_toml(&value, "true"), "{value}");
-    pty.wait_for("Turned Ultracode on · just you", WAIT)?;
+    pty.wait_for("Turned Ultracode on · everywhere", WAIT)?;
     Ok(())
 }
 
@@ -601,8 +597,7 @@ fn app_setting_applies_to_next_conversation_turn() -> anyhow::Result<()> {
     submit(&mut pty, requests::HI)?;
     wait_turns_finished(&scenario, 1)?;
 
-    submit(&mut pty, "/effort high")?;
-    answer_scope(&scenario, &mut pty, 's', None)?;
+    submit(&mut pty, "/effort high --session")?;
     wait_setting_changed(&scenario, "roles.main.effort", 1)?;
     submit(&mut pty, "tell me more")?;
     wait_turns_finished(&scenario, 2)?;
@@ -619,8 +614,11 @@ fn app_setting_applies_to_next_conversation_turn() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `--local`, `--project`, `--global` and `--session` each put one change in their place. A
+/// change with no flag saves where it takes effect, and a flag that saves under a file that
+/// wins says so.
 #[test]
-fn app_setting_scope_session_project_global() -> anyhow::Result<()> {
+fn app_setting_flags_save_where_they_say() -> anyhow::Result<()> {
     let scenario = scenario()?;
     let global = scenario.repo.global_config();
     let project = project_config(&scenario);
@@ -629,8 +627,7 @@ fn app_setting_scope_session_project_global() -> anyhow::Result<()> {
     let mut pty = start(&scenario)?;
 
     // This project, just me: the local file, kept out of git.
-    submit(&mut pty, "/effort medium")?;
-    answer_scope(&scenario, &mut pty, 'm', None)?;
+    submit(&mut pty, "/effort medium --local")?;
     wait_setting_changed(&scenario, key, 1)?;
     assert!(same_toml(
         &toml_value(&read(&local)?, key).unwrap_or_default(),
@@ -640,43 +637,35 @@ fn app_setting_scope_session_project_global() -> anyhow::Result<()> {
     assert!(exclude.contains("config.local.toml"), "{exclude}");
 
     // This project, shared.
-    submit(&mut pty, "/effort low")?;
-    answer_scope(&scenario, &mut pty, 'p', None)?;
+    submit(&mut pty, "/effort low --project")?;
     wait_setting_changed(&scenario, key, 2)?;
     assert!(same_toml(
         &toml_value(&read(&project)?, key).unwrap_or_default(),
         "\"low\""
     ));
 
-    // Everywhere, while the project files set it: the question says so.
-    submit(&mut pty, "/effort high")?;
-    let question = wait_open_choice(&scenario, ChoiceKind::SettingScope)?;
-    let said = format!(
-        "{}\n{}\n{}",
-        question.title,
-        question.body.join("\n"),
-        question
-            .options
-            .iter()
-            .filter_map(|o| o.detail.clone())
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    assert!(said.contains("won't change this repo"), "{said}");
-    answer_question(&mut pty, number_of(&question.options, 'e'))?;
-    wait_choice_closed(&scenario, &question.id)?;
+    // Everywhere, while your own project file sets it: the line says that file wins.
+    submit(&mut pty, "/effort high --global")?;
     wait_setting_changed(&scenario, key, 3)?;
     assert!(same_toml(
         &toml_value(&read(&global)?, key).unwrap_or_default(),
         "\"high\""
     ));
+    pty.wait_for(r"though your own file for this\s+project wins here", WAIT)?;
+
+    // No flag: where it takes effect, your own file, which sets it.
+    submit(&mut pty, "/effort xhigh")?;
+    wait_setting_changed(&scenario, key, 4)?;
+    assert!(same_toml(
+        &toml_value(&read(&local)?, key).unwrap_or_default(),
+        "\"xhigh\""
+    ));
 
     // Just this session: every file stays as it is.
     let files = [global, project, local];
     let before = snapshot(&files);
-    submit(&mut pty, "/effort low")?;
-    answer_scope(&scenario, &mut pty, 's', None)?;
-    wait_setting_changed(&scenario, key, 4)?;
+    submit(&mut pty, "/effort low --session")?;
+    wait_setting_changed(&scenario, key, 5)?;
     assert_eq!(snapshot(&files), before, "a session change wrote a file");
     let scopes: Vec<SettingScope> = scope_changes(&scenario)?
         .into_iter()
@@ -689,10 +678,12 @@ fn app_setting_scope_session_project_global() -> anyhow::Result<()> {
             SettingScope::ProjectLocal,
             SettingScope::Project,
             SettingScope::Global,
+            SettingScope::ProjectLocal,
             SettingScope::Session
         ]
     );
-    scenario.shot(&pty, "app_setting_scope_session_project_global")?;
+    pty.wait_for("Set effort to low · this session · was xhigh", WAIT)?;
+    scenario.shot(&pty, "app_setting_flags_save_where_they_say")?;
     Ok(())
 }
 
@@ -712,7 +703,6 @@ fn app_setting_keeps_comments_and_logs_line() -> anyhow::Result<()> {
     let mut pty = start(&scenario)?;
 
     submit(&mut pty, "/theme light")?;
-    answer_scope(&scenario, &mut pty, 'e', None)?;
     wait_setting_changed(&scenario, "ui.theme", 1)?;
     let text = read(&global)?;
     for comment in &comments {
@@ -723,7 +713,10 @@ fn app_setting_keeps_comments_and_logs_line() -> anyhow::Result<()> {
         .find(|e| e.key == "ui.theme")
         .expect("ui.theme wasn't written");
     assert!(entry.commented, "the new key has no description:\n{text}");
-    pty.wait_for(r#"[●⏺] Set ui\.theme = "?light"? · everywhere · was"#, WAIT)?;
+    pty.wait_for(
+        r#"[●⏺] Set ui\.theme = "?light"? · everywhere \(~/\.argonauts/config\.toml\)"#,
+        WAIT,
+    )?;
 
     let run_dir = start_captain(&scenario, &mut pty, requests::SMALL_FIX)?;
     let settings = wait_until("the run's settings", || Ok(run_settings(&run_dir).ok()))?;
@@ -767,8 +760,8 @@ fn app_vim_saved_in_global_config() -> anyhow::Result<()> {
     scenario.shot(&pty, "app_vim_saved_in_global_config")?;
     quit(&mut pty)?;
 
-    // A project file that sets the key wins over everywhere, so the change stays in the
-    // session and a notice says why.
+    // The team's file sets the key and would win over everywhere, so the change saves just
+    // for you, where it takes effect, and the line says why. The team's file stays as it is.
     let scenario = scenario_with(GLOBAL_CONFIG)?;
     scenario
         .repo
@@ -781,14 +774,16 @@ fn app_vim_saved_in_global_config() -> anyhow::Result<()> {
         .filter(|(key, _)| key == "ui.keys")
         .map(|(_, scope)| scope)
         .collect();
-    assert_eq!(scopes, [SettingScope::Session, SettingScope::Session]);
-    assert_eq!(read(&scenario.repo.global_config())?, global_before);
-    assert!(
-        notices(&scenario)?
-            .iter()
-            .any(|n| n.contains("ui.keys") || n.contains("this session")),
-        "no notice said why the change stays in the session"
+    assert_eq!(
+        scopes,
+        [SettingScope::ProjectLocal, SettingScope::ProjectLocal]
     );
+    assert_eq!(read(&scenario.repo.global_config())?, global_before);
+    assert_eq!(
+        read(&project_config(&scenario))?,
+        "[ui]\nkeys = \"default\"\n"
+    );
+    pty.wait_for("since the team's file sets it", WAIT)?;
     scenario.shot(&pty, "app_vim_saved_in_global_config_project")?;
     Ok(())
 }

@@ -35,6 +35,7 @@ use argonauts_core::names::{ApprovalId, ModelRef, RoleName, WorkflowId};
 use argonauts_core::policy::{HardLimit, PolicyOutcome, Verdict};
 use argonauts_core::session_runner::Access;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::delivery::{DeliveryCommits, DeliveryWrite, UnbornLanding};
 use argonauts_core::settings::fallback::{MergeRule, Retry, UnknownTier};
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
@@ -524,10 +525,14 @@ fn plan_opened(tasks: &[TaskSpec]) -> RunEventKind {
             new_dependencies: Vec::new(),
             flags: Vec::new(),
             workflow: None,
+            seats: Vec::new(),
+            objections: Vec::new(),
+            offer: None,
         })),
         evidence_sha256: "0".repeat(64),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options: Vec::new(),
         free_text: FreeText::None,
         needs_you: true,
@@ -611,6 +616,7 @@ fn spec(task: &TaskId) -> TaskSpec {
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 

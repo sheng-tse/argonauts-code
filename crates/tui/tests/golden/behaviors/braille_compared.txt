@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+                                     ⠈⠉                             Comparing GPT 6 Luna                       Actions
+                                           ⡀ ⣀ ⡀                    With the other models
+    ⣀⡄ ⢀                                ⡨⣸⣼⣕⣿⣶⣧⣔⢅                      Behind the dots: GPT 6 Luna does this more
+  ⠆          ⠐  ⣠⣦⣶⣦⡆⠄                   ⠁⠊⠓⠙⠉⠝⠈  ⡀                    Behind the dots: GPT 6 Luna does this less
+              ⡀ ⠈⠙⠙⠉⠃⠈
+          ⢀       ⠈                       ⡀                   ⡀     ○ Haiku 5.5                                    406
+      ⢀⣦⣤⣤⡀                      ⠒                          ⢲⣵⣶⣵⣧⣗  ● GPT 6 Luna                                    66
+       ⠉⠉⠁                                                   ⠈⠙⠈⠈   ○ GPT 5.6 Luna                                  49
+                                                                    ○ Haiku 4.5                                     22
+                       ⢀⢀        ⠣ ⠐⠂                               ○ Gemini 3.8 Flash                              19
+                       ⠁⠐⠄⡠⡄⢂    ⣍⢉⡒    
+                        ⠴⠠⢒⠄ ⠐⢀ ⡈                ⠐⠉⠚⠓
+                            ⠒ ⡀⠠⠥⢂⠈
+
+  ◉ Reviewed git history and previous implementations · GPT 6 Luna · tie-breaker-2 · label: read git history
+    The map stays as it was; move away and the ring goes; click opens its card
+
+  Label map · 562 actions in 19 runs across 6 projects · last 30 days
+  Distinctive to GPT 6 Luna · 66 actions; the others 496
+    Checked git status or diff and read git history         4   (6.1%)   others   2   (0.4%)
+    Checked git status or diff and ran a shell command      3   (4.5%)   others   4   (0.8%)
+    Ran the test suite                                      8  (12.1%)   others  19   (3.8%)
+    Returned its structured answer                         34  (51.5%)   others 135  (27.2%)
+
+
+
+
+   r to cycle dates · s this project · d summaries · tab grouping · ←  →  compare · ↓  the list · esc back

@@ -1,9 +1,10 @@
 use std::path::Path;
 use std::time::Duration;
 
+use argonauts_core::adapter::IdentityMarks;
 use argonauts_core::app::UltraColour;
 use argonauts_core::cli_commands::{BuiltinCommand, CliCommand};
-use argonauts_core::cli_sessions::{CliScan, CliSession, CliTurn};
+use argonauts_core::cli_sessions::{CliScan, CliSession, CliTurn, ResumeCommand, resume_facts};
 use argonauts_core::events::context::ContextDetail;
 use argonauts_core::keywords::Keyword;
 use argonauts_core::limits::{PlanUsageAnswer, PlanUsageReading};
@@ -64,6 +65,10 @@ const STARTUP_MESSAGE: argonauts_core::adapter::StartupMessage =
     };
 
 impl Adapter for ClaudeCodeAdapter {
+    fn first_count(&self) -> Option<argonauts_core::events::context::FirstCount> {
+        Some(argonauts_core::events::context::FirstCount::Answer)
+    }
+
     fn id(&self) -> &'static str {
         "claude-code"
     }
@@ -87,6 +92,34 @@ impl Adapter for ClaudeCodeAdapter {
     fn instruction_files(&self, workdir: &Path, isolated: bool) -> Vec<String> {
         let config = isolation::your_config_dir();
         instructions::loaded(workdir, config.as_deref(), isolated)
+    }
+
+    /// The tools its stream names, the rows its screen draws, and its home folder.
+    fn identity_marks(&self) -> IdentityMarks {
+        IdentityMarks {
+            tool_names: &[
+                "Bash",
+                "Read",
+                "Edit",
+                "MultiEdit",
+                "Write",
+                "NotebookEdit",
+                "TodoWrite",
+                "Task",
+                "Agent",
+                "Glob",
+                "Grep",
+                "WebFetch",
+                "WebSearch",
+                "ToolSearch",
+                "Skill",
+                "StructuredOutput",
+                "Workflow",
+            ],
+            row_marks: &["⏺", "⎿"],
+            home_folders: &["~/.claude"],
+            citation: None,
+        }
     }
 
     fn session_parser(&self, req: &SessionRequest) -> Box<dyn StreamParser> {
@@ -242,6 +275,41 @@ impl Adapter for ClaudeCodeAdapter {
                 .collect(),
             ..CommandSpec::new(self.binary(), workdir).args(["--resume", session_id])
         })
+    }
+
+    /// Claude Code 2.1.310 reads `--settings` as a JSON string too, laid over your own.
+    fn seat_screen_args(&self) -> Vec<String> {
+        let settings = serde_json::json!({
+            "autoMemoryEnabled": false,
+            "attribution": { "commit": "", "pr": "" },
+        });
+        vec!["--settings".to_owned(), settings.to_string()]
+    }
+
+    /// `claude --resume <id>`. Claude Code's own picker never lists a session `claude -p`
+    /// ran, so the id is the way in, or the session's name once that's known to find it.
+    fn resume_command(&self, req: &SessionRequest) -> Option<ResumeCommand> {
+        let spec = self.interactive_resume(req)?;
+        let by_name = req
+            .preferences
+            .title
+            .as_deref()
+            .and_then(command::name_for)
+            .filter(|_| resume_facts::CLAUDE_BY_NAME);
+        let words = match by_name {
+            Some(name) => vec![spec.program, "--resume".to_owned(), name],
+            None => std::iter::once(spec.program).chain(spec.args).collect(),
+        };
+        Some(ResumeCommand {
+            words,
+            local_model: false,
+            from_any_folder: resume_facts::CLAUDE_FROM_ANY_FOLDER,
+            also: None,
+        })
+    }
+
+    fn lists_sessions(&self) -> bool {
+        true
     }
 
     fn cli_sessions(&self, scan: &CliScan, limit: usize) -> anyhow::Result<Vec<CliSession>> {
@@ -469,7 +537,7 @@ mod tests {
                 "SendMessage",
                 "ListAgents",
                 "--settings",
-                r#"{"crossSessionInbound":"refuse","attribution":{"commit":"","pr":""},"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false}}"#,
+                r#"{"crossSessionInbound":"refuse","attribution":{"commit":"","pr":""},"autoMemoryEnabled":false,"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false}}"#,
             ]
         );
         assert_eq!(spec.stdin.as_deref(), Some("Fix the bug"));
@@ -1006,6 +1074,40 @@ mod tests {
     }
 
     #[test]
+    fn the_session_you_talk_to_is_named_by_the_conversation_every_turn() {
+        let turn = |n: u32| {
+            command(&SessionRequest {
+                scratch_dir: Some(format!("/tmp/state/conversation-004/t-00{n}").into()),
+                main_session: true,
+                preferences: argonauts_core::session_runner::SessionPreferences {
+                    title: Some("Add due dates to\nthe tasks CLI".into()),
+                    ..Default::default()
+                },
+                ..request(SessionRole::Direct)
+            })
+        };
+        for n in 1..=3 {
+            assert_eq!(
+                value_after(&turn(n), "--name"),
+                Some("argonauts Add due dates to the tasks CLI")
+            );
+        }
+        // Another session keeps its folder's name, title or not.
+        let reviewer = command(&SessionRequest {
+            scratch_dir: Some("/tmp/state/runs/run-01/review-001".into()),
+            preferences: argonauts_core::session_runner::SessionPreferences {
+                title: Some("Add due dates to the tasks CLI".into()),
+                ..Default::default()
+            },
+            ..request(SessionRole::Build)
+        });
+        assert_eq!(
+            value_after(&reviewer, "--name"),
+            Some("argonauts review-001")
+        );
+    }
+
+    #[test]
     fn compaction_flags_per_cli() {
         let adapter = ClaudeCodeAdapter;
         assert_eq!(
@@ -1248,6 +1350,7 @@ mod tests {
                 fast: true,
                 language: Some("ja".into()),
                 workflow_word_off: true,
+                title: None,
             },
             ..request(SessionRole::Direct)
         }));
@@ -1489,6 +1592,18 @@ mod tests {
     }
 
     #[test]
+    fn a_seats_own_screen_keeps_no_memory_and_signs_nothing() {
+        let args = ClaudeCodeAdapter.seat_screen_args();
+        assert_eq!(args[0], "--settings");
+        let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
+        assert_eq!(settings["autoMemoryEnabled"], false);
+        assert_eq!(
+            settings["attribution"],
+            serde_json::json!({ "commit": "", "pr": "" })
+        );
+    }
+
+    #[test]
     fn interactive_resume_opens_the_same_session() {
         let spec = ClaudeCodeAdapter
             .interactive_resume(&SessionRequest::reopening(
@@ -1510,6 +1625,16 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    #[test]
+    fn the_resume_command_names_the_session_by_its_id() {
+        let req = SessionRequest::reopening(SESSION_ID, Path::new("/tmp/worktree"));
+        let typed = ClaudeCodeAdapter.resume_command(&req).unwrap();
+        assert_eq!(typed.words, ["claude", "--resume", SESSION_ID]);
+        assert!(!typed.local_model && typed.also.is_none());
+        let flag = SessionRequest::reopening("--continue", Path::new("/w"));
+        assert!(ClaudeCodeAdapter.resume_command(&flag).is_none());
     }
 
     #[test]
@@ -1664,5 +1789,60 @@ mod tests {
                 spec.env_remove
             );
         }
+    }
+}
+
+/// Every tool its recorded output names is one of its marks, so a relayed message never names
+/// one in its own words.
+#[cfg(test)]
+mod identity_tests {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use argonauts_core::Adapter;
+
+    use super::*;
+
+    const AFTER: &str = r#""type":"tool_use""#;
+    const THEN: &str = r#""name":""#;
+
+    /// The names that follow `after` in every recorded fixture, up to the next quote.
+    fn recorded(after: &str, then: &str) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        let mut dirs = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for piece in text.split(after).skip(1) {
+                    let Some(at) = piece.find(then).filter(|at| *at < 160) else {
+                        continue;
+                    };
+                    if let Some(name) = piece[at + then.len()..].split('"').next() {
+                        names.insert(name.to_owned());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn every_tool_its_output_names_is_one_of_its_marks() {
+        let marks = ClaudeCodeAdapter::new().identity_marks();
+        let recorded = recorded(AFTER, THEN);
+        assert!(!recorded.is_empty(), "the fixtures name tools");
+        let unmarked: Vec<&String> = recorded
+            .iter()
+            .filter(|name| !name.starts_with("mcp__") && !marks.tool_names.contains(&name.as_str()))
+            .collect();
+        assert!(unmarked.is_empty(), "{unmarked:?}");
+        assert!(!marks.home_folders.is_empty());
     }
 }

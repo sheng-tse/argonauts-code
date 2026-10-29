@@ -580,10 +580,14 @@ fn run_details(run: &RunState) -> Vec<String> {
             .map(argonauts_core::text::shown_name),
     );
     let (done, total) = run.tasks_done();
-    if total > 0 && cli_own.is_none() {
+    let tasks_counted = total > 0 && cli_own.is_none();
+    if tasks_counted {
         details.push(format!("{done}/{total} tasks"));
     }
+    // A run counted in tasks leaves its agents to the rows under it; one with no tasks to count
+    // says how many agents are at work.
     match run.running_sessions().count() {
+        _ if tasks_counted => {}
         0 => {}
         1 => details.push("1 agent".to_owned()),
         agents => details.push(format!("{agents} agents")),
@@ -677,8 +681,16 @@ fn destination(run: &RunState, message: &QueuedMessage, names: &DisplayNames) ->
 /// The input rule's label: the main session's model by name alone, such as `Opus 5.5`, with
 /// the workflow's name first when it isn't Captain. Which CLI the model runs on is
 /// the marked chip on the bottom line. A run's own workflow shows on its panel row, never here.
+/// Under Council, where you write to every seat, the rule says only `council`, as Claude Code
+/// labels its own.
 fn composer_label(state: &AppState) -> Option<String> {
     let workflow = workflow_label(state).filter(|workflow| workflow != CAPTAIN);
+    if workflow
+        .as_deref()
+        .is_some_and(|workflow| workflow.eq_ignore_ascii_case(COUNCIL))
+    {
+        return Some(COUNCIL.to_owned());
+    }
     match (workflow, main_model(state)) {
         (Some(workflow), Some(model)) => Some(format!(
             "{} · {model}",
@@ -692,6 +704,9 @@ fn composer_label(state: &AppState) -> Option<String> {
 
 /// The workflow in which the main session's CLI does everything itself.
 const CAPTAIN: &str = "captain";
+
+/// The workflow in which the seats talk it over with you before anyone works.
+const COUNCIL: &str = "council";
 
 /// The model the main session runs, or its CLI's name while nobody knows the model.
 fn main_model(state: &AppState) -> Option<String> {
@@ -826,9 +841,12 @@ pub fn label_for_agent(agent_id: &str) -> String {
 }
 
 /// Where Enter sends a draft now, while a run works or a question waits.
+/// What Enter does with what you typed while a run works.
+pub(crate) const GUIDES_THE_RUN: &str = "Enter sends guidance to the run";
+
 fn enter_sends(state: &AppState) -> Option<String> {
     match &state.mode {
-        Some(AppMode::Working { .. }) => Some("Enter sends guidance to the run".to_owned()),
+        Some(AppMode::Working { .. }) => Some(GUIDES_THE_RUN.to_owned()),
         Some(AppMode::Pausing { .. }) => Some("Enter cancels the pause".to_owned()),
         Some(AppMode::Waiting { .. }) => Some("Enter resumes the run".to_owned()),
         Some(AppMode::Answering { .. }) => Some("Enter sends it after this answer".to_owned()),
@@ -848,13 +866,21 @@ fn run_takes_text(state: &AppState) -> bool {
     }
 }
 
-/// Added to the exit hint: runs keep going under their run host after the app leaves.
+/// Added to the exit hint: runs keep going under their run host after the app leaves, and
+/// keep the computer awake while they do when the app says their host holds sleep off.
 fn exit_note(state: &AppState) -> Option<String> {
-    match state.runs.values().filter(|run| run.is_active()).count() {
-        0 => None,
-        1 => Some("the run keeps going".to_owned()),
-        runs => Some(format!("{runs} runs keep going")),
-    }
+    let awake = state
+        .status
+        .as_ref()
+        .is_some_and(|status| status.line.runs_keep_awake);
+    let note = match state.runs.values().filter(|run| run.is_active()).count() {
+        0 => return None,
+        1 if awake => "the run keeps going and keeps the computer awake".to_owned(),
+        1 => "the run keeps going".to_owned(),
+        runs if awake => format!("{runs} runs keep going and keep the computer awake"),
+        runs => format!("{runs} runs keep going"),
+    };
+    Some(note)
 }
 
 /// The row the first start after an update shows above the input until your first key, as
@@ -966,20 +992,15 @@ mod tests {
             .push(workflow(1, "maker-checker", &["Build"], None));
         state.runs.insert(id.clone(), run);
         state.mode = Some(AppMode::Working { run: id.clone() });
-        assert_eq!(
-            composer_label(&state).as_deref(),
-            Some("Council · Claude Code")
-        );
+        assert_eq!(composer_label(&state).as_deref(), Some("council"));
 
         state.runs.get_mut(&id).unwrap().mode = Some(RunMode::Captain);
-        assert_eq!(
-            composer_label(&state).as_deref(),
-            Some("Council · Claude Code")
-        );
+        assert_eq!(composer_label(&state).as_deref(), Some("council"));
     }
 
-    /// The rule's label: the model by name alone, the workflow first when it isn't Captain, and
-    /// ultracode as the rule's own tag, never a word in the label.
+    /// The rule's label: the model by name alone, the workflow first when it isn't Captain,
+    /// `council` alone under Council, and ultracode as the rule's own tag, never a word in the
+    /// label.
     #[test]
     fn the_input_rule_names_the_main_model_with_the_workflow_first() {
         let mut state = AppState::default();
@@ -1002,9 +1023,11 @@ mod tests {
         state.status = Some(status("captain", "claude-code/claude-opus-5-5"));
         assert_eq!(composer_label(&state).as_deref(), Some("Opus 5.5"));
         state.status = Some(status("council", "claude-code/claude-opus-5-5"));
+        assert_eq!(composer_label(&state).as_deref(), Some("council"));
+        state.status = Some(status("maker-checker", "claude-code/claude-opus-5-5"));
         assert_eq!(
             composer_label(&state).as_deref(),
-            Some("Council · Opus 5.5")
+            Some("Maker-checker · Opus 5.5")
         );
         // After /model the rule names the new model, and nothing else says which CLI.
         state.status = Some(status("captain", "codex/gpt-6.1-sol"));
@@ -1544,6 +1567,30 @@ mod tests {
         assert_eq!(
             awake_words(&state, wall).as_deref(),
             Some("awake until you quit")
+        );
+    }
+
+    #[test]
+    fn the_exit_hint_says_when_runs_left_going_keep_the_computer_awake() {
+        let mut state = AppState::default();
+        state.status = Some(status_with(None));
+        assert_eq!(exit_note(&state), None);
+        for n in 1..=2 {
+            let run = RunId::new(format!("run-0{n}")).unwrap();
+            state.runs.insert(run.clone(), RunState::new(run));
+        }
+        assert_eq!(exit_note(&state).as_deref(), Some("2 runs keep going"));
+        if let Some(status) = state.status.as_mut() {
+            status.line.runs_keep_awake = true;
+        }
+        assert_eq!(
+            exit_note(&state).as_deref(),
+            Some("2 runs keep going and keep the computer awake")
+        );
+        state.runs.pop_first();
+        assert_eq!(
+            exit_note(&state).as_deref(),
+            Some("the run keeps going and keeps the computer awake")
         );
     }
 }

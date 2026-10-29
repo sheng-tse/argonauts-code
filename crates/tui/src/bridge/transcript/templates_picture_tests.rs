@@ -7,7 +7,7 @@ use argonauts_core::template_list::{ChangedIn, TemplateEntry, TemplateList};
 use ratatui::text::Line;
 
 use super::live_rows_tests::Screen;
-use super::picture_check::{Unlike, assert_matches};
+use super::picture_check::assert_matches;
 use crate::cell::{HistoryCell as _, TemplateFolder, TemplateRows};
 use crate::render::{Clock, RenderCtx};
 use crate::text::plain_text;
@@ -70,19 +70,7 @@ fn templates_lists_the_workflows_and_the_prompts_and_shows_the_folder() {
         include_str!("../../../tests/golden/transcript/templates.txt"),
         include_str!("../../../tests/golden/transcript/templates.html"),
         &theme,
-        &[
-            Unlike {
-                row: 0,
-                cols: (73, 110),
-                why: "the product's name on screen is Argonauts Code, so the rest of the row \
-                      sits five cells further right",
-            },
-            Unlike {
-                row: 7,
-                cols: (0, 0),
-                why: "the message's glyph is ❯ on screen",
-            },
-        ],
+        &[],
     );
 }
 

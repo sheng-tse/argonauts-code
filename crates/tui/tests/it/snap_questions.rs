@@ -24,6 +24,7 @@ use argonauts_core::names::{
     AgentId, ApprovalId, ChoiceId, DecisionId, ModelRef, RoleName, SessionKey,
 };
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::fallback::{FallbackMode, FallbackStrategy};
 use argonauts_core::settings::limit::{LimitAmount, LimitLineKind, LimitUnit};
 use argonauts_core::settings::protocol::JudgingMethod;
@@ -117,6 +118,7 @@ fn approval(
         evidence_sha256: "e3b0c442".into(),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options,
         free_text: FreeText::Guidance,
         needs_you: true,
@@ -148,6 +150,9 @@ fn run_state() -> RunState {
                 reviews: 0,
                 waiting_on_agent: None,
                 item: Some(item.into()),
+                way: None,
+                todos: None,
+                reviewers: 0,
             },
         );
     }
@@ -261,6 +266,7 @@ fn spec(n: u32, title: &str, who: &str, reviewer: &str, depends_on: &[u32]) -> T
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 
@@ -333,6 +339,9 @@ fn plan() -> ApprovalOpened {
         new_dependencies: vec!["serde_json".into()],
         flags: vec!["A comment in plan 2 addresses the judges".into()],
         workflow: None,
+        seats: Vec::new(),
+        objections: Vec::new(),
+        offer: None,
     };
     approval(
         ApprovalKind::Plan,
@@ -675,7 +684,7 @@ fn app_choice(
         } else {
             FreeText::None
         },
-        bell: kind != ChoiceKind::SettingScope,
+        bell: true,
     }
 }
 
@@ -690,17 +699,6 @@ fn choices() -> Vec<AppChoice> {
                 choose('s', "Captain", "captain"),
                 choose('c', "Crew run", "crew"),
                 choose('n', "No, just asking", "no"),
-            ],
-        ),
-        app_choice(
-            ChoiceKind::SettingScope,
-            "Save effort = high where?",
-            &[],
-            vec![
-                choose('s', "Just this session", "session"),
-                recommended(choose('m', "This project, just me", "project_local")),
-                choose('p', "This project, shared", "project"),
-                choose('e', "Everywhere", "global"),
             ],
         ),
         app_choice(
@@ -1461,8 +1459,9 @@ fn an_agent_question_shows_only_what_answers_it() {
         free_text.contains("Agent: build:fix-money · Haiku 4.5 on Claude Code"),
         "{free_text}"
     );
-    assert!(!free_text.contains("Type my own answer"), "{free_text}");
-    assert!(!free_text.contains("Enter to type"), "{free_text}");
+    // Typing an answer is one row, and carrying on without you the last.
+    assert!(free_text.contains("1. Type my own answer"), "{free_text}");
+    assert!(free_text.contains("2. Carry on without me"), "{free_text}");
 
     let mut hostile = agent_question(&[], true);
     if let ApprovalPacket::Question(question) = &mut hostile.packet {

@@ -78,6 +78,7 @@ pub(crate) async fn session_answer(
     };
     let running = host
         .start(SessionPlan {
+            without_status: false,
             at: None,
             role,
             worker: worker.clone(),

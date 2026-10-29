@@ -333,7 +333,8 @@ impl Transcript {
                 && by_a_person
                 && !record.is_meta
             {
-                self.turns.push(CliTurn::prompt(text));
+                let sent = record.timestamp.as_deref().and_then(parse_time);
+                self.turns.push(CliTurn::prompt(text).sent_at(sent));
             }
             return;
         }

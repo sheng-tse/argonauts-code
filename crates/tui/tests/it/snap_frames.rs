@@ -220,6 +220,7 @@ fn every_view(
         ViewData::ResumeList {
             conversations,
             sessions,
+            ..
         } => (conversations, sessions),
         other => panic!("{other:?}"),
     };
@@ -357,10 +358,7 @@ fn every_question(sample: &str, width: u16, theme: &Theme) -> Vec<(String, Vec<L
     }
     let choices = [
         ("start work", start_work_choice("ch-001")),
-        (
-            "scope",
-            scope_choice("ch-002", "Save theme where?", "global", Some(sample)),
-        ),
+        ("safety", safety_choice("ch-002", sample)),
     ];
     for (name, event) in choices {
         let choice = app_choice(&with_sample(&event, sample));
@@ -431,10 +429,6 @@ fn every_picker(sample: &str) -> Vec<(&'static str, Picker)> {
         &format!("Light or dark colors {sample}"),
     );
     let values = flow::settings_picker("theme", vec![theme_row]);
-    // The third value is the sample, and the project file sets the key, so it asks where.
-    let mut scope = values.clone();
-    let event = scope.handle_key(key(KeyCode::Char('3')));
-    assert_eq!(flow::advance(&mut scope, event), Step::Stay);
     let keys = flow::settings_picker(
         "ui",
         vec![
@@ -491,7 +485,6 @@ fn every_picker(sample: &str) -> Vec<(&'static str, Picker)> {
     empty.placeholder = format!("Nothing yet {sample}");
     vec![
         ("values picker", values),
-        ("scope question", scope),
         ("keys picker", keys),
         ("typed value picker", typed),
         ("models picker", models),

@@ -7,7 +7,7 @@ use std::time::Instant;
 use ratatui::text::Line;
 
 use super::*;
-use crate::bridge::transcript::picture_check::{Unlike, assert_matches};
+use crate::bridge::transcript::picture_check::assert_rows_match;
 use crate::render::Clock;
 use crate::text::plain_text;
 use crate::theme::{Glyphs, Theme};
@@ -40,8 +40,7 @@ fn state(vim: VimMode, draft: &str) -> BottomState {
         "Fix the money rounding",
         WorkflowRowState::Running,
     );
-    row.agents_done = 2;
-    row.agents_total = 5;
+    row.count = Some((2, 5));
     row.elapsed_ms = 100_000;
     row.tokens = 31_000;
     state.workflows.rows = vec![row];
@@ -67,150 +66,45 @@ fn rows_from_the_rule(state: &BottomState, then: usize) -> Vec<Line<'static>> {
     lines[rule..(rule + 4 + then).min(lines.len())].to_vec()
 }
 
-/// `⏵⏵ autopilot on` from `col`, in autopilot's own colour, where the pictures paint it amber.
-fn autopilot(row: usize, col: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (col, col + 14),
-        why: "autopilot keeps its own colour, where the picture paints it amber",
-    }
-}
-
-fn caption(row: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (0, usize::from(WIDTH) - 1),
-        why: "the picture's own caption, which the screen doesn't draw",
-    }
-}
-
-fn rule(row: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (0, usize::from(WIDTH) - 1),
-        why: "the input's rules keep their own grey, a step brighter than the picture's",
-    }
-}
-
-fn prompt(row: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (0, 0),
-        why: "the prompt is in the text color while the input has the keys",
-    }
-}
-
+/// The picture's second part: no label in NORMAL, then `-- INSERT --` with a draft. Its first
+/// part draws the old line, and its captions aren't screen.
 #[test]
 fn vim_label_nothing_in_normal_and_insert_dim_first() {
-    let today = |row| Unlike {
-        row,
-        cols: (0, usize::from(WIDTH) - 1),
-        why: "the picture's first part is the screen before this change",
-    };
-    let mut lines = vec![Line::default()];
-    lines.extend(std::iter::repeat_n(Line::default(), 4));
-    lines.push(Line::default());
-    lines.push(Line::default());
-    lines.extend(rows_from_the_rule(&state(VimMode::Normal, ""), 0));
-    lines.push(Line::default());
-    lines.extend(rows_from_the_rule(&state(VimMode::Insert, "fix the te"), 0));
-    assert_matches(
-        "vim_label",
-        &lines,
-        &trimmed(include_str!("../../tests/golden/bottom/vim_label.txt")),
-        include_str!("../../tests/golden/bottom/vim_label.html"),
-        &theme(),
-        &[
-            caption(0),
-            today(1),
-            today(2),
-            today(3),
-            today(4),
-            caption(6),
-            rule(7),
-            prompt(8),
-            rule(9),
-            autopilot(10, 2),
-            rule(12),
-            prompt(13),
-            rule(14),
-            autopilot(15, 15),
-            // A difference from the picture, which Claude Code makes too: it turns its footer
-            // hint off while the vim label shows.
-            Unlike {
-                row: 15,
-                cols: (54, usize::from(WIDTH) - 1),
-                why: "while -- INSERT -- shows, the line leaves out ? for shortcuts, as Claude \
-                      Code hides its hint while its vim label shows",
-            },
-        ],
-    );
+    let picture = trimmed(include_str!("../../tests/golden/bottom/vim_label.txt"));
+    let html = include_str!("../../tests/golden/bottom/vim_label.html");
+    for (state, rows) in [
+        (state(VimMode::Normal, ""), 7..11),
+        (state(VimMode::Insert, "fix the te"), 12..16),
+    ] {
+        assert_rows_match(
+            "vim_label",
+            &rows_from_the_rule(&state, 0),
+            (&picture, html),
+            rows,
+            &theme(),
+            &[],
+        );
+    }
 }
 
+/// `k k` back through what you typed, `j j` forward again, and one more `j` into the list under
+/// the input, each under its caption. The picture's list also holds a background shell's row,
+/// which the list doesn't, so its rows and the picture's last part, a step onto that row, stay
+/// out of the comparison.
 #[test]
 fn vim_jk_history_then_the_list_and_back() {
-    let shell = |row| Unlike {
-        row,
-        cols: (0, usize::from(WIDTH) - 1),
-        why: "a background shell's row, which the list under the input doesn't hold",
-    };
-    let tokens = |row| Unlike {
-        row,
-        cols: (66, usize::from(WIDTH) - 1),
-        why: "tokens in the one format every screen uses, 31k, where the picture writes 31.0k",
-    };
+    let picture = trimmed(include_str!("../../tests/golden/bottom/vim_jk.txt"));
+    let html = include_str!("../../tests/golden/bottom/vim_jk.html");
     let normal = |draft: &str, selected: Option<usize>| {
         let mut state = state(VimMode::Normal, draft);
         state.workflows.selected = selected;
         rows_from_the_rule(&state, 2)
     };
-    let block = |lines: &mut Vec<Line<'static>>, rows: Vec<Line<'static>>| {
-        lines.push(Line::default());
-        lines.extend(rows);
-        lines.push(Line::default());
-        lines.push(Line::default());
-    };
-    let mut lines = Vec::new();
-    block(&mut lines, normal(PROMPT, None));
-    block(&mut lines, normal("", None));
-    block(&mut lines, normal("", Some(0)));
-    block(&mut lines, normal("", None));
-    lines.pop();
-    let unlike: Vec<Unlike> = [0, 9, 18, 27]
-        .into_iter()
-        .flat_map(|top| [caption(top), rule(top + 1), prompt(top + 2), rule(top + 3)])
-        .chain([shell(7), shell(16), shell(25), shell(34)])
-        .chain([tokens(6), tokens(15), tokens(24), tokens(33)])
-        .chain([autopilot(4, 2), autopilot(13, 2), autopilot(31, 2)])
-        .chain([6, 15, 24, 33].map(|row| Unlike {
-            row,
-            cols: (28, 35),
-            why: "the done part of a run's bar is in the text's own colour, which the picture \
-                  names as its foreground",
-        }))
-        .chain([Unlike {
-            row: 24,
-            cols: (0, 27),
-            why: "the selected row's mark and name keep the list's own colours",
-        }])
-        .chain([Unlike {
-            row: 2,
-            cols: (2, usize::from(WIDTH) - 1),
-            why: "the draft is in the terminal's own colour, which the picture names as its \
-                  foreground",
-        }])
-        .chain([Unlike {
-            row: 22,
-            cols: (0, usize::from(WIDTH) - 1),
-            why: "the list with the keys puts its own keys on the line, as Claude Code's does",
-        }])
-        .collect();
-    assert_matches(
-        "vim_jk",
-        &lines,
-        &trimmed(include_str!("../../tests/golden/bottom/vim_jk.txt")),
-        include_str!("../../tests/golden/bottom/vim_jk.html"),
-        &theme(),
-        &unlike,
-    );
+    for (lines, rows) in [
+        (normal(PROMPT, None), 1..7),
+        (normal("", None), 10..16),
+        (normal("", Some(0)), 19..25),
+    ] {
+        assert_rows_match("vim_jk", &lines, (&picture, html), rows, &theme(), &[]);
+    }
 }

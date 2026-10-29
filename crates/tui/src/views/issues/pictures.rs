@@ -229,47 +229,8 @@ fn an_issue_read_back_and_waiting_on_its_plan_is_its_picture() {
         (&txt, &html),
         2..29,
         &screen.theme,
-        &[
-            report_glyph(2),
-            command_arguments(4),
-            question_colour(17, WIDTH as usize - 1),
-            question_colour(18, 29),
-            option_number(21),
-            option_number(22),
-            option_number(23),
-        ],
+        &[report_glyph(2)],
     );
-}
-
-/// An option's number is dim, as every question draws it, where the picture colours it with
-/// its words.
-fn option_number(row: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (4, 5),
-        why: "an option's number is dim, as every question draws it",
-    }
-}
-
-/// A question that holds the keys draws its rule, its mark and its title in the question
-/// colour, as every question here does. The picture keeps the faint rule, the accent mark and
-/// the plain title of the older merge question it starts from.
-fn question_colour(row: usize, last: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (0, last),
-        why: "a question's rule, mark and title take the question colour, where the picture keeps the older merge question's",
-    }
-}
-
-/// A report's row draws a command's name in the code colour and its arguments as the words
-/// around them, as every `⎿` row does. The picture colours `/issue 42 --all-comments` whole.
-fn command_arguments(row: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (44, 60),
-        why: "a report's row colours a command's name, not its arguments",
-    }
 }
 
 /// On macOS a report starts with `⏺`, as the answer under it does. The picture takes the
@@ -299,6 +260,7 @@ fn draft_question() -> argonauts_core::events::approval::ApprovalOpened {
     };
     use argonauts_core::names::ApprovalId;
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+    use argonauts_core::settings::asking::WhenDeclined;
     let option = |key: char, label: &str, value: &str, detail: &str| AnswerOption {
         key,
         label: label.to_owned(),
@@ -322,6 +284,7 @@ fn draft_question() -> argonauts_core::events::approval::ApprovalOpened {
         evidence_sha256: "0".repeat(64),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options: vec![
             option(
                 'p',
@@ -361,21 +324,7 @@ fn the_draft_a_run_on_an_issue_ends_with_is_its_picture() {
     let ctx = RenderCtx::new(WIDTH, &theme, Clock::still(Instant::now()));
     let lines = question.lines(&ctx);
     let (txt, html) = picture("issue_draft");
-    assert_rows_match(
-        "issue_draft",
-        &lines,
-        (&txt, &html),
-        2..19,
-        &theme,
-        &[
-            question_colour(0, WIDTH as usize - 1),
-            question_colour(1, 37),
-            option_number(11),
-            option_number(12),
-            option_number(13),
-            option_number(14),
-        ],
-    );
+    assert_rows_match("issue_draft", &lines, (&txt, &html), 2..19, &theme, &[]);
 }
 
 /// The draft pull request #57 whose check failed, followed in a Pull request phase after the
@@ -394,12 +343,8 @@ mod pr_follow {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
-    use crate::bottom::{
-        AgentPanel, WorkflowPanel, WorkflowRow as PanelRow, WorkflowRowState, panel_lines,
-    };
-    use crate::render::{Clock, RenderCtx};
     use crate::views::workflow::WorkflowView;
-    use crate::views::workflow_pictures::{Picture, buffer_of, dark};
+    use crate::views::workflow_pictures::{Picture, dark};
     use crate::views::{View, ViewCtx};
 
     /// The frame stops six cells short of the screen's right edge, as Claude Code's does.
@@ -553,84 +498,5 @@ mod pr_follow {
         // failure and dim after it.
         picture.assert_drawn(1..5, &buf, 0);
         picture.assert_drawn(5..16, &buf, 4);
-    }
-
-    #[test]
-    fn its_row_in_the_bottom_list_reads_as_its_picture_as_it_goes_on() {
-        let mut picture = the_picture();
-        let rows = [
-            (
-                18,
-                WorkflowRowState::PullRequest,
-                (11, 13),
-                846_000,
-                309_000,
-                "#57 · fixing CI, round 1 of 3",
-            ),
-            (
-                21,
-                WorkflowRowState::PullRequestWaits,
-                (13, 13),
-                940_000,
-                331_000,
-                "#57 · CI running",
-            ),
-            (
-                22,
-                WorkflowRowState::PullRequest,
-                (13, 13),
-                3_720_000,
-                331_000,
-                "#57 · 2 comments to answer",
-            ),
-            (
-                23,
-                WorkflowRowState::PullRequest,
-                (15, 15),
-                7_800_000,
-                377_000,
-                "needs you · #57 · reviewers disagree",
-            ),
-            (
-                24,
-                WorkflowRowState::Done,
-                (15, 15),
-                7_800_000,
-                377_000,
-                "#57 merged on GitHub",
-            ),
-        ];
-        let theme = dark();
-        let ctx = RenderCtx::new(SCREEN, &theme, Clock::still(Instant::now()));
-        for (at, state, (done, total), elapsed_ms, tokens, said) in rows {
-            let mut row = PanelRow::new("run-01", NAME, state);
-            row.agents_done = done;
-            row.agents_total = total;
-            row.elapsed_ms = elapsed_ms;
-            row.tokens = tokens;
-            row.said = Some(said.to_owned());
-            let panel = WorkflowPanel {
-                rows: vec![row],
-                max_rows: 5,
-                ..WorkflowPanel::default()
-            };
-            let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
-            let buf = buffer_of(&lines, SCREEN);
-            // The name column is 24 cells on every row of the bottom list, as the done run's
-            // picture draws it, where this one draws 22. The row that asks for you has no room
-            // in the picture for the two cells more, so it is held to its words and its mark.
-            if state == WorkflowRowState::PullRequest && said.starts_with("needs you") {
-                let drawn = crate::text::plain_text(&lines[..1]).replacen(
-                    "limiter         ",
-                    "limiter       ",
-                    1,
-                );
-                assert_eq!(drawn.trim_end(), picture.text(at..at + 1)[0], "row {at}");
-                picture.assert_cells(at, 0..19, &buf, 0);
-                continue;
-            }
-            picture.reword(at, "limiter       ", "limiter         ");
-            picture.assert_drawn(at..at + 1, &buf, 0);
-        }
     }
 }

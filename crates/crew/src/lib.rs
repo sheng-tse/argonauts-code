@@ -14,6 +14,7 @@ pub mod change;
 pub mod claude_codes;
 pub mod closing;
 pub mod consultant;
+pub mod council;
 pub mod divide;
 pub mod engine;
 pub mod error;

@@ -543,10 +543,12 @@ pub(super) async fn show_runs(ctx: &mut Ctx, every_folder: bool) -> anyhow::Resu
     let runs = ctx.services.conductor.list().await?;
     let conversations = super::conversation::list(ctx, &runs);
     let sessions = super::conversation::cli_sessions(ctx, every_folder).await;
+    let in_cli = super::conversation::in_cli::listed(ctx, &conversations, &sessions).await;
     ctx.send(AppEvent::View {
         data: Box::new(argonauts_core::app::ViewData::ResumeList {
             conversations,
             sessions,
+            in_cli,
         }),
     });
     Ok(())
@@ -894,8 +896,7 @@ async fn send_recap(ctx: &mut Ctx, run: &RunId, events: &[RunEvent], outcome: Ru
         return;
     }
     let summary = attach::status_summary(ctx, run, events).await;
-    let closing = recap::closing_in(events);
-    let mut text = recap::recap_from_summary(&summary, Some(outcome), closing);
+    let mut text = recap::recap_from_summary(&summary, Some(outcome), events);
     if text.trim().is_empty() {
         text = format!(
             "{} Ask for another change, or /resume an older run.",

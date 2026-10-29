@@ -1,11 +1,11 @@
  In /config, among the other rows                                                                                     
                                                                                                                       
-   Behaviors map                      deeper   labels, or labels and summaries                                        
+   Behaviors map                      summaries   labels, or labels and summaries                                     
    Behaviors summarizer               auto ›   Qwen3 Coder 30B on Ollama                                              
    Behaviors embedder                 auto ›   nomic-embed-text on Ollama                                             
                                                                                                                       
  And in a shell                                                                                                       
                                                                                                                       
-$ argonauts behaviors --deep --since 30d                                                                              
+$ argonauts behaviors --summaries --since 30d                                                                         
 Summarizing 562 actions with Qwen3 Coder 30B on Ollama (auto) · 0 already done                                        
 …                                                                                                                     

@@ -6,14 +6,14 @@ use unicode_width::UnicodeWidthStr;
 
 /// Patterns for the parts every screen has.
 pub const BULLET: &str = "[●⏺]";
-pub const TOP_RULE: &str = "^─+ Council · Haiku ─$";
+pub const TOP_RULE: &str = "^─+ council ─$";
 pub const INPUT_ROW: &str = "^❯";
 /// The bottom line, with each CLI's plan usage against its right edge. The mode's hints are the
 /// first things the chips take the room of, so at 100 columns they may be gone.
 pub const MODE_IDLE: &str =
     r"^  ǁ supervised mode on( \(shift\+tab to cycle\))?( · \? for shortcuts)?( {2,}\S.*)?$";
 /// The bottom line's right end at 100 columns: the CLI in use marked and bold, the other dim.
-pub const STATUS_IDLE: &str = r" {2,}● Claude 5h .{6} 71%  ○ Codex 5h .{6} 38%$";
+pub const STATUS_IDLE: &str = r" +● Claude 5h .{6}  71%   ○ Codex 5h .{6}  38%$";
 /// Work is going: the bottom line says how to stop it, or, where the chips took that hint's
 /// room, the working line is up.
 pub const WORKING: &str = r"esc to interrupt|^[∙✢✲✶✻✼*] [\w'-]+…";

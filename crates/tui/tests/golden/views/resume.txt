@@ -1,9 +1,9 @@
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Resume a conversation · in ~/github/argonauts-code                                                                 │
+│ Resume a conversation · in ~/code/tasks-cli                                                                        │
 │                                                                                                                    │
 │     from              first prompt or title                                         last used     length           │
 │ ❯   Argonauts Code    Add due dates to the tasks CLI                                2h ago        42 turns         │
-│     Claude Code       README.md review and research                                 yesterday     1.2k turns       │
+│     Claude Code       Due dates review and research                                 yesterday     1.2k turns       │
 │     Claude Code       Fix the money rounding so the three failing tests pass        Oct 8         18 turns         │
 │     Codex             Make the rate limiter per API key                             Oct 8         9 turns          │
 │                                                                                                                    │

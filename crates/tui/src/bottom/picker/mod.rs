@@ -1,12 +1,12 @@
 //! The settings pickers, in Claude Code's dialog frame under the input: an edge rule in the
 //! question color, the title with what the choice does, numbered rows with `❯`, the current value
 //! with `✓`, a description column, `↓` and `… +N more` when the list goes on, and key hints.
-//! The scope question after a pick uses the same frame.
 //!
 //! The picker only moves, filters, and reports picks. What a pick means lives in
 //! [`Flow`](crate::views::settings::flow::Flow), which the settings screens keep in it.
 
 mod render;
+pub use render::{Gauge, PickerCell, PickerColumn};
 /// Pasted text for a line that holds one row: line breaks become spaces, and other control
 /// characters go.
 pub fn one_line(text: &str) -> String {
@@ -38,6 +38,9 @@ pub const VISIBLE_ROWS: usize = 8;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Picker {
     pub title: String,
+    /// The CLI or endpoint whose list this is, its logo drawn before the title where logos draw
+    /// as pictures. The models its rows name read as they do beside that logo.
+    pub title_logo: Option<argonauts_core::logos::Logo>,
     /// What the choice does, dim under the title.
     pub about: String,
     pub rows: Vec<PickerRow>,
@@ -70,12 +73,27 @@ pub struct Picker {
     /// Labels are sentences, such as issue titles, so they take the room the other columns
     /// leave rather than being cut short.
     pub wide_labels: bool,
+    /// The columns of the rows' cells, each as wide as its widest cell in the whole list, so
+    /// nothing moves as the rows scroll. Empty where the rows have descriptions instead.
+    pub columns: Vec<PickerColumn>,
+    /// A bar under the banner for the row under the pointer, such as what a model would take
+    /// of the memory models may use here.
+    pub gauge: Option<Gauge>,
+    /// The last pick came with the key `save_for_session` binds, so a settings picker keeps it
+    /// for this session only.
+    pub for_session: bool,
+    /// That key, as the footer names it: `None` until the app says, which names the default
+    /// key, and empty when nothing binds it.
+    pub session_key: Option<String>,
     pub flow: Flow,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PickerRow {
     pub label: String,
+    /// Whoever the label names, a CLI, an endpoint or a model's server, whose logo goes before
+    /// it where one draws.
+    pub logo: Option<argonauts_core::logos::Logo>,
     pub description: String,
     /// The value in effect now, drawn in the success color with `✓`.
     pub current: bool,
@@ -108,6 +126,20 @@ pub struct PickerRow {
     /// A dim column after the descriptions, lined up across the rows, such as how long ago an
     /// issue last changed.
     pub aside: Option<String>,
+    /// Under the picker's columns, in their order. A row with none has its description where
+    /// they start, such as "Other model…".
+    pub cells: Vec<PickerCell>,
+    /// The part that starts with a model's whole name, which drops its maker's word under the
+    /// title's logo where that logo draws as a picture, as `GPT 5.6 Luna` reads `5.6 Luna`
+    /// under Codex's.
+    pub model_in: Option<RowPart>,
+}
+
+/// A part of a row's words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowPart {
+    Label,
+    Description,
 }
 
 impl PickerRow {
@@ -165,6 +197,10 @@ impl Picker {
                     || row.label.to_lowercase().contains(&needle)
                     || row.description.to_lowercase().contains(&needle)
                     || row
+                        .cells
+                        .iter()
+                        .any(|cell| cell.text.to_lowercase().contains(&needle))
+                    || row
                         .also_matches
                         .as_deref()
                         .is_some_and(|text| text.to_lowercase().contains(&needle))
@@ -186,8 +222,16 @@ impl Picker {
         }
     }
 
-    /// New rows in place of the old, with the pointer on the first and no filter.
+    /// New rows in place of the old, with the pointer on the first and no filter, each with a
+    /// description rather than cells.
     pub fn set_rows(&mut self, rows: Vec<PickerRow>) {
+        self.set_table(Vec::new(), rows);
+    }
+
+    /// New rows with their cells under `columns`, as [`Picker::set_rows`] sets rows.
+    pub fn set_table(&mut self, columns: Vec<PickerColumn>, rows: Vec<PickerRow>) {
+        self.columns = columns;
+        self.gauge = None;
         self.rows = rows;
         self.selected = 0;
         self.offset = 0;
@@ -215,6 +259,20 @@ impl Picker {
 
     fn picks_by_letter(&self) -> bool {
         self.rows.iter().any(|row| row.key.is_some())
+    }
+
+    /// The key `save_for_session` binds, ctrl+s unless rebound: a settings picker picks as Enter
+    /// does, and keeps the pick for this session only. Any other picker leaves it unhandled.
+    pub fn pick_for_session(&mut self) -> PickerEvent {
+        if !self.flow.saves_settings {
+            return PickerEvent::Unhandled;
+        }
+        self.for_session = true;
+        let event = self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        if event == PickerEvent::Unhandled {
+            self.for_session = false;
+        }
+        event
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> PickerEvent {

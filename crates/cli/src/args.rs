@@ -32,12 +32,13 @@ pub enum Command {
     /// Start a run for scripts and CI, then watch it in the app, or as plain lines without a
     /// terminal.
     Run(RunArgs),
-    /// Open the app on an earlier conversation, a run, an agent's session in a run, or the main
-    /// agent CLI's own session to carry it on, or on the list of them to pick one.
+    /// Open the app on an earlier conversation, a run, an agent's session in a run, or any CLI's
+    /// own session to carry it on, or on the list of them to pick one.
     Resume {
         /// A conversation such as `conversation-002`, a run such as `run-03`, an agent's session in
-        /// a run such as `run-03/s-002`, or the main agent CLI's own session such as
-        /// `codex:019a2f`. With none, you pick from the list, which lists each run's agents.
+        /// a run such as `run-03/s-002`, or a CLI's own session by its id alone, such as
+        /// `019a2f`, or named, such as `codex:019a2f`. With none, you pick from the list, which
+        /// lists each run's agents.
         id: Option<String>,
     },
     /// Runs going across your repos, and this repo's runs that haven't ended.
@@ -255,12 +256,12 @@ pub struct BehaviorsArgs {
     pub since: Option<argonauts_app::BehaviorPeriod>,
     /// Write every agent session's actions for another tool instead: `hodoscope <DIR>` writes
     /// Hodoscope's trajectory JSON, one file per session.
-    #[arg(long, num_args = 2, value_names = ["FORMAT", "DIR"], conflicts_with = "deep")]
+    #[arg(long, num_args = 2, value_names = ["FORMAT", "DIR"], conflicts_with = "summaries")]
     pub export: Option<Vec<String>>,
-    /// Update the deeper map instead: each new action summarized by one model, then embedded
+    /// Update Summaries instead: each new action summarized by one model, then embedded
     /// and placed. Every summary is kept, so a second update sends only what's new.
     #[arg(long)]
-    pub deep: bool,
+    pub summaries: bool,
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]
@@ -279,7 +280,7 @@ pub enum ConfigCommand {
     Show,
     /// Print the JSON Schema of the settings files.
     Schema,
-    /// Save one setting. Each key has a usual file; a flag picks another.
+    /// Save one setting where your changes go, as the app saves it; a flag picks the file.
     Set {
         /// Such as `ui.bell`.
         key: String,

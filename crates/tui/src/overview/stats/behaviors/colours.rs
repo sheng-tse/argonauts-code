@@ -1,5 +1,5 @@
-//! The colour each group's dots and name draw in: a model in its shade of its CLI's colour, the
-//! same as on every other tab; a CLI in its own; any other group in the agents' colours in turn.
+//! The colour each group's dots and name draw in: a model in its CLI's colour, the same as on
+//! every other tab; a CLI in its own; any other group in the agents' colours in turn.
 
 use argonauts_core::behavior_map::{BehaviorMap, Grouping};
 use argonauts_core::display_names::DisplayNames;
@@ -7,7 +7,6 @@ use argonauts_core::overview::ModelTokens;
 use ratatui::style::{Color, Style};
 
 use crate::kit::Kit;
-use crate::overview::cli_role;
 use crate::overview::shades::ModelColors;
 use crate::theme::{ColorLevel, Role};
 
@@ -25,6 +24,18 @@ const OTHERS: [Role; 8] = [
 
 /// A dot drawn in no colour the theme gives.
 const GREY: (u8, u8, u8) = (160, 160, 170);
+/// The map's paper, the dark the world's pictures stand on.
+const PAPER: (u8, u8, u8) = (31, 32, 47);
+
+/// The map's paper as a terminal colour, for words that read as cut out of it, such as a new
+/// row's badge. A terminal of fewer colours takes the badges' own text colour.
+pub fn paper_colour(kit: &Kit<'_>) -> Option<Color> {
+    match kit.theme.level {
+        ColorLevel::TrueColor => Some(Color::Rgb(PAPER.0, PAPER.1, PAPER.2)),
+        ColorLevel::Ansi256 => Some(Color::Indexed(crate::theme::nearest_ansi256(PAPER))),
+        _ => kit.theme.color(Role::BadgeText),
+    }
+}
 
 #[derive(Debug, Clone, Default, Hash)]
 pub struct GroupColours {
@@ -53,7 +64,7 @@ impl GroupColours {
             let group = &map.groups[at];
             match (map.request.grouping, group.agent.as_deref()) {
                 (Grouping::Model, Some(agent)) => shades.style(kit, agent, group.model.as_deref()),
-                (Grouping::Cli, Some(agent)) => kit.fg(cli_role(agent)),
+                (Grouping::Cli, Some(agent)) => kit.fg(Role::for_cli(agent)),
                 _ => kit.fg(OTHERS[at % OTHERS.len()]),
             }
         };

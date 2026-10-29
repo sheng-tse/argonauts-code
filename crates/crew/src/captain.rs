@@ -108,6 +108,7 @@ pub fn task(state: &RunState, host: &Host) -> EngineResult<TaskSpec> {
         limit: TaskLimit::default(),
         predictions: None,
         item,
+        way: None,
     })
 }
 
@@ -219,6 +220,7 @@ mod tests {
                 limit: TaskLimit::default(),
                 predictions: None,
                 item: None,
+                way: None,
             },
             state,
             tries,

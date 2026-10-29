@@ -1,0 +1,38 @@
+     As note keeper I propose who does what. Where you said how, I kept it; any seat can                                
+     object, and you approve.                                                                                           
+                                                                                                                        
+      Task            Who                   How              Why                    Checked by                          
+      Redis bucket    ▐▌ Opus 5.5           Maker-checker    You asked              ▐▌                                  
+      Plan limits     ▐▌ 5.6 Luna           Own session      You asked              ▐▌                                  
+                      ✘  ▐▌ 3.8 Flash: every request reads this table, so Maker-checker                                 
+      Memory store    ▐▌ Qwen3 Coder 30B    Own session      Small, one file        ▐▌                                  
+      Route tests     ▐▌ 3.8 Flash          3 agents         You asked · 3 files    ▐▌                                  
+      Where you said how, that binds: a seat may object, only you change it. For the                                    
+      rest: small or one file, own session. Risky, like every request, money or logins,                                 
+      Maker-checker. Parts that share no files, one agent each. Each task goes to the                                   
+      seat whose idea it was; code picks a checker from another maker.                                                  
+▐▌    Only you see Checked by: the seats read "a fresh session that code picks".                                        
+                                                                                                                        
+                Every seat signed both · ▐▌ 3.8 Flash objects to a way you asked for; only you change it                
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Approve this plan?                                                                                                    
+  Approve with edits: change how any task is done, or who does it. Send back: the seats talk on.                        
+                                                                                                                        
+  ❯ 1. Approve the plan                                                                                                 
+    2. Approve with edits                                                                                               
+    3. Send back                                                                                                        
+    4. Run it as Captain                                                                                                
+    5. Abandon                                                                                                          
+    6. Show the plan                                                                                                    
+    7. Carry on without me                                                                                              
+       The plan goes ahead as written; the merge still asks you                                                         
+                                                                                                                        
+  Enter to choose · Tab to add a note · Esc back to the list · shift+tab to cycle modes                                 
+                                                                                                                        
+  ǁ supervised mode on                                                                                                  
+                                                                                                                        
+  ◆  Rate limit the API                    ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  4/4 · 5m10s · ↓  90.8k tokens                          
+    ⎿ ✔  ▐▌ Opus 5.5                       Wrote the plan              3m01s · ↓    29k tokens                          
+      ✔  ▐▌ 5.6 Luna                       Signed the plan             1m18s · ↓  16.9k tokens                          
+      ✔  ▐▌ 3.8 Flash                      Signed, 1 objection         2m44s · ↓  25.3k tokens                          
+      ✔  ▐▌ Qwen3 Coder 30B                Signed the plan             2m29s · ↓  19.6k tokens                          

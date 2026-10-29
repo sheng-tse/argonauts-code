@@ -12,6 +12,7 @@ use crate::policy::Violation;
 use crate::settings::limit::LimitAmount;
 use crate::steps::judgment::{ReviewOutput, SettleOutput};
 use crate::steps::task::{Predictions, TaskReport};
+use crate::workflow::WorkflowRef;
 use crate::{CommitInfo, DiffStat, TaskId};
 
 /// One unit of work, owned by one agent session at a time, in its own worktree.
@@ -44,6 +45,38 @@ pub struct TaskSpec {
     /// goal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
+    /// How the task is done. `None` in records from before ways were kept, and for a task no
+    /// plan gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub way: Option<TaskWay>,
+}
+
+/// How a task is done, and whether you named it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskWay {
+    pub how: Way,
+    /// You named this way in your request, so it binds: the plan marks it "You asked", and
+    /// code checks the plan against it before work starts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub asked_by_you: bool,
+    /// How many steps the workflow a task is done by declares, which its row counts done of
+    /// before they start. `None` for every other way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u32>,
+}
+
+/// The ways a task can be done, each by the task's worker.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "way", rename_all = "snake_case")]
+pub enum Way {
+    /// It does the task in its own session.
+    OwnSession,
+    /// It runs a workflow by name: one that ships with Argonauts Code, or one of yours.
+    Workflow { name: WorkflowRef },
+    /// It runs its CLI's own workflow, where the CLI has one.
+    CliWorkflow,
+    /// It starts this many agents of its model, 2 to 4, one for each part.
+    Agents { count: u8 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +209,12 @@ pub enum TaskEvent {
         /// The side branch that holds the replaced work.
         kept_on: String,
     },
+    /// The to-do list of the session doing the task, as done of total, whenever it changes.
+    /// A task whose session keeps no list has none, and its row shows no count.
+    Todos {
+        done: u32,
+        total: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -257,11 +296,17 @@ pub enum ReviewEvent {
         /// 1-based.
         round: u32,
         review: ReviewOutput,
+        /// `None` in records from before it was kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        picked_by: Option<PickedBy>,
     },
     /// The judge settled reviewers who disagreed.
     Settled {
         judge: ModelRef,
         ruling: SettleOutput,
+        /// `None` in records from before it was kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        picked_by: Option<PickedBy>,
     },
     /// A reviewer's acceptance tests merged on a test task.
     TestsWritten {
@@ -269,6 +314,16 @@ pub enum ReviewEvent {
         for_task: TaskId,
         files: Vec<String>,
     },
+}
+
+/// Who chose a reviewer or a judge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PickedBy {
+    /// You did: in your request, by a use-only pair, in a workflow's step or in your roles.
+    You,
+    /// Code picked it for you.
+    Code,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -333,4 +388,98 @@ pub enum MergeEvent {
         /// The manifest and lockfile change.
         sha: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::steps::judgment::ReviewVerdict;
+
+    fn written_task() -> serde_json::Value {
+        json!({
+            "id": "task-001", "title": "Plan limits", "task": "Read the limits from the key's plan.",
+            "kind": { "kind": "build" }, "owned_paths": [], "read_only_paths": [],
+            "forbidden_paths": [], "hidden_paths": [], "depends_on": [], "criteria": [],
+            "worker": null, "reviewers": [], "limit": {},
+        })
+    }
+
+    #[test]
+    fn a_task_from_before_ways_reads_with_none() {
+        let spec: TaskSpec = serde_json::from_value(written_task()).unwrap();
+        assert_eq!(spec.way, None);
+        assert!(serde_json::to_value(&spec).unwrap().get("way").is_none());
+    }
+
+    #[test]
+    fn each_way_reads_back_with_whether_you_asked_for_it() {
+        let ways = [
+            (Way::OwnSession, json!({ "way": "own_session" })),
+            (
+                Way::Workflow {
+                    name: WorkflowRef::new("maker-checker"),
+                },
+                json!({ "way": "workflow", "name": "maker-checker" }),
+            ),
+            (Way::CliWorkflow, json!({ "way": "cli_workflow" })),
+            (
+                Way::Agents { count: 3 },
+                json!({ "way": "agents", "count": 3 }),
+            ),
+        ];
+        for (how, written) in ways {
+            let mut task = written_task();
+            task["way"] = json!({ "how": written, "asked_by_you": true });
+            let spec: TaskSpec = serde_json::from_value(task.clone()).unwrap();
+            let asked = TaskWay {
+                how,
+                asked_by_you: true,
+                steps: None,
+            };
+            assert_eq!(spec.way.as_ref(), Some(&asked));
+            assert_eq!(serde_json::to_value(&spec).unwrap()["way"], task["way"]);
+        }
+        let proposed: TaskWay =
+            serde_json::from_value(json!({ "how": { "way": "own_session" } })).unwrap();
+        assert!(!proposed.asked_by_you);
+    }
+
+    #[test]
+    fn a_to_do_count_reads_back() {
+        let todos = TaskEvent::Todos { done: 2, total: 4 };
+        let written = serde_json::to_value(&todos).unwrap();
+        assert_eq!(written, json!({ "event": "todos", "done": 2, "total": 4 }));
+        assert_eq!(serde_json::from_value::<TaskEvent>(written).unwrap(), todos);
+    }
+
+    #[test]
+    fn a_review_says_who_picked_its_reviewer_and_older_ones_read_without() {
+        let review = ReviewOutput {
+            verdict: ReviewVerdict::Approve,
+            summary: "The limiter holds.".into(),
+            comments: Vec::new(),
+            tamper_suspected: false,
+        };
+        let reviewed = |picked_by| ReviewEvent::Reviewed {
+            reviewer: "codex/gpt-5.6-luna".parse().unwrap(),
+            blind: true,
+            round: 1,
+            review: review.clone(),
+            picked_by,
+        };
+        let older = serde_json::to_value(reviewed(None)).unwrap();
+        assert!(older.get("picked_by").is_none());
+        assert_eq!(
+            serde_json::from_value::<ReviewEvent>(older).unwrap(),
+            reviewed(None)
+        );
+        let chosen = serde_json::to_value(reviewed(Some(PickedBy::You))).unwrap();
+        assert_eq!(chosen["picked_by"], "you");
+        assert_eq!(
+            serde_json::from_value::<ReviewEvent>(chosen).unwrap(),
+            reviewed(Some(PickedBy::You))
+        );
+    }
 }

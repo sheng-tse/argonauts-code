@@ -4,6 +4,7 @@
 pub mod agent_status;
 pub mod approval;
 pub mod context;
+pub mod council;
 pub mod failure;
 pub mod goal;
 pub mod plan;
@@ -73,4 +74,6 @@ pub enum RunEventKind {
     RunReview(RunReviewEvent),
     Note(Note),
     Workflow(WorkflowEvent),
+    /// A council's seats, messages, stances and checks.
+    Council(council::CouncilEvent),
 }

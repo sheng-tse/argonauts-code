@@ -77,6 +77,11 @@ struct SessionSettings {
     cross_session_inbound: &'static str,
     /// Agents never write git state, and commits carry no tool attribution lines.
     attribution: Attribution,
+    /// A run's session keeps no memory of its own, so nothing one council's seat noticed
+    /// reaches the next council, and a worker's worktree leaves no memory behind. 2.1.310's
+    /// schema: "When false, Claude will not read from or write to the auto-memory directory."
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_memory_enabled: Option<bool>,
     sandbox: Sandbox,
     #[serde(skip_serializing_if = "Option::is_none")]
     permissions: Option<Permissions>,
@@ -269,6 +274,7 @@ pub fn session_settings(
     let settings = SessionSettings {
         cross_session_inbound: "refuse",
         attribution: Attribution { commit: "", pr: "" },
+        auto_memory_enabled: (allowed == Allowed::Listed).then_some(false),
         sandbox,
         permissions: (!allow.is_empty() || !deny.is_empty()).then_some(Permissions { allow, deny }),
         disable_all_hooks: left_out.hooks,
@@ -372,10 +378,12 @@ pub fn validate(settings: &Value) -> anyhow::Result<()> {
                 value.as_str() == Some(PROACTIVE),
                 "outputStyle is only ever {PROACTIVE} here, not {value}"
             ),
-            "alwaysThinkingEnabled" | "workflowKeywordTriggerEnabled" => ensure!(
-                value == &Value::Bool(false),
-                "{key} is only ever false here, not {value}"
-            ),
+            "alwaysThinkingEnabled" | "workflowKeywordTriggerEnabled" | "autoMemoryEnabled" => {
+                ensure!(
+                    value == &Value::Bool(false),
+                    "{key} is only ever false here, not {value}"
+                )
+            }
             "fastMode" => ensure!(
                 value == &Value::Bool(true),
                 "fastMode is only ever true here, not {value}"
@@ -532,6 +540,25 @@ mod tests {
         serde_json::from_str(&settings).unwrap()
     }
 
+    /// A run's session, a council's seats and checks among them, writes no memory and signs
+    /// nothing; the session you talk to keeps your memory.
+    #[test]
+    fn a_runs_session_keeps_no_memory_and_signs_nothing() {
+        let run = left_out(
+            false,
+            CommandSandbox::Own,
+            Allowed::Listed,
+            &LeftOut::default(),
+        );
+        assert_eq!(run["autoMemoryEnabled"], json!(false));
+        assert_eq!(run["attribution"], json!({"commit": "", "pr": ""}));
+        for direct in [Allowed::Everything, Allowed::AsTheCliAsks] {
+            let yours = left_out(false, CommandSandbox::Own, direct, &LeftOut::default());
+            assert!(yours.get("autoMemoryEnabled").is_none());
+        }
+        assert!(validate(&json!({"autoMemoryEnabled": true})).is_err());
+    }
+
     /// A reader that may run the checks: one rule for each command as it is and with
     /// arguments, and no command without a rule, in Claude Code's sandbox or ours.
     #[test]
@@ -581,6 +608,7 @@ mod tests {
             fast: true,
             language: Some(" japanese ".into()),
             workflow_word_off: true,
+            title: None,
         };
         let with = |preferences: &SessionPreferences| -> Value {
             let settings = session_settings(
@@ -744,6 +772,7 @@ mod tests {
             json!({
                 "crossSessionInbound": "refuse",
                 "attribution": {"commit": "", "pr": ""},
+                "autoMemoryEnabled": false,
                 "sandbox": {
                     "enabled": true,
                     "failIfUnavailable": true,

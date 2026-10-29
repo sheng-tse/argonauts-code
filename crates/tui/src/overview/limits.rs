@@ -15,7 +15,7 @@ use ratatui::text::Span;
 
 use super::status::task_state;
 use crate::format;
-use crate::kit::{Drawn, Frame, Header, Kit, Level, States, bars, ljust, rjust, spread};
+use crate::kit::{Drawn, Frame, Header, Kit, Level, States, bars, legend, ljust, rjust, spread};
 use crate::state::RunState;
 use crate::text::{sanitize_line, spans_width, str_width, truncate_spans};
 use crate::theme::Role;
@@ -25,8 +25,8 @@ use crate::views::settings::words::value_words;
 const NEAR_LIMIT: f64 = 0.9;
 /// The most tasks the card lists before it counts the rest.
 const TASK_ROWS: usize = 8;
-/// The most limits the list shows at once. The rest scroll under the picked one.
-const LIMIT_ROWS: usize = 8;
+/// The fewest rows the list asks for: its heading, a limit and the count of the rest.
+pub const LIST_ROWS_AT_LEAST: usize = 3;
 /// The least cells a task's meter takes before the column goes.
 const LEAST_METER: usize = 8;
 /// Under this width the list leaves out each limit's key.
@@ -186,8 +186,15 @@ impl LimitsCards<'_> {
     }
 
     /// The limits, a row each: what it limits, its value in words, where the value came
-    /// from, and its key. `picked` is the row the keys are on.
-    pub fn list(&self, kit: &Kit<'_>, width: usize, picked: usize, mark: &str) -> Option<Drawn> {
+    /// from, and its key, in `room` rows at most. `picked` is the row the keys are on; where
+    /// the limits don't all fit, the rest scroll under it and a last row counts them.
+    pub fn list(
+        &self,
+        kit: &Kit<'_>,
+        (width, room): (usize, usize),
+        picked: usize,
+        mark: &str,
+    ) -> Option<Drawn> {
         if self.limits.is_empty() {
             return None;
         }
@@ -212,12 +219,20 @@ impl LimitsCards<'_> {
         let labels: Vec<String> = rows.iter().map(|row| label(&row.key)).collect();
         let values: Vec<String> = rows.iter().map(|row| value(&row.key, &row.value)).collect();
         let layers: Vec<&str> = rows.iter().map(layer).collect();
-        let column = |cells: &mut dyn Iterator<Item = usize>| cells.max().unwrap_or(0) + 3;
+        let column = |cells: &mut dyn Iterator<Item = usize>| {
+            cells.max().unwrap_or(0) + legend::BETWEEN_WORDS
+        };
         let label_w = column(&mut labels.iter().map(|cell| str_width(cell)));
         let value_w = column(&mut values.iter().map(|cell| str_width(cell)));
         let layer_w = column(&mut layers.iter().map(|cell| str_width(cell)));
-        let first = (picked + 1).saturating_sub(LIMIT_ROWS);
-        for (at, row) in rows.iter().enumerate().skip(first).take(LIMIT_ROWS) {
+        let room = room.max(LIST_ROWS_AT_LEAST);
+        let shown = if rows.len() < room {
+            rows.len()
+        } else {
+            room - 2
+        };
+        let first = (picked + 1).saturating_sub(shown);
+        for (at, row) in rows.iter().enumerate().skip(first).take(shown) {
             let on = at == picked;
             let mut line = vec![if on {
                 kit.span(format!(" {mark} "), Role::Question)
@@ -241,7 +256,7 @@ impl LimitsCards<'_> {
             }
             block.push(truncate_spans(&line, width));
         }
-        if rows.len() > LIMIT_ROWS {
+        if rows.len() > shown {
             let rest = format!("   {} of {} · ↑↓  shows the rest", picked + 1, rows.len());
             block.push(truncate_spans(&[kit.dim(rest)], width));
         }

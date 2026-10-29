@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+                                ⢀⣀⣀⡀                                Every maker
+                               ⣴⣿⣿⣿⣿⣦                               562 actions · ←  →  picks one, enter goes in
+                               ⠹⣿⣿⣿⣿⠏                               ● Anthropic                                    428
+                                 ⠉⠉                                   OpenAI                                       115
+                               ⢀⠠ ⠄⠄⡀                                 Google                                        19
+                             ⡠⠈  ⢀⡀  ⠁⢂
+                             ⠄  ⠰⣿⣿⠆  ⠠
+                             ⠡⢀  ⠈⠁  ⡀⠌
+             ⣶⣶⡄               ⠈⠐ ⠄⠂⠁               ⣴⣿⣿⣦
+             ⠉⠉                                     ⠙⠛⠛⠃
+
+
+
+
+  Anthropic · 428 actions, 76% of yours · 2 models
+    Turning: 33% of its actions came in the last 7 days · enter to go in
+
+  Label map · 562 actions in 19 runs across 6 projects · last 30 days
+  Most common
+  Returned its structured answer   169    Ran the test suite                         27
+  Read a source file                62    Edited a source file                       26
+  Searched code by pattern          28    Gave a structured answer that didn't fit   21
+
+
+
+
+
+   r to cycle dates · ←  →  pick a galaxy · enter go in · scroll in or out · esc back to the map

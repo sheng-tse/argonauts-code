@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use argonauts_core::adapter::Transport;
 use argonauts_core::answer_format;
+use argonauts_core::cli_sessions::ResumeCommand;
 use argonauts_core::driver::McpServerSpec;
 use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::layout::{self, session_files};
@@ -326,6 +327,20 @@ fn is_main_session(spec: &SessionSpec) -> bool {
                     | StepName::CliCommand
             )
         )
+}
+
+/// What you type to carry `cli_session` on in its CLI's own screen, as `adapter` builds it for
+/// a session of `worker` in `workdir`. `None` for a CLI that can't reopen one there.
+pub fn carry_on_command(
+    worker: &ModelRef,
+    cli_session: &str,
+    workdir: &Path,
+    adapter: &dyn Adapter,
+    settings: &Settings,
+    registry: Option<&dyn ModelRegistry>,
+) -> Option<ResumeCommand> {
+    let request = take_over_request(worker, cli_session, workdir, adapter, settings, registry);
+    adapter.resume_command(&request)
 }
 
 /// The request a take-over opens `cli_session` with: the model the worker's sessions run and its
@@ -1729,3 +1744,7 @@ mod pictures_tests;
 #[cfg(test)]
 #[path = "request_own_workflow_tests.rs"]
 mod own_workflow_tests;
+
+#[cfg(test)]
+#[path = "request_carry_on_tests.rs"]
+mod carry_on_tests;

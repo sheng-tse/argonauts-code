@@ -1,6 +1,7 @@
-//! The settings names that changed, each old line beside the line it becomes. The table words the start
-//! question that offers to edit a file still using old names, and makes that edit. It never
-//! reads an old name as its new one: until the file says the new name, its line does nothing.
+//! The settings names that changed, each old line beside the line it becomes, and the keys that
+//! are gone. The table words the start question that offers to edit a file still using old
+//! names, and makes that edit. It never reads an old name as its new one: until the file says
+//! the new name, its line does nothing.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -82,7 +83,19 @@ const VALUES: &[(&str, &str, &str)] = &[
     ("sandbox.mode", "off", "tool"),
     ("goal.default", "from_request", "from-request"),
     ("ui.views.*.open", "dialog", "view"),
+    ("ui.motion", "normal", "full"),
+    ("behaviors.map", "deeper", "summaries"),
 ];
+
+/// Keys that are gone, each with why, as the start question says it. The edit takes the line
+/// out.
+const RETIRED: &[(&str, &str)] = &[(
+    "ui.panel.bar",
+    "each run row's bar counts what sits under it, so it has no setting",
+)];
+
+/// What the start question writes in a gone key's place.
+const TAKEN_OUT: &str = "taken out";
 
 const MAIN_AGENT: &str = "main_agent";
 const CREW: &str = "crew";
@@ -106,6 +119,17 @@ pub struct Rename {
     pub value_now: Option<String>,
     /// A safety setting, whose value starts to count once it has its new name.
     pub safety: bool,
+    /// A key that is gone: the edit takes its line out, `to` is empty and `note` says why.
+    pub retired: bool,
+}
+
+/// What a key a file still sets under an old name is now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OldKey {
+    /// Its new name, with its value when the value's name changed too.
+    Renamed(String),
+    /// Gone, for this reason.
+    Retired(String),
 }
 
 /// What renaming a file did.
@@ -128,7 +152,7 @@ pub fn renames_in(text: &str) -> Vec<Rename> {
 }
 
 /// The old keys a file sets, each with what the start question will call it now.
-pub(crate) fn old_keys(table: &Table) -> BTreeMap<String, String> {
+pub(crate) fn old_keys(table: &Table) -> BTreeMap<String, OldKey> {
     let mut paths = Vec::new();
     collect_leaves(&mut Vec::new(), table, &mut paths);
     let paths: Vec<Vec<String>> = paths.into_iter().map(|(path, _)| path).collect();
@@ -137,11 +161,12 @@ pub(crate) fn old_keys(table: &Table) -> BTreeMap<String, String> {
         .filter(|rename| rename.from != rename.to)
         .map(|rename| {
             // A name that changed alone is said by itself; one whose value changed too, with it.
-            let new = match rename.value_now {
-                Some(_) => rename.new,
-                None => shown_key(&parts(&rename.to)),
+            let now = match (rename.retired, rename.value_now) {
+                (true, _) => OldKey::Retired(rename.note.unwrap_or_default()),
+                (false, Some(_)) => OldKey::Renamed(rename.new),
+                (false, None) => OldKey::Renamed(shown_key(&parts(&rename.to))),
             };
-            (rename.from, new)
+            (rename.from, now)
         })
         .collect()
 }
@@ -211,6 +236,7 @@ pub fn mod_renames_in(text: &str) -> Vec<Rename> {
         to: PLACES.to_owned(),
         value_now: Some(now),
         safety: false,
+        retired: false,
     }]
 }
 
@@ -285,6 +311,18 @@ fn renames_of(table: &Table, paths: &[Vec<String>]) -> Vec<Rename> {
         .iter()
         .filter_map(|path| {
             let value = value_at(table, path)?;
+            if let Some(why) = retired_why(&moved(path)) {
+                return Some(Rename {
+                    old: format!("{} = {value}", shown_key(path)),
+                    new: TAKEN_OUT.to_owned(),
+                    note: Some(why.to_owned()),
+                    from: path.join("."),
+                    to: String::new(),
+                    value_now: None,
+                    safety: false,
+                    retired: true,
+                });
+            }
             let set = paths;
             let to = moved(path);
             let value_now = value.as_str().and_then(|text| new_value(&to, text));
@@ -305,10 +343,12 @@ fn renames_of(table: &Table, paths: &[Vec<String>]) -> Vec<Rename> {
                 from: path.join("."),
                 to: to.join("."),
                 value_now: value_now.map(str::to_owned),
+                retired: false,
             })
         })
         .collect();
-    renames.sort_by_key(|rename| rename.from == rename.to);
+    // Moved keys first, then values that changed, then the keys that are gone.
+    renames.sort_by_key(|rename| (rename.retired, rename.from == rename.to));
     renames
 }
 
@@ -361,6 +401,14 @@ fn moved(path: &[String]) -> Vec<String> {
         path = parts(new);
     }
     path
+}
+
+/// Why the key at `path` is gone, when it is.
+fn retired_why(path: &[String]) -> Option<&'static str> {
+    RETIRED
+        .iter()
+        .find(|(key, _)| matches_key(key, path))
+        .map(|(_, why)| *why)
 }
 
 fn new_value(path: &[String], value: &str) -> Option<&'static str> {
@@ -429,6 +477,12 @@ fn edited(text: &str, renames: &[Rename]) -> Result<String, String> {
         } else {
             moved_tables_only(&from)
         };
+        if rename.retired {
+            take(doc.as_table_mut(), &now)
+                .ok_or_else(|| format!("{} isn't where the file said it was", rename.from))?;
+            drop_emptied_tables(doc.as_table_mut(), &now[..now.len() - 1]);
+            continue;
+        }
         if now != to {
             let item = take(doc.as_table_mut(), &now)
                 .ok_or_else(|| format!("{} isn't where the file said it was", rename.from))?;
@@ -444,6 +498,25 @@ fn edited(text: &str, renames: &[Rename]) -> Result<String, String> {
         }
     }
     Ok(doc.to_string())
+}
+
+/// Takes out the table at `path` and each table above it that holds nothing once it's gone, so
+/// taking out a key leaves no empty header behind.
+fn drop_emptied_tables(doc: &mut dyn TableLike, path: &[String]) {
+    for depth in (1..=path.len()).rev() {
+        let (parent, leaf) = path[..depth].split_at(depth - 1);
+        let Some(table) = table_at(&mut *doc, parent) else {
+            return;
+        };
+        let empty = table
+            .get(&leaf[0])
+            .and_then(Item::as_table_like)
+            .is_some_and(|inner| inner.is_empty());
+        if !empty {
+            return;
+        }
+        table.remove(&leaf[0]);
+    }
 }
 
 fn moved_tables_only(path: &[String]) -> Vec<String> {
@@ -572,13 +645,14 @@ fn holds_every_value(text: &str, edited: &str, renames: &[Rename]) -> Result<(),
     for rename in renames {
         let was = value_at(&before, &parts(&rename.from));
         let now = value_at(&after, &parts(&rename.to));
-        let kept = match (was, now) {
-            (Some(Value::String(was)), Some(Value::String(now))) => {
-                was == now || new_value(&parts(&rename.to), was) == Some(now.as_str())
-            }
-            (Some(was), Some(now)) => was == now,
-            _ => false,
-        };
+        let kept = rename.retired
+            || match (was, now) {
+                (Some(Value::String(was)), Some(Value::String(now))) => {
+                    was == now || new_value(&parts(&rename.to), was) == Some(now.as_str())
+                }
+                (Some(was), Some(now)) => was == now,
+                _ => false,
+            };
         let gone = rename.from == rename.to || value_at(&after, &parts(&rename.from)).is_none();
         if !kept || !gone {
             return Err(format!(
@@ -808,5 +882,100 @@ mode = "supervised" # read it back to me
                 "{new} holds no setting"
             );
         }
+        for (key, _) in RETIRED {
+            assert!(
+                !known.iter().any(|known| known == key),
+                "{key} is still a setting"
+            );
+        }
+    }
+
+    #[test]
+    fn the_motion_that_moved_everything_is_now_called_full() {
+        let text = "[ui]\nmotion = \"normal\" # spinners too\n";
+        let renames = renames_in(text);
+        assert_eq!(
+            names(&renames),
+            [("[ui] motion = \"normal\"", "[ui] motion = \"full\"")]
+        );
+        let edited = edited(text, &renames).unwrap();
+        assert_eq!(edited, "[ui]\nmotion = \"full\" # spinners too\n");
+        holds_every_value(text, &edited, &renames).unwrap();
+        let settings: Settings = toml::from_str(&edited).unwrap();
+        assert_eq!(
+            settings.ui.motion,
+            argonauts_core::settings::ui::Motion::Full
+        );
+        assert!(renames_in("[ui]\nmotion = \"reduced\"\n").is_empty());
+    }
+
+    #[test]
+    fn the_deeper_map_is_now_called_summaries() {
+        let text = "[behaviors]\nmap = \"deeper\"\n";
+        let renames = renames_in(text);
+        assert_eq!(
+            names(&renames),
+            [(
+                "[behaviors] map = \"deeper\"",
+                "[behaviors] map = \"summaries\""
+            )]
+        );
+        let edited = edited(text, &renames).unwrap();
+        assert_eq!(edited, "[behaviors]\nmap = \"summaries\"\n");
+        holds_every_value(text, &edited, &renames).unwrap();
+        let settings: Settings = toml::from_str(&edited).unwrap();
+        assert_eq!(
+            settings.behaviors.map,
+            argonauts_core::settings::behaviors::BehaviorMap::Summaries
+        );
+        assert!(renames_in("[behaviors]\nmap = \"labels\"\n").is_empty());
+    }
+
+    #[test]
+    fn a_key_that_is_gone_is_taken_out_with_why() {
+        let text = "[ui.panel]\n# rows\nbar = \"tasks\"\nmax_rows = 3\n";
+        let renames = renames_in(text);
+        assert_eq!(
+            names(&renames),
+            [("[ui.panel] bar = \"tasks\"", "taken out")]
+        );
+        let gone = &renames[0];
+        assert!(gone.retired && !gone.safety);
+        assert_eq!(
+            gone.note.as_deref(),
+            Some("each run row's bar counts what sits under it, so it has no setting")
+        );
+        let edited = edited(text, &renames).unwrap();
+        assert_eq!(edited, "[ui.panel]\n# rows\nmax_rows = 3\n");
+        holds_every_value(text, &edited, &renames).unwrap();
+        assert!(renames_in(&edited).is_empty());
+
+        let table: Table = text.parse().unwrap();
+        assert_eq!(
+            old_keys(&table).get("ui.panel.bar"),
+            Some(&OldKey::Retired(RETIRED[0].1.to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_table_a_gone_key_leaves_empty_goes_with_it() {
+        let text =
+            "[ui]\nbell = false\n\n[ui.panel]\nbar = \"spend\"\n\n[crew]\nmain = \"codex\"\n";
+        let renames = renames_in(text);
+        let without = edited(text, &renames).unwrap();
+        assert_eq!(without, "[ui]\nbell = false\n\n[crew]\nmain = \"codex\"\n");
+        holds_every_value(text, &without, &renames).unwrap();
+        let inline = "[ui]\npanel = { bar = \"time\" }\n";
+        let without = edited(inline, &renames_in(inline)).unwrap();
+        assert!(renames_in(&without).is_empty(), "{without}");
+        assert!(!without.contains("panel"), "{without}");
+    }
+
+    #[test]
+    fn moved_keys_come_first_then_values_then_keys_that_are_gone() {
+        let text = "[ui.panel]\nbar = \"tasks\"\n\n[ui]\nmotion = \"normal\"\nheads_up = \"off\"\n";
+        let renames = renames_in(text);
+        let froms: Vec<&str> = renames.iter().map(|rename| rename.from.as_str()).collect();
+        assert_eq!(froms, ["ui.heads_up", "ui.motion", "ui.panel.bar"]);
     }
 }

@@ -736,3 +736,73 @@ fn marked_rows_in_scrollback_stay_as_they_were() {
     assert_eq!(screen(&term), ["r1", "r2", "r3", "r4", ">"]);
     assert_eq!(scrollback(&mut term), ["old header"]);
 }
+
+/// History with a marked row, a long line under it, and a live rule twenty columns wide, the
+/// cursor resting on the live region's last row.
+fn rewrapping_terminal() -> InlineTerminal<Vec<u8>> {
+    let mut term = InlineTerminal::new(Vec::new(), Size::new(WIDTH, 10), Position::new(0, 0));
+    term.insert_marked_history(history(&["", "HEADER row", ""]), 1..2);
+    term.insert_history(history(&[&"x".repeat(15), "short"]));
+    term.draw(2, |frame| {
+        frame.paint_lines(&live(&[&"─".repeat(20), "> "]));
+        frame.set_cursor(2, 1);
+    })
+    .unwrap();
+    term.writer_mut().clear();
+    term
+}
+
+/// After a terminal rewraps every row at a new width, the marked rows are found again from
+/// where it says the cursor went: the lines printed under them and the live rows above the
+/// cursor each take the rows they need at the new width. A picture then goes back into them,
+/// while text no longer prints over them.
+#[test]
+fn marked_rows_are_found_again_after_a_rewrap_from_the_cursor() {
+    let mut term = rewrapping_terminal();
+    // Twenty columns become ten: the long line and the rule take two rows each, and the
+    // terminal, grown to 14 rows, keeps everything on screen with the cursor on row 11.
+    term.resize(Size::new(10, 14), Some(Position::new(2, 11)))
+        .unwrap();
+    assert!(term.marked_on_screen());
+    term.send_on_marked(0, 1, b"<picture>".to_vec());
+    term.redraw_marked(history(&["new"]));
+    term.draw(2, |frame| {
+        frame.paint_lines(&live(&["─".repeat(10).as_str(), "> "]))
+    })
+    .unwrap();
+    let sent = String::from_utf8_lossy(term.writer()).into_owned();
+    assert!(sent.contains("\x1b[2;2H<picture>"), "{sent:?}");
+    assert!(!sent.contains("new"), "{sent:?}");
+}
+
+/// Marked rows the rewrap pushed up into scrollback, or a terminal that couldn't say where its
+/// cursor went, leave nothing to find.
+#[test]
+fn marked_rows_pushed_into_scrollback_or_without_a_cursor_are_lost() {
+    let mut term = rewrapping_terminal();
+    term.resize(Size::new(10, 6), Some(Position::new(2, 5)))
+        .unwrap();
+    assert!(!term.marked_on_screen());
+
+    let mut term = rewrapping_terminal();
+    term.resize(Size::new(10, 14), None).unwrap();
+    assert!(!term.marked_on_screen());
+
+    // The same width keeps them, cursor or not.
+    let mut term = rewrapping_terminal();
+    term.resize(Size::new(WIDTH, 12), None).unwrap();
+    assert!(term.marked_on_screen());
+}
+
+/// A second resize before any frame finds the live rows no longer as the last frame drew
+/// them, so the marked rows can't be found again.
+#[test]
+fn a_burst_of_rewraps_before_a_frame_loses_the_marked_rows() {
+    let mut term = rewrapping_terminal();
+    term.resize(Size::new(10, 14), Some(Position::new(2, 11)))
+        .unwrap();
+    assert!(term.marked_on_screen());
+    term.resize(Size::new(8, 14), Some(Position::new(2, 12)))
+        .unwrap();
+    assert!(!term.marked_on_screen());
+}

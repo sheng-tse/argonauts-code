@@ -77,7 +77,7 @@ const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     ("limits", None),
     // The keys the later changes and decisions added.
     // With nothing naming one, Captain runs.
-    ("workflow", Some("\"captain\"")),
+    ("workflow", Some("\"council\"")),
     ("crew.main", Some("\"claude-code\"")),
     ("crew", None),
     ("fallback.strategy", Some("\"first\"")),
@@ -173,7 +173,7 @@ fn resolved_hash_recorded() {
     repo.local("[ui]\nbell = false\n");
     let local = resolve(&repo.sources()).unwrap();
     assert_ne!(local.sha256, first.sha256);
-    repo.global_workflow("captain", "[judging]\nanonymize = false\n");
+    repo.global_workflow("council", "[judging]\nanonymize = false\n");
     assert_ne!(resolve(&repo.sources()).unwrap().sha256, local.sha256);
 }
 

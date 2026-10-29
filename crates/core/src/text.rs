@@ -39,8 +39,8 @@ pub fn shown_name(name: &str) -> String {
     }
 }
 
-/// What a run's header and its Workflow line call the workflow it runs, after the run's name:
-/// a council is the mode itself, `Council`; any other is `orchestrator workflow`.
+/// What a run's header calls the workflow it runs, after the run's name: a council is the mode
+/// itself, `Council`; any other is `orchestrator workflow`.
 pub fn workflow_kind(kind: &str) -> String {
     let kind = kind.trim();
     if kind.eq_ignore_ascii_case("council") {
@@ -101,11 +101,12 @@ pub fn listed(items: &[String]) -> String {
 }
 
 /// Starts `text` in lowercase, for a reason that follows "since" or "because" mid-sentence,
-/// unless its first word is code or a name in capitals, such as `README` or `API`.
+/// unless its first word is code or a name in capitals, such as `README` or `API`, or it starts
+/// with a model named on its CLI, such as "Sonnet 5 on Claude Code".
 pub fn clause_case(text: &str) -> String {
     let first_word = text.split_whitespace().next().unwrap_or_default();
     let capitals = first_word.chars().filter(|c| c.is_uppercase()).count() > 1;
-    if is_code(first_word) || capitals {
+    if is_code(first_word) || capitals || starts_with_a_model(text) {
         return text.to_owned();
     }
     let mut chars = text.chars();
@@ -113,6 +114,18 @@ pub fn clause_case(text: &str) -> String {
         Some(first) => first.to_lowercase().chain(chars).collect(),
         None => String::new(),
     }
+}
+
+/// Whether `text` starts with a model as the app names one on its CLI: a name of a few words,
+/// then " on " and the CLI's name, such as "Sonnet 5 on Claude Code," or "Haiku on agy".
+fn starts_with_a_model(text: &str) -> bool {
+    let clause = text.split(',').next().unwrap_or_default();
+    let Some((model, cli)) = clause.split_once(" on ") else {
+        return false;
+    };
+    let capital = |words: &str| words.chars().next().is_some_and(char::is_uppercase);
+    let cli_named = capital(cli) || LOWERCASE_NAMES.iter().any(|name| cli.starts_with(name));
+    capital(model) && model.split_whitespace().count() <= 4 && cli_named
 }
 
 /// Names that are spelled in lowercase, which no sentence capitalizes.
@@ -145,9 +158,29 @@ pub fn state_words(name: &str) -> &str {
     }
 }
 
+/// The last sentence of `words`, the claim a reply most often answers: what a reply to a
+/// message quotes.
+pub fn last_sentence(words: &str) -> &str {
+    let trimmed = words.trim_end();
+    let body = trimmed.strip_suffix('.').unwrap_or(trimmed);
+    match body.rfind(". ") {
+        Some(at) => trimmed[at + 2..].trim_start(),
+        None => trimmed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_quotes_the_last_sentence() {
+        assert_eq!(
+            last_sentence("Keep the window. A bucket needs a burst size."),
+            "A bucket needs a burst size."
+        );
+        assert_eq!(last_sentence("One claim only"), "One claim only");
+    }
 
     #[test]
     fn a_runs_slug_is_drawn_as_its_words() {
@@ -174,6 +207,18 @@ mod tests {
             "limits.spend_per_run is spent"
         );
         assert_eq!(clause_case(""), "");
+        assert_eq!(
+            clause_case("Sonnet 5 on Claude Code, a fallback, reviewed task-001"),
+            "Sonnet 5 on Claude Code, a fallback, reviewed task-001"
+        );
+        assert_eq!(
+            clause_case("Haiku on agy reviewed it"),
+            "Haiku on agy reviewed it"
+        );
+        assert_eq!(
+            clause_case("Every check passed on the merge"),
+            "every check passed on the merge"
+        );
     }
 
     #[test]

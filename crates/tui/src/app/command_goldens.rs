@@ -87,8 +87,9 @@ impl Screen {
 
     /// `rows` of screen as the full screen draws them: the conversation, what printed and the
     /// live blocks under it, from the top, or its last rows once it fills the room, then the
-    /// live region pinned to the bottom.
-    fn frame(&mut self, printed: Vec<Line<'static>>, rows: usize) -> Vec<Line<'static>> {
+    /// live region pinned to the bottom. With them, where the terminal's cursor goes, as
+    /// (column, row).
+    fn frame(&mut self, printed: Vec<Line<'static>>, rows: usize) -> Frame {
         as_pictured(&mut self.model);
         let ctx = RenderCtx::new(WIDTH, &self.theme, Clock::new(self.started, self.now))
             .with_rows(rows as u16);
@@ -108,8 +109,30 @@ impl Screen {
         let mut screen = screen.split_off(screen_len.saturating_sub(room));
         screen.resize(room, Line::default());
         screen.extend(pinned.iter().cloned());
-        screen
+        let (column, row) = view.cursor.expect("the input's cursor");
+        let row = usize::from(row)
+            .checked_sub(view.trailing)
+            .expect("the cursor in the pinned input");
+        Frame {
+            rows: screen,
+            cursor: (usize::from(column), room + row),
+        }
     }
+}
+
+struct Frame {
+    rows: Vec<Line<'static>>,
+    cursor: (usize, usize),
+}
+
+/// The picture paints the terminal's own cursor as a block, a blank on the text's colour: the
+/// block's column and row within the picture's `rows`.
+fn block(html: &str, rows: std::ops::Range<usize>) -> (usize, usize) {
+    let grid = argonauts_testkit::picture::grid(html);
+    let (row, column) = argonauts_testkit::picture::find(&grid[rows], |cell| {
+        cell.ch == ' ' && cell.background.as_deref() == Some("var(--term-fg)")
+    });
+    (column, row)
 }
 
 /// The input and the line under it as the pictures draw them: Opus 5.5 on the input's rule,
@@ -164,7 +187,7 @@ fn names() -> AppEvent {
 fn welcome() -> AppEvent {
     AppEvent::Welcome {
         version: "0.0.1".to_owned(),
-        repo: "~/github/argonauts-code".to_owned(),
+        repo: "~/code/tasks-cli".to_owned(),
         workflow: "captain".to_owned(),
         agents: Vec::new(),
         runs_going: 0,
@@ -188,33 +211,6 @@ fn line_edge(row: usize) -> Unlike {
     }
 }
 
-/// The input's rules keep their own grey, a step brighter than the picture's.
-fn rule(row: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (0, WIDTH as usize - 1),
-        why: "the input's rules keep their own grey, a step brighter than the picture's",
-    }
-}
-
-/// While a command works, as while a turn does, the input's `❯` is grey.
-fn busy_prompt(row: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (0, 0),
-        why: "the input's ❯ turns grey while the command works, as while a turn does",
-    }
-}
-
-/// The cursor is the terminal's own, where the picture paints a block.
-fn cursor(row: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (2, 2),
-        why: "the cursor is the terminal's own, where the picture paints its block",
-    }
-}
-
 /// After `/clear` the screen starts over: the header as a fresh start prints it, the way back
 /// to the old conversation under it, then the empty input and the line under it.
 #[test]
@@ -232,12 +228,13 @@ fn the_screen_after_clear_is_its_picture() {
     let (txt, html) = picture("clear_after");
     assert_rows_match(
         "clear_after",
-        &frame,
+        &frame.rows,
         (&txt, &html),
         1..16,
         &screen.theme,
-        &[rule(11), cursor(12), rule(13), line_edge(14)],
+        &[line_edge(14)],
     );
+    assert_eq!(frame.cursor, block(&html, 1..16));
 }
 
 /// On the inline screen, `/clear` sends what the screen showed up into the terminal's
@@ -376,17 +373,19 @@ fn update_as_it_works_and_once_its_done_is_its_picture() {
         .find_map(|ms| {
             screen.now = started + Duration::from_millis(ms);
             let frame = screen.frame(printed.clone(), 14);
-            frame[8].to_string().starts_with('✻').then_some(frame)
+            frame.rows[8].to_string().starts_with('✻').then_some(frame)
         })
         .expect("a moment the spinner shows ✻");
     assert_rows_match(
         "update_after",
-        &working[3..],
+        &working.rows[3..],
         (&txt, &html),
         2..13,
         &screen.theme,
-        &[rule(7), busy_prompt(8), cursor(8), rule(9), line_edge(10)],
+        &[line_edge(10)],
     );
+    let (column, row) = working.cursor;
+    assert_eq!((column, row - 3), block(&html, 2..13));
 
     screen.send(AppEvent::Report {
         title: "Update".to_owned(),
@@ -404,12 +403,13 @@ fn update_as_it_works_and_once_its_done_is_its_picture() {
     let done = screen.frame(printed, 22);
     assert_rows_match(
         "update_after",
-        &done,
+        &done.rows,
         (&txt, &html),
         17..39,
         &screen.theme,
-        &[rule(18), cursor(19), rule(20), line_edge(21)],
+        &[line_edge(21)],
     );
+    assert_eq!(done.cursor, block(&html, 17..39));
 }
 
 /// The recorded Captain run whose words the Starting line's picture uses, its placeholders
@@ -482,8 +482,8 @@ fn the_captain_runs_start_and_answer_are_its_picture() {
     assert_rows_match("captain_after", &answer, (&txt, &html), 61..67, &theme, &[]);
 }
 
-/// The Captain run's picture keeps your prompt over the run's end and over its start, each
-/// cut where the picture cuts it.
+/// The Captain run's picture keeps your prompt over the run's end and over its start, cut a
+/// cell short of the edge.
 #[test]
 fn the_captain_runs_prompt_rows_are_its_picture() {
     let theme = on_macos();
@@ -491,25 +491,20 @@ fn the_captain_runs_prompt_rows_are_its_picture() {
     let (txt, html) = picture("captain_after");
     let words = sticky::words(PROMPT).expect("the prompt's words");
     let prompt = [sticky::prompt_row(&words, &ctx), Line::default()];
-    for (top, picture_cuts) in [(56, 106), (87, 100)] {
-        let cut = Unlike {
-            row: 0,
-            cols: (picture_cuts, WIDTH as usize - 1),
-            why: "the kept prompt is cut a cell short of the edge, where the picture cuts it sooner",
-        };
+    for top in [56, 87] {
         assert_rows_match(
             "captain_after",
             &prompt,
             (&txt, &html),
             top..top + 2,
             &theme,
-            &[cut],
+            &[],
         );
     }
 }
 
-/// Your words as the fork picture keeps them over either start: the prompt row the Starting
-/// line's picture has.
+/// Your words as the fork picture keeps them over either start, cut a cell short of the edge
+/// as the Starting line's picture cuts them.
 #[test]
 fn the_fork_starts_prompt_row_is_its_picture() {
     const ASKED: &str = "Run what we just worked out as an orchestrator workflow, with Codex as \
@@ -519,11 +514,6 @@ fn the_fork_starts_prompt_row_is_its_picture() {
     let (txt, html) = picture("fork_start");
     let words = sticky::words(ASKED).expect("the prompt's words");
     let prompt = [sticky::prompt_row(&words, &ctx), Line::default()];
-    let cut = Unlike {
-        row: 0,
-        cols: (100, WIDTH as usize - 1),
-        why: "the kept prompt is cut a cell short of the edge, where the picture cuts it at 100",
-    };
     for top in [2, 31] {
         assert_rows_match(
             "fork_start",
@@ -531,7 +521,7 @@ fn the_fork_starts_prompt_row_is_its_picture() {
             (&txt, &html),
             top..top + 2,
             &theme,
-            &[cut],
+            &[],
         );
     }
 }
@@ -546,20 +536,13 @@ fn the_starting_line_over_its_row_is_its_picture() {
     let (txt, html) = picture("starting_line_after");
     let words = sticky::words(PROMPT).expect("the prompt's words");
     let prompt = [sticky::prompt_row(&words, &ctx), Line::default()];
-    // The picture cuts the prompt at its hundredth cell; Claude Code's own row, which the
-    // build draws, cuts it a cell short of the edge.
-    let cut = Unlike {
-        row: 0,
-        cols: (100, WIDTH as usize - 1),
-        why: "the kept prompt is cut a cell short of the edge, where the picture cuts it at 100",
-    };
     assert_rows_match(
         "starting_line_after",
         &prompt,
         (&txt, &html),
         0..2,
         &theme,
-        &[cut],
+        &[],
     );
 
     let mut starting = AssistantMessage::new(STARTING).lines(&ctx);
@@ -615,11 +598,6 @@ fn the_starting_line_over_its_row_is_its_picture() {
         (&txt, &html),
         5..7,
         &theme,
-        &[Unlike {
-            row: 0,
-            cols: (0, 0),
-            why: "a Workflow call has its bullet green, as Claude Code's own calls do and as the \
-                  council's rows draw it",
-        }],
+        &[],
     );
 }

@@ -5,11 +5,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::SystemTime;
 
 use argonauts_core::RunId;
 use argonauts_core::Spend;
 use argonauts_core::app::{HeaderAndBottomLine, LineFacts, PlanUsageChip, UltraColour};
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::limits::{HealthBoard, PlanUsageBoard, PlanUsageReading};
 use argonauts_core::names::{AgentId, ModelRef};
 use argonauts_core::plan_usage::{LiveUsage, UNNAMED_SHOWN_FOR, current_live};
@@ -24,7 +25,11 @@ use super::Ctx;
 use super::names::cli_defaults;
 use super::turn::conversation_agent;
 use crate::env::AppEnv;
-use crate::usage_ledger::{UsageLedger, by_day, local_day};
+use crate::usage_ledger::{LedgerLine, UsageLedger, by_day, local_day};
+
+mod command;
+
+pub(crate) use command::command as bottom_line_command;
 
 /// What the attached run adds to the header and bottom line.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -58,6 +63,8 @@ pub(crate) fn header_and_bottom_line(
     );
     let mut line = line_facts(&ctx.env, OffsetDateTime::now_utc());
     line.main_effort = main_effort;
+    line.saves_to = settings.save_changes_to;
+    line.runs_keep_awake = ctx.awake.runs_keep_awake(&settings.awake);
     HeaderAndBottomLine {
         title: title.to_owned(),
         repo: ctx.env.display_repo(),
@@ -92,27 +99,72 @@ fn ultra_look(agent: &str, ultracode: bool, effort: Option<&str>) -> Option<Ultr
         .colour_when(ultracode, effort)
 }
 
-/// The bottom line's settings, and the facts of the parts they put on it. A part that isn't
-/// on the line costs nothing to leave out.
+/// The bottom line's settings, with what `/bottom-line` changed for this session laid over
+/// them, and the facts of the parts they put on it. A part that isn't on the line costs nothing
+/// to leave out.
 pub(crate) fn line_facts(env: &AppEnv, now: OffsetDateTime) -> LineFacts {
-    let settings = line_settings(env);
+    let mut settings = line_settings(env);
+    command::lay_over(env, &mut settings.plan_usage);
+    let week = last_week(env, now);
     LineFacts {
         branch: settings
             .has(BRANCH)
             .then(|| branch(&env.repo_root))
             .flatten(),
         spend_days: if settings.has(SPEND) {
-            spend_days(env, now)
+            week.days
         } else {
             Vec::new()
         },
+        spent_this_week: week.by_cli,
+        // The caller that knows the settings fills this in.
+        saves_to: Default::default(),
         // The screen reads an artifact off the call that publishes it, so there's none to
         // tell it about here.
         artifact: None,
-        // The caller that knows the main session fills this in.
+        // The caller that knows the main session and the computer's holds fills these in.
         main_effort: None,
+        most_used: most_used(env, now),
+        runs_keep_awake: false,
+        conversation: None,
+        in_cli: None,
         settings,
     }
+}
+
+/// How far back the line looks for the CLI used most.
+const MOST_USED_DAYS: i64 = 30;
+
+/// Each ledger folder's CLIs by use, worked out the first time the line asked.
+type MostUsed = Vec<(PathBuf, Vec<String>)>;
+
+/// The CLIs used over the last 30 days, the most used first. Worked out once per ledger, when
+/// the app starts, so the CLIs on the line stay put for the session.
+fn most_used(env: &AppEnv, now: OffsetDateTime) -> Vec<String> {
+    static WORKED_OUT: Mutex<MostUsed> = Mutex::new(Vec::new());
+    let ledger_dir = env.paths.usage_dir();
+    let mut known = WORKED_OUT.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, ranked)) = known.iter().find(|(dir, _)| *dir == ledger_dir) {
+        return ranked.clone();
+    }
+    let first = local_day(now).saturating_sub(time::Duration::days(MOST_USED_DAYS - 1));
+    let ranked = by_use(&UsageLedger::new(&env.paths).read_since(Some(first)));
+    known.push((ledger_dir, ranked.clone()));
+    ranked
+}
+
+/// CLIs by how many turns and run agents went to each, then by the tokens they read and
+/// wrote, which tells apart two used as often.
+fn by_use(lines: &[LedgerLine]) -> Vec<String> {
+    let mut uses: BTreeMap<&str, (usize, u64)> = BTreeMap::new();
+    for line in lines {
+        let (times, tokens) = uses.entry(line.agent_id.as_str()).or_default();
+        *times += 1;
+        *tokens += line.input + line.output;
+    }
+    let mut ranked: Vec<(&str, (usize, u64))> = uses.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    ranked.into_iter().map(|(cli, _)| cli.to_owned()).collect()
 }
 
 /// The two files a line's settings come from, and when each was last written.
@@ -175,27 +227,40 @@ fn branch(repo: &Path) -> Option<String> {
 /// How many days the spend part's sparkline covers.
 const SPEND_DAYS: i64 = 7;
 
-/// Each ledger folder's last reading, and when it was taken.
-type LedgerReads = HashMap<PathBuf, (Instant, Vec<f64>)>;
+/// The last seven days from the usage ledger.
+#[derive(Debug, Clone, Default)]
+struct LastWeek {
+    /// What each day cost, oldest first and today last. Empty when none of them cost anything.
+    days: Vec<f64>,
+    /// What each CLI spent over them, by its id.
+    by_cli: BTreeMap<String, f64>,
+}
 
-/// How long a reading of the ledger stands in for the next one.
-const SPEND_READ_EVERY: Duration = Duration::from_secs(30);
+/// Each ledger folder's last reading, with the day it was for and the ledger as it was then.
+type LedgerReads = HashMap<PathBuf, (time::Date, LedgerStamp, LastWeek)>;
 
-/// What each of the last seven days cost, oldest first and today last, from the usage ledger.
-/// Empty when none of them cost anything. The ledger is read at most every half minute.
-fn spend_days(env: &AppEnv, now: OffsetDateTime) -> Vec<f64> {
+/// The ledger's month files, each with when it was last written and how long it was. A turn
+/// that ends appends to one, so the next status reads it again.
+type LedgerStamp = Vec<(PathBuf, Option<SystemTime>, u64)>;
+
+/// The last seven days' spend, by day and by CLI. The ledger is read again only once it grew
+/// or the day turned.
+fn last_week(env: &AppEnv, now: OffsetDateTime) -> LastWeek {
     static READ: Mutex<Option<LedgerReads>> = Mutex::new(None);
     let ledger_dir = env.paths.usage_dir();
+    let today = local_day(now);
+    let stamp = ledger_stamp(&ledger_dir);
     let mut read = READ.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let read = read.get_or_insert_with(HashMap::new);
-    if let Some((at, days)) = read.get(&ledger_dir)
-        && at.elapsed() < SPEND_READ_EVERY
+    if let Some((day, known, week)) = read.get(&ledger_dir)
+        && *day == today
+        && *known == stamp
     {
-        return days.clone();
+        return week.clone();
     }
-    let today = local_day(now);
     let first = today.saturating_sub(time::Duration::days(SPEND_DAYS - 1));
-    let spent = by_day(&UsageLedger::new(&env.paths).read_since(Some(first)));
+    let lines = UsageLedger::new(&env.paths).read_since(Some(first));
+    let spent = by_day(&lines);
     let mut days: Vec<f64> = (0..SPEND_DAYS)
         .map(|back| today.saturating_sub(time::Duration::days(SPEND_DAYS - 1 - back)))
         .map(|day| spent.get(&day).map_or(0.0, |spend| spend.cost_usd))
@@ -203,8 +268,28 @@ fn spend_days(env: &AppEnv, now: OffsetDateTime) -> Vec<f64> {
     if days.iter().all(|cost| *cost <= 0.0) {
         days.clear();
     }
-    read.insert(ledger_dir, (Instant::now(), days.clone()));
-    days
+    let mut by_cli: BTreeMap<String, f64> = BTreeMap::new();
+    for line in lines.iter().filter(|line| line.cost > 0.0) {
+        *by_cli.entry(line.agent_id.clone()).or_default() += line.cost;
+    }
+    let week = LastWeek { days, by_cli };
+    read.insert(ledger_dir, (today, stamp, week.clone()));
+    week
+}
+
+fn ledger_stamp(dir: &Path) -> LedgerStamp {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut stamp: LedgerStamp = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            Some((entry.path(), meta.modified().ok(), meta.len()))
+        })
+        .collect();
+    stamp.sort();
+    stamp
 }
 
 /// The conversation's agent as the header names it. The bottom line carries the same, so it
@@ -352,7 +437,7 @@ pub(crate) fn plan_usage_chips(
             .filter(|reading| reading.resets_at.is_none_or(|resets| resets > now))
             .collect();
         chips.push(PlanUsageChip {
-            label: agent_label(&agent_id),
+            label: DisplayNames::default().cli(&agent_id.0),
             reading: argonauts_core::limits::binding_reading(&windows).cloned(),
             health: health.state(&agent_id).state,
             windows,
@@ -360,17 +445,6 @@ pub(crate) fn plan_usage_chips(
         seen.push(agent_id);
     }
     chips
-}
-
-/// The short name the bottom line shows, such as `Claude` for `claude-code`.
-pub(crate) fn agent_label(agent_id: &AgentId) -> String {
-    match agent_id.0.as_str() {
-        "claude-code" => "Claude".to_owned(),
-        "codex" => "Codex".to_owned(),
-        "antigravity-cli" => "agy".to_owned(),
-        "opencode" => "OpenCode".to_owned(),
-        other => other.to_owned(),
-    }
 }
 
 #[cfg(test)]
@@ -656,6 +730,43 @@ mod tests {
         );
     }
 
+    /// The CLI used most is the one with the most turns and run agents over the last 30 days,
+    /// worked out once, so a turn later in the session doesn't move the line.
+    #[test]
+    fn the_most_used_clis_are_counted_over_30_days_once() {
+        let (parts, _) = TestCtx::new(CliOptions::default());
+        let env = &parts.ctx.env;
+        let now = OffsetDateTime::now_utc();
+        let ledger = UsageLedger::new(&env.paths);
+        let turn = crate::usage_ledger::TurnNote::default();
+        let spend = |output_tokens| Spend {
+            output_tokens,
+            ..Spend::default()
+        };
+        let ran = |worker: &str, times: usize, tokens: u64, days_ago: i64| {
+            let worker: ModelRef = worker.parse().unwrap();
+            let at = now - time::Duration::days(days_ago);
+            for _ in 0..times {
+                ledger.turn_ended(&env.repo_root, &worker, &spend(tokens), turn, at);
+            }
+        };
+        ran("claude-code/claude-opus-5-5", 5, 10, 1);
+        ran("codex/gpt-5.6-luna", 2, 10, 3);
+        ran("opencode/ollama/qwen3-coder", 2, 400, 20);
+        // Busier, but before the 30 days.
+        ran("antigravity-cli/gemini-3.8-flash", 9, 10, 40);
+        assert_eq!(
+            line_facts(env, now).most_used,
+            ["claude-code", "opencode", "codex"]
+        );
+
+        ran("codex/gpt-5.6-luna", 6, 10, 0);
+        assert_eq!(
+            line_facts(env, now).most_used,
+            ["claude-code", "opencode", "codex"]
+        );
+    }
+
     #[test]
     fn the_branch_reads_from_head_without_git() {
         let dir = tempfile::tempdir().unwrap();
@@ -713,7 +824,7 @@ mod tests {
         );
         let chips = plan_usage_chips(&crew, &plan_usage, &health);
         let labels: Vec<&str> = chips.iter().map(|chip| chip.label.as_str()).collect();
-        assert_eq!(labels, ["Codex", "Claude"]);
+        assert_eq!(labels, ["Codex", "Claude Code"]);
         assert_eq!(chips[0].reading.as_ref().and_then(|r| r.used), Some(0.38));
         // Every window the board has, so the CLI in use can show both.
         assert_eq!(

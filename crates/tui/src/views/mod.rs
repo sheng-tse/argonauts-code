@@ -40,6 +40,7 @@ pub mod resume;
 pub mod rewind;
 pub mod session;
 pub mod settings;
+pub mod setup_sheet;
 pub mod states;
 mod structured;
 #[cfg(test)]
@@ -58,6 +59,7 @@ mod workflow_inner_tests;
 mod workflow_nested_tests;
 mod workflow_outline;
 pub mod workflow_page;
+mod workflow_peek;
 #[cfg(test)]
 pub(crate) mod workflow_pictures;
 #[cfg(test)]
@@ -495,7 +497,20 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
             {
                 opened = opened.on_inside(&id);
             }
+            // Opened from a council's task, its head says whose task it is in which council.
+            let council = &mut cx.model.bottom.council;
+            if let Some(task) = council.opening.take()
+                && inside.is_some()
+            {
+                opened = opened.for_council_task(task, council.faces.clone());
+            }
             cx.out.open(opened.following(refresh.follower()));
+        }
+        // A refresh is for a sheet that closed before it came.
+        ViewData::SetupSheet { sheet } if sheet.refresh => {}
+        ViewData::SetupSheet { sheet } => {
+            cx.out
+                .open(setup_sheet::SetupSheetView::new((**sheet).clone()));
         }
         ViewData::Agent { view } => cx
             .out
@@ -513,10 +528,11 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         ViewData::ResumeList {
             conversations,
             sessions,
-        } => cx.out.open(resume::ResumePicker::listing(
-            conversations.clone(),
-            sessions.clone(),
-        )),
+            in_cli,
+        } => cx.out.open(
+            resume::ResumePicker::listing(conversations.clone(), sessions.clone())
+                .with_in_cli(in_cli.clone()),
+        ),
         ViewData::Diff { diff } => cx.out.open(pager::Pager::diff(diff.clone())),
         // A refresh is for a /mods that closed before it came.
         ViewData::Mods { view } if view.refresh => {}
@@ -573,6 +589,8 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         ViewData::StatusTab { .. } => {}
         // Only the Behaviors tab asks it, and draws its questions in the tab.
         ViewData::DeepOffer { .. } => {}
+        // Only a seat's own session view asks it, and one that closed takes nothing.
+        ViewData::SeatKey { .. } => {}
         ViewData::Issues { .. } => issues::open(data, cx),
     }
 }

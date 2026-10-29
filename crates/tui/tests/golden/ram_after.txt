@@ -1,69 +1,76 @@
- /model on OpenCode: the RAM line says what models can use and what is free now, and each row whether it fits now     
+ /model on OpenCode: the memory line says what models can use, the gauge what this pick takes, each row if it fits    
                                                                                                                       
 ❯ /model                                                                                                              
                                                                                                                       
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  OpenCode                                                                                                            
-  The model the main agent runs on OpenCode. Model lists refreshed just now.                                          
-  Models can use up to 52 GB of this Mac's 64 GB · 18 GB free now · models hold 25 GB · macOS and your apps 21 GB     
+  ◧◨ OpenCode                                                                                                         
+  The model the main agent runs on OpenCode. Every model here is free. Model lists refreshed just now.                
+  Models can use up to 52 GB of this computer's 64 GB · 18 GB free now · models hold 25 GB · other apps 21 GB         
+  this pick                                                        25 of 52 GB · loaded now                           
                                                                                                                       
-    1. Default                 1M context   · hosted by OpenCode Zen · runs Nemotron 3.5 Super VL Free                
-       Ollama                                                                                                         
-  ❯ 2. Qwen3 Coder 30B (64k)   64k context  · 25 GB RAM · tools · free · loaded · recommended                         
-    3. Gemma4 E2b              128k context · 8 GB RAM · tools, thinking · free · fits now                            
-    4. Llama3.2                128k context · 24 GB RAM · tools · free · fits once apps free 6 GB                     
-    5. Qwen3 Coder 30B         256k context · 45 GB RAM · tools · free · fits once loaded models unload               
-    6. Gemma2 9B               8k context   · 6 GB RAM · no tools · free · fits now                                   
-    7. Gemma3 12B              128k context · 17 GB RAM · no tools · free · fits now                                  
-  ↓ 8. Gemma3 12B 32K          32k context  · 11 GB RAM · no tools · free · fits now                                  
+     1. Default                         1M context · hosted by OpenCode Zen · runs Nemotron 3.5 Super VL Free         
+                                                                                                                      
+    Installed through Ollama            context  memory  abilities                  fit                               
+  ❯  2. Qwen3 Coder 30B (64k)               64k   25 GB  tools                      loaded · recommended              
+     3. Gemma4 E2B                         128k    8 GB  tools, thinking            fits now                          
+     4. Llama3.2                           128k   24 GB  tools                      fits once apps free 6 GB          
+     5. Qwen3 Coder 30B                    256k   45 GB  tools                      fits once loaded models unload    
+     6. Gemma2 9B                            8k    6 GB  no tools                   fits now                          
+     7. Gemma3 12B                         128k   17 GB  no tools                   fits now                          
+  ↓  8. Gemma3 12B 32K                      32k   11 GB  no tools                   fits now                          
     … +14 more                                                                                                        
                                                                                                                       
   ○ Effort not supported for Qwen3 Coder 30B (64k)                                                                    
                                                                                                                       
-  Enter to choose · j/k to move · / to filter · Esc to go back                                                        
+  Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back                           
                                                                                                                       
  Scrolled on: models that aren't installed but would fit, then the hosted ones. Enter on one not installed asks first:
                                                                                                                       
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  OpenCode                                                                                                            
-  The model the main agent runs on OpenCode. Model lists refreshed just now.                                          
-  Models can use up to 52 GB of this Mac's 64 GB · 18 GB free now · models hold 25 GB · macOS and your apps 21 GB     
+  ◧◨ OpenCode                                                                                                         
+  The model the main agent runs on OpenCode. Every model here is free. Model lists refreshed just now.                
+  Models can use up to 52 GB of this computer's 64 GB · 18 GB free now · models hold 25 GB · other apps 21 GB         
+  this pick                    ╱╱╱                                 21 of 52 GB · 3 GB more than is free now           
                                                                                                                       
-  ↑ 7.  Gemma3 12B                   128k context · 17 GB RAM · no tools · free · fits now                            
-    8.  Gemma3 12B 32K               32k context  · 11 GB RAM · no tools · free · fits now                            
-        Not installed · fits this Mac                                                                                 
-  ❯ 9.  Qwen3.5 27B                  64k context  · 21 GB RAM · tools, thinking · free · 17 GB download               
-                                     fits once apps free 3 GB                                                         
-    10. Devstral 24B                 64k context  · 18 GB RAM · tools · free · 14 GB download · fits now              
-    11. GPT-OSS 20B                  64k context  · 16 GB RAM · tools, thinking · free · 14 GB download · fits now    
-        OpenCode Zen                                                                                                  
-    12. Nemotron 3.5 Super VL Free   1M context   · hosted by OpenCode Zen · tools, thinking · free                   
-    13. Beam Free                    1M context   · hosted by OpenCode Zen · tools, thinking · free                   
-  ↓ 14. LongCat 2.5 Preview Free     1M context   · hosted by OpenCode Zen · tools · free                             
+    Installed through Ollama            context  memory  abilities                  fit                               
+  ↑  7. Gemma3 12B                         128k   17 GB  no tools                   fits now                          
+     8. Gemma3 12B 32K                      32k   11 GB  no tools                   fits now                          
+                                                                                                                      
+    Not installed · fits this computer  context  memory  abilities        download  fit                               
+  ❯  9. Qwen3.5 27B                         64k   21 GB  tools, thinking     17 GB  fits once apps free 3 GB          
+    10. Devstral 24B                        64k   18 GB  tools               14 GB  fits now                          
+    11. GPT-OSS 20B                         64k   16 GB  tools, thinking     14 GB  fits now                          
+                                                                                                                      
+    Hosted by OpenCode Zen              context          abilities                                                    
+    12. Nemotron 3.5 Super VL Free           1M          tools, thinking                                              
+    13. Beam Free                            1M          tools, thinking                                              
+  ↓ 14. LongCat 2.5 Preview Free             1M          tools                                                        
     … +8 more                                                                                                         
                                                                                                                       
   Download Qwen3.5 27B with Ollama (17 GB download)?  Enter to download · Esc to keep looking                         
                                                                                                                       
-  Enter to choose · j/k to move · / to filter · Esc to go back                                                        
+  Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back                           
                                                                                                                       
- A different Mac with 16 GB (illustrative), as its RAM line says: the list warns and suggests a smaller               
+ A different computer with 16 GB (illustrative), as its memory line says: the list warns and suggests a smaller       
  model by what it needs.                                                                                              
                                                                                                                       
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  OpenCode                                                                                                            
-  The model the main agent runs on OpenCode. Model lists refreshed just now.                                          
-  Models can use up to 11 GB of this Mac's 16 GB · 8 GB free now · models hold none · macOS and your apps 8 GB        
+  ◧◨ OpenCode                                                                                                         
+  The model the main agent runs on OpenCode. Every model here is free. Model lists refreshed just now.                
+  Models can use up to 11 GB of this computer's 16 GB · 8 GB free now · models hold none · other apps 8 GB            
+  this pick                                        ╱╱╱╱╱╱╱╱╱╱╱╱╱╱  25 of 11 GB · 14 GB more than models may use here  
                                                                                                                       
-    1. Default                 1M context   · hosted by OpenCode Zen · runs Nemotron 3.5 Super VL Free                
-       Ollama                                                                                                         
-  ❯ 2. Qwen3 Coder 30B (64k)   64k context  · 25 GB RAM · tools · free · too big here                                 
-    3. Llama3.2                128k context · 24 GB RAM · tools · free · too big here; fits at 32k (4 GB RAM)         
-       Not installed · fits this Mac                                                                                  
-    4. Qwen3 8B                32k context  · 7 GB RAM · tools, thinking · free · 6 GB download                       
-                               fits now · recommended                                                                 
-    5. Qwen2.5 Coder 7B        32k context  · 6 GB RAM · tools · free · 5 GB download · fits now                      
-    6. Other model…            type provider/model, or provider/model#variant                                         
+    1. Default                          1M context · hosted by OpenCode Zen · runs Nemotron 3.5 Super VL Free         
+                                                                                                                      
+    Installed through Ollama            context  memory  abilities                  fit                               
+  ❯ 2. Qwen3 Coder 30B (64k)                64k   25 GB  tools                      too big here                      
+    3. Llama3.2                            128k   24 GB  tools                      too big here; fits at 32k (4 GB)  
+                                                                                                                      
+    Not installed · fits this computer  context  memory  abilities        download  fit                               
+    4. Qwen3 8B                             32k    7 GB  tools, thinking      6 GB  fits now · recommended            
+    5. Qwen2.5 Coder 7B                     32k    6 GB  tools                5 GB  fits now                          
+    6. Other model…                     type provider/model, or provider/model#variant                                
                                                                                                                       
   Qwen3 Coder 30B (64k) needs 25 GB of RAM; models may use at most 11 GB here. Try Qwen3 8B, which needs 7 GB.        
                                                                                                                       
-  Enter to choose · j/k to move · / to filter · Esc to go back                                                        
+  Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back                           

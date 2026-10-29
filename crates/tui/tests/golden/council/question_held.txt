@@ -1,0 +1,14 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ GPT 5.6 Luna's message repeats your private words
+
+  17 words in a row match what you wrote to it in private at 10:46 AM. The talk goes on without it.
+  ❯ 1. Ask GPT 5.6 Luna to say it without your words
+       It gets one more try, told only that it repeated what you wrote to it
+    2. Share your private message with the council
+       Every seat reads it, and it binds them like anything you write to the council
+    3. Send it as written: the seats read these words, not your message
+    4. Drop it: no seat ever reads it
+    5. Carry on without me
+       The seat says it again without your words
+
+  Enter to choose · Tab to add a note · Esc back to the list · shift+tab to cycle modes

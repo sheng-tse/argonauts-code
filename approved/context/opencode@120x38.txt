@@ -1,0 +1,95 @@
+Context, OpenCode the main session, counted: the tab as it first shows
+screen 120x38
+at ?,0
+size 120x31
+terminal fg=#c8d3f5 bg=#222436
+text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats
+ What fills each session's context                                                         1 session · 23.1k in context
+
+     Context Usage
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   ￼￼ Qwen3 Coder 30B (64k)
+     ⛁ ⛁ ⛁ ⛀ ⛁ ⛁ ⛁ ⛀ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   ollama/qwen3-coder:30b-64k
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   23.1k/64k tokens (36%)
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ OpenCode's own prompt and tools: ~7.6k tokens (11.8%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Instruction files: ~1.2k tokens (1.8%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Messages: ~14.4k tokens (22.5%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free space: 40.9k (63.8%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+                                               ~ is our count. Used and the window are OpenCode's own.
+
+     Instruction files · loaded by OpenCode itself
+     └ AGENTS.md · ~1.2k tokens
+
+     /context all to expand
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ◆ context                                                                                      23.1k of 64k   36%  │
+ │              ▌ ▋                         ▎                                                                         │
+ │                                                                                                                    │
+ │ ▌ OpenCode's own prompt and tools    ~7.6k  11.8%      ▌ Instruction files   ~1.2k   1.8%                          │
+ │ ▌ Messages                          ~14.4k  22.5%      ▌ Free space          40.9k  63.8%                          │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ tab · ←  →  tabs · ↓  into the list · enter opens one · esc closes
+paint
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+.bbbbbbbb...cccccccc....cccccc....cccccc....ccccc...deeeeeeed...cccccc....ccccc
+.ffff.fffff.ffff.fffffffff.fffffff.........................................................f.fffffff.f.fffff.ff.fffffff
+
+.....bbbbbbb.bbbbb
+.....g.g.g.g.g.g.g.g.g.g.g.g.g.g.g.g.g.g.g.g...hh.ccccc.ccccc.ccc.ccccc
+.....g.g.g.g.i.i.i.i.j.j.j.j.j.j.j.j.j.j.j.j...ffffffffffffffffffffffffff
+.....j.j.j.j.j.j.j.j.j.j.j.j.j.j.j.j.j.j.j.j...fffffffff.ffffff.fffff
+.....j.j.j.j.j.j.j.j.j.j.j.j.j.f.f.f.f.f.f.f
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...kkkkkkkkk.kkkkk.kk.kkkkkkkk
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...g.cccccccccc.ccc.cccccc.ccc.cccccc.fffff.ffffff.fffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...i.ccccccccccc.cccccc.fffff.ffffff.ffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...j.ccccccccc.ffffff.ffffff.fffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...f.cccc.cccccc.fffff.fffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f
+...............................................f.ff.fff.ffffff.ffff.fff.fff.ffffff.fff.ffffffffff.ffff
+
+.....bbbbbbbbbbb.bbbbb.f.ffffff.ff.ffffffff.ffffff
+.....f.fffffffff.f.fffff.ffffff
+
+.....ffffffff.fff.ff.ffffff
+
+.llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll
+.l.m.nnnnnnn......................................................................................nnnnn.ff.fff..opppo.l
+.l.qqqqqqqqqqqqqrstuuuuuuuuuuuuuuuuuuuuuuuuuvwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww.l
+.l....................................................................................................................l
+.l.g.cccccccccc.ccc.cccccc.ccc.ccccc....nnnnn..fffff......i.ccccccccccc.ccccc...nnnnn...ffff..........................l
+.l.j.cccccccc..........................nnnnnn..fffff......x.cccc.ccccc..........nnnnn..fffff..........................l
+.llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll
+
+.fff.f.f..f..ffff.f.f..ffff.fff.ffff.f.fffff.fffff.fff.f.fff.ffffff
+key
+. blank
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+b fg=#c8d3f5 bold  ; the terminal's own
+c fg=#c8d3f5  ; the terminal's own
+d bg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+e fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp
+f fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+g fg=#888888  ; Rule
+h logo=ollama
+i fg=#d77757
+j fg=#827dbd
+k fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment
+l fg=#4f5468  ; ModBorder
+m fg=#e6a23c  ; Accent, CatBrief
+n fg=#ffffff bold  ; Bright
+o bg=#4eba65  ; Success, CatAgents
+p fg=#14161f bg=#4eba65 bold  ; BadgeText, on Success, on CatAgents
+q bg=#888888  ; Rule
+r fg=#888888 bg=#d77757  ; Rule
+s bg=#d77757
+t fg=#d77757 bg=#827dbd
+u bg=#827dbd
+v fg=#827dbd bg=#3a3f55  ; on CatFree
+w bg=#3a3f55  ; CatFree
+x fg=#3a3f55  ; CatFree

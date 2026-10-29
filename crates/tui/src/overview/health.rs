@@ -5,19 +5,22 @@
 use argonauts_core::status_tab::{CliHealth, HealthRows, ModelStanding, Standing};
 use ratatui::text::Span;
 
-use super::cards::cli_role;
 use super::shades::ModelColors;
 use crate::format::WallClock;
-use crate::kit::{Drawn, Frame, Kit, spread};
+use crate::kit::logo::{ModelLabel, NoPicture};
+use crate::kit::{Drawn, Frame, Kit, legend, spread};
 use crate::text::{spans_width, truncate_spans, wrap_spans};
 use crate::theme::Role;
 
 /// The columns' widths in a card with room for all of them: the CLI, its model, the state, and
 /// why. When it's checked next takes the rest.
-const FULL_COLUMNS: [usize; 4] = [19, 18, 15, 40];
+const FULL_COLUMNS: [usize; 4] = [19, 20, 16, 41];
+
+/// The column of the reasons.
+const WHY: usize = 3;
 
 /// Blank cells kept between a column's words and the next column.
-const GAP: usize = 2;
+const GAP: usize = legend::BETWEEN_WORDS;
 
 /// A test task nobody finished counts as failed after this long, in words.
 const SILENT_LIMIT: &str = "out if silent an hour";
@@ -137,8 +140,8 @@ impl Row {
 /// The columns' widths in a card `inner` cells across: [`FULL_COLUMNS`], which leave the last
 /// column room for its longest words in a card with room for all of them. A narrower card takes
 /// the cells that column is short from the blank ones the others have past their own longest
-/// words, the right-most first, so a row is cut only once none are left. The CLIs' names stay
-/// where they are.
+/// words, the right-most first, so a row is cut only once none are left. Past that the reasons
+/// give way, since a sentence cut short still reads where a name or a state wouldn't.
 fn columns<'a>(table: impl Iterator<Item = &'a Row>, inner: usize) -> [usize; 4] {
     let mut longest = [0; 4];
     let mut last = 0;
@@ -156,16 +159,17 @@ fn columns<'a>(table: impl Iterator<Item = &'a Row>, inner: usize) -> [usize; 4]
     }
     let mut widths = FULL_COLUMNS;
     let mut short = (FULL_COLUMNS.iter().sum::<usize>() + last).saturating_sub(inner);
-    for at in (1..widths.len()).rev() {
+    for at in (0..widths.len()).rev() {
         let spare = widths[at].saturating_sub(longest[at] + GAP).min(short);
         widths[at] -= spare;
         short -= spare;
     }
+    widths[WHY] = widths[WHY].saturating_sub(short).max(GAP + 1);
     widths
 }
 
-/// A CLI's rows: its dot and name on the first, then a row a model. One that isn't installed is
-/// a single quiet row.
+/// A CLI's rows: its logo, or its dot where no picture draws, and its whole name on the first,
+/// then a row a model. One that isn't installed is a single quiet row.
 fn cli_rows(
     cli: &CliHealth,
     shades: &ModelColors<'_>,
@@ -173,6 +177,9 @@ fn cli_rows(
     clock: &WallClock,
 ) -> Vec<Row> {
     let dot = if cli.main { "● " } else { "○ " };
+    let label = |mark: Span<'static>| {
+        ModelLabel::cli_named(&cli.id, &cli.name, kit.theme, NoPicture::Mark(mark))
+    };
     // What is said of a CLI with no model to list runs on from its name.
     let alone = |name: Vec<Span<'static>>, said: &'static str| {
         vec![Row {
@@ -181,13 +188,15 @@ fn cli_rows(
         }]
     };
     if !cli.installed {
-        let name = vec![kit.dim(dot), kit.dim(cli.name.clone())];
+        let label = label(kit.dim(dot));
+        let mut name = label.logo;
+        name.push(kit.dim(label.name));
         return alone(name, "not installed");
     }
-    let name = vec![
-        kit.span(dot, cli_role(&cli.id)),
-        kit.strong(cli.name.clone()),
-    ];
+    let label = label(kit.span(dot, Role::for_cli(&cli.id)));
+    let logo = label.whose;
+    let mut name = label.logo;
+    name.push(kit.strong(label.name));
     if cli.models.is_empty() {
         return alone(name, "no model named yet");
     }
@@ -196,10 +205,12 @@ fn cli_rows(
         .iter()
         .map(|model| {
             let style = shades.style_named(kit, &cli.id, &model.name);
+            // Under a drawn logo the maker's word goes: "5.6 Luna" under Codex's.
+            let shown = ModelLabel::named(&logo, &model.name, kit.theme, NoPicture::Nothing).name;
             Row::of(
                 [
                     first.take().unwrap_or_default(),
-                    vec![Span::styled(model.name.clone(), style)],
+                    vec![Span::styled(shown, style)],
                     state_spans(kit, model.state),
                     why_spans(model, shades, kit),
                 ],

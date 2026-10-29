@@ -1,6 +1,6 @@
  1  a clean merge: code checks and merges; one model writes the commit message
  ╭ Phases ──────────┬ Merge · 1 agent ──────────────────────────────────────────────────────────────────────────────╮
- │   ✔ Build    2/2 │  ✔ commit message  Opus 5.5 · 11.8k tok · given the diff, no tools                        19s │
+ │   ✔ Build    2/2 │  ✔ commit message  ◧◨ Opus 5.5                                              11.8k tok     19s │
  │   ✔ Review   2/2 │                                                                                               │
  │   ✔ Sign-off 1/1 │                                                                                               │
  │ ❯ ✔ Merge    1/1 │                                                                                               │
@@ -8,8 +8,8 @@
 
  2  two tasks changed the same lines: git finds it, a model settles it, code merges again
  ╭ Phases ──────────┬ Merge · 2 agents ─────────────────────────────────────────────────────────────────────────────╮
- │   ✔ Build    2/2 │  ✔ settle conflict  Opus 5.5 · 9.6k tok · kept both changes to the --due parsing          41s │
- │   ✔ Review   2/2 │  ✔ commit message   Opus 5.5 · 11.8k tok                                                  19s │
+ │   ✔ Build    2/2 │  ✔ settle conflict  ◧◨ Opus 5.5                                              9.6k tok     41s │
+ │   ✔ Review   2/2 │  ✔ commit message   ◧◨ Opus 5.5                                             11.8k tok     19s │
  │   ✔ Sign-off 1/1 │                                                                                               │
  │ ❯ ✔ Merge    2/2 │                                                                                               │
  │                  │                                                                                               │
@@ -17,8 +17,8 @@
 
  3  your branch moved and a test broke: a model fixes it, code checks again, then merges
  ╭ Phases ──────────┬ Merge · 2 agents ─────────────────────────────────────────────────────────────────────────────╮
- │   ✔ Build    2/2 │  ✔ fix after main moved  Opus 5.5 · 14.2k tok · 1 file                                    52s │
- │   ✔ Review   2/2 │  ✔ commit message        Opus 5.5 · 11.8k tok                                             19s │
+ │   ✔ Build    2/2 │  ✔ fix after main moved  ◧◨ Opus 5.5                                        14.2k tok     52s │
+ │   ✔ Review   2/2 │  ✔ commit message        ◧◨ Opus 5.5                                        11.8k tok     19s │
  │   ✔ Sign-off 1/1 │                                                                                               │
  │ ❯ ✔ Merge    2/2 │                                                                                               │
  │                  │                                                                                               │

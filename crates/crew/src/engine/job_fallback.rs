@@ -1025,7 +1025,7 @@ fn say_builders_provider(
     let stopped = stopped_in_words(&display_name(from), why);
     let text = format!(
         "{stopped}, and nobody outside the builder's provider is left, so {} takes {} on \
-         autopilot · the merge is left to you",
+         autopilot · its work stays on its branch for you",
         display_name(taker),
         job_in_words(job),
     );
@@ -1257,6 +1257,17 @@ fn candidates(
         );
         // The rest of what's installed after the crew; a repeat is dropped below.
         pool.extend(available);
+        // A model the orchestrator picked for a task hands it to the next by its order.
+        if job.role == RoleName::Worker && host.settings().crew.orchestrator_picks.worker {
+            let kind = job.task.as_ref().and_then(|task| {
+                host.read(|state| state.tasks.get(task).map(|entry| entry.spec.kind.clone()))
+            });
+            let task_type = kind.map_or_else(
+                || "build".to_owned(),
+                |kind| crate::divide::assign::task_type(&kind, None),
+            );
+            pool = crate::divide::picked_order(host, pool, &task_type);
+        }
         pool.retain(|model| {
             !stopped.contains(&model.agent_id())
                 && services

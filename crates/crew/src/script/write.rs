@@ -120,6 +120,7 @@ pub(super) async fn script_for(
             ));
         }
         let plan = SessionPlan {
+            without_status: false,
             at: Some(call.at.clone()),
             role: RoleName::Orchestrator,
             worker: orchestrator.clone(),

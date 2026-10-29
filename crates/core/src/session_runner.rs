@@ -134,6 +134,10 @@ pub struct SessionPreferences {
     /// The word `ultracode` in a prompt asks the CLI for nothing.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub workflow_word_off: bool,
+    /// The conversation's title, which a CLI that names its sessions in its own lists names
+    /// this one by, the same on every turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 impl SessionPreferences {
@@ -425,6 +429,11 @@ pub trait SessionRunner: Send + Sync {
     }
     /// Opens the session in the CLI's own UI, for take-over.
     fn take_over_command(&self, cli_session: &str, workdir: &Path) -> Option<CommandSpec>;
+    /// [`Self::take_over_command`] for a council seat's session, which goes on there as a run's
+    /// session does, with nothing kept in the CLI's memory and no attribution lines.
+    fn seat_take_over_command(&self, cli_session: &str, workdir: &Path) -> Option<CommandSpec> {
+        self.take_over_command(cli_session, workdir)
+    }
     /// The cheapest model its CLI offers, for small read-only steps such as a fallback
     /// summary. `None` when it knows of none, and then its own model does them.
     fn cheapest_model(&self) -> Option<String> {
@@ -436,6 +445,12 @@ pub trait SessionRunner: Send + Sync {
     fn instruction_files(&self, workdir: &Path, isolated: bool) -> Vec<String> {
         let _ = (workdir, isolated);
         Vec::new()
+    }
+
+    /// What gives its CLI away in what its agent writes, as
+    /// [`Adapter::identity_marks`](crate::Adapter::identity_marks) says.
+    fn identity_marks(&self) -> crate::adapter::IdentityMarks {
+        crate::adapter::IdentityMarks::default()
     }
 
     /// What its CLI's own login check says, the way the app's start check reads it: `Some(true)`

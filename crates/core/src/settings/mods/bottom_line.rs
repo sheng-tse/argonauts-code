@@ -45,10 +45,16 @@ impl Choice for LineForm {
 }
 
 impl Choice for PlanUsageShow {
-    const ALL: &'static [Self] = &[Self::All, Self::Main, Self::NearLimit];
+    const ALL: &'static [Self] = &[
+        Self::MainAndMostUsed,
+        Self::All,
+        Self::Main,
+        Self::NearLimit,
+    ];
 
     fn label(self) -> &'static str {
         match self {
+            Self::MainAndMostUsed => "the one in use and the most used",
             Self::All => "all in the crew",
             Self::Main => "the one in use",
             Self::NearLimit => "those near a limit",
@@ -157,7 +163,7 @@ pub trait PageEdits {
 }
 
 /// The order the file writes its keys in, which a table's own order (by name) isn't.
-const KEY_ORDER: [&str; 8] = [
+const KEY_ORDER: [&str; 10] = [
     "form",
     "left",
     "right",
@@ -165,6 +171,8 @@ const KEY_ORDER: [&str; 8] = [
     "plan-usage.windows",
     "plan-usage.as",
     "plan-usage.resets",
+    "plan-usage.holding-up",
+    "plan-usage.clis",
     "narrow.drop",
 ];
 
@@ -270,7 +278,7 @@ impl PageEdits for BottomLineSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::bottom_line::PARTS;
+    use crate::settings::bottom_line::{LineCli, PARTS};
     use crate::settings::mods::builtin;
 
     fn names(parts: &[String]) -> Vec<&str> {
@@ -304,7 +312,7 @@ mod tests {
             }
         }
         check::<LineForm>(5);
-        check::<PlanUsageShow>(3);
+        check::<PlanUsageShow>(4);
         check::<PlanUsageWindows>(4);
         check::<PlanUsageAs>(2);
         check::<PlanUsageResets>(3);
@@ -419,12 +427,6 @@ mod tests {
     #[test]
     fn every_key_the_line_reads_can_be_written_and_reads_back() {
         let before = BottomLineSettings::default();
-        let keys: Vec<String> = leaves(&before).into_iter().map(|(key, _)| key).collect();
-        for key in &keys {
-            assert!(KEY_ORDER.contains(&key.as_str()), "{key}");
-        }
-        assert_eq!(keys.len(), KEY_ORDER.len());
-
         let mut after = before.clone();
         after.form = LineForm::Gauges;
         after.toggle(true, "branch");
@@ -433,7 +435,21 @@ mod tests {
         after.plan_usage.windows = PlanUsageWindows::SevenDays;
         after.plan_usage.r#as = PlanUsageAs::Left;
         after.plan_usage.resets = PlanUsageResets::Never;
+        after.plan_usage.holding_up = false;
+        after.plan_usage.clis = Some(vec![
+            LineCli::new("codex"),
+            LineCli {
+                cli: "claude-code".to_owned(),
+                windows: Some(PlanUsageWindows::Both),
+            },
+        ]);
         after.narrow.drop = vec!["branch".to_owned()];
+        // The list of CLIs is unset by default, so only a changed file has every key.
+        let keys: Vec<String> = leaves(&after).into_iter().map(|(key, _)| key).collect();
+        for key in &keys {
+            assert!(KEY_ORDER.contains(&key.as_str()), "{key}");
+        }
+        assert_eq!(keys.len(), KEY_ORDER.len());
         let pairs = after.changes_from(&before);
         assert_eq!(
             pairs

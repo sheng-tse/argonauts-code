@@ -54,6 +54,8 @@ pub(super) fn action(group: usize, behavior: &str, (x, y): (f32, f32)) -> MapAct
         input: "git status".to_owned(),
         place: Some("in the run's worktree".to_owned()),
         run_shows: None,
+        failed: false,
+        outcome: None,
     }
 }
 
@@ -163,26 +165,85 @@ impl Sample {
         self
     }
 
-    /// Red where `group` acts more, around `place`.
-    pub fn more_at(mut self, group: usize, place: (f32, f32)) -> Self {
-        let grid = self.map.comparisons[group]
-            .overlay
-            .get_or_insert_with(|| vec![0.0; GRID * GRID]);
-        for row in 0..GRID {
-            for column in 0..GRID {
-                let x = column as f32 / (GRID - 1) as f32;
-                let y = row as f32 / (GRID - 1) as f32;
-                let near = 1.0 - ((x - place.0).hypot(y - place.1) / 0.1).min(1.0);
-                grid[row * GRID + column] = grid[row * GRID + column].max(near);
-            }
-        }
-        self
-    }
-
     pub fn small(mut self, group: usize, why: &str) -> Self {
         let comparison = &mut self.map.comparisons[group];
         comparison.overlay = None;
         comparison.why_not = Some(why.to_owned());
+        self
+    }
+}
+
+/// One model's facts: its maker, its actions, and its behaviors with their counts.
+pub(crate) fn model_facts(
+    model: &str,
+    agent: &str,
+    maker: &str,
+    behaviors: &[(&str, u32)],
+) -> argonauts_core::behavior_world::ModelFacts {
+    use argonauts_core::behavior_world::{ModelBehavior, ModelFacts};
+    ModelFacts {
+        model: model.to_owned(),
+        agent: agent.to_owned(),
+        maker: maker.to_owned(),
+        actions: behaviors.iter().map(|(_, count)| count).sum(),
+        behaviors: behaviors
+            .iter()
+            .map(|(behavior, count)| ModelBehavior {
+                behavior: (*behavior).to_owned(),
+                count: *count,
+                ..ModelBehavior::default()
+            })
+            .collect(),
+        ..ModelFacts::default()
+    }
+}
+
+/// Three makers' models: Anthropic's two, the busiest, OpenAI's one and Google's one; Haiku 5.5
+/// has more behaviors than a star has planets, so it has a belt.
+pub(crate) fn three_makers() -> argonauts_core::behavior_world::WorldFacts {
+    argonauts_core::behavior_world::WorldFacts {
+        models: vec![
+            model_facts(
+                "gpt-6-luna",
+                "codex",
+                "openai",
+                &[("read git history", 5), ("read a source file", 2)],
+            ),
+            model_facts(
+                "claude-haiku-5-5",
+                "claude-code",
+                "anthropic",
+                &[
+                    ("read a source file", 12),
+                    ("edited a source file", 6),
+                    ("ran the test suite", 4),
+                    ("searched code by pattern", 3),
+                    ("wrote a doc", 2),
+                    ("changed git state", 2),
+                    ("listed a folder", 1),
+                ],
+            ),
+            model_facts(
+                "gemini-3.8-flash",
+                "antigravity-cli",
+                "google",
+                &[("read a source file", 3)],
+            ),
+            model_facts(
+                "claude-haiku-4-5",
+                "claude-code",
+                "anthropic",
+                &[("read a source file", 2)],
+            ),
+        ],
+        ..Default::default()
+    }
+}
+
+impl Sample {
+    /// The map with the world's facts beside it.
+    pub fn world(mut self, world: argonauts_core::behavior_world::WorldFacts) -> Self {
+        self.map.world = Some(Box::new(world));
         self
     }
 }

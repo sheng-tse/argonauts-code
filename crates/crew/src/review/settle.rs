@@ -14,7 +14,7 @@ use crate::engine::host::{Ask, Host};
 use crate::error::{EngineError, EngineResult};
 use crate::plan::context::{self, crew_for, providers};
 use crate::prompts::review::SETTLE;
-use crate::review::{Verdict, agree, diff_cut, task_of};
+use crate::review::{Verdict, agree, diff_cut, picked, picked_for, task_of};
 use crate::state::RunState;
 use crate::workflow::{StepCall, StepDone};
 
@@ -80,12 +80,15 @@ pub async fn settle(host: &Host, task: &TaskId) -> EngineResult<Verdict> {
     match host.ask::<Settle>(ask).await {
         Ok(answered) => {
             let verdict = verdict(&answered.output);
+            // A judge you named counts as a reviewer you chose does.
+            let picked_by = picked_for(host, RoleName::Judge, &judge, &answered.worker, false);
             host.record(
                 Some(task),
                 Some(&answered.session),
                 RunEventKind::Review(ReviewEvent::Settled {
                     judge: answered.worker,
                     ruling: answered.output,
+                    picked_by: Some(picked_by),
                 }),
             )?;
             Ok(verdict)
@@ -180,12 +183,14 @@ pub async fn step(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     ask.blind = true;
     let answered = host.ask::<Settle>(ask).await?;
     let line = verdict(&answered.output).line();
+    let picked_by = picked(host, RoleName::Judge, &judge, false);
     host.record(
         None,
         Some(&answered.session),
         RunEventKind::Review(ReviewEvent::Settled {
             judge,
             ruling: answered.output,
+            picked_by: Some(picked_by),
         }),
     )?;
     Ok(StepDone::done(line))

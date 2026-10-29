@@ -1,0 +1,1772 @@
+# The approved drawings: how each screen must look, cell for cell, at the terminal size its file
+# names (`<panel>/<state>@<cols>x<rows>.txt`), exported from the approved pictures.
+#
+# A drawing's file reads, line by line: what it shows; `screen <cols>x<rows>`; `at <row>,<col>`,
+# where its first cell sits on that screen from 0, `?` where the test finds it by its text;
+# `size <cols>x<rows>`, its own cells; `terminal fg=#rrggbb bg=#rrggbb`, the terminal's own
+# colours; `text` and a row of characters for each of its rows, one a cell, U+FFFC where a logo
+# or picture covers one; `paint` and a row of keys, one a cell; then `key` and what each key
+# paints: `fg=`, `bg=`, `bold`, `italic`, `logo=<name>` or `picture=<name>`, `.` for a blank on
+# the terminal's background and `?` for a cell whose character alone is compared. A row may stop
+# early, its last cells blanks. `crates/testkit/src/approved.rs` says more and compares screens
+# with drawings; `crates/scenarios/tests/it/app_drawings.rs` brings the real app to each
+# drawing's screen and compares the two.
+#
+# Each drawing is listed once:
+#
+#   [[drawing]]
+#   file = "limits/now@120x38.txt"   # its path in this folder
+#   release = "0.2.0"                # the release it was approved for
+#   approval = 360                   # the number of the approval that settled it
+#   hash = "sha256:…"                # of the file, so a drawing never changes unseen
+#   home = "homes/council"           # optional: argonauts/ goes into ARGONAUTS_HOME, home/ into HOME;
+#                                    # a home with argonauts/config.toml is set up, so no setup asks
+#   clis = "conversation/alone.toml" # optional: fake CLI rules for the drawing's requests,
+#                                    # placed before the default fake agents' rules
+#   folder = "code/shop"             # optional: the project's folder under HOME, as the header
+#                                    # names it after ~/ (github/argonauts-code unless named)
+#   held_by = "crates/tui/src/…_tests.rs::draws_it"
+#                                    # optional: the test that holds the drawing's cells, for a
+#                                    # screen whose figures the fake CLIs can't give; the app is
+#                                    # then only brought to the screen
+#   steps = [                        # what brings the app from its start to the screen; a drawing
+#                                    # needs steps, a holding test, or both
+#     { wait = "shift\\+tab to cycle" },  # a regex the visible rows match; after it the
+#                                    # runner waits out a new question's first moment
+#     { press = "Esc" },             # a key: Enter, Esc, Tab, Shift+Tab, Up, Ctrl+c, j, …
+#     { send = "/usage\r" },         # text typed, \r for Enter
+#   ]
+#
+# A screen draws a drawing's cells otherwise only where a departure allows it:
+#
+#   [[departure]]
+#   file = "limits/now@120x38.txt"
+#   row = 5                          # the drawing's own row, counted from its first, as a
+#                                    # report counts them
+#   cols = [10, 14]                  # its first and last columns, both included
+#   instead = "what the screen draws there instead, and why"
+#   approval = 361                   # the approval that allows it
+#
+# `cargo test -p argonauts-testkit approved` checks that every drawing here is listed, reads and
+# still has its hash.
+
+[[drawing]]
+file = "behaviors/deeper-list-down-1@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:e09c0436f63dc989c5370d553c5ba821510cf324f47b19efe0ec98305595337a"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-2@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:4a905809588b63a760d75f2bc4b5750e19971516d0eee8b1b30d134f637cd6a5"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-3@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:8d7885b0a10583bbe631d817b2f542d134b23ba93dc6a3f1ad9cd474f25e91e1"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-4@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:2dda11ccfb5030fb5446282c8496ba3e9b4b074289d8c9afd7337dd4964316ed"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-5@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:1fc41c41d143ef838f631c420d7859843efb0b564f19e212f773508031066a71"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-6@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:a5adfb6d39fd5b2d64441c49ee5d67b5eff47c0118a8a2cf7044387d218c5346"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-7@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:8fc8952e834934913c562971acd05c0035de18a9594aab9db0bad27b85726156"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-8@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:5a76e10d22ad7aab5d698b2e10df78d8dc4e43ddb2cec5583de6a6f18e59c480"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-9-up-1@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:15237c3aaf69a01f07f05aff738fc307440ba53c9268db350f3f8e675a2d5c5c"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Up" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-9-up-2@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:b5ae6edf224a09f5bfbd30248b155cc591873e7ab98388da92085cbaa1813968"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Up" },
+  { press = "Up" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-9-up-3@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:9c44c3e6888615a53d1a2c67591bc8ab117e873b8094acb875c4d24e1af477b4"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-9-up-4@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:323085a33f888bbd2703591070e9280e8a94913d1a2b2e3c30b7aac52c6451b3"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-9-up-5@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:73e376e2de508062bb1026ce502e338418f3d546e535757105c024aa73fa8663"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-9-up-6@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:be18591fd5ceb72e98143672c22b78662faf00eb8c5b62186fef13c40eb77f42"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-9-up-7@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:579743f2b2ebdd22119862844502ad573542705a29f7aa2d2a65d33933a68bf1"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-9-up-8@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:24445197945b6b528d712f5e3058ae55849ef36e50000387be004ac8375ed1d1"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+  { press = "Up" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-list-down-9@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:ba5164f9eb0fdfe1278cce74b458c95bb720268a9cdaa5fb307525e59008b9b1"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-map-compared@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:cba4cea337cf0b984e72755fe3f1d3ae566f484498ad68a64abf2872e224a61e"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::beside_the_map_summaries_compare_a_model_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-map-compared@177x40.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:a50baecc0467575e0a35721d85e573a2b7690545d4179a8d773fef9e1bb379b8"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::beside_the_map_summaries_compare_a_model_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/label-list-down-10@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:7b87c1b1c69d0ca7b0d387358390d3608ba4aa49a0d25184667a09854c76ea73"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_label_list_steps_down_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/label-list-down-11@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:19abbe8c18686663e4939808ce2084675148cf339e27033c301e1bb45db6aec5"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_label_list_steps_down_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/label-list-down-1@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:badf219101be14ef1074c1c2640cd108ff9a3fd0a5557bd06f776d5754a0465d"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_label_list_steps_down_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/label-list-down-4@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:3904ed99b25dbdfc5c8e8061315bd1c2f0e898421b51317a1b33f7cf282bb868"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_label_list_steps_down_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/label-list-down-5@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:172b3827561e8992164916c7d3f3f905bc10f568782ccb14928229745acaf5cb"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_label_list_steps_down_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/label-list-down-6@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:99c8556a44722527218888a34c7125e0d36859d7391d4dca7d0e6a744ca8ccc8"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_label_list_steps_down_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "behaviors/label-map@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:8dceff376cc64336bb1a6cafe0548a39b9e65b782a4b42a5be51922cfc441f4b"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_label_map_opens_with_nothing_compared_and_the_mouse_on_the_hurricane_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+]
+
+[[drawing]]
+file = "behaviors/label-map@177x40.txt"
+release = "0.2.0"
+approval = 364
+hash = "sha256:efecf4c6847cc187a7cbd2bfcc6ec59e02e4647bbb76c6343a9ee494a635793d"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_label_map_opens_with_nothing_compared_and_the_mouse_on_the_hurricane_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+]
+
+[[drawing]]
+file = "behaviors/legend-sample-crew@120x38.txt"
+release = "0.2.0"
+approval = 361
+hash = "sha256:a962b049fa931d2fe2f81b12fd413baadcffe90ef281ecae94bd9d91b79a9eeb"
+home = "homes/captain-vim"
+held_by = "crates/tui/src/overview/stats/behaviors/golden/drawings.rs::the_legend_draws_each_model_of_the_colours_crew_in_its_clis_shade"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+]
+
+[[drawing]]
+file = "bottom-line/logos@177x40.txt"
+release = "0.2.0"
+approval = 364
+hash = "sha256:1e4fc707cbb6ded12c9ca6973eb7aec3b8b5a7e61a5b783618f7728a3a674b5f"
+home = "homes/autopilot"
+steps = [
+  { wait = "-- INSERT -- .*autopilot on \\(shift\\+tab to cycle\\)" },
+  { wait = "7d \\S+  44% .* 0%$" },
+]
+
+[[drawing]]
+file = "config-mods/cards@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:92aa89680ddad33178973d0f58dfc969dd4c27f442f620f2d70a1bb0cfaf39c5"
+home = "homes/council"
+held_by = "crates/tui/src/mods/drawings_tests.rs::each_card_draws_beside_the_list_as_its_drawing_does"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/mods\r" },
+  { wait = "Config › Mods" },
+]
+
+[[drawing]]
+file = "config-mods/cards@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:0b151467715a41df496f8e0dc3e8bd6ea0f300e98755925e1132fd9b240d3707"
+home = "homes/council"
+held_by = "crates/tui/src/mods/drawings_tests.rs::each_card_draws_beside_the_list_as_its_drawing_does"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/mods\r" },
+  { wait = "Config › Mods" },
+]
+
+[[drawing]]
+file = "config-mods/list@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:f9f7c3fb6ce3635e365061da055c50875f83ec96fe41968869cc6e2f1cbb71fc"
+home = "homes/mods"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/mods\r" },
+  { wait = "Config › Mods" },
+]
+
+[[drawing]]
+file = "config-mods/list@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:6d145f9b7300a4e24d27be8d70e0badeddc71b0f13f1c9b6d6b950d425ff9811"
+home = "homes/mods"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/mods\r" },
+  { wait = "Config › Mods" },
+]
+
+[[drawing]]
+file = "context/agy-before@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:5456853c4e03abb6a93fdb3a1bc75bab3b78b79d072af73c8e392d2afa478295"
+home = "homes/context-kept-agy"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "from your last session" },
+]
+
+[[drawing]]
+file = "context/agy-before@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:d4770bea553daae2990c1a701f0680df4f00b980260f3a0521242b7a29fc4541"
+home = "homes/context-kept-agy"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "from your last session" },
+]
+
+[[drawing]]
+file = "context/agy-first@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:1990807de3bb7bdf80283cf7e16c9341882bd44c9d25df02ef431b86df84690f"
+home = "homes/context-first-agy"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "estimated" },
+]
+
+[[drawing]]
+file = "context/agy-first@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:71bf5a1aa94aa60558795a937567ea7a8b8a464317928b39956eba09cad2d246"
+home = "homes/context-first-agy"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "estimated" },
+]
+
+[[drawing]]
+file = "context/agy-loading@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:361cb8b4bd4afe47e1477735930b7d7515a3c1010fdaf4d0905f98222f1e54bd"
+home = "homes/context-kept-agy"
+clis = "context/agy.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "Look at the README\r" },
+  { wait = "esc to interrupt" },
+  { send = "/context\r" },
+  { wait = "agy is loading" },
+]
+
+[[drawing]]
+file = "context/agy-loading@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:966d7d83d73640ab58be947b1ffae6a2b7b4b6d60138215fb61556960264d424"
+home = "homes/context-kept-agy"
+clis = "context/agy.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "Look at the README\r" },
+  { wait = "esc to interrupt" },
+  { send = "/context\r" },
+  { wait = "agy is loading" },
+]
+
+[[drawing]]
+file = "context/agy@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:7ed266cf44313d975dbd300a0c434a80335c9b32ce266fc04a4964dc65a06766"
+home = "homes/council-agy"
+held_by = "crates/tui/src/overview/context/drawing_tests.rs::every_context_state_matches_its_drawing"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "What fills each session's context" },
+]
+
+[[drawing]]
+file = "context/agy@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:6a38d942b22b9340bc5282ae8e79a1a7ac2eec9df1d833285b96339d759a5158"
+home = "homes/council-agy"
+held_by = "crates/tui/src/overview/context/drawing_tests.rs::every_context_state_matches_its_drawing"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "What fills each session's context" },
+]
+
+[[drawing]]
+file = "context/claude-code-before@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:34f8a4c046b400b0f42e65ca9fcec5e9cc1a5001099bfda490da9a8e0c91c074"
+home = "homes/context-kept"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "from your last session" },
+]
+
+[[drawing]]
+file = "context/claude-code-before@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:ef58512f4b7a2ba167d81c9d9f99aa17d2839f3d7b4b53203dc5e3974f8ef4d3"
+home = "homes/context-kept"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "from your last session" },
+]
+
+[[drawing]]
+file = "context/claude-code-first@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:16fcfaa59f1301af8d6763db949520f48f0e8ccef8f216080147e214079d7855"
+home = "homes/context-first"
+held_by = "crates/tui/src/overview/context/drawing_tests.rs::every_context_state_matches_its_drawing"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "estimated" },
+]
+
+[[drawing]]
+file = "context/claude-code-first@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:90a3bb2f6f9db43459295cd0e2e47895ecf73014248de7dbefc5f348a2b7843f"
+home = "homes/context-first"
+held_by = "crates/tui/src/overview/context/drawing_tests.rs::every_context_state_matches_its_drawing"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "estimated" },
+]
+
+[[drawing]]
+file = "context/claude-code-loading@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:1fb12a4c3ad0a0d9e1db0ccbc9776efd0067f69418759c83c53a70e8fbd9a4a4"
+home = "homes/context-kept"
+clis = "context/claude-code.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "Look at the README\r" },
+  { wait = "esc to interrupt" },
+  { send = "/context\r" },
+  { wait = "Claude Code is loading" },
+]
+
+[[drawing]]
+file = "context/claude-code-loading@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:b8aa39930a135df1b03d9c468d137c6d2526f877bb84df916bdb14145b6bd30b"
+home = "homes/context-kept"
+clis = "context/claude-code.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "Look at the README\r" },
+  { wait = "esc to interrupt" },
+  { send = "/context\r" },
+  { wait = "Claude Code is loading" },
+]
+
+[[drawing]]
+file = "context/claude-code@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:a7e92e8da931bea19cbbc1cacb5298bacf888652703837d742eed92bf608e20b"
+home = "homes/council"
+clis = "context/claude-code.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
+  { send = "/context\r" },
+  { wait = "32.3k in context" },
+  { wait = "33 skills" },
+]
+
+[[drawing]]
+file = "context/claude-code@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:6b6c999a768bd7e0adfde12a47edbdca9ec2cdfe83e7ce1edbb03fffcfecb487"
+home = "homes/council"
+clis = "context/claude-code.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
+  { send = "/context\r" },
+  { wait = "32.3k in context" },
+  { wait = "33 skills" },
+]
+
+[[drawing]]
+file = "context/codex-before@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:2b96de3018d6099ad4a5fcb7c352b49eab7a52fdfacfe46b94def02fc389e46b"
+home = "homes/context-kept-codex"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "from your last session" },
+]
+
+[[drawing]]
+file = "context/codex-before@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:ec8645bac9ef4f9256c84581c9ec66929fd80db0d4171fbb9414b626ac3fcfdd"
+home = "homes/context-kept-codex"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "from your last session" },
+]
+
+[[drawing]]
+file = "context/codex-first@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:e1c8d29052d2b83a024eaa4f3f5e8ab1bef7bcca244c6cfc752d6e36c9888925"
+home = "homes/context-first-codex"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "estimated" },
+]
+
+[[drawing]]
+file = "context/codex-first@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:0c912f2243173e77a474b2c0ae4dd991818351387b5c588e76a10b8d5aaef6eb"
+home = "homes/context-first-codex"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "estimated" },
+]
+
+[[drawing]]
+file = "context/codex-loading@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:dbad53ae2731b723d1be526ecfdee319521e8f01e62b53aa4d5dc1f58f2f385c"
+home = "homes/context-kept-codex"
+clis = "context/codex.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "Look at the README\r" },
+  { wait = "esc to interrupt" },
+  { send = "/context\r" },
+  { wait = "Codex is loading" },
+]
+
+[[drawing]]
+file = "context/codex-loading@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:776e6adf8b127be80dca80c622196abd8dc3128bdef8ced004bd3175deb2ea9b"
+home = "homes/context-kept-codex"
+clis = "context/codex.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "Look at the README\r" },
+  { wait = "esc to interrupt" },
+  { send = "/context\r" },
+  { wait = "Codex is loading" },
+]
+
+[[drawing]]
+file = "context/codex@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:b144cb97448a856f301be4ba8d89de1609abc3cb09b9f4810e47ffc000d8a427"
+home = "homes/context-kept-codex"
+clis = "context/codex.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
+  { send = "/context\r" },
+  { wait = "61.4k in context" },
+]
+
+[[drawing]]
+file = "context/codex@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:935a95d16f6ffaa832c7d7e715eb542fe9e3f7b66b3e64d8407dfe14b8936f60"
+home = "homes/context-kept-codex"
+clis = "context/codex.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
+  { send = "/context\r" },
+  { wait = "61.4k in context" },
+]
+
+[[drawing]]
+file = "context/crew-list@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:8741d33f26754dbfdc5ab7ac26db2222634bc86e1cc302670ac24605e1b667c5"
+home = "homes/council"
+held_by = "crates/tui/src/overview/context/drawing_tests.rs::every_context_state_matches_its_drawing"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "What fills each session's context" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "context/crew-list@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:75aa24bb4a468502ece03ac584832facd8278d7a979f64d9f09502f20e938af7"
+home = "homes/council"
+held_by = "crates/tui/src/overview/context/drawing_tests.rs::every_context_state_matches_its_drawing"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "What fills each session's context" },
+  { press = "Down" },
+]
+
+[[drawing]]
+file = "context/opencode-before@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:085c5f19cf892bf7359ff88032b09012d6aa2c349099cc9723bb7d1e3c430a89"
+home = "homes/context-kept-opencode"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "from your last session" },
+]
+
+[[drawing]]
+file = "context/opencode-before@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:68ebdcf080ed75fe32be4422731b52b7b3e2a38a2bca8c0d5ce2499279cc2ade"
+home = "homes/context-kept-opencode"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "from your last session" },
+]
+
+[[drawing]]
+file = "context/opencode-first@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:23d9dc2c6684a053dda7cb44572048749a7d20c000445b245a83cd3f4605e748"
+home = "homes/context-first-opencode"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "estimated" },
+]
+
+[[drawing]]
+file = "context/opencode-first@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:65c19aa4830b9d4e607e5568310cce19d6cd3c7bae3f1800372e24e35bc5b928"
+home = "homes/context-first-opencode"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "estimated" },
+]
+
+[[drawing]]
+file = "context/opencode-loading@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:ae57fe3ceffee62846a431f31de145f33ba6141ceb852be7079f7f7fd266d78e"
+home = "homes/context-kept-opencode"
+clis = "context/opencode.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "Look at the README\r" },
+  { wait = "esc to interrupt" },
+  { send = "/context\r" },
+  { wait = "OpenCode is loading" },
+]
+
+[[drawing]]
+file = "context/opencode-loading@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:490a20284a7a8498c1f33ab8f540c91450919c850799a3437282f2d46720be42"
+home = "homes/context-kept-opencode"
+clis = "context/opencode.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "Look at the README\r" },
+  { wait = "esc to interrupt" },
+  { send = "/context\r" },
+  { wait = "OpenCode is loading" },
+]
+
+[[drawing]]
+file = "context/opencode@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:5d3a6390daddfa49ee11146d5cd65439401bb693c57f622d23785923e64e5133"
+home = "homes/context-kept-opencode"
+clis = "context/opencode.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
+  { send = "/context\r" },
+  { wait = "23.1k in context" },
+]
+
+[[drawing]]
+file = "context/opencode@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:ecc765736e6e9ecad8c3b7bd939b3428a16cfa0a47382899b57e437b35328413"
+home = "homes/context-kept-opencode"
+clis = "context/opencode.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
+  { send = "/context\r" },
+  { wait = "23.1k in context" },
+]
+
+[[drawing]]
+file = "context/with-crew@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:0f208907a9173cce506eefa126e78b0ba00aa19f04eef29b644232062b421a28"
+home = "homes/council"
+held_by = "crates/tui/src/overview/context/drawing_tests.rs::every_context_state_matches_its_drawing"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "What fills each session's context" },
+]
+
+[[drawing]]
+file = "context/with-crew@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:d44a59337d0ee170cd941e65e011cced69639f86ed2286697f9f72127753760c"
+home = "homes/council"
+held_by = "crates/tui/src/overview/context/drawing_tests.rs::every_context_state_matches_its_drawing"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "What fills each session's context" },
+]
+
+[[drawing]]
+file = "context-mod/card@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:a641a2f13191f4f8f9e7931c5dbba445543f9411e97cbcb4bdad18dea856bb46"
+home = "homes/council"
+clis = "context/claude-code.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
+  { send = "/context\r" },
+  { wait = "32.3k in context" },
+  { wait = "33 skills" },
+  { press = "Down" },
+  { press = "End" },
+]
+
+[[drawing]]
+file = "context-mod/card@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:b99bf8feaa37d3b2e15daf1fafcff67b667074682f89a208d2e2725489b2c540"
+home = "homes/council"
+clis = "context/claude-code.toml"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
+  { send = "/context\r" },
+  { wait = "32.3k in context" },
+  { wait = "33 skills" },
+  { press = "Down" },
+  { press = "End" },
+]
+
+[[drawing]]
+file = "conversation/council-default-alone@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:8b1635e738ea4c50ac3594a062da534ac7985474707eb5c50b97e1d7b9d68ecc"
+home = "homes/council-direct"
+clis = "conversation/alone.toml"
+held_by = "crates/scenarios/tests/it/app_conversation.rs::app_default_workflow_says_when_the_main_agent_works_alone"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "Make the rate limiter per API key, so one busy key can't block the others. Keep the tests passing.\r" },
+  { wait = "Added 16 lines" },
+]
+
+[[drawing]]
+file = "conversation/council-default-alone@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:eebc1980597bc2c950ce3d771424a422f7c1558237a5e0024a7a8d2a7636b6ab"
+home = "homes/council-direct"
+clis = "conversation/alone.toml"
+held_by = "crates/scenarios/tests/it/app_conversation.rs::app_default_workflow_says_when_the_main_agent_works_alone"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "Make the rate limiter per API key, so one busy key can't block the others. Keep the tests passing.\r" },
+  { wait = "Added 16 lines" },
+]
+
+[[drawing]]
+file = "conversation/orchestrator-run-codex-builds@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:5d92bffb42dbc3ee4593f93db7bdfd0a8a951121992ea1ce7aa828c4e8ea1eca"
+home = "homes/orchestrator"
+held_by = "crates/tui/src/bridge/agents/rows_tests.rs::a_run_building_on_codexs_other_models_matches_its_drawings"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { wait = "Orchestrator · Opus 5\\.5" },
+]
+
+[[drawing]]
+file = "conversation/orchestrator-run-codex-builds@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:4e504dea2156c922f672a41ee96f04b01d08e1ac15f9c9135bdf84877f9ddd66"
+home = "homes/orchestrator"
+held_by = "crates/tui/src/bridge/agents/rows_tests.rs::a_run_building_on_codexs_other_models_matches_its_drawings"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { wait = "Orchestrator · Opus 5\\.5" },
+]
+
+[[drawing]]
+file = "conversation/orchestrator-run@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:83e0f8b11869a8eb7e4f2941850980721c2578872e950001b5ac59b7b810267a"
+home = "homes/orchestrator"
+held_by = "crates/tui/src/bridge/agents/rows_tests.rs::an_orchestrator_run_matches_its_drawings"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { wait = "Orchestrator · Opus 5\\.5" },
+]
+
+[[drawing]]
+file = "conversation/orchestrator-run@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:53c2681131ffc13a41a8f3b129cee351eca3ff8fb2392320dfe6c4ad354feced"
+home = "homes/orchestrator"
+held_by = "crates/tui/src/bridge/agents/rows_tests.rs::an_orchestrator_run_matches_its_drawings"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { wait = "Orchestrator · Opus 5\\.5" },
+]
+
+[[drawing]]
+file = "council/first-answers@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:d214ce2a6442692c2b24210be2917af9b83f1245bc7b20c9fde5f69ab82f90d8"
+home = "homes/council-talk"
+clis = "council/seats-writing.toml"
+held_by = "crates/tui/src/council/approved_tests.rs::first_answers_draw_their_conversation_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/council\r" },
+  { wait = "Switched to Council" },
+  { send = "Add rate limiting to the public API, so one noisy client can't slow down everyone else. Build the limiter with Maker-checker, split the route tests across agents, and let Luna do the plan limits in its own session.\r" },
+  { wait = "Run this workflow\\?" },
+  { press = "Enter" },
+  { wait = "answers alone first" },
+]
+
+[[drawing]]
+file = "council/plan@120x38.txt"
+release = "0.2.0"
+approval = 364
+hash = "sha256:865e5abc070634425c81bf8ebe41b6e6ecfc1bfee7e078ae3ef66c9a1cfe784e"
+home = "homes/council-talk"
+clis = "council/seats-writing.toml"
+held_by = "crates/tui/src/council/approved_tests.rs::the_plan_draws_its_conversation_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/council\r" },
+  { wait = "Switched to Council" },
+  { send = "Add rate limiting to the public API, so one noisy client can't slow down everyone else. Build the limiter with Maker-checker, split the route tests across agents, and let Luna do the plan limits in its own session.\r" },
+  { wait = "Run this workflow\\?" },
+  { press = "Enter" },
+  { wait = "answers alone first" },
+]
+
+[[drawing]]
+file = "council/sent@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:5d5720b249f21ce459ff3e65698e9e173f54f198ab11ddcbe54437c85a7ef7f3"
+home = "homes/council-talk"
+clis = "council/seats-writing.toml"
+held_by = "crates/tui/src/council/approved_tests.rs::sent_draws_its_conversation_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/council\r" },
+  { wait = "Switched to Council" },
+  { send = "Add rate limiting to the public API, so one noisy client can't slow down everyone else. Build the limiter with Maker-checker, split the route tests across agents, and let Luna do the plan limits in its own session.\r" },
+  { wait = "Run this workflow\\?" },
+  { press = "Enter" },
+  { wait = "answers alone first" },
+]
+
+[[drawing]]
+file = "council/talk@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:c528cd49739ae4c9d2acde6407ad2f550d4773eb487f52554f4fd9817b015461"
+home = "homes/council-talk"
+clis = "council/seats-writing.toml"
+held_by = "crates/tui/src/council/approved_tests.rs::the_talk_draws_its_conversation_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/council\r" },
+  { wait = "Switched to Council" },
+  { send = "Add rate limiting to the public API, so one noisy client can't slow down everyone else. Build the limiter with Maker-checker, split the route tests across agents, and let Luna do the plan limits in its own session.\r" },
+  { wait = "Run this workflow\\?" },
+  { press = "Enter" },
+  { wait = "answers alone first" },
+]
+
+[[drawing]]
+file = "council/work-starts@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:8ee1ebb0438eb05c23db513b1d2467e9bd1dbd042fcf1cf3fb9f1befa13730e3"
+home = "homes/council-talk"
+clis = "council/seats-writing.toml"
+held_by = "crates/tui/src/council/approved_tests.rs::the_work_starts_as_drawn"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/council\r" },
+  { wait = "Switched to Council" },
+  { send = "Add rate limiting to the public API, so one noisy client can't slow down everyone else. Build the limiter with Maker-checker, split the route tests across agents, and let Luna do the plan limits in its own session.\r" },
+  { wait = "Run this workflow\\?" },
+  { press = "Enter" },
+  { wait = "answers alone first" },
+]
+
+[[drawing]]
+file = "limits/spend-card-week@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:15bdb5935f3a0be845e41d1c28804fe5a25e0ffb01339c3eb6992556735f39b1"
+home = "homes/council"
+# Held: its spend falls on the first days of the current week, which a fixed ledger can't
+# follow.
+held_by = "crates/tui/src/overview/sample/crew_like_tests.rs::limits_draws_a_week_with_spend_as_its_drawing_does"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/limits\r" },
+  { wait = "What counts toward the limits you set" },
+]
+
+[[drawing]]
+file = "limits/spend-card@120x38.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:9f904d4d3617da980f61577a7f05bf4672dfcfaa8a3a0422553446ff8df2075d"
+home = "homes/council"
+# Held: the card marks today's weekday, which follows the clock. The home's ledger gives
+# every other cell on the release build.
+held_by = "crates/tui/src/overview/sample/crew_like_tests.rs::limits_draws_the_crew_as_its_drawings_do"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/limits\r" },
+  { wait = "What counts toward the limits you set" },
+]
+
+[[drawing]]
+file = "limits/spend-card@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:5d1644c57747f287d407dd4648e566cdc97abf481575f00ed1599269710336e6"
+home = "homes/council"
+# Held: the card marks today's weekday, which follows the clock. The home's ledger gives
+# every other cell on the release build.
+held_by = "crates/tui/src/overview/sample/crew_like_tests.rs::limits_draws_the_crew_as_its_drawings_do"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/limits\r" },
+  { wait = "What counts toward the limits you set" },
+]
+
+[[drawing]]
+file = "stats/by-model-table-light-terminal@120x38.txt"
+release = "0.2.0"
+approval = 364
+hash = "sha256:62644fb44b44daf00b7dd66c6029f12daa64b5d677e5b71d000fe1f1dad4d042"
+home = "homes/council"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/stats\r" },
+  { wait = "tokens by CLI" },
+  { press = "Down" },
+  { press = "Right" },
+  { wait = "▾tokens" },
+]
+
+[[drawing]]
+file = "stats/by-model-table@120x38.txt"
+release = "0.2.0"
+approval = 364
+hash = "sha256:73cb3a33802dc05eab1e457735bce78230d31fff1c319b6eb07674b1f3debf49"
+home = "homes/council"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/stats\r" },
+  { wait = "tokens by CLI" },
+  { press = "Down" },
+  { press = "Right" },
+  { wait = "▾tokens" },
+]
+
+[[drawing]]
+file = "stats/by-model-table@177x40.txt"
+release = "0.2.0"
+approval = 360
+hash = "sha256:1dc7cf4f1e81f60e0dec96c5119811897c007ffacdb3eece3a694f841fd4a627"
+home = "homes/council"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/stats\r" },
+  { wait = "tokens by CLI" },
+  { press = "Down" },
+  { press = "Right" },
+  { wait = "▾tokens" },
+]

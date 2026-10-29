@@ -30,7 +30,9 @@ const STEPS_WAIT: Duration = Duration::from_secs(180);
 /// merge approvals wait for you, since these runs are about your answers there. The fakes
 /// answer the fixed phases, so the workflow runs those. A request typed as plain text ends
 /// with the verdict, which a CLI that takes no tools keeps.
-const CREW_CONFIG: &str = r#"crew = ["claude-code", "codex", "antigravity-cli"]
+const CREW_CONFIG: &str = r#"# The crew's fixed phases, whose drafts, map and judging the scenario scripts.
+workflow = "fixed-phases"
+crew = ["claude-code", "codex", "antigravity-cli"]
 
 [main_session]
 tools = false
@@ -99,7 +101,8 @@ fn crew_scenario() -> anyhow::Result<Scenario> {
     if let Some(dir) = config.parent() {
         fs::create_dir_all(dir)?;
     }
-    fs::write(config, as_set_up(CREW_CONFIG))?;
+    fs::write(&config, as_set_up(CREW_CONFIG))?;
+    crate::app_support::write_fixed_phases(&config)?;
     scenario.repo.write(
         "package.json",
         "{ \"name\": \"acme-api\", \"scripts\": { \"test\": \"vitest run\" } }\n",

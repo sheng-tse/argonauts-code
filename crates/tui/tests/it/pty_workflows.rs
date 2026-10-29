@@ -21,6 +21,12 @@ fn with_views(script: Script, crew: &[Agent], times: usize) -> Script {
 /// so its row, Ctrl+T, and `/workflows` open the workflow view. A run with agents and no workflow
 /// opens its newest agent instead.
 fn declared_run(agents: usize) -> (Vec<Agent>, Vec<AppEvent>) {
+    let (_, crew, events) = declared(agents);
+    (crew, events)
+}
+
+/// [`declared_run`] with the script of its run, for what the run sends later.
+fn declared(agents: usize) -> (RunScript, Vec<Agent>, Vec<AppEvent>) {
     let (mut run, crew, mut events) = crew_run(agents);
     events.push(run.event(
         None,
@@ -30,7 +36,7 @@ fn declared_run(agents: usize) -> (Vec<Agent>, Vec<AppEvent>) {
             "workflow": {"name": "export-json", "description": "Add a --json flag to export",
                 "phases": []}}}),
     ));
-    (crew, events)
+    (run, crew, events)
 }
 
 fn workflow_request(value: &Value) -> bool {
@@ -168,22 +174,23 @@ fn down_past_panel_opens_run_tree() {
         .size(40, 100)
         .ui("[panel]\nagents = true")
         .start();
-    // Your conversation's row and the run's come first, so four of the seven agents show and
-    // three wait below.
-    driver.wait_visible("^  ↓  3 more");
-    // The first ↓ focuses the run's row; four more reach the fourth agent, the last one shown.
+    // Your conversation's row and the run's come first, so four of its seven tasks show, and
+    // the other three and the seven agents under them wait below.
+    driver.wait_visible("^  ↓  10 more");
+    // The first ↓ focuses the run's row; four more reach the fourth task, the last one shown.
     for _ in 0..5 {
         driver.press(Key::Down);
     }
     driver.assert_no_command("request");
     // ↓ on the last visible row scrolls the rest in, a row at a time.
     driver.press(Key::Down);
-    driver.wait_visible("^  ↓  2 more");
+    driver.wait_visible("^  ↓  9 more");
     driver.assert_no_command("request");
-    driver.press(Key::Down);
+    for _ in 0..9 {
+        driver.press(Key::Down);
+    }
     driver.wait_gone("^  ↓  \\d+ more");
     driver.assert_no_command("request");
-    driver.press(Key::Down);
     // The panel ends the screen, so the last agent is on its last row.
     driver.wait_until("the last agent picked", |screen| {
         let rows = screen.visible.len() - blank_rows_at_bottom(screen);
@@ -262,7 +269,7 @@ fn enter_on_workflow_row_opens_agent_view() {
     );
     let agent = driver.wait_visible("│ Prompt");
     assert_order(&agent, &["│ Prompt", "│ Activity", "Diff · 4 files"]);
-    driver.wait_visible("⏺ Running|✔ Done");
+    driver.wait_visible("⣾ Running|✔ Done");
     driver.press(Key::Esc);
     driver.wait_visible(VIEW_HEADER);
 }
@@ -277,7 +284,7 @@ fn panel_row_enter_opens_workflow_view() {
     assert!(
         screen.visible[mode + 1..]
             .iter()
-            .any(|row| row.contains("Add a --json flag") || row.contains("council")),
+            .any(|row| row.contains(" · Add a")),
         "one row per run:\n{}",
         screen.visible_text()
     );
@@ -334,7 +341,7 @@ fn resize_leaves_no_stale_rows() {
                 .is_some_and(|rule| width(&screen.visible[rule]) == usize::from(cols))
         });
         assert_eq!(
-            count_rows(&screen, " Council · Haiku ─$"),
+            count_rows(&screen, " council ─$"),
             1,
             "at {cols}:\n{}",
             screen.text()
@@ -568,4 +575,49 @@ fn the_view_opened_before_any_agent_starts_follows_the_run() {
     driver.signal("declare");
     driver.wait_command_where("request", workflow_request);
     driver.wait_visible(VIEW_HEADER);
+}
+
+/// Esc on an agent's question leaves it unanswered and the run's row waiting on you, where
+/// Enter brings it back: the run's view opens on the agent that asked, with the question under
+/// it. Once it is answered the view closes and the keys are back on the row.
+#[test]
+fn a_waiting_runs_row_opens_on_its_question_and_comes_back_once_answered() {
+    let (mut run, crew, events) = declared(2);
+    let question = run.question_approval("approval-001", &crew[1]);
+    let decided = run.decided(
+        "approval-001",
+        json!({"action": "choose", "value": "Yes, keep it"}),
+        json!({"party": "user"}),
+    );
+    let script = Script::idle()
+        .all(0, events)
+        .at(0, question)
+        .await_command("request")
+        .at(0, workflow_view(&crew, None))
+        .await_command("answer")
+        .at(0, decided);
+    let mut driver = TestDriver::start(script);
+    // The question takes the input's place, so the screen is made taller with it up.
+    driver.resize(64, COLS);
+    driver.wait_visible("Keep a CSV fallback\\?");
+    past_the_question_guard();
+    driver.press(Key::Esc);
+    driver.wait_gone("Keep a CSV fallback\\?");
+    driver.assert_no_command("answer");
+    driver.press(Key::Down);
+    driver.wait_visible("enter to answer");
+    driver.press(Key::Enter);
+    driver.wait_command_where("request", workflow_request);
+    driver.wait_visible(VIEW_HEADER);
+    driver.wait_visible("Keep a CSV fallback\\?");
+    // The pointer is on the agent that asked, in the agents pane.
+    let asked = format!("❯\\S {}", label(&crew[1]));
+    driver.wait_visible(&asked);
+    past_the_question_guard();
+    driver.press(Key::Enter);
+    let answer = driver.wait_command("answer");
+    assert_eq!(answer["to"]["id"], "approval-001");
+    driver.wait_gone(VIEW_HEADER);
+    driver.wait_visible("enter to open its workflow");
+    driver.wait_visible("^❯ .*Export-json");
 }

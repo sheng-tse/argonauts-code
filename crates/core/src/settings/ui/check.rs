@@ -19,7 +19,6 @@ const FORGIVING: &[&str] = &[
     "above_input",
     "views",
     "mods",
-    "panel.bar",
     "panel.context",
 ];
 
@@ -367,7 +366,7 @@ mod tests {
             glyph = "+"
             color = 12
             [ui.panel]
-            bar = "tasks"
+            max_rows = 3
             context = "loud"
             "##,
         );
@@ -405,7 +404,7 @@ mod tests {
         assert_eq!(ui.mods.context.colors.len(), 1);
         assert_eq!(ui.states.done.glyph.as_deref(), Some("+"));
         assert_eq!(ui.states.done.color, default.states.done.color);
-        assert_eq!(ui.panel.bar, super::super::places::PanelBar::Tasks);
+        assert_eq!(ui.panel.max_rows, 3);
         assert_eq!(ui.panel.context, default.panel.context);
     }
 

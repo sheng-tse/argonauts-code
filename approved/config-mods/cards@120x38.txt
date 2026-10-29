@@ -1,0 +1,136 @@
+Config › Mods: the context, spend, tokens and checks cards in the pane beside the list
+screen 120x38
+at ?,?
+size 61x38
+terminal fg=#c8d3f5 bg=#222436
+text
+╭───────────────────────────────────────────────────────────╮
+│ ◆ context           32.3k of 1M · compacts at 967k    3%  │
+│   ▏▏▏▏▏▏                                               ▏  │
+│                                                           │
+│ ▌ System prompt              4.4k   0.4%                  │
+│ ▌ System tools              19.4k   1.9%                  │
+│ ▌ MCP tools                   705   0.1%                  │
+│ ▌ MCP server instructions     960   0.1%                  │
+│ ▌ Memory files                503   0.1%                  │
+│ ▌ Skills                     6.4k   0.6%                  │
+│ ▌ Messages                     10  <0.1%                  │
+│ ▌ Free space                 935k  93.5%                  │
+╰───────────────────────────────────────────────────────────╯
+
+╭───────────────────────────────────────────────────────────╮
+│ ◆ spend                                      ~$1.86 today │
+│                                         ▏            ▉    │
+│                                                           │
+│ ▌ ￼￼ Claude Code   ~$1.31   70%                           │
+│ ▌ ￼￼ Codex          $0.45   24%                           │
+│ ▌ ￼￼ agy           ~$0.10    5%                           │
+╰───────────────────────────────────────────────────────────╯
+
+╭───────────────────────────────────────────────────────────╮
+│ ◆ tokens                                1.4M tokens today │
+│                                       ▋               ▏   │
+│                                                           │
+│ ▌ from cache   950k   68%      ▌ new input   380k   27%   │
+│ ▌ output        70k    5%                                 │
+╰───────────────────────────────────────────────────────────╯
+
+╭───────────────────────────────────────────────────────────╮
+│ ◆ checks                                    7 of 9 passed │
+│                                             ▎     ▋       │
+│                                                           │
+│ ▌ passed   7   78%      ▌ running   1   11%               │
+│ ▌ failed   1   11%                                        │
+╰───────────────────────────────────────────────────────────╯
+paint
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+a.b.ccccccc...........ccccc.dd.dd.d.dddddddd.dd.dddd...effe.a
+a.ghijklmnooooooooooooooooooooooooooooooooooooooooooooooopq.a
+a...........................................................a
+a.r.ssssss.ssssss..............cccc...dddd..................a
+a.d.ssssss.sssss..............ccccc...dddd..................a
+a.t.sss.sssss...................ccc...dddd..................a
+a.u.sss.ssssss.ssssssssssss.....ccc...dddd..................a
+a.v.ssssss.sssss................ccc...dddd..................a
+a.w.ssssss.....................cccc...dddd..................a
+a.x.ssssssss.....................cc..ddddd..................a
+a.y.ssss.sssss.................cccc..ddddd..................a
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+a.b.ccccc......................................cccccc.ddddd.a
+a.zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzABBBBBBBBBBBBCDDD.a
+a...........................................................a
+a.E.FF.ssssss.ssss...cccccc...ddd...........................a
+a.G.HH.sssss..........ccccc...ddd...........................a
+a.I.JJ.sss...........cccccc....dd...........................a
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+a.b.cccccc................................cccc.dddddd.ddddd.a
+a.KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKLMMMMMMMMMMMMMMMNOO.a
+a...........................................................a
+a.P.ssss.sssss...cccc...ddd......Q.sss.sssss...cccc...ddd...a
+a.R.ssssss........ccc....dd.................................a
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+a.b.cccccc....................................c.dd.d.dddddd.a
+a.eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeSTTTTTUVVVVVV.a
+a...........................................................a
+a.W.ssssss...c...ddd......X.sssssss...c...ddd...............a
+a.Y.ssssss...c...ddd........................................a
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+key
+. blank
+a fg=#4f5468  ; ModBorder
+b fg=#e6a23c  ; Accent, CatBrief
+c fg=#ffffff bold  ; Bright
+d fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+e bg=#4eba65  ; Success, CatAgents
+f fg=#14161f bg=#4eba65 bold  ; BadgeText, on Success, on CatAgents
+g bg=#888888  ; Rule
+h bg=#999999  ; Dim, ModeSupervised, SyntaxComment
+i fg=#999999 bg=#0a91b3  ; Dim, ModeSupervised, SyntaxComment
+j fg=#0a91b3 bg=#17a34a
+k fg=#17a34a bg=#d77757
+l fg=#d77757 bg=#ffc109
+m fg=#ffc109 bg=#827dbd
+n fg=#827dbd bg=#3a3f55  ; on CatFree
+o bg=#3a3f55  ; CatFree
+p fg=#ffc107 bg=#262a3a  ; Warn, ModeAuto, Tick, on Held
+q bg=#262a3a  ; Held
+r fg=#888888  ; Rule
+s fg=#c8d3f5  ; the terminal's own
+t fg=#0a91b3
+u fg=#17a34a
+v fg=#d77757
+w fg=#ffc109
+x fg=#827dbd
+y fg=#3a3f55  ; CatFree
+z bg=#f7a07f  ; CliClaude
+A fg=#f7a07f bg=#6a9ee6  ; CliClaude, on CliCodex
+B bg=#6a9ee6  ; CliCodex
+C fg=#6a9ee6 bg=#6cd1cf  ; CliCodex, on CliAgy
+D bg=#6cd1cf  ; CliAgy
+E fg=#f7a07f  ; CliClaude
+F logo=claudecode
+G fg=#6a9ee6  ; CliCodex
+H logo=codex
+I fg=#6cd1cf  ; CliAgy
+J logo=antigravity
+K bg=#60a5fa  ; AgentBlue
+L fg=#60a5fa bg=#c084fc  ; AgentBlue, on AgentPurple
+M bg=#c084fc  ; AgentPurple
+N fg=#c084fc bg=#22d3ee  ; AgentPurple, on AgentCyan
+O bg=#22d3ee  ; AgentCyan
+P fg=#60a5fa  ; AgentBlue
+Q fg=#c084fc  ; AgentPurple
+R fg=#22d3ee  ; AgentCyan
+S fg=#4eba65 bg=#ffc107  ; Success, CatAgents, on Warn, on ModeAuto, on Tick
+T bg=#ffc107  ; Warn, ModeAuto, Tick
+U fg=#ffc107 bg=#ff6b80  ; Warn, ModeAuto, Tick, on Danger, on ModeAutopilot
+V bg=#ff6b80  ; Danger, ModeAutopilot
+W fg=#4eba65  ; Success, CatAgents
+X fg=#ffc107  ; Warn, ModeAuto, Tick
+Y fg=#ff6b80  ; Danger, ModeAutopilot

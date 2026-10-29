@@ -24,7 +24,7 @@ fn agent_panel_view_tabs_and_plan_usages() {
     driver.wait_visible("Keep a CSV fallback\\?");
     // The question has the keys until it's passed on.
     past_the_question_guard();
-    driver.press(Key::Esc);
+    carry_on(&mut driver);
     driver.wait_visible("◆ Question left to the agent · you, ");
     driver.press(Key::Left);
     let view = driver.wait_gone(TOP_RULE);
@@ -86,7 +86,7 @@ fn agent_panel_view_lists_conversations_and_other_repos() {
     driver.wait_visible("Keep a CSV fallback\\?");
     // The question has the keys until it's passed on.
     past_the_question_guard();
-    driver.press(Key::Esc);
+    carry_on(&mut driver);
     driver.wait_visible("◆ Question left to the agent · you, ");
     driver.press(Key::Left);
     let request = driver.wait_command("request");

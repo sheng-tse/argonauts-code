@@ -1,0 +1,33 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
+
+                                                                    Every model
+                                                                    Nothing compared · ←  →  compares one
+                                                                    ●  ◧◨ Haiku 5.5         12
+                                                                    ●  ◧◨ 6 Luna            11
+                                                                    ●  ◧◨ 5.6 Luna          10
+                                                                    ●  ◧◨ Haiku 4.5          9
+                                                                    ●  ◧◨ 3.8 Flash          8
+                                                                    ●  ◧◨ Sonnet 5           7
+                                                                    ●  ◧◨ Opus 5.5           6
+                                                                    ●  ◧◨ 6                  5
+                                                                    ●  ◧◨ Qwen3 Coder 30B    4
+                                                                    ●  ◧◨ Gemma 3 12B        3
+
+
+  Point at anything on the map to see what it is.
+
+  Label map · 75 actions in 19 runs across 6 projects
+  Most common
+  Read a source file   75
+
+
+
+
+
+
+   r to cycle dates · s this project · d summaries · tab groupings · ←  →  compare · t top view · esc back

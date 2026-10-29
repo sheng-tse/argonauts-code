@@ -89,16 +89,6 @@ impl UsageCard {
     }
 }
 
-/// The color a CLI keeps on every bar and legend, the same as the bottom line's, so its share
-/// reads the same everywhere.
-pub fn cli_role(agent: &str) -> Role {
-    match agent {
-        "claude-code" | "codex" | "antigravity-cli" => Role::for_cli(agent),
-        "opencode" => Role::AgentGreen,
-        _ => Role::AgentPink,
-    }
-}
-
 /// What the cards draw from.
 #[derive(Debug, Clone, Copy)]
 pub struct UsageCards<'a> {
@@ -325,11 +315,9 @@ impl UsageCards<'_> {
         let entries: Vec<Entry> = if full {
             parts
                 .iter()
-                .map(|(name, tokens, role)| Entry {
-                    role: *role,
-                    name: (*name).to_owned(),
-                    amount: format::tokens(*tokens),
-                    share: share_of(*tokens as f64, all as f64),
+                .map(|(name, tokens, role)| {
+                    Entry::new(*role, *name, format::tokens(*tokens))
+                        .shared(share_of(*tokens as f64, all as f64))
                 })
                 .collect()
         } else {

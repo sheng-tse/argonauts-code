@@ -9,10 +9,11 @@ use ratatui::text::{Line, Span};
 use time::OffsetDateTime;
 
 use super::block::INDENT;
+use super::starting::Started;
 use super::{ContextPane, ContextTab, CrewFacts};
 use crate::bridge::tools::Places;
 use crate::cell::HistoryCell;
-use crate::kit::Kit;
+use crate::kit::{ContextCard, Kit};
 use crate::render::RenderCtx;
 use crate::state::{AppState, ContextCount};
 use crate::theme::Role;
@@ -58,6 +59,20 @@ impl ContextPrinted {
         }
     }
 
+    /// The card the tab ends with for the main session before its CLI counts it by category,
+    /// and for a CLI that says only how full it is, from the start the screen keeps: the card
+    /// above the input draws it too.
+    pub fn started_card(state: &AppState) -> Option<ContextCard> {
+        let main = state.conversation.main_start.as_ref()?;
+        let row = main.row.as_ref();
+        if row.is_some_and(|row| row.worker.agent != main.start.agent) {
+            return None;
+        }
+        let now = crate::bottom::wall_now();
+        Started::of(&main.start, row, &state.names, main.cli_window, now)
+            .map(|started| started.card())
+    }
+
     /// Shows paths from `places`, wherever a test runs.
     #[cfg(test)]
     pub(crate) fn showing_paths_from(mut self, places: Places) -> Self {
@@ -88,7 +103,7 @@ impl HistoryCell for ContextPrinted {
             pane: &pane,
         };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        for section in tab.sections(&kit, width) {
+        for section in tab.printed_sections(&kit, width) {
             if !lines.is_empty() && !section.joined {
                 lines.push(Line::default());
             }

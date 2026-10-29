@@ -12,9 +12,9 @@ use serde_json::Value;
 pub(crate) use files::{FileRole, path_of};
 pub(crate) use shell::unwrapped as script_of;
 
-/// Raised whenever a rule changes what an action is labelled, so labels kept from before are
-/// worked out again.
-pub(crate) const RULES_VERSION: u32 = 2;
+/// Raised whenever a rule changes what an action is labelled, or what it keeps beside its
+/// label, so labels kept from before are worked out again.
+pub(crate) const RULES_VERSION: u32 = 3;
 
 /// One tool call as a run's log has it.
 #[derive(Debug, Clone, Copy)]

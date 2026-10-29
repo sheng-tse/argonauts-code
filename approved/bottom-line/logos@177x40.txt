@@ -1,0 +1,19 @@
+The bottom line on Autopilot in vim's INSERT: each plan's meters after its CLI's logo, in whole cells, flush right; laid out by the app's rules from a screenshot's figures
+screen 177x40
+at ?,0
+size 177x1
+terminal fg=#c8d3f5 bg=#222436
+text
+  -- INSERT -- ⏵⏵ autopilot on (shift+tab to cycle)                                                     ￼￼ 5h ▄▁▁▁▁▁  15%  7d ▄▄▄▁▁▁  44%   ￼￼ 5h ▁▁▁▁▁▁   0%   ￼￼ 5h ▁▁▁▁▁▁   0%
+paint
+..aa.aaaaaa.aa.bb.bbbbbbbbb.bb.aaaaaaaaaa.aa.aaaaaa.....................................................cc.aa.deeeee..fff..aa.dddeee..fff...gg.aa.eeeeee...aa...hh.aa.eeeeee...aa
+key
+. blank
+a fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+b fg=#ff6b80  ; Danger, ModeAutopilot
+c logo=claudecode
+d fg=#f7a07f  ; CliClaude
+e fg=#505050  ; Faint
+f fg=#ffffff bold  ; Bright
+g logo=codex
+h logo=antigravity

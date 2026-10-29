@@ -390,7 +390,7 @@ impl View for PromptsView {
 }
 
 /// `w`: who writes one role's instructions. Picking goes back to the conversation, where the change
-/// is shown and asks where to keep it, as every setting does.
+/// is shown and saved where your changes go, as every setting is.
 #[derive(Debug)]
 struct WriterPicker {
     role: String,

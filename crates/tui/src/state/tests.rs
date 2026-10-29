@@ -32,6 +32,7 @@ use argonauts_core::names::{AgentId, ChoiceId, MessageId, ModelRef, RoleName, Tu
 use argonauts_core::policy::{NarratorLineKind, NarratorStatus};
 use argonauts_core::session_runner::{Access, RunnerKind};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::settings::ui::NarratorMode;
@@ -168,6 +169,8 @@ fn session_started(who: ModelRef, follow: u8) -> SessionEvent {
         asked_by: None,
         asked_why: None,
         forked: false,
+        seat: None,
+        billing: None,
     }))
 }
 
@@ -193,6 +196,7 @@ fn spec(n: u32, title: &str) -> TaskSpec {
         },
         predictions: None,
         item: None,
+        way: None,
     }
 }
 
@@ -211,6 +215,7 @@ fn question(id: u32, title: &str, needs_you: bool) -> ApprovalOpened {
         evidence_sha256: String::new(),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options: Vec::new(),
         free_text: FreeText::Answer,
         needs_you,
@@ -289,6 +294,27 @@ fn run(state: &AppState) -> &RunState {
 
 fn session(state: &AppState) -> &SessionState {
     &run(state).sessions[&key(1)]
+}
+
+/// A session keeps who pays for its tokens as its start said, and a start from before that
+/// was recorded leaves it unknown.
+#[test]
+fn a_session_keeps_who_pays_for_it() {
+    let mut log = Log::new();
+    let SessionEvent::Started(mut paid) = session_started(worker("codex", "gpt-6"), 2) else {
+        unreachable!()
+    };
+    paid.billing = Some(argonauts_core::events::session::Billing::Paid);
+    let state = fold(&[
+        log.event(started("Fix the export race", RunMode::Crew)),
+        log.session(1, None, session_started(worker("claude-code", "opus"), 1)),
+        log.session(2, None, SessionEvent::Started(paid)),
+    ]);
+    assert_eq!(session(&state).billing, None);
+    assert_eq!(
+        run(&state).sessions[&key(2)].billing,
+        Some(argonauts_core::events::session::Billing::Paid)
+    );
 }
 
 #[test]
@@ -878,6 +904,7 @@ fn a_reviewer_that_sent_the_work_back_waits_for_its_next_round() {
                 comments: Vec::new(),
                 tamper_suspected: false,
             },
+            picked_by: None,
         };
         log.at(Some(task_id(1)), Some(key(n)), RunEventKind::Review(review))
     };

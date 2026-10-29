@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::names::AgentId;
+use crate::names::{AgentId, ConversationId};
 use crate::session::SessionRequest;
 
 /// Where an adapter looks for what its CLI keeps on disk. Tests point `home` at a fixture, never
@@ -137,6 +137,14 @@ pub struct CliTurn {
     /// has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<CliStep>,
+    /// When a person's words were sent, where the transcript says. A turn sent after a
+    /// conversation last used the session was made in the CLI's own screen.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub sent: Option<OffsetDateTime>,
 }
 
 impl CliTurn {
@@ -146,7 +154,13 @@ impl CliTurn {
             from: Speaker::User,
             text: text.into(),
             steps: Vec::new(),
+            sent: None,
         }
+    }
+
+    /// The same words, sent at `at`.
+    pub fn sent_at(self, at: Option<OffsetDateTime>) -> Self {
+        Self { sent: at, ..self }
     }
 
     /// An agent's turn with nothing in it yet.
@@ -155,6 +169,7 @@ impl CliTurn {
             from: Speaker::Agent,
             text: String::new(),
             steps: Vec::new(),
+            sent: None,
         }
     }
 
@@ -284,6 +299,117 @@ impl ResumeLaunch {
             request.model = self.model.clone();
         }
     }
+}
+
+/// The turns sent after `left`, each prompt with the agent's answers after it: what was made in
+/// the CLI's own screen since a conversation last used the session. A prompt the transcript
+/// doesn't date is never counted as one.
+pub fn made_since(turns: &[CliTurn], left: OffsetDateTime) -> &[CliTurn] {
+    let first = turns
+        .iter()
+        .position(|turn| turn.from == Speaker::User && turn.sent.is_some_and(|sent| sent > left));
+    first.map_or(&[], |first| &turns[first..])
+}
+
+/// How many of `turns` are a person's words.
+pub fn prompts(turns: &[CliTurn]) -> u32 {
+    let count = turns
+        .iter()
+        .filter(|turn| turn.from == Speaker::User)
+        .count();
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+/// What you type in a session's folder to carry it on in its CLI's own screen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeCommand {
+    /// Each word apart, such as `claude`, `--resume` and the session's id.
+    pub words: Vec<String>,
+    /// The words give a local model and its flags again, without which the CLI would carry
+    /// the session on with its hosted model.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local_model: bool,
+    /// The CLI finds the session by these words from any folder, so no `cd` goes first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_any_folder: bool,
+    /// Another way the CLI's own screen finds it, such as its own list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub also: Option<String>,
+}
+
+/// How a session carries on in its CLI's own screen, for the rows and the lines that say so,
+/// and for `o`, which opens it there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InItsCli {
+    pub session: CliSessionRef,
+    /// The conversation that carries it, for one of Argonauts Code's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<ConversationId>,
+    /// The CLI's name, such as `Claude Code`.
+    pub cli: String,
+    /// What to type, ready to copy, after a `cd` to its folder when it needs one.
+    pub command: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local_model: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub also: Option<String>,
+    /// Prompts sent in the CLI's own screen since the conversation last used the session.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub made_there: u32,
+}
+
+impl InItsCli {
+    /// `command` for a session that carries on in `folder`, typed in `here`.
+    pub fn typed(
+        command: &ResumeCommand,
+        folder: &std::path::Path,
+        here: &std::path::Path,
+    ) -> String {
+        let words = shell_words(&command.words);
+        if command.from_any_folder || folder == here {
+            return words;
+        }
+        format!("cd {} && {words}", shell_word(&folder.to_string_lossy()))
+    }
+}
+
+/// `words` as a shell reads them back, each quoted only when it must be.
+pub fn shell_words(words: &[String]) -> String {
+    words
+        .iter()
+        .map(|word| shell_word(word))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '=' | '@' | '+')
+        });
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
+/// What each CLI does with a session Argonauts Code started that only a live check of that
+/// CLI can show. Each is one switch: the command or the words that would promise it follow it,
+/// and nothing else does.
+pub mod resume_facts {
+    /// `claude --resume <id>` finds the session from a folder other than the one it ran in.
+    pub const CLAUDE_FROM_ANY_FOLDER: bool = false;
+    /// `claude --resume "<name>"` finds it by the name Argonauts Code gives its sessions.
+    pub const CLAUDE_BY_NAME: bool = false;
+    /// `codex resume --include-non-interactive` lists the sessions `codex exec` ran.
+    pub const CODEX_LISTS_EXEC_SESSIONS: bool = false;
+    /// A session on a local model carries on with that model only when given its flags again.
+    pub const CODEX_LOCAL_NEEDS_FLAGS: bool = true;
+    /// OpenCode's own list shows the session, titled as the conversation.
+    pub const OPENCODE_LISTS_IT: bool = false;
+    /// agy's own picker lists a conversation Argonauts Code started.
+    pub const AGY_LISTS_IT: bool = false;
 }
 
 #[cfg(test)]
@@ -418,6 +544,67 @@ mod tests {
             serde_json::to_value(&launch).unwrap()["fork"],
             json!(true),
             "a launch kept for later still forks"
+        );
+    }
+
+    #[test]
+    fn turns_made_in_the_cli_are_those_sent_after_the_conversation_left() {
+        let left = time::macros::datetime!(2026-10-24 19:30 UTC);
+        let at = |minutes: i64| Some(left + time::Duration::minutes(minutes));
+        let mut answer = CliTurn::of_the_agent();
+        answer.wrote("Done.");
+        let turns = [
+            CliTurn::prompt("Add a --due flag").sent_at(at(-20)),
+            answer.clone(),
+            CliTurn::prompt("Make the due date optional").sent_at(at(5)),
+            answer.clone(),
+            CliTurn::prompt("Run the tests").sent_at(at(9)),
+            answer,
+        ];
+        let made = made_since(&turns, left);
+        assert_eq!(made.len(), 4);
+        assert_eq!(made[0].text, "Make the due date optional");
+        assert_eq!(prompts(made), 2);
+        assert!(made_since(&turns, left + time::Duration::hours(1)).is_empty());
+        // A transcript that dates nothing never claims a turn was made there.
+        assert!(made_since(&[CliTurn::prompt("hi")], left).is_empty());
+    }
+
+    #[test]
+    fn a_command_is_typed_in_the_folder_it_carries_on_in() {
+        let words = |words: &[&str]| words.iter().map(|word| (*word).to_owned()).collect();
+        let command = ResumeCommand {
+            words: words(&["claude", "--resume", "4a5b6c7d"]),
+            local_model: false,
+            from_any_folder: false,
+            also: None,
+        };
+        let repo = std::path::Path::new("/Users/you/github/tasks-cli");
+        assert_eq!(
+            InItsCli::typed(&command, repo, repo),
+            "claude --resume 4a5b6c7d"
+        );
+        let worktree = std::path::Path::new("/Users/you/.argonauts/work/tasks cli");
+        assert_eq!(
+            InItsCli::typed(&command, worktree, repo),
+            "cd '/Users/you/.argonauts/work/tasks cli' && claude --resume 4a5b6c7d"
+        );
+        let anywhere = ResumeCommand {
+            from_any_folder: true,
+            ..command
+        };
+        assert_eq!(
+            InItsCli::typed(&anywhere, worktree, repo),
+            "claude --resume 4a5b6c7d"
+        );
+        assert_eq!(
+            shell_words(&words(&[
+                "claude",
+                "--resume",
+                "argonauts Add due dates",
+                "it's"
+            ])),
+            r"claude --resume 'argonauts Add due dates' 'it'\''s'"
         );
     }
 }

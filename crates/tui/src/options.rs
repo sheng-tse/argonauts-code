@@ -37,6 +37,9 @@ pub struct UiOptions {
     ///
     /// [`QUIT_WINDOW`]: crate::app::QUIT_WINDOW
     pub double_press: Duration,
+    /// `behaviors.view = "world"`, which the app sets: a terminal no variable names is asked
+    /// whether it takes the kitty protocol's pictures, and gets the world if it answers.
+    pub ask_for_pictures: bool,
 }
 
 impl UiOptions {
@@ -58,6 +61,7 @@ impl UiOptions {
             ultracode_trigger: true,
             greeting: None,
             double_press: crate::app::QUIT_WINDOW,
+            ask_for_pictures: false,
         }
     }
 }

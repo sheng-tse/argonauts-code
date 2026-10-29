@@ -632,6 +632,8 @@ pub(crate) fn part(kind: InputPartKind, label: &str, text: String) -> InputPart 
 /// Everything a turn's session needs besides the settings.
 pub(crate) struct Launch<'a> {
     pub conversation: &'a ConversationId,
+    /// The conversation's title, which the main session is named by.
+    pub title: &'a str,
     pub turn: &'a TurnId,
     pub step: &'a TurnStep,
     pub text: &'a str,
@@ -1006,19 +1008,25 @@ pub(crate) fn session_spec(
         asking,
         cli_workflow: cli_workflow(settings, direct, words),
         shell: argonauts_core::session_runner::SessionShell::None,
-        preferences: preferences(settings, launch.fast),
+        preferences: preferences(settings, launch),
     }
 }
 
-/// What you set for the session you talk to that its CLI takes as settings of its own.
-fn preferences(settings: &Settings, fast: bool) -> SessionPreferences {
+/// What you set for the session you talk to that its CLI takes as settings of its own, and
+/// the title it's named by: the conversation's, or before it has one, your words'.
+fn preferences(settings: &Settings, launch: &Launch<'_>) -> SessionPreferences {
     let main = &settings.main_session;
     let language = main.language.trim();
+    let title = match launch.title.trim() {
+        "" => super::recap::title_from_request(launch.text),
+        title => title.to_owned(),
+    };
     SessionPreferences {
         thinking_off: !main.thinking,
-        fast,
+        fast: launch.fast,
         language: (!language.is_empty()).then(|| language.to_owned()),
         workflow_word_off: !settings.workflows.ultracode_trigger,
+        title: (!title.is_empty()).then_some(title),
     }
 }
 
@@ -1401,6 +1409,7 @@ mod tests {
         let step = TurnStep::Ask { run_status: None };
         let launch = Launch {
             conversation: &conversation,
+            title: "",
             turn: &turn,
             step: &step,
             text: "what does main do?",

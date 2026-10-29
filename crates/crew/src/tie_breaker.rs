@@ -183,6 +183,7 @@ mod tests {
             limit: TaskLimit::default(),
             predictions: None,
             item: None,
+            way: None,
         }
     }
 

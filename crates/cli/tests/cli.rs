@@ -184,9 +184,10 @@ fn a_config_that_wont_parse_prints_its_escapes_written_out() {
     }
 }
 
-/// A test build never carries the PostHog key, so even with telemetry on, nothing can be sent.
+/// A test binary sends nothing even with telemetry on, and says why: a debug build never sends,
+/// and an optimized one, which could, is run with CI set, so it holds its report while it is.
 #[test]
-fn a_test_build_has_no_key_to_send_with() {
+fn a_test_binary_says_why_it_sends_nothing() {
     let repo = TempRepo::new().unwrap();
     fs::create_dir_all(repo.home()).unwrap();
     fs::write(repo.global_config(), "[telemetry]\nenabled = true\n").unwrap();
@@ -199,6 +200,7 @@ fn a_test_build_has_no_key_to_send_with() {
         .current_dir(repo.root())
         .envs(repo.envs())
         .env("PATH", &bin)
+        .env("CI", "true")
         .env_remove("DO_NOT_TRACK")
         .env_remove("ARGONAUTS_SESSION")
         .stdin(Stdio::null())
@@ -208,7 +210,12 @@ fn a_test_build_has_no_key_to_send_with() {
     assert!(output.status.success(), "{}", describe(&output));
     assert!(shown.starts_with("Usage reports are on"), "{shown}");
     assert!(
-        shown.contains("This build has no PostHog key, so it sends nothing."),
+        shown.contains("CI is set, so nothing is sent while it is."),
+        "{shown}"
+    );
+    assert_eq!(
+        shown.contains("This is a debug build, so it sends nothing."),
+        cfg!(debug_assertions),
         "{shown}"
     );
 }
@@ -371,6 +378,13 @@ fn doctor_fails_without_an_agent_cli_and_passes_with_one() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(json["agents"].is_array(), "{json}");
     assert_eq!(json["waiting"], serde_json::json!([]));
+    // Argonauts Code itself, before its first look for a new release.
+    assert_eq!(
+        json["update"]["running"],
+        env!("CARGO_PKG_VERSION"),
+        "{json}"
+    );
+    assert!(json["update"]["last_look"].is_null(), "{json}");
 }
 
 /// With no git on PATH, or something there that exits 127 as a shell does for a program it
@@ -464,6 +478,10 @@ fn doctor_lists_every_cli_with_its_version() {
     assert!(checked(&line("Codex")), "{report}");
     assert!(line("agy").contains("not installed"), "{report}");
     assert!(line("OpenCode").contains("not installed"), "{report}");
+    // Argonauts Code's own row comes first: a new home has never looked for a release.
+    let own = text.lines().next().unwrap_or_default();
+    assert!(own.starts_with("Argonauts Code "), "{report}");
+    assert!(own.ends_with("no update check yet"), "{report}");
     assert!(text.contains("Ready with 2 of "), "{report}");
     assert!(!text.contains("wasn't checked with"), "{report}");
 
@@ -752,12 +770,12 @@ fn mcp_serve_rereads_the_repos_trust_on_every_call() {
     let _ = child.wait();
 }
 
-/// `argonauts behaviors --deep` with nothing recorded says so and calls no model; without
-/// `--deep` it ranks the labels instead, and `--deep` doesn't export.
+/// `argonauts behaviors --summaries` with nothing recorded says so and calls no model; without
+/// `--summaries` it ranks the labels instead, and `--summaries` doesn't export.
 #[test]
 fn behaviors_deep_with_nothing_recorded_calls_no_model() {
     let repo = TempRepo::new().unwrap();
-    let mut args = vec!["behaviors", "--deep", "--since", "30d"];
+    let mut args = vec!["behaviors", "--summaries", "--since", "30d"];
     args.extend(NO_LOCAL_SERVERS);
     let output = argonauts(&repo, repo.root(), &args);
     assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
@@ -776,13 +794,13 @@ fn behaviors_deep_with_nothing_recorded_calls_no_model() {
     let both = argonauts(
         &repo,
         repo.root(),
-        &["behaviors", "--deep", "--export", "hodoscope", "out"],
+        &["behaviors", "--summaries", "--export", "hodoscope", "out"],
     );
     assert_eq!(both.status.code(), Some(2), "{}", describe(&both));
     let wrong = argonauts(
         &repo,
         repo.root(),
-        &["behaviors", "--deep", "--since", "soon"],
+        &["behaviors", "--summaries", "--since", "soon"],
     );
     assert_ne!(wrong.status.code(), Some(0), "{}", describe(&wrong));
 }
@@ -798,7 +816,7 @@ fn behaviors_deep_with_a_hosted_summarizer_asks_and_sends_nothing_without_a_term
     fs::write(run.join("events.jsonl"), format!("{started}\n")).unwrap();
     let mut args = vec![
         "behaviors",
-        "--deep",
+        "--summaries",
         "--set",
         "behaviors.summarizer=claude-code/haiku",
     ];

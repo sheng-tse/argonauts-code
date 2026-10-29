@@ -1,7 +1,6 @@
 //! The row at the bottom takes a workflow's name and its agents, done of all, from what the
-//! workflow reports, and its goals from the goals the screen knows of. Like the view, it holds
-//! no list of phases: one phase, twelve, phases that repeat, and nothing reported yet. Which
-//! phase is going on is the view's to say.
+//! workflow reports. Like the view, it holds no list of phases: one phase, twelve, phases that
+//! repeat, and nothing reported yet. Which phase is going on is the view's to say.
 
 use std::time::{Duration, Instant};
 
@@ -158,8 +157,10 @@ fn a_workflow_that_has_reported_nothing_yet_shows_its_name_alone() {
     assert!(!text.contains("0/0"), "{text}");
 }
 
+/// The row counts its agents and says nothing of the goals they work toward, which their own
+/// rows and views show.
 #[test]
-fn the_row_counts_the_goals_still_running() {
+fn the_row_counts_its_agents_and_says_nothing_of_goals() {
     let workflow = || {
         reported(
             &["Sort"],
@@ -177,11 +178,7 @@ fn the_row_counts_the_goals_still_running() {
     ];
     let text = row(workflow(), &goals);
     assert!(text.contains("  1/3 · "), "{text}");
-    assert!(text.trim_end().ends_with("· 2 goals running"), "{text}");
-    let text = row(workflow(), &goals[1..]);
-    assert!(text.trim_end().ends_with("· 1 goal running"), "{text}");
-    let text = row(workflow(), &goals[2..]);
-    assert!(!text.contains("running"), "{text}");
+    assert!(!text.contains("goal"), "{text}");
 }
 
 /// A run of the kind the runner makes, its Work step going on, with the agent that wrote the
@@ -204,6 +201,8 @@ fn run_with_a_step_workflow() -> (
         path: vec![0],
     };
     let run = state.runs.get_mut(&id).unwrap();
+    // Its work isn't divided into tasks, so its row counts its agents.
+    run.tasks.clear();
     run.workflows.push(WorkflowState {
         id: WorkflowId::numbered(1),
         name: "script".into(),
@@ -400,28 +399,27 @@ fn ended_run(
     state
 }
 
-/// A run that ended keeps its row, saying how it ended as the pictures' rows do: merged, and
-/// stopped with what carries it on. The row goes when its time is up, the same time Claude
-/// Code keeps a finished workflow listed, and a run of an earlier session has none.
+/// A run that ended keeps its row, its mark saying how it ended as the pictures' rows do:
+/// merged, and stopped. The row goes when its time is up, the same time Claude Code keeps a
+/// finished workflow listed, and a run of an earlier session has none.
 #[test]
 fn a_run_that_ended_keeps_its_row_for_a_while() {
     use argonauts_core::events::run::RunOutcome;
 
     use crate::bridge::panel::KEPT_AFTER_END;
-    use crate::views::workflow_pictures::{buffer_of, dark, picture};
+    use crate::views::workflow_pictures::dark;
 
-    let picture = picture!("run_rows");
     let theme = dark();
     let now = Instant::now();
     let ctx = RenderCtx::new(124, &theme, Clock::still(now));
     let wall = OffsetDateTime::UNIX_EPOCH + time::Duration::days(400);
     let ago = Duration::from_secs(5);
     let cases = [
-        (RunOutcome::Merged, (6, 6), 380, 177_000, 3, None),
-        (RunOutcome::Stopped, (3, 6), 302, 140_000, 4, Some(0)),
+        (RunOutcome::Merged, (6, 6), 380, 177_000, "  ✔  ", None),
+        (RunOutcome::Stopped, (3, 6), 302, 140_000, "❯ ×  ", Some(0)),
     ];
-    for (outcome, agents, secs, tokens, pictured, selected) in cases {
-        let state = ended_run(outcome, agents, secs, tokens, (wall, ago));
+    for (outcome, (done, all), secs, tokens, mark, selected) in cases {
+        let state = ended_run(outcome, (done, all), secs, tokens, (wall, ago));
         let rows = run_rows(&state, wall, now);
         assert_eq!(rows.len(), 1, "{outcome:?}");
         assert_eq!(rows[0].leaves_at, Some(now + KEPT_AFTER_END - ago));
@@ -432,8 +430,9 @@ fn a_run_that_ended_keeps_its_row_for_a_while() {
             ..WorkflowPanel::default()
         };
         let agents = AgentPanel::default();
-        let lines = panel_lines(&panel, &agents, &ctx);
-        picture.assert_drawn(pictured..pictured + 1, &buffer_of(&lines, 124), 0);
+        let text = plain_text(&panel_lines(&panel, &agents, &ctx));
+        assert!(text.starts_with(mark), "{outcome:?}: {text}");
+        assert!(text.contains(&format!("  {done}/{all} · ")), "{text}");
 
         // The screen wakes when the row's time is up, and lets it go then, not before.
         let leaves = now + KEPT_AFTER_END - ago;

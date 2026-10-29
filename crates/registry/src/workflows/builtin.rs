@@ -6,8 +6,8 @@ use argonauts_core::workflow_files;
 
 use super::choices::about_of;
 
-/// What runs when no setting names a workflow.
-pub(crate) const DEFAULT_WORKFLOW: &str = "captain";
+/// What runs when no setting names a workflow: Council, whose settings are the built-in ones.
+pub(crate) const DEFAULT_WORKFLOW: &str = "council";
 
 /// The workflow the built-in settings are, so its file sets no key.
 pub(crate) const BASE_WORKFLOW: &str = "council";

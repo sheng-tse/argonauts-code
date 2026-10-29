@@ -51,6 +51,7 @@ fn tasks_card(task_limit: Option<LimitAmount>, width: usize) -> Vec<String> {
     rows(cards.tasks(&Kit::new(&theme), Frame::view(width)))
 }
 
+/// The list in the ten rows Limits leaves it at 120 × 38.
 fn list(limits: &[SettingRow], width: usize, picked: usize) -> Vec<String> {
     let theme = plain();
     let cards = LimitsCards {
@@ -58,7 +59,7 @@ fn list(limits: &[SettingRow], width: usize, picked: usize) -> Vec<String> {
         task_limit: None,
         limits,
     };
-    rows(cards.list(&Kit::new(&theme), width, picked, "❯"))
+    rows(cards.list(&Kit::new(&theme), (width, 10), picked, "❯"))
 }
 
 #[test]

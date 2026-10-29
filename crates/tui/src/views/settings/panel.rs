@@ -1,5 +1,5 @@
-//! Editing a setting inside `/config` or `/approvals`: the picker's values or typed line, then
-//! the scope question, drawn in the view's box in place of its list.
+//! Editing a setting inside `/config` or `/approvals`: the picker's values or typed line, drawn
+//! in the view's box in place of its list.
 
 use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;

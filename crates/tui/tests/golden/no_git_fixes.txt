@@ -30,7 +30,7 @@
   Enter to choose · Tab to add a note · Esc to set aside
 
  ╭ Phases ──────────┬ Sign-off · 1 agent ───────────────────────────────────────────────────────────────────────────╮
- │   ✔ Build    2/2 │  ✔ sign-off:add-due-dates  Opus 5.5 · 12.1k tok · approved                                33s │
+ │   ✔ Build    2/2 │  ✔ sign-off:add-due-dates  ◧◨ Opus 5.5                                      12.1k tok     33s │
  │   ✔ Review   2/2 │                                                                                               │
  │ ❯ ✔ Sign-off 1/1 │                                                                                               │
  │                  │                                                                                               │

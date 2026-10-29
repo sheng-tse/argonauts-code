@@ -12,16 +12,21 @@ use super::example::{self, Example};
 use crate::overview::golden::{Picture, Region, differences, theme};
 use crate::overview::{OverviewView, Tab, UsageWatch};
 use crate::state::AppState;
+use crate::theme::Theme;
 use crate::views::{View, ViewCtx};
 
 const WIDTH: u16 = 118;
 
 /// The panel on `example`, opened with every list open where `every_list`, after `keys`.
 fn panel(example: &Example, every_list: bool, keys: &[KeyCode]) -> Buffer {
+    panel_in(example, every_list, keys, &theme())
+}
+
+/// [`panel`] in `theme`.
+fn panel_in(example: &Example, every_list: bool, keys: &[KeyCode], theme: &Theme) -> Buffer {
     let state = example.state();
-    let theme = theme();
     let ctx = ViewCtx {
-        theme: &theme,
+        theme,
         state: &state,
         now: Instant::now(),
     };
@@ -34,7 +39,7 @@ fn panel(example: &Example, every_list: bool, keys: &[KeyCode]) -> Buffer {
     }
     let area = |view: &mut OverviewView, state: &AppState| {
         let ctx = ViewCtx {
-            theme: &theme,
+            theme,
             state,
             now: Instant::now(),
         };
@@ -105,13 +110,13 @@ fn key_row(buf: &Buffer) -> u16 {
 }
 
 /// As the tab opens: the main session's block, then MCP tools, Skills and the crew folded,
-/// from the panel's rule to its key line.
+/// and the context card, from the panel's rule to its key line.
 #[test]
 fn the_context_tab_opens_folded_as_its_picture_draws_it() {
     let picture = Picture::load("context_cc");
     let buf = panel(&example::after_the_run(), false, &[]);
-    assert_eq!(buf.area.height, 32, "the panel is as tall as its picture");
-    assert_rows(&picture, &buf, 2..34, 0);
+    assert_eq!(buf.area.height, 41, "the panel is as tall as its picture");
+    assert_rows(&picture, &buf, 2..43, 0);
 }
 
 /// `/context all`: each list a line a server, a group or an agent.
@@ -120,7 +125,7 @@ fn every_list_opens_as_its_picture_draws_it() {
     let picture = Picture::load("context_cc");
     let buf = panel(&example::after_the_run(), true, &[]);
     // Under the main session's block and its auto-compact window.
-    assert_rows(&picture, &buf, 37..55, 20);
+    assert_rows(&picture, &buf, 46..64, 20);
 }
 
 /// Enter on build:per-api-key: its own block, with its tries and tie-breakers, and the one
@@ -133,8 +138,8 @@ fn an_agents_own_block_matches_its_picture() {
     let mut keys = vec![KeyCode::Down; 9];
     keys.push(KeyCode::Enter);
     let buf = panel(&example::after_the_run(), true, &keys);
-    assert_rows(&picture, &buf, 58..71, 4);
-    assert_rows(&picture, &buf, 72..73, key_row(&buf));
+    assert_rows(&picture, &buf, 67..80, 4);
+    assert_rows(&picture, &buf, 81..82, key_row(&buf));
 }
 
 /// A request that went straight to a run: no main session's block, and the crew says where
@@ -143,5 +148,33 @@ fn an_agents_own_block_matches_its_picture() {
 fn a_run_with_no_conversation_session_matches_its_picture() {
     let picture = Picture::load("context_cc");
     let buf = panel(&example::straight_to_a_run(), false, &[]);
-    assert_rows(&picture, &buf, 76..83, 4);
+    assert_rows(&picture, &buf, 85..92, 4);
+}
+
+/// Where the terminal draws logos: the main session's block, every list, and an agent's own
+/// block, each model with its logo before its name.
+#[test]
+fn the_tab_puts_each_models_logo_before_its_name() {
+    use crate::kit::logo::golden::{count, pictured, with_stand_ins};
+    use crate::overview::golden::{assert_matches, keep};
+
+    let theme = pictured(&theme());
+    let example = example::after_the_run();
+    let mut keys = vec![KeyCode::Down; 9];
+    keys.push(KeyCode::Enter);
+    for (name, shown) in [
+        ("context_logos", false, &[][..], 1),
+        ("context_lists_logos", true, &[][..], 8),
+        ("context_agent_logos", true, &keys[..], 1),
+    ]
+    .map(|(name, every_list, keys, logos)| {
+        let buf = panel_in(&example, every_list, keys, &theme);
+        assert_eq!(count(&buf), logos, "{name}");
+        let shown = with_stand_ins(&buf);
+        keep(name, &shown);
+        (name, shown)
+    }) {
+        let picture = Picture::load(name);
+        assert_matches(&picture, &shown, &Region::whole(&picture, (0, 0)), &theme);
+    }
 }

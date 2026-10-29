@@ -84,6 +84,8 @@ impl Run {
             asked_by: None,
             asked_why: None,
             forked: false,
+            seat: None,
+            billing: None,
         };
         self.send(
             Some(session),
@@ -285,40 +287,6 @@ fn reviewed_run() -> Run {
     run
 }
 
-/// An agent's header reads as the council's rows draw it: its label in the text's colour, where
-/// this picture draws it bold, and its model in its shade, where this picture draws it dim.
-fn agents_as_the_council_draws_them(
-    picture: &str,
-) -> Vec<super::transcript::picture_check::Unlike> {
-    use super::transcript::picture_check::Unlike;
-
-    let mut unlike = Vec::new();
-    for (row, line) in picture.lines().enumerate() {
-        let Some((label, who)) = line
-            .strip_prefix("● ")
-            .and_then(|rest| rest.split_once(" · "))
-            .filter(|(label, _)| label.contains(':'))
-        else {
-            continue;
-        };
-        let label_end = 1 + label.chars().count();
-        unlike.push(Unlike {
-            row,
-            cols: (2, label_end),
-            why: "an agent's label reads in the text's colour, as the council's rows draw it",
-        });
-        if let Some((model, _)) = who.split_once(" on ") {
-            let start = label_end + 1 + " · ".chars().count();
-            unlike.push(Unlike {
-                row,
-                cols: (start, start + model.chars().count() - 1),
-                why: "an agent's model reads in its shade, as the council's rows draw it",
-            });
-        }
-    }
-    unlike
-}
-
 #[test]
 fn checks_a_reviewer_and_a_sign_off_read_as_drawn() {
     let mut run = reviewed_run();
@@ -342,9 +310,9 @@ fn checks_a_reviewer_and_a_sign_off_read_as_drawn() {
         assert!(crate::text::str_width(line) <= usize::from(WIDTH), "{line}");
     }
 
-    // The colours: green bullets, the Checks call bold, the agents' labels plain, who runs them
-    // dim but for the model in its shade, every ⎿ line dim, the verdict plain, and every other
-    // cell as the drawing colours it.
+    // The colours: green bullets, the Checks call and the agents' labels bold, as Claude Code
+    // heads its agents, who runs them dim but for the model in its shade, every ⎿ line dim, the
+    // verdict plain, and every other cell as the drawing colours it.
     let theme = {
         let mut theme = Theme::dark();
         theme.glyphs = Glyphs::UNICODE;
@@ -356,7 +324,7 @@ fn checks_a_reviewer_and_a_sign_off_read_as_drawn() {
         PICTURE,
         COLOURS,
         &theme,
-        &agents_as_the_council_draws_them(PICTURE),
+        &[],
     );
     let rows = &printed;
     let success = theme.style(Role::Success).fg;
@@ -370,8 +338,8 @@ fn checks_a_reviewer_and_a_sign_off_read_as_drawn() {
     };
     for (at, name, bold) in [
         (0, "Checks", true),
-        (3, "review:per-key", false),
-        (7, "sign-off:per-key", false),
+        (3, "review:per-key", true),
+        (7, "sign-off:per-key", true),
     ] {
         assert_eq!(span(&rows[at], "●").style.fg, success, "{name}");
         assert_eq!(

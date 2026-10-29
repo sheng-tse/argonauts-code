@@ -1,5 +1,5 @@
-⏺ Workflow(Add due dates · orchestrator workflow)
+⏺ Workflow(Add due dates · Orchestrator)
   ⎿  Running in background · /workflows to monitor and save
 
-⏺ Workflow(Add due dates · orchestrator workflow)
+⏺ Workflow(Add due dates · Orchestrator)
   ⎿  ✔ Completed in 6m 20s · 6 agents · 177k tokens · merged onto main

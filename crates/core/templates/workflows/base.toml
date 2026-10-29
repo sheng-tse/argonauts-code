@@ -1,0 +1,126 @@
+# The phases every workflow without its own runs: an ablation, a file of steps you wrote, a
+# script. Not a workflow to pick: it holds the crew's fixed phases.
+name  = "base"
+about = "The crew's fixed phases: blind drafts, a map, critique, then one plan merged or judged"
+
+[[phases]]
+name     = "Understand"
+detail   = "models from several providers read the request, and others compare the readings"
+standard = "understand"
+
+  [[phases.steps]]
+  kind  = "loop_until"
+  name  = "understanding"
+  until = "understood"
+  max   = 2
+
+    [[phases.steps.steps]]
+    kind  = "read"
+    name  = "readings"
+    role  = "reader"
+    label = "read:{provider}"
+
+    [[phases.steps.steps]]
+    kind  = "compare"
+    name  = "differences"
+    role  = "comparer"
+    input = "readings"
+    label = "compare:{n}"
+
+    [[phases.steps.steps]]
+    kind     = "approval"
+    approval = "understand"
+
+[[phases]]
+name     = "Plan"
+detail   = "blind drafts, a map of where they disagree, critique, then one plan merged or judged"
+standard = "plan"
+
+  [[phases.steps]]
+  kind  = "loop_until"
+  name  = "planning"
+  until = "plan_decided"
+  max   = 3
+
+    [[phases.steps.steps]]
+    kind  = "draft"
+    name  = "drafts"
+    role  = "draft"
+    blind = true
+    input = "goal"
+    label = "draft:{provider}"
+
+    [[phases.steps.steps]]
+    kind  = "map"
+    name  = "map"
+    role  = "map"
+    input = "drafts"
+    label = "map:{n}"
+
+    [[phases.steps.steps]]
+    kind  = "loop_until"
+    name  = "critique"
+    until = "critique_done"
+    max   = 3
+
+      [[phases.steps.steps.steps]]
+      kind  = "critique"
+      name  = "critiques"
+      role  = "critic"
+      input = "map"
+      label = "critique:{provider}"
+
+      [[phases.steps.steps.steps]]
+      kind  = "draft"
+      name  = "revisions"
+      role  = "draft"
+      input = "critiques"
+      label = "revise:{provider}"
+
+      [[phases.steps.steps.steps]]
+      kind  = "map"
+      name  = "remap"
+      role  = "map"
+      input = "revisions"
+      label = "remap:{n}"
+
+    [[phases.steps.steps]]
+    kind  = "synthesize"
+    name  = "merged"
+    role  = "draft"
+    input = "drafts"
+    when  = "drafts_agree"
+    label = "synthesize:{provider}"
+
+    [[phases.steps.steps]]
+    kind  = "judge"
+    name  = "scores"
+    role  = "judge"
+    blind = true
+    input = "drafts"
+    when  = "drafts_disagree"
+    label = "judge:{provider}"
+
+    [[phases.steps.steps]]
+    kind     = "approval"
+    approval = "plan"
+
+[[phases]]
+name     = "Build"
+detail   = "one worker per task in its own worktree, its checks, then a review from another provider"
+standard = "do"
+
+  [[phases.steps]]
+  kind  = "build"
+  role  = "worker"
+  input = "plan"
+  label = "build:{item}"
+
+[[phases]]
+name     = "Merge"
+detail   = "the final check, then the merge into your branch"
+standard = "decide"
+
+  [[phases.steps]]
+  kind  = "merge"
+  label = "merge:{branch}"

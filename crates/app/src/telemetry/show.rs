@@ -46,6 +46,10 @@ pub(crate) enum Held {
     Off,
     DoNotTrack,
     Ci,
+    /// A debug or test build, which never sends.
+    DebugBuild,
+    /// An optimized build made with `ARGONAUTS_POSTHOG_KEY` set empty, or with a host of its own
+    /// and no key.
     NoKey,
 }
 
@@ -109,11 +113,12 @@ fn first_line(due: &Due, held: &[Held]) -> String {
     format!("Usage reports are on. {when} and holds exactly this:")
 }
 
-fn held_line(why: Held) -> &'static str {
+pub(super) fn held_line(why: Held) -> &'static str {
     match why {
         Held::Off => "",
         Held::DoNotTrack => "DO_NOT_TRACK is set, so nothing is sent while it is.",
         Held::Ci => "CI is set, so nothing is sent while it is.",
+        Held::DebugBuild => "This is a debug build, so it sends nothing.",
         Held::NoKey => "This build has no PostHog key, so it sends nothing.",
     }
 }
@@ -687,6 +692,11 @@ mod tests {
         let off = text(&Due::NextStart, &[Held::Off, Held::NoKey]);
         assert!(off.starts_with("Usage reports are off"), "{off}");
         assert!(off.contains("no PostHog key"), "{off}");
+        let debug = text(&Due::NextStart, &[Held::DebugBuild]);
+        assert!(
+            debug.contains("This is a debug build, so it sends nothing."),
+            "{debug}"
+        );
         let ci = text(&Due::NextStart, &[Held::Ci]);
         assert!(ci.starts_with("Usage reports are on. Today's report goes out at the next start"));
         assert!(ci.contains("CI is set"), "{ci}");

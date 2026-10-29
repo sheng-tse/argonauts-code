@@ -1,9 +1,9 @@
 use argonauts_core::AgentEvent;
 use argonauts_core::events::session::{
-    CliWorkflowRun, EndReason, FileDiff, QueuedMessage, SessionEnd, SessionInput, SessionStarted,
-    SubagentUpdate,
+    Billing, CliWorkflowRun, EndReason, FileDiff, QueuedMessage, SessionEnd, SessionInput,
+    SessionStarted, SubagentUpdate,
 };
-use argonauts_core::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::names::{ModelRef, RoleName, SeatId, SessionKey};
 use argonauts_core::settings::sessions::SessionSettings;
 use argonauts_core::steps::StepName;
 use argonauts_core::views::ContextUse;
@@ -41,6 +41,8 @@ pub struct SessionState {
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub cost_usd: Option<f64>,
+    /// Who pays for its tokens, as its start recorded. `None` in records that don't say.
+    pub billing: Option<Billing>,
     pub context: Option<ContextUse>,
     /// The model's whole window when the stream said, which can be larger than the cap.
     pub context_window: Option<u64>,
@@ -81,6 +83,8 @@ pub struct SessionState {
     /// Its latest review sent its task's work back, so as one of the run's own reviewers its
     /// next round is still to come.
     pub sent_back: bool,
+    /// The council seat it is the session of, whose row under its request it times.
+    pub seat: Option<SeatId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -199,6 +203,7 @@ impl SessionState {
             tokens_in: 0,
             tokens_out: 0,
             cost_usd: None,
+            billing: None,
             context: None,
             context_window: None,
             rotations: 0,
@@ -221,6 +226,7 @@ impl SessionState {
             stalled: false,
             cli_session: None,
             sent_back: false,
+            seat: None,
         }
     }
 
@@ -248,6 +254,8 @@ impl SessionState {
             .filter(|label| !label.is_empty())
             .map(str::to_owned);
         session.cli_session = started.resumed_from.clone();
+        session.billing = started.billing;
+        session.seat = started.seat.clone();
         session
     }
 

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::overview::OverviewPeriod;
+use crate::settings::behaviors::BehaviorView;
 
 /// The density grid's side: the difference is worked out at `GRID` by `GRID` places.
 pub const GRID: usize = 60;
@@ -81,7 +82,7 @@ pub struct MapRequest {
     pub grouping: Grouping,
     pub period: OverviewPeriod,
     pub scope: Scope,
-    /// The label map or the deeper one, as `d` switched; `behaviors.map` says when `None`.
+    /// The label map or Summaries, as `d` switched; `behaviors.map` says when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map: Option<crate::settings::behaviors::BehaviorMap>,
 }
@@ -119,19 +120,29 @@ pub struct BehaviorMap {
     pub comparisons: Vec<Comparison>,
     /// Actions no label fits, which the map leaves out.
     pub unlabelled: usize,
-    /// No deeper map has been made yet, so the tab offers one.
+    /// No Summaries are made yet, so the tab offers them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub offer_deeper: bool,
-    /// On the deeper map: actions it has no summary of yet, which `d` offers to add.
+    pub offer_summaries: bool,
+    /// On Summaries: actions it has no summary of yet, which `d` offers to add.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unsummarized: usize,
-    /// On the deeper map: the summaries were placed by their words, with no embedding model.
+    /// On Summaries: the summaries were placed by their words, with no embedding model.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub by_words: bool,
+    /// What the world draws under and round the dots. `None` where the app worked none out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world: Option<Box<crate::behavior_world::WorldFacts>>,
+    /// `behaviors.view` as it stood when the map was made, so the tab draws it as asked.
+    #[serde(default, skip_serializing_if = "is_auto")]
+    pub view: BehaviorView,
 }
 
 fn is_zero(count: &usize) -> bool {
     *count == 0
+}
+
+fn is_auto(view: &BehaviorView) -> bool {
+    *view == BehaviorView::Auto
 }
 
 /// One group of dots: a model, a CLI, a role, a workflow, a project or an outcome.
@@ -141,7 +152,7 @@ pub struct MapGroup {
     /// The CLI whose colour the group draws in, when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    /// The model's id, for its shade of the CLI's colour.
+    /// The model's id, which draws it in its CLI's colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub actions: usize,
@@ -156,7 +167,7 @@ pub struct MapAction {
     /// Its group's index.
     pub group: usize,
     /// The behavior it counts under: its label's words on the label map, its summary on the
-    /// deeper one.
+    /// Summaries.
     pub behavior: String,
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,6 +197,23 @@ pub struct MapAction {
     /// The run's own words about it, such as the review's note on its task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_shows: Option<String>,
+    /// Its tool call failed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub failed: bool,
+    /// What became of the work it was part of. `None` for a conversation's own turn, or work
+    /// not settled yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ActionOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionOutcome {
+    Merged,
+    /// A review sent it back.
+    SentBack,
+    /// It never merged.
+    Dropped,
 }
 
 /// One group against the rest.
@@ -216,7 +244,7 @@ pub struct BehaviorRow {
     pub others: usize,
     /// The actions the row lights on the map, by index.
     pub lit: Vec<usize>,
-    /// Its summary says more than its label: the deeper map marks it new.
+    /// Its summary says more than its label: Summaries marks it new.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub new: bool,
 }
@@ -233,5 +261,30 @@ impl BehaviorMap {
             .iter()
             .enumerate()
             .filter(move |(_, action)| action.group == group)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A map written before it carried the view reads as `auto`, and `auto` is left out when
+    /// written, so maps that ask for nothing look as they always did.
+    #[test]
+    fn the_view_reads_back_as_written_and_auto_is_left_out() {
+        let plain = BehaviorMap::default();
+        let written = serde_json::to_value(&plain).unwrap();
+        assert!(written.get("view").is_none(), "{written}");
+        let read: BehaviorMap = serde_json::from_value(written).unwrap();
+        assert_eq!(read.view, BehaviorView::Auto);
+
+        let braille = BehaviorMap {
+            view: BehaviorView::Braille,
+            ..BehaviorMap::default()
+        };
+        let written = serde_json::to_value(&braille).unwrap();
+        assert_eq!(written["view"], "braille");
+        let read: BehaviorMap = serde_json::from_value(written).unwrap();
+        assert_eq!(read, braille);
     }
 }

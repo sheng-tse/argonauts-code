@@ -1,4 +1,4 @@
-//! The deeper Behaviors map: each action summarized by one model, the summaries embedded and
+//! Summaries: each action summarized by one model, the summaries embedded and
 //! projected to two dimensions, so behaviors no label names show up too. Everything is kept in
 //! `~/.argonauts/behaviors/` and never made twice; opening the map only reads it.
 

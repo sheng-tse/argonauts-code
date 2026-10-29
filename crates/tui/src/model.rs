@@ -38,6 +38,9 @@ pub struct ViewModel {
     /// The key of the `/config key=value` typed last, and the command as typed, whose change
     /// prints under it as `⎿  Set ui.tips to false (in ~/.argonauts/config.toml)`.
     pub typed_config: Option<(String, String)>,
+    /// A workflow's command as typed last, such as `/council`, which the line it leaves prints
+    /// under: `⎿  Switched to Council · everywhere`.
+    pub typed_workflow: Option<String>,
     /// The text behind the newest failure in the conversation, for `r` until something is typed.
     pub raw_failure: Option<crate::bridge::failure::RawFailure>,
     /// What `[ui]` asks of the terminal while the screen runs.

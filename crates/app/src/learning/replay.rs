@@ -1026,6 +1026,8 @@ mod tests {
                 asked_by: None,
                 asked_why: None,
                 forked: false,
+                seat: None,
+                billing: None,
             }))),
             RunEventKind::Session(SessionEvent::Ended(Box::new(SessionEnd {
                 reason: EndReason::Completed,

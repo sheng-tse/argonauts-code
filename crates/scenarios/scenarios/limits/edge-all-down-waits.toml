@@ -1,4 +1,4 @@
-# Claude Code, the only agent in the crew, hits its usage limit, which resets in 20 seconds.
+# Claude Code, the only agent in the crew, hits its usage limit, which resets in 6 seconds.
 # Once it resets, the resumed or fresh session finishes the task.
 
 [version]

@@ -116,6 +116,14 @@ fn cli_options(prepare: impl FnOnce(&TempRepo) + 'static) -> CliOptions {
     }
 }
 
+/// Your global file sending changes to `place`, a `save_changes_to` word.
+fn saving_to(place: &'static str) -> impl FnOnce(&TempRepo) + 'static {
+    move |repo| {
+        let text = format!("save_changes_to = \"{place}\"\n{SET_UP_GLOBAL}");
+        std::fs::write(repo.global_config(), text).unwrap();
+    }
+}
+
 async fn slash(driver: &TestDriver, command: SlashCommand) {
     driver.send(UiCommand::Slash { command }).await;
 }
@@ -131,10 +139,6 @@ async fn answer(driver: &TestDriver, id: &ChoiceId, action: AnswerAction, text: 
             remember: false,
         })
         .await;
-}
-
-fn choose(scope: SettingScope) -> AnswerAction {
-    choices::choose(choices::scope_value(scope))
 }
 
 async fn next_choice(driver: &mut TestDriver, kind: ChoiceKind) -> AppChoice {
@@ -171,7 +175,25 @@ async fn next_change(
             scope,
             previous,
             reset,
+            ..
         } => (key, value, scope, previous, reset),
+        _ => unreachable!(),
+    }
+}
+
+/// `(key, value, scope, why)` of the next `SettingChanged`.
+async fn next_saved(driver: &mut TestDriver) -> (String, String, SettingScope, Option<String>) {
+    let event = driver
+        .until(|event| matches!(event, AppEvent::SettingChanged { .. }))
+        .await;
+    match event {
+        AppEvent::SettingChanged {
+            key,
+            value,
+            scope,
+            why,
+            ..
+        } => (key, value, scope, why),
         _ => unreachable!(),
     }
 }
@@ -184,15 +206,6 @@ async fn next_notice(driver: &mut TestDriver) -> String {
         AppEvent::Notice { text, .. } => text,
         _ => unreachable!(),
     }
-}
-
-fn recommended(choice: &AppChoice) -> AnswerAction {
-    choice
-        .options
-        .iter()
-        .find(|option| option.recommended)
-        .map(|option| option.action.clone())
-        .unwrap()
 }
 
 fn row<'a>(rows: &'a [SettingRow], key: &str) -> &'a SettingRow {
@@ -544,11 +557,10 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
 }
 
 #[tokio::test]
-async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
-    use SettingScope::*;
+async fn each_command_argument_saves_at_once_where_your_changes_go_keeping_comments() {
     let codex: ModelRef = "codex/gpt-5.6".parse().unwrap();
-    // The command, the key it sets, the value saved, and the scope it recommends.
-    let cases: Vec<(SlashCommand, &str, &str, SettingScope)> = vec![
+    // The command, the key it sets, and the value saved.
+    let cases: Vec<(SlashCommand, &str, &str)> = vec![
         (
             SlashCommand::Model {
                 role: Some(RoleName::Reviewer),
@@ -557,7 +569,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "roles.reviewer.models",
             "[\"codex/gpt-5.6\"]",
-            ProjectLocal,
         ),
         (
             SlashCommand::Effort {
@@ -567,7 +578,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "roles.main.effort",
             "\"high\"",
-            ProjectLocal,
         ),
         (
             SlashCommand::Model {
@@ -577,16 +587,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "crew.main",
             "\"codex\"",
-            ProjectLocal,
-        ),
-        (
-            SlashCommand::Workflow {
-                name: Some("council".to_owned()),
-                action: WorkflowVerb::Use,
-            },
-            "workflow",
-            "\"council\"",
-            Project,
         ),
         (
             SlashCommand::Approvals {
@@ -595,7 +595,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "approvals.merge.mode",
             "\"auto_preview\"",
-            Project,
         ),
         (
             SlashCommand::Limits {
@@ -605,7 +604,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "limits.spend_per_run",
             "5.0",
-            Project,
         ),
         (
             SlashCommand::Fallback {
@@ -615,7 +613,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "fallback.reviewer.mode",
             "\"wait\"",
-            Project,
         ),
         (
             SlashCommand::Fallback {
@@ -625,7 +622,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "fallback.context",
             "\"note+summary\"",
-            Project,
         ),
         (
             SlashCommand::Fallback {
@@ -635,7 +631,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "fallback.reviewer.summarizer",
             "\"claude-code/haiku\"",
-            Project,
         ),
         (
             SlashCommand::Permissions {
@@ -645,7 +640,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "sandbox.network",
             "true",
-            Project,
         ),
         (
             SlashCommand::Permissions {
@@ -655,7 +649,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "roles.worker.sandbox.mode",
             "\"tool\"",
-            Project,
         ),
         (
             SlashCommand::Permissions {
@@ -665,7 +658,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "sandbox.fail_closed",
             "false",
-            Project,
         ),
         (
             SlashCommand::Narrator {
@@ -675,7 +667,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "ui.narrator",
             "\"live\"",
-            Global,
         ),
         (
             SlashCommand::Theme {
@@ -683,7 +674,6 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             },
             "ui.theme",
             "\"dark\"",
-            Global,
         ),
     ];
     let mut driver = TestDriver::start_with(cli_options(|repo| {
@@ -691,12 +681,8 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
     }))
     .await;
     let global = driver.repo.global_config();
-    for (command, key, value, scope) in cases {
+    for (command, key, value) in cases {
         slash(&driver, command).await;
-        let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-        assert_eq!(recommended(&question), choose(scope), "{key}");
-        assert_eq!(question.body[0], format!("{key} = {value}"));
-        answer(&driver, &question.id, choose(Global), None).await;
         let safety = !argonauts_registry::safety_keys_in(key, value).is_empty();
         if safety {
             let confirm = next_choice(&mut driver, ChoiceKind::ConfirmSafetySetting).await;
@@ -709,7 +695,7 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
         let (changed, saved, saved_scope, _, reset) = next_change(&mut driver).await;
         assert_eq!(
             (changed.as_str(), saved.as_str(), saved_scope, reset),
-            (key, value, Global, false)
+            (key, value, SettingScope::Global, false)
         );
         let text = std::fs::read_to_string(&global).unwrap();
         assert!(text.contains("# Mine, keep these notes.\n[ui]\n"), "{text}");
@@ -885,7 +871,7 @@ async fn another_level_for_a_model_fixed_at_one_is_refused_saying_so() {
 }
 
 #[tokio::test]
-async fn a_model_picked_with_an_effort_saves_both_where_you_choose() {
+async fn a_model_picked_with_an_effort_saves_both_at_once() {
     let registry = registry_with(&[serde_json::json!({
         "id": "claude-code/haiku",
         "provider": "anthropic",
@@ -912,10 +898,6 @@ async fn a_model_picked_with_an_effort_saves_both_where_you_choose() {
     );
 
     slash(&driver, pick("high")).await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-    assert_eq!(question.body[0], "crew.main = \"claude-code/haiku\"");
-    assert_eq!(question.body[1], "roles.main.effort = \"high\"");
-    answer(&driver, &question.id, choose(SettingScope::Global), None).await;
     let mut saved = Vec::new();
     for _ in 0..2 {
         let (key, value, scope, _, _) = next_change(&mut driver).await;
@@ -960,11 +942,10 @@ async fn a_model_picked_with_an_effort_saves_both_where_you_choose() {
 }
 
 /// `/effort`'s Ultracode toggle. The main agent's slider offers it as it is now and a role's
-/// doesn't. The toggle alone asks where to save and writes only `ultracode`, which the
-/// status then carries for the input rule; with a level, both are saved together. `/config`
-/// lists it.
+/// doesn't. The toggle alone saves at once and writes only `ultracode`, which the status then
+/// carries for the input rule; with a level, both are saved together. `/config` lists it.
 #[tokio::test]
-async fn ultracode_from_the_effort_slider_saves_where_you_choose() {
+async fn ultracode_from_the_effort_slider_saves_at_once() {
     let mut driver = TestDriver::start_with(cli_options(|repo| {
         let reviewer = "[roles.reviewer]\nmodels = [\"claude-code\"]\n";
         std::fs::write(repo.global_config(), reviewer).unwrap();
@@ -989,22 +970,10 @@ async fn ultracode_from_the_effort_slider_saves_where_you_choose() {
     assert_eq!(slider.ultracode, None, "a role's slider has no toggle");
 
     slash(&driver, effort(None, None, Some(true))).await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-    assert_eq!(question.body[0], "ultracode = true");
-    assert!(
-        !question.body.iter().any(|line| line.contains("effort")),
-        "{question:?}"
-    );
-    assert_eq!(
-        recommended(&question),
-        choose(SettingScope::ProjectLocal),
-        "saved for just you, as /effort saves"
-    );
-    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
     let (key, value, scope, _, _) = next_change(&mut driver).await;
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
-        ("ultracode", "true", SettingScope::Project)
+        ("ultracode", "true", SettingScope::Global)
     );
     let event = driver
         .until(|event| matches!(event, AppEvent::Status { .. }))
@@ -1013,10 +982,9 @@ async fn ultracode_from_the_effort_slider_saves_where_you_choose() {
         unreachable!()
     };
     assert!(status.ultracode, "the input rule's label shows it");
-    let project =
-        std::fs::read_to_string(driver.repo.root().join(".argonauts/config.toml")).unwrap();
-    assert!(project.contains("ultracode = true"), "{project}");
-    assert!(!project.contains("effort"), "{project}");
+    let global = std::fs::read_to_string(driver.repo.global_config()).unwrap();
+    assert!(global.contains("ultracode = true"), "{global}");
+    assert!(!global.contains("effort"), "{global}");
 
     slash(&driver, effort(None, None, None)).await;
     let ViewData::Effort { slider } = next_view(&mut driver).await else {
@@ -1025,15 +993,6 @@ async fn ultracode_from_the_effort_slider_saves_where_you_choose() {
     assert_eq!(slider.ultracode, Some(UltracodeToggle::new(true)));
 
     slash(&driver, effort(None, Some("high"), Some(false))).await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-    assert_eq!(
-        question.body[..2],
-        [
-            "roles.main.effort = \"high\"".to_owned(),
-            "ultracode = false".to_owned()
-        ]
-    );
-    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
     let mut saved = Vec::new();
     for _ in 0..2 {
         let (key, value, _, _, _) = next_change(&mut driver).await;
@@ -1202,42 +1161,48 @@ async fn vim_is_saved_globally() {
     driver.exit().await;
 }
 
+/// The team's file would hide a change saved everywhere, so it saves where it takes effect,
+/// in your own file for this project, and the line says why. The team's file isn't touched.
 #[tokio::test]
-async fn vim_is_held_for_the_session_when_the_project_file_sets_it() {
+async fn vim_saves_just_for_you_when_the_team_file_sets_it() {
     let mut driver = TestDriver::start_with(cli_options(|repo| {
         repo.write(".argonauts/config.toml", "[ui]\nkeys = \"default\"\n")
             .unwrap();
     }))
     .await;
     slash(&driver, SlashCommand::Vim).await;
-    let (key, value, scope, ..) = next_change(&mut driver).await;
+    let (key, value, scope, why) = next_saved(&mut driver).await;
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
-        ("ui.keys", "\"vim\"", SettingScope::Session)
+        ("ui.keys", "\"vim\"", SettingScope::ProjectLocal)
     );
-    let notice = next_notice(&mut driver).await;
-    assert!(
-        notice.starts_with("This project's file sets ui.keys"),
-        "{notice}"
-    );
+    assert_eq!(why.as_deref(), Some("since the team's file sets it"));
     assert_eq!(
         std::fs::read_to_string(driver.repo.global_config()).unwrap(),
         SET_UP_GLOBAL
     );
+    let shared = driver.repo.root().join(".argonauts/config.toml");
+    assert_eq!(
+        std::fs::read_to_string(shared).unwrap(),
+        "[ui]\nkeys = \"default\"\n"
+    );
 
-    // The session holds it, and the next toggle still knows the project file is under it.
+    // Your own file holds it now, and the next toggle goes there too.
     slash(&driver, SlashCommand::Vim).await;
-    let (_, value, scope, ..) = next_change(&mut driver).await;
+    let (_, value, scope, why) = next_saved(&mut driver).await;
     assert_eq!(
         (value.as_str(), scope),
-        ("\"default\"", SettingScope::Session)
+        ("\"default\"", SettingScope::ProjectLocal)
     );
+    assert_eq!(why.as_deref(), Some("since it's set there already"));
     driver.exit().await;
 }
 
 #[tokio::test]
 async fn write_to_untrusted_project_file_keeps_it_untrusted() {
     let mut driver = TestDriver::start_with(cli_options(|repo| {
+        let just_you = format!("save_changes_to = \"just_you\"\n{SET_UP_GLOBAL}");
+        std::fs::write(repo.global_config(), just_you).unwrap();
         repo.write(
             ".argonauts/config.local.toml",
             "[sandbox]\nmode = \"container\"\n",
@@ -1254,16 +1219,17 @@ async fn write_to_untrusted_project_file_keeps_it_untrusted() {
         },
     )
     .await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-    assert_eq!(recommended(&question), choose(SettingScope::ProjectLocal));
-    answer(
-        &driver,
-        &question.id,
-        choose(SettingScope::ProjectLocal),
-        None,
-    )
-    .await;
-    let trust = next_choice(&mut driver, ChoiceKind::TrustProject).await;
+    // The question at start comes first; the one about this write says the change is saved.
+    let event = driver
+        .until(|event| {
+            matches!(event, AppEvent::Choice { choice }
+                if choice.kind == ChoiceKind::TrustProject
+                    && choice.body.iter().any(|line| line.contains("saved either way")))
+        })
+        .await;
+    let AppEvent::Choice { choice: trust } = event else {
+        unreachable!()
+    };
     assert!(
         trust
             .body
@@ -1499,7 +1465,7 @@ async fn a_yes_that_cannot_resolve_keeps_nothing_trusted_and_says_why_once() {
 
 #[tokio::test]
 async fn a_trusted_or_new_project_file_stays_trusted_after_a_write() {
-    let mut driver = TestDriver::start().await;
+    let mut driver = TestDriver::start_with(cli_options(saving_to("this_project"))).await;
     slash(
         &driver,
         SlashCommand::Theme {
@@ -1507,8 +1473,6 @@ async fn a_trusted_or_new_project_file_stays_trusted_after_a_write() {
         },
     )
     .await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
     next_change(&mut driver).await;
     let file = driver.repo.root().join(".argonauts/config.toml");
     assert!(TrustStore::load(&state_dir(&driver.repo)).is_trusted(&file));
@@ -1523,8 +1487,6 @@ async fn a_trusted_or_new_project_file_stays_trusted_after_a_write() {
         },
     )
     .await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
     let confirm = next_choice(&mut driver, ChoiceKind::ConfirmSafetySetting).await;
     answer(&driver, &confirm.id, AnswerAction::Approve, None).await;
     let (key, value, ..) = next_change(&mut driver).await;
@@ -1545,8 +1507,6 @@ async fn a_safety_confirm_declined_changes_nothing() {
         },
     )
     .await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-    answer(&driver, &question.id, choose(SettingScope::Global), None).await;
     let confirm = next_choice(&mut driver, ChoiceKind::ConfirmSafetySetting).await;
     assert!(
         confirm.body[0].starts_with("approvals.merge.mode: now "),
@@ -1561,206 +1521,133 @@ async fn a_safety_confirm_declined_changes_nothing() {
         std::fs::read_to_string(driver.repo.global_config()).unwrap(),
         SET_UP_GLOBAL
     );
-
-    // Esc on the scope question closes it the same way.
-    slash(
-        &driver,
-        SlashCommand::Theme {
-            name: Some("dark".to_owned()),
-        },
-    )
-    .await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-    driver
-        .send(UiCommand::SetAside {
-            to: AnswerTarget::Choice {
-                id: question.id.clone(),
-            },
-        })
-        .await;
-    let closed = driver
-        .until(|event| matches!(event, AppEvent::ChoiceClosed { id, .. } if *id == question.id))
-        .await;
-    assert!(matches!(closed, AppEvent::ChoiceClosed { outcome, .. } if outcome == "Not changed."));
     driver.exit().await;
 }
 
+/// A flag puts one change where it says: for this session, in a file the team's file still
+/// wins over (and the line says so), and never a key only your global file holds elsewhere.
 #[tokio::test]
-async fn the_scope_question_warns_when_a_higher_layer_wins() {
+async fn a_flag_saves_one_change_where_it_says() {
     let mut driver = TestDriver::start_with(cli_options(|repo| {
         repo.write(".argonauts/config.toml", "[ui]\ntheme = \"light\"\n")
             .unwrap();
     }))
     .await;
-    slash(
-        &driver,
-        SlashCommand::Theme {
-            name: Some("dark".to_owned()),
-        },
-    )
-    .await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-    let everywhere = question
-        .options
-        .iter()
-        .find(|option| option.key == 'e')
-        .unwrap();
-    assert_eq!(
-        everywhere.detail.as_deref(),
-        Some("This project's file sets this, so saving it everywhere won't change this repo.")
-    );
-    assert!(
-        question
-            .options
-            .iter()
-            .filter(|option| option.detail.is_some())
-            .count()
-            == 1
-    );
-    assert_eq!(
-        question.body[1],
-        "Now \"light\", from this project's shared file."
-    );
-    driver.exit().await;
-}
-
-#[tokio::test]
-async fn the_orchestrator_is_asked_for_and_saved_with_the_workflow() {
-    let mut driver = TestDriver::start().await;
-    slash(
-        &driver,
-        SlashCommand::Workflow {
-            name: Some("orchestrator".to_owned()),
-            action: WorkflowVerb::Use,
-        },
-    )
-    .await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
-    let ViewData::Models { role, .. } = next_view(&mut driver).await else {
-        panic!("the orchestrator's picker");
+    let saved_in = |scope, change| SlashCommand::SavedIn {
+        scope,
+        change: Box::new(change),
     };
-    assert_eq!(role, Some(RoleName::Orchestrator));
-    // The picker opens and closes its watch on the model lists around the pick.
-    driver.send(UiCommand::WatchModels { watching: true }).await;
-
-    // The pick saves both keys to the workflow's scope without asking again.
-    let worker: ModelRef = "codex/gpt-5.6".parse().unwrap();
-    slash(
-        &driver,
-        SlashCommand::Model {
-            role: Some(RoleName::Orchestrator),
-            worker: Some(worker.clone()),
-            effort: None,
-        },
-    )
-    .await;
-    let (key, value, scope, ..) = next_change(&mut driver).await;
+    let effort = |level: &str| SlashCommand::Effort {
+        role: None,
+        level: Some(level.to_owned()),
+        ultracode: None,
+    };
+    slash(&driver, effort("high")).await;
+    next_saved(&mut driver).await;
+    slash(&driver, saved_in(SettingScope::Session, effort("max"))).await;
+    let (key, value, scope, previous, _) = next_change(&mut driver).await;
     assert_eq!(
-        (key.as_str(), value.as_str(), scope),
-        ("workflow", "\"orchestrator\"", SettingScope::Project)
-    );
-    let (key, value, scope, ..) = next_change(&mut driver).await;
-    assert_eq!(
-        (key.as_str(), value.as_str(), scope),
+        (key.as_str(), value.as_str(), scope, previous.as_deref()),
         (
-            "roles.orchestrator.models",
-            "[\"codex/gpt-5.6\"]",
-            SettingScope::Project
+            "roles.main.effort",
+            "\"max\"",
+            SettingScope::Session,
+            Some("\"high\"")
         )
     );
-    let saved = std::fs::read_to_string(driver.repo.root().join(".argonauts/config.toml")).unwrap();
-    assert!(
-        saved.contains("orchestrator") && saved.contains("codex/gpt-5.6"),
-        "{saved}"
-    );
-    let questions = driver
-        .seen()
+    let global = std::fs::read_to_string(driver.repo.global_config()).unwrap();
+    assert!(global.contains("effort = \"high\""), "{global}");
+
+    // A plain change after it replaces this session's, in the file.
+    slash(&driver, effort("low")).await;
+    let (_, value, scope, _) = next_saved(&mut driver).await;
+    assert_eq!((value.as_str(), scope), ("\"low\"", SettingScope::Global));
+    driver
+        .send(UiCommand::Request {
+            view: ViewRequest::Config,
+        })
+        .await;
+    let ViewData::Config { entries } = next_view(&mut driver).await else {
+        panic!("/config's plain list");
+    };
+    let effort_now = entries
         .iter()
-        .filter(|event| matches!(event, AppEvent::Choice { .. }))
-        .count();
-    assert_eq!(questions, 1, "no second question: {:#?}", driver.seen());
-
-    driver.exit().await;
-
-    // Anything else first drops the hold, so a later orchestrator pick is a plain /model. A
-    // fresh repo, since this one now has its orchestrator.
-    let mut driver = TestDriver::start().await;
-    slash(
-        &driver,
-        SlashCommand::Workflow {
-            name: Some("orchestrator".to_owned()),
-            action: WorkflowVerb::Use,
-        },
-    )
-    .await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
-    next_view(&mut driver).await;
-    slash(&driver, SlashCommand::Theme { name: None }).await;
-    next_view(&mut driver).await;
-    slash(
-        &driver,
-        SlashCommand::Model {
-            role: Some(RoleName::Orchestrator),
-            worker: Some(worker),
-            effort: None,
-        },
-    )
-    .await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
+        .find(|entry| entry.key == "roles.main.effort")
+        .unwrap();
     assert_eq!(
-        question.body[0],
-        "roles.orchestrator.models = [\"codex/gpt-5.6\"]"
+        (effort_now.value.as_str(), effort_now.layer.as_str()),
+        ("\"low\"", "global")
     );
+
+    let theme = SlashCommand::Theme {
+        name: Some("dark".to_owned()),
+    };
+    slash(&driver, saved_in(SettingScope::Global, theme)).await;
+    let (_, _, scope, why) = next_saved(&mut driver).await;
+    assert_eq!(scope, SettingScope::Global);
+    assert_eq!(why.as_deref(), Some("though the team's file wins here"));
+
+    let place = SlashCommand::Config {
+        key: Some("save_changes_to".to_owned()),
+        value: Some("this_project".to_owned()),
+        reset: false,
+    };
+    slash(&driver, saved_in(SettingScope::ProjectLocal, place)).await;
+    let refused = driver
+        .until(|event| matches!(event, AppEvent::SettingRefused { .. }))
+        .await;
+    let AppEvent::SettingRefused { why, .. } = refused else {
+        unreachable!()
+    };
+    assert!(why.contains("only in your global file"), "{why}");
     driver.exit().await;
 }
 
+/// A change the team's file would hide saves just for you, a `--set` flag's for this session,
+/// and each line says why.
 #[tokio::test]
-async fn a_command_outside_settings_drops_the_orchestrator_hold() {
-    let mut driver = TestDriver::start().await;
-    slash(
-        &driver,
-        SlashCommand::Workflow {
-            name: Some("orchestrator".to_owned()),
-            action: WorkflowVerb::Use,
-        },
-    )
+async fn a_change_a_layer_above_would_hide_saves_where_it_takes_effect() {
+    let mut driver = TestDriver::start_with(CliOptions {
+        flags: vec!["ui.tips=false".to_owned()],
+        ..cli_options(|repo| {
+            repo.write(".argonauts/config.toml", "[ui]\ntheme = \"light\"\n")
+                .unwrap();
+        })
+    })
     .await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
-    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
-    next_view(&mut driver).await;
-
-    // The screen answers /help itself, so the controller only sees that you moved on.
-    slash(&driver, SlashCommand::Help).await;
-    slash(
-        &driver,
-        SlashCommand::Model {
-            role: Some(RoleName::Orchestrator),
-            worker: Some("codex/gpt-5.6".parse().unwrap()),
-            effort: None,
-        },
-    )
-    .await;
-    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
+    let config = |key: &str, value: &str| SlashCommand::Config {
+        key: Some(key.to_owned()),
+        value: Some(value.to_owned()),
+        reset: false,
+    };
+    slash(&driver, config("ui.theme", "dark")).await;
+    let (key, _, scope, why) = next_saved(&mut driver).await;
     assert_eq!(
-        question.body[0],
-        "roles.orchestrator.models = [\"codex/gpt-5.6\"]"
+        (key.as_str(), scope),
+        ("ui.theme", SettingScope::ProjectLocal)
     );
+    assert_eq!(why.as_deref(), Some("since the team's file sets it"));
+    let shared = std::fs::read_to_string(driver.repo.root().join(".argonauts/config.toml"));
+    assert_eq!(shared.unwrap(), "[ui]\ntheme = \"light\"\n");
+
+    slash(&driver, config("ui.tips", "true")).await;
+    let (key, _, scope, why) = next_saved(&mut driver).await;
+    assert_eq!((key.as_str(), scope), ("ui.tips", SettingScope::Session));
+    assert_eq!(why.as_deref(), Some("since a --set flag sets it"));
     driver.exit().await;
 }
 
-/// With no settings file naming a workflow, Captain runs, and the row Config's Workflow row
-/// reads says so: the default nobody picked, though the settings it runs on are council's.
+/// With no settings file naming a workflow, Council runs on its own built-in settings, and
+/// Config's Workflow row says so.
 #[test]
-fn the_workflow_row_names_captain_when_nothing_names_a_workflow() {
+fn the_workflow_row_names_council_when_nothing_names_a_workflow() {
     let fixture = Fixture::new(false, |_| {});
     let row = super::rows::row(
         &fixture.ctx.settings,
         "workflow".to_owned(),
         SettingScope::Global,
     );
-    assert_eq!(row.value, "\"captain\"");
+    assert_eq!(row.value, "\"council\"");
 }
 
 /// Each Config row reads a key the settings have, so no row hides for a misspelled key.
@@ -1799,7 +1686,7 @@ async fn set_setting_safety_key_refused_in_agent_session() {
         &mut fixture.state,
         "sandbox.network".to_owned(),
         "false".to_owned(),
-        SettingScope::Global,
+        Some(SettingScope::Global),
     )
     .await
     .unwrap_err()
@@ -1826,7 +1713,7 @@ async fn set_setting_safety_key_refused_in_agent_session() {
         &mut fixture.state,
         "endpoints.ollama".to_owned(),
         "{ base_url = \"http://evil\" }".to_owned(),
-        SettingScope::Session,
+        Some(SettingScope::Session),
     )
     .await
     .unwrap_err()
@@ -1847,7 +1734,7 @@ async fn set_setting_safety_key_refused_in_agent_session() {
         &mut fixture.state,
         "ui.theme".to_owned(),
         "\"dark\"".to_owned(),
-        SettingScope::Session,
+        Some(SettingScope::Session),
     )
     .await
     .unwrap();
@@ -1896,7 +1783,7 @@ async fn safety_changes_are_refused_without_a_terminal() {
         .send(UiCommand::SetSetting {
             key: "sandbox.network".to_owned(),
             value: "false".to_owned(),
-            scope: SettingScope::Session,
+            scope: Some(SettingScope::Session),
         })
         .await;
     assert!(refusal(&mut driver).await.contains("sandbox.network"));
@@ -1926,16 +1813,14 @@ async fn safety_changes_are_refused_without_a_terminal() {
         },
     )
     .await;
-    next_choice(&mut driver, ChoiceKind::SettingScope).await;
+    let (key, ..) = next_change(&mut driver).await;
+    assert_eq!(key, "ui.theme");
     let global = std::fs::read_to_string(driver.repo.global_config()).unwrap();
-    assert_eq!(
-        global,
-        format!("{SET_UP_GLOBAL}[sandbox]\nnetwork = true\n")
-    );
+    assert!(global.contains("[sandbox]\nnetwork = true\n"), "{global}");
     let events = driver.exit().await;
     assert!(
         !events.iter().any(|event| match event {
-            AppEvent::SettingChanged { .. } => true,
+            AppEvent::SettingChanged { key, .. } => key != "ui.theme",
             AppEvent::Choice { choice } => choice.kind == ChoiceKind::ConfirmSafetySetting,
             _ => false,
         }),
@@ -2164,7 +2049,7 @@ async fn a_new_main_agent_starts_a_fresh_conversation() {
         &mut fixture.state,
         "crew.main".to_owned(),
         "\"codex\"".to_owned(),
-        SettingScope::Session,
+        Some(SettingScope::Session),
     )
     .await
     .unwrap();
@@ -2185,7 +2070,7 @@ async fn a_value_that_doesnt_resolve_is_put_back() {
         &mut fixture.state,
         "limits.soft_stop".to_owned(),
         "\"lots\"".to_owned(),
-        SettingScope::Project,
+        Some(SettingScope::Project),
     )
     .await
     .unwrap_err();
@@ -2204,7 +2089,7 @@ async fn a_key_the_catalog_lacks_is_kept_only_when_resolve_knows_it() {
         &mut fixture.state,
         "fallback.strategi".to_owned(),
         "spread".to_owned(),
-        SettingScope::Project,
+        Some(SettingScope::Project),
     )
     .await
     .unwrap_err();
@@ -2220,7 +2105,7 @@ async fn a_key_the_catalog_lacks_is_kept_only_when_resolve_knows_it() {
         &mut fixture.state,
         "fallback.strategi".to_owned(),
         "spread".to_owned(),
-        SettingScope::Session,
+        Some(SettingScope::Session),
     )
     .await
     .unwrap_err();
@@ -2232,7 +2117,7 @@ async fn a_key_the_catalog_lacks_is_kept_only_when_resolve_knows_it() {
         &mut fixture.state,
         "fallback.strategy".to_owned(),
         "spread".to_owned(),
-        SettingScope::Project,
+        Some(SettingScope::Project),
     )
     .await
     .unwrap();
@@ -2259,14 +2144,14 @@ async fn a_key_the_catalog_lacks_is_kept_only_when_resolve_knows_it() {
     assert!(rows.iter().any(|row| row.key == "fallback.reviewer.pick"));
 }
 
-/// Sets `key` through the same path as a picker's scope answer.
+/// Sets `key` in `scope` through the same path as a pick with a place named on purpose.
 async fn set_at(fixture: &mut Fixture, key: &str, value: &str, scope: SettingScope) {
     set(
         &mut fixture.ctx,
         &mut fixture.state,
         key.to_owned(),
         value.to_owned(),
-        scope,
+        Some(scope),
     )
     .await
     .unwrap();
@@ -2461,7 +2346,7 @@ async fn the_fallback_context_saves_at_each_scope() {
         &mut fixture.state,
         "fallback.context".to_owned(),
         "summary".to_owned(),
-        Project,
+        Some(Project),
     )
     .await
     .unwrap_err()
@@ -2658,29 +2543,6 @@ async fn config_answers_a_value_it_cant_save_with_why() {
     for left_out in ["maybe", "sometimes", "no.such", "[no]"] {
         assert!(!text.contains(left_out), "{text}");
     }
-}
-
-#[tokio::test]
-async fn config_says_who_holds_a_key_of_yours_and_changes_nothing() {
-    let mut driver = TestDriver::start_with(cli_options(|repo| {
-        repo.write(".argonauts/config.toml", "[ui]\nrecaps = false\n")
-            .unwrap();
-    }))
-    .await;
-    slash(
-        &driver,
-        SlashCommand::Config {
-            key: Some("ui.recaps".to_owned()),
-            value: Some("true".to_owned()),
-            reset: false,
-        },
-    )
-    .await;
-    let said = next_notice(&mut driver).await;
-    assert!(
-        said.starts_with("ui.recaps is set by the project's .argonauts/config.toml"),
-        "{said}"
-    );
 }
 
 /// `/config all` lists every key in All settings, as `/config <key>` lists those under one.

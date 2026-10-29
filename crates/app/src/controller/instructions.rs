@@ -1958,15 +1958,35 @@ fn settle_mode(entries: &mut [Entry], command: Option<&Command>) -> Option<RunMo
     })
 }
 
+/// Words that ask for less of something, as "skip the tests" does.
+const LOOSENING: [&str; 8] = [
+    "skip", "no", "without", "dont", "disable", "off", "never", "ignore",
+];
+
+/// Whether words of yours about checks ask for them to run, as "make sure the tests pass"
+/// does, rather than for fewer, as "skip the tests" does.
+pub(crate) fn asks_for_checks(says: &str) -> bool {
+    !tokens(says)
+        .iter()
+        .any(|word| LOOSENING.contains(&word.as_str()))
+}
+
+/// Whether your message asks to keep checks, as "keep these checks" or "save the tests" does,
+/// and not "don't keep the checks".
+pub(crate) fn asks_to_keep_checks(message: &str) -> bool {
+    let names_checks = tokens(message)
+        .iter()
+        .any(|word| matches!(word.as_str(), "check" | "checks" | "test" | "tests"));
+    names_checks && stance(message, &["keep", "save"], &[]) == Stance::For
+}
+
 /// Free text the main agent gets as a must. It never touches a safety setting, as the main agent
 /// can't change one, and on its own it doesn't make the run a crew's.
 fn for_the_main_agent(instruction: &Instruction) -> Result<Effect, String> {
     let says = instruction.says.trim();
     let words = tokens(says);
     let has = |cues: &[&str]| words.iter().any(|word| cues.contains(&word.as_str()));
-    let loosens = has(&[
-        "skip", "no", "without", "dont", "disable", "off", "never", "ignore",
-    ]);
+    let loosens = has(&LOOSENING);
     let why = if has(&["sandbox", "sandboxed", "sandboxing"]) {
         Some("the sandbox is a safety setting, /permissions changes it")
     } else if words.iter().any(|word| word.starts_with("approv"))

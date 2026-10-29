@@ -30,6 +30,11 @@ pub const BUILT_IN: &[(&str, &str)] = built_in![
     "ablate-no-experiments",
 ];
 
+/// The phases a workflow without its own runs, as `(name, the file's text)`: an ablation, a file
+/// of steps, a script. It holds the crew's fixed phases and is no workflow to pick, so the
+/// picker never lists it.
+pub const BASE: (&str, &str) = ("base", crate::template!("workflows/base.toml"));
+
 /// What `workflows/README.md` says: every key of a step, and what a script may use.
 pub const README: &str = crate::template!("workflows/README.md");
 
@@ -117,7 +122,7 @@ mod tests {
     fn the_built_ins_with_steps_and_with_phases() {
         assert_eq!(
             names(with_steps()),
-            ["council", "orchestrator", "maker-checker", "best-of-n"]
+            ["orchestrator", "maker-checker", "best-of-n"]
         );
         assert_eq!(
             names(with_phases()),
@@ -133,8 +138,31 @@ mod tests {
     }
 
     #[test]
+    fn the_base_phases_are_no_workflow_to_pick() {
+        assert_eq!(built_in("base"), None, "no workflow to pick by name");
+        assert!(BUILT_IN.iter().all(|(name, _)| *name != BASE.0));
+        let base = phases(BASE.1, "the-file").unwrap().unwrap();
+        assert_eq!(base.name, "base");
+        let names: Vec<&str> = base
+            .phases
+            .iter()
+            .map(|phase| phase.name.as_str())
+            .collect();
+        assert_eq!(names, ["Understand", "Plan", "Build", "Merge"]);
+        let council = phases(built_in("council").unwrap(), "the-file")
+            .unwrap()
+            .unwrap();
+        let names: Vec<&str> = council
+            .phases
+            .iter()
+            .map(|phase| phase.name.as_str())
+            .collect();
+        assert_eq!(names, ["Understand", "Talk", "Build", "Merge"]);
+    }
+
+    #[test]
     fn a_built_ins_phases_come_with_its_name_what_it_is_for_and_its_params() {
-        for (name, text) in with_phases() {
+        for (name, text) in with_phases().chain([BASE]) {
             let workflow = phases(text, "the-file")
                 .unwrap_or_else(|err| panic!("{name}: {err}"))
                 .unwrap();

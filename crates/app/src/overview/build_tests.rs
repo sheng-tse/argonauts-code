@@ -43,6 +43,7 @@ fn line(day: Date, agent: &str, model: &str, tokens: u64) -> LedgerLine {
         hour: Some(21),
         conversation: None,
         took: 0,
+        billing: None,
     }
 }
 
@@ -90,29 +91,46 @@ fn build_named(
     )
 }
 
-/// A model's color goes by its tokens in all, so the list is the same whatever the period.
+/// The list as a screen reads it: each model with the tokens it carries, in its order.
+fn ranked(data: &OverviewData) -> Vec<(&str, Option<&str>, u64)> {
+    data.all_time_models
+        .iter()
+        .map(|model| (model.agent.as_str(), model.model.as_deref(), model.tokens))
+        .collect()
+}
+
+/// A model's colour goes by what ran through Argonauts Code, whatever the period: the
+/// computer's whole count, which the import reads, only places the models that never ran
+/// here, after the ones that did.
 #[test]
-fn every_model_is_listed_with_its_tokens_in_all_whatever_the_period() {
+fn models_rank_by_what_ran_through_argonauts_whatever_the_period() {
     let records = vec![
         record(
             datetime!(2025-10-09 21:10 UTC),
             "claude-code",
             "claude-opus-5-5",
             1,
-            1000,
+            900_000,
         ),
         record(
-            datetime!(2026-10-08 09:00 UTC),
+            datetime!(2026-10-07 09:00 UTC),
             "claude-code",
             "claude-haiku-5-5",
             2,
             3000,
         ),
+        record(
+            datetime!(2026-09-01 09:00 UTC),
+            "claude-code",
+            "claude-opus-4-8",
+            3,
+            400_000,
+        ),
     ];
     let lines = vec![
-        // Claude Code's records hold this work already, so the ledger's line adds only the
-        // name it gave the model.
-        line(date!(2026 - 10 - 08), "claude-code", "haiku", 9_999),
+        // Claude Code's records hold this work already: it counts toward what ran here only.
+        line(date!(2026 - 10 - 07), "claude-code", "haiku", 2_000),
+        line(date!(2025 - 10 - 09), "claude-code", "claude-opus-5-5", 500),
         line(
             date!(2026 - 06 - 02),
             "antigravity-cli",
@@ -121,23 +139,136 @@ fn every_model_is_listed_with_its_tokens_in_all_whatever_the_period() {
         ),
     ];
     let all = build(&records, &lines, &[], OverviewPeriod::All);
-    let listed: Vec<(&str, Option<&str>, u64)> = all
-        .all_time_models
-        .iter()
-        .map(|model| (model.agent.as_str(), model.model.as_deref(), model.tokens))
-        .collect();
     assert_eq!(
-        listed,
+        ranked(&all),
         [
-            ("claude-code", Some("claude-haiku-5-5"), 3000),
-            ("claude-code", Some("claude-opus-5-5"), 1000),
+            ("claude-code", Some("haiku"), 2_000),
+            ("claude-code", Some("claude-opus-5-5"), 500),
             ("antigravity-cli", Some("gemini-3.6-pro"), 200),
-            ("claude-code", Some("haiku"), 0),
+            ("claude-code", Some("claude-opus-4-8"), 0),
+            ("claude-code", Some("claude-haiku-5-5"), 0),
         ]
     );
     let week = build(&records, &lines, &[], OverviewPeriod::Week);
     assert_eq!(week.models.len(), 1, "only Haiku 5.5 ran this week");
     assert_eq!(week.all_time_models, all.all_time_models);
+}
+
+/// Two models that ran as much here keep the order of the computer's whole count, and a CLI
+/// the import didn't read counts the ledger's lines for both.
+#[test]
+fn a_tie_on_what_ran_here_goes_to_the_bigger_count_on_this_computer() {
+    let records = vec![
+        record(
+            datetime!(2026-03-01 10:00 UTC),
+            "claude-code",
+            "claude-haiku-4-5",
+            1,
+            9_600,
+        ),
+        record(
+            datetime!(2026-03-01 11:00 UTC),
+            "claude-code",
+            "claude-opus-5",
+            2,
+            96_300,
+        ),
+    ];
+    let lines = vec![
+        line(
+            date!(2026 - 10 - 01),
+            "claude-code",
+            "claude-haiku-4-5",
+            120,
+        ),
+        line(date!(2026 - 10 - 01), "claude-code", "claude-opus-5", 120),
+        line(date!(2026 - 10 - 02), "codex", "gpt-6-astra", 50),
+        line(date!(2026 - 10 - 02), "codex", "gpt-6-luna", 50),
+        line(date!(2026 - 10 - 03), "codex", "gpt-6-luna", 10),
+    ];
+    let data = build(&records, &lines, &[], OverviewPeriod::All);
+    assert_eq!(
+        ranked(&data),
+        [
+            ("claude-code", Some("claude-opus-5"), 120),
+            ("claude-code", Some("claude-haiku-4-5"), 120),
+            ("codex", Some("gpt-6-luna"), 60),
+            ("codex", Some("gpt-6-astra"), 50),
+        ]
+    );
+}
+
+/// The places are settled once a day from what came before it, so a model that passes another
+/// today keeps its colour until tomorrow, and a model new today goes after every other.
+#[test]
+fn the_places_hold_all_day_and_a_model_new_today_goes_last_until_tomorrow() {
+    let records = vec![record(
+        datetime!(2026-09-30 10:00 UTC),
+        "claude-code",
+        "claude-opus-4-8",
+        1,
+        140_000,
+    )];
+    let lines = vec![
+        line(date!(2026 - 10 - 07), "claude-code", "claude-opus-5-5", 300),
+        line(
+            date!(2026 - 10 - 07),
+            "claude-code",
+            "claude-sonnet-5-5",
+            200,
+        ),
+        // Today Sonnet 5.5 passes Opus 5.5, and Fable 5.1 runs for the first time.
+        line(
+            date!(2026 - 10 - 08),
+            "claude-code",
+            "claude-sonnet-5-5",
+            5_000,
+        ),
+        line(
+            date!(2026 - 10 - 08),
+            "claude-code",
+            "claude-fable-5-1",
+            9_000,
+        ),
+    ];
+    let sources = |today: Date| {
+        let prices = PriceList::default();
+        let display = DisplayNames::default();
+        let sources = Sources {
+            records: &records,
+            lines: &lines,
+            work: &[],
+            clock: utc(),
+            prices: &prices,
+            names: &display,
+        };
+        overview(
+            &sources,
+            OverviewPeriod::All,
+            today,
+            ImportStatus::Done,
+            YearColors::Cli,
+            &names,
+        )
+    };
+    assert_eq!(
+        ranked(&sources(date!(2026 - 10 - 08))),
+        [
+            ("claude-code", Some("claude-opus-5-5"), 300),
+            ("claude-code", Some("claude-sonnet-5-5"), 200),
+            ("claude-code", Some("claude-opus-4-8"), 0),
+            ("claude-code", Some("claude-fable-5-1"), 0),
+        ]
+    );
+    assert_eq!(
+        ranked(&sources(date!(2026 - 10 - 09))),
+        [
+            ("claude-code", Some("claude-fable-5-1"), 9_000),
+            ("claude-code", Some("claude-sonnet-5-5"), 5_200),
+            ("claude-code", Some("claude-opus-5-5"), 300),
+            ("claude-code", Some("claude-opus-4-8"), 0),
+        ]
+    );
 }
 
 #[test]
@@ -519,4 +650,60 @@ fn a_model_spelled_three_ways_is_one_model() {
     assert_eq!(year.model.as_deref(), Some("claude-haiku-5-5"));
     let chart = data.model_days.iter().find(|part| part.day == day).unwrap();
     assert_eq!(chart.tokens, [7_000, 500]);
+}
+
+/// A line whose session kept who paid counts under that, with what the line says it cost, so a
+/// key used then still counts as paid once you're on a plan. Lines from before lines kept it,
+/// and the import's records, count under who your settings say pays now, at list prices. The
+/// split goes by output tokens, which every CLI counts the same way.
+#[test]
+fn the_tokens_split_by_who_each_line_says_paid_for_them() {
+    use argonauts_core::events::session::Billing;
+
+    let day = date!(2026 - 10 - 07);
+    let output = |mut line: LedgerLine, tokens: u64| {
+        line.output = tokens;
+        line
+    };
+    let mut keyed = output(line(day, "codex", "gpt-5.6-luna", 300_000), 30_000);
+    keyed.billing = Some(Billing::Paid);
+    keyed.cost = 1.25;
+    let mut local = output(line(day, "ollama", "qwen3-coder:30b", 700_000), 70_000);
+    local.billing = Some(Billing::Free);
+    let older = output(line(day, "codex", "gpt-5.6-luna", 100_000), 10_000);
+    let records = [record(
+        datetime!(2026-10-07 09:00 UTC),
+        "claude-code",
+        "claude-sonnet-5-5",
+        1,
+        900_000,
+    )];
+    let lines = [keyed, local, older];
+    let prices = PriceList::default();
+    let display = DisplayNames::default();
+    let sources = Sources {
+        records: &records,
+        lines: &lines,
+        work: &[],
+        clock: utc(),
+        prices: &prices,
+        names: &display,
+    };
+    let pays = |agent: &str, _: Option<&str>| match agent {
+        "ollama" => Billing::Free,
+        _ => Billing::Plan,
+    };
+    let paid = who_paid(&sources, OverviewPeriod::All, date!(2026 - 10 - 08), &pays);
+    // The import's 900k tokens hold 90k of output, under the plan with the older line's 10k.
+    assert_eq!(
+        (paid.plan, paid.free, paid.paid),
+        (100_000, 70_000, 30_000),
+        "{paid:?}"
+    );
+    assert!((paid.paid_usd - 1.25).abs() < 1e-9, "{paid:?}");
+    assert!(!paid.cost_estimated && !paid.cost_partial, "{paid:?}");
+
+    // Past the period, a line counts for nothing.
+    let paid = who_paid(&sources, OverviewPeriod::Week, date!(2026 - 10 - 30), &pays);
+    assert_eq!((paid.plan, paid.free, paid.paid), (0, 0, 0), "{paid:?}");
 }

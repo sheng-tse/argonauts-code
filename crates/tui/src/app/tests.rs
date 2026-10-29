@@ -511,20 +511,20 @@ fn a_question_that_shows_while_you_type_sets_the_draft_aside() {
 #[test]
 fn a_question_you_set_off_keeps_typing_and_slash_out_of_the_input() {
     let (mut ui, t0) = ui();
-    let mut scope = QuestionPrompt::new(
+    let mut fallback = QuestionPrompt::new(
         12,
-        "Where should this be saved?",
-        "Save where?",
+        "Codex is out until 4:10 PM. Who carries on?",
+        "Who carries on?",
         vec![
-            QuestionOption::new("Just this session"),
-            QuestionOption::new("This project, just me"),
-            QuestionOption::new("This project, shared"),
-            QuestionOption::new("Everywhere"),
+            QuestionOption::new("Claude Code"),
+            QuestionOption::new("agy"),
+            QuestionOption::new("OpenCode"),
+            QuestionOption::new("Wait for Codex"),
         ],
     )
     .yours();
-    scope.esc_answers = true;
-    ui.model_mut().bottom.question = Some(scope);
+    fallback.esc_answers = true;
+    ui.model_mut().bottom.question = Some(fallback);
     ui.frame(t0).unwrap();
     assert!(ui.model().bottom.focused_question().is_some());
     for c in ['s', '/', 'm'] {
@@ -1645,6 +1645,42 @@ fn rebound_keys_reach_the_ui() {
     );
     assert_eq!(ui.model().bottom.composer.text(), "a\nb");
     assert_eq!(chord(&mut ui, 's', t0), [UiAction::submit("a\nb")]);
+}
+
+/// In a settings picker the key `save_for_session` binds picks for this session only, and a
+/// rebinding moves it: ctrl+s is then the picker's own key again.
+#[test]
+fn a_rebound_save_for_session_picks_for_this_session() {
+    let (mut ui, t0) = ui();
+    assert_eq!(
+        ui.model().bottom.save_for_session_key.as_deref(),
+        Some("ctrl+s")
+    );
+    let overrides = [("save_for_session".to_owned(), "ctrl+l".to_owned())].into();
+    ui.set_keymap(crate::keymap::Keymap::from_settings(&overrides).unwrap());
+    assert_eq!(
+        ui.model().bottom.save_for_session_key.as_deref(),
+        Some("ctrl+l")
+    );
+    let mut picker = Picker::new("Theme", "");
+    picker.flow.saves_settings = true;
+    picker.set_rows(vec![PickerRow::new("dark", "")]);
+    ui.model_mut().bottom.picker = Some(picker);
+    let ctrl = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+    ui.handle_event(ctrl('s'), t0);
+    let picker = ui.model().bottom.picker.as_ref().expect("still open");
+    assert!(!picker.for_session);
+    assert_eq!(
+        ui.handle_event(ctrl('l'), t0),
+        [UiAction::Picker(PickerEvent::Picked(0))]
+    );
+    let picker = ui
+        .model()
+        .bottom
+        .picker
+        .as_ref()
+        .expect("the flow closes it");
+    assert!(picker.for_session);
 }
 
 #[derive(Debug)]
@@ -2967,4 +3003,40 @@ fn opt_w_ignores_the_workflow_word_and_undoes_it() {
     ui.model.bottom.composer.clear();
     type_text(&mut ui, "sum ∑", t0);
     assert_eq!(ui.model.bottom.composer.text(), "sum ∑");
+}
+
+/// A seat's numbered logo goes out with the first frame that draws it, in the same update, and
+/// not again.
+#[test]
+fn a_numbered_logo_goes_out_with_the_frame_that_first_draws_it() {
+    use crate::bottom::{RunRowKind, WorkflowRow, WorkflowRowState};
+    use argonauts_core::logos::{Logo, LogoMark};
+
+    crate::kit::logo::set_takes_logos(true);
+    let terminal = InlineTerminal::new(Vec::new(), Size::new(COLUMNS, ROWS), Position::new(0, 2));
+    let theme = crate::kit::logo::golden::pictured(&Theme::dark());
+    let t0 = Instant::now();
+    let mut ui = Ui::new(terminal, theme, ViewModel::new("conversation"), t0);
+    let mut seat = WorkflowRow::new("run-01#s-001", "Opus 5.5 · 2", WorkflowRowState::Running);
+    seat.kind = RunRowKind::Work;
+    seat.depth = 1;
+    seat.logo = Some(Logo {
+        agent: argonauts_core::names::AgentId("claude-code".to_owned()),
+        mark: Some(LogoMark::ClaudeCode),
+    });
+    seat.number = Some(2);
+    ui.model.bottom.workflows.rows = vec![
+        WorkflowRow::new("run-01", "Rate limit the API", WorkflowRowState::Running),
+        seat,
+    ];
+    ui.frame(t0).unwrap();
+    let written = String::from_utf8_lossy(ui.terminal().writer()).into_owned();
+    // Claude Code's logo numbered 2, on a dark screen.
+    let picture = format!("a=p,U=1,i={}", 0x4c_5000 + 2);
+    assert_eq!(written.matches(&picture).count(), 1, "{written:?}");
+    ui.model.bottom.workflows.rows[1].name = "Opus 5.5 · 2 ".to_owned();
+    ui.frame(t0 + Duration::from_secs(1)).unwrap();
+    let written = String::from_utf8_lossy(ui.terminal().writer()).into_owned();
+    assert_eq!(written.matches(&picture).count(), 1, "sent once");
+    crate::kit::logo::set_takes_logos(false);
 }

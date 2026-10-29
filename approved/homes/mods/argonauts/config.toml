@@ -1,0 +1,10 @@
+# Set up with Council and Claude Code to talk to. mods/ holds the files /setup writes, with the
+# branch on no place yet. agents.json holds Claude Code's plan usage as read at a time still to
+# come, so the app never asks the fake CLIs, which have no usage to give, to read it again.
+workflow = "council"
+
+[crew]
+main = "claude-code"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]

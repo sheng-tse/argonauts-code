@@ -36,8 +36,8 @@ mod recap;
 mod route;
 mod run_commands;
 pub(crate) mod runs;
+mod seat_key;
 pub(crate) mod settings;
-mod setup_again;
 mod shell;
 mod start_mode;
 mod status_health;
@@ -48,6 +48,7 @@ pub(crate) mod test_support;
 mod tries;
 pub(crate) mod turn;
 pub(crate) mod ultra;
+mod workflow_switch;
 mod workflows;
 mod workspace;
 
@@ -56,9 +57,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand, ViewRequest};
+use argonauts_core::events::RunEventKind;
 use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::events::context::ContextDetail;
-use argonauts_core::events::run::RunMode;
+use argonauts_core::events::council::CouncilAction;
+use argonauts_core::events::run::{RunLifecycle, RunMode};
 use argonauts_core::input::{
     AgentsAction, PromptsAction, ResumeTarget, SlashCommand, ViewAction, WorkflowVerb,
 };
@@ -70,17 +73,22 @@ use argonauts_core::views::{LearningArea, LearningCommand, conversation_run};
 use argonauts_core::{AgentEvent, NoteLevel, RunId};
 use tokio::sync::mpsc;
 
-pub(crate) use ctx::{AppServices, Ctx, Effect, Internal, Outbox, ScopeRequest};
-pub(crate) use header_and_bottom_line::{agent_label, header_agent, plan_usage_chips};
+pub(crate) use ctx::{AppServices, Ctx, Effect, Internal, Outbox};
+pub(crate) use header_and_bottom_line::{header_agent, plan_usage_chips};
 pub(crate) use route::Route;
 pub(crate) use run_commands::ApprovalReply;
 
+use self::conversation::starting::{main_start, tell_main_start};
 use crate::FirstView;
 use crate::repo_files;
 use crate::setup::Setup;
 
 /// How often waiting runs are checked for a wake while the app is open.
 const WAKE_EVERY: Duration = Duration::from_secs(60);
+
+/// How soon waiting runs are checked after a run host starts waiting, so a wait due before the
+/// next regular check is known by then.
+const SOON_AFTER_WAITING: Duration = Duration::from_secs(1);
 
 /// How long closing waits for cancelled conversation steps to stop their agent processes.
 const STOP_GRACE: Duration = Duration::from_secs(3);
@@ -134,9 +142,9 @@ pub(crate) struct Controller {
     settings: settings::SettingsState,
     connect: connect::ConnectState,
     workflows: workflows::State,
+    workflow_switch: workflow_switch::State,
     prompt_trust: prompt_trust::PromptTrustState,
     renamed: settings::renamed::RenamedState,
-    setup_again: setup_again::SetupAgainState,
     git: folder_git::GitState,
     templates: templates::TemplatesState,
     needed_update: needed_update::NeededUpdateState,
@@ -177,9 +185,9 @@ impl Controller {
             settings,
             connect: connect::ConnectState::default(),
             workflows: workflows::State::default(),
+            workflow_switch: workflow_switch::State::default(),
             prompt_trust: prompt_trust::PromptTrustState::default(),
             renamed: settings::renamed::RenamedState::default(),
-            setup_again: setup_again::SetupAgainState::default(),
             git: folder_git::GitState::default(),
             templates: templates::TemplatesState::default(),
             needed_update: needed_update::NeededUpdateState::default(),
@@ -205,13 +213,16 @@ impl Controller {
         }
         self.keep_runs();
         self.follow_conversation();
+        self.tell_main_start().await;
         crate::issue::follow_up(&self.ctx, &mut self.issue);
         header_and_bottom_line::read_stale_at_start(&self.ctx);
+        workflow_switch::tell_the_menu(&self.ctx, &mut self.workflow_switch);
         // Opening already checked, so the first check comes a while later.
         let mut next_wake = tokio::time::Instant::now() + WAKE_EVERY;
         loop {
             let attaches = runs::attaches(&self.runs);
             let conversation = conversation::id(&self.conversation).clone();
+            let carried = conversation::in_cli::carried(&self.conversation);
             let effects = tokio::select! {
                 command = commands.recv() => {
                     let Some(command) = command else { break };
@@ -223,6 +234,10 @@ impl Controller {
                     self.settle(result)
                 }
                 Some(message) = self.internal.recv() => {
+                    if starts_waiting(&message) {
+                        let soon = tokio::time::Instant::now() + SOON_AFTER_WAITING;
+                        next_wake = next_wake.min(soon);
+                    }
                     let result = self.internal_message(message).await;
                     self.settle(result)
                 }
@@ -252,9 +267,14 @@ impl Controller {
                     &mut self.runs,
                     conversation::own_runs(&self.conversation),
                 );
+                self.tell_main_start().await;
             }
             self.keep_runs();
             self.follow_conversation();
+            // The lines left on quit name the session the conversation now carries.
+            if !exit && conversation::in_cli::carried(&self.conversation) != carried {
+                self.send_status();
+            }
             if exit {
                 break;
             }
@@ -420,6 +440,9 @@ impl Controller {
     /// True when the app should close.
     async fn apply_all(&mut self, effects: Vec<Effect>) -> bool {
         let mut queue = VecDeque::from(effects);
+        // The screen hears the main start once the effects are through, so a batch works it out
+        // once and what they write first, such as the setup's templates, isn't held up behind it.
+        let mut start_changed = false;
         while let Some(effect) = queue.pop_front() {
             let result = match effect {
                 Effect::Exit => return true,
@@ -429,29 +452,37 @@ impl Controller {
                     // the agent whose session it carries on.
                     let fresh = conversation::fresh_session(&mut self.ctx, &mut self.conversation);
                     cli_commands::refresh(&self.ctx, &mut self.agent_id, &self.conversation);
+                    start_changed = true;
                     fresh
                 }
                 Effect::CommandsChanged => {
                     cli_commands::refresh(&self.ctx, &mut self.agent_id, &self.conversation);
+                    workflow_switch::tell_the_menu(&self.ctx, &mut self.workflow_switch);
+                    start_changed = true;
                     Ok(Vec::new())
                 }
                 Effect::SettingsApplied { keys } => {
                     names::send(&mut self.ctx);
+                    workflow_switch::tell_the_menu(&self.ctx, &mut self.workflow_switch);
                     conversation::saved(&self.ctx, &mut self.conversation, &keys);
+                    start_changed = true;
                     let applied = runs::settings_applied(&mut self.ctx, &mut self.runs, &keys);
                     applied.await.map(|mut effects| {
                         effects.push(Effect::Status);
                         effects
                     })
                 }
-                Effect::AskScope(request) => {
-                    settings::ask_scope(&mut self.ctx, &mut self.settings, *request).await
+                Effect::SaveChanges { pairs } => {
+                    settings::save(&mut self.ctx, &mut self.settings, pairs, None)
                 }
                 Effect::SaveSettings { pairs, scope } => {
-                    settings::save(&mut self.ctx, &mut self.settings, pairs, scope)
+                    settings::save(&mut self.ctx, &mut self.settings, pairs, Some(scope))
                 }
                 Effect::SaveConfirmedSettings { pairs, scope } => {
                     settings::save_confirmed(&mut self.ctx, &mut self.settings, pairs, scope)
+                }
+                Effect::KeepSettings { pairs, scope } => {
+                    settings::keep_confirmed(&mut self.ctx, &mut self.settings, pairs, scope)
                 }
                 Effect::Status => {
                     self.send_status();
@@ -480,6 +511,9 @@ impl Controller {
                 }
             };
             queue.extend(self.settle(result));
+        }
+        if start_changed {
+            self.tell_main_start().await;
         }
         false
     }
@@ -539,6 +573,12 @@ impl Controller {
             .unwrap_or_else(|| self.ctx.settings().approvals.mode())
     }
 
+    /// The screen hears the main session's start once it's worked out and whenever it changes,
+    /// so the Context mod above the input has it before the session's CLI counts it.
+    async fn tell_main_start(&mut self) {
+        tell_main_start(&self.ctx, &mut self.conversation, self.agent_id.set()).await;
+    }
+
     fn send_status(&self) {
         let mut parts = runs::status_parts(&self.runs);
         // The setup writes your answers at its end, so until then the line shows the mode its
@@ -546,11 +586,12 @@ impl Controller {
         if let Some(mode) = self.setup.as_ref().and_then(Setup::approval_mode) {
             parts.approval_mode = Some(mode);
         }
-        let status = header_and_bottom_line::header_and_bottom_line(
+        let mut status = header_and_bottom_line::header_and_bottom_line(
             &self.ctx,
             conversation::title(&self.conversation),
             parts,
         );
+        conversation::in_cli::for_the_line(&self.ctx, &self.conversation, &mut status.line);
         self.ctx.send(AppEvent::Status { status });
     }
 
@@ -591,7 +632,7 @@ impl Controller {
             UiCommand::SetAside {
                 to: AnswerTarget::Choice { id },
             } => self.set_aside(id).await,
-            // Esc on a run's question or approval: carry on without me.
+            // A run's question or approval set aside: carry on without me.
             UiCommand::SetAside {
                 to: AnswerTarget::Approval { run, id },
             } => run_commands::carry_on(ctx, run, id).await,
@@ -611,7 +652,31 @@ impl Controller {
             } => run_commands::take_over_ended(ctx, runs, run, task, exit_code).await,
             UiCommand::TerminalReturned { argv } => {
                 account::terminal_returned(ctx, &argv);
-                Ok(Vec::new())
+                // A seat carried on in its CLI comes back to its council's talk, with what
+                // you typed to it there as your private messages to it.
+                if let Some(back) = conversation::in_cli::seat_back(&argv) {
+                    let said = conversation::in_cli::typed_to_seat(ctx, &back).await;
+                    let rejoin = CouncilAction::Rejoin {
+                        seat: back.seat,
+                        said,
+                    };
+                    return run_commands::council(ctx, runs, Some(back.run), rejoin).await;
+                }
+                conversation::in_cli::returned(ctx, &mut self.conversation, &argv).await
+            }
+            UiCommand::CarryOnSeat { run, seat, session } => {
+                if !run_commands::seat_sits_out(ctx, &run, &seat).await? {
+                    return Ok(Vec::new());
+                }
+                let at = (run, seat);
+                conversation::in_cli::open_for_seat(ctx, &self.conversation, &session, at).await
+            }
+            UiCommand::OpenInItsCli {
+                session,
+                conversation: carried_by,
+            } => {
+                conversation::in_cli::open(ctx, &self.conversation, &session, carried_by.as_ref())
+                    .await
             }
             UiCommand::Reassign { run, task, to } => {
                 run_commands::reassign(ctx, runs, run, task, to).await
@@ -648,9 +713,9 @@ impl Controller {
             }
             UiCommand::ApprovalMode { mode } => run_commands::approval_mode(ctx, runs, mode).await,
             UiCommand::Verbosity { level } => {
-                settings::verbosity(ctx, &mut self.settings, level).await
+                settings::verbosity(ctx, &mut self.settings, level, None).await
             }
-            UiCommand::Vim { on } => settings::vim(ctx, &mut self.settings, on).await,
+            UiCommand::Vim { on } => settings::vim(ctx, &mut self.settings, on, None).await,
             UiCommand::Narrator { mode } => {
                 settings::narrator_mode(ctx, &mut self.settings, mode).await
             }
@@ -664,7 +729,16 @@ impl Controller {
                 run_commands::spot_check(ctx, run, id, correct).await
             }
             UiCommand::Goal { run, action } => run_commands::goal(ctx, runs, run, action).await,
+            UiCommand::Council { run, action } => {
+                run_commands::council(ctx, runs, run, action).await
+            }
             UiCommand::Request { view } => self.view(view).await,
+            UiCommand::SetupSheet { action } => {
+                workflow_switch::act(ctx, &mut self.workflow_switch, action)
+            }
+            UiCommand::SetSetting { key, value, scope } if key == "workflow" => {
+                workflow_switch::switch(ctx, &mut self.workflow_switch, &value, scope)
+            }
             UiCommand::SetSetting { key, value, scope } => {
                 settings::set(ctx, &mut self.settings, key, value, scope).await
             }
@@ -795,6 +869,24 @@ impl Controller {
         let conversation = &mut self.conversation;
         let settings = &mut self.settings;
         match command {
+            SlashCommand::SavedIn { scope, change } => match *change {
+                SlashCommand::Templates { name } => {
+                    templates::command(ctx, &mut self.templates, name, Some(scope))
+                }
+                // A workflow switches as it does without a flag, in the place the flag names.
+                SlashCommand::Workflow {
+                    name: Some(name),
+                    action: WorkflowVerb::Use,
+                } => workflow_switch::switch(ctx, &mut self.workflow_switch, &name, Some(scope)),
+                SlashCommand::Config {
+                    key: Some(key),
+                    value: Some(value),
+                    reset: false,
+                } if key == "workflow" => {
+                    workflow_switch::switch(ctx, &mut self.workflow_switch, &value, Some(scope))
+                }
+                change => settings::saved_in(ctx, settings, change, scope).await,
+            },
             SlashCommand::Clear => conversation::clear(ctx, conversation),
             SlashCommand::Resume { target: None } => run_commands::resume(ctx, runs, None).await,
             SlashCommand::Resume {
@@ -826,8 +918,11 @@ impl Controller {
             SlashCommand::Captain { task } => {
                 conversation::start_forced(ctx, conversation, RunMode::Captain, task).await
             }
-            SlashCommand::Crew { task } => {
+            SlashCommand::Crew { task: Some(task) } => {
                 conversation::start_forced(ctx, conversation, RunMode::Crew, task).await
+            }
+            SlashCommand::Crew { task: None } => {
+                conversation::crew_taken_alone(ctx, conversation).await
             }
             SlashCommand::WorkflowRun { task: Some(task) } if !task.trim().is_empty() => {
                 conversation::start_workflow(ctx, conversation, task).await
@@ -870,7 +965,8 @@ impl Controller {
             } => {
                 conversation::ask_context(conversation, ContextDetail::Full);
                 let row = conversation::context_row(conversation);
-                run_commands::context(ctx, runs, row).await
+                let start = main_start(ctx, conversation, agent_id.set()).await;
+                run_commands::context(ctx, runs, row, start).await
             }
             // A session at work is counted first, and the rows print once its count is in.
             SlashCommand::Context {
@@ -882,7 +978,8 @@ impl Controller {
                 ..
             } => {
                 let row = conversation::context_row(conversation);
-                run_commands::context_report(ctx, runs, row).await
+                let start = main_start(ctx, conversation, agent_id.set()).await;
+                run_commands::context_report(ctx, runs, row, start).await
             }
             SlashCommand::Context { action, .. } => mod_places::tab(ctx, Place::Context, action),
             // In a direct conversation, the turns that changed files; in a run, its approvals.
@@ -896,16 +993,27 @@ impl Controller {
             SlashCommand::Stop { run } => run_commands::stop(ctx, runs, run).await,
             SlashCommand::Agents {
                 action: AgentsAction::Add { name },
-            } => agents_add::add(ctx, &name).await,
+            } => agents_add::add(ctx, &name, None).await,
             SlashCommand::Workflow {
-                name,
+                name: Some(name),
+                action: WorkflowVerb::Use,
+            } => workflow_switch::switch(ctx, &mut self.workflow_switch, &name, None),
+            SlashCommand::Config {
+                key: Some(key),
+                value: Some(value),
+                reset: false,
+            } if key == "workflow" => {
+                workflow_switch::switch(ctx, &mut self.workflow_switch, &value, None)
+            }
+            SlashCommand::Workflow {
+                name: None,
                 action: WorkflowVerb::Use,
             } => {
                 let command = SlashCommand::Workflow {
-                    name,
+                    name: None,
                     action: WorkflowVerb::Use,
                 };
-                settings::command(ctx, settings, command).await
+                settings::command(ctx, settings, command, None).await
             }
             SlashCommand::Workflow { name, action } => files::chosen(ctx, name, action).await,
             SlashCommand::WorkflowNew { name, from } => {
@@ -923,17 +1031,19 @@ impl Controller {
                 action: PromptsAction::Writer { role, who },
             } => {
                 let change = prompt_templates::writer_setting(role.as_deref(), &who)?;
-                settings::command(ctx, settings, change).await
+                settings::command(ctx, settings, change, None).await
             }
             SlashCommand::Prompts { action } => prompt_templates::command(ctx, action),
-            SlashCommand::Templates { name, global } => {
-                templates::command(ctx, &mut self.templates, name, global)
+            SlashCommand::Templates { name } => {
+                templates::command(ctx, &mut self.templates, name, None)
             }
             SlashCommand::Verbosity { level: Some(level) } => {
-                settings::verbosity(ctx, settings, level).await
+                settings::verbosity(ctx, settings, level, None).await
             }
-            SlashCommand::Vim => settings::toggle_vim(ctx, settings).await,
-            SlashCommand::Setup => Ok(setup_again::ask(&mut self.ctx, &mut self.setup_again)),
+            SlashCommand::Vim => settings::toggle_vim(ctx, settings, None).await,
+            // The questions start on what your file holds, so going through them again changes
+            // only what you change.
+            SlashCommand::Setup => Ok(vec![Effect::OpenSetup]),
             SlashCommand::Connect { outside_agent } => {
                 connect::connect(ctx, &mut self.connect, outside_agent)
             }
@@ -964,8 +1074,11 @@ impl Controller {
                 crate::mods::open(ctx, &self.mods, context, page, false).await
             }
             SlashCommand::Mods { action, scope } => mod_places::command(ctx, action, scope),
+            SlashCommand::BottomLine { change, scope } => {
+                header_and_bottom_line::bottom_line_command(ctx, change, scope)
+            }
             // The screen handles these itself.
-            SlashCommand::Help | SlashCommand::Artifacts => Ok(Vec::new()),
+            SlashCommand::Help | SlashCommand::Artifacts | SlashCommand::Overview => Ok(Vec::new()),
             command @ (SlashCommand::Model { .. }
             | SlashCommand::Effort { .. }
             | SlashCommand::Agents { .. }
@@ -980,7 +1093,7 @@ impl Controller {
             | SlashCommand::Records { .. }
             | SlashCommand::LearnedWorkflows { .. }
             | SlashCommand::Skills
-            | SlashCommand::Memory) => settings::command(ctx, settings, command).await,
+            | SlashCommand::Memory) => settings::command(ctx, settings, command, None).await,
             SlashCommand::Compact { instructions } => {
                 conversation::compact(ctx, conversation, instructions)
             }
@@ -995,7 +1108,7 @@ impl Controller {
             SlashCommand::Cd { path } => {
                 workspace::cd(ctx, path, conversation::settled(conversation))
             }
-            SlashCommand::AddDir { path } => workspace::add_dir(ctx, &path),
+            SlashCommand::AddDir { path } => workspace::add_dir(ctx, &path, None),
             SlashCommand::Plan { task } => conversation::plan(ctx, conversation, task),
             SlashCommand::Goal { text } => conversation::goal(ctx, conversation, text),
             SlashCommand::Fast { on } => conversation::fast(ctx, conversation, on),
@@ -1067,7 +1180,7 @@ impl Controller {
             Ok(said) => ctx.notice(NoteLevel::Info, said),
             Err(err) => ctx.notice(NoteLevel::Warn, format!("{err:#}")),
         }
-        settings::command(ctx, &mut self.settings, area_command(area)).await
+        settings::command(ctx, &mut self.settings, area_command(area), None).await
     }
 
     /// One background replay at a time, while candidates wait and the month's limit lasts.
@@ -1093,7 +1206,8 @@ impl Controller {
             ViewRequest::Context => {
                 conversation::ask_context(&self.conversation, ContextDetail::Full);
                 let row = conversation::context_row(&self.conversation);
-                run_commands::context(ctx, &mut self.runs, row).await
+                let start = main_start(ctx, &mut self.conversation, self.agent_id.set()).await;
+                run_commands::context(ctx, &mut self.runs, row, start).await
             }
             ViewRequest::WorkflowLibrary => {
                 files::library(ctx, &workflows::taken(&self.agent_id), false);
@@ -1133,10 +1247,19 @@ impl Controller {
                 Ok(Vec::new())
             }
             ViewRequest::Learning { area } => {
-                settings::command(ctx, &mut self.settings, area_command(area)).await
+                settings::command(ctx, &mut self.settings, area_command(area), None).await
             }
             ViewRequest::Issues => crate::issue::list(ctx),
             ViewRequest::DeepOffer => crate::behaviors::deep::tab::offer(ctx),
+            ViewRequest::SeatKey {
+                run,
+                talk,
+                seats,
+                reader,
+            } => {
+                seat_key::answer(ctx, run, talk, &seats, reader);
+                Ok(Vec::new())
+            }
             view => run_commands::view(ctx, &mut self.runs, view).await,
         }
     }
@@ -1173,14 +1296,6 @@ impl Controller {
         }
         if settings::renamed::owns_choice(&self.renamed, &id) {
             return settings::renamed::answer_choice(ctx, &mut self.renamed, id, action);
-        }
-        if setup_again::owns_choice(&self.setup_again, &id) {
-            return Ok(setup_again::answer_choice(
-                ctx,
-                &mut self.setup_again,
-                id,
-                &action,
-            ));
         }
         if folder_git::owns_choice(&self.git, &id) {
             return folder_git::answer_choice(ctx, &mut self.git, id, action);
@@ -1227,10 +1342,6 @@ impl Controller {
         if settings::renamed::owns_choice(&self.renamed, &id) {
             return settings::renamed::set_aside(ctx, &mut self.renamed, id);
         }
-        if setup_again::owns_choice(&self.setup_again, &id) {
-            setup_again::set_aside(ctx, &mut self.setup_again, id);
-            return Ok(Vec::new());
-        }
         if folder_git::owns_choice(&self.git, &id) {
             return folder_git::set_aside(ctx, &mut self.git, id);
         }
@@ -1254,7 +1365,9 @@ impl Controller {
     async fn internal_message(&mut self, message: Internal) -> anyhow::Result<Vec<Effect>> {
         match message {
             Internal::Conversation(update) => {
-                // The CLI's own command list, which the `/` menu mirrors.
+                // The CLI's own command list, which the `/` menu mirrors, and which the main
+                // session's start counts the skills of.
+                let mut start_changed = false;
                 if let conversation::TurnUpdate::Event {
                     turn,
                     event: RunnerEvent::Agent(AgentEvent::CommandsChanged { commands }),
@@ -1269,20 +1382,30 @@ impl Controller {
                         &self.conversation,
                         commands,
                     );
+                    start_changed = true;
                 }
                 let read_back = crate::issue::heard(&mut self.issue, &update);
                 let effects =
                     conversation::on_update(&mut self.ctx, &mut self.conversation, update).await?;
+                start_changed |= conversation::start_kept_fresh(&self.conversation);
                 if let Some(read_back) = read_back {
                     crate::issue::read_back(&mut self.ctx, &mut self.issue, read_back);
                 }
                 if conversation::print_is_due(&mut self.conversation) {
                     let row = conversation::context_row(&self.conversation);
-                    run_commands::context_report(&mut self.ctx, &mut self.runs, row).await?;
+                    let start =
+                        main_start(&self.ctx, &mut self.conversation, self.agent_id.set()).await;
+                    run_commands::context_report(&mut self.ctx, &mut self.runs, row, start).await?;
+                }
+                if start_changed {
+                    self.tell_main_start().await;
                 }
                 Ok(effects)
             }
             Internal::Run(update) => runs::on_update(&mut self.ctx, &mut self.runs, update).await,
+            Internal::WorkflowSwitch(probed) => {
+                workflow_switch::probed(&mut self.ctx, &mut self.workflow_switch, probed)
+            }
             Internal::Setup(update) => match self.setup.as_mut() {
                 Some(setup) => setup.on_update(&mut self.ctx, update).await,
                 None => Ok(Vec::new()),
@@ -1329,12 +1452,26 @@ impl Controller {
             Internal::DeepMapMade { deeper } => {
                 crate::behaviors::deep::tab::made(&mut self.ctx, deeper).await
             }
+            Internal::SaveChanges { pairs } => {
+                settings::save(&mut self.ctx, &mut self.settings, pairs, None)
+            }
         }
     }
 }
 
+/// A run host started waiting, or went away as a waiting host does once it has said so.
+fn starts_waiting(message: &Internal) -> bool {
+    match message {
+        Internal::Run(runs::RunUpdate::Event { event, .. }) => {
+            matches!(event.kind, RunEventKind::Run(RunLifecycle::Waiting { .. }))
+        }
+        Internal::Run(runs::RunUpdate::Live { live: false, .. }) => true,
+        _ => false,
+    }
+}
+
 /// A workflow held for its orchestrator waits through the pick and its picker asking for rows
-/// again. Anything else you do drops it, so a later pick asks where to save.
+/// again. Anything else you do drops it, so a later pick is a plain `/model orchestrator`.
 fn keeps_orchestrator_hold(command: &UiCommand) -> bool {
     matches!(
         command,

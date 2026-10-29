@@ -14,13 +14,14 @@ use super::cli::{SQUARES, Stats, count, numbers, took, window_meter};
 use super::data::{Cli, Crew};
 use super::draw;
 use crate::format;
+use crate::kit::legend::BETWEEN_WORDS;
 use crate::kit::{Drawn, Form, Frame, Header, Kit, fit, spread};
 use crate::overview::cards::{used_of, window_label};
-use crate::text::{spans_width, truncate_spans};
+use crate::text::{spans_width, str_width, truncate_spans};
 use crate::theme::Role;
 
-/// Cells for a CLI's dot and short name.
-const NAME: usize = 10;
+/// Cells of a CLI's dot and the blank after it.
+const DOT: usize = 2;
 /// Cells for its busiest model.
 const MODEL: usize = 18;
 /// Cells of its share's bar.
@@ -104,10 +105,17 @@ impl StatsCard<'_> {
             drawn.push(vec![kit.dim("Nothing recorded in this period yet.")]);
         }
         let whole = crew.measured(settings.measure).max(1);
+        // Every CLI keeps its whole name, the column as wide as the longest.
+        let names = crew
+            .clis
+            .iter()
+            .map(|cli| DOT + str_width(&cli.name) + BETWEEN_WORDS)
+            .max()
+            .unwrap_or(0);
         let rows: Vec<Row> = crew
             .clis
             .iter()
-            .map(|cli| self.cli_row(kit, &look, cli, whole, &settings.columns))
+            .map(|cli| self.cli_row(kit, &look, (cli, names), whole, &settings.columns))
             .collect();
         for line in lay_out(rows, inner) {
             drawn.push(line);
@@ -134,22 +142,23 @@ impl StatsCard<'_> {
         pieces
     }
 
-    /// `● Claude  Opus 5.5  ▄▄▄▄▄▄  7 tasks ■■■■■■■      840k tok  7d ▄▄ 56%`.
+    /// `● Claude Code    Opus 5.5  ▄▄▄▄▄▄  7 tasks ■■■■■■■      840k tok  7d ▄▄ 56%`, its
+    /// name in a column `names` cells wide.
     fn cli_row(
         &self,
         kit: &Kit<'_>,
         look: &Stats<'_>,
-        cli: &Cli,
+        (cli, names): (&Cli, usize),
         whole: u64,
         columns: &[StatsColumn],
     ) -> Row {
         let dot = if cli.main { "●" } else { "○" };
         let name = if cli.main {
-            kit.strong(cli.short())
+            kit.strong(cli.name.clone())
         } else {
-            Span::raw(cli.short())
+            Span::raw(cli.name.clone())
         };
-        let mut left = fit(vec![kit.span(dot, cli.role()), Span::raw(" "), name], NAME);
+        let mut left = fit(vec![kit.span(dot, cli.role()), Span::raw(" "), name], names);
         let model = cli
             .models
             .first()

@@ -1,0 +1,13 @@
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Resume a conversation · in ~/code/tasks-cli                                                                        │
+│                                                                                                                    │
+│     from              first prompt or title                                         last used     length           │
+│     Argonauts Code    Add due dates to the tasks CLI                                12m ago       44 turns         │
+│     Claude Code       Due dates review and research                                 yesterday     1.2k turns       │
+│     OpenCode          Port the CSV importer to streaming                            Oct 9                          │
+│     Claude Code       Fix the money rounding so the three failing tests pass        Oct 8         18 turns         │
+│ ❯   Codex             Make the rate limiter per API key                             Oct 8         9 turns          │
+│                                                                                                                    │
+│ In Codex: codex resume 019a5770-1c2d-7e3f-9a4b-5c6d7e8f9a0b                                                        │
+│ ↑↓  pick · enter continues it · o opens it in Codex · b branches from it · a every folder · / search · esc         │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

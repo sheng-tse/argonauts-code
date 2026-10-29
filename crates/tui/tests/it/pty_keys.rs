@@ -10,7 +10,7 @@ use serde_json::json;
 fn crew_with_panel(agents: usize) -> (RunScript, Vec<Agent>, TestDriver) {
     let (run, crew, events) = crew_run(agents);
     let driver = TestDriver::launch(Script::idle().all(0, events))
-        .ui("[panel]\nagents = true")
+        .ui("[panel]\nagents = true\nmax_rows = 10")
         .start();
     driver.wait_visible("↓  to manage");
     (run, crew, driver)
@@ -133,9 +133,10 @@ fn keyboard_map_table() {
 #[test]
 fn navigation_keys_consistent() {
     let (_, _, mut driver) = crew_with_panel(2);
-    // The run's row comes first, so the first agent is two rows down.
-    driver.press(Key::Down);
-    driver.press(Key::Down);
+    // The run's row and its two tasks come first, so the first agent is four rows down.
+    for _ in 0..4 {
+        driver.press(Key::Down);
+    }
     driver.press(Key::Enter);
     let session = driver.wait_gone(TOP_RULE);
     assert!(
@@ -168,10 +169,11 @@ fn navigation_keys_consistent() {
 #[test]
 fn down_focuses_agent_panel() {
     let (_, _, mut driver) = crew_with_panel(3);
-    // The run's row comes first, with its agents under it, so codex is three rows down.
-    driver.press(Key::Down);
-    driver.press(Key::Down);
-    driver.press(Key::Down);
+    // The run's row and its three tasks come first, with its agents under them, so codex is
+    // six rows down.
+    for _ in 0..6 {
+        driver.press(Key::Down);
+    }
     driver.press(Key::Enter);
     driver.wait_gone(TOP_RULE);
     // The codex agent's view opened.
@@ -189,16 +191,17 @@ fn down_focuses_agent_panel() {
         "{listed:?}"
     );
     assert!(
-        listed.visible[rule + 8].starts_with(&format!("    {BULLET} task-003 ")),
+        listed.visible[rule + 11].starts_with(&format!("    {BULLET} task-003 ")),
         "{listed:?}"
     );
     driver.press(Key::Esc);
     driver.wait_visible(TOP_RULE);
     driver.press(Key::Down);
     driver.press(Key::Down);
-    // The first x asks inline, like Ctrl+C's double press, and the second stops.
+    // A task done in its own session is that session. The first x on its row asks inline,
+    // like Ctrl+C's double press, and the second stops it.
     driver.press(Key::Char('x'));
-    driver.wait_visible("x again to stop task-002 · esc to keep");
+    driver.wait_visible("x again to stop Add the JSON writer · esc to keep");
     driver.press(Key::Char('x'));
     let stop = driver.wait_command("stop_agent");
     assert_eq!(
@@ -252,12 +255,12 @@ fn agent_panel_rows_progress() {
         .collect();
     // Without color the bars are drawn in glyphs, so the screen's text shows them.
     let driver = TestDriver::launch(Script::idle().all(0, events).all(0, todos))
-        .ui("[panel]\nagents = true")
+        .ui("[panel]\nagents = true\nmax_rows = 10")
         .env("NO_COLOR", "1")
         .start();
     let screen = driver.wait_visible("↓  18\\.1k tokens");
     let mode = expect_row(&screen, "↓  to manage");
-    let mut last = expect_row(&screen, "Council · Add a --json flag to export ");
+    let mut last = expect_row(&screen, "Council · Add a --js… ");
     assert!(last > mode, "the run's row under the bottom line");
     for agent in &crew {
         // Under the run's row, a row of the list: the dot, the agent's name (its task, in a
@@ -276,7 +279,7 @@ fn agent_panel_rows_progress() {
         last = row;
     }
     // The run's row keeps the bar, and the agents' stats start in one column.
-    let run_row = &screen.visible[expect_row(&screen, "Council · Add a --json flag to export ")];
+    let run_row = &screen.visible[expect_row(&screen, "Council · Add a --js… ")];
     assert!(run_row.contains(['▰', '▱']), "{run_row}");
     let stats: Vec<Option<usize>> = crew
         .iter()

@@ -1,0 +1,15 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Claude Code is down
+  Opus 5.5 overloaded, Sonnet 5.5 failing with server errors
+  Two tasks wait for it, their work so far kept. same_cli keeps them on Claude Code.
+
+  ❯ 1. Wait for Claude Code
+       your setting · tried again in 4m48s
+    2. One agent for every paused task
+       Gemini 3.6 Pro on agy fits both
+    3. Choose per task
+       an agent for each, from every installed CLI
+    4. Carry on without me
+       The main agent picks for each task and goes on; kept as an assumption to review
+
+  Enter to choose · Tab to add a note · Esc back to the list · shift+tab to cycle modes

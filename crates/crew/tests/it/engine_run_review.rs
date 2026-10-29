@@ -224,6 +224,7 @@ fn history(run: &RunId, context: &RepoContext, base: &str) -> anyhow::Result<Vec
             p_at_most_two_tries: 0.8,
         }),
         item: None,
+        way: None,
     };
     let report = TaskReport {
         status: ReportStatus::Done,

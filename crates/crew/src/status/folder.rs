@@ -168,7 +168,8 @@ impl Folder {
             | RunEventKind::Session(_)
             | RunEventKind::Agent(_)
             | RunEventKind::RunReview(_)
-            | RunEventKind::Note(_) => None,
+            | RunEventKind::Note(_)
+            | RunEventKind::Council(_) => None,
         }
     }
 

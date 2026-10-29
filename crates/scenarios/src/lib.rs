@@ -44,8 +44,19 @@ pub fn past_the_guard_of(pty: &Pty, title: &str) -> anyhow::Result<()> {
 const SET_UP_WORKFLOW: &str =
     "# Set up with council, the crew these scenarios follow.\nworkflow = \"council\"\n";
 
-/// `settings` as a setup leaves them: naming council, the crew these scenarios follow, unless
-/// they name a workflow already. With no setting naming one, Captain would run.
+/// The line that keeps a scenario's settings on the built-in default workflow, which nobody
+/// chose.
+const ON_THE_DEFAULT: &str = "# The workflow is the built-in default.\n";
+
+/// `settings` on the built-in default workflow: council, which nobody chose, so the
+/// Captain-or-crew rules may leave a small change to the main agent.
+pub fn on_the_default_workflow(settings: &str) -> String {
+    format!("{ON_THE_DEFAULT}{settings}")
+}
+
+/// `settings` as a setup leaves them: naming council, the crew these scenarios follow, chosen as
+/// you would choose it, unless they name a workflow already or stay on the default. With no
+/// setting naming one, Council runs on its built-in settings.
 pub fn as_set_up(settings: &str) -> String {
     let before_tables = settings
         .lines()
@@ -55,7 +66,7 @@ pub fn as_set_up(settings: &str) -> String {
             .strip_prefix("workflow")
             .is_some_and(|rest| rest.trim_start().starts_with('='))
     });
-    if names_one {
+    if names_one || settings.contains(ON_THE_DEFAULT) {
         settings.to_owned()
     } else {
         format!("{SET_UP_WORKFLOW}{settings}")
@@ -211,6 +222,8 @@ mod tests {
         // A key named workflow inside a table is not the workflow setting.
         assert!(as_set_up("[ui]\nworkflow = \"x\"\n").starts_with(SET_UP_WORKFLOW));
         assert!(as_set_up("[crew]\nworkflows = 1\n").starts_with(SET_UP_WORKFLOW));
+        let default = on_the_default_workflow("[ui]\n");
+        assert_eq!(as_set_up(&default), default);
     }
 
     #[test]

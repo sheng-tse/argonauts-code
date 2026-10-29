@@ -1034,6 +1034,7 @@ fn allowed_fields(kind: StepKind) -> &'static [&'static str] {
         StepKind::GoalCheck => &[],
         StepKind::Workflow => &["workflow", "params"],
         StepKind::Script => &[],
+        StepKind::Talk => &["role", "models", "count", "input"],
     }
 }
 

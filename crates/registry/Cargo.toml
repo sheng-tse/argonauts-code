@@ -16,6 +16,8 @@ include = ["/catalog/**", "/clis/**", "/src/**/*.rs", "/LICENSE", "/NOTICE"]
 [dependencies]
 argonauts-adapter-opencode.workspace = true
 argonauts-core.workspace = true
+# The served catalog's signature, checked against the keys that sign the update manifests.
+minisign-verify.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 schemars.workspace = true
@@ -30,5 +32,7 @@ toml_edit.workspace = true
 
 [dev-dependencies]
 argonauts-testkit.workspace = true
+# Signs the test catalogs with a key made for each test.
+minisign.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

@@ -31,7 +31,11 @@ pub(crate) fn files() -> Vec<(PathBuf, String)> {
 
     let workflows = Path::new(layout::user_files::WORKFLOWS);
     files.push((workflows.join(README), page(workflow_files::README)));
-    for (name, text) in workflow_files::BUILT_IN {
+    // The crew's fixed phases too, which every workflow without its own runs.
+    for (name, text) in workflow_files::BUILT_IN
+        .iter()
+        .chain([&workflow_files::BASE])
+    {
         files.push((workflows.join(format!("{name}.toml")), (*text).to_owned()));
     }
 

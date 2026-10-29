@@ -1,11 +1,10 @@
 ---
 source: crates/tui/tests/it/snap_workflows.rs
-assertion_line: 733
 expression: "&text"
 ---
 ──────────────────────────────────────────────────────────────────────────
  council
- Fix the race in the export test and add a regress…  6/11 agents · 46m00s
+ Fix the race in the export test and add a…          6/11 agents · 46m00s
 
  ╭ Understand · 2 agents ─────────┬ reader ─────────────────────────────╮
  │ ❯ ✔ reader  Opus on Claude Co… │ ✔ Done · Opus on Claude Code        │

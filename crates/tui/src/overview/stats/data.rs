@@ -1,6 +1,6 @@
 //! The crew's stats summed the ways Stats shows them: each CLI with its models, each model
 //! across its roles, and each role with the models that filled it. Every view reads these,
-//! so a model keeps its shade and its numbers wherever it shows. The main agent's conversations
+//! so a model keeps its texture and its numbers wherever it shows. The main agent's conversations
 //! are a role's work like any other, though no bar of tasks counts them.
 
 use std::collections::BTreeMap;
@@ -13,7 +13,6 @@ use argonauts_core::settings::stats::StatsMeasure;
 use time::{Date, Duration, Weekday};
 
 use super::draw::Fared;
-use crate::overview::cli_role;
 use crate::overview::shades::ModelColors;
 use crate::theme::Role;
 
@@ -25,8 +24,9 @@ pub(super) struct Model {
     pub model: Option<String>,
     /// Such as `GPT 5.6`, or the CLI's name when it ran its own default.
     pub name: String,
-    /// Its place among its CLI's models by their tokens in all, which picks its shade.
-    pub shade: usize,
+    /// Its place among its CLI's models by their tokens in all, which picks its texture and
+    /// whether it draws in its CLI's hue or the grey of the rest.
+    pub place: usize,
     pub spent: Spend,
     /// What it did in each role it filled, by [`StatsRole::unit`].
     pub done: BTreeMap<StatsRole, u32>,
@@ -174,7 +174,7 @@ pub(super) struct Cli {
 
 impl Cli {
     pub fn role(&self) -> Role {
-        cli_role(&self.agent)
+        Role::for_cli(&self.agent)
     }
 
     pub fn spent(&self) -> Spend {
@@ -223,21 +223,6 @@ impl Cli {
             .iter()
             .map(|model| model.took.get(&role).copied().unwrap_or(0))
             .sum()
-    }
-
-    /// `Claude`, `Codex`, `agy`: the short name the card above the input and the by-model
-    /// rows use.
-    pub fn short(&self) -> String {
-        short_cli(&self.agent, &self.name)
-    }
-}
-
-pub(super) fn short_cli(agent: &str, name: &str) -> String {
-    match agent {
-        "claude-code" => "Claude".to_owned(),
-        "codex" => "Codex".to_owned(),
-        "antigravity-cli" => "agy".to_owned(),
-        _ => name.to_owned(),
     }
 }
 
@@ -305,6 +290,9 @@ impl Slot {
 
 /// Weeks a chart of every day so far shows at most.
 pub(super) const WEEKS: usize = 10;
+/// Under this many days of history, a chart of every day so far shows days, not weeks, so
+/// a short history fills the chart instead of two thin weeks at its left.
+const DAYS_BEFORE_WEEKS: i64 = 28;
 
 impl Crew {
     pub fn of(usage: &UsageSummary, stats: &CrewStats, names: &DisplayNames, today: Date) -> Self {
@@ -378,7 +366,7 @@ impl Crew {
         let shades = ModelColors::new(&usage.all_time_models, names)
             .with(shown.map(|model| (model.agent.as_str(), model.model.as_deref())));
         for model in clis.iter_mut().flat_map(|cli| &mut cli.models) {
-            model.shade = shades.place(&model.agent, model.model.as_deref());
+            model.place = shades.place(&model.agent, model.model.as_deref());
         }
         clis.sort_by(|a, b| {
             b.main
@@ -439,9 +427,22 @@ impl Crew {
         day - Duration::days(i64::from(back))
     }
 
+    /// The first day anything was recorded on, or today with nothing yet.
+    fn earliest(&self) -> Date {
+        let earliest = self.days.iter().map(|part| part.day).min();
+        earliest.unwrap_or(self.today).min(self.today)
+    }
+
+    /// Whether the chart's columns are days: every period's are, but a chart of every day so
+    /// far, whose are weeks once the history reaches four of them.
+    pub fn slots_are_days(&self) -> bool {
+        self.period != UsagePeriod::All
+            || (self.today - self.earliest()).whole_days() < DAYS_BEFORE_WEEKS
+    }
+
     /// The chart's columns for the period: every day so far as weeks, up to the last
-    /// [`WEEKS`] of them; the week and the month as their days, those after today ahead; and
-    /// today by itself.
+    /// [`WEEKS`] of them, or as its days while they're fewer than four weeks; the week and the
+    /// month as their days, those after today ahead; and today by itself.
     pub fn slots(&self) -> Vec<Slot> {
         let today = self.today;
         let day = |first: Date| Slot {
@@ -460,9 +461,16 @@ impl Crew {
                 let days = i64::from(first.month().length(first.year()));
                 (0..days).map(|k| day(first + Duration::days(k))).collect()
             }
+            UsagePeriod::All if self.slots_are_days() => {
+                let earliest = self.earliest();
+                let days = (today - earliest).whole_days() + 1;
+                (0..days)
+                    .map(|k| day(earliest + Duration::days(k)))
+                    .collect()
+            }
             UsagePeriod::All => {
                 let this_week = self.week_of(today);
-                let earliest = self.days.iter().map(|part| part.day).min().unwrap_or(today);
+                let earliest = self.earliest();
                 let weeks = ((this_week - self.week_of(earliest)).whole_days() / 7 + 1)
                     .clamp(1, WEEKS as i64);
                 (0..weeks)

@@ -11,9 +11,10 @@ pub fn names() -> impl Iterator<Item = &'static str> {
     workflow_files::with_phases().map(|(name, _)| name)
 }
 
-/// The file of a built-in workflow that has phases.
+/// The file of a built-in workflow that has phases, the base phases among them.
 pub fn source(name: &str) -> Option<&'static str> {
     workflow_files::with_phases()
+        .chain([workflow_files::BASE])
         .find(|(builtin, _)| *builtin == name)
         .map(|(_, text)| text)
 }
@@ -64,7 +65,7 @@ mod tests {
             limit_left_usd: None,
             as_you_asked: &[],
         };
-        for name in names() {
+        for name in names().chain([workflow_files::BASE.0]) {
             let workflow = load(name).unwrap_or_else(|err| panic!("{err}"));
             assert!(!workflow.description.is_empty(), "{name}");
             let text = example(name).unwrap_or_else(|err| panic!("{err}"));

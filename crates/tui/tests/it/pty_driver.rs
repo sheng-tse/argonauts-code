@@ -36,12 +36,7 @@ fn every_builder_makes_a_contract_event() {
         exit(),
         ui_settings(json!({"keys": "vim", "theme": "light"})),
         start_work_choice("ch-001"),
-        scope_choice(
-            "ch-002",
-            "Save where?",
-            "global",
-            Some("A project file sets this."),
-        ),
+        safety_choice("ch-002", "approvals.merge.mode: supervised →  auto"),
         choice_closed("ch-001", "No run started."),
         run.session_input(agent, &[("task", "Add the JSON writer")]),
         run.text_delta(agent, "Adding"),

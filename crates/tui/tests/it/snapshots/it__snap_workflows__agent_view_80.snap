@@ -1,11 +1,10 @@
 ---
 source: crates/tui/tests/it/snap_workflows.rs
-assertion_line: 664
 expression: "screen(&mut view, width, height, &state)"
 ---
 ──────────────────────────────────────────────────────────────────────────
- argonauts-ui-kit
- Build a standalone Rust UI kit prototype that matc…  8/12 agents · 2h44m
+ todo-tui
+ Build a terminal todo app: an inline task list, a…   8/12 agents · 2h44m
 
  ╭ Build · 7 agents ┬ build:a-terminal-bottom ──────────────────────────╮
  │ ❯ ✔ build:a-ter… │ ✔ Done · Opus on Claude Code                      │
@@ -15,9 +14,9 @@ expression: "screen(&mut view, width, height, &state)"
  │       ✔ draft:s… │   Build the terminal and the whole bottom region… │
  │       ✔ draft:s… │   … 13 more lines                                 │
  │     2 Test    0… │                                                   │
- │       ⏺ test:sc… │ Activity · last 3 of 195 tool calls · ⏎ expand    │
- │       ⏺ test:sn… │   ⏺ Bash(cargo test -p argonauts-tui co…) · error │
- │   ✘ build:d-pla… │   ⏺ Bash(cargo clippy -p argonauts-tui --all-ta…) │
+ │       ⣾ test:sc… │ Activity · last 3 of 195 tool calls · ⏎ expand    │
+ │       ⣾ test:sn… │   ⏺ Bash(cargo test -p argonauts-tui co…) · error │
+ │   × build:d-pla… │   ⏺ Bash(cargo clippy -p argonauts-tui --all-ta…) │
  │                  │   ◌ Bash(cargo test -p argonauts-tui) · no result │
  │                  │                                                   │
  │                  │ Diff · 4 files · +120 -18 · d open                │

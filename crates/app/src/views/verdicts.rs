@@ -655,6 +655,7 @@ mod tests {
                 blind: false,
                 round: 1,
                 review,
+                picked_by: None,
             }),
         );
         reviewed.session = Some(session.clone());

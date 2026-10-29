@@ -6,9 +6,10 @@
 //! The example is OpenCode 2.0.32's `model.list` on a Mac with Ollama: ten free OpenCode Zen
 //! models and seven Ollama tags, three of them with no tool use, and Nemotron 3.5 Super VL Free
 //! as what Default runs. A picture's captions are prose around its frames, so only the frames
-//! are compared, each by its rows.
+//! are compared, each by its rows. They are drawn in a terminal that draws logos as pictures,
+//! whose cells the pictures write as `◧◨`.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use argonauts_core::app::{ModelChoice, SettingRow};
 use argonauts_core::limits::{CostEstimate, PlanUsageReading, PlanUsageSource, PlanUsageStatus};
@@ -22,7 +23,8 @@ use time::OffsetDateTime;
 
 use super::flow;
 use crate::bottom::{BottomState, Picker};
-use crate::bridge::transcript::picture_check::{Unlike, assert_rows_match};
+use crate::bridge::transcript::picture_check::assert_rows_match;
+use crate::kit::logo::golden::{lines_with_stand_ins, pictured};
 use crate::render::{Clock, RenderCtx};
 use crate::text::plain_text;
 use crate::theme::{Glyphs, Theme};
@@ -43,17 +45,19 @@ fn picture(txt: &str, html: &str) -> (String, String) {
 fn theme() -> Theme {
     let mut theme = Theme::dark();
     theme.glyphs = Glyphs::UNICODE;
-    theme
+    pictured(&theme)
 }
 
-/// The picker as the bottom of the screen draws it, in the input's place.
+/// The picker as the bottom of the screen draws it, in the input's place, once the memory
+/// gauge has settled on the row the keys moved to.
 fn drawn(picker: &Picker) -> Vec<Line<'static>> {
     let theme = theme();
-    let ctx = RenderCtx::new(WIDTH, &theme, Clock::still(Instant::now()));
+    let settled = Instant::now() + Duration::from_secs(1);
+    let ctx = RenderCtx::new(WIDTH, &theme, Clock::still(settled));
     let mut bottom = BottomState::new();
     bottom.composer.label = Some("Opus 5.5".to_owned());
     bottom.picker = Some(picker.clone());
-    bottom.render(&ctx).lines
+    lines_with_stand_ins(&bottom.render(&ctx).lines)
 }
 
 fn compare(
@@ -62,32 +66,7 @@ fn compare(
     rows: std::ops::Range<usize>,
     lines: &[Line<'static>],
 ) {
-    assert_rows_match(
-        name,
-        lines,
-        (txt, html),
-        rows,
-        &theme(),
-        &gemma_unlike(lines),
-    );
-}
-
-/// `gemma4:e2b` reads "Gemma4 E2B" now, where the pictures still show the rule they fix.
-fn gemma_unlike(lines: &[Line<'static>]) -> Vec<Unlike> {
-    lines
-        .iter()
-        .enumerate()
-        .filter_map(|(row, line)| {
-            let text = plain_text(std::slice::from_ref(line));
-            let col = text.find("Gemma4 E2B")?;
-            let col = text[..col].chars().count() + "Gemma4 E2".len();
-            Some(Unlike {
-                row,
-                cols: (col, col),
-                why: "a size with a letter before it takes capitals, the fix the picture names",
-            })
-        })
-        .collect()
+    assert_rows_match(name, lines, (txt, html), rows, &theme(), &[]);
 }
 
 fn key(picker: &mut Picker, code: KeyCode) {
@@ -119,15 +98,22 @@ fn choice(worker: &str, access: ModelAccess, cost: CostEstimate) -> ModelChoice 
     }
 }
 
+/// A plan reading of `share` used in the window that's fuller for `agent`: the five hours for
+/// Claude Code, the week for the others, each resetting at 4:40pm.
 fn used(agent: &str, share: f64) -> Option<PlanUsageReading> {
+    let window = if agent == "claude-code" {
+        "five_hour"
+    } else {
+        "seven_day"
+    };
     Some(PlanUsageReading {
         agent_id: AgentId(agent.to_owned()),
         status: PlanUsageStatus::Allowed,
         used: Some(share),
-        resets_at: None,
-        window: Some("five_hour".into()),
+        resets_at: Some(time::macros::datetime!(2026-10-18 16:40 UTC)),
+        window: Some(window.into()),
         source: PlanUsageSource::RateLimitEvent,
-        observed_at: OffsetDateTime::UNIX_EPOCH,
+        observed_at: time::macros::datetime!(2026-10-18 14:30 UTC),
         detail: None,
         wrap_up: false,
     })
@@ -378,8 +364,8 @@ fn the_picker_takes_the_inputs_place_with_opencode_counted() {
     );
     let picker = model_picker(&every_choice(), FRESH);
     let lines = drawn(&picker);
-    // The picture's rule is row 23; the rows above it are the conversation's.
-    compare("model_picker_after", &picture, 22..33, &lines);
+    // The picture's rule is row 21; the rows above it are the conversation's.
+    compare("model_picker_after", &picture, 20..31, &lines);
 }
 
 /// The picker's comparison fails once one cell of its picture is changed, a cell in the
@@ -396,16 +382,16 @@ fn a_picture_changed_in_one_cell_no_longer_matches_the_picker() {
     let fails = |txt: &str, html: &str| {
         let picture = picture(txt, html);
         catch_unwind(AssertUnwindSafe(|| {
-            compare("changed", &picture, 22..33, &lines);
+            compare("changed", &picture, 20..31, &lines);
         }))
         .is_err()
     };
     assert!(!fails(TXT, HTML));
     let grid = page::grid(HTML);
-    let (row, column) = page::find(&grid[22..33], |cell| {
+    let (row, column) = page::find(&grid[20..31], |cell| {
         cell.ch.is_alphanumeric() && cell.color.as_deref() == Some("#b1b9f9")
     });
-    let row = row + 22;
+    let row = row + 20;
     let changed =
         |edit: &dyn Fn(&mut page::Cell)| page::edited(HTML, |grid| edit(&mut grid[row][column]));
     let recoloured = changed(&|cell| cell.color = Some("var(--term-dim)".to_owned()));
@@ -429,12 +415,12 @@ fn opencodes_level_lists_what_opencode_can_run_in_its_groups() {
     );
     let mut picker = opencode_level(&every_choice(), FRESH);
     down_to(&mut picker, "Qwen3 Coder 30B (64k)");
-    compare("opencode_models_after", &picture, 2..20, &drawn(&picker));
+    compare("opencode_models_after", &picture, 2..21, &drawn(&picker));
 
     // The same list scrolled to its end.
     key(&mut picker, KeyCode::Char('G'));
     assert_eq!(pointed_label(&picker), "Other model…");
-    compare("opencode_models_after", &picture, 23..37, &drawn(&picker));
+    compare("opencode_models_after", &picture, 24..39, &drawn(&picker));
 }
 
 #[test]
@@ -451,7 +437,7 @@ fn a_model_offers_its_own_levels_and_one_with_none_says_so() {
     let line = picker.flow.effort.clone().expect("the effort line");
     assert_eq!(line.levels, ["low", "high", "max"]);
     assert_eq!(line.level(), Some("high"));
-    compare("opencode_effort_after", &picture, 0..18, &drawn(&picker));
+    compare("opencode_effort_after", &picture, 0..20, &drawn(&picker));
 
     // Nemotron 3 Ultra Free has no variants: Ultra is its size.
     down_to(&mut picker, "Nemotron 3 Ultra Free");
@@ -461,7 +447,7 @@ fn a_model_offers_its_own_levels_and_one_with_none_says_so() {
         .find(|line| plain_text(std::slice::from_ref(line)).contains("Effort not supported"))
         .cloned()
         .expect("the line for a model with no levels");
-    compare("opencode_effort_after", &picture, 22..23, &[none]);
+    compare("opencode_effort_after", &picture, 24..25, &[none]);
 }
 
 /// Typing matches a model's id too, and the group headings hide while a filter is typed.
@@ -471,11 +457,20 @@ fn typing_an_id_finds_its_row_and_hides_the_headings() {
         drawn(picker)
             .iter()
             .map(|line| plain_text(std::slice::from_ref(line)).trim().to_owned())
-            .filter(|text| text == "Ollama" || text == "OpenCode Zen")
+            .filter_map(|text| {
+                ["Installed through Ollama", "Hosted by OpenCode Zen"]
+                    .into_iter()
+                    .find(|heading| text.starts_with(heading))
+                    .map(str::to_owned)
+            })
             .collect()
     };
     let mut picker = opencode_level(&every_choice(), FRESH);
-    assert_eq!(headings(&picker), ["Ollama"], "the first rows' heading");
+    assert_eq!(
+        headings(&picker),
+        ["Installed through Ollama"],
+        "the first rows' heading"
+    );
     picker.filter = "qwen3-coder:30b".to_owned();
     let mut shown: Vec<&str> = picker
         .shown()
@@ -566,7 +561,7 @@ fn opencodes_level_keeps_the_pointer_on_its_model_as_a_new_one_comes_in() {
     compare(
         "model_picker_live_opencode",
         &picture,
-        5..23,
+        5..24,
         &drawn(&picker),
     );
 
@@ -579,7 +574,7 @@ fn opencodes_level_keeps_the_pointer_on_its_model_as_a_new_one_comes_in() {
     compare(
         "model_picker_live_opencode",
         &picture,
-        27..45,
+        28..47,
         &drawn(&picker),
     );
 
@@ -591,7 +586,7 @@ fn opencodes_level_keeps_the_pointer_on_its_model_as_a_new_one_comes_in() {
     );
     super::models::refresh(&mut picker, &every_choice());
     let about = drawn(&picker)[2].clone();
-    compare("model_picker_live_opencode", &picture, 48..49, &[about]);
+    compare("model_picker_live_opencode", &picture, 50..51, &[about]);
 }
 
 const GIB: u64 = 1 << 30;
@@ -603,7 +598,6 @@ const MAC_64: MachineMemory = MachineMemory {
     total: 64 * GIB,
     in_use: 25 * GIB,
     free: 18 * GIB,
-    mac: true,
 };
 
 /// What each local tag takes at its window, in GB, and whether it thinks.
@@ -633,7 +627,7 @@ fn suggestion(
     );
     choice.name = name.to_owned();
     choice.listed = Some(ListedFacts {
-        group: Some("Not installed · fits this Mac".to_owned()),
+        group: Some("Not installed · fits this computer".to_owned()),
         window: Some(window),
         no_tools: false,
         thinking,
@@ -740,7 +734,7 @@ fn opencodes_level_knows_this_machines_memory() {
     picker.flow.memory = Some(MAC_64);
     key(&mut picker, KeyCode::Char('4'));
     down_to(&mut picker, "Qwen3 Coder 30B (64k)");
-    compare("ram_after", &picture, 4..23, &drawn(&picker));
+    compare("ram_after", &picture, 4..25, &drawn(&picker));
 
     // Scrolled on to OpenCode Zen's third, then back to the first model not installed, where
     // Enter asks before anything downloads.
@@ -751,7 +745,7 @@ fn opencodes_level_knows_this_machines_memory() {
     assert_eq!(pointed_label(&picker), "Qwen3.5 27B");
     key(&mut picker, KeyCode::Enter);
     assert!(picker.input.is_none() && picker.flow.download_asked.is_some());
-    compare("ram_after", &picture, 26..47, &drawn(&picker));
+    compare("ram_after", &picture, 28..52, &drawn(&picker));
     // Esc keeps looking; Enter twice pulls it with Ollama, and the list stays open on it.
     key(&mut picker, KeyCode::Esc);
     assert_eq!(picker.flow.download_asked, None);
@@ -791,7 +785,7 @@ fn the_memory_line_says_what_holds_the_memory() {
     }
 }
 
-/// At 80 columns the memory line wraps under its own start, so what macOS and your apps hold
+/// At 80 columns the memory line wraps under its own start, so what other apps hold
 /// still shows.
 #[test]
 fn the_memory_line_wraps_on_a_narrow_screen() {
@@ -820,7 +814,7 @@ fn the_memory_line_wraps_on_a_narrow_screen() {
         .position(|row| row.contains("Models can use"))
         .expect("the memory line");
     let read: Vec<&str> = rows[at..at + 2].iter().map(|row| row.trim()).collect();
-    assert!(read.join(" ").contains("macOS and your apps"), "{rows:#?}");
+    assert!(read.join(" ").contains("other apps"), "{rows:#?}");
     assert!(!read.join(" ").contains('…'), "{rows:#?}");
     assert!(
         rows[at + 1].starts_with("  ") && !rows[at + 1].starts_with("   "),
@@ -845,7 +839,7 @@ fn a_memory_reading_after_the_level_opened_fills_its_line() {
 
     picker.flow.memory = Some(MAC_64);
     super::models::refresh(&mut picker, &choices);
-    compare("ram_after", &picture, 4..23, &drawn(&picker));
+    compare("ram_after", &picture, 4..25, &drawn(&picker));
 
     picker.flow.memory = Some(MachineMemory {
         in_use: 12 * GIB,
@@ -860,8 +854,8 @@ fn a_memory_reading_after_the_level_opened_fills_its_line() {
         .collect();
     assert_eq!(
         line.trim_end(),
-        "  Models can use up to 52 GB of this Mac's 64 GB · 31 GB free now · models hold 12 GB · \
-         macOS and your apps 21 GB"
+        "  Models can use up to 52 GB of this computer's 64 GB · 31 GB free now · models hold 12 \
+         GB · other apps 21 GB"
     );
 }
 
@@ -876,7 +870,6 @@ fn a_smaller_mac_warns_and_suggests_a_model_that_fits() {
         total: 16 * GIB,
         in_use: 0,
         free: 8 * GIB,
-        mac: true,
     };
     let local = |route: &'static str, name: &'static str, window: u64, ram: u64, fit: Fit| {
         let mut choice = opencode_choice(&tag(route, name, window, true));
@@ -925,5 +918,83 @@ fn a_smaller_mac_warns_and_suggests_a_model_that_fits() {
     key(&mut picker, KeyCode::Char('4'));
     down_to(&mut picker, "Qwen3 Coder 30B (64k)");
     let lines = drawn(&picker);
-    compare("ram_after", &picture, 51..69, &lines);
+    compare("ram_after", &picture, 56..76, &lines);
+}
+
+/// Codex's three models and its Default, which runs the first.
+fn codex_choices() -> Vec<ModelChoice> {
+    let model = |id: &str, name: &str| {
+        let mut model = choice(id, ModelAccess::Subscription, CostEstimate::PlanUsage(0.01));
+        model.name = name.to_owned();
+        model.plan_usage = used("codex", 0.02);
+        model
+    };
+    let mut default = model("codex", "");
+    default.runs = Some("GPT 5.6 Luna".to_owned());
+    default.current = true;
+    vec![
+        default,
+        model("codex/gpt-5.6-luna", "GPT 5.6 Luna"),
+        model("codex/gpt-5.6", "GPT 5.6"),
+        model("codex/gpt-5.6-mini", "GPT 5.6 Mini"),
+    ]
+}
+
+/// Codex's list drawn on `theme`, from the rule down.
+fn codex_level_on(theme: &Theme, name: &str) -> Vec<Line<'static>> {
+    let mut picker = model_picker(&codex_choices(), FRESH);
+    key(&mut picker, KeyCode::Char('1'));
+    assert_eq!(picker.title, "Codex");
+    let settled = Instant::now() + Duration::from_secs(1);
+    let ctx = RenderCtx::new(WIDTH, theme, Clock::still(settled));
+    let mut bottom = BottomState::new();
+    bottom.composer.label = Some("Opus 5.5".to_owned());
+    bottom.picker = Some(picker);
+    let lines = lines_with_stand_ins(&bottom.render(&ctx).lines);
+    let at = lines
+        .iter()
+        .position(|line| plain_text(std::slice::from_ref(line)).starts_with('─'))
+        .expect("the picker's rule");
+    let lines = lines[at..].to_vec();
+    crate::picture_dump::lines(name, &lines);
+    crate::picture_dump::lines_page(name, &lines, theme);
+    lines
+}
+
+/// Where the logos draw as pictures, Codex's list has its logo before its title, and its
+/// models, under it, drop the maker's word as they do beside Codex's logo anywhere: `5.6 Luna`.
+/// Elsewhere the title is the CLI's name alone and every model keeps its whole name.
+#[test]
+fn codexs_list_names_its_models_as_they_read_beside_its_logo() {
+    let pictures = picture(
+        include_str!("../../../tests/golden/codex_models_pictures.txt"),
+        include_str!("../../../tests/golden/codex_models_pictures.html"),
+    );
+    let lines = codex_level_on(&theme(), "codex_models_pictures");
+    let rows = 0..pictures.0.lines().count();
+    assert_rows_match(
+        "codex_models_pictures",
+        &lines,
+        (&pictures.0, &pictures.1),
+        rows,
+        &theme(),
+        &[],
+    );
+
+    let mut plain = Theme::dark();
+    plain.glyphs = Glyphs::UNICODE;
+    let words = picture(
+        include_str!("../../../tests/golden/codex_models_plain.txt"),
+        include_str!("../../../tests/golden/codex_models_plain.html"),
+    );
+    let lines = codex_level_on(&plain, "codex_models_plain");
+    let rows = 0..words.0.lines().count();
+    assert_rows_match(
+        "codex_models_plain",
+        &lines,
+        (&words.0, &words.1),
+        rows,
+        &plain,
+        &[],
+    );
 }

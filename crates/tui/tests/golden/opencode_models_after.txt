@@ -1,39 +1,41 @@
 ❯ /model                                                                                                              
                                                                                                                       
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  OpenCode                                                                                                            
-  The model the main agent runs on OpenCode. Model lists refreshed just now.                                          
+  ◧◨ OpenCode                                                                                                         
+  The model the main agent runs on OpenCode. Every model here is free. Model lists refreshed just now.                
                                                                                                                       
-    1. Default                 Nemotron 3.5 Super VL Free                                                             
-       Ollama                                                                                                         
-    2. Gemma4 E2b              128k context · on this machine                                                         
-    3. Llama3.2                128k context · on this machine                                                         
-    4. Qwen3 Coder 30B         256k context · on this machine                                                         
-  ❯ 5. Qwen3 Coder 30B (64k)   64k context · on this machine                                                          
-    6. Gemma2 9B               no tool use · 8k context · on this machine                                             
-    7. Gemma3 12B              no tool use · 128k context · on this machine                                           
-  ↓ 8. Gemma3 12B 32K          no tool use · 32k context · on this machine                                            
+     1. Default                      Nemotron 3.5 Super VL Free                                                       
+                                                                                                                      
+    Installed through Ollama         context  abilities                                                               
+     2. Gemma4 E2B                      128k  tools                                                                   
+     3. Llama3.2                        128k  tools                                                                   
+     4. Qwen3 Coder 30B                 256k  tools                                                                   
+  ❯  5. Qwen3 Coder 30B (64k)            64k  tools                                                                   
+     6. Gemma2 9B                         8k  no tools                                                                
+     7. Gemma3 12B                      128k  no tools                                                                
+  ↓  8. Gemma3 12B 32K                   32k  no tools                                                                
     … +11 more                                                                                                        
                                                                                                                       
   ○ Effort not supported for Qwen3 Coder 30B (64k)                                                                    
                                                                                                                       
-  Enter to choose · j/k to move · / to filter · Esc to go back                                                        
+  Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back                           
                                                                                                                       
  The same list scrolled to its end: "Other model…" takes a full id, or one with a variant.                            
                                                                                                                       
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  OpenCode                                                                                                            
-  The model the main agent runs on OpenCode. Model lists refreshed just now.                                          
+  ◧◨ OpenCode                                                                                                         
+  The model the main agent runs on OpenCode. Every model here is free. Model lists refreshed just now.                
                                                                                                                       
-  ↑ 12. Space Bunny Free              1M context · free                                                               
-    13. MiMo-V2.6-Flash Free          200k context · free                                                             
-    14. DeepSeek V4.1 Flash Free      200k context · free                                                             
-    15. GLM-5.3-Flash Free            200k context · free                                                             
-    16. Nemotron 3.5 Lightning Free   256k context · free                                                             
-    17. Nemotron 3 Ultra Free         1M context · free                                                               
-    18. Big Pickle                    200k context · free                                                             
-  ❯ 19. Other model…                  type provider/model, or provider/model#variant                                  
+    Hosted by OpenCode Zen           context  abilities                                                               
+  ↑ 12. Space Bunny Free                  1M  tools                                                                   
+    13. MiMo-V2.6-Flash Free            200k  tools                                                                   
+    14. DeepSeek V4.1 Flash Free        200k  tools                                                                   
+    15. GLM-5.3-Flash Free              200k  tools                                                                   
+    16. Nemotron 3.5 Lightning Free     256k  tools                                                                   
+    17. Nemotron 3 Ultra Free             1M  tools                                                                   
+    18. Big Pickle                      200k  tools                                                                   
+  ❯ 19. Other model…                 type provider/model, or provider/model#variant                                   
                                                                                                                       
-  Enter to choose · j/k to move · / to filter · Esc to go back                                                        
+  Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back                           
                                                                                                                       
  (cropped to the /model echo and the picker: the header above and the empty rows between them are left out)           

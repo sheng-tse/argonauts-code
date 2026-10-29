@@ -86,7 +86,11 @@ fn role_check(
         effective_compaction(adapter, compaction, env);
     let warning = match lifetime {
         SessionLifetime::Task => None,
-        SessionLifetime::Run | SessionLifetime::Project if !compaction_off => None,
+        SessionLifetime::Run | SessionLifetime::Project | SessionLifetime::Seat
+            if !compaction_off =>
+        {
+            None
+        }
         SessionLifetime::Run => Some(format!(
             "{} keeps one session per run (lifetime run), but its compaction is off on {}.",
             role.as_str(),
@@ -94,6 +98,11 @@ fn role_check(
         )),
         SessionLifetime::Project => Some(format!(
             "{} keeps one session per project (lifetime project), but its compaction is off on {}.",
+            role.as_str(),
+            adapter.id()
+        )),
+        SessionLifetime::Seat => Some(format!(
+            "{} keeps one session per council seat (lifetime seat), but its compaction is off on {}.",
             role.as_str(),
             adapter.id()
         )),

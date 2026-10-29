@@ -2,10 +2,13 @@
 //! between off, a hidden history under Argonauts Code's home, and becoming a repository, which
 //! shows what its first commit would hold and asks before anything is written. A repository
 //! picks what a merged run leaves on your branch. Nothing here touches your folder or your
-//! `.git` before you've seen what it will do and said yes.
+//! `.git` before you've seen what it will do and said yes. A folder with no git that you never
+//! turned off gets its hidden history the first time Captain may write there, so `/rewind`
+//! always has something to go back to.
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use anyhow::Context as _;
 use argonauts_core::api::{RunState, RunSummary};
@@ -69,6 +72,49 @@ const DELIVERIES: [(&str, &str, &str, DeliveryCommits, DeliveryWrite); 4] = [
 
 /// The most files the first commit's question names before it says how many more.
 const NAMED: usize = 6;
+
+/// Folders whose history Captain found past the limits this session, so each turn after doesn't
+/// count their files again.
+static TOO_BIG: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+/// Before a Captain turn that may write in `root`: in a folder with no git, the hidden history
+/// turns on, so `/rewind` can put back what the turn changes. `Some` is what to tell you, the
+/// one time it turns on. It stays off where you turned it off with `/git`, where
+/// `history.enabled` is off, in your home folder and at the top of the file system, and for a
+/// folder past the history's limits, as a workflow's first record would be.
+pub(crate) fn keep_history_for_captain(ctx: &Ctx, root: &Path) -> Option<String> {
+    let env = &ctx.env;
+    let history = &ctx.settings().history;
+    let turned_off = hidden_git::dir(&env.state_dir)
+        .join(argonauts_core::hidden_git::OFF)
+        .exists();
+    if root != env.repo_root || env.git() != FolderGit::Off || !history.enabled || turned_off {
+        return None;
+    }
+    if hidden_git::refused(root, env.user_home.as_deref()).is_some() {
+        return None;
+    }
+    let mut too_big = TOO_BIG.lock().unwrap_or_else(PoisonError::into_inner);
+    if too_big.contains(root) {
+        return None;
+    }
+    let fits = hidden_git::first_commit_within(root, &env.state_dir, history);
+    if let Err(err) = fits {
+        tracing::info!("Captain keeps no history of {}: {err:#}", root.display());
+        too_big.insert(root.to_path_buf());
+        return None;
+    }
+    drop(too_big);
+    if let Err(err) = hidden_git::turn_on(&env.state_dir) {
+        tracing::warn!("turning the hidden history on for Captain: {err:#}");
+        return None;
+    }
+    Some(format!(
+        "This folder has no git, so Captain keeps its history under {}, and /rewind can put \
+         back what it changes. Your folder gets no .git. /git changes that.",
+        env.display(env.paths.home())
+    ))
+}
 
 /// How a run lands in a repository with no commits, whichever of the choices is in use.
 fn before_a_first_commit(settings: &Settings) -> &'static str {
@@ -698,6 +744,110 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// The app in a folder without git where every request goes to Captain, whose session
+    /// changes `todo.txt`.
+    async fn captain_without_git() -> TestDriver {
+        let driver = TestDriver::start_with(CliOptions {
+            prepare: Some(Box::new(|repo| {
+                std::fs::remove_dir_all(repo.root().join(".git")).unwrap();
+                repo.write("todo.txt", "buy milk\n").unwrap();
+                std::fs::write(
+                    repo.global_config(),
+                    "[captain_or_crew]\nforce = \"captain\"\n",
+                )
+                .unwrap();
+            })),
+            ..CliOptions::default()
+        })
+        .await;
+        driver.agent.respond(|spec| {
+            std::fs::write(spec.workdir.join("todo.txt"), "buy bread\n").unwrap();
+            argonauts_testkit::FakeSession::completed("Changed the list.")
+        });
+        driver
+    }
+
+    async fn captain_turn(driver: &mut TestDriver) {
+        driver.submit("Put bread on the list").await;
+        driver
+            .until(|event| {
+                matches!(
+                    event,
+                    AppEvent::Conversation {
+                        event: argonauts_core::app::ConversationEvent::TurnFinished { .. }
+                    }
+                )
+            })
+            .await;
+    }
+
+    fn said_captain_keeps_history(events: &[AppEvent]) -> bool {
+        events.iter().any(|event| {
+            matches!(event, AppEvent::Notice { text, .. } if text.contains("Captain keeps its history"))
+        })
+    }
+
+    #[tokio::test]
+    async fn captains_first_write_turns_the_hidden_history_on_so_rewind_works() {
+        let mut driver = captain_without_git().await;
+        let root = driver.env.repo_root.clone();
+        assert_eq!(driver.env.git(), FolderGit::Off);
+        captain_turn(&mut driver).await;
+        assert!(matches!(driver.env.git(), FolderGit::Hidden(_)));
+        assert_eq!(
+            std::fs::read_to_string(root.join("todo.txt")).unwrap(),
+            "buy bread\n"
+        );
+        assert!(!root.join(".git").exists(), "your folder gets no .git");
+
+        driver
+            .send(UiCommand::Slash {
+                command: SlashCommand::Rewind { task: None },
+            })
+            .await;
+        let AppEvent::Choice { choice } = driver
+            .until(|event| matches!(event, AppEvent::Choice { choice } if choice.kind == ChoiceKind::RewindTurn))
+            .await
+        else {
+            unreachable!()
+        };
+        let label = choice.options[0].label.clone();
+        let outcome = pick(&mut driver, &choice, &label).await;
+        assert_eq!(outcome, "Put back todo.txt");
+        assert_eq!(
+            std::fs::read_to_string(root.join("todo.txt")).unwrap(),
+            "buy milk\n"
+        );
+        let events = driver.exit().await;
+        let told: Vec<&AppEvent> = events
+            .iter()
+            .filter(|event| said_captain_keeps_history(std::slice::from_ref(*event)))
+            .collect();
+        assert_eq!(told.len(), 1, "said once");
+        let AppEvent::Notice { text, .. } = told[0] else {
+            unreachable!()
+        };
+        assert!(
+            text.starts_with("This folder has no git, so Captain keeps its history under ")
+                && text.ends_with(
+                    ", and /rewind can put back what it changes. Your folder gets no .git. /git \
+                     changes that."
+                ),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_history_you_turned_off_stays_off_for_captain() {
+        let mut driver = captain_without_git().await;
+        hidden_git::turn_on(&driver.env.state_dir).unwrap();
+        hidden_git::turn_off(&driver.env.state_dir).unwrap();
+        captain_turn(&mut driver).await;
+        assert_eq!(driver.env.git(), FolderGit::Off);
+        let events = driver.exit().await;
+        assert!(!said_captain_keeps_history(&events));
     }
 
     #[tokio::test]

@@ -41,7 +41,7 @@ pub fn run(command: &ConfigCommand, set: &[String]) -> anyhow::Result<ExitCode> 
     Ok(ExitCode::SUCCESS)
 }
 
-/// `None` leaves it to the key's usual file.
+/// `None` saves it where your changes go.
 fn scope(local: bool, project: bool, global: bool) -> Option<SettingScope> {
     if local {
         Some(SettingScope::ProjectLocal)

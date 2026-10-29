@@ -1,0 +1,58 @@
+{
+  "opencode": {
+    "agent": "opencode",
+    "model": "ollama/qwen3-coder:30b-64k",
+    "window": 65536,
+    "buffer": 0,
+    "parts": [
+      {
+        "holds": "own_prompt_and_tools",
+        "tokens": 7743,
+        "color": "promptBorder"
+      },
+      {
+        "holds": "instruction_files",
+        "tokens": 1200,
+        "color": "claude"
+      }
+    ],
+    "files": [
+      {
+        "name": "AGENTS.md",
+        "tokens": 1200
+      }
+    ],
+    "from": {
+      "from": "last_session"
+    },
+    "first_count": "step"
+  },
+  "opencode ollama/qwen3-coder:30b-64k": {
+    "agent": "opencode",
+    "model": "ollama/qwen3-coder:30b-64k",
+    "window": 65536,
+    "buffer": 0,
+    "parts": [
+      {
+        "holds": "own_prompt_and_tools",
+        "tokens": 7743,
+        "color": "promptBorder"
+      },
+      {
+        "holds": "instruction_files",
+        "tokens": 1200,
+        "color": "claude"
+      }
+    ],
+    "files": [
+      {
+        "name": "AGENTS.md",
+        "tokens": 1200
+      }
+    ],
+    "from": {
+      "from": "last_session"
+    },
+    "first_count": "step"
+  }
+}

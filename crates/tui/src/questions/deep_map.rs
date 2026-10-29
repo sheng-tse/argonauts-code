@@ -1,4 +1,4 @@
-//! The deeper Behaviors map's questions, asked in the tab when you press `d`: what to
+//! Summaries' questions, asked in the tab when you press `d`: what to
 //! summarize, each answer with how long it takes; who summarizes, each with what it costs; and,
 //! for a hosted model, once more, since it would read the other CLIs' actions too. A download
 //! of the embedding model is asked last, and only once.
@@ -27,7 +27,7 @@ const GB: f64 = 1_000_000_000.0;
 /// Which question shows.
 #[derive(Debug, Clone, PartialEq)]
 enum Step {
-    /// `d` on the deeper map: add the actions it doesn't have yet.
+    /// `d` on Summaries: add the actions they don't have yet.
     Update,
     Scope,
     Summarizer,
@@ -61,6 +61,9 @@ pub struct DeepQuestions {
     scope: usize,
     /// You said yes to redoing the map.
     redo: bool,
+    /// Asked from Summaries: leaving the questions without an update shows the label map, so
+    /// `d` always goes somewhere.
+    from_summaries: bool,
 }
 
 impl DeepQuestions {
@@ -76,19 +79,34 @@ impl DeepQuestions {
             pointer: 0,
             scope: 0,
             redo: false,
+            from_summaries: false,
         }
     }
 
-    /// What `d` on the deeper map asks: adding the actions it doesn't have yet, or going back
-    /// to the label map.
+    /// What `d` on Summaries asks: adding the actions they don't have yet, or going back to
+    /// the label map. With no model to summarize, or no word of who made them, there's nothing
+    /// to add to: the questions say so, or start from what to summarize, and leaving them shows
+    /// the label map.
     pub fn update(offer: DeepOffer) -> DeepQuestions {
-        let questions = DeepQuestions::new(offer);
-        if questions.step == Step::NoSummarizer {
+        let questions = DeepQuestions {
+            from_summaries: true,
+            ..DeepQuestions::new(offer)
+        };
+        if questions.step == Step::NoSummarizer || questions.offer.made_by.is_none() {
             return questions;
         }
         DeepQuestions {
             step: Step::Update,
             ..questions
+        }
+    }
+
+    /// Leaving the questions without an update: the label map where they were asked from
+    /// Summaries, else the map as it is.
+    fn left(&self) -> DeepAnswer {
+        match self.from_summaries {
+            true => DeepAnswer::LabelMap,
+            false => DeepAnswer::NotNow,
         }
     }
 
@@ -134,7 +152,7 @@ impl DeepQuestions {
     pub fn key(&mut self, code: KeyCode) -> Option<DeepAnswer> {
         let count = self.answers().len();
         if count == 0 {
-            return matches!(code, KeyCode::Enter | KeyCode::Esc).then_some(DeepAnswer::NotNow);
+            return matches!(code, KeyCode::Enter | KeyCode::Esc).then(|| self.left());
         }
         match code {
             KeyCode::Up => {
@@ -161,7 +179,8 @@ impl DeepQuestions {
 
     fn back(&mut self) -> Option<DeepAnswer> {
         let (step, pointer) = match self.step {
-            Step::Update | Step::Scope | Step::NoSummarizer => return Some(DeepAnswer::NotNow),
+            Step::Update => return Some(DeepAnswer::NotNow),
+            Step::Scope | Step::NoSummarizer => return Some(self.left()),
             Step::Summarizer => (Step::Scope, self.scope),
             Step::Hosted(chosen) | Step::Redo(chosen) | Step::Download(chosen) => {
                 (Step::Summarizer, chosen)
@@ -193,7 +212,7 @@ impl DeepQuestions {
                 None
             }
             Step::Summarizer => self.summarize_with(self.pointer),
-            Step::NoSummarizer => Some(DeepAnswer::NotNow),
+            Step::NoSummarizer => Some(self.left()),
             Step::Hosted(chosen) => match (self.pointer, self.first_local()) {
                 (0, _) => self.chosen(chosen),
                 (1, Some(local)) => self.chosen(local),
@@ -405,7 +424,7 @@ impl DeepQuestions {
                     .as_ref()
                     .map_or(("", 0), |made| (made.name.as_str(), made.actions));
                 (
-                    "Update the deeper map?".to_owned(),
+                    "Update Summaries?".to_owned(),
                     vec![format!(
                         "{name} summarized its {actions} actions. Only the new ones are \
                          summarized, and the dots there stay where they are."
@@ -444,14 +463,14 @@ impl DeepQuestions {
                 };
                 let why = if prompt_changed {
                     format!(
-                        "The deeper map's summaries were written with an older prompt. One map never \
-                         mixes two, so its {actions} actions would be summarized again with {}.",
+                        "Summaries were written with an older prompt. One map never mixes two, so \
+                         its {actions} actions would be summarized again with {}.",
                         offer.name
                     )
                 } else {
                     format!(
-                        "The deeper map was made by {made_by}. One map never mixes two \
-                         summarizers, so its {actions} actions would be summarized again with {}.",
+                        "Summaries were made by {made_by}. One map never mixes two summarizers, \
+                         so its {actions} actions would be summarized again with {}.",
                         offer.name
                     )
                 };
@@ -500,6 +519,7 @@ impl DeepQuestions {
                 }
             },
             Step::Hosted(_) | Step::Redo(_) | Step::Download(_) => "Enter to choose".to_owned(),
+            Step::NoSummarizer if self.from_summaries => "Esc shows the label map".to_owned(),
             Step::NoSummarizer => "Esc to keep the label map".to_owned(),
         }
     }
@@ -901,13 +921,13 @@ pub(crate) mod sample {
             ],
             summarizers: vec![
                 local(
-                    "ollama/qwen3-coder:30b-64k",
+                    "ollama/qwen3-coder:30b",
                     "Qwen3 Coder 30B on Ollama",
                     "Qwen3 Coder 30B",
                     18,
                 ),
                 local(
-                    "ollama/gemma3:12b-32k",
+                    "ollama/gemma3:12b",
                     "Gemma 3 12B on Ollama",
                     "Gemma 3 12B",
                     8,
@@ -1018,7 +1038,7 @@ mod tests {
                 scope: DeepScope::Project {
                     name: "council".to_owned()
                 },
-                summarizer: "ollama/qwen3-coder:30b-64k".parse().unwrap(),
+                summarizer: "ollama/qwen3-coder:30b".parse().unwrap(),
                 download_embedder: true,
                 redo: false,
             }))
@@ -1035,7 +1055,7 @@ mod tests {
         let Some(DeepAnswer::Start(start)) = answer else {
             panic!("{answer:?}");
         };
-        assert_eq!(start.summarizer.to_string(), "ollama/qwen3-coder:30b-64k");
+        assert_eq!(start.summarizer.to_string(), "ollama/qwen3-coder:30b");
         assert!(!start.download_embedder);
         let mut questions = DeepQuestions::new(page_offer());
         questions.key(KeyCode::Enter);
@@ -1072,7 +1092,7 @@ mod tests {
             name: "nomic-embed-text on Ollama".to_owned(),
         };
         offer.made_by = Some(argonauts_core::deep_map::MadeBy {
-            model: "ollama/gemma3:12b-32k".parse().unwrap(),
+            model: "ollama/gemma3:12b".parse().unwrap(),
             name: "Gemma 3 12B on Ollama".to_owned(),
             actions: 562,
             new_actions: 0,
@@ -1112,7 +1132,7 @@ mod tests {
 
     fn made_by_qwen(prompt_changed: bool) -> argonauts_core::deep_map::MadeBy {
         argonauts_core::deep_map::MadeBy {
-            model: "ollama/qwen3-coder:30b-64k".parse().unwrap(),
+            model: "ollama/qwen3-coder:30b".parse().unwrap(),
             name: "Qwen3 Coder 30B on Ollama".to_owned(),
             actions: 562,
             new_actions: 37,
@@ -1142,7 +1162,7 @@ mod tests {
         };
         assert!(start.redo);
         assert_eq!(start.scope, DeepScope::Everything);
-        assert_eq!(start.summarizer.to_string(), "ollama/qwen3-coder:30b-64k");
+        assert_eq!(start.summarizer.to_string(), "ollama/qwen3-coder:30b");
         // With the prompt as it was, the map's own summarizer adds the new actions.
         offer.made_by = Some(made_by_qwen(false));
         let mut questions = DeepQuestions::update(offer.clone());
@@ -1152,23 +1172,23 @@ mod tests {
             "{answer:?}"
         );
         // The settings now name another summarizer: that one would make it again, which asks.
-        offer.named = Some("ollama/gemma3:12b-32k".parse().unwrap());
+        offer.named = Some("ollama/gemma3:12b".parse().unwrap());
         let mut questions = DeepQuestions::update(offer);
         assert_eq!(questions.key(KeyCode::Enter), None);
         let Some(DeepAnswer::Start(start)) = questions.key(KeyCode::Enter) else {
             panic!("a yes starts it");
         };
         assert!(start.redo);
-        assert_eq!(start.summarizer.to_string(), "ollama/gemma3:12b-32k");
+        assert_eq!(start.summarizer.to_string(), "ollama/gemma3:12b");
     }
 
     #[test]
-    fn with_no_model_to_summarize_with_d_says_so_and_takes_no_key_but_esc() {
+    fn with_no_model_to_summarize_with_d_says_so_and_summaries_go_back_to_the_labels() {
         let mut offer = page_offer();
         offer.summarizers.clear();
-        for mut questions in [
-            DeepQuestions::new(offer.clone()),
-            DeepQuestions::update(offer.clone()),
+        for (mut questions, left) in [
+            (DeepQuestions::new(offer.clone()), DeepAnswer::NotNow),
+            (DeepQuestions::update(offer.clone()), DeepAnswer::LabelMap),
         ] {
             let theme = theme();
             let text: Vec<String> = questions
@@ -1180,13 +1200,13 @@ mod tests {
             for code in [KeyCode::Up, KeyCode::Down, KeyCode::Char('1')] {
                 assert_eq!(questions.key(code), None, "{code:?}");
             }
-            assert_eq!(questions.key(KeyCode::Enter), Some(DeepAnswer::NotNow));
-            assert_eq!(questions.key(KeyCode::Esc), Some(DeepAnswer::NotNow));
+            assert_eq!(questions.key(KeyCode::Enter), Some(left.clone()));
+            assert_eq!(questions.key(KeyCode::Esc), Some(left));
         }
         offer.made_by = Some(made_by_qwen(false));
         let mut questions = DeepQuestions::update(offer);
         assert_eq!(questions.key(KeyCode::Down), None);
-        assert_eq!(questions.key(KeyCode::Esc), Some(DeepAnswer::NotNow));
+        assert_eq!(questions.key(KeyCode::Esc), Some(DeepAnswer::LabelMap));
     }
 
     #[test]
@@ -1217,7 +1237,7 @@ mod tests {
             download_embedder: false,
             redo: false,
         };
-        let local = questions.started(&start("ollama/qwen3-coder:30b-64k"));
+        let local = questions.started(&start("ollama/qwen3-coder:30b"));
         assert_eq!((local.done, local.total), (0, 562));
         assert_eq!(local.seconds_left, Some(page_offer().scopes[0].seconds));
         assert_eq!(local.summarizer, "Qwen3 Coder 30B on Ollama");

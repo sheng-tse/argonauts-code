@@ -1,0 +1,38 @@
+      Redis bucket    ▐▌ Opus 5.5           Maker-checker    You asked              ▐▌                                  
+      Plan limits     ▐▌ 5.6 Luna           Own session      You asked              ▐▌                                  
+                      ✘  ▐▌ 3.8 Flash: every request reads this table, so Maker-checker                                 
+      Memory store    ▐▌ Qwen3 Coder 30B    Own session      Small, one file        ▐▌                                  
+      Route tests     ▐▌ 3.8 Flash          3 agents         You asked · 3 files    ▐▌                                  
+      Where you said how, that binds: a seat may object, only you change it. For the                                    
+      rest: small or one file, own session. Risky, like every request, money or logins,                                 
+      Maker-checker. Parts that share no files, one agent each. Each task goes to the                                   
+      seat whose idea it was; code picks a checker from another maker.                                                  
+▐▌    Only you see Checked by: the seats read "a fresh session that code picks".                                        
+                                                                                                                        
+                Every seat signed both · ▐▌ 3.8 Flash objects to a way you asked for; only you change it                
+                                                                                                                        
+◆ Approve with edits                                                                                                    
+  Change how each task is done, or who does it. What you set here binds, as what you asked in your message does.        
+                                                                                                                        
+    Task           Who                   How                 Why                                                        
+    Redis bucket   ▐▌ Opus 5.5           Maker-checker       You asked                                                  
+    Plan limits    ▐▌ 5.6 Luna           Own session         You asked                                                  
+                   ✘  ▐▌ 3.8 Flash: every request reads this table, so Maker-checker · yours stands                     
+  ❯ Memory store   ▐▌ Qwen3 Coder 30B    ‹ Maker-checker ›   You changed it · the note keeper had Own session           
+    Route tests    ▐▌ 3.8 Flash          3 agents            You asked · 3 files                                        
+                                                                                                                        
+    Ways for Memory store   ← →   Own session   Maker-checker   Spec-first   2 agents   3 agents   4 agents             
+    Not offered: Best-of-n, Draft-and-vote · this council's setup lists two workflows · Set up Council changes it       
+                                                                                                                        
+  enter to approve · ↑ ↓  to pick a task · ← →  to change its way · tab to change who · esc to go back                  
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task                                                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts · ↓  to manage                                            
+                                                                                                                        
+  ◆  Rate limit the API                    ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  4/4 · 5m22s · ↓  90.8k tokens                          
+    ⎿ ✔  ▐▌ Opus 5.5                       Wrote the plan              3m01s · ↓    29k tokens                          
+      ✔  ▐▌ 5.6 Luna                       Signed the plan             1m18s · ↓  16.9k tokens                          
+      ✔  ▐▌ 3.8 Flash                      Signed, 1 objection         2m44s · ↓  25.3k tokens                          
+      ✔  ▐▌ Qwen3 Coder 30B                Signed the plan             2m29s · ↓  19.6k tokens                          

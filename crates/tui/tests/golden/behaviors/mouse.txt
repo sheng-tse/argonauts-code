@@ -1,26 +1,33 @@
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats   All time  Last 7 days  Last 30 days 
-   Overview    Models    Behaviors           By model    By CLI    By role    By workflow    By project    By outcome 
-  Deeper map · 562 actions · the mouse resting near a dot                                                             
-                                                                                                                      
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
 
-[picture]
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
 
-Comparing GPT 6 Luna                                                                                                  
-with the other models                                                                                                 
-red: Luna does this more                                                                                              
-blue: Luna does this less                                                                                             
-                                                                                                                      
-○ Haiku 5.5         406                                                                                               
-● GPT 6 Luna         66                                                                                               
-○ GPT 5.6 Luna       49                                                                                               
-○ Haiku 4.5          22                                                                                               
-○ Gemini 3.8 Flash   19                                                                                               
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
 
-[picture]
+                                                                    Every model
+                                                                    Nothing compared · ←  →  compares one
+                                                                    ●  ◧◨ Haiku 5.5   406
+                                                                    ●  ◧◨ 6 Luna       66
+                                                                    ●  ◧◨ 5.6 Luna     49
+                                                                    ●  ◧◨ Haiku 4.5    22
+                                                                    ●  ◧◨ 3.8 Flash    19
 
-                                                                                                                      
-  ◉ Reviewed git history and previous implementations · GPT 6 Luna · tie-breaker-2 · label: read git history          
-    the map stays as it was; move away and the ring goes; click opens its card                                        
-                                                                                                                      
-  r to cycle dates · g group · s this project · d deeper map · ←  →  compare · ↓  the list · esc back                 
+
+
+
+
+
+
+  ◌ Checked git status or diff and read git history · ◧◨ 6 Luna · 4 of its 66 · everyone 6 · today at 8:32 AM
+
+  Label map · 562 actions in 19 runs across 6 projects · last 30 days
+  Most common
+  Returned its structured answer   169    Ran the test suite                         27
+  Read a source file                62    Edited a source file                       26
+  Searched code by pattern          28    Gave a structured answer that didn't fit   21
+
+
+
+
+   r to cycle dates · s this project · d summaries · tab groupings · ←  →  compare · t top view · esc back

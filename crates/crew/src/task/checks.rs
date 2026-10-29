@@ -17,6 +17,7 @@ use argonauts_core::events::RunEventKind;
 use argonauts_core::events::task::{CheckKind, CheckOutcome, TaskKind, TaskState};
 use argonauts_core::limits::CheckRequest;
 use argonauts_core::policy::{HardLimit, Violation};
+use argonauts_core::project_checks::untrusted_checks_file;
 use argonauts_core::session_runner::Access;
 use argonauts_core::settings::protocol::CheckCommand;
 use argonauts_core::steps::task::{ReportStatus, TaskReport};
@@ -94,11 +95,7 @@ pub async fn run_in(
     let commands = &host.settings().checks.run;
     let tests_task = matches!(spec.kind, TaskKind::AcceptanceTests { .. });
     if commands.is_empty() {
-        host.record(
-            Some(task),
-            None,
-            RunEventKind::Check(no_command_checks(CheckKind::Command)),
-        )?;
+        host.record(Some(task), None, RunEventKind::Check(none_set(host)))?;
     } else {
         // A test task's commands are the stub check's input, so they stay as they ran.
         let expected = if tests_task {
@@ -592,6 +589,38 @@ pub fn no_command_checks(kind: CheckKind) -> CheckOutcome {
     }
 }
 
+/// The marker for a run with no checks, saying why there are none: none are set, or the only
+/// file that sets them is a project file you haven't trusted, which the run left out.
+fn none_set(host: &Host) -> CheckOutcome {
+    let mut marker = no_command_checks(CheckKind::Command);
+    let overrides = host.read(|state| {
+        state
+            .run
+            .started
+            .as_ref()
+            .map(|started| started.overrides.clone())
+    });
+    let root = &host.repo().root;
+    if let Some(file) = overrides.and_then(|set| untrusted_checks_file(root, &set)) {
+        marker.summary = held_back_text(&file);
+    }
+    marker
+}
+
+/// What the checks cell says when `file` sets the checks the run left out.
+pub fn held_back_text(file: &str) -> String {
+    format!("{HELD_BACK_IN}{file}{HELD_BACK_WHY}")
+}
+
+/// The file a no-checks marker says holds the checks the run left out, if it says one.
+pub fn held_back_file(marker: &CheckOutcome) -> Option<&str> {
+    let file = marker.summary.strip_prefix(HELD_BACK_IN)?;
+    file.strip_suffix(HELD_BACK_WHY)
+}
+
+const HELD_BACK_IN: &str = "checks.run is set in ";
+const HELD_BACK_WHY: &str = ", a file you haven't trusted · /setup";
+
 /// Journals from before `skipped` recorded the marker as a failure with no command.
 pub fn is_no_command_checks(outcome: &CheckOutcome) -> bool {
     outcome.skipped || (outcome.command.is_none() && outcome.summary == NO_COMMAND_CHECKS)
@@ -753,6 +782,19 @@ mod tests {
         assert!(!passing.passed);
         assert_eq!(passing.violations[0].limit, HardLimit::TestPassesOnStubs);
         assert_eq!(passing.kind, CheckKind::StubCheck);
+    }
+
+    #[test]
+    fn checks_held_back_name_the_file_that_holds_them() {
+        let text = held_back_text(".argonauts/config.toml");
+        assert_eq!(
+            text,
+            "checks.run is set in .argonauts/config.toml, a file you haven't trusted · /setup"
+        );
+        let mut marker = no_command_checks(CheckKind::Command);
+        assert_eq!(held_back_file(&marker), None);
+        marker.summary = text;
+        assert_eq!(held_back_file(&marker), Some(".argonauts/config.toml"));
     }
 
     #[test]

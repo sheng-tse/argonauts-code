@@ -14,8 +14,9 @@ use std::sync::Arc;
 use argonauts_core::api::{ApiError, ApprovalAnswer, Approvals, DiffScope};
 use argonauts_core::app::{AppEvent, NOT_CHANGED, ViewData};
 use argonauts_core::events::approval::AnswerAction;
+use argonauts_core::events::council::CouncilAction;
 use argonauts_core::events::goal::{GoalAction, LET_THE_MAIN_AGENT_ANSWER};
-use argonauts_core::names::{ApprovalId, ChoiceId};
+use argonauts_core::names::{ApprovalId, ChoiceId, SeatId};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::{NoteLevel, RunId, TaskId};
 
@@ -30,7 +31,7 @@ pub(crate) use control::{
 pub(crate) use tasks::{checkpoints, reassign, remember_pick, rewind, slash_reassign};
 pub(crate) use views::{
     all_repos, ask_narrator, context, context_report, save_workflow, status, summary, view,
-    workflow_view,
+    window_figures, workflow_view,
 };
 
 /// Why nothing that decides or raises autonomy can leave this app.
@@ -177,9 +178,9 @@ pub(crate) async fn answer(ctx: &mut Ctx, runs: &mut RunsState, reply: ApprovalR
     Ok(Vec::new())
 }
 
-/// Esc on a run's question or approval means "carry on without me": the engine
-/// takes an option in your place, as `approvals.when_declined` says, so the run never waits on
-/// it. One it can't take anything for stays open, and a line says why.
+/// A run's question or approval set aside means "carry on without me": the engine takes an
+/// option in your place, as `approvals.when_declined` says, so the run never waits on it. One
+/// it can't take anything for stays open, and a line says why.
 pub(crate) async fn carry_on(ctx: &mut Ctx, run: RunId, id: ApprovalId) -> Handled {
     let Some(approvals) = approvals(ctx) else {
         return Ok(Vec::new());
@@ -442,6 +443,49 @@ pub(crate) async fn goal(
     }
     ctx.notice(NoteLevel::Info, done);
     Ok(Vec::new())
+}
+
+/// What you say to the council of `run`, or of the run on screen. The council's own events
+/// show what it took, so only a refusal says anything here: a seat's name that fits two seats,
+/// or a talk that has ended.
+pub(crate) async fn council(
+    ctx: &mut Ctx,
+    runs: &mut RunsState,
+    run: Option<RunId>,
+    action: CouncilAction,
+) -> Handled {
+    let Some(run) = run.or_else(|| on_screen(ctx, runs)) else {
+        return Ok(Vec::new());
+    };
+    let doing = match &action {
+        CouncilAction::Private { .. } => "Couldn't send it to the seat",
+        CouncilAction::Share { .. } => "Couldn't share it with the council",
+        CouncilAction::CarryOn { .. } | CouncilAction::Rejoin { .. } => {
+            "Couldn't change who sits in the talk"
+        }
+        CouncilAction::Write { .. } => "Couldn't send it to the council",
+    };
+    if let Err(err) = ctx.services.conductor.council(&run, action).await {
+        return refused(ctx, err, || doing.to_owned());
+    }
+    Ok(Vec::new())
+}
+
+/// The seat sits out its council's talk, before its session opens in its own CLI. False when
+/// the run refused, which its notice says.
+pub(crate) async fn seat_sits_out(
+    ctx: &mut Ctx,
+    run: &RunId,
+    seat: &SeatId,
+) -> anyhow::Result<bool> {
+    let action = CouncilAction::CarryOn { seat: seat.clone() };
+    match ctx.services.conductor.council(run, action).await {
+        Ok(()) => Ok(true),
+        Err(err) => refused(ctx, err, || {
+            "Couldn't carry the seat on in its CLI".to_owned()
+        })
+        .map(|_| false),
+    }
 }
 
 pub(crate) async fn spot_check(

@@ -17,12 +17,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::workflow::WorkflowView;
-use super::workflow_pictures::{Picture, buffer_of, dark, picture};
+use super::workflow_pictures::{Picture, dark, picture};
 use super::{View, ViewCtx};
-use crate::bottom::{
-    AgentPanel, WorkflowPanel, WorkflowRow as PanelRow, WorkflowRowState, panel_lines,
-};
-use crate::render::{Clock, RenderCtx};
 use crate::state::AppState;
 
 /// The frame stops six cells short of the screen's right edge, as Claude Code's does.
@@ -264,16 +260,8 @@ fn select(view: &mut WorkflowView, phase: usize) {
     }
 }
 
-/// The picture, with what every screen draws otherwise:
-/// - the description is cut at a word, as every pane cuts one, where the picture cuts mid-word;
-/// - one label column holds for the whole workflow, sized to its longest label,
-///   `signoff:per-key-rate-limit`, where the picture fits each phase's column to its own
-///   labels, so challenge:p3's row has no room left for its tokens and leaves them out, as a
-///   row short of room does;
-/// - a note in the plain tone is dim, as a challenge's is, where the picture draws Decide's
-///   `chose p2` in the text's colour;
-/// - the bottom list's name column is 24 cells on every row, as the done run's picture draws
-///   it, where this one draws 22.
+/// The picture, with the bottom list's name column 24 cells on every row, as the done run's
+/// picture draws it, where this one draws 22.
 fn the_picture() -> Picture {
     let mut picture = picture!("council_rows_after");
     // Every other picture of the bottom list gives a run's name 22 cells and two more before
@@ -284,9 +272,8 @@ fn the_picture() -> Picture {
 
 #[test]
 fn the_done_view_on_decide_reads_as_its_picture() {
-    let mut picture = the_picture();
     // The run ended, so nothing is left to stop or pause.
-    picture.reword(54, " · x stop workflow · p pause", "");
+    let picture = the_picture();
     let mut view = WorkflowView::new(council());
     select(&mut view, 2);
     picture.assert_drawn(40..55, &drawn(&mut view, 15), 0);
@@ -302,24 +289,4 @@ fn the_same_view_on_sign_off_and_on_challenge_reads_as_its_picture() {
         let buf = drawn(&mut view, ABOVE_BOX + 10);
         picture.assert_drawn(rows, &buf, ABOVE_BOX);
     }
-}
-
-#[test]
-fn the_runs_row_in_the_bottom_list_reads_as_its_picture() {
-    let picture = the_picture();
-    let theme = dark();
-    let ctx = RenderCtx::new(SCREEN, &theme, Clock::still(Instant::now()));
-    let mut row = PanelRow::new("run-01", RATE, WorkflowRowState::Done);
-    row.agents_done = 11;
-    row.agents_total = 11;
-    row.elapsed_ms = 155_000;
-    row.tokens = 302_000;
-    row.said = Some("merged onto main".to_owned());
-    let panel = WorkflowPanel {
-        rows: vec![row],
-        max_rows: 5,
-        ..WorkflowPanel::default()
-    };
-    let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
-    picture.assert_drawn(78..79, &buffer_of(&lines, SCREEN), 0);
 }

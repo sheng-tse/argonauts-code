@@ -19,6 +19,7 @@ use argonauts_core::events::session::{
 };
 use argonauts_core::events::task::TaskState;
 use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::logos::logo_for;
 use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::session_runner::Access;
 use argonauts_core::settings::approvals::ApprovalMode;
@@ -470,7 +471,9 @@ impl AgentBlocks {
             detail.push_str(" · ");
             detail.push_str(failure::RAW_ERROR_HINT);
         }
-        let mut summary = live.whole.summarized(Some(&detail));
+        let mut summary = live
+            .whole
+            .summarized_with(&spent_and_took(end), Some(&detail));
         if let Some(line) = gave
             .as_ref()
             .and_then(|gave| gave.line(live.whole.tool_uses(), &took(end)))
@@ -721,9 +724,9 @@ fn prints(kind: &RunEventKind) -> bool {
     }
 }
 
-/// Where a session sits: its run, key, task, and when it began.
-/// What an agent's block is headed by: its label, `● fix:slugify · Haiku 4.5 on Claude Code`,
-/// or for a log from before labels, its role and task after its name.
+/// What an agent's block is headed by: its label and the task it works, `● fix:slugify(Slug
+/// the titles) · Haiku 4.5 on Claude Code`, or for a log from before labels, its role and task
+/// after its name.
 struct Named {
     label: Option<String>,
     task: String,
@@ -731,6 +734,23 @@ struct Named {
     step: Option<StepName>,
 }
 
+/// What an agent's parentheses say where its step isn't the task's own work: a planner plans
+/// the work, and a reviewer or judge reviews the task its id names last, `review the flag`
+/// for `due-flag`. `None` keeps the task's title.
+fn doing(step: Option<StepName>, task: Option<&TaskId>) -> Option<String> {
+    match step? {
+        StepName::Orchestrate => Some("plan the work".to_owned()),
+        StepName::Review | StepName::Judge => {
+            let last = task?.as_str().rsplit('-').next().unwrap_or_default();
+            // A numbered id such as `task-002` names nothing to review.
+            let named = !last.is_empty() && !last.chars().all(|c| c.is_ascii_digit());
+            Some(format!("review the {}", if named { last } else { "task" }))
+        }
+        _ => None,
+    }
+}
+
+/// Where a session sits: its run, key, task, and when it began.
 struct Place<'a> {
     run: &'a RunId,
     key: &'a SessionKey,
@@ -755,12 +775,14 @@ impl Live {
                 .and_then(|run| run.tasks.get(task))
                 .map(|row| row.title.clone())
         });
+        let title = doing(named.step, place.task).or(title);
         // The transcript overlay is the detail view, so its stamp keeps the id.
         let started = format::ClockTime::from(place.at.to_offset(cx.state.clock_offset()));
         let agent = cx.state.names.worker(worker);
         let head = match &named.label {
-            // A label reads in the text's colour, with no colour of its own.
-            Some(label) => ToolCall::agent(label.clone(), None, agent, String::new())
+            // A label heads it as Claude Code heads its agents, with the task it works in
+            // parentheses and no colour of its own.
+            Some(label) => ToolCall::agent(label.clone(), None, agent, title.unwrap_or_default())
                 .with_model(shaded(worker, cx.state)),
             None => ToolCall::agent(agent, Some(color), named.task, title.unwrap_or_default()),
         }
@@ -813,17 +835,14 @@ impl Live {
         let Some(session) = cx.state.session(&self.run, &self.key) else {
             return false;
         };
-        let name = cx
-            .state
-            .names
-            .worker(&cx.state.names.running(&session.worker));
         let running = cx.state.names.running(&session.worker);
+        let name = cx.state.names.worker(&running);
         let mut changed = false;
         for call in [&mut self.head, &mut self.whole, &mut self.outbox] {
             // A labeled block names its agent after the label, its model in its shade.
             let shown = match &mut call.title {
                 ToolTitle::Agent { role, model, .. } if self.labeled => {
-                    *model = Some(shaded(&running, cx.state));
+                    *model = Some(Box::new(shaded(&running, cx.state)));
                     role
                 }
                 ToolTitle::Agent { name, .. } => name,
@@ -849,7 +868,8 @@ impl Live {
         else {
             return StartedAgent::new(self.head.title.plain(), None, "");
         };
-        let detail = if task.is_empty() {
+        // Under a label the tree names who runs it alone, as the label says what it works.
+        let detail = if task.is_empty() || self.labeled {
             role.clone()
         } else {
             format!("{role} {task}")
@@ -1373,8 +1393,8 @@ fn decided_alone(end: &SessionEnd, on_autopilot: bool) -> Option<String> {
     })
 }
 
-/// The shade `worker`'s model draws in: its place among its CLI's models, as every tab ranks
-/// them by the tokens they ran here.
+/// Who runs `worker` as its header draws them: the logo of whoever serves its model, and the
+/// model in its colour, its place among its CLI's models as every tab ranks them.
 fn shaded(worker: &ModelRef, state: &AppState) -> ModelShade {
     let names = &state.names;
     let (cli, name) = names.shown_as(&worker.agent, worker.model.as_deref());
@@ -1386,13 +1406,15 @@ fn shaded(worker: &ModelRef, state: &AppState) -> ModelShade {
         .with_named([(cli.as_str(), name.as_str())])
         .place_named(&cli, &name);
     ModelShade {
-        cli: crate::overview::cli_role(&cli),
-        place: u8::try_from(place % crate::overview::shades::SHADES).unwrap_or_default(),
+        cli: crate::theme::Role::for_cli(&cli),
+        place: u8::try_from(place.min(crate::overview::shades::OWN_TEXTURES)).unwrap_or_default(),
+        logo: logo_for(&worker.agent, worker.model.as_deref()),
+        model: names.model(&worker.agent, worker.model.as_deref()),
+        on: names.cli(&worker.agent),
     }
 }
 
-/// `report ✓ · checks ✓ · 9m 40s · 61.0k tokens`, or why it ended first. What the agent decided
-/// in your place comes right before how long it took.
+/// `report ✓ · checks ✓`, or why it ended first, then what the agent decided in your place.
 fn end_detail(
     end: &SessionEnd,
     checks: Option<bool>,
@@ -1418,19 +1440,29 @@ fn end_detail(
         parts.push(format!("checks {mark}"));
     }
     parts.extend(decided.map(str::to_owned));
-    parts.push(took(end));
     parts.join(" · ")
 }
 
-/// How long the session took and what it spent, as Claude Code writes its own agents' rows:
+/// What the session spent and how long it took, in the order Claude Code's own agents' rows
+/// put them in their parentheses: `61.0k tokens · 9m 40s`.
+fn spent_and_took(end: &SessionEnd) -> String {
+    let mut parts: Vec<String> = spent(end).into_iter().collect();
+    parts.push(format::duration(Duration::from_millis(end.duration_ms)));
+    parts.join(" · ")
+}
+
+/// How long the session took and what it spent, as a council's challenge and choice rows end:
 /// `9m 40s · 61.0k tokens`.
 fn took(end: &SessionEnd) -> String {
     let mut parts = vec![format::duration(Duration::from_millis(end.duration_ms))];
-    let tokens = end.spend.input_tokens + end.spend.output_tokens;
-    if tokens > 0 {
-        parts.push(format!("{} tokens", format::tokens_as_claude_code(tokens)));
-    }
+    parts.extend(spent(end));
     parts.join(" · ")
+}
+
+/// `61.0k tokens`, or nothing for a session that spent none.
+fn spent(end: &SessionEnd) -> Option<String> {
+    let tokens = end.spend.input_tokens + end.spend.output_tokens;
+    (tokens > 0).then(|| format!("{} tokens", format::tokens_as_claude_code(tokens)))
 }
 
 /// Why it ended, in words. A failure the CLI explained is one plain line; its own text stays
@@ -1511,6 +1543,10 @@ fn back_from(now: Instant, offset: time::Duration) -> Instant {
         .and_then(|offset| now.checked_sub(offset))
         .unwrap_or(now)
 }
+
+#[cfg(test)]
+#[path = "agents/rows_tests.rs"]
+mod rows_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1626,7 +1662,7 @@ mod tests {
         );
         assert_eq!(
             printed(named_for_the_message("s-002", writer, "completed")),
-            "● commit message · Haiku on Claude Code\n  ⎿  Done · 0 tool uses · 12s"
+            "● commit message · Haiku on Claude Code\n  ⎿  Done (0 tool uses · 12s)"
         );
         let stopped = printed(named_for_the_message("s-003", None, "stopped"));
         assert!(

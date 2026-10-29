@@ -1,7 +1,7 @@
 //! `argonauts_setup`: the main session sets Argonauts Code up from what you say. It fills this
 //! form, Argonauts Code checks it the way it checks a settings file, and you see it as one
-//! question. Nothing is written until you pick where it applies. Only the main session is offered
-//! the tool, so no agent of a crew changes your setup by itself.
+//! question. Nothing is written until you say yes, and then it saves where your changes go. Only
+//! the main session is offered the tool, so no agent of a crew changes your setup by itself.
 //!
 //! The settings half of the form is made from the catalog `/config` is drawn from, so the
 //! form names every setting and the values each takes, and is never out of date.
@@ -17,11 +17,12 @@ pub const DESCRIPTION: &str = "Proposes a change to the user's Argonauts Code se
     any prompt, goals, limits, fallbacks and mods. Call it only when the user asks for a change, \
     never when they only talk about their setup. Argonauts Code checks the form: a wrong value \
     comes back as an error for you to fix. A valid one is shown to the user as one question, and \
-    nothing is written until they pick where it applies, so say in a line what you would set and \
-    that nothing has changed yet. The answer says what they picked. For what a setting does, or \
-    for the fields of a workflow, role or mod file, open the guide first.";
+    nothing is written until they say yes, so say in a line what you would set and that nothing \
+    has changed yet. Yes keeps it for the request when request_too is set, else saves it where \
+    their changes go, and the answer says where. For what a setting does, or for the fields of \
+    a workflow, role or mod file, open the guide first.";
 
-/// It writes files once you pick, so a CLI asks before it calls it where it asks at all.
+/// It writes files once you say yes, so a CLI asks before it calls it where it asks at all.
 pub const READ_ONLY: bool = false;
 
 /// Where the user said to keep the change, in the same message.
@@ -122,7 +123,7 @@ pub fn input_schema() -> Value {
                                 message: \"for this one\" is request, \"from now on\" is \
                                 conversation unless they name this repository or all their \
                                 repositories, \"save that\" is repository. Otherwise ask, \
-                                the default: the question asks them."
+                                the default: the question asks them to say yes."
             },
             "keep_says": {
                 "type": "string",
@@ -130,8 +131,8 @@ pub fn input_schema() -> Value {
             },
             "request_too": {
                 "type": "boolean",
-                "description": "The same message also asks for work, so the change can hold \
-                                for that request alone."
+                "description": "The same message also asks for work, so yes on the \
+                                question keeps the change for that request alone."
             }
         },
         "required": ["asked"],

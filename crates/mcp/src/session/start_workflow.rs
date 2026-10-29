@@ -66,6 +66,31 @@ fn schema() -> Value {
                     },
                     "required": ["says", "kind"]
                 }
+            },
+            "checks": {
+                "type": "array",
+                "description": "The commands that show the change works, such as the project's \
+                                tests, when the user has set no checks of their own. They hold \
+                                for this run alone, on each task and on the merge, inside the \
+                                run's sandbox, and nothing is saved. Name each one and give its \
+                                argument list, which runs with no shell. Never write checks \
+                                into a settings file yourself.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "A short name, such as \"tests\" or \"lint\"."
+                        },
+                        "command": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "The program and its arguments, such as \
+                                            [\"python3\", \"-m\", \"unittest\", \"-q\"]."
+                        }
+                    },
+                    "required": ["name", "command"]
+                }
             }
         },
         "required": ["request"]
@@ -119,6 +144,18 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(list.contains("\"Use a workflow\""), "{list}");
+    }
+
+    /// Checks come as a name and an argument list each, for this run alone, so the session
+    /// never writes them into a settings file.
+    #[test]
+    fn checks_come_with_the_call_never_in_a_file() {
+        let schema = schema();
+        let checks = &schema["properties"]["checks"];
+        assert_eq!(checks["items"]["required"], json!(["name", "command"]));
+        let about = checks["description"].as_str().unwrap();
+        assert!(about.contains("this run alone"), "{about}");
+        assert!(about.contains("Never write checks"), "{about}");
     }
 
     #[test]

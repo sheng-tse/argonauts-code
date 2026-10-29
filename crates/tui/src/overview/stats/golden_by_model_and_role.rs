@@ -221,27 +221,16 @@ fn by_model_matches_its_drawing() {
         named: Some(models_and_roles),
     };
     compared.assert_matches("by model", html, rows(0..2));
-    keys_at(&compared, 63).assert_matches("by model", html, rows(63..64));
+    keys_at(&compared, 62).assert_matches("by model", html, rows(62..63));
     let known = [
-        // The drawing gives the two cells left over on its bar of spend to the last model.
-        // A bar gives what is left over by largest remainder, so one of them is Sonnet
-        // 5.5's, whose $1.60 of $11.20 is 11.7 cells: its part is a cell longer, the parts
-        // after it start a cell later, and Gemini 3.6 Flash keeps one cell.
-        "row 12 col 91 '━': drawing Some(\"#6aa6ff\")".to_owned(),
-        "row 12 col 107 '━': drawing Some(\"#2e5fc0\")".to_owned(),
-        "row 12 col 111 '━': drawing Some(\"#36cfe6\")".to_owned(),
-        "row 12 col 114 '━': drawing Some(\"#1b8a9c\")".to_owned(),
-        // Fourteen sign-offs of 11 seconds are 2m 34s, and a time summed up reads as the
-        // minutes that have passed, as the drawing's own 2h 54m does for GPT 5.6's 2h 54m 46s.
-        reads(html, 19, &[("Flash 3m", "Flash 2m")]),
         // 140 tokens a second over 42 minutes would be more than its 0.35M tokens in all.
-        reads(html, 46, &[("140 tok/s", "130 tok/s")]),
+        reads(html, 45, &[("140 tok/s", "130 tok/s")]),
         // What a piece of work cost is an average, written without the mark of an estimate,
         // as the drawing's other rows have it; and 0.43M tokens over 49 reviews are 8.8k each.
-        reads(html, 60, &[("~$0.009     9k  ", "$0.009      8.8k")]),
+        reads(html, 59, &[("~$0.009     9k  ", "$0.009      8.8k")]),
     ];
     let known: Vec<&str> = known.iter().map(String::as_str).collect();
-    compared.assert_different_only_in("by model", html, rows(3..62), &known);
+    compared.assert_different_only_in("by model", html, rows(3..61), &known);
 }
 
 #[test]
@@ -297,27 +286,26 @@ fn by_role_matches_its_drawing() {
         named: Some(models_and_roles),
     };
     compared.assert_matches("by role", html, rows(0..1));
-    keys_at(&compared, 65).assert_matches("by role", html, rows(65..66));
-    let known = [
-        // $0.40 of $11.20 is 3.6 in a hundred.
-        reads(html, 13, &[("~$0.40 3%", "~$0.40 4%")]),
-        // The merger's six minutes are two thirds of a cell of the agent time and the
-        // judge's two and a half a quarter of one, so by largest remainder the bar's last
-        // cell is the merger's, where the drawing gives it to the judge.
-        "row 16 col 115 '━': drawing Some(\"term-pur\")".to_owned(),
-        // Fourteen sign-offs of 11 seconds are 2m 34s, and a time summed up reads as the
-        // minutes that have passed, as the drawing's own 8h 57m does for the workers' 8h 57m
-        // 50s.
-        reads(html, 18, &[("judge 3m", "judge 2m")]),
-        // The four models' times a task, as their cards have them, come to 8m 32s over the
-        // 63 tasks.
-        reads(html, 32, &[("8m 31s a task", "8m 32s a task")]),
-        // The drawing gives the cell left over on the reviewers' bar to the last reason. By
-        // largest remainder it is wrong rounding's, whose two of six are 32.7 cells.
-        "row 55 col 99 '━': drawing Some(\"term-blu\")".to_owned(),
-    ];
+    keys_at(&compared, 64).assert_matches("by role", html, rows(64..65));
+    // The four models' times a task, as their cards have them, come to 8m 32s over the 63
+    // tasks.
+    let known = [reads(html, 31, &[("8m 31s a task", "8m 32s a task")])];
     let known: Vec<&str> = known.iter().map(String::as_str).collect();
-    compared.assert_different_only_in("by role", html, rows(2..64), &known);
+    compared.assert_different_only_in("by role", html, rows(2..50), &known);
+    // What each role caught or changed has a table under each bar since, where the drawing
+    // has a legend, and is its own picture's.
+    let caught = include_str!("../../../tests/golden/stats/caught_or_changed.html");
+    let at = Offset {
+        rows: row_of(&screen, "◆ what each role caught or changed") as isize - 1,
+        columns: 1,
+    };
+    dump("caught_or_changed", &screen, at, caught);
+    let compared = Compared {
+        at,
+        named: Some(app_drawn),
+        ..compared
+    };
+    compared.assert_matches("by role", caught, rows(0..drawing(caught).len()));
 }
 
 /// The main role's row of turns always says how many conversations they were in. Where its
@@ -342,10 +330,13 @@ fn the_main_roles_turns_always_say_in_how_many_conversations() {
     for width in [SCREEN - 8, 100, 80] {
         let shown = text(&sub_tab_at(crew(), 2, width));
         assert!(
-            shown.contains("│ turns    61 in 9 · 7 "),
+            (shown.lines()).any(|row| row.contains("│ turns ") && row.contains(" 61 in 9 · 7 ")),
             "{width}:\n{shown}"
         );
     }
+    // Cards with room for every row keep 3 blanks after their longest label.
+    let roomy = text(&sub_tab_at(crew(), 2, 100));
+    assert!(roomy.contains("│ returns   6 · most: "), "{roomy}");
 }
 
 /// Three cards to a row end where the box above them does at every width, on By CLI, By
@@ -370,11 +361,12 @@ fn a_row_of_cards_ends_where_the_box_above_it_does() {
     }
 }
 
-/// A model named as long as a provider's own id for it keeps its numbers in each legend of
-/// the box of all models, at every width: its name is cut where the cards cut it, and what it
-/// spent has its thousands marked.
+/// A model named as long as a provider's own id for it keeps its numbers in the table of all
+/// models at every width: its name gives way in the names' column, what it spent has its
+/// thousands marked, and every column of amounts is as wide as its widest, so each row's
+/// numbers end where every other row's do.
 #[test]
-fn a_long_model_name_keeps_its_numbers_in_every_legend() {
+fn a_long_model_name_keeps_its_numbers_in_the_table() {
     let long = (CLAUDE, "sonnet-5-5-20260901-extended-thinking-preview");
     for width in [80u16, 100, 120, 140] {
         let mut example = crew();
@@ -392,31 +384,28 @@ fn a_long_model_name_keeps_its_numbers_in_every_legend() {
         let top = top.unwrap_or_else(|| panic!("{width}:\n{shown}"));
         let bottom = rows[top..].iter().position(|row| row.contains('╰'));
         let together = &rows[top..top + bottom.expect("the box's last row")];
-        // Each entry starts at its swatch, and the long name's ends in the mark of a cut.
-        let cut: Vec<&str> = together
-            .iter()
-            .flat_map(|row| row.split("■ ").skip(1))
-            .filter(|entry| entry.contains('…'))
-            .map(|entry| entry.trim_end_matches(['│', ' ']))
+        let row = (together.iter())
+            .find(|row| row.contains("~$12,356.88"))
+            .unwrap_or_else(|| panic!("{width}:\n{shown}"));
+        let numbers: Vec<&str> = row
+            .trim_end_matches(['│', ' '])
+            .split_whitespace()
             .collect();
-        let after = |entry: &str| {
-            entry
-                .split_once("… ")
-                .map(|(_, numbers)| numbers.to_owned())
+        // At 80 columns, and at 120 where the chart stands beside it, amounts this wide leave
+        // the names too little room beside the time, so the table gives up its last column.
+        let figures = ["89.00b", "100%", "~$12,356.88", "100%", "25h", "0m", "66%"];
+        let figures = if matches!(width, 80 | 120) {
+            &figures[..4]
+        } else {
+            &figures[..]
         };
-        assert_eq!(
-            cut.iter().map(|entry| after(entry)).collect::<Vec<_>>(),
-            [
-                Some("89.0b 100%".to_owned()),
-                Some("~$12,356.88 100%".to_owned()),
-                Some("25h 0m 66%".to_owned()),
-            ],
-            "{width}:\n{shown}"
-        );
-        for entry in cut {
-            let name = entry.split_once(' ').map_or(entry, |(name, _)| name);
-            assert!(crate::text::str_width(name) <= 16, "{width}: {entry}");
-        }
+        assert!(numbers.ends_with(figures), "{width}:\n{shown}");
+        let ends: Vec<usize> = (together.iter())
+            .filter(|row| row.trim_end_matches(['│', ' ']).ends_with('%'))
+            .map(|row| row.trim_end_matches(['│', ' ']).chars().count())
+            .collect();
+        assert_eq!(ends.len(), 7, "a row for each model: {width}:\n{shown}");
+        assert!(ends.iter().all(|end| *end == ends[0]), "{width}:\n{shown}");
     }
 }
 
@@ -469,25 +458,29 @@ fn a_model_opened_matches_its_drawing() {
     let screen = screen(&theme, usage, saturday(), &keys, SCREEN);
     let html = include_str!("../../../tests/golden/stats/by_model_opened.html");
     let at = Offset {
-        rows: row_of(&screen, "■ Haiku 5.5 on Claude Code") as isize - 1,
+        rows: row_of(&screen, "██  Haiku 5.5 on Claude Code") as isize - 1,
         columns: 1,
     };
-    dump("by_model_opened", &screen, at, html);
     let compared = Compared {
         theme: &theme,
         screen: &screen,
         at,
         named: Some(one_claude_model),
     };
-    let known = [
-        // 2.8M of the 3.3M it read came from cache, 84 in a hundred. The drawing's 82 are
-        // of all its tokens, the ones it wrote among them.
-        reads(html, 6, &[("cache hit 82%", "cache hit 84%")]),
-        // The drawing has the days' letters a cell right of the bars they name.
-        reads(html, 10, &[(" S M T W T F S ", "S M T W T F S  ")]),
-    ];
-    let known: Vec<&str> = known.iter().map(String::as_str).collect();
-    compared.assert_different_only_in("a model opened", html, rows(0..16), &known);
+    // The drawing's left half, its work. Its right half has a legend of the kinds of token
+    // where the card has a table since, and is the card's own picture's.
+    let work = Region {
+        rows: 0..15,
+        columns: 0..62,
+    };
+    compared.assert_matches("a model opened", html, work);
+    let card = include_str!("../../../tests/golden/stats/opened_model.html");
+    dump("opened_model", &screen, at, card);
+    let compared = Compared {
+        named: Some(app_drawn),
+        ..compared
+    };
+    compared.assert_matches("a model opened", card, rows(0..drawing(card).len()));
 }
 
 #[test]

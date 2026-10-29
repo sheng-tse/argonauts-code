@@ -1,0 +1,38 @@
+                                                                                                                        
+    ▗█▖ ▗▘ Argonauts Code v0.2.0                                                                                        
+ ▗▙  █ ▗▛▘ Claude Code · Opus 5.5 with xhigh effort · Council                                                           
+  ▀█████▄▘ ~/code/shop-api                                                                                              
+                                                                                                                        
+❯ /council                                                                                                              
+  ⎿  Switched to Council · everywhere (~/.argonauts/config.toml)                                                        
+                                                                                                                        
+                                                      ▐▌ ▐▌ ▐▌ ▐▌                                                       
+                                                        Council                                                         
+                            4 seats · each one is its own session · Opus 5.5 keeps the notes                            
+                                                                                                                        
+                                                     Today 10:41 AM                                                     
+                                                                                                                        
+                                 Add rate limiting to the public API, so one noisy client can't slow down everyone      
+                                 else. Build the limiter with Maker-checker, split the route tests across agents, and   
+                                 let Luna do the plan limits in its own session.                                        
+                                                                                                                        
+                                                                                                   Read by ▐▌ ▐▌ ▐▌ ▐▌  
+                                                                                                                        
+                                Each seat answers alone first, without seeing the others                                
+                                                                                                                        
+                                                                                                                        
+▐▌  • • •    ▐▌  • • •    ▐▌  • • •    ▐▌  • • •                                                                        
+                                                                                                                        
+✻ Parleying… (14s · ↓  3.2k of 200k tokens · 0/4 seats agree)                                                           
+  ⎿  Tip: write to every seat, @ one, or shift+↑  to pick a message or a task                                            
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ Write to the council, @ a seat, or shift+↑  to pick a message or task                                                 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ↓  to manage                                           
+                                                                                                                        
+  ⣾  Rate limit the API                    ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/4 · 14s · ↓  3.2k tokens                             
+    ⎿ ○  ▐▌ Opus 5.5                       Writing its first answer    14s · ↓  1.1k tokens                             
+      ○  ▐▌ 5.6 Luna                       Writing its first answer    14s · ↓   840 tokens                             
+      ○  ▐▌ 3.8 Flash                      Writing its first answer    14s · ↓   760 tokens                             
+      ○  ▐▌ Qwen3 Coder 30B                Writing its first answer    14s · ↓   510 tokens                             

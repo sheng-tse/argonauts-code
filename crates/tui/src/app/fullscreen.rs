@@ -127,6 +127,38 @@ impl Scrollback {
             .flatten()
     }
 
+    /// How many rows have printed so far, where the next [`push`](Self::push) starts.
+    pub fn printed_len(&self) -> usize {
+        self.printed.len()
+    }
+
+    /// Where printed rows `first..first + rows` showed in the last frame: the screen row the
+    /// first sat on, above the screen once it scrolled past, and the screen rows of them in
+    /// view. `None` while none shows or any of them wraps onto more rows than one.
+    pub fn printed_rows_at(&self, first: usize, rows: usize) -> Option<(i32, Range<u16>)> {
+        let last = first + rows.checked_sub(1)?;
+        if self.wrapped_from <= last {
+            return None;
+        }
+        let top = *self.wrapped_at.get(first)?;
+        let below = self
+            .wrapped_at
+            .get(last + 1)
+            .copied()
+            .unwrap_or(self.wrapped.len());
+        if below - top != rows {
+            return None;
+        }
+        let (start, end) = (top.max(self.shown.start), below.min(self.shown.end));
+        if start >= end {
+            return None;
+        }
+        let on_screen = |row: usize| u16::try_from(row - self.shown.start + self.kept_above).ok();
+        let first_at =
+            i32::try_from(top + self.kept_above).ok()? - i32::try_from(self.shown.start).ok()?;
+        Some((first_at, on_screen(start)?..on_screen(end)?))
+    }
+
     /// The header printed last now reads as `lines`, rows that only change how they look, as
     /// an ultra look's moving light does: they take the old ones' place where they show,
     /// without wrapping the rest again.
@@ -467,10 +499,11 @@ impl<W: Write> Ui<W> {
             (row < screen.height).then_some(Position::new(column, row))
         });
         let placing = self.place_mascot(now, mascot_at);
-        let map = self.place_map();
+        let map = self.place_map(now);
         self.terminal.draw_buffer_resting(&buffer, cursor)?;
         self.send_placing(placing)?;
-        self.send_map_placing(map)
+        self.send_map_placing(map)?;
+        self.place_council_pictures()
     }
 
     /// PgUp and PgDn scroll the conversation. False on the inline screen, where the terminal

@@ -410,8 +410,15 @@ async fn context_print_counts_the_working_session_first() {
             },
         })
         .await;
-    let controls = controls_after(&driver, 1).await;
-    assert_eq!(controls[0], SessionControl::AskContext(ContextDetail::Full));
+    // The fresh session's first reading asked for the count its start is kept from.
+    let controls = controls_after(&driver, 2).await;
+    assert_eq!(
+        controls,
+        [
+            SessionControl::AskContext(ContextDetail::Summary),
+            SessionControl::AskContext(ContextDetail::Full)
+        ]
+    );
     let printed = |event: &AppEvent| matches!(event, AppEvent::View { data } if matches!(**data, ViewData::ContextPrint { .. }));
     assert!(
         !driver.seen().iter().any(printed),

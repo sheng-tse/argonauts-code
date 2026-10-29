@@ -11,7 +11,7 @@ use crate::cli_commands::{BuiltinCommand, CliCommand, CommandKind};
 use crate::cli_sessions::{CliScan, CliSession, CliTurn, ResumeLaunch};
 use crate::driver::SessionDriver;
 use crate::event::AgentEvent;
-use crate::events::context::ContextDetail;
+use crate::events::context::{ContextDetail, FirstCount};
 use crate::keywords::Keyword;
 use crate::limits::{PlanUsageAnswer, PlanUsageReading};
 use crate::screen::ScreenRequest;
@@ -203,6 +203,12 @@ pub trait Adapter: Send + Sync {
         false
     }
 
+    /// When the CLI first counts a fresh session itself: after its first answer, turn or step.
+    /// `None` for a CLI whose count was never recorded.
+    fn first_count(&self) -> Option<FirstCount> {
+        None
+    }
+
     /// A command that reads plan usage without spending any, such as `agy -p "/usage"`. `model` is
     /// the one the agent's sessions use, for a CLI that names a model on every call.
     fn plan_usage_probe(&self, workdir: &Path, model: Option<&str>) -> Option<CommandSpec> {
@@ -282,6 +288,21 @@ pub trait Adapter: Send + Sync {
     /// `opencode --session <id>`. `req` also has the session's model and launch hints, for a
     /// CLI that must be given them again, as Codex's local mode must.
     fn interactive_resume(&self, req: &SessionRequest) -> Option<CommandSpec> {
+        let _ = req;
+        None
+    }
+
+    /// What its own screen on a council seat's session adds, so the seat goes on as a run's
+    /// session does: nothing kept in the CLI's memory, no attribution lines in its commits.
+    /// Empty for a CLI that has neither or no flag for them.
+    fn seat_screen_args(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// What you type to carry `req.resume_session` on in the CLI's own screen, as the rows
+    /// that say how print it: `claude --resume <id>`, `codex resume <id>`. `None` for a CLI
+    /// that can't reopen one there.
+    fn resume_command(&self, req: &SessionRequest) -> Option<crate::cli_sessions::ResumeCommand> {
         let _ = req;
         None
     }
@@ -370,6 +391,12 @@ pub trait Adapter: Send + Sync {
         None
     }
 
+    /// Whether the CLI keeps a list of its sessions that [`Adapter::cli_sessions`] reads. One
+    /// that keeps none, as agy, carries a session on only by an id you give it.
+    fn lists_sessions(&self) -> bool {
+        false
+    }
+
     /// The CLI's own sessions that ran in `scan.folder`, newest first, at most `limit`. Reads
     /// only the CLI's session list and transcripts, never its credentials. Blocking file reads.
     fn cli_sessions(&self, scan: &CliScan, limit: usize) -> anyhow::Result<Vec<CliSession>> {
@@ -424,6 +451,43 @@ pub trait Adapter: Send + Sync {
         let _ = (workdir, isolated);
         Vec::new()
     }
+
+    /// What gives the CLI away in what its agent writes, which a council strips before another
+    /// seat reads it. The default knows nothing, so nothing is stripped for this CLI.
+    fn identity_marks(&self) -> IdentityMarks {
+        IdentityMarks::default()
+    }
+}
+
+/// The traces a CLI leaves in its agent's words: its tool names, the marks its output rows draw,
+/// its home folders and the way it cites a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct IdentityMarks {
+    /// Such as `Bash`, `TodoWrite` or `apply_patch`, which a relayed message names in plain words.
+    pub tool_names: &'static [&'static str],
+    /// Such as `⏺`, `⎿` or `• Ran`, at the start of a row.
+    pub row_marks: &'static [&'static str],
+    /// Such as `~/.claude`, written with `~` for the home folder.
+    pub home_folders: &'static [&'static str],
+    pub citation: Option<CitationForm>,
+}
+
+impl IdentityMarks {
+    pub fn is_empty(&self) -> bool {
+        self.tool_names.is_empty()
+            && self.row_marks.is_empty()
+            && self.home_folders.is_empty()
+            && self.citation.is_none()
+    }
+}
+
+/// How a CLI cites a file and its lines, as `【F:src/lib.rs†L3-L9】` is `open` `【F:`, `lines`
+/// `†L` and `close` `】`. A relayed message rewrites one as `src/lib.rs:3`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CitationForm {
+    pub open: &'static str,
+    pub lines: &'static str,
+    pub close: &'static str,
 }
 
 /// How the CLI runner talks to the agent's process.
@@ -662,6 +726,18 @@ impl Default for StopPlan {
     }
 }
 
+/// `AGENTS.md` when `workdir` has one, for the
+/// [`instruction_files`](Adapter::instruction_files) of a CLI that reads the project's
+/// AGENTS.md by itself.
+pub fn agents_md(workdir: &Path) -> Vec<String> {
+    const NAME: &str = "AGENTS.md";
+    if workdir.join(NAME).is_file() {
+        vec![NAME.to_owned()]
+    } else {
+        Vec::new()
+    }
+}
+
 /// The first `X.Y.Z` version number in `output`, with any `-pre` or `+build` suffix.
 pub fn extract_version(output: &str) -> Option<String> {
     output
@@ -786,6 +862,21 @@ mod tests {
         // No login state is claimed without a verified check.
         assert_eq!(adapter.setup_hints(), SetupHints::default());
         assert!(adapter.setup_hints().login_check.is_none());
+    }
+
+    #[test]
+    fn an_agent_by_default_leaves_no_marks_to_strip() {
+        let adapter: Box<dyn Adapter> = Box::new(Fake);
+        assert!(adapter.identity_marks().is_empty());
+        let codex_like = IdentityMarks {
+            citation: Some(CitationForm {
+                open: "【F:",
+                lines: "†L",
+                close: "】",
+            }),
+            ..IdentityMarks::default()
+        };
+        assert!(!codex_like.is_empty());
     }
 
     #[test]

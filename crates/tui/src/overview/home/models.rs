@@ -4,15 +4,17 @@
 //! its sessions.
 
 use argonauts_core::display_names::DisplayNames;
+use argonauts_core::logos::logo_for;
 use argonauts_core::overview::{ModelDay, OverviewData, OverviewModel};
 use ratatui::style::Style;
 use ratatui::text::Span;
 
 use super::chart::{self, Cell, LABEL_CELLS};
 use super::look::{
-    Unit, big, cli_word, dollars, model_style, model_word, share_tenths, short_date,
+    Unit, big, cli_word, dollars, model_style, model_swatch, model_word, share_tenths, short_date,
 };
 use super::numbers::heading;
+use crate::kit::logo::{ModelLabel, NoPicture};
 use crate::kit::{Drawn, Kit, fit, merge};
 use crate::overview::shades::ModelColors;
 use crate::text::truncate_spans;
@@ -89,12 +91,15 @@ impl Models<'_> {
             if at > 0 {
                 legend.push(kit.dim(" · "));
             }
-            legend.push(Span::styled("● ", styles[at]));
-            legend.push(Span::raw(model_word(
-                self.names,
+            let label = self.label(kit, &model.agent, model.model.as_deref());
+            legend.extend(label.logo);
+            legend.push(model_swatch(
+                kit,
+                self.shades,
                 &model.agent,
                 model.model.as_deref(),
-            )));
+            ));
+            legend.push(Span::raw(label.name));
         }
         drawn.push(truncate_spans(&legend, width));
         Some(drawn)
@@ -147,6 +152,18 @@ impl Models<'_> {
         drawn
     }
 
+    /// A model's name after the logo of whoever serves it, as Stats names its models. Where
+    /// logos don't draw, the swatch after it marks the model alone.
+    fn label(&self, kit: &Kit<'_>, agent: &str, id: Option<&str>) -> ModelLabel {
+        let logo = logo_for(agent, id);
+        ModelLabel::named(
+            &logo,
+            &model_word(self.names, agent, id),
+            kit.theme,
+            NoPicture::Nothing,
+        )
+    }
+
     /// A model's four lines: its name and share, its CLI with its value and sessions, its
     /// input and output, and its cache.
     fn cell(&self, kit: &Kit<'_>, model: &OverviewModel) -> Vec<Vec<Span<'static>>> {
@@ -171,15 +188,18 @@ impl Models<'_> {
             1 => "1 session".to_owned(),
             n => format!("{n} sessions"),
         });
+        let label = self.label(kit, agent, id);
+        let mut name = label.logo;
+        name.extend([
+            model_swatch(kit, self.shades, agent, id),
+            heading(label.name),
+            kit.dim(format!(
+                " ({})",
+                share_tenths(tokens.total(), self.data.total.total())
+            )),
+        ]);
         vec![
-            vec![
-                Span::styled("● ", model_style(kit, self.shades, agent, id)),
-                heading(model_word(self.names, agent, id)),
-                kit.dim(format!(
-                    " ({})",
-                    share_tenths(tokens.total(), self.data.total.total())
-                )),
-            ],
+            name,
             vec![kit.dim(format!("  {}", on.join(" · ")))],
             vec![kit.dim(format!(
                 "  In: {} · Out: {}",

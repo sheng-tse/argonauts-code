@@ -2,11 +2,13 @@
 //! controller's routing share this parser, so they never disagree.
 
 mod at_words;
+mod bottom_line;
 mod cli;
 mod draft;
 mod issue;
 mod mods;
 mod prompts;
+mod scope_flag;
 mod shared;
 
 use std::path::PathBuf;
@@ -23,11 +25,13 @@ use crate::settings::SettingScope;
 use crate::settings::ui::NarratorMode;
 
 pub use at_words::{AtWord, at_word, at_words};
+pub use bottom_line::LineChange;
 pub use cli::parse_input_with;
 pub use draft::{DraftCommand, NOT_A_COMMAND, draft_command, is_command_word};
 pub use issue::IssueRef;
 pub use mods::{ModPlaceChange, ModsAction, ViewAction};
 pub use prompts::PromptsAction;
+pub use scope_flag::{SCOPE_FLAGS, scope_of_flag};
 pub use shared::SHARED_COMMANDS;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,8 +70,9 @@ pub enum SlashCommand {
     Captain {
         task: String,
     },
+    /// No task hands the crew the request the main agent just took alone.
     Crew {
-        task: String,
+        task: Option<String>,
     },
     /// The crew does it as a workflow, the main agent's phases. No task opens the workflow view, as
     /// `/workflows` does. Nothing typed makes it now that `/workflow` picks the workflow; a
@@ -175,12 +180,10 @@ pub enum SlashCommand {
         action: PromptsAction,
     },
     /// `/templates`: the built-in workflows and prompts, which is in use and which you changed.
-    /// With a `name`, a copy of that one goes into this folder's `.argonauts/`, or into
-    /// `~/.argonauts/` with `global`.
+    /// With a `name`, a copy of that one goes where your changes save: `~/.argonauts/` for
+    /// everywhere, else this folder's `.argonauts/`. A flag names the place on purpose.
     Templates {
         name: Option<String>,
-        #[serde(default)]
-        global: bool,
     },
     /// `/fallback <role> <key> <value>` sets one key under `fallback.<role>.`, the table of
     /// the crew role that `role` follows.
@@ -260,6 +263,13 @@ pub enum SlashCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<SettingScope>,
     },
+    /// Which CLIs show their plan meters on the bottom line, and in what order.
+    BottomLine {
+        change: LineChange,
+        /// Where the change is saved; unset is where your changes go.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<SettingScope>,
+    },
     /// `/mods <name>` for a mod that is a file: its page, or with `pin` or `unpin` one change
     /// to where it shows.
     ModFile {
@@ -295,14 +305,17 @@ pub enum SlashCommand {
     },
     /// The agent CLIs, their versions, and logins.
     Doctor,
-    /// Keeps the computer awake: until you quit with no `time`, for a time such as `2h`,
-    /// and `off` lets it sleep again, also while agents work.
+    /// Keeps the computer awake. With no `time` it switches: on until you quit, or back to
+    /// the default when a hold is on. `on` always holds until you quit, a time such as `2h`
+    /// holds for that long, and `off` goes back to the default.
     Awake {
         time: Option<String>,
     },
     /// Each installed agent CLI updated in turn the way it was installed, then Doctor.
     Update,
     Help,
+    /// The usage panel on its Overview tab, as `/status`, `/context` and `/limits` open theirs.
+    Overview,
     /// The pages this conversation published on claude.ai with Claude Code's Artifact tool:
     /// open one in the browser, or copy its link.
     Artifacts,
@@ -395,6 +408,12 @@ pub enum SlashCommand {
         name: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         args: String,
+    },
+    /// A change typed with `--session`, `--local`, `--project` or `--global`: the command
+    /// `change` saves in `scope` rather than where `save_changes_to` says.
+    SavedIn {
+        scope: SettingScope,
+        change: Box<SlashCommand>,
     },
 }
 
@@ -543,7 +562,9 @@ pub const SLASH_COMMANDS: &[SlashSpec] = &[
     SlashSpec { name: "artifacts", args: "", help: "The pages this conversation published: open one or copy its link", handler: Handler::Ui, category: CommandCategory::Session },
     SlashSpec { name: "exit", args: "", help: "Close the screen. Runs keep going", handler: Handler::Ui, category: CommandCategory::Session },
     SlashSpec { name: "ask", args: "<question>", help: "Answer only, never a run", handler: Handler::App, category: CommandCategory::Work },
-    SlashSpec { name: "captain", args: "<task>", help: "The CLI you talk to does it itself", handler: Handler::App, category: CommandCategory::Work },
+    SlashSpec { name: "captain", args: "[task]", help: "The CLI you talk to does the work itself", handler: Handler::App, category: CommandCategory::Work },
+    SlashSpec { name: "orchestrator", args: "[request]", help: "The orchestrator plans and delegates; workers build, reviewers check", handler: Handler::App, category: CommandCategory::Work },
+    SlashSpec { name: "council", args: "[request]", help: "Each seat answers alone, then they talk until every seat agrees and split the work", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "crew", args: "<task>", help: "The crew does it", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "follow-up", args: "[run] <request>", help: "Follow up on a finished run", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "issue", args: "[number|url]", help: "Work on a GitHub issue: pick one of the open ones, or name it", handler: Handler::App, category: CommandCategory::Work },
@@ -564,6 +585,7 @@ pub const SLASH_COMMANDS: &[SlashSpec] = &[
     SlashSpec { name: "approvals", args: "", help: "Each approval's mode, and what waits for you", handler: Handler::App, category: CommandCategory::ApprovalsAndLimits },
     SlashSpec { name: "limits", args: "[print|pin]", help: "Run and task limits", handler: Handler::App, category: CommandCategory::ApprovalsAndLimits },
     SlashSpec { name: "stats", args: "[today|week|month|all] [pin]", help: "What each CLI and model did, and all together: tasks, reviews, tokens, spend", handler: Handler::App, category: CommandCategory::ApprovalsAndLimits },
+    SlashSpec { name: "overview", args: "", help: "The usage panel on its Overview tab: what you used and spent across every CLI", handler: Handler::Ui, category: CommandCategory::ApprovalsAndLimits },
     SlashSpec { name: "permissions", args: "", help: "Whose rules guard the agents, internet, commits, protected paths", handler: Handler::App, category: CommandCategory::ApprovalsAndLimits },
     SlashSpec { name: "records", args: "[agent]", help: "Who is good at what: each agent's track record and prediction score by kind of work. Pin, reset, or rebuild one", handler: Handler::App, category: CommandCategory::Learning },
     SlashSpec { name: "learned", args: "[name]", help: "Workflows learned from your runs, and how they evolve: versions, candidates, replays, canaries. Promote, roll back, or export one as a skill", handler: Handler::App, category: CommandCategory::Learning },
@@ -574,6 +596,7 @@ pub const SLASH_COMMANDS: &[SlashSpec] = &[
     SlashSpec { name: "theme", args: "", help: "Light, dark, or auto", handler: Handler::Both, category: CommandCategory::Display },
     SlashSpec { name: "vim", args: "", help: "Vim keys on or off", handler: Handler::Both, category: CommandCategory::Display },
     SlashSpec { name: "mods", args: "[mod] [change]", help: "Where each mod shows, above the input, on the bottom line, or on a tab, and how it draws", handler: Handler::App, category: CommandCategory::Display },
+    SlashSpec { name: "bottom-line", args: "[add|remove|reset] [cli]", help: "Which CLIs show their plan meters under the input, and in what order", handler: Handler::Both, category: CommandCategory::Display },
     SlashSpec { name: "pin", args: "<mod>", help: "Show a mod above the input, such as context", handler: Handler::App, category: CommandCategory::Display },
     SlashSpec { name: "unpin", args: "<mod>", help: "Take a mod from above the input", handler: Handler::App, category: CommandCategory::Display },
     SlashSpec { name: "config", args: "[key=value|all]", help: "Settings, each changed in place. key=value sets one; all lists every key and where it came from", handler: Handler::App, category: CommandCategory::SetupAndHelp },
@@ -582,7 +605,7 @@ pub const SLASH_COMMANDS: &[SlashSpec] = &[
     SlashSpec { name: "git", args: "[clean]", help: "How this folder keeps history: off, hidden, or made a git repository. In a repository, what a merged run leaves on your branch. clean removes what ended runs left behind", handler: Handler::App, category: CommandCategory::SetupAndHelp },
     SlashSpec { name: "connect", args: "<hermes|openclaw>", help: "Let an outside agent drive Argonauts Code over MCP: shows the config it needs, and writes it only after you confirm", handler: Handler::App, category: CommandCategory::SetupAndHelp },
     SlashSpec { name: "doctor", args: "", help: "The agent CLIs, their versions, and logins", handler: Handler::App, category: CommandCategory::SetupAndHelp },
-    SlashSpec { name: "awake", args: "[time|off]", help: "Keep the computer awake until you quit, or for a time such as 2h. It stays awake by itself while anything works", handler: Handler::App, category: CommandCategory::SetupAndHelp },
+    SlashSpec { name: "awake", args: "[on|off|time]", help: "Keep the computer awake until you quit, and again to let it sleep, or for a time such as 2h. It stays awake by itself while anything works", handler: Handler::App, category: CommandCategory::SetupAndHelp },
     SlashSpec { name: "update", args: "", help: "Update each agent CLI the way it was installed, then run Doctor", handler: Handler::App, category: CommandCategory::SetupAndHelp },
     SlashSpec { name: "help", args: "", help: "Keys and commands, by category", handler: Handler::Ui, category: CommandCategory::SetupAndHelp },
 ];
@@ -734,7 +757,12 @@ fn bad(command: &str, problem: impl Into<String>) -> InputError {
     }
 }
 
+/// `/name args`, a change's place flag taken off first.
 fn parse_slash(name: &str, args: &str) -> Result<SlashCommand, InputError> {
+    scope_flag::parse(name, args, parse_command)
+}
+
+fn parse_command(name: &str, args: &str) -> Result<SlashCommand, InputError> {
     let no_args = |command: SlashCommand| {
         if args.is_empty() {
             Ok(command)
@@ -756,11 +784,23 @@ fn parse_slash(name: &str, args: &str) -> Result<SlashCommand, InputError> {
         "ask" => Ok(SlashCommand::Ask {
             question: text_arg("a question")?,
         }),
+        // Bare, a workflow's command switches to it; with words it runs that one request.
+        "captain" | "orchestrator" | "council" if args.is_empty() => Ok(SlashCommand::Workflow {
+            name: Some(name.to_owned()),
+            action: WorkflowVerb::Use,
+        }),
+        "captain" | "orchestrator" | "council" if cli::only_a_flag(args) => {
+            Err(cli::not_a_request(name, args))
+        }
         "captain" => Ok(SlashCommand::Captain {
-            task: text_arg("a task")?,
+            task: args.to_owned(),
+        }),
+        "orchestrator" | "council" => Ok(SlashCommand::WorkflowRequest {
+            workflow: name.to_owned(),
+            request: args.to_owned(),
         }),
         "crew" => Ok(SlashCommand::Crew {
-            task: text_arg("a task")?,
+            task: (!args.is_empty()).then(|| args.to_owned()),
         }),
         "follow-up" => parse_follow_up(name, args),
         "issue" => issue::parse_issue(name, args),
@@ -790,6 +830,7 @@ fn parse_slash(name: &str, args: &str) -> Result<SlashCommand, InputError> {
         "theme" => parse_one_word(name, args).map(|name| SlashCommand::Theme { name }),
         "vim" => no_args(SlashCommand::Vim),
         "mods" => mods::parse_mods(name, args),
+        "bottom-line" => bottom_line::parse_bottom_line(name, args),
         "pin" => mods::parse_pin(name, args, true),
         "unpin" => mods::parse_pin(name, args, false),
         "config" | "settings" => parse_config(name, args),
@@ -805,18 +846,19 @@ fn parse_slash(name: &str, args: &str) -> Result<SlashCommand, InputError> {
         "awake" => parse_awake(name, args),
         "update" => no_args(SlashCommand::Update),
         "help" => no_args(SlashCommand::Help),
+        "overview" => no_args(SlashCommand::Overview),
         "artifacts" => no_args(SlashCommand::Artifacts),
         other => shared::parse(other, args)
             .unwrap_or_else(|| Err(InputError::UnknownCommand(other.to_owned()))),
     }
 }
 
-/// `/awake`, `/awake off`, or `/awake <time>` with a time such as `2h` or `45m`.
+/// `/awake`, `/awake on`, `/awake off`, or `/awake <time>` with a time such as `2h` or `45m`.
 fn parse_awake(name: &str, args: &str) -> Result<SlashCommand, InputError> {
-    let usage = "use /awake, /awake <time> such as 2h or 45m, or /awake off";
-    let time = match optional_word(name, args, "/awake [time|off]")? {
+    let usage = "use /awake, /awake on, /awake off, or /awake <time> such as 2h or 45m";
+    let time = match optional_word(name, args, "/awake [on|off|time]")? {
         None => None,
-        Some("off") => Some("off"),
+        Some(word @ ("on" | "off")) => Some(word),
         Some(time) => match crate::settings::Span::new(time).parse() {
             Ok(Some(span)) if !span.is_zero() => Some(time),
             _ => return Err(bad(name, usage)),
@@ -827,17 +869,14 @@ fn parse_awake(name: &str, args: &str) -> Result<SlashCommand, InputError> {
     })
 }
 
-/// `/templates`, `/templates council`, `/templates frames/reviewer --global`. A name becomes
-/// a file's path, so it must not reach outside its folder.
+/// `/templates`, `/templates council`, `/templates frames/reviewer`. A name becomes a file's
+/// path, so it must not reach outside its folder. `--global` or `--project` after it is
+/// taken off as every change's place is.
 fn parse_templates(name: &str, args: &str) -> Result<SlashCommand, InputError> {
-    let usage = "use /templates, or /templates <name> [--global] to copy one";
-    let mut words: Vec<&str> = args.split_whitespace().collect();
-    let global = words.last() == Some(&"--global");
-    if global {
-        words.pop();
-    }
+    let usage = "use /templates, or /templates <name> [--global|--project] to copy one";
+    let words: Vec<&str> = args.split_whitespace().collect();
     let template = match words.as_slice() {
-        [] if !global => None,
+        [] => None,
         [word] => {
             let safe = word.split('/').all(|piece| {
                 !piece.is_empty()
@@ -852,10 +891,7 @@ fn parse_templates(name: &str, args: &str) -> Result<SlashCommand, InputError> {
         }
         _ => return Err(bad(name, usage)),
     };
-    Ok(SlashCommand::Templates {
-        name: template,
-        global,
-    })
+    Ok(SlashCommand::Templates { name: template })
 }
 
 fn parse_run(name: &str, word: &str) -> Result<RunId, InputError> {
@@ -1433,8 +1469,17 @@ mod tests {
             ("/ask how does auth work?", slash(SlashCommand::Ask { question: "how does auth work?".into() })),
             ("/ask", bad_args("ask")),
             ("/captain fix the typo", slash(SlashCommand::Captain { task: "fix the typo".into() })),
-            ("  /crew add per-key rate limiting", slash(SlashCommand::Crew { task: "add per-key rate limiting".into() })),
-            ("/crew", bad_args("crew")),
+            ("/captain", slash(SlashCommand::Workflow { name: Some("captain".into()), action: WorkflowVerb::Use })),
+            ("/council", slash(SlashCommand::Workflow { name: Some("council".into()), action: WorkflowVerb::Use })),
+            ("/orchestrator", slash(SlashCommand::Workflow { name: Some("orchestrator".into()), action: WorkflowVerb::Use })),
+            ("/council add per-key rate limiting", slash(SlashCommand::WorkflowRequest { workflow: "council".into(), request: "add per-key rate limiting".into() })),
+            ("/orchestrator split the parser", slash(SlashCommand::WorkflowRequest { workflow: "orchestrator".into(), request: "split the parser".into() })),
+            ("/council --session", slash(SlashCommand::SavedIn { scope: SettingScope::Session, change: Box::new(SlashCommand::Workflow { name: Some("council".into()), action: WorkflowVerb::Use }) })),
+            ("/orchestrator  --global ", slash(SlashCommand::SavedIn { scope: SettingScope::Global, change: Box::new(SlashCommand::Workflow { name: Some("orchestrator".into()), action: WorkflowVerb::Use }) })),
+            ("/captain --verbose", bad_args("captain")),
+            ("/council --session fix the typo", slash(SlashCommand::WorkflowRequest { workflow: "council".into(), request: "--session fix the typo".into() })),
+            ("  /crew add per-key rate limiting", slash(SlashCommand::Crew { task: Some("add per-key rate limiting".into()) })),
+            ("/crew", slash(SlashCommand::Crew { task: None })),
             ("/follow-up run-01 add tests", slash(SlashCommand::FollowUp { run: Some(run("run-01")), request: "add tests".into() })),
             ("/follow-up add tests", slash(SlashCommand::FollowUp { run: None, request: "add tests".into() })),
             ("/follow-up running the linter too", slash(SlashCommand::FollowUp { run: None, request: "running the linter too".into() })),
@@ -1578,21 +1623,33 @@ mod tests {
             ("/doctor", slash(SlashCommand::Doctor)),
             ("/update", slash(SlashCommand::Update)),
             ("/doctor codex", bad_args("doctor")),
-            ("/templates", slash(SlashCommand::Templates { name: None, global: false })),
+            ("/templates", slash(SlashCommand::Templates { name: None })),
             (
                 "/templates frames/reviewer --global",
-                slash(SlashCommand::Templates { name: Some("frames/reviewer".into()), global: true }),
+                slash(SlashCommand::SavedIn {
+                    scope: SettingScope::Global,
+                    change: Box::new(SlashCommand::Templates { name: Some("frames/reviewer".into()) }),
+                }),
             ),
             ("/templates ../config", bad_args("templates")),
-            ("/templates --global", bad_args("templates")),
+            (
+                "/templates --global",
+                slash(SlashCommand::SavedIn {
+                    scope: SettingScope::Global,
+                    change: Box::new(SlashCommand::Templates { name: None }),
+                }),
+            ),
             ("/templates council now", bad_args("templates")),
             ("/awake", slash(SlashCommand::Awake { time: None })),
             ("/awake 2h", slash(SlashCommand::Awake { time: Some("2h".into()) })),
             ("/awake off", slash(SlashCommand::Awake { time: Some("off".into()) })),
+            ("/awake on", slash(SlashCommand::Awake { time: Some("on".into()) })),
             ("/awake forever", bad_args("awake")),
             ("/awake 0m", bad_args("awake")),
             ("/awake 2h now", bad_args("awake")),
             ("/help", slash(SlashCommand::Help)),
+            ("/overview", slash(SlashCommand::Overview)),
+            ("/overview week", bad_args("overview")),
             ("/artifacts", slash(SlashCommand::Artifacts)),
             ("/frobnicate", unknown("frobnicate")),
             ("/", unknown("")),
@@ -1634,7 +1691,7 @@ mod tests {
                 spec.name
             );
         }
-        assert_eq!(SLASH_COMMANDS.len(), 47);
+        assert_eq!(SLASH_COMMANDS.len(), 51);
         let mut names: Vec<&str> = SLASH_COMMANDS.iter().map(|spec| spec.name).collect();
         names.sort_unstable();
         names.dedup();
@@ -1659,7 +1716,18 @@ mod tests {
             groups,
             [
                 ("Session", vec!["clear", "resume", "artifacts", "exit"]),
-                ("Work", vec!["ask", "captain", "crew", "follow-up", "issue"]),
+                (
+                    "Work",
+                    vec![
+                        "ask",
+                        "captain",
+                        "orchestrator",
+                        "council",
+                        "crew",
+                        "follow-up",
+                        "issue"
+                    ]
+                ),
                 (
                     "Runs",
                     vec![
@@ -1686,7 +1754,7 @@ mod tests {
                 ),
                 (
                     "Approvals and limits",
-                    vec!["approvals", "limits", "stats", "permissions"]
+                    vec!["approvals", "limits", "stats", "overview", "permissions"]
                 ),
                 ("Learning", vec!["records", "learned", "skills", "memory"]),
                 (
@@ -1697,6 +1765,7 @@ mod tests {
                         "theme",
                         "vim",
                         "mods",
+                        "bottom-line",
                         "pin",
                         "unpin"
                     ]
@@ -1726,7 +1795,7 @@ mod tests {
                 .find(|spec| spec.name == name)
                 .map(|spec| spec.handler)
         };
-        for name in ["workflows", "help", "exit"] {
+        for name in ["workflows", "help", "exit", "overview"] {
             assert_eq!(handler(name), Some(Handler::Ui), "{name}");
         }
         for name in ["verbosity", "vim", "theme"] {
@@ -1797,7 +1866,6 @@ mod tests {
             waits,
             [
                 "ask",
-                "captain",
                 "crew",
                 "follow-up",
                 "reassign",

@@ -160,7 +160,7 @@ async fn council_has_everyone_propose_and_challenge_then_builds_and_cross_review
         Some("Cross-review") => accept(),
         _ => text("ok"),
     });
-    let script = steps(built_in("council").expect("built in"));
+    let script = steps(include_str!("../fixtures/council-steps.toml"));
     let ended = run(&script, request("move to v2", 2, 1), &host).await;
 
     assert_eq!(

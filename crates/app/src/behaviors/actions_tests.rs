@@ -3,6 +3,7 @@ use argonauts_core::events::run::RunOutcome;
 use argonauts_core::names::{RoleName, SessionKey};
 use argonauts_core::steps::judgment::ReviewOutput;
 use serde_json::json;
+use time::Duration;
 
 use super::*;
 use crate::client::test_support::{
@@ -50,6 +51,7 @@ fn reviewed(seq: u64, task: &TaskId, verdict: ReviewVerdict) -> RunEvent {
                     comments: Vec::new(),
                     tamper_suspected: false,
                 },
+                picked_by: None,
             }),
         )
     }
@@ -408,4 +410,89 @@ fn a_failed_sessions_work_ends_as_its_task_does_unless_it_was_set_aside() {
     let set_aside = of_run("run-1", &base(true), &BTreeMap::new(), catalog());
     let outcomes: Vec<_> = set_aside.iter().map(|a| a.outcome).collect();
     assert_eq!(outcomes, [Some(Outcome::Dropped), Some(Outcome::Merged)]);
+    let second = |seq: i64| Some(crate::client::test_support::base_ts() + Duration::seconds(seq));
+    assert_eq!(
+        set_aside.iter().map(|a| a.settled_at).collect::<Vec<_>>(),
+        [second(5), second(9)],
+        "dropped when its branch went back, the rest when it merged"
+    );
+}
+
+/// Each outcome keeps the time of the event that settled it, so the map can tell work dropped
+/// this week from work dropped long ago.
+#[test]
+fn an_outcome_keeps_when_it_was_settled() {
+    let second = |seq: i64| Some(crate::client::test_support::base_ts() + Duration::seconds(seq));
+    let settled: Vec<_> = of_run("run-1", &a_run(true), &BTreeMap::new(), catalog())
+        .iter()
+        .map(|action| action.settled_at)
+        .collect();
+    assert_eq!(
+        settled,
+        [second(5), second(13), second(13), second(18), second(18)],
+        "sent back by the review, merged, and dropped when the run finished"
+    );
+    let going = of_run("run-1", &a_run(false), &BTreeMap::new(), catalog());
+    assert_eq!(going[3].settled_at, None, "nothing has settled it yet");
+}
+
+/// A crash is told apart from the CLI's other failures, and a session's end keeps its time.
+#[test]
+fn a_crashed_session_is_a_crash_and_keeps_when_it_ended() {
+    let (crashed, stuck, stopped) = (
+        SessionKey::numbered(1),
+        SessionKey::numbered(2),
+        SessionKey::numbered(3),
+    );
+    let one = task_spec(1);
+    let mut events = vec![run_started(0, "tests", None)];
+    for (at, (session, reason)) in [
+        (
+            &crashed,
+            EndReason::Crashed {
+                message: "exited with signal 11".to_owned(),
+            },
+        ),
+        (
+            &stuck,
+            EndReason::CliError {
+                category: argonauts_core::ErrorCategory::Overloaded,
+                message: "overloaded".to_owned(),
+            },
+        ),
+        (&stopped, EndReason::ContextFull),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let seq = 1 + 4 * at as u64;
+        events.extend([
+            session_started(seq, session, Some(&one.id), RoleName::Worker, "codex"),
+            tool(
+                seq + 1,
+                session,
+                "item_1",
+                "command_execution",
+                json!({"command": "pytest"}),
+            ),
+            finished(seq + 2, session, "item_1", false),
+            ended(seq + 3, session, reason),
+        ]);
+    }
+    let actions = of_run("run-1", &events, &BTreeMap::new(), catalog());
+    let ends: Vec<_> = actions.iter().map(|a| a.ended).collect();
+    assert_eq!(
+        ends,
+        [
+            Some(SessionEnded::Crashed),
+            Some(SessionEnded::Failed),
+            Some(SessionEnded::Stopped)
+        ]
+    );
+    let second = |seq: i64| Some(crate::client::test_support::base_ts() + Duration::seconds(seq));
+    assert_eq!(
+        actions.iter().map(|a| a.ended_at).collect::<Vec<_>>(),
+        [second(4), second(8), second(12)]
+    );
+    assert_eq!(SessionEnded::Crashed.name(), "crashed");
 }

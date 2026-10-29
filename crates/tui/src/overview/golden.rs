@@ -3,7 +3,7 @@
 //! `.html` of the same characters in coloured spans, in the crate's `tests/golden/`.
 //!
 //! Colours in a picture are names, such as `--term-dim` or `--v-claude`; each stands for the
-//! theme roles that draw it. A colour written as its value, such as `#b4472a`, is that colour
+//! theme roles that draw it. A colour written as its value, such as `#6a9ee6`, is that colour
 //! exactly. Text in the terminal's own colour may be drawn in the theme's normal or bright
 //! text. A blank cell's text colour and weight can't be seen, so only its fill is compared.
 
@@ -111,7 +111,7 @@ pub(crate) fn golden_folder(area: &str) -> PathBuf {
         .join(area)
 }
 
-/// `#b4472a` as the colour it is.
+/// `#6a9ee6` as the colour it is.
 fn exact_color(name: &str) -> Option<Color> {
     let hex = u32::from_str_radix(name.strip_prefix('#')?, 16).ok()?;
     Some(Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8))
@@ -340,14 +340,6 @@ fn parse_html(html: &str) -> Vec<Vec<PictureCell>> {
     cells_of(&picture::grid(html))
 }
 
-/// The cells of each grid a picture's `.html` draws, in order.
-pub(crate) fn parse_parts(html: &str) -> Vec<Vec<Vec<PictureCell>>> {
-    picture::grids(html)
-        .iter()
-        .map(|grid| cells_of(grid))
-        .collect()
-}
-
 fn cells_of(grid: &[Vec<picture::Cell>]) -> Vec<Vec<PictureCell>> {
     grid.iter()
         .map(|row| {
@@ -363,7 +355,7 @@ fn cells_of(grid: &[Vec<picture::Cell>]) -> Vec<Vec<PictureCell>> {
         .collect()
 }
 
-/// `var(--term-dim)` as `--term-dim`, and `#b4472a` as itself. Any other colour is one no
+/// `var(--term-dim)` as `--term-dim`, and `#6a9ee6` as itself. Any other colour is one no
 /// picture here names.
 fn colour_name(value: Option<&str>) -> Option<String> {
     let value = value?;

@@ -1,4 +1,4 @@
-//! The deeper map's questions as the app fills them: how many actions each answer covers,
+//! Summaries' questions as the app fills them: how many actions each answer covers,
 //! across how many projects and CLIs, how long it takes and the tokens a hosted model would use,
 //! and who may summarize.
 

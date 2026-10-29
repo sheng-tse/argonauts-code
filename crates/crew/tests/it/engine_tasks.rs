@@ -36,6 +36,7 @@ use argonauts_core::session_runner::{
     Access, RunnerCapabilities, RunnerEvent, SessionRunner, SessionSpec,
 };
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::fallback::FallbackMode;
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit, OnHit};
 use argonauts_core::settings::prompts::{RolePrompts, Writer};
@@ -549,6 +550,45 @@ async fn no_command_checks_blocks_auto_merge() -> anyhow::Result<()> {
             "{kind:?}"
         );
     }
+    Ok(())
+}
+
+/// A run whose checks only a project file you haven't trusted names leaves them out, and its
+/// checks cell names that file rather than saying none are set.
+#[tokio::test(flavor = "multi_thread")]
+async fn checks_a_file_you_havent_trusted_names_are_said_to_wait() -> anyhow::Result<()> {
+    let crew = Crew::new()?;
+    let dir = crew.repo.root().join(".argonauts");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("config.toml"),
+        "[checks]\nrun = [{ name = \"tests\", command = [\"pytest\"] }]\n",
+    )?;
+    crew.services
+        .workers
+        .add(fake_worker(WORKER_B, &[("src/a.rs", "fn a() {}\n")]));
+    crew.services.workers.add(reviewer(REVIEWER));
+    let bench = Bench::new(
+        &crew,
+        RunMode::Crew,
+        &[spec("task-001", &[], WORKER_B, REVIEWER)],
+    )
+    .await?;
+
+    bench.build().await?;
+    let record = bench
+        .host
+        .read(|state| state.tasks.get(&TaskId::new("task-001").unwrap()).cloned())
+        .context("no task")?;
+    let marker = record
+        .checks
+        .iter()
+        .find(|g| checks::is_no_command_checks(g))
+        .context("no checks cell note")?;
+    assert_eq!(
+        marker.summary,
+        checks::held_back_text(".argonauts/config.toml")
+    );
     Ok(())
 }
 
@@ -2222,6 +2262,9 @@ fn approved_plan(tasks: &[TaskSpec]) -> Vec<(Option<TaskId>, RunEventKind)> {
         new_dependencies: Vec::new(),
         flags: Vec::new(),
         workflow: None,
+        seats: Vec::new(),
+        objections: Vec::new(),
+        offer: None,
     };
     let opened = ApprovalOpened {
         id: id.clone(),
@@ -2232,6 +2275,7 @@ fn approved_plan(tasks: &[TaskSpec]) -> Vec<(Option<TaskId>, RunEventKind)> {
         evidence_sha256: evidence.clone(),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
+        when_declined: WhenDeclined::Decide,
         options: Vec::new(),
         free_text: FreeText::None,
         needs_you: true,
@@ -2274,6 +2318,7 @@ fn spec(id: &str, deps: &[&str], who: &str, reviewer: &str) -> TaskSpec {
         limit: TaskLimit::default(),
         predictions: None,
         item: None,
+        way: None,
     }
 }
 

@@ -1,6 +1,5 @@
 ---
 source: crates/tui/tests/it/snap_claude_code_live.rs
-assertion_line: 82
 expression: text(&view.lines)
 ---
 ✶ Rowing… (38s · ↓  2.9k tokens)
@@ -13,4 +12,4 @@ expression: text(&view.lines)
 
   Enter to choose · Esc to carry on without me
 
-  ⏵⏵ auto mode on                                                             ● Claude 5h ▄▄▄▄▄▄ 53%
+  ⏵⏵ auto mode on                                                            ● Claude 5h ▄▄▄▁▁▁  53%

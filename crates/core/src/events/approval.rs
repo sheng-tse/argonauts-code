@@ -7,17 +7,19 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use super::agent_status::FallbackPlan;
+use super::council::{HeldWhy, TextPart};
 use super::goal::{Assumption, GoalFile, GoalQuestion};
 use super::plan::{DesignDecision, JudgingResult, LimitPlan, TaskGraph};
 use super::run::Party;
-use super::task::{CheckOutcome, TaskKind, TaskState};
+use super::task::{CheckOutcome, TaskKind, TaskState, Way};
 use crate::fallback::QualityDebt;
-use crate::names::{AgentId, ApprovalId, ModelRef, RoleName};
+use crate::names::{AgentId, ApprovalId, MessageId, ModelRef, RoleName, SeatId};
 use crate::policy::{AutoPreviewRecord, Verdict, Violation};
 use crate::settings::approvals::{ApprovalMode, DecideWith};
+use crate::settings::asking::WhenDeclined;
 use crate::settings::limit::LimitAmount;
 use crate::steps::judgment::ReviewVerdict;
-use crate::workflow::{Workflow, WorkflowRef};
+use crate::workflow::{StepRef, Workflow, WorkflowRef};
 use crate::{DiffStat, LimitDimension, Spend, SpendStatus, TaskId};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,6 +54,9 @@ pub struct ApprovalOpened {
     pub mode: ApprovalMode,
     /// Who decides in auto mode.
     pub decide_with: DecideWith,
+    /// What Carry on without me does here, as `approvals.when_declined` said when it opened.
+    #[serde(default)]
+    pub when_declined: WhenDeclined,
     /// In display order.
     pub options: Vec<AnswerOption>,
     pub free_text: FreeText,
@@ -107,6 +112,9 @@ pub enum ApprovalPacket {
     OriginalReturned(OriginalReturnedPacket),
     /// Whether a CLI already at work in a step may take a job of it nothing else can.
     SecondAgent(SecondAgentPacket),
+    /// A council asks you what happens to a message code held, or how a point its talk left
+    /// open is settled.
+    Council(CouncilPacket),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -136,6 +144,60 @@ pub struct PlanPacket {
     /// picked it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<PlanWorkflow>,
+    /// The seat that builds each task a council's plan gives one, so the plan names the seat
+    /// even where two seats share a model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seats: Vec<TaskSeat>,
+    /// Each council seat still against a way you asked for. Your way stands, and the plan shows
+    /// the objection beside its task.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objections: Vec<WayObjection>,
+    /// What Approve with edits offers a plan whose tasks have ways. `None` for any other plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer: Option<WaysOffer>,
+}
+
+/// A task of a council's plan and the seat whose folder and session build it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSeat {
+    pub task: TaskId,
+    pub seat: SeatId,
+}
+
+/// The ways a plan's tasks may take, as the setup allows them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaysOffer {
+    /// In the order ←/→ steps through them.
+    pub ways: Vec<Way>,
+    /// What the setup leaves out and where to change it, as the sheet's line reads: "Not
+    /// offered: Best-of-n, Draft-and-vote · this council's setup lists two workflows · Set up
+    /// Council changes it".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_offered: Option<String>,
+}
+
+/// A seat's objection to the way you asked for one task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WayObjection {
+    pub task: TaskId,
+    pub seat: SeatId,
+    /// The first sentence of the seat's newest message against your way, with the seats it
+    /// names kept as seats. Empty when it objected with a tapback alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reason: Vec<TextPart>,
+}
+
+impl WayObjection {
+    /// The reason's words, with each seat it names written by `name`.
+    pub fn words(&self, name: impl Fn(&SeatId) -> String) -> String {
+        self.reason
+            .iter()
+            .map(|part| match part {
+                TextPart::Words(words) => words.clone(),
+                TextPart::Seat(seat) => name(seat),
+            })
+            .collect()
+    }
 }
 
 /// The run's workflow as the plan approval shows it.
@@ -366,6 +428,51 @@ pub struct SecondAgentPacket {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CouncilPacket {
+    /// The talk step whose council asks.
+    pub talk: StepRef,
+    pub about: CouncilQuestion,
+    /// The question as your screen asks it.
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "about", rename_all = "snake_case")]
+pub enum CouncilQuestion {
+    /// A seat's message that repeats what you told it in private.
+    Held {
+        message: MessageId,
+        /// Why it's held, which the question words with the time below.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        why: Option<HeldWhy>,
+        /// When you wrote the private message it repeats. Your screen writes it as a time of
+        /// day in its own zone, which the engine doesn't know.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "time::serde::rfc3339::option"
+        )]
+        wrote_at: Option<OffsetDateTime>,
+    },
+    /// A point still open when the talk stopped, by its number.
+    Point { point: u32 },
+    /// The note keeper's plan, which repeats what you told it in private: every task reads the
+    /// plan, so it waits for you before it is sealed.
+    HeldPlan {
+        keeper: SeatId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        why: Option<HeldWhy>,
+        /// When you wrote the private message it repeats.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "time::serde::rfc3339::option"
+        )]
+        wrote_at: Option<OffsetDateTime>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuestionPacket {
     pub from: ModelRef,
     pub task: TaskId,
@@ -402,8 +509,8 @@ pub enum AnswerAction {
     /// Branches are kept.
     Abandon,
     Choose {
-        /// An answer's label, a [`SettingScope`] name on the scope question, or a guided-setup
-        /// step's value.
+        /// An answer's label, a [`SettingScope`] name on a recorded scope question, or a
+        /// guided-setup step's value.
         ///
         /// [`SettingScope`]: crate::settings::SettingScope
         value: String,
@@ -451,9 +558,9 @@ pub enum AnswerAction {
     Redo,
     /// The fallback keeps the task, and the debt stays for the merge rule.
     KeepFallback,
-    /// Esc on a question or an approval: carry on without me. No question offers
-    /// it. The engine takes an option in your place, as `approvals.when_declined` says, and
-    /// records that one, so this never reaches the journal.
+    /// "Carry on without me", the last option the screen adds to a run's question or
+    /// approval. The engine takes an option in your place, as `approvals.when_declined` says,
+    /// and records that one, so this never reaches the journal.
     CarryOn,
 }
 
