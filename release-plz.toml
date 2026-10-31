@@ -1,7 +1,7 @@
 # release-plz prepares each release as a pull request: the next version, from the Conventional Commits since the
 # last release, and the changelog section for it. Merging the pull request changes nothing else; the release itself
 # starts when the maintainer runs release.yml with the tag, and dist makes the tag and the GitHub release. So
-# release-plz makes neither, and publishes the crates only when release.yml calls it (publish-crates.yml).
+# release-plz makes neither, and publishes nothing: publish-crates.yml publishes with cargo.
 [workspace]
 git_tag_enable = false
 git_release_enable = false

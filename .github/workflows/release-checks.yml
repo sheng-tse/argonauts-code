@@ -1,6 +1,7 @@
 # What must hold before a release is published, checked by release.yml beside the Linux packages, once the builds
 # are done: the GitHub release is created only if this job passes, and every publish job waits for that. dist
-# itself checks that the tag matches the workspace's version. A dry run checks the notices only.
+# itself checks that the tag matches the workspace's version. A dry run checks the notices only. Each check lives in
+# packaging/release/checks.sh, which the rehearsal (rehearse.sh) runs too, on the release pull request's head.
 name: Release checks
 
 on:
@@ -11,9 +12,6 @@ on:
         type: string
 
 permissions: {}
-
-env:
-  CARGO_ABOUT_VERSION: 0.9.2
 
 jobs:
   checks:
@@ -28,69 +26,32 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-      - name: The release is made from main, on a commit CI passed
+      - name: The release is made from main
+        if: ${{ env.TAG != 'dry-run' }}
+        run: sh packaging/release/checks.sh from-main
+      - name: CI passed on the release's commit
         if: ${{ env.TAG != 'dry-run' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -eu
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::Releases are made from main, and this run is on ${GITHUB_REF}"
-            exit 1
-          fi
-          passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
-            --status success --json databaseId --jq length)
-          if [ "$passed" -eq 0 ]; then
-            echo "::error::CI hasn't passed on ${GITHUB_SHA}"
-            exit 1
-          fi
-      # dist turns the section into the release notes. Betas need none.
-      - name: A stable release has its changelog section, dated today
-        if: ${{ env.TAG != 'dry-run' && !contains(env.TAG, '-') }}
-        run: |
-          set -eu
-          heading="## [${TAG#v}] - $(date -u +%Y-%m-%d)"
-          if ! grep -qxF "$heading" CHANGELOG.md; then
-            echo "::error::CHANGELOG.md needs a section headed \"${heading}\""
-            exit 1
-          fi
+        run: sh packaging/release/checks.sh ci-passed "$GITHUB_SHA"
+      # dist turns the section into the release notes. Betas need none. A section dated yesterday passes too, so a
+      # release begun in the evening isn't stopped by midnight UTC.
+      - name: A stable release has its changelog section, dated today or yesterday in UTC
+        if: ${{ env.TAG != 'dry-run' }}
+        run: sh packaging/release/checks.sh changelog "$TAG"
+      - name: The README's release badge names the release
+        if: ${{ env.TAG != 'dry-run' }}
+        run: sh packaging/release/checks.sh badge "$TAG"
       - name: The update keys are real minisign keys
         if: ${{ env.TAG != 'dry-run' }}
-        run: python3 packaging/updates/check_keys.py
-      # The short install address serves a copy of packaging/install.sh from the Pages site, which a release doesn't
-      # update, so a copy left behind would install otherwise than the release says. Until the copy is there, the
-      # README names the release's own address.
+        run: sh packaging/release/checks.sh update-keys
       - name: The installer the short address serves is packaging/install.sh
         if: ${{ env.TAG != 'dry-run' }}
-        env:
-          SHORT: https://argonauts-code.github.io/install.sh
-        run: |
-          set -eu
-          served="$RUNNER_TEMP/served-install.sh"
-          status=$(curl --proto '=https' --tlsv1.2 -sSL -o "$served" -w '%{http_code}' "$SHORT")
-          case "$status" in
-            200) ;;
-            404)
-              echo "::warning::${SHORT} isn't served yet, so the README's install address stays the release's"
-              exit 0
-              ;;
-            *)
-              echo "::error::${SHORT} answered ${status}"
-              exit 1
-              ;;
-          esac
-          if ! cmp -s "$served" packaging/install.sh; then
-            echo "::error::${SHORT} isn't the same as packaging/install.sh: copy it to the Pages site"
-            diff -u "$served" packaging/install.sh || true
-            exit 1
-          fi
-      - name: The third-party notices match Cargo.lock
+        run: sh packaging/release/checks.sh short-installer
+      - name: Install cargo-about
         run: |
           set -eu
           rustup update stable --no-self-update && rustup default stable
-          cargo install --locked "cargo-about@${CARGO_ABOUT_VERSION}" --features cli
-          sh packaging/notices/generate.sh
-          if ! git diff --quiet -- THIRD_PARTY_NOTICES.md; then
-            echo "::error::THIRD_PARTY_NOTICES.md is out of date: run packaging/notices/generate.sh and commit it"
-            exit 1
-          fi
+          cargo install --locked "cargo-about@$(sh packaging/release/checks.sh cargo-about-version)" --features cli
+      - name: The third-party notices match Cargo.lock
+        run: sh packaging/release/checks.sh notices

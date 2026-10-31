@@ -84,6 +84,24 @@ class AddXzCheck(unittest.TestCase):
         self.assertFalse(add_xz_check.has_check(dists))
         self.assertTrue(add_xz_check.has_check(add_xz_check.add_check(dists)))
 
+    def test_the_command_is_stored_executable_and_the_rest_as_dist_stored_them(self):
+        patched = add_xz_check.add_check(package(DIST_FILES))
+        with tarfile.open(fileobj=io.BytesIO(patched), mode="r:gz") as tar:
+            modes = {member.name: member.mode for member in tar.getmembers()}
+        self.assertEqual(modes.pop("package/run-argonauts.js"), 0o755)
+        self.assertEqual(set(modes.values()), {0o644})
+
+    def test_a_package_whose_command_isnt_executable_is_not_one_to_publish(self):
+        out = io.BytesIO()
+        with tarfile.open(fileobj=io.BytesIO(add_xz_check.add_check(package(DIST_FILES))), mode="r:gz") as old:
+            with tarfile.open(fileobj=out, mode="w") as new:
+                for member in old.getmembers():
+                    data = old.extractfile(member).read()
+                    if member.name == "package/run-argonauts.js":
+                        member.mode = 0o644
+                    new.addfile(member, io.BytesIO(data))
+        self.assertFalse(add_xz_check.has_check(gzip.compress(out.getvalue())))
+
     def test_each_checksum_dist_wrote_reads_the_package_the_release_uploads(self):
         name = "argonauts-code-npm-package.tar.gz"
         dists = package(DIST_FILES)

@@ -6,11 +6,12 @@ the one npm publishes:
         --checksums target/distrib/*.sha256 target/distrib/*.sum target/distrib/*.json dist-manifest.json
 
 xz-check.js goes in beside dist's files, install.js calls it before it installs, and run-argonauts.js calls it before
-a first run installs the program. Everything else in the package stays as dist made it. A package whose two entry
+a first run installs the program. run-argonauts.js, the package's command, is stored executable. Everything else in
+the package stays as dist made it. A package whose two entry
 files read otherwise than dist writes them is refused, so a newer dist can't ship a package without the check. Each
 file named after --checksums that holds the package's SHA-256 as dist wrote it gets the new package's instead, and a
-name that matches no file is passed over. With --has-check, it only says whether the package has the check, as the
-npm publish asks before it publishes.
+name that matches no file is passed over. With --has-check, it only says whether the package has the check and an
+executable command, as the npm publish asks before it publishes.
 """
 
 import argparse
@@ -38,6 +39,13 @@ ENTRIES = {
 }
 
 
+# The file package.json names as the `argonauts` command. npm 11.19 leaves its link behind when the xz check stops an
+# install, and an install from the registry after that finds the link in place and leaves the file as the package
+# stores it, so a file stored 0644 gave "Permission denied" (0.2.0's smoke test, node:24-bookworm-slim).
+COMMAND = "package/run-argonauts.js"
+EXECUTABLE = 0o755
+
+
 class Refused(Exception):
     pass
 
@@ -60,6 +68,8 @@ def add_check(package: bytes) -> bytes:
                 data = becomes.encode()
                 member.size = len(data)
                 seen.add(member.name)
+            if member.name == COMMAND:
+                member.mode = EXECUTABLE
             new.addfile(member, io.BytesIO(data) if data is not None else None)
             if member.name == "package/install.js":
                 check = CHECK.read_bytes()
@@ -74,7 +84,7 @@ def add_check(package: bytes) -> bytes:
 
 
 def has_check(package: bytes) -> bool:
-    """Whether the package holds the check, with both entry files calling it."""
+    """Whether the package holds the check, with both entry files calling it, and stores its command executable."""
     with tarfile.open(fileobj=io.BytesIO(package), mode="r:gz") as tar:
         names = tar.getnames()
         if "package/xz-check.js" not in names:
@@ -82,7 +92,7 @@ def has_check(package: bytes) -> bool:
         for name, (_, becomes) in ENTRIES.items():
             if name not in names or tar.extractfile(name).read().decode() != becomes:
                 return False
-    return True
+        return tar.getmember(COMMAND).mode & 0o111 == 0o111
 
 
 def rewrite_checksums(was: bytes, now: bytes, files: list) -> list:
@@ -110,7 +120,7 @@ def main() -> int:
         if has_check(package):
             print(f"{args.package} has the xz check.")
             return 0
-        print(f"{args.package} has no xz check, so it isn't published.", file=sys.stderr)
+        print(f"{args.package} has no xz check or no executable command, so it isn't published.", file=sys.stderr)
         return 1
     try:
         patched = add_check(package)
