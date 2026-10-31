@@ -1,0 +1,105 @@
+# What the source layout check allows today:
+#
+#   cargo test --locked -p argonauts-testkit --test source_layout
+#
+# A crate's src/ holds its entry file (lib.rs or main.rs) and folders by area, and a folder's
+# module is its mod.rs. A file may hold 1,500 production lines and a crate 60,000: non-blank
+# lines under src/ outside the tests. The files and crates over those limits are listed below,
+# each with its count when listed as its ceiling and its planned split. A listed file or crate
+# may only shrink, and comes off the list once it is back within the limit. Paths are from the
+# workspace's top; a crate's is the one Cargo.toml lists among the members.
+
+# core may only shrink. Its ceiling is its count once the modules only app or crew used moved
+# out, plus the 687 lines they held, so 0.2.1's changes have room; the release lowers it to
+# core's count then.
+[core]
+ceiling = 43877
+
+# Crates whose src/ may hold .rs files beside the entry file, and why.
+[exceptions]
+"crates/scenarios" = "leftovers.rs beside lib.rs: two files, 444 lines, too small for folders"
+
+[[file]]
+path = "crates/crew/src/engine/host/mod.rs"
+ceiling = 2384
+split = "the Host's methods by kind: room and pauses, asking a model, sessions, access outside the project"
+
+[[file]]
+path = "crates/app/src/controller/conversation/mod.rs"
+ceiling = 2133
+split = "ConversationState by kind: branching and resuming, the shell and attached runs, the context count, requests and workflows"
+
+[[file]]
+path = "crates/app/src/controller/instructions/mod.rs"
+ceiling = 1975
+split = "the checks by kind: who works and reviews, models and cost, approvals, merge, limits and network; the request's cues"
+
+[[file]]
+path = "crates/app/src/controller/conversation/direct/mod.rs"
+ceiling = 1939
+split = "by stage: starting a turn, the files it leaves, what waits on you"
+
+[[file]]
+path = "crates/crew/src/council/talk/mod.rs"
+ceiling = 1907
+split = "by stage: the council's state, a turn at the table, writing and the plan, landing a turn"
+
+[[file]]
+path = "crates/tui/src/bridge/tools.rs"
+ceiling = 1811
+split = "tools by kind: edits, commands, reads, written reports"
+
+[[file]]
+path = "crates/crew/src/engine/job_fallback.rs"
+ceiling = 1790
+split = "by question: what a job remembers of failures, sign-in checks, who carries on, the view's words"
+
+[[file]]
+path = "crates/tui/src/views/agent.rs"
+ceiling = 1788
+split = "by pane: the phase's agents, the selected agent's sections, the keys and footer"
+
+[[file]]
+path = "crates/crew/src/git/mod.rs"
+ceiling = 1689
+split = "folded into conductor's Git, by kind: worktrees and branches, commits, diffs, merges"
+
+[[file]]
+path = "crates/core/src/app/mod.rs"
+ceiling = 1657
+split = "by direction: UiCommand and its types, AppEvent and its types, ViewData and its rows"
+
+[[file]]
+path = "crates/tui/src/views/workflow/mod.rs"
+ceiling = 1647
+split = "by job: the view's rows, its keys and moves, the goal box"
+
+[[file]]
+path = "crates/registry/src/settings/catalog.rs"
+ceiling = 1570
+split = "by job: the word tables, the named keys, the schema walk"
+
+[[file]]
+path = "crates/app/src/controller/conversation/lifecycle.rs"
+ceiling = 1568
+split = "by stage: beginning a turn, following its events, ending it, reading the reply"
+
+[[file]]
+path = "crates/app/src/controller/workflow_switch/sheet/mod.rs"
+ceiling = 1565
+split = "by job: the draft and its changes, a step's rows and words, the seats"
+
+[[crate]]
+path = "crates/tui"
+ceiling = 156055
+split = "the crates its folders already form, cut right after 0.2.1: base, world, frame, cells, council, panels, bottom and the shell"
+
+[[crate]]
+path = "crates/app"
+ceiling = 87526
+split = "off the tui shell first (it needs only base and cells), then the controller and the modules knotted around it as a crate"
+
+[[crate]]
+path = "crates/crew"
+ceiling = 79674
+split = "git folded into conductor's Git, council as a crate, then the engine once its knot of modules is untied"
