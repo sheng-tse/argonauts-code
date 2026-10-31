@@ -146,7 +146,7 @@ impl Adapter for AcpAdapter {
         };
         let template = match req.role {
             SessionRole::Build | SessionRole::Direct => &self.manifest.build_args,
-            SessionRole::ReadOnly => &self.manifest.read_only_args,
+            SessionRole::ReadOnly | SessionRole::NoTools => &self.manifest.read_only_args,
         };
         let args = template
             .iter()

@@ -23,9 +23,15 @@ use serde_json::{Map, Value, json};
 use crate::models::provider::CONFIG_CONTENT_ENV;
 
 /// Puts the `permission` block in the inline config, beside the provider config already there.
+/// A session with no tools is denied every one, which 2.2.0 takes as a single word.
 pub(crate) fn apply(cmd: &mut CommandSpec, req: &SessionRequest) {
-    let Some(permission) = permission(req) else {
-        return;
+    let permission = if req.role == SessionRole::NoTools {
+        Value::from(DENY)
+    } else {
+        let Some(permission) = permission(req) else {
+            return;
+        };
+        permission
     };
     let at = cmd
         .env_set
@@ -92,7 +98,7 @@ pub(crate) fn permission(req: &SessionRequest) -> Option<Value> {
         only(&closed)
     };
     permission.insert("read".to_owned(), read);
-    if req.role != SessionRole::ReadOnly {
+    if !req.role.reads_only() {
         let edit = if writes {
             let both: Rules = closed.iter().chain(&unwritten).cloned().collect();
             allowed_but(&both)
@@ -216,6 +222,27 @@ mod tests {
         let mut alone = CommandSpec::default();
         apply(&mut alone, &req);
         assert_eq!(alone.env_set[0].0, CONFIG_CONTENT_ENV);
+    }
+
+    #[test]
+    fn a_session_with_no_tools_is_denied_every_one_in_any_mode() {
+        for req in [
+            SessionRequest {
+                role: SessionRole::NoTools,
+                ..SessionRequest::default()
+            },
+            on_autopilot(SessionRole::NoTools, "/home/you/app"),
+        ] {
+            let mut cmd = CommandSpec::default();
+            cmd.env_set.push((
+                CONFIG_CONTENT_ENV.to_owned(),
+                json!({"provider": {"ollama": {}}}).to_string(),
+            ));
+            apply(&mut cmd, &req);
+            let config: Value = serde_json::from_str(&cmd.env_set[0].1).unwrap();
+            assert_eq!(config["permission"], json!("deny"));
+            assert!(config["provider"]["ollama"].is_object());
+        }
     }
 
     #[test]

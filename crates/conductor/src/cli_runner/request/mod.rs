@@ -64,13 +64,14 @@ pub const APPROVE_TOKEN_ENV: &str = "ARGONAUTS_APPROVE_TOKEN";
 /// `mcp_server_errors` when it fails to start.
 pub const STATUS_SERVER: &str = "argonauts_status";
 
-/// Only build, experiment, and direct sessions may change files; everything else gets the read-only
-/// flags.
+/// Only build, experiment, and direct sessions may change files; a session with no tools gets
+/// none where its CLI can turn them off, and everything else gets the read-only flags.
 pub fn session_role(access: Access) -> SessionRole {
     match access {
         Access::Build | Access::Experiment => SessionRole::Build,
         Access::Direct => SessionRole::Direct,
-        Access::NoTools | Access::ReadOnly => SessionRole::ReadOnly,
+        Access::NoTools => SessionRole::NoTools,
+        Access::ReadOnly => SessionRole::ReadOnly,
     }
 }
 
@@ -113,12 +114,14 @@ pub fn session_request(
             schema: &schema,
             report: &report,
         });
+        // A session with no tools gets no status or approval tools either.
+        let with_tools = session_role(spec.access) != SessionRole::NoTools;
         Some(
             write_session_mcp_config(
                 &spec.session_dir,
-                spec.status_file.as_deref(),
+                spec.status_file.as_deref().filter(|_| with_tools),
                 report,
-                spec.asking.as_ref(),
+                spec.asking.as_ref().filter(|_| with_tools),
                 &argonauts,
                 ToolLoading::for_role(session_role(spec.access)),
             )
@@ -578,7 +581,7 @@ pub enum ToolLoading {
 impl ToolLoading {
     pub fn for_role(role: SessionRole) -> Self {
         match role {
-            SessionRole::ReadOnly | SessionRole::Build => Self::Always,
+            SessionRole::ReadOnly | SessionRole::NoTools | SessionRole::Build => Self::Always,
             SessionRole::Direct => Self::Deferred,
         }
     }
@@ -852,12 +855,12 @@ mod tests {
     }
 
     #[test]
-    fn read_only_flags_until_approved() {
+    fn read_only_or_no_tools_until_approved() {
         let dir = tempfile::tempdir().unwrap();
         let adapter = TestAdapter::new("true");
         let mut spec = spec_in(dir.path(), dir.path(), "look");
         for (access, role) in [
-            (Access::NoTools, SessionRole::ReadOnly),
+            (Access::NoTools, SessionRole::NoTools),
             (Access::ReadOnly, SessionRole::ReadOnly),
             (Access::Build, SessionRole::Build),
             (Access::Experiment, SessionRole::Build),

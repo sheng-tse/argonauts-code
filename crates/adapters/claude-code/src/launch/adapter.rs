@@ -578,6 +578,10 @@ mod tests {
         for writes in ["Edit", "Write", "Bash", "NotebookEdit"] {
             assert!(!tools.iter().any(|tool| tool == writes), "{tools:?}");
         }
+        // `--tools ""` is how 2.1.314 turns every built-in tool off.
+        let none = command(&request(SessionRole::NoTools));
+        assert_eq!(value_after(&none, "--tools"), Some(""));
+        assert_eq!(value_after(&none, "--permission-mode"), Some("dontAsk"));
         // The conversation's own session names no tools, so its tool search was never off.
         assert_eq!(
             value_after(&command(&request(SessionRole::Direct)), "--tools"),

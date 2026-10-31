@@ -382,6 +382,26 @@ mod tests {
     }
 
     #[test]
+    fn a_session_with_no_tools_turns_off_the_shell_and_every_other_tool() {
+        let args = command(&request(SessionRole::NoTools)).args;
+        assert_eq!(value_after(&args, "--sandbox"), "read-only");
+        let disabled: Vec<&str> = args
+            .windows(2)
+            .filter(|pair| pair[0] == "--disable")
+            .map(|pair| pair[1].as_str())
+            .collect();
+        for feature in ["shell_tool", "unified_exec", "multi_agent", "view_image"] {
+            assert!(disabled.contains(&feature), "{args:?}");
+        }
+        assert!(
+            args.iter().any(|arg| arg == "web_search=\"disabled\""),
+            "{args:?}"
+        );
+        let read_only = command(&request(SessionRole::ReadOnly)).args;
+        assert!(!read_only.iter().any(|arg| arg == "shell_tool"));
+    }
+
+    #[test]
     fn codex_passes_your_model_and_always_its_sandbox() {
         for role in [
             SessionRole::ReadOnly,
@@ -392,7 +412,7 @@ mod tests {
             assert_eq!(value_after(&spec.args, "--model"), CHEAPEST_MODEL);
             assert!(!spec.args.iter().any(|arg| arg == "--output-schema"));
             let expected = match role {
-                SessionRole::ReadOnly => "read-only",
+                SessionRole::ReadOnly | SessionRole::NoTools => "read-only",
                 SessionRole::Build | SessionRole::Direct => "workspace-write",
             };
             assert_eq!(value_after(&spec.args, "--sandbox"), expected);

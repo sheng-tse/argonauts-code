@@ -166,7 +166,7 @@ fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
     let allowed = match (effective_role(req), req.asks) {
         (SessionRole::Direct, Asks::Never) => Allowed::Everything,
         (SessionRole::Direct, Asks::LikeCli | Asks::EveryChange) => Allowed::AsTheCliAsks,
-        (SessionRole::ReadOnly | SessionRole::Build, _) => Allowed::Listed,
+        (SessionRole::ReadOnly | SessionRole::NoTools | SessionRole::Build, _) => Allowed::Listed,
     };
     let own = own_workflow(
         req,
@@ -230,7 +230,7 @@ fn own_workflow(req: &SessionRequest, role: SessionRole, fanout: Fanout) -> OwnW
     let (may_run, asks_you) = match role {
         SessionRole::Direct => (fanout != Fanout::Off, req.asks != Asks::Never),
         SessionRole::Build => (fanout.offers_workflows(), false),
-        SessionRole::ReadOnly => (false, false),
+        SessionRole::ReadOnly | SessionRole::NoTools => (false, false),
     };
     if !may_run || req.background_off {
         return OwnWorkflow::default();
@@ -264,6 +264,7 @@ pub fn effective_role(req: &SessionRequest) -> SessionRole {
     match req.role {
         SessionRole::Build if approved => SessionRole::Build,
         SessionRole::Direct if approved => SessionRole::Direct,
+        SessionRole::NoTools => SessionRole::NoTools,
         _ => SessionRole::ReadOnly,
     }
 }
@@ -281,7 +282,7 @@ fn with_permission_flags(
     // A project's settings can set another default mode, and a resume forgets the flag, so it
     // goes on every launch.
     let spec = match role {
-        SessionRole::ReadOnly | SessionRole::Build => spec
+        SessionRole::ReadOnly | SessionRole::NoTools | SessionRole::Build => spec
             .args(["--permission-mode", permission_mode(role)])
             .args(["--permission-prompts", "none"])
             .args(["--tools".to_owned(), tool_list(role, fanout, req)]),
@@ -389,7 +390,7 @@ pub fn user_message_line_with_uuid(text: &str, uuid: &str) -> String {
 fn permission_mode(role: SessionRole) -> &'static str {
     match role {
         // Denies anything that would prompt, and the tool list has no way to write.
-        SessionRole::ReadOnly => "dontAsk",
+        SessionRole::ReadOnly | SessionRole::NoTools => "dontAsk",
         SessionRole::Build | SessionRole::Direct => "acceptEdits",
     }
 }
@@ -397,6 +398,8 @@ fn permission_mode(role: SessionRole) -> &'static str {
 fn tool_list(role: SessionRole, fanout: Fanout, req: &SessionRequest) -> String {
     let background_off = req.background_off;
     let mut tools: Vec<&str> = match role {
+        // 2.1.314's `--tools ""` turns off every built-in tool.
+        SessionRole::NoTools => Vec::new(),
         SessionRole::ReadOnly => READ_ONLY_TOOLS.to_vec(),
         SessionRole::Build | SessionRole::Direct => [BUILD_TOOLS, TODO_TOOLS].concat(),
     };

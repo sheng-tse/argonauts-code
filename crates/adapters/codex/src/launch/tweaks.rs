@@ -101,6 +101,31 @@ pub fn read_only_no_subagents() -> Vec<String> {
     config_override("agents.enabled=false")
 }
 
+/// The tool features 0.165's `features list` shows on, for a session that answers from its
+/// prompt alone. Web search is a setting rather than a feature.
+const TOOL_FEATURES: &[&str] = &[
+    "shell_tool",
+    "unified_exec",
+    "multi_agent",
+    "view_image",
+    "image_generation",
+    "apps",
+    "plugins",
+    "browser_use",
+    "computer_use",
+    "in_app_browser",
+    "tool_suggest",
+];
+
+pub fn tools_off() -> Vec<String> {
+    let mut args: Vec<String> = TOOL_FEATURES
+        .iter()
+        .flat_map(|feature| ["--disable".to_owned(), (*feature).to_owned()])
+        .collect();
+    args.extend(config_override("web_search=\"disabled\""));
+    args
+}
+
 fn no_subagents() -> Vec<String> {
     vec!["--disable".to_owned(), "multi_agent".to_owned()]
 }

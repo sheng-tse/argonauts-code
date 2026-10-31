@@ -532,7 +532,8 @@ fn role_of(access: Access) -> SessionRole {
     match access {
         Access::Direct => SessionRole::Direct,
         Access::Build | Access::Experiment => SessionRole::Build,
-        Access::NoTools | Access::ReadOnly => SessionRole::ReadOnly,
+        Access::NoTools => SessionRole::NoTools,
+        Access::ReadOnly => SessionRole::ReadOnly,
     }
 }
 

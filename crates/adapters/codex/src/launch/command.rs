@@ -103,7 +103,7 @@ pub fn build(program: &str, req: &SessionRequest) -> anyhow::Result<CommandSpec>
 pub fn sandbox_mode(req: &SessionRequest) -> &'static str {
     match req.role {
         _ if req.tool_sandbox_off => "danger-full-access",
-        SessionRole::ReadOnly => "read-only",
+        SessionRole::ReadOnly | SessionRole::NoTools => "read-only",
         // A direct turn runs as a build session in your checkout: Codex asks only to leave its
         // sandbox, and inside ours there's nothing to leave to.
         SessionRole::Build | SessionRole::Direct => "workspace-write",
@@ -182,6 +182,9 @@ fn launch_tweak_args(req: &SessionRequest) -> Vec<String> {
             args.extend(tweaks::read_only_no_subagents());
         }
     }
+    if req.role == SessionRole::NoTools {
+        args.extend(tweaks::tools_off());
+    }
     if req.user_hooks_off {
         args.extend(tweaks::user_hooks_off().args);
     }
@@ -193,7 +196,7 @@ fn launch_tweak_args(req: &SessionRequest) -> Vec<String> {
 }
 
 fn is_judge_like(role: SessionRole, fanout: NativeFanout) -> bool {
-    role == SessionRole::ReadOnly && tweaks::subagents_off(fanout)
+    role.reads_only() && tweaks::subagents_off(fanout)
 }
 
 fn refuse_unsafe_extra_args(extra_args: &[String]) -> anyhow::Result<()> {

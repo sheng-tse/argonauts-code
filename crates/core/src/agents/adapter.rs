@@ -794,7 +794,7 @@ mod tests {
         fn command(&self, req: &SessionRequest) -> anyhow::Result<CommandSpec> {
             let spec = CommandSpec::new(self.binary(), &req.workdir).arg(&req.prompt);
             Ok(match req.role {
-                SessionRole::ReadOnly => spec.arg("--read-only"),
+                SessionRole::ReadOnly | SessionRole::NoTools => spec.arg("--read-only"),
                 SessionRole::Build | SessionRole::Direct => spec,
             })
         }
