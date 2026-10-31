@@ -31,7 +31,7 @@ text
   Point at anything on the map to see what it is.                                                   Listing project files to understand structure
                                                                                                     Checking repository status and local environment setup
   Summaries · 650 of 823 summarized by Qwen3 Coder 30B · 173 newer not yet                     new  Responded with a greeting
-  Redo stopped: Haiku 5.5 didn't answer after 40 of 823 summaries.                             new  Drafting the retry handler notes
+  Redo stopped after 40 of 823 summaries: Haiku 5.5 stopped without an answer.                 new  Drafting the retry handler notes
   The map is as it was, and the 40 are kept for the next try.                                  new  Measuring each test suite before a merge
                                                                                                     Reading the token bucket config values
 
@@ -66,7 +66,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ..iiiii.ii.iiiiiiii.ii.iii.iii.ii.iii.iiii.ii.iii...................................................eeeeeee.eeeeeee.eeeee.ee.eeeeeeeeee.eeeeeeeee
 ....................................................................................................eeeeeeee.eeeeeeeeee.eeeeee.eee.eeeee.eeeeeeeeeee.eeeee
 ..iiiiiiiii.i.iii.ii.iii.iiiiiiiiii.ii.iiiii.iiiii.iii.i.iii.iiiii.iii.iii....................sttts.eeeeeeeee.eeee.e.eeeeeeee
-..uuuu.uuuuuuuu.iiiii.iii.iiiiii.iiiiii.iiiii.ii.ii.iii.iiiiiiiiii............................sttts.eeeeeeee.eee.eeeee.eeeeeee.eeeee
+..uuuu.uuuuuuu.iiiii.ii.ii.iii.iiiiiiiiii.iiiii.iii.iiiiiii.iiiiiii.ii.iiiiiii................sttts.eeeeeeee.eee.eeeee.eeeeeee.eeeee
 ..iii.iii.ii.ii.ii.iiii.iii.iii.ii.iii.iiii.iii.iii.iiii.iiii.................................sttts.eeeeeeeee.eeee.eeee.eeeee.eeeeee.e.eeeee
 ....................................................................................................eeeeeee.eee.eeeee.eeeeee.eeeeee.eeeeee
 

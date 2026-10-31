@@ -809,11 +809,12 @@ steps = [
   { press = "l" },
 ]
 
+# Row 25, the line under the headline, says why the redo stopped, in approval 375's wording.
 [[drawing]]
 file = "behaviors/deeper-map-kept@120x38.txt"
 release = "0.2.1"
 approval = 371
-hash = "sha256:61ec529669591cef97e20bc5cf05caf2ad244259c316c2668320c5dbd0eea91c"
+hash = "sha256:dd31f77e353f1aa48ae70ba90e399fff9b4a37c2d069131386a74363ce4c7721"
 held = { approval = 374, why = """\
   The app can't reach this screen yet. The drawing shows a redo by Haiku 5.5 that stopped on a \
   map Qwen3 Coder 30B made, but the tab redoes a map only with its own summarizer, and \
@@ -839,11 +840,12 @@ steps = [
   { press = "Down" },
 ]
 
+# Row 25, the line under the headline, says why the redo stopped, in approval 375's wording.
 [[drawing]]
 file = "behaviors/deeper-map-kept@177x40.txt"
 release = "0.2.1"
 approval = 371
-hash = "sha256:0ea145962e2069a8844c930cffe6c32fdec77a9819ad57f9ee0dee53352060ea"
+hash = "sha256:af763396308375a2dd933dda3e177218cac554fce6b6d5de3f26d6097f8a4605"
 held = { approval = 374, why = """\
   The app can't reach this screen yet. The drawing shows a redo by Haiku 5.5 that stopped on a \
   map Qwen3 Coder 30B made, but the tab redoes a map only with its own summarizer, and \

@@ -458,7 +458,7 @@ fn beside_the_map_summaries_compare_a_model_as_drawn() {
 }
 
 /// A redo with Haiku 5.5 that stopped answering after 40 summaries leaves the map as it was,
-/// and says so under the headline.
+/// and says why under the headline.
 fn kept_after_a_failed_redo(size: (u16, u16)) {
     use argonauts_core::behaviors::deep_map::{DeepDone, DeepProgress};
 
@@ -477,7 +477,7 @@ fn kept_after_a_failed_redo(size: (u16, u16)) {
     opened.state.deep.done(&DeepDone {
         written: 40,
         placed: 650,
-        failed: Some("the summarizer stopped answering".to_owned()),
+        failed: Some("Haiku 5.5 stopped without an answer".to_owned()),
         ..DeepDone::default()
     });
     let kept = opened.draw();
@@ -488,6 +488,66 @@ fn kept_after_a_failed_redo(size: (u16, u16)) {
 fn a_failed_redo_keeps_the_map_and_says_so_as_drawn() {
     kept_after_a_failed_redo(SMALL);
     kept_after_a_failed_redo(WIDE);
+}
+
+/// Each row of `buf` as text, its blanks at the end left out.
+fn row_texts(buf: &Buffer) -> Vec<String> {
+    let area = buf.area;
+    (area.top()..area.bottom())
+        .map(|y| {
+            let row: String = (area.left()..area.right())
+                .map(|x| buf[(x, y)].symbol().to_owned())
+                .collect();
+            row.trim_end().to_owned()
+        })
+        .collect()
+}
+
+/// An update whose Haiku 5.5 was refused its start says why under the headline at every real
+/// size: the reason's second sentence gives way where the row is short, and the first is cut at
+/// a word where even that doesn't fit, as at 80 × 24 and in the map's column beside the list at
+/// 177 × 40.
+#[test]
+fn a_refused_update_says_why_at_every_real_size() {
+    use argonauts_core::behaviors::deep_map::{DeepDone, DeepProgress};
+    use argonauts_testkit::screen::REAL_SIZES;
+
+    const REFUSED: &str = "Haiku 5.5 couldn't start, since a CLI session needs a sandbox. Only \
+        sandbox.mode = \"tool\" or \"none\", which you set yourself, lets one run without ours";
+    let stopped = "Update stopped after 0 of 88 summaries: Haiku 5.5 couldn't start, since a";
+    for size in REAL_SIZES {
+        let mut opened = Opened::new(super::models(), &summaries(), (size.cols, size.rows), true);
+        opened.state.deep.running = Some(DeepProgress {
+            done: 0,
+            total: 88,
+            seconds_left: None,
+            summarizer: "Haiku 5.5 on Claude Code".to_owned(),
+            short: "Haiku 5.5".to_owned(),
+            redo: false,
+            downloading: false,
+        });
+        opened.draw();
+        opened.state.deep.done(&DeepDone {
+            failed: Some(REFUSED.to_owned()),
+            ..DeepDone::default()
+        });
+        let rows = row_texts(&opened.draw());
+        let at = rows
+            .iter()
+            .position(|row| row.contains("Update stopped"))
+            .unwrap_or_else(|| panic!("{size}: no stopped line in\n{}", rows.join("\n")));
+        let said = rows[at].trim_start();
+        let wanted = match size.cols {
+            80 => format!("{stopped}…"),
+            120 => format!("{stopped} CLI session needs a sandbox."),
+            177 => format!("{stopped} CLI…"),
+            _ => format!("Update stopped after 0 of 88 summaries: {REFUSED}."),
+        };
+        // Beside the list, the line keeps its blanks before the list's column.
+        let said = said.split("    ").next().unwrap_or(said);
+        assert_eq!(said, wanted, "{size}");
+        assert_eq!(rows[at + 1].trim_start(), "The map is as it was.", "{size}");
+    }
 }
 
 #[test]

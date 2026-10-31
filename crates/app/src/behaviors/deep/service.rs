@@ -27,7 +27,7 @@ use super::offer::{covers, embedder_note, keyed_embedder, offer, scope_offer};
 use super::open::{START_WAIT, installed_servers, pull, start};
 use super::prompt::PROMPT_VERSION;
 use super::records::{Recorded, recorded};
-use super::session::SessionSummarizer;
+use super::session::{SessionSummarizer, couldnt_start};
 use super::store::Store;
 use super::summarize::{LocalServer, Summarizer};
 use super::update::{Before, Deep, EmbedWith, before};
@@ -197,16 +197,22 @@ impl DeepMaps {
         summarizer: &ModelRef,
         progress: &mut (dyn FnMut(DeepProgress) + Send),
     ) -> anyhow::Result<()> {
-        let (Some((base_url, _)), Some(tag)) = (&gathered.ollama, summarizer.model.as_deref())
-        else {
-            anyhow::bail!("Ollama isn't answering, so {summarizer} can't be downloaded");
-        };
         let name = gathered
             .open
             .models
             .iter()
             .find(|choice| &choice.worker == summarizer)
-            .map_or_else(|| tag.to_owned(), |choice| choice.display_name());
+            .map(|choice| choice.display_name())
+            .or_else(|| {
+                gathered
+                    .names
+                    .model(&summarizer.agent, summarizer.model.as_deref())
+            })
+            .unwrap_or_else(|| summarizer.to_string());
+        let (Some((base_url, _)), Some(tag)) = (&gathered.ollama, summarizer.model.as_deref())
+        else {
+            anyhow::bail!("{name} didn't download, since Ollama isn't answering");
+        };
         let mut told = |done: u64, total: u64| {
             progress(DeepProgress {
                 done: done as usize,
@@ -220,7 +226,7 @@ impl DeepMaps {
         };
         pull(base_url, tag, &mut told)
             .await
-            .map_err(|why| anyhow!("{name} didn't download: {why}"))
+            .map_err(|why| anyhow!("{name} didn't download ({why})"))
     }
 
     /// The counts of one scope, for a question about it.
@@ -383,9 +389,14 @@ impl DeepMaps {
 
     fn summarizer_for(&self, chosen: &Candidate) -> anyhow::Result<Box<dyn Summarizer>> {
         if let Place::ThisMachine(local) = &chosen.place {
-            return LocalServer::new(&local.runtime, &local.base_url, &local.model)
+            return LocalServer::new(&local.runtime, &local.base_url, &local.model, &chosen.short)
                 .map(|server| Box::new(server) as Box<dyn Summarizer>)
-                .ok_or_else(|| anyhow!("no client for this machine's servers"));
+                .ok_or_else(|| {
+                    anyhow!(
+                        "{} couldn't start, since there's no client for this machine's servers",
+                        chosen.short
+                    )
+                });
         }
         let workers = self.workers.clone().unwrap_or_else(|| {
             let (plan_usage, health) = argonauts_conductor::boards_with(
@@ -404,7 +415,7 @@ impl DeepMaps {
         });
         let runner = workers
             .get(&chosen.model)
-            .map_err(|err| anyhow!("{} can't summarize: {err}", chosen.name))?;
+            .map_err(|err| anyhow!(couldnt_start(&chosen.short, &err)))?;
         let effort = crate::agents::adapters::builtin_adapters()
             .iter()
             .find(|adapter| adapter.id() == chosen.model.agent)
@@ -415,7 +426,12 @@ impl DeepMaps {
         let n = SUMMARIZERS.fetch_add(1, Ordering::Relaxed);
         let scratch: PathBuf =
             std::env::temp_dir().join(format!("argonauts-summaries-{}-{n}", std::process::id()));
-        Ok(Box::new(SessionSummarizer::new(runner, effort, scratch)))
+        Ok(Box::new(SessionSummarizer::new(
+            runner,
+            &chosen.short,
+            effort,
+            scratch,
+        )))
     }
 
     /// The embedder the settings give: word vectors, a model they name, or auto's

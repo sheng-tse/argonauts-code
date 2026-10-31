@@ -29,7 +29,7 @@ text
   Point at anything on the map to see what it is.
 
   Summaries · 650 of 823 summarized by Qwen3 Coder 30B · 173 newer not yet
-  Redo stopped: Haiku 5.5 didn't answer after 40 of 823 summaries.
+  Redo stopped after 40 of 823 summaries: Haiku 5.5 stopped without an answer.
   The map is as it was, and the 40 are kept for the next try.
   Distinctive to Opus 5.5 · 8 of its 9 actions, in the model's words ·  new  says more than its label
           Broad search for cache invalidation
@@ -62,7 +62,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ..iiiii.ii.iiiiiiii.ii.iii.iii.ii.iii.iiii.ii.iii
 
 ..iiiiiiiii.i.iii.ii.iii.iiiiiiiiii.ii.iiiii.iiiii.iii.i.iii.iiiii.iii.iii
-..rrrr.rrrrrrrr.iiiii.iii.iiiiii.iiiiii.iiiii.ii.ii.iii.iiiiiiiiii
+..rrrr.rrrrrrr.iiiii.ii.ii.iii.iiiiiiiiii.iiiii.iii.iiiiiii.iiiiiii.ii.iiiiiii
 ..iii.iii.ii.ii.ii.iiii.iii.iii.ii.iii.iiii.iii.iii.iiii.iiii
 ..bbbbbbbbbbb.bb.bbbb.bbb.i.i.ii.iii.i.iiiiiiii.ii.iii.iiiiiii.iiiii.i.sttts.iiii.iiii.iiii.iii.iiiii
 ..........eeeee.eeeeee.eee.eeeee.eeeeeeeeeeee

@@ -63,7 +63,8 @@ pub struct DeepFlow {
 struct Kept {
     done: DeepDone,
     summarizer: String,
-    total: usize,
+    /// The summaries it was making, `None` while it hadn't asked for any yet.
+    total: Option<usize>,
     redo: bool,
 }
 
@@ -98,7 +99,11 @@ impl DeepFlow {
                             p.short.clone()
                         }
                     }),
-                    total: progress.as_ref().map_or(0, |p| p.total),
+                    // While it downloads, the progress counts megabytes.
+                    total: progress
+                        .as_ref()
+                        .filter(|p| !p.downloading)
+                        .map(|p| p.total),
                     redo: progress.as_ref().is_some_and(|p| p.redo),
                 });
             self.started = None;
@@ -245,8 +250,8 @@ impl DeepFlow {
     }
 
     /// Under the headline, after an update that left the map as it was: why, and that the
-    /// summaries it wrote are kept for the next try.
-    pub fn kept_lines(&self, kit: &Kit<'_>) -> Option<Vec<Line<'static>>> {
+    /// summaries it wrote are kept for the next try, in `width`.
+    pub fn kept_lines(&self, kit: &Kit<'_>, width: usize) -> Option<Vec<Line<'static>>> {
         let kept = self.kept.as_ref()?;
         Some(deep_lines::kept(
             kit,
@@ -254,6 +259,7 @@ impl DeepFlow {
             &kept.summarizer,
             kept.total,
             kept.redo,
+            width,
         ))
     }
 

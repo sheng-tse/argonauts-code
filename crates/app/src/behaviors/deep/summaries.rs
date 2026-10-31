@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use std::io;
 use std::time::{Duration, Instant};
 
+use argonauts_core::safety::sanitize::sanitize_for_terminal;
+use argonauts_tui::base::text::{At, cut};
 use tokio_util::sync::CancellationToken;
 
 use super::action::{ActionKey, DeepAction};
@@ -51,7 +53,7 @@ pub(crate) struct Summarized {
     pub stopped: bool,
     /// It sent as many texts as it was let, and more wait.
     pub paused: bool,
-    /// Why the summarizer stopped answering, when it did.
+    /// Why the update stopped before its end, in a sentence naming the summarizer.
     pub failed: Option<String>,
 }
 
@@ -112,7 +114,8 @@ pub(crate) fn needed<'a>(actions: &'a [DeepAction], store: &Store, summarizer: &
 
 /// Summarizes every action of `actions` that has no summary from `summarizer` yet, sending at
 /// most `most` texts when it's given. It stops between requests once `stop` is cancelled, and
-/// when the summarizer fails; what came back before is kept either way.
+/// when the summarizer fails or answers with no line it was asked for; what came back before
+/// is kept either way.
 pub(crate) async fn summarize(
     actions: &[DeepAction],
     store: &Store,
@@ -169,8 +172,13 @@ pub(crate) async fn summarize(
                 break;
             }
         };
+        let found = prompt::summaries(&reply, batch.len());
+        if found.iter().all(Option::is_none) {
+            done.failed = Some(unreadable(summarizer.name(), &reply));
+            break;
+        }
         let mut lines = Vec::new();
-        for (pending, summary) in batch.iter().zip(prompt::summaries(&reply, batch.len())) {
+        for (pending, summary) in batch.iter().zip(found) {
             let Some(summary) = summary else {
                 continue;
             };
@@ -193,13 +201,33 @@ pub(crate) async fn summarize(
     Ok(done)
 }
 
+/// How much of a reply's first line a reason quotes, in cells.
+const QUOTED: usize = 80;
+
+/// What a reply gave instead of numbered lines, by its first line.
+fn unreadable(name: &str, reply: &str) -> String {
+    let first = reply
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(sanitize_for_terminal)
+        .unwrap_or_default();
+    if first.is_empty() {
+        return format!("{name} answered nothing");
+    }
+    format!(
+        "{name} answered without the numbered lines asked for (\"{}\")",
+        cut(&first, QUOTED, At::Word)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::super::action::PatchCounts;
     use super::super::action::sample::shell;
-    use super::super::summarize::fakes::Echo;
+    use super::super::summarize::fakes::{Echo, Says};
     use super::*;
 
     const QWEN: &str = "ollama/qwen3-coder:30b";
@@ -289,6 +317,30 @@ mod tests {
         let rest = Echo::new(QWEN);
         let done = run(&all, &store, &rest).await;
         assert_eq!((done.already, done.written, rest.requests()), (20, 15, 2));
+    }
+
+    #[tokio::test]
+    async fn a_reply_with_no_line_to_keep_stops_the_update_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        // Llama 3.2 numbered the one action it was sent 2.
+        let says = Says::new(
+            "ollama/llama3.2",
+            "Llama 3.2",
+            "2. Create a new file in place.",
+        );
+        let done = run(&actions("run-1", 1), &store, &says).await;
+        assert_eq!((done.written, done.requests, done.missing), (0, 1, 1));
+        assert_eq!(
+            done.failed.as_deref(),
+            Some(
+                "Llama 3.2 answered without the numbered lines asked for (\"2. Create a new \
+                 file in place.\")"
+            )
+        );
+        let empty = Says::new("ollama/llama3.2", "Llama 3.2", "  \n");
+        let done = run(&actions("run-1", 3), &store, &empty).await;
+        assert_eq!(done.failed.as_deref(), Some("Llama 3.2 answered nothing"));
     }
 
     #[tokio::test]

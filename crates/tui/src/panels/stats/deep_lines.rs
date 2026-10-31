@@ -6,6 +6,7 @@ use argonauts_core::behaviors::deep_map::{DeepDone, DeepProgress};
 use ratatui::text::{Line, Span};
 
 use crate::base::kit::Kit;
+use crate::base::text::{At, cut, cut_spans, sanitize_line, str_width};
 use crate::base::theme::Role;
 
 /// The tab's margin, as the rows stand alone; the panel's inset is one of its cells.
@@ -87,7 +88,8 @@ pub fn ended(done: &DeepDone) -> String {
     }
     if let Some(why) = &done.failed {
         return format!(
-            "The summarizer stopped answering ({why}): {made}. Every summary written is kept."
+            "The update stopped: {}. {made}. Every summary written is kept.",
+            sanitize_line(why.trim().trim_end_matches('.'))
         );
     }
     let words = if done.by_words {
@@ -107,14 +109,17 @@ pub fn ended(done: &DeepDone) -> String {
     )
 }
 
-/// The two lines under the headline after an update that left the map as it was:
-/// `Redo stopped: Haiku 5.5 didn't answer after 40 of 823 summaries.`, then what was kept.
+/// The two lines under the headline after an update that left the map as it was, in `width`:
+/// why it stopped, such as `Update stopped after 0 of 88 summaries: Haiku 5.5 couldn't start,
+/// since a CLI session needs a sandbox.`, then what was kept. `total` is the summaries the
+/// update was making, `None` while none was asked for yet, as while the summarizer downloads.
 pub fn kept(
     kit: &Kit<'_>,
     done: &DeepDone,
     summarizer: &str,
-    total: usize,
+    total: Option<usize>,
     redo: bool,
+    width: usize,
 ) -> Vec<Line<'static>> {
     let kind = if redo { "Redo" } else { "Update" };
     let who = if summarizer.is_empty() {
@@ -122,33 +127,65 @@ pub fn kept(
     } else {
         summarizer
     };
-    let how = if done.stopped {
-        format!(
-            " you stopped it after {} of {total} summaries.",
-            done.written
+    let after = total
+        .map(|total| format!(" after {} of {total} summaries", done.written))
+        .unwrap_or_default();
+    let why = done
+        .failed
+        .as_deref()
+        .map(|why| sanitize_line(why.trim().trim_end_matches('.')).into_owned())
+        .filter(|why| !why.is_empty());
+    let (stopped, how) = if done.stopped {
+        (
+            format!(" {kind} stopped:"),
+            format!(" you stopped it{after}."),
         )
     } else if let Some(fewer) = done.fewer {
-        format!(
-            " its new map had {} dots, fewer than this map's {}.",
-            fewer.made, fewer.shown
+        (
+            format!(" {kind} stopped:"),
+            format!(
+                " its new map had {} dots, fewer than this map's {}.",
+                fewer.made, fewer.shown
+            ),
         )
+    } else if let Some(why) = why {
+        match after.is_empty() {
+            true => (format!(" {kind} stopped:"), format!(" {why}.")),
+            false => (format!(" {kind} stopped"), format!("{after}: {why}.")),
+        }
     } else {
-        format!(
-            " {who} didn't answer after {} of {total} summaries.",
-            done.written
+        (
+            format!(" {kind} stopped:"),
+            format!(" {who} didn't answer{after}."),
         )
     };
     let kept = match done.written {
         0 => "The map is as it was.".to_owned(),
         written => format!("The map is as it was, and the {written} are kept for the next try."),
     };
+    let how = whole_sentences(&how, width.saturating_sub(str_width(&stopped)));
+    let first = [Span::styled(stopped, kit.style(Role::Warn)), kit.dim(how)];
     vec![
-        Line::from(vec![
-            Span::styled(format!(" {kind} stopped:"), kit.style(Role::Warn)),
-            kit.dim(how),
-        ]),
-        Line::from(vec![kit.dim(format!(" {kept}"))]),
+        Line::from(cut_spans(&first, width, At::Word)),
+        Line::from(vec![kit.dim(cut(&format!(" {kept}"), width, At::Word))]),
     ]
+}
+
+/// `words` whole where they fit in `cells`, else as many of their first sentences as fit, so
+/// a reason too long for the row ends where one of its sentences does. The first sentence
+/// stays even where it doesn't fit, for the cut to shorten.
+fn whole_sentences(words: &str, cells: usize) -> String {
+    if str_width(words) <= cells {
+        return words.to_owned();
+    }
+    let ends = words.match_indices(". ").map(|(at, _)| at + 1);
+    let fits = ends
+        .take_while(|&end| str_width(&words[..end]) <= cells)
+        .last();
+    match fits {
+        Some(end) => words[..end].to_owned(),
+        None => words.to_owned(),
+    }
 }
 
 /// Under the map while it fills in.
@@ -219,7 +256,7 @@ mod tests {
             }),
             ..DeepDone::default()
         };
-        let lines: Vec<String> = kept(&kit, &done, "Haiku 5.5", 120, true)
+        let lines: Vec<String> = kept(&kit, &done, "Haiku 5.5", Some(120), true, 117)
             .iter()
             .map(|line| line.to_string())
             .collect();
@@ -231,6 +268,99 @@ mod tests {
             ]
         );
         assert!(ended(&done).starts_with("The map is as it was, since the new one had 120"));
+    }
+
+    fn kept_rows(done: &DeepDone, total: Option<usize>, width: usize) -> Vec<String> {
+        let theme = crate::base::theme::Theme::default();
+        let kit = Kit::new(&theme);
+        kept(&kit, done, "Haiku 5.5", total, false, width)
+            .iter()
+            .map(|line| line.to_string())
+            .collect()
+    }
+
+    /// What a refused start holds: a reason of two sentences.
+    const REFUSED: &str = "Haiku 5.5 couldn't start, since a CLI session needs a sandbox. Only \
+        sandbox.mode = \"tool\" or \"none\", which you set yourself, lets one run without ours";
+
+    #[test]
+    fn a_failed_update_says_why_after_how_far_it_got() {
+        let refused = DeepDone {
+            failed: Some(REFUSED.to_owned()),
+            ..DeepDone::default()
+        };
+        assert_eq!(
+            kept_rows(&refused, Some(88), 300),
+            [
+                format!(" Update stopped after 0 of 88 summaries: {REFUSED}."),
+                " The map is as it was.".to_owned(),
+            ]
+        );
+        let unanswered = DeepDone {
+            written: 40,
+            failed: Some("Haiku 5.5 stopped without an answer.".to_owned()),
+            ..DeepDone::default()
+        };
+        assert_eq!(
+            kept_rows(&unanswered, Some(823), 117),
+            [
+                " Update stopped after 40 of 823 summaries: Haiku 5.5 stopped without an answer.",
+                " The map is as it was, and the 40 are kept for the next try.",
+            ]
+        );
+        let stopped = DeepDone {
+            stopped: true,
+            ..unanswered
+        };
+        assert_eq!(
+            kept_rows(&stopped, Some(823), 117)[0],
+            " Update stopped: you stopped it after 40 of 823 summaries."
+        );
+    }
+
+    #[test]
+    fn a_summarizer_that_didnt_download_asked_for_no_summary() {
+        let done = DeepDone {
+            failed: Some(
+                "Qwen3.5 27B didn't download (pull model manifest: file does not exist)".into(),
+            ),
+            ..DeepDone::default()
+        };
+        assert_eq!(
+            kept_rows(&done, None, 117),
+            [
+                " Update stopped: Qwen3.5 27B didn't download (pull model manifest: file does not \
+                 exist).",
+                " The map is as it was.",
+            ]
+        );
+    }
+
+    /// The panel's own rows at the real sizes are held in its drawings' tests.
+    #[test]
+    fn a_long_reason_gives_way_a_sentence_at_a_time_then_at_a_word() {
+        let refused = DeepDone {
+            failed: Some(REFUSED.to_owned()),
+            ..DeepDone::default()
+        };
+        let first = " Update stopped after 0 of 88 summaries: Haiku 5.5 couldn't start, since a CLI \
+            session needs a sandbox.";
+        for (width, said) in [
+            (
+                262,
+                format!(" Update stopped after 0 of 88 summaries: {REFUSED}."),
+            ),
+            (117, first.to_owned()),
+            (
+                77,
+                " Update stopped after 0 of 88 summaries: Haiku 5.5 couldn't start, since a…"
+                    .to_owned(),
+            ),
+        ] {
+            let rows = kept_rows(&refused, Some(88), width);
+            assert_eq!(rows[0], said, "{width}");
+            assert!(str_width(&rows[0]) < width, "{width}: {}", rows[0]);
+        }
     }
 
     #[test]
