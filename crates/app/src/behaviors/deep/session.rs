@@ -73,8 +73,10 @@ impl SessionSummarizer {
             keep_input_open: false,
             limits: SessionLimits::default(),
             goal_sha256: None,
+            // A CLI session runs inside the sandbox, which the runner lowers to what your
+            // settings allow. With no network, the CLI reaches only its own servers.
             sandbox: SandboxProfile {
-                mode: SandboxMode::None,
+                mode: SandboxMode::Os,
                 writable: vec![workdir],
                 network: false,
                 ..SandboxProfile::default()
@@ -192,6 +194,8 @@ mod tests {
         assert_eq!(specs.len(), 1);
         let spec = &specs[0];
         assert_eq!(spec.access, Access::NoTools);
+        assert_eq!(spec.sandbox.mode, SandboxMode::Os);
+        assert!(!spec.sandbox.network);
         assert!(spec.isolated);
         assert_eq!(spec.effort.as_deref(), Some("low"));
         assert_eq!(spec.prompt[0].text, "the request");
