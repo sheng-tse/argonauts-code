@@ -16,6 +16,7 @@ mod agents_ollama_endpoint_reviews_task;
 mod agents_opencode_owns_task;
 mod agents_scenario_files;
 mod app_approvals;
+mod app_behaviors_summaries;
 mod app_behaviors_world;
 mod app_bottom_line_picker;
 mod app_context_windows;

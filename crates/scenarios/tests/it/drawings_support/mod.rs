@@ -109,10 +109,8 @@ pub(crate) fn still(pty: &Pty) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The fake CLIs for `entry`: the rules its `clis` file holds, first, then the default agents'
-/// rules, which play every other request. The rules are written into `scratch`, where the fakes
-/// read them while the scenario runs, beside the files their `emit_file` steps name, which sit
-/// beside the `clis` file.
+/// The fake CLIs for `entry`: the rules its `clis` file holds, as [`playing_first`] plays them,
+/// beside the files their `emit_file` steps name, which sit beside the `clis` file.
 fn scenario_of(entry: &Entry, dir: &Path, scratch: &Path) -> anyhow::Result<Scenario> {
     let Some(clis) = &entry.clis else {
         return Scenario::new(AGENTS);
@@ -124,6 +122,13 @@ fn scenario_of(entry: &Entry, dir: &Path, scratch: &Path) -> anyhow::Result<Scen
         fs::copy(&from, scratch.join(name))
             .with_context(|| format!("copying {}", from.display()))?;
     }
+    playing_first(&rules, scratch)
+}
+
+/// The fake CLIs playing `rules` first, then the default agents' rules, which play every other
+/// request. The rules are written into `scratch`, where the fakes read them while the scenario
+/// runs.
+pub(crate) fn playing_first(rules: &str, scratch: &Path) -> anyhow::Result<Scenario> {
     let agents = fs::read_to_string(argonauts_scenarios::scenario_file(AGENTS))
         .with_context(|| format!("reading {AGENTS}"))?;
     let first_rule = agents
@@ -216,7 +221,7 @@ pub(crate) fn reach(pty: &mut Pty, steps: &[Step]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn copy_folder(from: &Path, into: &Path) -> anyhow::Result<()> {
+pub(crate) fn copy_folder(from: &Path, into: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(into).with_context(|| format!("creating {}", into.display()))?;
     for entry in fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
         let entry = entry?;

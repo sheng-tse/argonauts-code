@@ -95,10 +95,11 @@ split = "by job: the draft and its changes, a step's rows and words, the seats"
 # the pointer's line at a dot, 90 for the talk's one count and its rows, 139 for a held turn's
 # rows waiting off the screen and the council's plan view, 85 for leaving the keys on the
 # sub-tabs where nothing below moves and 12 for measuring who did what's labels (160,097 in
-# all), and app 81 more for the chosen council's verdict-first estimate and the checks rules
-# and 164 for refusing only what words about checks say (88,699). crew has 300 for its 243
-# lines and more still to come, 150 more for its council fixes, 16 for the talk's one count
-# and 16 for each way's reason on the plan (80,156). The release lowers each to its count then.
+# all), and app 81 more for the chosen council's verdict-first estimate and the checks rules,
+# 164 for refusing only what words about checks say and 2 for summary sessions in the sandbox
+# (88,701). crew has 300 for its 243 lines and more still to come, 150 more for its council
+# fixes, 16 for the talk's one count and 16 for each way's reason on the plan (80,156). The
+# release lowers each to its count then.
 # The listed files get no room: one that grows is split as its entry says.
 [[crate]]
 path = "crates/tui"
@@ -107,7 +108,7 @@ split = "the crates its folders already form, cut right after 0.2.1: base, world
 
 [[crate]]
 path = "crates/app"
-ceiling = 88699
+ceiling = 88701
 split = "off the tui shell first (it needs only base and cells), then the controller and the modules knotted around it as a crate"
 
 [[crate]]
