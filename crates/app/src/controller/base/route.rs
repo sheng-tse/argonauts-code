@@ -1,0 +1,409 @@
+//! What plain text and mentions mean in each app mode. Slash commands run at once in any mode.
+
+use argonauts_core::RunId;
+use argonauts_core::agents::cli_commands::CliCommandSet;
+use argonauts_core::app::{AppMode, UiCommand};
+use argonauts_core::input::{
+    InputError, MentionTarget, ParsedInput, SlashCommand, parse_input_with,
+};
+
+/// Said when a mention arrives with no run to deliver it to.
+pub(crate) const NO_RUN_FOR_MENTION: &str = "No run is going, so the mention wasn't sent.";
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Route {
+    /// `Idle`: record it and run the estimate.
+    NewRequest {
+        text: String,
+    },
+    /// `Answering`: queued as the next conversation turn.
+    NextTurn {
+        text: String,
+    },
+    /// `Idle` or `Answering`, and you typed `ultracode` with the request: it goes through a
+    /// workflow.
+    WorkflowRequest {
+        text: String,
+    },
+    /// `Working`, `Pausing`, or `Waiting`: queued for every working agent's next turn.
+    Guidance {
+        run: RunId,
+        text: String,
+    },
+    /// `Pausing` and an empty Enter.
+    CancelPause,
+    /// `Waiting` and an empty Enter.
+    Resume {
+        run: RunId,
+    },
+    Mention {
+        run: RunId,
+        target: MentionTarget,
+        text: String,
+    },
+    /// Such as a mention with no run going: nothing is sent.
+    Notice {
+        text: String,
+    },
+    Slash {
+        command: SlashCommand,
+    },
+    Nothing,
+}
+
+/// For `Submit` and `Mention`. Anything else routes to `Nothing`. `commands` are the main
+/// agent's own, which `/` also takes. Text that `starts_with_file`, such as `@README.md what
+/// is this?`, is about that file, so it isn't a mention. Text that `starts_with_path`, such as
+/// `/tmp is full, clean it`, is a prompt and no command, unless the word is a command's name.
+pub(crate) fn route(
+    mode: &AppMode,
+    command: UiCommand,
+    commands: Option<&CliCommandSet>,
+    starts_with_file: impl Fn(&str) -> bool,
+    starts_with_path: impl Fn(&str) -> bool,
+) -> Route {
+    match command {
+        UiCommand::Submit {
+            text,
+            workflow_requested,
+            ..
+        } => {
+            let route = if starts_with_file(&text) {
+                plain(mode, text.trim().to_owned())
+            } else {
+                submitted(mode, &text, commands, starts_with_path)
+            };
+            match route {
+                Route::NewRequest { text } | Route::NextTurn { text } if workflow_requested => {
+                    Route::WorkflowRequest { text }
+                }
+                route => route,
+            }
+        }
+        UiCommand::Mention { target, text } => mention(mode, target, text),
+        _ => Route::Nothing,
+    }
+}
+
+/// The screen parses what you type, but an outside agent may send it raw, so `/` and `@` still
+/// count here.
+fn submitted(
+    mode: &AppMode,
+    text: &str,
+    commands: Option<&CliCommandSet>,
+    starts_with_path: impl Fn(&str) -> bool,
+) -> Route {
+    match parse_input_with(text, commands) {
+        Ok(ParsedInput::Slash { command }) => Route::Slash { command },
+        Ok(ParsedInput::Mention { target, text }) => mention(mode, target, text),
+        Ok(ParsedInput::Plain { text }) => plain(mode, text),
+        Ok(ParsedInput::Empty) => empty(mode),
+        // Only a name that is no command is looked for on the disk, so a command always wins.
+        Err(InputError::UnknownCommand(_)) if starts_with_path(text) => {
+            plain(mode, text.trim().to_owned())
+        }
+        Err(err) => Route::Notice {
+            text: err.to_string(),
+        },
+    }
+}
+
+fn plain(mode: &AppMode, text: String) -> Route {
+    match mode {
+        AppMode::Idle => Route::NewRequest { text },
+        AppMode::Answering { .. } => Route::NextTurn { text },
+        AppMode::Working { run } | AppMode::Pausing { run } | AppMode::Waiting { run, .. } => {
+            Route::Guidance {
+                run: run.clone(),
+                text,
+            }
+        }
+    }
+}
+
+fn empty(mode: &AppMode) -> Route {
+    match mode {
+        AppMode::Pausing { .. } => Route::CancelPause,
+        AppMode::Waiting { run, .. } => Route::Resume { run: run.clone() },
+        AppMode::Idle | AppMode::Answering { .. } | AppMode::Working { .. } => Route::Nothing,
+    }
+}
+
+fn mention(mode: &AppMode, target: MentionTarget, text: String) -> Route {
+    match mode {
+        AppMode::Working { run } | AppMode::Pausing { run } | AppMode::Waiting { run, .. } => {
+            Route::Mention {
+                run: run.clone(),
+                target,
+                text,
+            }
+        }
+        AppMode::Idle | AppMode::Answering { .. } => Route::Notice {
+            text: NO_RUN_FOR_MENTION.to_owned(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use argonauts_core::base::names::TurnId;
+    use argonauts_core::input::parse_input;
+    use argonauts_core::runs::events::run::WaitReason;
+
+    fn run() -> RunId {
+        RunId::new("run-001").unwrap()
+    }
+
+    fn route(mode: &AppMode, command: UiCommand, commands: Option<&CliCommandSet>) -> Route {
+        super::route(mode, command, commands, |_| false, |_| false)
+    }
+
+    fn submit(text: &str) -> UiCommand {
+        UiCommand::Submit {
+            text: text.to_owned(),
+            workflow_requested: false,
+            pictures: Vec::new(),
+        }
+    }
+
+    fn at_codex(text: &str) -> UiCommand {
+        UiCommand::Mention {
+            target: MentionTarget::Worker("codex".parse().unwrap()),
+            text: text.to_owned(),
+        }
+    }
+
+    fn modes() -> Vec<AppMode> {
+        vec![
+            AppMode::Idle,
+            AppMode::Answering {
+                turn: TurnId::numbered(1),
+            },
+            AppMode::Working { run: run() },
+            AppMode::Pausing { run: run() },
+            AppMode::Waiting {
+                run: run(),
+                reason: WaitReason::Approval,
+            },
+        ]
+    }
+
+    /// A request you typed `ultracode` in asks for a workflow, and while a run works it is
+    /// guidance like any other text. A command stays a command.
+    #[test]
+    fn the_typed_keyword_asks_for_a_workflow() {
+        let asked = |text: &str| UiCommand::Submit {
+            text: text.to_owned(),
+            workflow_requested: true,
+            pictures: Vec::new(),
+        };
+        let workflow = Route::WorkflowRequest {
+            text: "ultracode tidy the helpers".to_owned(),
+        };
+        for mode in &modes()[..2] {
+            assert_eq!(
+                route(mode, asked(" ultracode tidy the helpers"), None),
+                workflow
+            );
+        }
+        assert_eq!(
+            route(&modes()[2], asked("ultracode tidy the helpers"), None),
+            Route::Guidance {
+                run: run(),
+                text: "ultracode tidy the helpers".to_owned()
+            }
+        );
+        assert!(matches!(
+            route(&AppMode::Idle, asked("/help"), None),
+            Route::Slash { .. }
+        ));
+    }
+
+    #[test]
+    fn route_table() {
+        let text = || "add rate limiting".to_owned();
+        let guidance = || Route::Guidance {
+            run: run(),
+            text: text(),
+        };
+        let mentioned = || Route::Mention {
+            run: run(),
+            target: MentionTarget::Worker("codex".parse().unwrap()),
+            text: "look at the tests".to_owned(),
+        };
+        let no_run = || Route::Notice {
+            text: NO_RUN_FOR_MENTION.to_owned(),
+        };
+        // Per mode: plain text, empty Enter, a mention, and a mention typed as text.
+        let expected = [
+            (Route::NewRequest { text: text() }, Route::Nothing, no_run()),
+            (Route::NextTurn { text: text() }, Route::Nothing, no_run()),
+            (guidance(), Route::Nothing, mentioned()),
+            (guidance(), Route::CancelPause, mentioned()),
+            (guidance(), Route::Resume { run: run() }, mentioned()),
+        ];
+        for (mode, (plain, empty, mention)) in modes().iter().zip(expected) {
+            assert_eq!(
+                route(mode, submit("  add rate limiting "), None),
+                plain,
+                "{mode:?}"
+            );
+            assert_eq!(route(mode, submit("   "), None), empty, "{mode:?}");
+            assert_eq!(
+                route(mode, at_codex("look at the tests"), None),
+                mention,
+                "{mode:?}"
+            );
+            assert_eq!(
+                route(mode, submit("@codex look at the tests"), None),
+                mention,
+                "{mode:?}"
+            );
+            assert_eq!(
+                route(mode, submit("/status"), None),
+                Route::Slash {
+                    command: SlashCommand::Status {
+                        action: Default::default()
+                    }
+                },
+                "{mode:?}"
+            );
+            assert!(
+                matches!(
+                    route(mode, submit("/no-such-command"), None),
+                    Route::Notice { .. }
+                ),
+                "{mode:?}"
+            );
+            assert_eq!(
+                route(mode, UiCommand::CancelTurn, None),
+                Route::Nothing,
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_address_that_is_no_target_stays_plain_text() {
+        assert_eq!(
+            route(&AppMode::Idle, submit("@ nothing"), None),
+            Route::Notice {
+                text: parse_input("@ nothing").unwrap_err().to_string()
+            }
+        );
+        assert_eq!(
+            route(&AppMode::Idle, submit("mail me@example.com"), None),
+            Route::NewRequest {
+                text: "mail me@example.com".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn text_led_by_a_file_is_a_message_about_it_not_a_mention() {
+        let names_readme = |text: &str| text.trim_start().starts_with("@README.md");
+        let text = " @README.md what is this? ";
+        assert_eq!(
+            super::route(&AppMode::Idle, submit(text), None, names_readme, |_| false),
+            Route::NewRequest {
+                text: "@README.md what is this?".to_owned()
+            }
+        );
+        let working = AppMode::Working { run: run() };
+        assert_eq!(
+            super::route(&working, submit(text), None, names_readme, |_| false),
+            Route::Guidance {
+                run: run(),
+                text: "@README.md what is this?".to_owned()
+            }
+        );
+        assert!(matches!(
+            super::route(&working, submit("@codex look"), None, names_readme, |_| {
+                false
+            }),
+            Route::Mention { .. }
+        ));
+    }
+
+    /// `/tmp` is a folder, so a prompt that starts with it is text for the agent, in every
+    /// mode. A name that is nowhere is still refused, and a command's name stays a command.
+    #[test]
+    fn text_led_by_a_path_that_exists_is_a_prompt_and_no_command() {
+        let names_tmp = |text: &str| text.split_whitespace().next() == Some("/tmp");
+        let led_by = |mode: &AppMode, text: &str| {
+            super::route(mode, submit(text), None, |_| false, names_tmp)
+        };
+        let text = " /tmp is full, clean it ";
+        let prompt = || "/tmp is full, clean it".to_owned();
+        assert_eq!(
+            led_by(&AppMode::Idle, text),
+            Route::NewRequest { text: prompt() }
+        );
+        let answering = AppMode::Answering {
+            turn: TurnId::numbered(1),
+        };
+        assert_eq!(led_by(&answering, text), Route::NextTurn { text: prompt() });
+        let working = AppMode::Working { run: run() };
+        assert_eq!(
+            led_by(&working, text),
+            Route::Guidance {
+                run: run(),
+                text: prompt()
+            }
+        );
+        assert_eq!(
+            led_by(&AppMode::Idle, "/no-such-command"),
+            Route::Notice {
+                text: "unknown command /no-such-command".to_owned()
+            }
+        );
+
+        let everything_exists = |_: &str| true;
+        assert_eq!(
+            super::route(
+                &AppMode::Idle,
+                submit("/clear"),
+                None,
+                |_| false,
+                everything_exists
+            ),
+            Route::Slash {
+                command: SlashCommand::Clear
+            }
+        );
+    }
+
+    #[test]
+    fn a_outside_agent_may_send_the_main_agents_own_commands_raw() {
+        use argonauts_core::base::names::AgentId;
+        let set = CliCommandSet::new(
+            AgentId("claude-code".into()),
+            "Claude Code",
+            argonauts_adapter_claude_code::BUILTIN_COMMANDS,
+            Vec::new(),
+        );
+        let idle = &AppMode::Idle;
+        assert_eq!(
+            route(idle, submit("/simplify  the parser"), Some(&set)),
+            Route::Slash {
+                command: SlashCommand::Cli {
+                    name: "simplify".into(),
+                    args: "the parser".into()
+                }
+            }
+        );
+        assert_eq!(
+            route(idle, submit("/reset"), Some(&set)),
+            Route::Slash {
+                command: SlashCommand::Clear
+            }
+        );
+        assert_eq!(
+            route(idle, submit("/voice"), Some(&set)),
+            Route::Notice {
+                text: "/voice works only in Claude Code itself".into()
+            }
+        );
+    }
+}

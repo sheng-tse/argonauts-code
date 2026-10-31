@@ -4,10 +4,14 @@
 use std::io;
 use std::path::Path;
 
-use argonauts_core::names::RoleName;
-use argonauts_core::prompt_files::{self, PromptDirs, RoleFileMode, Template, Written, YourFile};
-use argonauts_core::prompt_list::{CHANGED, INSTRUCTIONS, PromptList, PromptRow, WriterChoice};
-use argonauts_core::prompt_parts::{BUILT_IN, Readers, finer_roles};
+use argonauts_core::app::prompt_list::{
+    CHANGED, INSTRUCTIONS, PromptList, PromptRow, WriterChoice,
+};
+use argonauts_core::base::names::RoleName;
+use argonauts_core::prompts::prompt_files::{
+    self, PromptDirs, RoleFileMode, Template, Written, YourFile,
+};
+use argonauts_core::prompts::prompt_parts::{BUILT_IN, Readers, finer_roles};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::prompts::Writer;
@@ -62,7 +66,7 @@ const OWN: [Template; 7] = [
 /// Each role's frame first, then the prompts of its steps.
 pub(crate) fn all() -> Vec<Template> {
     let mut templates = argonauts_crew::prompts::catalog::ALL.to_vec();
-    templates.extend(argonauts_policy::templates::ALL);
+    templates.extend(argonauts_policy::sessions::templates::ALL);
     templates.extend(OWN);
     templates
 }
@@ -91,7 +95,7 @@ pub(crate) fn file_in_use(dirs: &PromptDirs, template: &Template) -> Option<Your
 /// Tells this process where your prompt files are, once, when the app opens on a repository.
 /// They are looked for again each time a prompt is sent, so what you trust, write or delete
 /// counts from the next prompt on.
-pub(crate) fn use_files_of(env: &crate::env::AppEnv) {
+pub(crate) fn use_files_of(env: &crate::startup::env::AppEnv) {
     let (repo, state, home) = (
         env.repo_root.clone(),
         env.state_dir.clone(),
@@ -104,7 +108,7 @@ pub(crate) fn use_files_of(env: &crate::env::AppEnv) {
 
 /// The repository's `.argonauts`, then `~/.argonauts`, with the project files that came with
 /// the repository passed over until you trust them.
-pub(crate) fn dirs(env: &crate::env::AppEnv) -> PromptDirs {
+pub(crate) fn dirs(env: &crate::startup::env::AppEnv) -> PromptDirs {
     argonauts_crew::prompts::trust::dirs(&env.repo_root, &env.state_dir, Some(env.paths.home()))
 }
 
@@ -299,7 +303,7 @@ fn instructions_row(dirs: &PromptDirs, settings: &Settings, readers: Readers) ->
 /// Who may write a role's instructions: the orchestrator, Argonauts Code's own templates, then each
 /// agent on the crew.
 fn writers(settings: &Settings) -> Vec<WriterChoice> {
-    let names = argonauts_core::display_names::DisplayNames::default();
+    let names = argonauts_core::look::display_names::DisplayNames::default();
     let fixed = [Writer::Orchestrator, Writer::BuiltIn]
         .into_iter()
         .map(|writer| WriterChoice {
@@ -307,7 +311,7 @@ fn writers(settings: &Settings) -> Vec<WriterChoice> {
             shown: writer.shown(),
         });
     let members = settings.crew.members();
-    let mut crew: Vec<&argonauts_core::names::ModelRef> = Vec::new();
+    let mut crew: Vec<&argonauts_core::base::names::ModelRef> = Vec::new();
     for worker in std::iter::once(&settings.crew.main).chain(&members) {
         if !crew.contains(&worker) {
             crew.push(worker);

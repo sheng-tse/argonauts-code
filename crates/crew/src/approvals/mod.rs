@@ -8,16 +8,16 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use tokio::sync::oneshot;
 
-use argonauts_core::api::ApprovalAnswer;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{ApprovalId, ModelRef, RoleName};
+use argonauts_core::runs::api::ApprovalAnswer;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened,
     ApprovalPacket, FreeText, PolicyCheck,
 };
-use argonauts_core::events::run::Party;
-use argonauts_core::events::shared::BlackboardEvent;
-use argonauts_core::names::{ApprovalId, ModelRef, RoleName};
-use argonauts_core::policy::{
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::shared::BlackboardEvent;
+use argonauts_core::safety::policy::{
     AutoPreviewRecord, DecisionPoint, EvidenceDocument, EvidenceFacts, EvidencePacket,
     EvidenceSubject, PolicyOutcome, UserDecision, Verdict, Violation,
 };
@@ -27,8 +27,8 @@ use argonauts_core::settings::approvals::{
 };
 use argonauts_core::{Note, NoteLevel, TaskId};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::state::RunState;
 use crate::state::approvals::ApprovalRecord;
 use crate::state::ids::IdKind;
@@ -736,7 +736,8 @@ fn decision_point(host: &Host, id: &ApprovalId, request: &ApprovalRequest) -> De
 /// Whose answers take the place of yours in autopilot now: the phase's tie-breaker, else the main
 /// agent.
 fn tie_breaker_of(state: &RunState, settings: &Settings) -> ModelRef {
-    crate::tie_breaker::tie_breaker(state, settings).unwrap_or_else(|| settings.crew.main.clone())
+    crate::roles::tie_breaker::tie_breaker(state, settings)
+        .unwrap_or_else(|| settings.crew.main.clone())
 }
 
 /// The learned workflow the run's Captain-or-crew choice picked, which auto preview records count

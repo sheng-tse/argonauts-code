@@ -127,7 +127,7 @@ fn the_ice_shows_on_the_map_as_on_the_planet() {
 
 #[test]
 fn the_pointer_finds_the_ground_behind_each_pixel() {
-    use crate::world::scene::{HitMap, Pointed};
+    use crate::base::draw::scene::{HitMap, Pointed};
     let map = map(Key::R);
     let mut hits = HitMap::new();
     for mark in map.dots.marks(0, 9) {

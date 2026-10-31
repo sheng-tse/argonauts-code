@@ -3,8 +3,8 @@
 //! who comes from which maker, so code assigns every check; the seats read "a fresh session
 //! that code picks".
 
-use argonauts_core::events::council::{CheckRung, Seat, SeatRole};
-use argonauts_core::names::{ModelRef, SeatId};
+use argonauts_core::base::names::{ModelRef, SeatId};
+use argonauts_core::runs::events::council::{CheckRung, Seat, SeatRole};
 use argonauts_core::settings::council::SameModelCheck;
 
 use super::lexicon::Lexicon;
@@ -182,7 +182,7 @@ fn comment_text(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::council::Seat;
+    use argonauts_core::runs::events::council::Seat;
 
     use super::*;
 

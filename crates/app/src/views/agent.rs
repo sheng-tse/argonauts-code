@@ -1,19 +1,19 @@
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::run::{BriefFrom, RunLifecycle, StartsFrom};
-use argonauts_core::events::session::{InputPartKind, SessionEnd};
-use argonauts_core::events::task::TaskEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ModelRef, RoleName, SessionKey};
-use argonauts_core::sanitize::sanitize_for_terminal;
-use argonauts_core::session_runner::Access;
-use argonauts_core::steps::{is_own_tool, last_json_object};
-use argonauts_core::views::{
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::app::views::{
     ActivityLine, AgentView, AskedFor, Moved, PromptAbout, ReviewGiven, StartedFrom,
     SubagentsSection, Tone,
 };
+use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::run::{BriefFrom, RunLifecycle, StartsFrom};
+use argonauts_core::runs::events::session::{InputPartKind, SessionEnd};
+use argonauts_core::runs::events::task::TaskEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::safety::sanitize::sanitize_for_terminal;
+use argonauts_core::workflows::steps::{is_own_tool, last_json_object};
 use argonauts_core::{DiffStat, RunId};
 use argonauts_tui::bridge::tools::start_call;
-use argonauts_tui::cell::ToolTitle;
+use argonauts_tui::cells::cell::ToolTitle;
 use serde_json::Value;
 use std::path::Path;
 
@@ -200,7 +200,7 @@ fn given_of(session: &SessionFacts) -> Option<String> {
     } else {
         format!(
             "{verb} with {} in its prompt, no tools",
-            argonauts_core::text::listed(&what)
+            argonauts_core::base::text::listed(&what)
         )
     })
 }
@@ -530,15 +530,15 @@ mod tests {
         agent, input, run_id, session_ended, session_event, session_started, task_event,
     };
     use argonauts_core::AgentEvent;
-    use argonauts_core::events::session::{
+    use argonauts_core::app::views::RowStatus;
+    use argonauts_core::base::names::{ModelRef, RoleName};
+    use argonauts_core::models::meter::{MeterAction, MeterLimit, SpendStatus};
+    use argonauts_core::runs::events::session::{
         EndReason, SubagentKind, SubagentStatus, SubagentUpdate,
     };
-    use argonauts_core::events::session::{FileDiff, LimitEvent, SessionEvent};
-    use argonauts_core::events::task::{TaskState, TryCause};
-    use argonauts_core::meter::{MeterAction, MeterLimit, SpendStatus};
-    use argonauts_core::names::{ModelRef, RoleName};
-    use argonauts_core::steps::StepName;
-    use argonauts_core::views::RowStatus;
+    use argonauts_core::runs::events::session::{FileDiff, LimitEvent, SessionEvent};
+    use argonauts_core::runs::events::task::{TaskState, TryCause};
+    use argonauts_core::workflows::steps::StepName;
     use argonauts_core::{Spend, TaskId};
 
     fn tool(id: &str, command: &str) -> AgentEvent {
@@ -558,7 +558,7 @@ mod tests {
             let mut add = |kind, label: &str, text: &str| {
                 input
                     .parts
-                    .push(argonauts_core::events::session::InputPart {
+                    .push(argonauts_core::runs::events::session::InputPart {
                         kind,
                         label: label.to_owned(),
                         text: text.to_owned(),
@@ -977,7 +977,7 @@ mod tests {
     /// it is there, and says what it may touch from how it was started, not from its role.
     #[test]
     fn a_worker_asked_to_review_reads_as_a_read_only_reviewer() {
-        use argonauts_core::session_runner::Access;
+        use argonauts_core::agents::session_runner::Access;
 
         let asked = |seq, key: &SessionKey, label: &str, access| {
             let mut event = session_started(seq, key, None, RoleName::Worker, "codex");
@@ -1097,8 +1097,9 @@ mod tests {
 
     fn ended_with(key: &SessionKey, result_text: &str, structured: Option<Value>) -> RunEvent {
         let mut event = session_ended(9, key, EndReason::Completed, 1_000);
-        if let RunEventKind::Session(argonauts_core::events::session::SessionEvent::Ended(end)) =
-            &mut event.kind
+        if let RunEventKind::Session(argonauts_core::runs::events::session::SessionEvent::Ended(
+            end,
+        )) = &mut event.kind
         {
             end.result_text = Some(result_text.to_owned());
             end.structured = structured;
@@ -1171,7 +1172,7 @@ mod tests {
     #[test]
     fn an_orchestrators_view_says_what_it_began_from() {
         use crate::client::test_support::run_started;
-        use argonauts_core::events::run::{BriefFrom, ForkFrom, RunLifecycle, StartsFrom};
+        use argonauts_core::runs::events::run::{BriefFrom, ForkFrom, RunLifecycle, StartsFrom};
 
         let opus: ModelRef = "claude-code/claude-opus-5-5".parse().unwrap();
         let fork = StartsFrom::Fork(ForkFrom {

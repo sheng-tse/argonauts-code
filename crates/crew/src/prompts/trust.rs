@@ -9,9 +9,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use argonauts_core::hash::sha256_hex;
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
-use argonauts_core::prompt_files::{PROJECT_DIR, PromptDirs, README_FILE};
+use argonauts_core::base::hash::sha256_hex;
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::prompts::prompt_files::{PROJECT_DIR, PromptDirs, README_FILE};
 use serde::{Deserialize, Serialize};
 
 /// Kept in the repository's state folder, beside the trust of its settings files.
@@ -197,7 +197,7 @@ fn key(file: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::names::RoleName;
+    use argonauts_core::base::names::RoleName;
 
     use super::*;
 

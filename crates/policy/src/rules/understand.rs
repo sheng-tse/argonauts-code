@@ -1,7 +1,7 @@
 //! Understand: approve only when no question is open. Scope, security, data, and cost questions
 //! always reach you, so an open one never auto-approves, whatever `decide_with` says.
 
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::safety::policy::EvidenceFacts;
 
 use super::RuleVerdict;
 
@@ -21,7 +21,7 @@ pub fn check(facts: &EvidenceFacts) -> RuleVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::policy::Verdict;
+    use argonauts_core::safety::policy::Verdict;
 
     fn with(open_questions: Option<u32>) -> Verdict {
         let facts = EvidenceFacts {

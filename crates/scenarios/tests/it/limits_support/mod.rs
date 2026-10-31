@@ -17,8 +17,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
-use argonauts_core::events::RunEvent;
-use argonauts_core::paths::Paths;
+use argonauts_core::base::paths::Paths;
+use argonauts_core::runs::events::RunEvent;
 use argonauts_scenarios::{Scenario, WAIT, as_set_up};
 use argonauts_testkit::Pty;
 
@@ -126,7 +126,7 @@ impl Limits {
         timeout: Duration,
         done: impl Fn(&[RunEvent]) -> bool,
     ) -> anyhow::Result<Vec<RunEvent>> {
-        let deadline = argonauts_testkit::deadline::after(timeout);
+        let deadline = argonauts_testkit::pty::deadline::after(timeout);
         loop {
             let events = self.events();
             if done(&events) {

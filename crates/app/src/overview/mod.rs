@@ -15,16 +15,16 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use argonauts_core::agents::runtimes::RUNTIMES;
+use argonauts_core::app::overview::{ModelTokens, OverviewPeriod};
 use argonauts_core::app::{AppEvent, ViewData};
-use argonauts_core::meter::who_pays;
-use argonauts_core::overview::{ModelTokens, OverviewPeriod};
-use argonauts_core::pricing::{ListPrice, PriceList};
-use argonauts_core::registry::default_run;
-use argonauts_core::runtimes::RUNTIMES;
+use argonauts_core::models::meter::who_pays;
+use argonauts_core::models::pricing::{ListPrice, PriceList};
+use argonauts_core::models::registry::default_run;
 use argonauts_core::settings::endpoints::endpoint_settings;
 use argonauts_core::settings::ui::PaidByPlace;
 use argonauts_core::{NoteLevel, Paths};
-use argonauts_tui::format::WallClock;
+use argonauts_tui::base::format::WallClock;
 use time::{Date, OffsetDateTime};
 
 pub(crate) use self::build::Sources;
@@ -34,8 +34,8 @@ pub(crate) use self::import::doctor_lines;
 use self::records::IMPORTED;
 pub(crate) use self::records::Store;
 use crate::controller::{Ctx, Effect};
-use crate::usage_ledger::{LedgerLine, UsageLedger, local_day};
-use crate::work_ledger::WorkLedger;
+use crate::usage::usage_ledger::{LedgerLine, UsageLedger, local_day};
+use crate::usage::work_ledger::WorkLedger;
 
 /// Answers the Overview tab: first its question when it carries the answer, then its numbers.
 pub(crate) async fn view(
@@ -167,7 +167,7 @@ pub(crate) fn all_time_models(
 }
 
 /// Every line of the usage ledger and the work ledger.
-fn ledgers(paths: &Paths) -> (Vec<LedgerLine>, Vec<crate::work_ledger::WorkLine>) {
+fn ledgers(paths: &Paths) -> (Vec<LedgerLine>, Vec<crate::usage::work_ledger::WorkLine>) {
     let ledger = UsageLedger::new(paths);
     ledger.rebuilt_once();
     let lines = ledger.read_since(None);

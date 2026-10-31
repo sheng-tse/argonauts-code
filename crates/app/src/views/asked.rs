@@ -5,9 +5,9 @@
 
 use std::collections::BTreeMap;
 
-use argonauts_core::events::session::{CliAgent, CliWorkflowRun};
-use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::views::{PhaseRow, RowNote, RowStatus, Tone, WorkflowRow, WorkflowView};
+use argonauts_core::app::views::{PhaseRow, RowNote, RowStatus, Tone, WorkflowRow, WorkflowView};
+use argonauts_core::base::names::{RoleName, SessionKey};
+use argonauts_core::runs::events::session::{CliAgent, CliWorkflowRun};
 use argonauts_tui::views::asks::{self, Ask, label_stem};
 
 use super::sessions::{RunFacts, SessionFacts};
@@ -120,13 +120,13 @@ fn is_ask(session: &SessionFacts) -> bool {
 #[cfg(test)]
 mod tests {
     use argonauts_core::TaskId;
-    use argonauts_core::event::AgentEvent;
-    use argonauts_core::events::session::EndReason;
-    use argonauts_core::events::session::{
+    use argonauts_core::base::names::SessionKey;
+    use argonauts_core::runs::event::AgentEvent;
+    use argonauts_core::runs::events::session::EndReason;
+    use argonauts_core::runs::events::session::{
         CliAgent, CliAgentState, CliPhase, CliWorkflowRun, SubagentStatus,
     };
-    use argonauts_core::events::{RunEvent, RunEventKind, SessionEvent};
-    use argonauts_core::names::SessionKey;
+    use argonauts_core::runs::events::{RunEvent, RunEventKind, SessionEvent};
     use serde_json::json;
 
     use super::*;
@@ -202,7 +202,7 @@ mod tests {
 
     /// Each agent row's label, worker, session, and what it decided once it answered.
     fn rows(events: &[RunEvent]) -> Vec<(String, String, SessionKey, Option<String>)> {
-        let id = argonauts_core::views::cli_workflow_run_id("w1");
+        let id = argonauts_core::app::views::cli_workflow_run_id("w1");
         let view = workflow_view(events, &run_id(), Some(&id)).unwrap();
         view.phases[0]
             .rows
@@ -306,7 +306,7 @@ mod tests {
         let (host, astra, mut events) = asked_about_store();
         if let RunEventKind::Session(SessionEvent::Started(started)) = &mut events[2].kind {
             started.label = Some("sign-off:due-dates".to_owned());
-            started.asked_by = Some(argonauts_core::events::session::AskedBy {
+            started.asked_by = Some(argonauts_core::runs::events::session::AskedBy {
                 session: host.clone(),
                 workflow: None,
                 agent: Some("review:cli".to_owned()),

@@ -8,25 +8,25 @@ use std::time::Duration;
 use serde_json::json;
 
 use argonauts_core::LimitDimension;
-use argonauts_core::event::AgentEvent;
-use argonauts_core::events::run::{Party, ResumeCause, RunLifecycle, RunMode, RunResumed};
-use argonauts_core::events::session::{Billing, EndReason, LimitEvent, SessionEvent};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::meter::{MeterAction, MeterLimit, Spend, SpendStatus};
-use argonauts_core::names::{ModelRef, RoleName, SeatId};
-use argonauts_core::registry::ModelEntry;
-use argonauts_core::session::AuthMode;
-use argonauts_core::session_runner::{Access, RunnerEvent, SessionControl};
+use argonauts_core::agents::session::AuthMode;
+use argonauts_core::agents::session_runner::{Access, RunnerEvent, SessionControl};
+use argonauts_core::base::names::{ModelRef, RoleName, SeatId};
+use argonauts_core::models::meter::{MeterAction, MeterLimit, Spend, SpendStatus};
+use argonauts_core::models::registry::ModelEntry;
+use argonauts_core::runs::event::AgentEvent;
+use argonauts_core::runs::events::run::{Party, ResumeCause, RunLifecycle, RunMode, RunResumed};
+use argonauts_core::runs::events::session::{Billing, EndReason, LimitEvent, SessionEvent};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::roles::RoleSettings;
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::steps::StepError;
-use argonauts_core::steps::understand::{Read, ReadInput};
+use argonauts_core::workflows::steps::StepError;
+use argonauts_core::workflows::steps::understand::{Read, ReadInput};
 use argonauts_crew::EngineError;
 use argonauts_crew::engine::commands;
 use argonauts_crew::engine::host::{Ask, Host, SessionPlan};
 use argonauts_crew::state::RunState;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
 
 use support::{Crew, names, script};
 

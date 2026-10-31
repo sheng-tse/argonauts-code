@@ -2,19 +2,21 @@
 //! views, the main agent's design step, and `/workflows` and `/context`.
 
 use argonauts_core::app::{AppEvent, UiCommand, ViewData, ViewRequest};
-use argonauts_core::engine::EngineCommand;
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::session::SessionStarted;
+use argonauts_core::base::layout::{project_files, user_files};
+use argonauts_core::base::names::{ApprovalId, WorkflowId};
+use argonauts_core::base::names::{ModelRef, RoleName};
 use argonauts_core::input::{Handler, ParsedInput, SLASH_COMMANDS, WorkflowAction, parse_input};
-use argonauts_core::layout::{project_files, user_files};
-use argonauts_core::names::{ApprovalId, WorkflowId};
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::runs::engine::EngineCommand;
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::session::SessionStarted;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::ui::{CliInternals, Glyphs};
 use argonauts_core::settings::workflows::OrchestratorDesign;
-use argonauts_core::steps::design::{DesignInput, DesignWorkflow};
-use argonauts_core::steps::{Step, StepName};
-use argonauts_core::workflow::{Count, StandardPhase, StepKind, StepModels, Workflow, WorkflowRef};
+use argonauts_core::workflows::steps::design::{DesignInput, DesignWorkflow};
+use argonauts_core::workflows::steps::{Step, StepName};
+use argonauts_core::workflows::workflow::{
+    Count, StandardPhase, StepKind, StepModels, Workflow, WorkflowRef,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -374,7 +376,7 @@ fn check_step_output<S: Step>(value: Value)
 where
     S::Output: std::fmt::Debug + PartialEq,
 {
-    let schema = argonauts_core::steps::output_schema::<S>();
+    let schema = argonauts_core::workflows::steps::output_schema::<S>();
     let errors = schema_errors(schema, &value);
     assert!(errors.is_empty(), "{:?}: {errors:#?}", S::NAME);
     round_trip::<S::Output>(value);

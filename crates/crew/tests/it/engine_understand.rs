@@ -6,25 +6,25 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::hash::sha256_hex;
+use argonauts_core::base::names::MessageId;
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket, FreeText,
 };
-use argonauts_core::events::goal::{
+use argonauts_core::runs::events::goal::{
     GoalChangeResolution, GoalEvent, GoalFile, GoalQuestion, LET_THE_MAIN_AGENT_ANSWER,
 };
-use argonauts_core::events::run::{Party, RunMode};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::hash::sha256_hex;
-use argonauts_core::names::MessageId;
-use argonauts_core::session_runner::Access;
+use argonauts_core::runs::events::run::{Party, RunMode};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::{Answerer, ApprovalMode, GoalChanges};
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::understand::DiffTag;
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::understand::DiffTag;
 use argonauts_crew::state::RunState;
 use argonauts_crew::understand::changes::{Route, route};
 use argonauts_crew::understand::{file, required_hash};
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
 
 use support::{Crew, Outcome, answer};
 
@@ -502,7 +502,7 @@ async fn goal_send_back_reads_again() -> anyhow::Result<()> {
             .filter(|spec| spec.step == Some(StepName::Read))
             .collect();
         assert_eq!(read_sessions.len(), 2);
-        let carries_note = |spec: &argonauts_core::session_runner::SessionSpec| {
+        let carries_note = |spec: &argonauts_core::agents::session_runner::SessionSpec| {
             spec.prompt.iter().any(|part| part.text.contains(note))
         };
         assert!(!carries_note(&read_sessions[0]));
@@ -515,9 +515,9 @@ async fn goal_send_back_reads_again() -> anyhow::Result<()> {
         .events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Workflow(argonauts_core::events::workflow::WorkflowEvent::Note(note)) => {
-                Some(note.text.clone())
-            }
+            RunEventKind::Workflow(
+                argonauts_core::runs::events::workflow::WorkflowEvent::Note(note),
+            ) => Some(note.text.clone()),
             _ => None,
         })
         .collect();

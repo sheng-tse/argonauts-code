@@ -5,7 +5,7 @@
 use crate::policy_support;
 use std::time::Duration;
 
-use argonauts_core::events::approval::ApprovalKind;
+use argonauts_core::runs::events::approval::ApprovalKind;
 use policy_support::{
     McpServer, OutsideAgent, RUN_WAIT, SUPERVISED_MERGE, TASK, captain_config, decisions, failed,
     merge_waits, opened_of_kind, runtime, text, trusted_scenario,

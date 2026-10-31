@@ -8,7 +8,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 
 use argonauts_core::CommandSpec;
-use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
+use argonauts_core::agents::session_runner::{SandboxMode, SandboxProfile};
 
 use super::launcher::{LaunchPlan, launcher_args};
 use super::profile::check_profile;
@@ -35,7 +35,7 @@ impl Landlock {
     /// Launches through the running `argonauts` binary.
     pub fn new() -> Self {
         Self {
-            launcher: argonauts_core::paths::this_program().ok(),
+            launcher: argonauts_core::base::paths::this_program().ok(),
         }
     }
 

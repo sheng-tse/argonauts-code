@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use argonauts_core::behavior_world::RisenWonder;
-use argonauts_core::layout::{repo_state, user_files};
-use argonauts_core::paths::{EVENT_LOG_FILE, write_private_file};
+use argonauts_core::base::layout::{repo_state, user_files};
+use argonauts_core::base::paths::{EVENT_LOG_FILE, write_private_file};
+use argonauts_core::behaviors::behavior_world::RisenWonder;
 use argonauts_core::{Paths, create_private_dir_all};
 use serde::{Deserialize, Serialize};
 

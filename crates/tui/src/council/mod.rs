@@ -12,49 +12,25 @@
 //! An [`Item`] is what the conversation holds; each look draws it into rows and, for the
 //! pictured look, the [`shapes`] under them. [`cell`] prints items into the conversation.
 
-mod blocks;
-mod bubbles;
-pub mod cell;
-pub mod checks;
-pub mod conversation;
-pub mod edits;
-pub mod faces;
-pub mod item;
-pub mod pick;
-pub mod picture;
-pub mod place;
-pub mod plan;
-pub mod reply;
-mod row;
-pub mod session_view;
-pub mod shapes;
-pub mod task_header;
-pub mod thread;
-mod transcript;
-pub mod views;
-pub mod words;
+pub mod draw;
+pub mod screens;
+pub mod talk;
+#[cfg(test)]
+pub(crate) mod tests;
+pub mod work;
 
-#[cfg(test)]
-mod approved_tests;
-#[cfg(test)]
-pub(crate) mod golden_tests;
-#[cfg(test)]
-pub(crate) mod story;
-#[cfg(test)]
-mod work_rows_golden_tests;
-
-use argonauts_core::names::SeatId;
+use argonauts_core::base::names::SeatId;
 use argonauts_core::settings::ui::{Bubbles, CouncilView};
 use ratatui::text::Line;
 
-pub use cell::{SharedItem, Spacing, TalkCell, TypingCell};
-pub use conversation::{Conversation, Said, When};
-pub use faces::{Face, Faces};
-pub use item::{Body, Drawn, Edge, Header, Item, Quote, SeatSays, YouSay};
-pub use shapes::Shape;
-pub use words::{Mark, Piece, Tone};
+pub use super::base::draw::shapes::Shape;
+pub use talk::cell::{SharedItem, Spacing, TalkCell, TypingCell};
+pub use talk::conversation::{Conversation, Said, When};
+pub use talk::faces::{Face, Faces};
+pub use talk::item::{Body, Drawn, Edge, Header, Item, Quote, SeatSays, YouSay};
+pub use talk::words::{Mark, Piece, Tone};
 
-use crate::theme::Theme;
+use crate::base::theme::Theme;
 
 /// The input's placeholder while a council talks.
 pub const PLACEHOLDER: &str =
@@ -115,7 +91,8 @@ impl Look {
     ) -> (Line<'static>, Vec<Shape>) {
         match self {
             Look::Pictures | Look::Plain => {
-                let (line, shapes) = bubbles::typing(writers, frame, reason, width, faces, theme);
+                let (line, shapes) =
+                    draw::bubbles::typing(writers, frame, reason, width, faces, theme);
                 (
                     line,
                     if self == Look::Pictures {
@@ -126,29 +103,13 @@ impl Look {
                 )
             }
             Look::Blocks => (
-                blocks::typing(writers, frame, reason, width, faces, theme),
+                draw::blocks::typing(writers, frame, reason, width, faces, theme),
                 Vec::new(),
             ),
             Look::Transcript => (
-                transcript::typing(writers, frame, reason, width, faces, theme),
+                draw::transcript::typing(writers, frame, reason, width, faces, theme),
                 Vec::new(),
             ),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_setting_picks_its_look() {
-        use Bubbles::*;
-        use CouncilView::*;
-        assert_eq!(Look::choose(Messages, Auto, true), Look::Pictures);
-        assert_eq!(Look::choose(Messages, Auto, false), Look::Transcript);
-        assert_eq!(Look::choose(Messages, Blocks, false), Look::Blocks);
-        assert_eq!(Look::choose(Messages, Plain, true), Look::Plain);
-        assert_eq!(Look::choose(Transcript, Auto, true), Look::Transcript);
     }
 }

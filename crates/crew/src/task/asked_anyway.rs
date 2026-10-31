@@ -7,17 +7,17 @@
 //! its report's concerns on lines that start with `Assumed:`. The run says each one once, so
 //! an answer nobody gave is recorded as an assumption you can review.
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::session::{EndReason, InputPart};
-use argonauts_core::names::{ModelRef, SessionKey};
-use argonauts_core::steps::asking;
-use argonauts_core::steps::task::TaskReport;
+use argonauts_core::base::names::{ModelRef, SessionKey};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::session::{EndReason, InputPart};
+use argonauts_core::workflows::steps::asking;
+use argonauts_core::workflows::steps::task::TaskReport;
 use argonauts_core::{Note, NoteLevel, TaskId};
 
 use super::session::Ended;
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
 use crate::engine::shared::lock;
-use crate::error::EngineResult;
 
 /// What the agent reads in place of an answer, when its session ended with a question and can
 /// take a reply. `None` leaves the end to be what it was: a report that doesn't match.
@@ -57,7 +57,7 @@ pub(crate) fn reply(
     } else {
         "to decide and carry on"
     };
-    let label = host.read(|state| crate::labels::task_label(state, task));
+    let label = host.read(|state| crate::sessions::labels::task_label(state, task));
     let note = Note {
         level: NoteLevel::Info,
         text: format!("{label} ended its turn with a question, so it was told {told}."),
@@ -79,7 +79,7 @@ pub(crate) fn on_report(
     if assumed.is_empty() {
         return Ok(());
     }
-    let label = host.read(|state| crate::labels::task_label(state, task));
+    let label = host.read(|state| crate::sessions::labels::task_label(state, task));
     let note = Note {
         level: NoteLevel::Info,
         text: format!("{label} assumed: {}", assumed.join("; ")),
@@ -90,7 +90,7 @@ pub(crate) fn on_report(
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::steps::task::ReportStatus;
+    use argonauts_core::workflows::steps::task::ReportStatus;
 
     use super::*;
 

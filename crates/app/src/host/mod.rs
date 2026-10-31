@@ -3,35 +3,38 @@
 
 pub(crate) mod clis;
 mod door;
+pub(crate) mod keep_awake;
+pub(crate) mod live_registry;
 pub(crate) mod log_views;
 pub(crate) mod memory;
 mod orphans;
 mod relay;
 mod reloader;
 mod revert_check;
+pub(crate) mod run_files;
 mod server;
 pub(crate) mod services;
 mod sink;
 mod start;
 mod time_limit;
+pub(crate) mod wake;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow, bail};
-use argonauts_core::control::{ControlReply, ControlRequest};
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::engine::{
+use argonauts_core::base::layout;
+use argonauts_core::base::paths::write_private_file;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::model_memory::Holder;
+use argonauts_core::runs::engine::{
     EngineContext, EngineExit, EventSink as _, RepoContext, RunEngine, Services,
 };
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome, WaitReason};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::hidden_git::CLEARED_STALE_LOCK;
-use argonauts_core::journal::{Journal, RunLock, read_all, read_since_snapshot};
-use argonauts_core::layout::run_files;
-use argonauts_core::model_memory::Holder;
-use argonauts_core::paths::write_private_file;
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunOutcome, WaitReason};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::hidden_git::CLEARED_STALE_LOCK;
+use argonauts_core::runs::journal::{Journal, RunLock, read_all, read_since_snapshot};
 use argonauts_core::settings::Settings;
 use argonauts_core::{Note, NoteLevel, Paths, RunId};
 use time::OffsetDateTime;
@@ -45,12 +48,13 @@ use self::door::Door;
 use self::relay::{Queue, Receipt};
 use self::server::ServerState;
 use self::sink::JournalSink;
-use crate::ancestry::{self, AgentMarkers};
-use crate::env::{AppEnv, FolderGit};
-use crate::live_registry::{self, LiveRunHost};
-use crate::model_memory::{ServerMemory, freed_line};
-use crate::run_files::{self as files, SettingsRecord, StartRecord};
-use crate::usage_ledger::UsageLedger;
+use crate::agents::model_memory::{ServerMemory, freed_line};
+use crate::control::{ControlReply, ControlRequest};
+use crate::host::run_files::{self as files, SettingsRecord, StartRecord};
+use crate::startup::ancestry::{self, AgentMarkers};
+use crate::startup::env::{AppEnv, FolderGit};
+use crate::usage::usage_ledger::UsageLedger;
+use live_registry::LiveRunHost;
 
 const SOURCE: &str = "argonauts-code";
 /// Live events kept for a slow subscriber before it reads the rest from the journal.
@@ -132,7 +136,7 @@ pub(crate) async fn host_with(
 ) -> anyhow::Result<HostExit> {
     let env = AppEnv::for_repo(options.paths.clone(), repo_root, false)?;
     let run_dir = env.run_dir(run);
-    if !run_dir.join(run_files::START).is_file() {
+    if !run_dir.join(layout::run_files::START).is_file() {
         bail!("run {run} has no start.json, so there's nothing to host");
     }
     if options.check_ancestry {
@@ -151,7 +155,7 @@ pub(crate) async fn host_with(
     // The run works for as long as this process hosts it, and the hold ends with the
     // process however it ends.
     let _awake = (keep_awake && host.settings.awake.while_working)
-        .then(|| crate::keep_awake::while_hosting(&host.settings.awake))
+        .then(|| crate::host::keep_awake::while_hosting(&host.settings.awake))
         .flatten();
     // Clients get their Welcome now, and their requests queue while the slow start runs.
     let serving = Serving::start(&host);
@@ -264,9 +268,12 @@ impl Host {
     ) -> anyhow::Result<(Self, Queue)> {
         let (pid, started) = ancestry::own_process();
         let token = files::read_token(&run_dir).context("reading the approval token")?;
-        write_private_file(&run_dir.join(run_files::PID), format!("{pid}\n").as_bytes())
-            .context("writing the run host's pid file")?;
-        let journal_path = run_dir.join(run_files::EVENTS);
+        write_private_file(
+            &run_dir.join(layout::run_files::PID),
+            format!("{pid}\n").as_bytes(),
+        )
+        .context("writing the run host's pid file")?;
+        let journal_path = run_dir.join(layout::run_files::EVENTS);
         let journal = Journal::open(&journal_path, lock)?;
         let fresh = journal.next_seq() == 0;
         let (events, _) = broadcast::channel(EVENT_BUFFER);
@@ -332,7 +339,7 @@ impl Host {
             // taken up again would fail on.
             let root = &self.env.repo_root;
             let writers = start::other_writers(&self.env);
-            match off_the_runtime(|| crate::hidden_git::clear_locks(root, writers)) {
+            match off_the_runtime(|| crate::git::hidden_git::clear_locks(root, writers)) {
                 Ok(true) => self.note(NoteLevel::Warn, CLEARED_STALE_LOCK.to_owned()),
                 Ok(false) => {}
                 Err(err) => {
@@ -698,7 +705,7 @@ impl Host {
         if let Err(err) = files::remove_socket(&self.run_dir) {
             tracing::warn!("removing the control socket: {err}");
         }
-        let pid = self.run_dir.join(run_files::PID);
+        let pid = self.run_dir.join(layout::run_files::PID);
         if let Err(err) = std::fs::remove_file(&pid)
             && err.kind() != std::io::ErrorKind::NotFound
         {
@@ -794,13 +801,13 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Instant;
 
+    use crate::control::ControlRequest;
     use argonauts_core::TaskId;
-    use argonauts_core::api::{DiffScope, StartRun};
-    use argonauts_core::control::ControlRequest;
-    use argonauts_core::future::BoxFuture;
+    use argonauts_core::base::future::BoxFuture;
+    use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
     use argonauts_core::input::MentionTarget;
-    use argonauts_core::journal::read_all;
-    use argonauts_core::names::{ModelRef, RoleName, SessionKey};
+    use argonauts_core::runs::api::{DiffScope, StartRun};
+    use argonauts_core::runs::journal::read_all;
     use argonauts_core::settings::approvals::ApprovalMode;
     use argonauts_testkit::TempRepo;
 
@@ -936,7 +943,7 @@ mod tests {
         }
 
         fn events(&self) -> Vec<RunEvent> {
-            read_all(&self.run_dir.join(run_files::EVENTS))
+            read_all(&self.run_dir.join(layout::run_files::EVENTS))
                 .unwrap()
                 .events
         }
@@ -1090,7 +1097,12 @@ mod tests {
             "in order, before anything else, without the one whose token was wrong or the \
              take-back"
         );
-        assert!(!test.run_dir.join(run_files::PENDING_ANSWERS).exists());
+        assert!(
+            !test
+                .run_dir
+                .join(layout::run_files::PENDING_ANSWERS)
+                .exists()
+        );
 
         let history = history.lock().unwrap().clone();
         assert_eq!(history.len(), 1, "a new run's history is its RunStarted");
@@ -1121,7 +1133,7 @@ mod tests {
             .join("base");
         assert!(base.join("README.md").is_file(), "the base worktree exists");
         assert!(!files::socket_path(&test.run_dir).exists());
-        assert!(!test.run_dir.join(run_files::PID).exists());
+        assert!(!test.run_dir.join(layout::run_files::PID).exists());
         assert!(live_registry::live_run_hosts(&test.paths).is_empty());
     }
 
@@ -1135,7 +1147,7 @@ mod tests {
             outside_agent: None,
         };
         files::append_pending(&test.run_dir, &guidance).unwrap();
-        let path = test.run_dir.join(run_files::PENDING_ANSWERS);
+        let path = test.run_dir.join(layout::run_files::PENDING_ANSWERS);
         let mut file = std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
@@ -1192,7 +1204,7 @@ mod tests {
             .await;
         assert_eq!(exit, HostExit::AlreadyHosted);
         assert_eq!(test.rounds.load(Ordering::SeqCst), 0);
-        assert!(!test.run_dir.join(run_files::EVENTS).exists());
+        assert!(!test.run_dir.join(layout::run_files::EVENTS).exists());
         drop(held);
     }
 
@@ -1231,7 +1243,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_finished_run_frees_the_model_it_loaded_and_says_so() {
-        use argonauts_core::model_memory::{ModelMemory, Server};
+        use argonauts_core::models::model_memory::{ModelMemory, Server};
         use argonauts_testkit::{FakeKind, FakeModelServer};
 
         let test = TestRun::new();
@@ -1282,7 +1294,7 @@ mod tests {
         let script: Script = Arc::new(|_, mut context: EngineContext| {
             Box::pin(async move {
                 match context.inbox.recv().await {
-                    Some(argonauts_core::engine::EngineCommand::Pause { now: false }) => {
+                    Some(argonauts_core::runs::engine::EngineCommand::Pause { now: false }) => {
                         EngineExit::Waiting(WaitReason::Paused)
                     }
                     _ => EngineExit::Crashed("expected a pause".to_owned()),
@@ -1398,7 +1410,7 @@ mod tests {
         files::append_pending(&test.run_dir, &answer(TOKEN)).unwrap();
         let script: Script = Arc::new(|_, mut context: EngineContext| {
             Box::pin(async move {
-                if let Some(argonauts_core::engine::EngineCommand::Answer { reply, .. }) =
+                if let Some(argonauts_core::runs::engine::EngineCommand::Answer { reply, .. }) =
                     context.inbox.recv().await
                 {
                     let _ = reply.send(Err("the evidence changed".to_owned()));
@@ -1496,7 +1508,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_run_without_start_json_is_an_error() {
         let test = TestRun::new();
-        std::fs::remove_file(test.run_dir.join(run_files::START)).unwrap();
+        std::fs::remove_file(test.run_dir.join(layout::run_files::START)).unwrap();
         let options = test.options(Duration::ZERO, finish(RunOutcome::Merged));
         assert!(
             host_with(test.repo.root(), &test.run, options)
@@ -1664,7 +1676,7 @@ mod tests {
     async fn the_socket_answers_while_the_start_is_still_slow() {
         use argonauts_core::agents::AgentGroup;
 
-        use crate::ancestry::tests::{child_of, spawn_group};
+        use crate::startup::ancestry::tests::{child_of, spawn_group};
 
         let test = TestRun::new();
         // An orphan that ignores SIGTERM holds the start up for the whole grace.
@@ -1675,10 +1687,11 @@ mod tests {
             pid: orphan.id(),
             start_time: ancestry::Processes::new().start_time(orphan.id()).unwrap(),
         };
-        let session = argonauts_core::layout::session_dir(&test.run_dir, &SessionKey::numbered(1));
+        let session =
+            argonauts_core::base::layout::session_dir(&test.run_dir, &SessionKey::numbered(1));
         std::fs::create_dir_all(&session).unwrap();
         std::fs::write(
-            session.join(argonauts_core::layout::session_files::PROCESS),
+            session.join(argonauts_core::base::layout::session_files::PROCESS),
             serde_json::to_vec(&group).unwrap(),
         )
         .unwrap();

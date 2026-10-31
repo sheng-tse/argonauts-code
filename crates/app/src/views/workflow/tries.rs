@@ -8,8 +8,8 @@
 
 use std::collections::BTreeMap;
 
-use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::views::{AgentRow, RowStatus, StepTry, WorkflowRow, round_stem};
+use argonauts_core::app::views::{AgentRow, RowStatus, StepTry, WorkflowRow, round_stem};
+use argonauts_core::base::names::{RoleName, SessionKey};
 
 use crate::views::sessions::RunFacts;
 
@@ -170,7 +170,7 @@ fn try_of(row: &AgentRow, nth: usize, sessions: &RunFacts) -> StepTry {
 #[cfg(test)]
 mod tests {
     use argonauts_core::Spend;
-    use argonauts_core::names::{ModelRef, SessionKey};
+    use argonauts_core::base::names::{ModelRef, SessionKey};
 
     use super::*;
 
@@ -368,7 +368,7 @@ mod tests {
     /// Workers that start and end at `(start, end)` seconds in, in that order.
     fn workers_at(times: &[(u64, u64)]) -> RunFacts {
         use crate::client::test_support::{session_ended, session_started};
-        use argonauts_core::events::session::EndReason;
+        use argonauts_core::runs::events::session::EndReason;
         let mut events: Vec<_> = Vec::new();
         for (n, (start, end)) in (1..).zip(times) {
             let key = SessionKey::numbered(n);

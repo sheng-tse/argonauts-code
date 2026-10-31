@@ -7,16 +7,16 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use argonauts_conductor::cli_versions::{CliVersions, Installed, version_check};
+use argonauts_conductor::boards::cli_versions::{CliVersions, Installed, version_check};
 use argonauts_conductor::doctor::versions::newest_tested;
 use argonauts_conductor::{AgentStatus, DoctorReport};
 use argonauts_core::Adapter;
-use argonauts_core::adapter::SetupHints;
-use argonauts_core::names::ModelRef;
-use argonauts_core::runtimes::{RUNTIMES, RuntimeKind, runtime};
+use argonauts_core::agents::adapter::SetupHints;
+use argonauts_core::agents::runtimes::{RUNTIMES, RuntimeKind, runtime};
+use argonauts_core::app::status_tab::CliVersionCheck;
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::settings::Settings;
-use argonauts_core::status_tab::CliVersionCheck;
-use argonauts_endpoints::runtime_api;
+use argonauts_endpoints::session::runtime_api;
 
 /// Each server probe waits at most this long.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);

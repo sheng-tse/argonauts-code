@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use argonauts_core::events::run::{RunLifecycle, RunOutcome};
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::run::{RunLifecycle, RunOutcome};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_scenarios::{Scenario, WAIT, past_the_question_guard};
 use argonauts_testkit::{Key, Pty};
 use policy_support::{

@@ -8,24 +8,24 @@ use std::sync::Arc;
 use serde_json::json;
 use time::{Duration, OffsetDateTime};
 
-use argonauts_core::event::AgentEvent;
-use argonauts_core::events::agent_status::{RunSpend, SpendEvent};
-use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::InputPartKind;
-use argonauts_core::events::task::{
+use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::event::AgentEvent;
+use argonauts_core::runs::events::agent_status::{RunSpend, SpendEvent};
+use argonauts_core::runs::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::InputPartKind;
+use argonauts_core::runs::events::task::{
     CheckKind, CheckOutcome, TaskEvent, TaskKind, TaskSpec, TaskState,
 };
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ModelRef, RoleName, SessionKey};
-use argonauts_core::steps::understand::{Read, ReadInput};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::workflows::steps::understand::{Read, ReadInput};
 use argonauts_core::{RunId, Spend, TaskId};
 use argonauts_crew::engine::host::{Ask, Host};
 use argonauts_crew::state::RunState;
 use argonauts_crew::status::files::StatusFiles;
 use argonauts_crew::status::folder::Folder;
 use argonauts_crew::status::{self, Viewer};
-use argonauts_testkit::runner::FakeSession;
+use argonauts_testkit::engine::runner::FakeSession;
 
 fn at(seq: u64, task: Option<&str>, session: Option<&str>, kind: RunEventKind) -> RunEvent {
     RunEvent {
@@ -308,7 +308,7 @@ fn session_spend(step: &str, usd: f64) -> anyhow::Result<RunEventKind> {
 
 /// What the run did once its own limit was spent: stopped by your rules, or paused.
 async fn at_the_run_limit(autopilot: bool) -> anyhow::Result<(bool, bool, Vec<String>)> {
-    use argonauts_core::events::run::RunLifecycle;
+    use argonauts_core::runs::events::run::RunLifecycle;
     use argonauts_core::settings::approvals::ApprovalMode;
     let mut crew = support::Crew::new()?;
     crew.settings.limits.spend.spend_per_run = Some(0.02);

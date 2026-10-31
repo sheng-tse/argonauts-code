@@ -2,9 +2,11 @@
 //! model, and the known endpoints are the only concrete names.
 
 use argonauts_core::AuthMode;
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::input::REASONING_LEVELS;
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::{CostModel, CostUnit, ModelAccess, ModelEntry, RegistryKind};
+use argonauts_core::models::registry::{
+    CostModel, CostUnit, ModelAccess, ModelEntry, RegistryKind,
+};
 use argonauts_core::settings::Settings;
 pub use argonauts_core::settings::endpoints::{builtin_endpoint, endpoint_settings};
 
@@ -87,7 +89,7 @@ pub fn cli_entry(settings: &Settings, adapter: &str, model: Option<&str>) -> Mod
     let provider = model
         .and_then(super::provider_from_model_id)
         .or_else(|| cli_default_provider(adapter))
-        .unwrap_or(argonauts_core::registry::provider::UNKNOWN_PROVIDER);
+        .unwrap_or(argonauts_core::models::registry::provider::UNKNOWN_PROVIDER);
     let (access, cost) = cli_access(settings, adapter);
     ModelEntry {
         id: ModelRef::new(adapter, model.map(str::to_owned)),

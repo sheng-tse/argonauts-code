@@ -9,24 +9,27 @@ use std::time::Instant;
 
 use time::OffsetDateTime;
 
+use argonauts_core::app::model_picker::{EffortLine, ListedFacts, ModelsLevel};
 use argonauts_core::app::{ModelChoice, UiCommand};
+use argonauts_core::base::names::{ModelRef, RoleName};
 use argonauts_core::input::SlashCommand;
-use argonauts_core::limits::{CostEstimate, PlanUsageReading, PlanUsageStatus};
-use argonauts_core::logos::{Logo, logo_for};
-use argonauts_core::model_catalog::display_name_from_id;
-use argonauts_core::model_picker::{EffortLine, ListedFacts, ModelsLevel};
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::registry::ModelAccess;
-use argonauts_core::registry::provider::{is_known, provider_name};
-use argonauts_core::window_size::window_words;
+use argonauts_core::look::logos::{Logo, logo_for};
+use argonauts_core::look::window_size::window_words;
+use argonauts_core::models::limits::{CostEstimate, PlanUsageReading, PlanUsageStatus};
+use argonauts_core::models::model_catalog::display_name_from_id;
+use argonauts_core::models::registry::ModelAccess;
+use argonauts_core::models::registry::provider::{is_known, provider_name};
 
-use super::flow::{self, Flow, Kept, RowAction, Stage, Step};
+use super::flow;
 use super::memory_rows;
-use super::words::{level_freshness, model_role, source_state, value_words, word_for_a_model};
+use crate::base::format::{self, setting_value};
+use crate::base::format::{ClockStyle, reset_time};
+use crate::base::text::words::{
+    level_freshness, model_role, source_state, value_words, word_for_a_model,
+};
+use crate::base::theme::Role;
+use crate::bottom::picker::flow::{Flow, Kept, RowAction, Stage, Step, opened_from_roles};
 use crate::bottom::{Picker, PickerCell, PickerColumn, PickerRow, RowPart};
-use crate::format::{self, setting_value};
-use crate::format::{ClockStyle, reset_time};
-use crate::theme::Role;
 
 const DEFAULT_LABEL: &str = "Default";
 const RECOMMENDED_LABEL: &str = "Default (recommended)";
@@ -595,18 +598,6 @@ fn listed<'a>(flow: &'a Flow, worker: &ModelRef) -> Option<&'a ModelChoice> {
     flow.models.iter().find(|choice| choice.worker == *worker)
 }
 
-/// In `/model`, a role's CLIs sit under the roles, so they go back to them.
-pub fn opened_from_roles(flow: &Flow) -> bool {
-    flow.command == "model"
-        && !flow.settings.is_empty()
-        && matches!(flow.stage, Stage::Models { role: Some(_) })
-}
-
-/// Whether `/model` shows its roles, which sit under the main agent's CLIs.
-pub fn on_roles(flow: &Flow) -> bool {
-    flow.command == "model" && flow.stage == Stage::Keys
-}
-
 /// Esc one level down goes up one. `false` on the first level, which closes.
 pub fn back(picker: &mut Picker) -> bool {
     match picker.flow.stage.clone() {
@@ -1037,7 +1028,7 @@ fn access_words(access: ModelAccess) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::limits::CostEstimate;
+    use argonauts_core::models::limits::CostEstimate;
 
     use super::*;
 

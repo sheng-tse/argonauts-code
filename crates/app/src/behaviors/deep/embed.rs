@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
-use argonauts_core::future::BoxFuture;
+use argonauts_core::base::future::BoxFuture;
 use serde_json::json;
 
 use super::linalg::{SparseRow, truncated_svd};
@@ -84,7 +84,7 @@ impl EmbeddingEndpoint {
     ) -> Option<EmbeddingEndpoint> {
         let timeout = Duration::from_secs(120);
         let client = if local {
-            argonauts_endpoints::runtime_api::local_client(timeout)?
+            argonauts_endpoints::session::runtime_api::local_client(timeout)?
         } else {
             reqwest::Client::builder().timeout(timeout).build().ok()?
         };
@@ -167,7 +167,7 @@ impl Embedder for EmbeddingEndpoint {
 /// Downloads the embedding model into the Ollama at `base_url`, once you said yes. It waits for
 /// the whole download.
 pub(crate) async fn pull_nomic(base_url: &str) -> Result<(), String> {
-    let client = argonauts_endpoints::runtime_api::local_client(Duration::from_secs(1800))
+    let client = argonauts_endpoints::session::runtime_api::local_client(Duration::from_secs(1800))
         .ok_or("no client for this machine's servers")?;
     let root = base_url.trim_end_matches('/').trim_end_matches("/v1");
     let url = format!("{root}/api/pull");

@@ -18,12 +18,12 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::draw;
-use super::rows::{self, Cells, Group, Row, Tick, Top};
-use crate::kit::{Drawn, Kit};
-use crate::theme::{Role, Theme};
-use crate::views::ViewOutcome;
-use crate::views::panes::Footer;
+use crate::base::draw::panes::Footer;
+use crate::base::kit::{Drawn, Kit};
+use crate::base::theme::{Role, Theme};
+use crate::frame::view::ViewOutcome;
+use crate::panels::mods::draw;
+use crate::panels::mods::rows::{self, Cells, Group, Row, Tick, Top};
 
 const BODY_ROW: usize = 0;
 const FORM_ROW: usize = 1;

@@ -5,13 +5,13 @@
 use std::time::{Duration, Instant};
 
 use argonauts_tui::app::{Flow, Host, StdoutWriter, Ui, UiAction, run};
+use argonauts_tui::base::draw::render::RenderCtx;
+use argonauts_tui::base::text::{sanitize_line, wrap_text};
+use argonauts_tui::base::theme::{ColorEnv, ColorLevel, Role, Theme};
 use argonauts_tui::bottom::{
     Activity, AgentRow, AgentState, QuestionOption, QuestionPrompt, WorkingLine,
 };
-use argonauts_tui::cell::{Cell, HistoryCell};
-use argonauts_tui::render::RenderCtx;
-use argonauts_tui::text::{sanitize_line, wrap_text};
-use argonauts_tui::theme::{ColorEnv, ColorLevel, Role, Theme};
+use argonauts_tui::cells::cell::{Cell, HistoryCell};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 

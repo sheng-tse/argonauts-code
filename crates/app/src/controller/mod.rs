@@ -5,82 +5,53 @@
 //! handles its commands in its own module. A part that needs another returns an [`Effect`],
 //! and the loop applies it, so no part reaches into another's state.
 
-mod account;
-mod agent_panel;
-mod agents_add;
-pub(crate) mod ask_role;
-mod attach;
-mod banner;
-mod captain_or_crew;
-mod cli_commands;
-pub(crate) mod cli_updates;
-mod connect;
+pub(crate) mod base;
+pub(crate) mod clis;
 pub(crate) mod conversation;
 mod crew_lines;
-mod ctx;
-mod doctor;
-mod files;
-#[cfg(test)]
-mod fixture_replay;
-mod folder_git;
+mod folders;
 mod header_and_bottom_line;
 pub(crate) mod instructions;
-mod mod_places;
-pub(crate) mod names;
-mod narrator_host;
+mod library;
 mod needed_update;
-mod notify;
-mod prompt_templates;
-mod prompt_trust;
-mod recap;
-mod route;
+mod panels;
 mod run_commands;
 pub(crate) mod runs;
-mod seat_key;
 pub(crate) mod settings;
 mod shell;
-mod start_mode;
-mod status_health;
-mod status_tab;
-mod templates;
-#[cfg(test)]
-pub(crate) mod test_support;
-mod tries;
-pub(crate) mod turn;
-pub(crate) mod ultra;
+pub(crate) mod turns;
 mod workflow_switch;
 mod workflows;
-mod workspace;
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use argonauts_core::agents::session_runner::RunnerEvent;
+use argonauts_core::app::views::{LearningArea, LearningCommand, conversation_run};
 use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand, ViewRequest};
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::AnswerAction;
-use argonauts_core::events::context::ContextDetail;
-use argonauts_core::events::council::CouncilAction;
-use argonauts_core::events::run::{RunLifecycle, RunMode};
+use argonauts_core::base::names::{ChoiceId, RoleName};
 use argonauts_core::input::{
     AgentsAction, PromptsAction, ResumeTarget, SlashCommand, ViewAction, WorkflowVerb,
 };
-use argonauts_core::names::{ChoiceId, RoleName};
-use argonauts_core::session_runner::RunnerEvent;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::AnswerAction;
+use argonauts_core::runs::events::context::ContextDetail;
+use argonauts_core::runs::events::council::CouncilAction;
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode};
 use argonauts_core::settings::approvals::{AUTOPILOT_BACK, ApprovalMode, StartMode};
 use argonauts_core::settings::ui::Place;
-use argonauts_core::views::{LearningArea, LearningCommand, conversation_run};
 use argonauts_core::{AgentEvent, NoteLevel, RunId};
 use tokio::sync::mpsc;
 
-pub(crate) use ctx::{AppServices, Ctx, Effect, Internal, Outbox};
+pub(crate) use base::ctx::{AppServices, Ctx, Effect, Internal, Outbox};
+pub(crate) use base::route::Route;
 pub(crate) use header_and_bottom_line::{header_agent, plan_usage_chips};
-pub(crate) use route::Route;
 pub(crate) use run_commands::ApprovalReply;
 
 use self::conversation::starting::{main_start, tell_main_start};
 use crate::FirstView;
-use crate::repo_files;
+use crate::conversation::repo_files;
 use crate::setup::Setup;
 
 /// How often waiting runs are checked for a wake while the app is open.
@@ -140,18 +111,18 @@ pub(crate) struct Controller {
     conversation: conversation::ConversationState,
     runs: runs::RunsState,
     settings: settings::SettingsState,
-    connect: connect::ConnectState,
+    connect: clis::connect::ConnectState,
     workflows: workflows::State,
     workflow_switch: workflow_switch::State,
-    prompt_trust: prompt_trust::PromptTrustState,
+    prompt_trust: library::prompt_trust::PromptTrustState,
     renamed: settings::renamed::RenamedState,
-    git: folder_git::GitState,
-    templates: templates::TemplatesState,
+    git: folders::folder_git::GitState,
+    templates: library::templates::TemplatesState,
     needed_update: needed_update::NeededUpdateState,
     issue: crate::issue::IssueWork,
     shell: shell::ShellState,
     /// The conversation's CLI's own commands.
-    agent_id: cli_commands::CliCommands,
+    agent_id: clis::cli_commands::CliCommands,
     /// The mod files, and what their commands last printed.
     mods: crate::mods::ModsState,
     /// The folder the screen's `@` list holds the files of.
@@ -183,17 +154,17 @@ impl Controller {
             conversation,
             runs,
             settings,
-            connect: connect::ConnectState::default(),
+            connect: clis::connect::ConnectState::default(),
             workflows: workflows::State::default(),
             workflow_switch: workflow_switch::State::default(),
-            prompt_trust: prompt_trust::PromptTrustState::default(),
+            prompt_trust: library::prompt_trust::PromptTrustState::default(),
             renamed: settings::renamed::RenamedState::default(),
-            git: folder_git::GitState::default(),
-            templates: templates::TemplatesState::default(),
+            git: folders::folder_git::GitState::default(),
+            templates: library::templates::TemplatesState::default(),
             needed_update: needed_update::NeededUpdateState::default(),
             issue: crate::issue::IssueWork::default(),
             shell: shell::ShellState::default(),
-            agent_id: cli_commands::CliCommands::default(),
+            agent_id: clis::cli_commands::CliCommands::default(),
             files_folder: None,
             setup: None,
             first: None,
@@ -304,7 +275,7 @@ impl Controller {
         if !conversation::settled(&self.conversation) {
             tracing::warn!("a conversation step was still stopping when the app closed");
         }
-        crate::model_memory::app_closing(&self.ctx.env.paths).await;
+        crate::agents::model_memory::app_closing(&self.ctx.env.paths).await;
         Ok(())
     }
 
@@ -339,7 +310,7 @@ impl Controller {
     }
 
     fn follow_conversation(&mut self) {
-        cli_commands::follow(&self.ctx, &mut self.agent_id, &self.conversation);
+        clis::cli_commands::follow(&self.ctx, &mut self.agent_id, &self.conversation);
         let folder = self.conversation.folder(&self.ctx);
         if self.files_folder.as_deref() != Some(folder) {
             let folder = folder.to_path_buf();
@@ -373,7 +344,7 @@ impl Controller {
     async fn open(&mut self, opening: Opening) -> Vec<Effect> {
         self.first = Some(opening.first);
         // The app sent them before its header; a controller started on its own sends them now.
-        names::send(&mut self.ctx);
+        clis::names::send(&mut self.ctx);
         settings::refresh_models(&self.ctx, &mut self.settings);
         self.follow_conversation();
         if let Err(why) = crate::setup::reference::refresh(&self.ctx.env) {
@@ -387,7 +358,7 @@ impl Controller {
             self.open_setup().await
         } else {
             settings::ask_trust_at_start(&mut self.ctx, &mut self.settings);
-            prompt_trust::ask_at_start(&mut self.ctx, &mut self.prompt_trust);
+            library::prompt_trust::ask_at_start(&mut self.ctx, &mut self.prompt_trust);
             self.after_setup().await
         };
         self.settle(result)
@@ -451,18 +422,18 @@ impl Controller {
                     // A new main agent brings its own commands, unless the conversation goes to
                     // the agent whose session it carries on.
                     let fresh = conversation::fresh_session(&mut self.ctx, &mut self.conversation);
-                    cli_commands::refresh(&self.ctx, &mut self.agent_id, &self.conversation);
+                    clis::cli_commands::refresh(&self.ctx, &mut self.agent_id, &self.conversation);
                     start_changed = true;
                     fresh
                 }
                 Effect::CommandsChanged => {
-                    cli_commands::refresh(&self.ctx, &mut self.agent_id, &self.conversation);
+                    clis::cli_commands::refresh(&self.ctx, &mut self.agent_id, &self.conversation);
                     workflow_switch::tell_the_menu(&self.ctx, &mut self.workflow_switch);
                     start_changed = true;
                     Ok(Vec::new())
                 }
                 Effect::SettingsApplied { keys } => {
-                    names::send(&mut self.ctx);
+                    clis::names::send(&mut self.ctx);
                     workflow_switch::tell_the_menu(&self.ctx, &mut self.workflow_switch);
                     conversation::saved(&self.ctx, &mut self.conversation, &keys);
                     start_changed = true;
@@ -504,9 +475,9 @@ impl Controller {
                         runs::setup_answered(&mut self.runs, mode);
                     }
                     self.setup = None;
-                    prompt_templates::write_for_setup(&self.ctx);
+                    library::prompt_templates::write_for_setup(&self.ctx);
                     // The setup asked about the folder's settings, not about its prompt files.
-                    prompt_trust::ask_at_start(&mut self.ctx, &mut self.prompt_trust);
+                    library::prompt_trust::ask_at_start(&mut self.ctx, &mut self.prompt_trust);
                     self.after_setup().await
                 }
             };
@@ -520,7 +491,7 @@ impl Controller {
 
     async fn start_run(
         &mut self,
-        request: argonauts_core::api::StartRun,
+        request: argonauts_core::runs::api::StartRun,
     ) -> anyhow::Result<Vec<Effect>> {
         let mode = self.approval_mode_shown();
         let held = &mut self.needed_update;
@@ -651,7 +622,7 @@ impl Controller {
                 exit_code,
             } => run_commands::take_over_ended(ctx, runs, run, task, exit_code).await,
             UiCommand::TerminalReturned { argv } => {
-                account::terminal_returned(ctx, &argv);
+                clis::account::terminal_returned(ctx, &argv);
                 // A seat carried on in its CLI comes back to its council's talk, with what
                 // you typed to it there as your private messages to it.
                 if let Some(back) = conversation::in_cli::seat_back(&argv) {
@@ -700,7 +671,7 @@ impl Controller {
             UiCommand::Summary => run_commands::summary(ctx, runs).await,
             UiCommand::Learning { area, command } => self.learning(area, command).await,
             UiCommand::WorkflowFile { name, action } => {
-                files::workflow(ctx, &workflows::taken(&self.agent_id), name, action).await
+                library::files::workflow(ctx, &workflows::taken(&self.agent_id), name, action).await
             }
             UiCommand::WorkflowPage { name, change } => {
                 workflows::page_change(ctx, &mut self.workflows, &name, change)
@@ -720,7 +691,7 @@ impl Controller {
                 settings::narrator_mode(ctx, &mut self.settings, mode).await
             }
             UiCommand::CancelTurn => conversation::cancel_turn(ctx, &mut self.conversation),
-            UiCommand::StopCommand => doctor::stop_command(ctx),
+            UiCommand::StopCommand => clis::doctor::stop_command(ctx),
             UiCommand::Focus { focused } => {
                 runs::focus(runs, focused);
                 Ok(Vec::new())
@@ -820,7 +791,7 @@ impl Controller {
         let ctx = &mut self.ctx;
         let runs = &mut self.runs;
         let starts_with_file = |text: &str| repo_files::starts_with_file(&root, text);
-        match route::route(
+        match base::route::route(
             &ctx.mode,
             command,
             self.agent_id.set(),
@@ -871,7 +842,7 @@ impl Controller {
         match command {
             SlashCommand::SavedIn { scope, change } => match *change {
                 SlashCommand::Templates { name } => {
-                    templates::command(ctx, &mut self.templates, name, Some(scope))
+                    library::templates::command(ctx, &mut self.templates, name, Some(scope))
                 }
                 // A workflow switches as it does without a flag, in the place the flag names.
                 SlashCommand::Workflow {
@@ -931,7 +902,7 @@ impl Controller {
                 run_commands::workflow_view(ctx, runs, None).await
             }
             SlashCommand::WorkflowRun { .. } => {
-                files::library(ctx, &workflows::taken(agent_id), false);
+                library::files::library(ctx, &workflows::taken(agent_id), false);
                 Ok(Vec::new())
             }
             SlashCommand::FollowUp { run, request } => {
@@ -945,16 +916,16 @@ impl Controller {
             // Typed, it opens the Status tab, which always draws, so it prints nothing.
             SlashCommand::Status {
                 action: ViewAction::Open,
-            } => status_tab::show(ctx, runs, conversation).await,
+            } => panels::status_tab::show(ctx, runs, conversation).await,
             SlashCommand::Status {
                 action: ViewAction::Print,
             } => run_commands::status(ctx, runs).await,
-            SlashCommand::Status { action } => mod_places::tab(ctx, Place::Status, action),
+            SlashCommand::Status { action } => panels::mod_places::tab(ctx, Place::Status, action),
             SlashCommand::Workflows if runs::attached(runs).is_some() => {
                 run_commands::workflow_view(ctx, runs, None).await
             }
             SlashCommand::Workflows => {
-                files::library(ctx, &workflows::taken(agent_id), false);
+                library::files::library(ctx, &workflows::taken(agent_id), false);
                 Ok(Vec::new())
             }
             // The tab lists everything in full, so `all` asks for nothing more. The main
@@ -981,7 +952,9 @@ impl Controller {
                 let start = main_start(ctx, conversation, agent_id.set()).await;
                 run_commands::context_report(ctx, runs, row, start).await
             }
-            SlashCommand::Context { action, .. } => mod_places::tab(ctx, Place::Context, action),
+            SlashCommand::Context { action, .. } => {
+                panels::mod_places::tab(ctx, Place::Context, action)
+            }
             // In a direct conversation, the turns that changed files; in a run, its approvals.
             SlashCommand::Rewind { task: None } if conversation::rewind(ctx, conversation) => {
                 Ok(Vec::new())
@@ -993,7 +966,7 @@ impl Controller {
             SlashCommand::Stop { run } => run_commands::stop(ctx, runs, run).await,
             SlashCommand::Agents {
                 action: AgentsAction::Add { name },
-            } => agents_add::add(ctx, &name, None).await,
+            } => clis::agents_add::add(ctx, &name, None).await,
             SlashCommand::Workflow {
                 name: Some(name),
                 action: WorkflowVerb::Use,
@@ -1015,7 +988,9 @@ impl Controller {
                 };
                 settings::command(ctx, settings, command, None).await
             }
-            SlashCommand::Workflow { name, action } => files::chosen(ctx, name, action).await,
+            SlashCommand::Workflow { name, action } => {
+                library::files::chosen(ctx, name, action).await
+            }
             SlashCommand::WorkflowNew { name, from } => {
                 workflows::new(ctx, agent_id, &name, from.as_deref())
             }
@@ -1030,12 +1005,12 @@ impl Controller {
             SlashCommand::Prompts {
                 action: PromptsAction::Writer { role, who },
             } => {
-                let change = prompt_templates::writer_setting(role.as_deref(), &who)?;
+                let change = library::prompt_templates::writer_setting(role.as_deref(), &who)?;
                 settings::command(ctx, settings, change, None).await
             }
-            SlashCommand::Prompts { action } => prompt_templates::command(ctx, action),
+            SlashCommand::Prompts { action } => library::prompt_templates::command(ctx, action),
             SlashCommand::Templates { name } => {
-                templates::command(ctx, &mut self.templates, name, None)
+                library::templates::command(ctx, &mut self.templates, name, None)
             }
             SlashCommand::Verbosity { level: Some(level) } => {
                 settings::verbosity(ctx, settings, level, None).await
@@ -1045,35 +1020,35 @@ impl Controller {
             // only what you change.
             SlashCommand::Setup => Ok(vec![Effect::OpenSetup]),
             SlashCommand::Connect { outside_agent } => {
-                connect::connect(ctx, &mut self.connect, outside_agent)
+                clis::connect::connect(ctx, &mut self.connect, outside_agent)
             }
-            SlashCommand::Git => folder_git::command(ctx, &mut self.git),
-            SlashCommand::GitClean => folder_git::clean(ctx).await,
+            SlashCommand::Git => folders::folder_git::command(ctx, &mut self.git),
+            SlashCommand::GitClean => folders::folder_git::clean(ctx).await,
             SlashCommand::Runs { archive } => runs::archive::command(ctx, archive).await,
-            SlashCommand::Doctor => doctor::doctor(ctx),
-            SlashCommand::Awake { time } => crate::keep_awake::command(ctx, time),
-            SlashCommand::Update => doctor::update(ctx),
+            SlashCommand::Doctor => clis::doctor::doctor(ctx),
+            SlashCommand::Awake { time } => crate::host::keep_awake::command(ctx, time),
+            SlashCommand::Update => clis::doctor::update(ctx),
             SlashCommand::Limits {
                 action: ViewAction::Print,
                 ..
             } => {
                 let spent = conversation::context_row(&self.conversation).map(|row| row.spent);
-                account::limits_report(ctx, spent).await
+                clis::account::limits_report(ctx, spent).await
             }
             SlashCommand::Limits { action, .. } if !action.is_open() => {
-                mod_places::tab(ctx, Place::Limits, action)
+                panels::mod_places::tab(ctx, Place::Limits, action)
             }
             SlashCommand::ModFile { name, words } => {
                 let context = conversation::context_row(&self.conversation);
                 crate::mods::file_command(ctx, &self.mods, context, name, words).await
             }
             // /mods and a mod's page read the mod files, which the controller keeps.
-            SlashCommand::Mods { action, .. } if mod_places::opens_mods(&action) => {
+            SlashCommand::Mods { action, .. } if panels::mod_places::opens_mods(&action) => {
                 let context = conversation::context_row(&self.conversation);
-                let page = mod_places::page_asked(&action);
+                let page = panels::mod_places::page_asked(&action);
                 crate::mods::open(ctx, &self.mods, context, page, false).await
             }
-            SlashCommand::Mods { action, scope } => mod_places::command(ctx, action, scope),
+            SlashCommand::Mods { action, scope } => panels::mod_places::command(ctx, action, scope),
             SlashCommand::BottomLine { change, scope } => {
                 header_and_bottom_line::bottom_line_command(ctx, change, scope)
             }
@@ -1106,16 +1081,16 @@ impl Controller {
             SlashCommand::Copy { nth } => conversation::copy(ctx, conversation, nth),
             SlashCommand::Export { file } => conversation::export(ctx, conversation, file),
             SlashCommand::Cd { path } => {
-                workspace::cd(ctx, path, conversation::settled(conversation))
+                folders::workspace::cd(ctx, path, conversation::settled(conversation))
             }
-            SlashCommand::AddDir { path } => workspace::add_dir(ctx, &path, None),
+            SlashCommand::AddDir { path } => folders::workspace::add_dir(ctx, &path, None),
             SlashCommand::Plan { task } => conversation::plan(ctx, conversation, task),
             SlashCommand::Goal { text } => conversation::goal(ctx, conversation, text),
             SlashCommand::Fast { on } => conversation::fast(ctx, conversation, on),
             SlashCommand::OutputStyle { style } => {
                 conversation::output_style(ctx, conversation, style)
             }
-            SlashCommand::Diff => workspace::diff(ctx),
+            SlashCommand::Diff => folders::workspace::diff(ctx),
             SlashCommand::Review { target } => {
                 conversation::review(ctx, conversation, false, target)
             }
@@ -1129,37 +1104,39 @@ impl Controller {
             } => {
                 let spent = conversation::context_row(conversation).map(|row| row.spent);
                 let opens_on = ctx.settings().ui.views.usage.period.usage();
-                let period = account::parse_period(period.as_deref(), opens_on)?;
-                account::usage_view(ctx, spent, period).await
+                let period = clis::account::parse_period(period.as_deref(), opens_on)?;
+                clis::account::usage_view(ctx, spent, period).await
             }
             SlashCommand::Usage {
                 period,
                 action: ViewAction::Print,
             } => {
                 let spent = conversation::context_row(conversation).map(|row| row.spent);
-                account::usage(ctx, spent, period).await
+                clis::account::usage(ctx, spent, period).await
             }
-            SlashCommand::Usage { action, .. } => mod_places::tab(ctx, Place::Usage, action),
+            SlashCommand::Usage { action, .. } => {
+                panels::mod_places::tab(ctx, Place::Usage, action)
+            }
             // The Stats tab draws from the usage numbers, which carry the crew's stats.
             SlashCommand::Stats {
                 period,
                 action: ViewAction::Open,
             } => {
                 let spent = conversation::context_row(conversation).map(|row| row.spent);
-                let period = account::stats_period(ctx, period.as_deref());
-                account::usage_view(ctx, spent, period).await
+                let period = clis::account::stats_period(ctx, period.as_deref());
+                clis::account::usage_view(ctx, spent, period).await
             }
             SlashCommand::Stats {
                 action: ViewAction::Pin { scope },
                 ..
-            } => mod_places::pin_stats(ctx, scope),
+            } => panels::mod_places::pin_stats(ctx, scope),
             SlashCommand::Stats { .. } => Ok(Vec::new()),
-            SlashCommand::Login { agent } => account::login(ctx, agent, true),
-            SlashCommand::Logout { agent } => account::login(ctx, agent, false),
-            SlashCommand::ReleaseNotes => account::release_notes(ctx),
-            SlashCommand::Feedback { text } => account::feedback(ctx, text),
+            SlashCommand::Login { agent } => clis::account::login(ctx, agent, true),
+            SlashCommand::Logout { agent } => clis::account::login(ctx, agent, false),
+            SlashCommand::ReleaseNotes => clis::account::release_notes(ctx),
+            SlashCommand::Feedback { text } => clis::account::feedback(ctx, text),
             SlashCommand::Cli { name, args } => {
-                cli_commands::run(ctx, conversation, &self.agent_id, &name, &args)
+                clis::cli_commands::run(ctx, conversation, &self.agent_id, &name, &args)
             }
         }
     }
@@ -1201,7 +1178,7 @@ impl Controller {
             | ViewRequest::Models { .. }
             | ViewRequest::Approvals => settings::view(ctx, &mut self.settings, view).await,
             ViewRequest::StatusTab => {
-                status_tab::show(ctx, &mut self.runs, &self.conversation).await
+                panels::status_tab::show(ctx, &mut self.runs, &self.conversation).await
             }
             ViewRequest::Context => {
                 conversation::ask_context(&self.conversation, ContextDetail::Full);
@@ -1210,15 +1187,15 @@ impl Controller {
                 run_commands::context(ctx, &mut self.runs, row, start).await
             }
             ViewRequest::WorkflowLibrary => {
-                files::library(ctx, &workflows::taken(&self.agent_id), false);
+                library::files::library(ctx, &workflows::taken(&self.agent_id), false);
                 Ok(Vec::new())
             }
             ViewRequest::Usage { period } => {
                 let spent = conversation::context_row(&self.conversation).map(|row| row.spent);
-                account::usage_view(ctx, spent, period).await
+                clis::account::usage_view(ctx, spent, period).await
             }
             ViewRequest::ReadPlanUsage => {
-                account::read_plan_usage(ctx);
+                clis::account::read_plan_usage(ctx);
                 Ok(Vec::new())
             }
             ViewRequest::Overview { period, import } => {
@@ -1228,7 +1205,7 @@ impl Controller {
                 ctx.deep.showing(request);
                 crate::views::behaviors::view(ctx, request).await
             }
-            ViewRequest::Crew => agent_panel::show(ctx, &self.conversation).await,
+            ViewRequest::Crew => panels::agent_panel::show(ctx, &self.conversation).await,
             ViewRequest::Mods { open, refresh } => {
                 let context = conversation::context_row(&self.conversation);
                 crate::mods::open(ctx, &self.mods, context, open, refresh).await
@@ -1257,7 +1234,7 @@ impl Controller {
                 seats,
                 reader,
             } => {
-                seat_key::answer(ctx, run, talk, &seats, reader);
+                turns::seat_key::answer(ctx, run, talk, &seats, reader);
                 Ok(Vec::new())
             }
             view => run_commands::view(ctx, &mut self.runs, view).await,
@@ -1284,24 +1261,24 @@ impl Controller {
         if settings::owns_choice(&self.settings, &id) {
             return settings::answer_choice(ctx, &mut self.settings, id, action, text).await;
         }
-        if connect::owns_choice(&self.connect, &id) {
-            return connect::answer_choice(ctx, &mut self.connect, id, action);
+        if clis::connect::owns_choice(&self.connect, &id) {
+            return clis::connect::answer_choice(ctx, &mut self.connect, id, action);
         }
         if workflows::owns_choice(&self.workflows, &id) {
             let (conversation, workflows) = (&mut self.conversation, &mut self.workflows);
             return workflows::answer_choice(ctx, conversation, workflows, id, action).await;
         }
-        if prompt_trust::owns_choice(&self.prompt_trust, &id) {
-            return prompt_trust::answer_choice(ctx, &mut self.prompt_trust, id, action);
+        if library::prompt_trust::owns_choice(&self.prompt_trust, &id) {
+            return library::prompt_trust::answer_choice(ctx, &mut self.prompt_trust, id, action);
         }
         if settings::renamed::owns_choice(&self.renamed, &id) {
             return settings::renamed::answer_choice(ctx, &mut self.renamed, id, action);
         }
-        if folder_git::owns_choice(&self.git, &id) {
-            return folder_git::answer_choice(ctx, &mut self.git, id, action);
+        if folders::folder_git::owns_choice(&self.git, &id) {
+            return folders::folder_git::answer_choice(ctx, &mut self.git, id, action);
         }
-        if templates::owns_choice(&self.templates, &id) {
-            return templates::answer_choice(ctx, &mut self.templates, id, action);
+        if library::templates::owns_choice(&self.templates, &id) {
+            return library::templates::answer_choice(ctx, &mut self.templates, id, action);
         }
         if needed_update::owns_choice(&self.needed_update, &id) {
             return needed_update::answer_choice(ctx, &mut self.needed_update, id, action);
@@ -1330,23 +1307,23 @@ impl Controller {
         if settings::owns_choice(&self.settings, &id) {
             return settings::set_aside(ctx, &mut self.settings, id);
         }
-        if connect::owns_choice(&self.connect, &id) {
-            return connect::set_aside(ctx, &mut self.connect, id);
+        if clis::connect::owns_choice(&self.connect, &id) {
+            return clis::connect::set_aside(ctx, &mut self.connect, id);
         }
         if workflows::owns_choice(&self.workflows, &id) {
             return workflows::set_aside(ctx, &mut self.workflows, id);
         }
-        if prompt_trust::owns_choice(&self.prompt_trust, &id) {
-            return prompt_trust::set_aside(ctx, &mut self.prompt_trust, id);
+        if library::prompt_trust::owns_choice(&self.prompt_trust, &id) {
+            return library::prompt_trust::set_aside(ctx, &mut self.prompt_trust, id);
         }
         if settings::renamed::owns_choice(&self.renamed, &id) {
             return settings::renamed::set_aside(ctx, &mut self.renamed, id);
         }
-        if folder_git::owns_choice(&self.git, &id) {
-            return folder_git::set_aside(ctx, &mut self.git, id);
+        if folders::folder_git::owns_choice(&self.git, &id) {
+            return folders::folder_git::set_aside(ctx, &mut self.git, id);
         }
-        if templates::owns_choice(&self.templates, &id) {
-            return templates::set_aside(ctx, &mut self.templates, id);
+        if library::templates::owns_choice(&self.templates, &id) {
+            return library::templates::set_aside(ctx, &mut self.templates, id);
         }
         if crate::issue::set_aside(&self.issue, &id) {
             return Ok(Vec::new());
@@ -1376,7 +1353,7 @@ impl Controller {
                         .conversation
                         .speaks_for_the_conversation(&self.ctx, turn)
                 {
-                    cli_commands::reported(
+                    clis::cli_commands::reported(
                         &self.ctx,
                         &mut self.agent_id,
                         &self.conversation,
@@ -1421,11 +1398,11 @@ impl Controller {
                 Ok(Vec::new())
             }
             Internal::ModelsRefreshed => {
-                names::send(&mut self.ctx);
+                clis::names::send(&mut self.ctx);
                 settings::models_refreshed(&self.ctx, &mut self.settings)
             }
             Internal::ModelSourceListed { cli } => {
-                names::send(&mut self.ctx);
+                clis::names::send(&mut self.ctx);
                 settings::model_source_listed(&self.ctx, &mut self.settings, &cli)
             }
             Internal::ModelsTick => settings::models_tick(&self.ctx, &mut self.settings),

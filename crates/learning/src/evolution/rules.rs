@@ -6,7 +6,7 @@ use argonauts_core::settings::SAFETY_KEYS;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::evolution::FIXED_CORE_KEYS;
 use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout};
-use argonauts_core::workflow::{Count, Step};
+use argonauts_core::workflows::workflow::{Count, Step};
 
 use crate::learned_workflows::{
     Change, ChangeClass, LoadedLearnedWorkflow, PROTECTED_KINDS, diff, guarded, key_matches,
@@ -180,7 +180,7 @@ fn weakened_step(old: &Step, new: &Step) -> Option<&'static str> {
     None
 }
 
-fn kind_name(kind: argonauts_core::workflow::StepKind) -> String {
+fn kind_name(kind: argonauts_core::workflows::workflow::StepKind) -> String {
     serde_json::to_value(kind)
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))

@@ -1,16 +1,16 @@
 use std::time::{Duration, Instant};
 
-use argonauts_core::keywords::Keyword;
+use argonauts_core::look::keywords::Keyword;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use super::*;
+use crate::base::draw::render::Clock;
+use crate::base::text::marks::decoration;
+use crate::base::text::plain_text;
+use crate::base::theme::{Glyphs, Role, Theme};
 use crate::bottom::VimMode;
-use crate::render::Clock;
-use crate::text::marks::decoration;
-use crate::text::plain_text;
-use crate::theme::{Glyphs, Role, Theme};
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -890,7 +890,7 @@ fn shell_mode_draws_its_marker_rules_and_placeholder_in_its_color() {
 
 const ULTRATHINK: Keyword = Keyword::new(
     "ultrathink",
-    argonauts_core::keywords::KeywordLook::Rainbow,
+    argonauts_core::look::keywords::KeywordLook::Rainbow,
     true,
 );
 
@@ -1055,7 +1055,7 @@ fn the_workflow_word_counts_only_in_a_message() {
     assert!(
         c.drawn_keywords()
             .iter()
-            .all(|keyword| keyword.word != argonauts_core::keywords::ULTRACODE.word)
+            .all(|keyword| keyword.word != argonauts_core::look::keywords::ULTRACODE.word)
     );
 
     // With the trigger off the word is only a word: nothing asks, and Opt+W is free.
@@ -1070,7 +1070,7 @@ fn the_workflow_word_counts_only_in_a_message() {
 /// a capital, the model, and the ultracode tag, in its colours.
 #[test]
 fn the_rule_with_a_workflow_matches_its_picture() {
-    use crate::overview::golden::{Picture, Region, assert_matches, theme};
+    use crate::testing::pictures::golden::{Picture, Region, assert_matches, theme};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 

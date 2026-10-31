@@ -24,15 +24,15 @@ use argonauts_adapter_claude_code::ClaudeCodeAdapter;
 use argonauts_adapter_codex::CodexAdapter;
 use argonauts_conductor::cli_runner::CliRunner;
 use argonauts_conductor::sandbox::proxy::Proxy;
-use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::names::ModelRef;
-use argonauts_core::session_runner::RunnerEvent;
-use argonauts_core::session_runner::{Access, SessionRunner};
+use argonauts_core::agents::session_runner::RunnerEvent;
+use argonauts_core::agents::session_runner::{Access, SessionRunner};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
 use argonauts_core::{Adapter, AgentEvent, Paths, TaskId, create_private_dir_all};
-use argonauts_testkit::runner::{drain, session_spec};
-use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
+use argonauts_testkit::engine::runner::{drain, session_spec};
+use argonauts_testkit::engine::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
 
 const PROMPT: &str = "Run `ls` and `echo ok > out.txt`, then reply done.";
 

@@ -5,13 +5,13 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use argonauts_core::steps::task::ProcessChange;
+use argonauts_core::workflows::steps::task::ProcessChange;
 
-use crate::error::{LearningError, Result};
 use crate::learned_workflows::{
     LoadedLearnedWorkflow, WORKFLOW_KEY, is_workflow_file, learned_workflow_dir, load_file, render,
     toml_to_json, version_file,
 };
+use crate::store::error::{LearningError, Result};
 
 /// Writes version `version` of the parent's learned workflow, with `proposal` applied, into
 /// `folder`.

@@ -7,10 +7,10 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use argonauts_core::events::session::{InputPart, InputPartKind};
+use argonauts_core::base::text::clause_case;
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
 use argonauts_core::settings::workflows::OrchestratorDesign;
-use argonauts_core::text::clause_case;
-use argonauts_core::workflow::{
+use argonauts_core::workflows::workflow::{
     Count, Phase, StandardPhase, Step, StepModels, Workflow, WorkflowParams, WorkflowRef,
 };
 

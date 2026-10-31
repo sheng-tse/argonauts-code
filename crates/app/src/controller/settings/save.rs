@@ -641,7 +641,7 @@ mod tests {
         use argonauts_core::input::{ModPlaceChange, ModsAction, ViewAction};
         use argonauts_core::settings::ui::Place;
 
-        use crate::controller::mod_places;
+        use crate::controller::panels::mod_places;
 
         let mut fixture = Fixture::new(false, |repo| {
             repo.write(

@@ -7,7 +7,7 @@ use std::path::Path;
 
 use argonauts_core::Paths;
 use argonauts_core::behaviors::Behavior;
-use argonauts_core::crew_stats::StatsRole;
+use argonauts_core::behaviors::crew_stats::StatsRole;
 use serde_json::Value;
 use time::OffsetDateTime;
 

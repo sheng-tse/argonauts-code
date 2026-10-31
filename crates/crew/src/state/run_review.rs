@@ -3,10 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::shared::RunReviewEvent;
-use argonauts_core::names::ModelRef;
-use argonauts_core::steps::task::MemoryProposal;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::shared::RunReviewEvent;
+use argonauts_core::workflows::steps::task::MemoryProposal;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunReviewState {
@@ -75,8 +75,8 @@ impl RunReviewState {
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::events::RunEventKind;
-    use argonauts_core::steps::task::ProcessChange;
+    use argonauts_core::runs::events::RunEventKind;
+    use argonauts_core::workflows::steps::task::ProcessChange;
 
     use super::*;
 

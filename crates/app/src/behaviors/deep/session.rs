@@ -5,13 +5,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use argonauts_core::events::session::{EndReason, InputPart, InputPartKind};
-use argonauts_core::future::BoxFuture;
-use argonauts_core::names::{ModelRef, RoleName, SessionKey};
-use argonauts_core::session_runner::{
+use argonauts_core::agents::session_runner::{
     Access, CliWorkflow, RunnerEvent, SandboxMode, SandboxProfile, SessionLimits,
     SessionPreferences, SessionRunner, SessionShell, SessionSpec,
 };
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::events::session::{EndReason, InputPart, InputPartKind};
 use argonauts_core::settings::sessions::{Compaction, FanoutSwitch, NativeFanout, SessionLifetime};
 use argonauts_core::{AgentEvent, create_private_dir_all};
 

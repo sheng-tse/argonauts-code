@@ -6,19 +6,21 @@ use std::path::{Path, PathBuf};
 
 use globset::{Glob, GlobSetBuilder};
 
-use argonauts_core::events::approval::{MergePacket, MergeRow};
-use argonauts_core::events::run::ChangedFile;
-use argonauts_core::events::session::EndReason;
-use argonauts_core::events::task::{
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::registry::provider::is_known;
+use argonauts_core::runs::events::approval::{MergePacket, MergeRow};
+use argonauts_core::runs::events::run::ChangedFile;
+use argonauts_core::runs::events::session::EndReason;
+use argonauts_core::runs::events::task::{
     CheckKind, CheckOutcome, PickedBy, ReviewEvent, TaskKind, TaskState,
 };
-use argonauts_core::names::ModelRef;
-use argonauts_core::policy::{EvidenceDocument, EvidenceFacts, EvidenceSubject, WithinProvider};
-use argonauts_core::registry::provider::is_known;
-use argonauts_core::steps::judgment::ReviewVerdict;
+use argonauts_core::safety::policy::{
+    EvidenceDocument, EvidenceFacts, EvidenceSubject, WithinProvider,
+};
+use argonauts_core::workflows::steps::judgment::ReviewVerdict;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::fallback::{merge_rule, notes};
 use crate::merge::final_check::{self, FinalCheck};
 use crate::merge::{branch, conductor, deliver, unborn};
@@ -202,7 +204,8 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
             Approval::WithinProvider { reviewer, fallback } => {
                 reviewed_by_other_provider = false;
                 approved_within_provider.push(WithinProvider {
-                    task: host.read(|state| crate::labels::task_label(state, &record.spec.id)),
+                    task: host
+                        .read(|state| crate::sessions::labels::task_label(state, &record.spec.id)),
                     reviewer: roles::display_name(&reviewer),
                     fallback,
                 });
@@ -228,7 +231,7 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
     let unreviewed_debt: Vec<String> = rows
         .iter()
         .filter(|row| !row.debt.is_empty() && merge_rule::enforced(host, &row.task))
-        .map(|row| host.read(|state| crate::labels::task_label(state, &row.task)))
+        .map(|row| host.read(|state| crate::sessions::labels::task_label(state, &row.task)))
         .collect();
 
     let mut agent_outputs: Vec<String> = rows.iter().map(row_line).collect();
@@ -412,7 +415,7 @@ enum Approval {
 /// its builder's provider, may review it.
 fn why_unreviewed(host: &Host, record: &TaskEntry) -> String {
     crate::review::nobody_to_review(host, &record.spec.id).unwrap_or_else(|| {
-        let label = host.read(|state| crate::labels::task_label(state, &record.spec.id));
+        let label = host.read(|state| crate::sessions::labels::task_label(state, &record.spec.id));
         format!("Nobody reviewed {label}")
     })
 }
@@ -622,7 +625,7 @@ mod tests {
     /// keeps the merge back, saying who gave it and whether as a fallback.
     #[test]
     fn an_approval_counts_from_another_provider_or_from_one_you_chose() {
-        use argonauts_core::steps::judgment::{ReviewOutput, SettleOutput};
+        use argonauts_core::workflows::steps::judgment::{ReviewOutput, SettleOutput};
 
         let provider = |model: &ModelRef| {
             let maker = match model.agent.as_str() {

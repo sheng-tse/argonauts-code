@@ -4,18 +4,18 @@
 
 use argonauts_core::PhaseStatus;
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalKind, ApprovalPacket, FreeText, StuckPacket,
 };
-use argonauts_core::events::run::{PhaseChange, RunPhase};
-use argonauts_core::events::task::{TaskKind, TaskState};
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::runs::events::run::{PhaseChange, RunPhase};
+use argonauts_core::runs::events::task::{TaskKind, TaskState};
+use argonauts_core::safety::policy::EvidenceFacts;
 
 use crate::approvals::{self, ApprovalRequest};
 use crate::divide;
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::state::RunState;
 use crate::workflow::StepAt;
 
@@ -150,7 +150,7 @@ pub(crate) fn record_phase(
 mod tests {
     use super::*;
     use crate::state::tasks::TaskEntry;
-    use crate::testutil::task_spec;
+    use crate::testing::task_spec;
 
     fn add(
         state: &mut RunState,

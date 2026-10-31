@@ -8,15 +8,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use argonauts_core::app::{AppChoice, AppEvent, ChoiceKind};
-use argonauts_core::events::approval::AnswerAction;
-use argonauts_core::names::ChoiceId;
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::base::names::ChoiceId;
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::runs::events::approval::AnswerAction;
 use argonauts_registry::{Rename, mod_renames_in, rename_in_file, rename_in_mod_file, renames_in};
 
 use super::save;
-use crate::choices;
 use crate::controller::{Ctx, Effect};
-use crate::trust::hash_of;
+use crate::setup::choices;
+use crate::startup::trust::hash_of;
 
 type Handled = anyhow::Result<Vec<Effect>>;
 
@@ -356,8 +356,8 @@ mod tests {
     use argonauts_tui::questions::choice_question;
 
     use super::*;
-    use crate::controller::test_support::{CliOptions, TestCtx};
-    use crate::golden::{assert_looks, drawn_rows, picture_rows, still, theme};
+    use crate::controller::base::test_support::{CliOptions, TestCtx};
+    use crate::testing::golden::{assert_looks, drawn_rows, picture_rows, still, theme};
 
     /// A global file an older build wrote, with three names that changed since.
     const OLDER: &str = r#"main_agent = "claude-code"
@@ -590,7 +590,7 @@ mode = "ask"
         );
         let theme = theme();
         let lines = choice_question(1, &choice).lines(&still(&theme));
-        crate::golden::dump("rename_after", &lines);
+        crate::testing::golden::dump("rename_after", &lines);
         assert_eq!(
             drawn_rows(&lines),
             picture_rows(include_str!("../../../tests/golden/rename_after.txt"))
@@ -604,7 +604,7 @@ mode = "ask"
 
     /// The question's rows at `width`, without the blanks at their ends.
     fn rows_at(choice: &AppChoice, width: u16) -> Vec<String> {
-        use argonauts_tui::render::{Clock, RenderCtx};
+        use argonauts_tui::base::draw::render::{Clock, RenderCtx};
         let theme = theme();
         let ctx = RenderCtx::new(width, &theme, Clock::still(std::time::Instant::now()));
         drawn_rows(&choice_question(1, choice).lines(&ctx))

@@ -1,4 +1,4 @@
-use argonauts_core::behavior_world::Wonder;
+use argonauts_core::behaviors::behavior_world::Wonder;
 
 use super::*;
 use crate::world::map::fields::crews::Key;

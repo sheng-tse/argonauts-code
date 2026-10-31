@@ -6,23 +6,20 @@ use std::path::Path;
 use std::sync::Arc;
 
 use argonauts_core::RunId;
-use argonauts_core::clock::{Clock, SystemClock};
-use argonauts_core::policy::{ApprovalPolicy, Narrator};
-use argonauts_core::registry::ModelRegistry;
-use argonauts_core::session_runner::RunnerDirectory;
+use argonauts_core::agents::session_runner::RunnerDirectory;
+use argonauts_core::base::clock::{Clock, SystemClock};
+use argonauts_core::models::registry::ModelRegistry;
+use argonauts_core::safety::policy::{ApprovalPolicy, Narrator};
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::StepRunner;
+use argonauts_core::workflows::steps::StepRunner;
 
 pub mod approvals;
 pub mod autonomy;
-pub mod daily;
 pub mod judge;
 pub mod limits;
 pub mod narrator;
-pub mod parts;
 pub mod rules;
-pub mod session;
-pub mod templates;
+pub mod sessions;
 
 /// Re-reads the settings, so each approval can use the stricter of the run-start and current
 /// approval settings.
@@ -72,13 +69,15 @@ fn build(
     }
     let judge = Arc::new(judge);
     let autonomy = Arc::new(autonomy::StateAutonomy::open(state_dir, clock.clone()));
-    Arc::new(approvals::ApprovalsPolicy::from_parts(parts::PolicyParts {
-        source,
-        limits,
-        judge,
-        autonomy,
-        clock,
-    }))
+    Arc::new(approvals::ApprovalsPolicy::from_parts(
+        approvals::parts::PolicyParts {
+            source,
+            limits,
+            judge,
+            autonomy,
+            clock,
+        },
+    ))
 }
 
 /// The narrator for one run, or for the app when `run` has no events yet.
@@ -96,14 +95,14 @@ pub fn narrator(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::approval::ApprovalKind;
-    use argonauts_core::names::ApprovalId;
-    use argonauts_core::policy::{
+    use argonauts_core::base::names::ApprovalId;
+    use argonauts_core::runs::events::approval::ApprovalKind;
+    use argonauts_core::safety::policy::{
         DecisionPoint, EvidenceFacts, EvidencePacket, NarratorError, PolicyOutcome, Verdict,
     };
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith, SandboxChoice};
     use argonauts_core::settings::ui::NarratorMode;
-    use argonauts_core::steps::SchemaStepRunner;
+    use argonauts_core::workflows::steps::SchemaStepRunner;
     use argonauts_testkit::FakeDirectory;
 
     fn point(kind: ApprovalKind) -> DecisionPoint {

@@ -6,14 +6,14 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use argonauts_core::RunId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::plan::PlanEvent;
-use argonauts_core::names::{DraftId, ModelRef, PlanLabel, SessionKey};
-use argonauts_core::steps::plan::{LabeledPlan, PlanDraft};
+use argonauts_core::base::names::{DraftId, ModelRef, PlanLabel, SessionKey};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::plan::PlanEvent;
+use argonauts_core::workflows::steps::plan::{LabeledPlan, PlanDraft};
 use argonauts_core::{create_private_dir_all, sha256_hex, write_private_file};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::state::ids::IdKind;
 use crate::state::plan::SealedDraft;
 
@@ -162,7 +162,7 @@ fn bullets(text: &mut String, heading: &str, items: &[String]) {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use argonauts_core::steps::plan::{PlanChoice, PlanPiece};
+    use argonauts_core::workflows::steps::plan::{PlanChoice, PlanPiece};
 
     use super::*;
 

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use argonauts_core::model_picker::MachineMemory;
+use argonauts_core::app::model_picker::MachineMemory;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

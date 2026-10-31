@@ -5,11 +5,12 @@ use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::flow::{self, Step};
+use super::flow;
+use crate::base::draw::panes;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::bottom::picker::flow::Step;
 use crate::bottom::{Picker, PickerEvent};
-use crate::render::{Clock, RenderCtx};
-use crate::views::panes;
-use crate::views::{ViewCtx, ViewOutcome};
+use crate::frame::view::{ViewCtx, ViewOutcome};
 
 /// Gives the key to the open editor. `None` when there's no editor, so the view handles it.
 pub fn edit_key(editor: &mut Option<Picker>, key: KeyEvent) -> Option<ViewOutcome> {

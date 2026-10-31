@@ -6,16 +6,16 @@
 use std::sync::Arc;
 
 use argonauts_core::NoteLevel;
+use argonauts_core::agents::session_runner::{RunnerError, SessionRunner};
 use argonauts_core::app::{AppEvent, AppMode, TurnReply};
-use argonauts_core::names::{ModelRef, RoleName, TurnId};
-use argonauts_core::session_runner::{RunnerError, SessionRunner};
+use argonauts_core::base::names::{ModelRef, RoleName, TurnId};
 
 use super::excerpt::{Exchange, reply_text};
 use super::lifecycle::{begin, begin_side};
 use super::{ConversationState, Queued};
-use crate::controller::recap::{recap_from_summary, title_from_request};
-use crate::controller::turn::{self, TurnStep};
-use crate::controller::workspace::review_changes;
+use crate::controller::folders::workspace::review_changes;
+use crate::controller::turns::recap::{recap_from_summary, title_from_request};
+use crate::controller::turns::turn::{self, TurnStep};
 use crate::controller::{Ctx, Effect};
 
 /// Side turns number apart from the conversation's, so the journal never sees them.

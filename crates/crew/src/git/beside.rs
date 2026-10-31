@@ -84,7 +84,7 @@ impl Git {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{TestRepo, git_test_env};
+    use crate::testing::{TestRepo, git_test_env};
 
     /// A repository where you edited `yours.txt` and `both.txt` without committing, and a
     /// run that started from that changed `both.txt` further down and added `new.txt`.

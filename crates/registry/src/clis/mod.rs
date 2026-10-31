@@ -5,6 +5,7 @@
 mod builtin;
 mod load;
 mod refusals;
+pub(crate) mod terms;
 mod turned_on;
 mod validate;
 mod wrappers;
@@ -12,7 +13,7 @@ mod wrappers;
 #[cfg(test)]
 mod tests;
 
-use argonauts_core::registry::CliManifest;
+use argonauts_core::models::registry::CliManifest;
 
 pub(crate) use builtin::every_builtin_cli;
 pub use builtin::{builtin_clis, builtin_home_template};

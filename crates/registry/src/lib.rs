@@ -1,41 +1,35 @@
 //! Settings resolution, workflows and their files, CLI profiles, the model registry, and
 //! the plan-terms note.
 
-mod always;
-mod catalog;
 pub mod clis;
-mod form;
 pub mod models;
-mod resolve;
 mod settings;
-mod terms;
 pub mod workflows;
-mod write;
 
 use std::path::PathBuf;
 
 use argonauts_core::app::ConfigEntry;
-use argonauts_core::events::run::OverrideRecord;
+use argonauts_core::runs::events::run::OverrideRecord;
 use argonauts_core::settings::Settings;
 
-pub use always::save_required_steps;
-pub use catalog::{setting_meta, settings_catalog};
+pub use clis::terms::TERMS_NOTE;
 pub use clis::{CliEntries, builtin_clis, cli_manifests};
-pub use form::settings_form;
 pub use models::{provider_from_model_id, provider_problems, registry};
-pub use resolve::resolve;
+pub use settings::catalog::{setting_meta, settings_catalog};
 pub use settings::crew::crew_list_problems;
+pub use settings::form::settings_form;
 pub use settings::plain::check_commands;
 pub use settings::renamed::{
     Rename, Renamed, mod_renames_in, rename_in_file, rename_in_mod_file, renames_in,
 };
+pub use settings::resolve::resolve;
 pub use settings::tighten::tightens;
-pub use terms::TERMS_NOTE;
+pub use settings::write::{check_settings, remove_setting, safety_keys_in, write_setting};
+pub use workflows::always::save_required_steps;
 pub use workflows::{WorkflowError, WorkflowInfo, find_workflow, workflows_in};
 pub use workflows::{
     builtin_workflow, upgrade_workflows, workflow_choices, workflow_choices_in, write_workflow,
 };
-pub use write::{check_settings, remove_setting, safety_keys_in, write_setting};
 
 /// Later layers win key by key: built-in, `global`, `project`, `project_local`, the workflow with
 /// the run's learned workflow over it, then `overrides`. Workflow files are looked up in

@@ -1,31 +1,21 @@
 //! The OpenCode adapter: `opencode run --format json`, with open-weight models through
 //! OpenCode's providers.
 
-mod command;
-mod level;
 pub mod models;
-mod outside;
-mod parser;
-pub mod private_server;
-mod provider;
-mod providers;
-mod sessions;
-#[cfg(test)]
-mod test_script;
-mod user_config;
+mod session;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use argonauts_core::adapter::IdentityMarks;
-use argonauts_core::confine::Confine;
-use argonauts_core::keywords::Keyword;
+use argonauts_core::agents::adapter::IdentityMarks;
+use argonauts_core::agents::confine::Confine;
+use argonauts_core::look::keywords::Keyword;
 use argonauts_core::{
     Adapter, Capabilities, CommandSpec, SessionRequest, SetupHints, StopPlan, StreamParser,
     extract_version,
 };
 
-pub use provider::{LocalUrls, local_provider_config};
+pub use models::provider::{LocalUrls, local_provider_config};
 
 /// The adapter's id, which also names OpenCode to the sandbox its own commands run in.
 pub(crate) const ID: &str = "opencode";
@@ -44,7 +34,7 @@ pub struct OpenCodeAdapter {
     local_urls: LocalUrls,
     /// How the commands this adapter runs itself start, which list and read back OpenCode's
     /// own sessions. Without one they run nothing.
-    reader: Option<sessions::Reader>,
+    reader: Option<session::sessions::Reader>,
 }
 
 impl OpenCodeAdapter {
@@ -66,7 +56,7 @@ impl OpenCodeAdapter {
     /// the one that lists your sessions. Each of its commands runs inside `confine`, since
     /// OpenCode started in a repo loads the plugins that repo sets up.
     pub fn with_program(mut self, program: impl Into<PathBuf>, confine: Arc<dyn Confine>) -> Self {
-        self.reader = Some(sessions::Reader {
+        self.reader = Some(session::sessions::Reader {
             program: program.into(),
             confine,
         });
@@ -75,8 +65,8 @@ impl OpenCodeAdapter {
 }
 
 impl Adapter for OpenCodeAdapter {
-    fn first_count(&self) -> Option<argonauts_core::events::context::FirstCount> {
-        Some(argonauts_core::events::context::FirstCount::Step)
+    fn first_count(&self) -> Option<argonauts_core::runs::events::context::FirstCount> {
+        Some(argonauts_core::runs::events::context::FirstCount::Step)
     }
 
     fn id(&self) -> &'static str {
@@ -89,7 +79,7 @@ impl Adapter for OpenCodeAdapter {
 
     /// OpenCode reads the project's AGENTS.md as its rules, `run` too.
     fn instruction_files(&self, workdir: &Path, _isolated: bool) -> Vec<String> {
-        argonauts_core::adapter::agents_md(workdir)
+        argonauts_core::agents::adapter::agents_md(workdir)
     }
 
     /// The tools its events name and its home folder.
@@ -122,11 +112,11 @@ impl Adapter for OpenCodeAdapter {
     }
 
     fn command(&self, req: &SessionRequest) -> anyhow::Result<CommandSpec> {
-        command::build(req, &self.local_urls)
+        session::command::build(req, &self.local_urls)
     }
 
     fn parser(&self) -> Box<dyn StreamParser> {
-        Box::new(parser::OpenCodeParser::default())
+        Box::new(session::parser::OpenCodeParser::default())
     }
 
     fn version_args(&self) -> &'static [&'static str] {
@@ -143,11 +133,11 @@ impl Adapter for OpenCodeAdapter {
     }
 
     fn talks_to_own_server(&self, req: &SessionRequest) -> bool {
-        !private_server::private_server_flags(req.cli_version.as_deref()).is_empty()
+        !models::private_server::private_server_flags(req.cli_version.as_deref()).is_empty()
     }
 
     fn config_query(&self, req: &SessionRequest) -> Option<CommandSpec> {
-        command::config_query(req, &self.local_urls)
+        session::command::config_query(req, &self.local_urls)
     }
 
     fn lists_sessions(&self) -> bool {
@@ -157,25 +147,26 @@ impl Adapter for OpenCodeAdapter {
     /// From `opencode session list` on a private server, in this folder's project.
     fn cli_sessions(
         &self,
-        scan: &argonauts_core::cli_sessions::CliScan,
+        scan: &argonauts_core::agents::cli_sessions::CliScan,
         limit: usize,
-    ) -> anyhow::Result<Vec<argonauts_core::cli_sessions::CliSession>> {
-        sessions::list(self.reader.as_ref(), scan, limit)
+    ) -> anyhow::Result<Vec<argonauts_core::agents::cli_sessions::CliSession>> {
+        session::sessions::list(self.reader.as_ref(), scan, limit)
     }
 
     /// From `opencode session export` on a private server.
     fn cli_session_turns(
         &self,
-        scan: &argonauts_core::cli_sessions::CliScan,
+        scan: &argonauts_core::agents::cli_sessions::CliScan,
         session: &str,
         count: usize,
-    ) -> anyhow::Result<Vec<argonauts_core::cli_sessions::CliTurn>> {
-        sessions::turns(self.reader.as_ref(), scan, session, count)
+    ) -> anyhow::Result<Vec<argonauts_core::agents::cli_sessions::CliTurn>> {
+        session::sessions::turns(self.reader.as_ref(), scan, session, count)
     }
 
     fn interactive_resume(&self, req: &SessionRequest) -> Option<CommandSpec> {
-        let config_files = user_config::config_files(&req.workdir, |name| std::env::var(name).ok());
-        command::take_over(req, &config_files, &self.local_urls)
+        let config_files =
+            models::user_config::config_files(&req.workdir, |name| std::env::var(name).ok());
+        session::command::take_over(req, &config_files, &self.local_urls)
     }
 
     /// `opencode -s <id>` in the repo. Take-over's own flags keep its server private, which
@@ -183,17 +174,17 @@ impl Adapter for OpenCodeAdapter {
     fn resume_command(
         &self,
         req: &SessionRequest,
-    ) -> Option<argonauts_core::cli_sessions::ResumeCommand> {
+    ) -> Option<argonauts_core::agents::cli_sessions::ResumeCommand> {
         let id = req
             .resume_session
             .as_deref()
             .map(str::trim)
-            .filter(|id| argonauts_core::cli_sessions::is_session_id(id))?;
-        Some(argonauts_core::cli_sessions::ResumeCommand {
+            .filter(|id| argonauts_core::agents::cli_sessions::is_session_id(id))?;
+        Some(argonauts_core::agents::cli_sessions::ResumeCommand {
             words: vec![self.binary().to_owned(), "-s".to_owned(), id.to_owned()],
             local_model: false,
             from_any_folder: false,
-            also: argonauts_core::cli_sessions::resume_facts::OPENCODE_LISTS_IT
+            also: argonauts_core::agents::cli_sessions::resume_facts::OPENCODE_LISTS_IT
                 .then(|| "pick it in OpenCode's own list".to_owned()),
         })
     }
@@ -238,11 +229,11 @@ impl Adapter for OpenCodeAdapter {
 
     /// Its own installer keeps it under `~/.opencode/bin` and names no address for the newest
     /// version, so that is only asked of Homebrew or npm.
-    fn install_sources(&self) -> argonauts_core::adapter::InstallSources {
-        argonauts_core::adapter::InstallSources {
+    fn install_sources(&self) -> argonauts_core::agents::adapter::InstallSources {
+        argonauts_core::agents::adapter::InstallSources {
             homebrew: Some("opencode"),
             npm: Some("opencode-ai"),
-            own: Some(argonauts_core::adapter::OwnInstaller {
+            own: Some(argonauts_core::agents::adapter::OwnInstaller {
                 path_part: "/.opencode/bin/",
                 newest_url: None,
             }),
@@ -250,15 +241,18 @@ impl Adapter for OpenCodeAdapter {
     }
 
     fn updater_off_env(&self) -> &'static [(&'static str, &'static str)] {
-        &[(command::AUTO_UPDATE_ENV, "1")]
+        &[(session::command::AUTO_UPDATE_ENV, "1")]
     }
 
     fn provider_checks(&self) -> &'static [&'static [&'static str]] {
-        providers::CHECKS
+        models::providers::CHECKS
     }
 
-    fn providers(&self, outputs: &[String]) -> Option<argonauts_core::adapter::CliProviders> {
-        providers::providers(outputs)
+    fn providers(
+        &self,
+        outputs: &[String],
+    ) -> Option<argonauts_core::agents::adapter::CliProviders> {
+        models::providers::providers(outputs)
     }
 
     /// The npm command from OpenCode's README at v1.18.33, unverified since OpenCode isn't

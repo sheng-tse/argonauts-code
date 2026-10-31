@@ -4,10 +4,10 @@
 //! a reviewer marked recommended and listed first, ranked as the catalog's rule says.
 
 use argonauts_core::app::ModelChoice;
-use argonauts_core::limits::CostEstimate;
-use argonauts_core::model_picker::{Fit, ListedFacts, LocalModel, MachineMemory, ModelMemory};
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::{ModelAccess, ModelEntry};
+use argonauts_core::app::model_picker::{Fit, ListedFacts, LocalModel, MachineMemory, ModelMemory};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::limits::CostEstimate;
+use argonauts_core::models::registry::{ModelAccess, ModelEntry};
 use argonauts_registry::models::suggested::{Placed, better, download, matching, ranked, room};
 
 use crate::host::memory::Ollama;
@@ -256,7 +256,7 @@ mod tests {
     use argonauts_core::settings::Settings;
     use argonauts_registry::models::cli_entry;
 
-    use argonauts_core::model_picker::{CodingScore, Figure};
+    use argonauts_core::app::model_picker::{CodingScore, Figure};
 
     use super::*;
     use crate::host::memory::{Held, Tag};

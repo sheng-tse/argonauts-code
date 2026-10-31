@@ -1,12 +1,12 @@
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::goal::{
+use argonauts_core::base::names::{RoleName, SessionKey};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::goal::{
     CheckRun, CheckedBy, CliGoalSaid, Criterion, CriterionCheck, CriterionState, CriterionVerdict,
     GoalChecked, GoalEvent, GoalRun, GoalVerdict,
 };
-use argonauts_core::events::run::Party;
-use argonauts_core::goal::{CheckWith, GoalFrom, GoalScope, GoalSpec};
-use argonauts_core::names::{RoleName, SessionKey};
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::workflows::goal::{CheckWith, GoalFrom, GoalScope, GoalSpec};
 
 use super::*;
 use crate::client::test_support::{event, run_id, session_started};
@@ -329,10 +329,10 @@ fn a_goal_with_no_agent_of_its_own_is_no_agents_goal() {
 /// opened agent carries its own the same way.
 #[test]
 fn the_workflow_view_and_the_opened_agent_carry_the_goal() {
-    use argonauts_core::events::session::SessionEvent;
-    use argonauts_core::events::workflow::{WorkflowEvent, WorkflowStarted};
-    use argonauts_core::names::WorkflowId;
-    use argonauts_core::workflow::{StepRef, Workflow};
+    use argonauts_core::base::names::WorkflowId;
+    use argonauts_core::runs::events::session::SessionEvent;
+    use argonauts_core::runs::events::workflow::{WorkflowEvent, WorkflowStarted};
+    use argonauts_core::workflows::workflow::{StepRef, Workflow};
 
     let session = SessionKey::numbered(7);
     let workflow: Workflow = serde_json::from_value(serde_json::json!({

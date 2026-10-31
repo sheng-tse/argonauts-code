@@ -4,10 +4,10 @@
 use std::fmt::Debug;
 
 use super::Sun;
-use crate::world::geo::{Globe, Plate};
+use crate::base::draw::geo::{Globe, Plate};
+use crate::base::draw::scene::{Pointed, picture_key};
 use crate::world::raster::noise::smooth;
 use crate::world::raster::{Brush, Canvas, Colour};
-use crate::world::scene::{Pointed, picture_key};
 
 /// How tall a wonder of the usual size stands on the map, and on the planet at its usual
 /// radius of 240 px, where a dot is about 9 px across.

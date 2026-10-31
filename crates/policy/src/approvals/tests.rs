@@ -5,15 +5,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use argonauts_core::RunId;
-use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
-use argonauts_core::events::task::TaskSpec;
-use argonauts_core::future::BoxFuture;
-use argonauts_core::names::{ApprovalId, ModelRef};
-use argonauts_core::policy::{
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::{ApprovalId, ModelRef};
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind};
+use argonauts_core::runs::events::task::TaskSpec;
+use argonauts_core::safety::policy::{
     ApprovalPolicy, ApprovalsView, AutoPreviewRecord, DecisionPoint, EvidenceFacts, EvidencePacket,
     HardLimit, HardLimits, PolicyOutcome, UserDecision, Verdict, Violation,
 };
-use argonauts_core::session_runner::SessionSpec;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{
     Answerer, ApprovalMode, ApprovalPointSettings, DecideWith, Decides, GoalChanges, Otherwise,
@@ -26,7 +26,7 @@ use super::ApprovalsPolicy;
 use super::decide::decide;
 use super::settings::{SettingsSource, stricter};
 use crate::SettingsReloader;
-use crate::parts::{Approve, Autonomy, ModelVerdict, PolicyParts, Refusal, Reservation};
+use crate::approvals::parts::{Approve, Autonomy, ModelVerdict, PolicyParts, Refusal, Reservation};
 
 struct FakeLimits {
     violations: Vec<Violation>,

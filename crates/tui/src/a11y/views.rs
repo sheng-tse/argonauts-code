@@ -1,16 +1,16 @@
 //! Views as flat lines: a table row reads as `header: value` pairs, a list as numbered items,
 //! and a pager as its lines.
 
-use argonauts_core::api::RunSummary;
 use argonauts_core::app::ViewData;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::views::{
+use argonauts_core::app::views::{
     AgentRow, CheckpointRow, LearningRow, LearningView, WorkflowFile, WorkflowOrigin, WorkflowRow,
 };
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::api::RunSummary;
 
-use crate::format;
-use crate::text::sanitize_line;
-use crate::views::goal_panel;
+use crate::base::format;
+use crate::base::text::sanitize_line;
+use crate::views::goal::panel as goal_panel;
 
 use super::words::{duration, tokens, word};
 
@@ -320,11 +320,11 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             }
             lines
         }
-        ViewData::Usage { summary } => crate::overview::cards::spoken(summary, names),
-        ViewData::StatusTab { view } => crate::overview::status_tab::spoken(view, names),
-        ViewData::Overview { overview } => crate::overview::spoken_overview(overview, names),
-        ViewData::Behaviors { map } => crate::overview::spoken_behaviors(map, names),
-        ViewData::DeepOffer { offer } => crate::questions::deep_map::spoken(offer),
+        ViewData::Usage { summary } => crate::panels::cards::spoken(summary, names),
+        ViewData::StatusTab { view } => crate::panels::status::status_tab::spoken(view, names),
+        ViewData::Overview { overview } => crate::panels::spoken_overview(overview, names),
+        ViewData::Behaviors { map } => crate::panels::spoken_behaviors(map, names),
+        ViewData::DeepOffer { offer } => crate::panels::stats::deep_map::spoken(offer),
         // A seat's view says its key with its head, where the seats' names are known.
         ViewData::SeatKey { .. } => Vec::new(),
         ViewData::Context { view } | ViewData::ContextPrint { view } => view
@@ -444,7 +444,7 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
 /// A workflow file's page as lines: where the file is, each step with its role, who would
 /// take it and how, and the check. A change made here is typed in the file, which is checked
 /// again each time it is saved.
-fn workflow_page_lines(page: &argonauts_core::workflow_page::WorkflowPage) -> Vec<String> {
+fn workflow_page_lines(page: &argonauts_core::app::workflow_page::WorkflowPage) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(said) = &page.said {
         lines.push(one(said));
@@ -635,9 +635,9 @@ fn one(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use argonauts_core::agents::cli_sessions::CliSession;
     use argonauts_core::app::ViewData;
-    use argonauts_core::cli_sessions::CliSession;
-    use argonauts_core::names::AgentId;
+    use argonauts_core::base::names::AgentId;
     use time::OffsetDateTime;
 
     use super::{agent_row, view_lines};
@@ -667,7 +667,7 @@ mod tests {
             problem: None,
             open: None,
         };
-        let names = argonauts_core::display_names::DisplayNames::default();
+        let names = argonauts_core::look::display_names::DisplayNames::default();
         assert_eq!(
             view_lines(&data, &names),
             [
@@ -719,11 +719,11 @@ mod tests {
     /// A reviewer's row, read aloud: who answered, what it decided, then the rest.
     #[test]
     fn a_rows_verdict_is_read_after_who_gave_it() {
-        let row = argonauts_core::views::AgentRow {
-            session: argonauts_core::names::SessionKey::parse("s-002").unwrap(),
+        let row = argonauts_core::app::views::AgentRow {
+            session: argonauts_core::base::names::SessionKey::parse("s-002").unwrap(),
             label: "review:store".into(),
             worker: "astra".parse().unwrap(),
-            status: argonauts_core::views::RowStatus::Done,
+            status: argonauts_core::app::views::RowStatus::Done,
             tokens: 41_200,
             spent: argonauts_core::Spend::default(),
             elapsed_ms: 58_000,
@@ -732,9 +732,9 @@ mod tests {
             fallback_for: None,
             answered: true,
             tries: Vec::new(),
-            note: Some(argonauts_core::views::RowNote::new(
+            note: Some(argonauts_core::app::views::RowNote::new(
                 "sent it back · 2 findings",
-                argonauts_core::views::Tone::Warn,
+                argonauts_core::app::views::Tone::Warn,
             )),
             inner: None,
             left_out: false,
@@ -747,12 +747,12 @@ mod tests {
             "{read}"
         );
         // A writer the merge didn't wait for is spoken as skipped, never as stopped.
-        let writer = argonauts_core::views::AgentRow {
+        let writer = argonauts_core::app::views::AgentRow {
             label: "commit message".to_owned(),
-            status: argonauts_core::views::RowStatus::Skipped,
-            note: Some(argonauts_core::views::RowNote::new(
-                argonauts_core::views::MERGED_AT_ONCE,
-                argonauts_core::views::Tone::Plain,
+            status: argonauts_core::app::views::RowStatus::Skipped,
+            note: Some(argonauts_core::app::views::RowNote::new(
+                argonauts_core::app::views::MERGED_AT_ONCE,
+                argonauts_core::app::views::Tone::Plain,
             )),
             not_needed: true,
             answered: false,

@@ -156,7 +156,7 @@ pub(crate) fn refused(number: u64, why: &str) -> AppEvent {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_testkit::fake_gh::{FakeGh, GhComment, GhIssue, GhRepo, GhWorld};
+    use argonauts_testkit::fake_clis::fake_gh::{FakeGh, GhComment, GhIssue, GhRepo, GhWorld};
 
     use super::*;
 

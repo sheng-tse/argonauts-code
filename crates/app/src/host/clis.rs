@@ -8,11 +8,11 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use argonauts_adapter_acp::acp_adapter;
 use argonauts_adapter_manifest::manifest_adapter_with;
-use argonauts_conductor::plan_usage::find_unsandboxed;
-use argonauts_core::adapter::Transport;
-use argonauts_core::layout::user_files;
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
-use argonauts_core::registry::{CliManifest, ModelRegistry};
+use argonauts_conductor::boards::plan_usage::find_unsandboxed;
+use argonauts_core::agents::adapter::Transport;
+use argonauts_core::base::layout::user_files;
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::models::registry::{CliManifest, ModelRegistry};
 use argonauts_core::settings::Settings;
 use argonauts_core::{Adapter, Paths, project_config_path};
 use argonauts_registry::clis::{builtin_home_template, check_manifest};
@@ -22,7 +22,7 @@ use argonauts_registry::models::{
     registry_with_trust,
 };
 
-use crate::trust::TrustStore;
+use crate::startup::trust::TrustStore;
 
 /// A repo's `.argonauts/models.toml`, and the state folder whose `trusted.json` says whether
 /// its entries count.
@@ -93,7 +93,7 @@ pub(crate) fn file_registry(
     let claude = cache.map(|_| ClaudeSource::for_settings(settings));
     let catalog = cache.map(|_| CatalogSource::argonauts(&crate::self_update::PUBLIC_KEYS));
     let opencode = AskOpenCode {
-        confine: crate::confine::read_only(settings, repo),
+        confine: crate::agents::confine::read_only(settings, repo),
         in_repo: repo.is_some_and(RepoModels::trusted),
     };
     registry_with_trust(
@@ -233,7 +233,7 @@ pub(crate) fn install_home_template(home: &Paths, manifest: &CliManifest) -> any
 #[cfg(test)]
 mod tests {
     use argonauts_core::RepoId;
-    use argonauts_core::layout::project_files;
+    use argonauts_core::base::layout::project_files;
     use argonauts_core::settings::agents::AgentSettings;
 
     use super::*;
@@ -374,7 +374,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = Paths::new(dir.path().join("home"));
         let mut made = CliAdapters::default();
-        let builtins = crate::adapters::builtin_adapters();
+        let builtins = crate::agents::adapters::builtin_adapters();
         let first = made.adapters(
             manifests(&Settings::default(), &home, None, &hermes_on()),
             &builtins,

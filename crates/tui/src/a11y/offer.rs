@@ -7,12 +7,12 @@
 //! drops the offer and means what it always does.
 
 use argonauts_core::TaskId;
+use argonauts_core::app::views::WorkflowFile;
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
-use argonauts_core::display_names::DisplayNames;
 use argonauts_core::input::{SlashCommand, WorkflowAction};
-use argonauts_core::views::WorkflowFile;
+use argonauts_core::look::display_names::DisplayNames;
 
-use crate::text::sanitize_line;
+use crate::base::text::sanitize_line;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Offer {
@@ -44,7 +44,7 @@ impl Offer {
     pub fn for_view(data: &ViewData, names: &DisplayNames) -> Option<Self> {
         match data {
             ViewData::Behaviors { map } => {
-                let places = crate::overview::world_places(map, names);
+                let places = crate::panels::world_places(map, names);
                 (!places.is_empty()).then_some(Self::Places { places, at: None })
             }
             ViewData::Checkpoints { checkpoints, .. } if !checkpoints.is_empty() => {
@@ -184,9 +184,9 @@ fn number(text: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::api::StatusSummary;
-    use argonauts_core::names::ModelRef;
-    use argonauts_core::views::{CheckpointRow, WorkflowOrigin};
+    use argonauts_core::app::views::{CheckpointRow, WorkflowOrigin};
+    use argonauts_core::base::names::ModelRef;
+    use argonauts_core::runs::api::StatusSummary;
     use time::OffsetDateTime;
 
     use super::*;
@@ -226,7 +226,7 @@ mod tests {
     /// slider would take Tab.
     #[test]
     fn a_after_the_effort_flips_ultracode() {
-        use argonauts_core::model_picker::EffortSlider;
+        use argonauts_core::app::model_picker::EffortSlider;
 
         let view = |on: bool| {
             let worker: ModelRef = "claude-code/haiku".parse().unwrap();
@@ -259,7 +259,7 @@ mod tests {
         let worker: ModelRef = "claude-code/haiku".parse().unwrap();
         let without = ViewData::Effort {
             slider: EffortSlider::without_levels(
-                Some(argonauts_core::names::RoleName::Reviewer),
+                Some(argonauts_core::base::names::RoleName::Reviewer),
                 worker,
                 "Haiku 4.5",
             ),
@@ -273,9 +273,9 @@ mod tests {
     fn n_and_p_step_from_place_to_place_on_the_world() {
         use crate::world::map::fields::crews::Key;
 
-        let map = crate::overview::stats::behaviors::crews::map(Key::R);
+        let map = crate::panels::stats::behaviors::crews::map(Key::R);
         let names = DisplayNames::default();
-        let places = crate::overview::world_places(&map, &names);
+        let places = crate::panels::world_places(&map, &names);
         assert!(places.len() > 3, "{places:#?}");
         let view = ViewData::Behaviors { map: Box::new(map) };
         let offer = Offer::for_view(&view, &names).unwrap();

@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
 use argonauts_conductor::fallback::why::{category_words, stop_line};
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::EndReason;
-use argonauts_core::events::shared::{BlackboardEvent, BlackboardKind};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::views::{ContextRow, EndedHow, RowStatus, SessionLeft};
+use argonauts_core::app::views::{ContextRow, EndedHow, RowStatus, SessionLeft};
+use argonauts_core::base::names::{RoleName, SessionKey};
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::EndReason;
+use argonauts_core::runs::events::shared::{BlackboardEvent, BlackboardKind};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::{ErrorCategory, RunId};
 use time::OffsetDateTime;
 
@@ -130,9 +130,9 @@ mod tests {
     use super::*;
     use crate::client::test_support::{agent, run_id, session_ended, session_started, usage};
     use argonauts_core::AgentEvent;
-    use argonauts_core::events::context::{ContextCategory, ContextKind, ContextUsage};
-    use argonauts_core::events::session::EndReason;
-    use argonauts_core::names::{RoleName, SessionKey};
+    use argonauts_core::base::names::{RoleName, SessionKey};
+    use argonauts_core::runs::events::context::{ContextCategory, ContextKind, ContextUsage};
+    use argonauts_core::runs::events::session::EndReason;
 
     #[test]
     fn context_rows_list_every_session_with_cap_calls_spend_and_rotations() {
@@ -226,8 +226,8 @@ mod tests {
     #[test]
     fn a_finished_runs_sessions_keep_their_rows() {
         use crate::client::test_support::event;
-        use argonauts_core::events::RunEventKind;
-        use argonauts_core::events::run::{RunLifecycle, RunOutcome};
+        use argonauts_core::runs::events::RunEventKind;
+        use argonauts_core::runs::events::run::{RunLifecycle, RunOutcome};
 
         let task = argonauts_core::TaskId::new("task-due-dates").unwrap();
         let (planner, worker) = (SessionKey::numbered(1), SessionKey::numbered(2));
@@ -362,13 +362,13 @@ mod tests {
     /// answered nobody's keeps its own, and so does an agent that answers another.
     #[test]
     fn a_tie_breaker_goes_by_the_agent_whose_question_it_answered() {
-        use argonauts_core::events::RunEventKind;
-        use argonauts_core::events::run::Party;
-        use argonauts_core::events::shared::{
+        use argonauts_core::base::names::MessageId;
+        use argonauts_core::base::names::ModelRef;
+        use argonauts_core::runs::events::RunEventKind;
+        use argonauts_core::runs::events::run::Party;
+        use argonauts_core::runs::events::shared::{
             BlackboardEvent, BlackboardKind, BlackboardMessage, Recipient,
         };
-        use argonauts_core::names::MessageId;
-        use argonauts_core::names::ModelRef;
 
         use crate::client::test_support::session_event;
 
@@ -380,8 +380,9 @@ mod tests {
         );
         let labelled = |seq, key: &SessionKey, role, label: &str| {
             let mut event = session_started(seq, key, None, role, "claude-code");
-            if let RunEventKind::Session(argonauts_core::events::SessionEvent::Started(started)) =
-                &mut event.kind
+            if let RunEventKind::Session(argonauts_core::runs::events::SessionEvent::Started(
+                started,
+            )) = &mut event.kind
             {
                 started.label = Some(label.to_owned());
             }

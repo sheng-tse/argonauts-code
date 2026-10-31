@@ -4,12 +4,12 @@
 //! yours and is never rewritten: if it still opens on today, one line says so, once.
 
 use argonauts_core::NoteLevel;
-use argonauts_core::hash::sha256_hex;
+use argonauts_core::base::hash::sha256_hex;
 use argonauts_core::settings::mods::{MODS_DIR, builtin};
 use argonauts_core::settings::stats::{StatsPeriod, StatsSettings};
 
 use super::files;
-use crate::env::AppEnv;
+use crate::startup::env::AppEnv;
 
 /// The SHA-256 of each starter setup wrote that opened Stats on today.
 const OPENED_ON_TODAY: [&str; 3] = [
@@ -43,7 +43,7 @@ pub(crate) fn opens_on_all(env: &AppEnv) -> Option<(NoteLevel, String)> {
         return None;
     }
     // Said once: a mark that can't be written only means the line may come again.
-    let _ = argonauts_core::paths::write_private_file(&told, b"");
+    let _ = argonauts_core::base::paths::write_private_file(&told, b"");
     let shown = env.shown(&path);
     Some((
         NoteLevel::Info,
@@ -56,7 +56,7 @@ pub(crate) fn opens_on_all(env: &AppEnv) -> Option<(NoteLevel, String)> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::paths::Paths;
+    use argonauts_core::base::paths::Paths;
     use argonauts_testkit::TempRepo;
 
     use super::*;

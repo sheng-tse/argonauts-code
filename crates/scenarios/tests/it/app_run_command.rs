@@ -3,8 +3,8 @@
 use crate::app_support;
 use anyhow::Context as _;
 use app_support::*;
-use argonauts_core::events::approval::{ApprovalEvent, ApprovalKind};
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::approval::{ApprovalEvent, ApprovalKind};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use std::path::Path;
 
 /// The run's phases and tasks in order, which timing doesn't change.

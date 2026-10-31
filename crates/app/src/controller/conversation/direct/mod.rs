@@ -18,15 +18,15 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use argonauts_conductor::sandbox::profile::PROTECTED_PATHS;
+use argonauts_core::agents::session::SessionRole;
 use argonauts_core::app::{AppEvent, ChoiceKind};
-use argonauts_core::asking::{Ask, AskReply};
-use argonauts_core::event::AgentEvent;
-use argonauts_core::events::approval::AnswerAction;
-use argonauts_core::events::run::{CaptainOrCrewDecision, RunMode};
-use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::names::{ChoiceId, ModelRef, TurnId};
-use argonauts_core::outside::{BeforeWrites, KeptIn, KeptOut, Outside, both, shown};
-use argonauts_core::session::SessionRole;
+use argonauts_core::base::names::{ChoiceId, ModelRef, TurnId};
+use argonauts_core::runs::asking::{Ask, AskReply};
+use argonauts_core::runs::event::AgentEvent;
+use argonauts_core::runs::events::approval::AnswerAction;
+use argonauts_core::runs::events::run::{CaptainOrCrewDecision, RunMode};
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
+use argonauts_core::safety::outside::{BeforeWrites, KeptIn, KeptOut, Outside, both, shown};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::approvals::SandboxChoice;
 use argonauts_core::settings::fallback::FallbackEntry;
@@ -41,16 +41,16 @@ use self::rewind::Snapshot;
 use super::{
     ConversationState, Turn, handover, lifecycle, run_request, send_queued, standing, tools,
 };
-use crate::choices::{self, option};
-use crate::controller::turn::{self, DirectWords, TurnStep, part};
+use crate::controller::turns::turn::{self, DirectWords, TurnStep, part};
 use crate::controller::{Ctx, Effect};
+use crate::setup::choices::{self, option};
 use argonauts_conductor::fallback::shortlist::{
     Sources, auto_check, shortlist as fallback_shortlist,
 };
 use argonauts_core::TaskId;
-use argonauts_core::events::task::{TaskKind, TaskLimit, TaskSpec};
-use argonauts_core::limits::{Candidate, CandidateQuery, TrackRecord, TrackRecords};
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::models::limits::{Candidate, CandidateQuery, TrackRecord, TrackRecords};
+use argonauts_core::runs::events::task::{TaskKind, TaskLimit, TaskSpec};
 
 const ANTIGRAVITY: &str = "antigravity-cli";
 
@@ -738,7 +738,7 @@ fn start(
     conversation: &mut ConversationState,
     text: String,
     asks: Asks,
-    step: impl FnOnce(Option<argonauts_core::session_runner::Asking>) -> TurnStep,
+    step: impl FnOnce(Option<argonauts_core::agents::session_runner::Asking>) -> TurnStep,
 ) -> anyhow::Result<()> {
     // Its folder is there before the snapshot `/rewind` takes of it.
     if !lifecycle::place_ready(ctx, conversation)? {
@@ -751,7 +751,7 @@ fn start(
     let lines = standing::lines(&offered);
     let rewind = settings.captain.rewind.then(|| max_bytes(settings));
     let next = TurnId::numbered(conversation.turns + 1);
-    let roles = crate::controller::ask_role::roles(settings);
+    let roles = crate::controller::turns::ask_role::roles(settings);
     let listener = if asks != Asks::Never || !offered.is_empty() || !roles.is_empty() {
         Some(listen::listen(ctx.internal.clone(), next)?)
     } else {
@@ -766,7 +766,8 @@ fn start(
     let watched = conversation.direct.watched.clone();
     // A folder with no git turns its hidden history on as Captain may first write there.
     if rewind.is_some()
-        && let Some(said) = crate::controller::folder_git::keep_history_for_captain(ctx, &root)
+        && let Some(said) =
+            crate::controller::folders::folder_git::keep_history_for_captain(ctx, &root)
     {
         ctx.notice(NoteLevel::Info, said);
     }
@@ -1387,13 +1388,13 @@ pub(crate) fn on_asked(
             Ok(tools::call(ctx, conversation, &name, call))
         }
         Ask::Role { role, what, .. } => {
-            let role_asked = crate::controller::ask_role::Asked {
+            let role_asked = crate::controller::turns::ask_role::Asked {
                 role,
                 what,
                 request: current.text.clone(),
                 folder: conversation.folder(ctx).to_path_buf(),
             };
-            crate::controller::ask_role::answer(ctx, role_asked, asked.reply);
+            crate::controller::turns::ask_role::answer(ctx, role_asked, asked.reply);
             Ok(Vec::new())
         }
     }
@@ -1938,7 +1939,7 @@ pub(crate) fn rewind(ctx: &mut Ctx, conversation: &mut ConversationState) -> boo
         .map(|((index, record), key)| {
             let mut option = option(
                 key,
-                &crate::controller::recap::title_from_request(&record.text),
+                &crate::controller::turns::recap::title_from_request(&record.text),
                 choices::choose(&index.to_string()),
                 index == newest,
             );

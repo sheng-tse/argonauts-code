@@ -7,16 +7,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, PoisonError, Weak};
 
 use argonauts_core::TaskId;
-use argonauts_core::events::session::InputPartKind;
-use argonauts_core::limits::{FallbackNote, TranscriptPaths};
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::registry::{ModelAccess, ModelEntry};
-use argonauts_core::session_runner::Access;
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::fallback::{FallbackSummary, FallbackSummaryInput};
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::models::limits::{FallbackNote, TranscriptPaths};
+use argonauts_core::models::registry::{ModelAccess, ModelEntry};
+use argonauts_core::runs::events::session::InputPartKind;
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::fallback::{FallbackSummary, FallbackSummaryInput};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::fallback::rules;
 use crate::prompts;
 use crate::task::support::part;

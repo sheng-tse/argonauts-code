@@ -3,7 +3,7 @@
 //! this and Enter obeys it, so what looks like a command is one.
 
 use super::{SHARED_COMMANDS, SLASH_COMMANDS, slash_spec};
-use crate::cli_commands::CliCommandSet;
+use crate::agents::cli_commands::CliCommandSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DraftCommand {

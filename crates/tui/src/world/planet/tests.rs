@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use super::*;
-use crate::world::geo::{LonLat, Plate};
+use crate::base::draw::geo::{LonLat, Plate};
 use crate::world::map::fields::crews::{Crew, Key};
 use crate::world::map::land::Marks;
 use crate::world::map::relief::cells::{compare_means, mean_colours};
@@ -356,9 +356,9 @@ mod spin {
     use std::sync::Arc;
 
     use super::*;
+    use crate::base::draw::scene::{Depth, Part, Scene};
     use crate::world::planet_fx::{Hurricane, Weather};
     use crate::world::raster::{Brush, Colour, Path};
-    use crate::world::scene::{Depth, Part, Scene};
 
     /// A quarter of the map's size, so a whole turn draws quickly.
     const SMALL: (usize, usize) = (288, 137);
@@ -712,7 +712,7 @@ mod spin {
         let sprite = scene
             .sprites()
             .iter()
-            .find(|sprite| sprite.id == crate::world::scene::PartId::new("planet weather", 0))
+            .find(|sprite| sprite.id == crate::base::draw::scene::PartId::new("planet weather", 0))
             .expect("the storm's loop");
         let globe = r.globe(view, SIZE);
         let at = globe.project(place);
@@ -751,8 +751,8 @@ mod spin {
 
 mod pointing {
     use super::*;
+    use crate::base::draw::scene::{Mark, Pointed, Shape};
     use crate::world::map::land::{GroundKind, line_at};
-    use crate::world::scene::{Mark, Pointed, Shape};
 
     fn facing() -> View {
         View::stepped(-0.35)
@@ -1175,8 +1175,8 @@ mod unroll {
 
 mod standing {
     use super::*;
+    use crate::base::draw::scene::{Depth, Pointed};
     use crate::world::raster::{Brush, Colour, Path};
-    use crate::world::scene::{Depth, Pointed};
 
     /// A made-up wonder: a pale tower as tall as asked, standing on its foot.
     #[derive(Debug)]
@@ -1225,7 +1225,7 @@ mod standing {
         }
     }
 
-    fn ground_picture(scene: &crate::world::scene::Scene) -> crate::world::scene::Image {
+    fn ground_picture(scene: &crate::base::draw::scene::Scene) -> crate::base::draw::scene::Image {
         scene
             .stack()
             .iter()

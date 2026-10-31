@@ -5,11 +5,11 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
 use super::table::Table;
-use crate::cell::HistoryCell;
-use crate::cell::layout::more_row;
-use crate::render::RenderCtx;
-use crate::text::{fit_lines, sanitize, sanitize_line, str_width, wrap_spans};
-use crate::theme::Role;
+use crate::base::draw::render::RenderCtx;
+use crate::base::text::{fit_lines, sanitize, sanitize_line, str_width, wrap_spans};
+use crate::base::theme::Role;
+use crate::cells::cell::HistoryCell;
+use crate::cells::cell::layout::more_row;
 
 /// Where the body starts, under the heading's text.
 const BODY: usize = 2;

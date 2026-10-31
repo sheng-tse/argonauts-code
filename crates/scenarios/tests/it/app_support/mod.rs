@@ -17,10 +17,12 @@ use anyhow::{Context as _, bail};
 use argonauts_core::app::{
     AppChoice, AppEvent, AppMode, ChoiceKind, ConversationEvent, TraceLine, UiCommand,
 };
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{AnswerOption, ApprovalEvent, ApprovalKind, ApprovalOpened};
-use argonauts_core::layout::run_files;
-use argonauts_core::names::ChoiceId;
+use argonauts_core::base::layout::run_files;
+use argonauts_core::base::names::ChoiceId;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
+    AnswerOption, ApprovalEvent, ApprovalKind, ApprovalOpened,
+};
 use argonauts_scenarios::{
     COLS, ROWS, Scenario, WAIT, as_set_up, on_the_default_workflow, past_the_guard_of,
     past_the_question_guard,
@@ -165,7 +167,7 @@ pub fn write_fixed_phases(global_config: &std::path::Path) -> anyhow::Result<()>
         .context("the global config has a folder")?
         .join("workflows");
     std::fs::create_dir_all(&folder)?;
-    let (base, text) = argonauts_core::workflow_files::BASE;
+    let (base, text) = argonauts_core::workflows::workflow_files::BASE;
     let named = text.replace(
         &format!("name  = \"{base}\""),
         &format!("name  = \"{FIXED_PHASES}\""),
@@ -364,9 +366,9 @@ pub fn submit(pty: &mut Pty, text: &str) -> anyhow::Result<()> {
 /// meanwhile: a view the app answers for opens when the answer comes, which can be after the
 /// Esc that was to close it.
 pub fn back_to_the_input(pty: &mut Pty) -> anyhow::Result<()> {
-    let holds = argonauts_testkit::deadline::scaled(Duration::from_millis(300));
-    let patience = argonauts_testkit::deadline::scaled(Duration::from_secs(1));
-    let deadline = argonauts_testkit::deadline::after(WAIT);
+    let holds = argonauts_testkit::pty::deadline::scaled(Duration::from_millis(300));
+    let patience = argonauts_testkit::pty::deadline::scaled(Duration::from_secs(1));
+    let deadline = argonauts_testkit::pty::deadline::after(WAIT);
     let mut shown_since = None;
     let mut hidden_since = Instant::now();
     loop {
@@ -507,7 +509,7 @@ pub fn wait_until<T>(
     what: &str,
     mut check: impl FnMut() -> anyhow::Result<Option<T>>,
 ) -> anyhow::Result<T> {
-    let deadline = argonauts_testkit::deadline::after(WAIT);
+    let deadline = argonauts_testkit::pty::deadline::after(WAIT);
     loop {
         if let Some(found) = check()? {
             return Ok(found);
@@ -875,7 +877,7 @@ pub fn quit(pty: &mut Pty) -> anyhow::Result<()> {
 
 /// The run directories under the scenario's home, oldest first.
 pub fn run_dirs(scenario: &Scenario) -> Vec<PathBuf> {
-    argonauts_testkit::journal::run_dirs(scenario.repo.home())
+    argonauts_testkit::home::journal::run_dirs(scenario.repo.home())
 }
 
 pub fn wait_run_dir(scenario: &Scenario) -> anyhow::Result<PathBuf> {
@@ -966,8 +968,8 @@ pub fn merge(pty: &mut Pty, run_dir: &Path) -> anyhow::Result<()> {
     wait_journal(run_dir, "the run to finish merged", |event| {
         matches!(
             event.kind,
-            RunEventKind::Run(argonauts_core::events::run::RunLifecycle::Finished {
-                outcome: argonauts_core::events::run::RunOutcome::Merged,
+            RunEventKind::Run(argonauts_core::runs::events::run::RunLifecycle::Finished {
+                outcome: argonauts_core::runs::events::run::RunOutcome::Merged,
                 ..
             })
         )

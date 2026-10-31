@@ -8,8 +8,8 @@
 
 use argonauts_adapter_claude_code::ClaudeCodeAdapter;
 use argonauts_core::AgentEvent;
-use argonauts_core::adapter::Adapter;
-use argonauts_core::artifacts::{self, Artifact};
+use argonauts_core::agents::adapter::Adapter;
+use argonauts_core::app::artifacts::{self, Artifact};
 use serde_json::Value;
 
 const STREAM: &str = include_str!("../data/artifact.stdout.jsonl");

@@ -1,26 +1,21 @@
 //! agy (`agy`) adapter for Argonauts Code.
 
-mod agents_file;
-mod banner;
-mod command;
-mod errors;
+mod account;
+mod launch;
 mod parser;
-mod probe;
-mod subagents;
-mod tweaks;
 
 use std::path::Path;
 
-use argonauts_core::adapter::IdentityMarks;
-use argonauts_core::keywords::Keyword;
-use argonauts_core::limits::{PlanUsageAnswer, PlanUsageReading};
+use argonauts_core::agents::adapter::IdentityMarks;
+use argonauts_core::look::keywords::Keyword;
+use argonauts_core::models::limits::{PlanUsageAnswer, PlanUsageReading};
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::{
     Adapter, Capabilities, CommandSpec, LaunchTweak, SessionRequest, SetupHints, StopPlan,
     StreamParser, extract_version,
 };
 
-pub use command::{
+pub use launch::command::{
     API_KEY_ENV, AUTO_UPDATE_ENV, AUTO_UPDATE_VALUE, build_command, user_message_line,
 };
 pub use parser::AgyStreamParser;
@@ -56,17 +51,17 @@ impl AntigravityCli {
 }
 
 /// The `init` event, with what the parser takes from it.
-const STARTUP_MESSAGE: argonauts_core::adapter::StartupMessage =
-    argonauts_core::adapter::StartupMessage {
+const STARTUP_MESSAGE: argonauts_core::agents::adapter::StartupMessage =
+    argonauts_core::agents::adapter::StartupMessage {
         marker: r#""event":"init""#,
         is: &[("/event", "init")],
         fields: &[
-            argonauts_core::adapter::StartupField {
+            argonauts_core::agents::adapter::StartupField {
                 pointer: "/conversation_id",
                 what: "its session",
                 without: "its conversations can't be resumed",
             },
-            argonauts_core::adapter::StartupField {
+            argonauts_core::agents::adapter::StartupField {
                 pointer: "/init/model",
                 what: "its model",
                 without: "the model it really ran can't be told from the one asked for",
@@ -75,8 +70,8 @@ const STARTUP_MESSAGE: argonauts_core::adapter::StartupMessage =
     };
 
 impl Adapter for AntigravityCli {
-    fn first_count(&self) -> Option<argonauts_core::events::context::FirstCount> {
-        Some(argonauts_core::events::context::FirstCount::Step)
+    fn first_count(&self) -> Option<argonauts_core::runs::events::context::FirstCount> {
+        Some(argonauts_core::runs::events::context::FirstCount::Step)
     }
 
     fn id(&self) -> &'static str {
@@ -143,7 +138,7 @@ impl Adapter for AntigravityCli {
     }
 
     fn plan_usage_probe(&self, workdir: &Path, model: Option<&str>) -> Option<CommandSpec> {
-        Some(probe::plan_usage_probe_command(
+        Some(account::probe::plan_usage_probe_command(
             self.binary(),
             workdir,
             model,
@@ -151,28 +146,28 @@ impl Adapter for AntigravityCli {
     }
 
     fn parse_plan_usage_probe(&self, stdout: &str) -> Option<PlanUsageReading> {
-        probe::parse_usage(self.id(), stdout)
+        account::probe::parse_usage(self.id(), stdout)
     }
 
     fn parse_plan_usage_probe_answer(&self, stdout: &str) -> Option<PlanUsageAnswer> {
-        probe::usage_answer(self.id(), stdout)
+        account::probe::usage_answer(self.id(), stdout)
     }
 
     fn compaction(&self, setting: Compaction) -> LaunchTweak {
-        tweaks::compaction(setting)
+        launch::tweaks::compaction(setting)
     }
 
     fn native_fanout(&self, setting: NativeFanout) -> LaunchTweak {
-        tweaks::native_fanout(setting)
+        launch::tweaks::native_fanout(setting)
     }
 
     fn user_hooks_off(&self) -> LaunchTweak {
-        tweaks::user_hooks_off()
+        launch::tweaks::user_hooks_off()
     }
 
     fn interactive_resume(&self, req: &SessionRequest) -> Option<CommandSpec> {
         let session_id = req.resume_session.as_deref()?;
-        command::interactive_resume_command(self.binary(), session_id, &req.workdir)
+        launch::command::interactive_resume_command(self.binary(), session_id, &req.workdir)
     }
 
     /// The tools its stream names and its home folder.
@@ -197,20 +192,20 @@ impl Adapter for AntigravityCli {
     fn resume_command(
         &self,
         req: &SessionRequest,
-    ) -> Option<argonauts_core::cli_sessions::ResumeCommand> {
+    ) -> Option<argonauts_core::agents::cli_sessions::ResumeCommand> {
         let spec = self.interactive_resume(req)?;
-        Some(argonauts_core::cli_sessions::ResumeCommand {
+        Some(argonauts_core::agents::cli_sessions::ResumeCommand {
             words: std::iter::once(spec.program).chain(spec.args).collect(),
             local_model: false,
             from_any_folder: false,
-            also: argonauts_core::cli_sessions::resume_facts::AGY_LISTS_IT
+            also: argonauts_core::agents::cli_sessions::resume_facts::AGY_LISTS_IT
                 .then(|| "pick it in agy's own list".to_owned()),
         })
     }
 
     /// agy reads the project's AGENTS.md as its rules.
     fn instruction_files(&self, workdir: &Path, _isolated: bool) -> Vec<String> {
-        argonauts_core::adapter::agents_md(workdir)
+        argonauts_core::agents::adapter::agents_md(workdir)
     }
 
     /// agy also runs Claude and GPT-OSS models. The registry maps those model ids to their
@@ -236,15 +231,18 @@ impl Adapter for AntigravityCli {
         true
     }
 
-    fn banner_account(&self, screen: &str) -> Option<argonauts_core::adapter::BannerAccount> {
-        banner::account(screen)
+    fn banner_account(
+        &self,
+        screen: &str,
+    ) -> Option<argonauts_core::agents::adapter::BannerAccount> {
+        account::banner::account(screen)
     }
 
     fn updater_off_env(&self) -> &'static [(&'static str, &'static str)] {
         &[(AUTO_UPDATE_ENV, AUTO_UPDATE_VALUE)]
     }
 
-    fn startup_message(&self) -> Option<&'static argonauts_core::adapter::StartupMessage> {
+    fn startup_message(&self) -> Option<&'static argonauts_core::agents::adapter::StartupMessage> {
         Some(&STARTUP_MESSAGE)
     }
 }

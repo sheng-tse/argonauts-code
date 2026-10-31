@@ -4,7 +4,7 @@
 
 use std::f64::consts::PI;
 
-use argonauts_core::behavior_world::Crash;
+use argonauts_core::behaviors::behavior_world::Crash;
 use time::Duration;
 
 use super::water::{arc, tsunami_run, valley_path};

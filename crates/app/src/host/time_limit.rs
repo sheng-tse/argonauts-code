@@ -6,13 +6,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use argonauts_core::NoteLevel;
-use argonauts_core::control::ControlRequest;
 use argonauts_core::settings::Settings;
 use time::OffsetDateTime;
 use tokio::task::JoinHandle;
 
 use super::relay::Entry;
 use super::{Host, note};
+use crate::control::ControlRequest;
 
 /// What's left of an outside-agent run's time limit. `None` for a run you started, or a limit of
 /// `"none"`.

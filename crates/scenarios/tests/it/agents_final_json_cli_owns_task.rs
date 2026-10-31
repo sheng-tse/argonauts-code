@@ -8,7 +8,7 @@ use agents_support::{
     session_end, session_home, sessions_of, start_captain, toml_path, try_workers,
     wait_for_finished_task, write_file, write_global_config, write_global_models,
 };
-use argonauts_core::layout::user_files;
+use argonauts_core::base::layout::user_files;
 
 const TEMPLATE: &str = "// From the test's openclaw-exec template.\n{ agents: { defaults: { runtime: \"embedded\" } } }\n";
 

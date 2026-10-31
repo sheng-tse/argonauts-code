@@ -4,7 +4,7 @@
 use time::OffsetDateTime;
 
 use super::{Feature, Kind, Nature, NatureFacts, Shoal};
-use crate::format::ClockTime;
+use crate::base::format::ClockTime;
 use crate::world::map::fields::Ground;
 use crate::world::map::land::days_ago;
 

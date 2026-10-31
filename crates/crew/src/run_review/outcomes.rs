@@ -6,18 +6,18 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use argonauts_core::limits::TrackRecord;
+use argonauts_core::models::limits::TrackRecord;
 use argonauts_core::{RunId, TaskId};
 use argonauts_learning::{LearningError, Store};
 
-use crate::error::{EngineError, EngineResult};
+use crate::engine::error::{EngineError, EngineResult};
 use crate::state::RunState;
 
 pub use argonauts_learning::outcomes::{
     Difficulty, LogLine, Outcome as OutcomeRecord, Prediction, Predictor, StepKey,
 };
 
-pub const OUTCOMES_DIR: &str = argonauts_core::layout::repo_state::OUTCOMES;
+pub const OUTCOMES_DIR: &str = argonauts_core::base::layout::repo_state::OUTCOMES;
 
 /// The step a task's newest try started in, usually its `build` step.
 pub trait TaskStep: Sized {
@@ -147,7 +147,7 @@ mod tests {
     use std::fs::OpenOptions;
     use std::io::Write;
 
-    use argonauts_core::workflow::{StandardPhase, StepKind};
+    use argonauts_core::workflows::workflow::{StandardPhase, StepKind};
 
     use super::*;
 
@@ -289,10 +289,10 @@ mod tests {
     /// A task's step is the one its newest try started in.
     #[test]
     fn task_keyed_by_the_step_it_was_built_in() {
-        use argonauts_core::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
-        use argonauts_core::events::{RunEvent, RunEventKind};
-        use argonauts_core::names::WorkflowId;
-        use argonauts_core::workflow::StepRef;
+        use argonauts_core::base::names::WorkflowId;
+        use argonauts_core::runs::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
+        use argonauts_core::runs::events::{RunEvent, RunEventKind};
+        use argonauts_core::workflows::workflow::StepRef;
 
         let id = WorkflowId::numbered(1);
         let events = [

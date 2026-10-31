@@ -17,7 +17,7 @@
 //! its `tasks`. Phases are named for each request, so a proposal is told by what its agent is: a
 //! worker of a council that only reads and works on no task.
 
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
 use serde_json::Value;
 
 /// What the agent gave, when it is one of a council's.

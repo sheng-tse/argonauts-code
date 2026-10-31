@@ -4,9 +4,9 @@
 use std::collections::BTreeSet;
 
 use argonauts_core::RunId;
-use argonauts_core::events::goal::{Assumption, Criterion, GoalFile, GoalSource};
-use argonauts_core::names::ModelRef;
-use argonauts_core::steps::understand::Reading;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::events::goal::{Assumption, Criterion, GoalFile, GoalSource};
+use argonauts_core::workflows::steps::understand::Reading;
 
 use super::file::hashed;
 use super::materiality::one_line;

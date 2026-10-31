@@ -5,11 +5,11 @@ use crate::common;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
-use argonauts_tui::model::{
+use argonauts_tui::app::model::{
     ApprovalMode, AssistantMessage, QuestionOption, QuestionPrompt, ToolCall, ToolItem, ToolKind,
     ToolState, UserMessage, ViewModel, WorkingLine,
 };
-use argonauts_tui::theme::Role;
+use argonauts_tui::base::theme::Role;
 use argonauts_tui::{InlineTerminal, Ui, UiAction};
 use common::{bg, fg, t0, theme};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};

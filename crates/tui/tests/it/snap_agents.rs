@@ -5,34 +5,34 @@
 use crate::common;
 use std::collections::BTreeMap;
 
+use argonauts_core::agents::session_runner::{Access, RunnerKind};
 use argonauts_core::app::AppEvent;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::session::{
+use argonauts_core::base::names::{AgentId, ModelRef, RoleName, SessionKey};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::model_catalog::{CatalogEntry, ModelCatalog};
+use argonauts_core::runs::events::session::{
     EndReason, FileDiff, SessionEnd, SessionEvent, SessionStarted, SubagentKind, SubagentStatus,
     SubagentUpdate,
 };
-use argonauts_core::events::task::{TaskEvent, TaskState};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::model_catalog::{CatalogEntry, ModelCatalog};
-use argonauts_core::names::{AgentId, ModelRef, RoleName, SessionKey};
-use argonauts_core::session_runner::{Access, RunnerKind};
+use argonauts_core::runs::events::task::{TaskEvent, TaskState};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::settings::ui::{AgentsInConversation, UiSettings};
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_core::{
     AgentEvent, ErrorCategory, PluginOutputKind, RetryReason, RunId, Spend, TaskId, TodoItem,
     TodoStatus, Verbosity,
 };
 use argonauts_tui::HistoryCell;
+use argonauts_tui::app::model::ViewModel;
+use argonauts_tui::base::draw::render::{Clock, RenderCtx};
+use argonauts_tui::base::stability::{self, samples};
+use argonauts_tui::base::theme::Role;
 use argonauts_tui::bridge::agents::AgentBlocks;
 use argonauts_tui::bridge::{Cx, Effects};
-use argonauts_tui::model::ViewModel;
-use argonauts_tui::render::{Clock, RenderCtx};
-use argonauts_tui::stability::{self, samples};
-use argonauts_tui::state::{
+use argonauts_tui::frame::state::{
     AppState, Doing, Replay, RunState, SessionState, SessionStatus, TaskRow,
 };
-use argonauts_tui::theme::Role;
 use common::{assert_fits, at, style_of, t0, text, theme};
 use ratatui::text::Line;
 use serde_json::{Value, json};
@@ -1524,7 +1524,7 @@ fn argonauts_own_calls_stay_in_the_overlay() {
 /// workflow's row and view: it gets no block of its own and prints nothing in the conversation.
 #[test]
 fn a_reviewer_asked_inside_a_cli_workflow_prints_nothing_of_its_own() {
-    use argonauts_core::events::session::{CliPhase, CliWorkflowRun};
+    use argonauts_core::runs::events::session::{CliPhase, CliWorkflowRun};
     let mut crew = Crew::new(Verbosity::Full);
     crew.start("s-001", "claude-code/haiku", Some(1));
     let key = SessionKey::parse("s-001").expect("a key");
@@ -1563,7 +1563,7 @@ fn a_reviewer_asked_inside_a_cli_workflow_prints_nothing_of_its_own() {
 /// until the workflow ends, then prints once with its final phases.
 #[test]
 fn a_workflow_row_stays_live_until_its_workflow_ends() {
-    use argonauts_core::events::session::{CliPhase, CliWorkflowRun};
+    use argonauts_core::runs::events::session::{CliPhase, CliWorkflowRun};
     let workflow = |status| CliWorkflowRun {
         id: "wf_1".into(),
         call: Some("toolu_w".into()),

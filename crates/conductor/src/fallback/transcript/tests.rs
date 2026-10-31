@@ -1,14 +1,14 @@
 use std::path::{Path, PathBuf};
 
-use argonauts_core::events::session::{
+use argonauts_core::agents::session_runner::{Access, RunnerKind};
+use argonauts_core::base::names::{RoleName, SessionKey};
+use argonauts_core::models::limits::FallbackPlanner;
+use argonauts_core::runs::events::session::{
     EndReason, InputPart, InputPartKind, LaunchRecord, PromptVia, SessionEnd, SessionEvent,
     SessionInput, SessionStarted,
 };
-use argonauts_core::events::task::TaskEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::FallbackPlanner;
-use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::session_runner::{Access, RunnerKind};
+use argonauts_core::runs::events::task::TaskEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::fallback::{AgentFallbacks, FallbackContext};
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::{AgentEvent, ErrorCategory, Spend, TaskId, TodoItem, TodoStatus};
@@ -18,7 +18,7 @@ use time::OffsetDateTime;
 use super::*;
 use crate::fallback::testing::{Fixture, TASK, agent_id, run, task, worker};
 use crate::git::Git;
-use crate::testutil::{TestRepo, git_test_env};
+use crate::testing::{TestRepo, git_test_env};
 
 struct Log {
     events: Vec<RunEvent>,

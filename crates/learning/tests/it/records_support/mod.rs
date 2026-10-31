@@ -6,10 +6,10 @@
 use time::macros::datetime;
 use time::{Duration, OffsetDateTime};
 
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::{RunId, TaskId};
 use argonauts_learning::outcomes::{LogLine, Outcome, Prediction, Predictor};
-use argonauts_learning::types::Assignment;
+use argonauts_learning::store::types::Assignment;
 
 /// Every book in these tests is built as of this moment.
 pub const AS_OF: OffsetDateTime = datetime!(2026-10-01 0:00 UTC);

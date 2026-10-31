@@ -11,18 +11,18 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 use argonauts_core::TaskId;
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::events::session::{EndReason, SessionEnd, SessionStarted};
-use argonauts_core::events::task::TaskState;
-use argonauts_core::events::{
+use argonauts_core::base::layout::{self, session_files};
+use argonauts_core::base::names::{ModelRef, SessionKey};
+use argonauts_core::base::paths::{Paths, project_config_path};
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::runs::events::session::{EndReason, SessionEnd, SessionStarted};
+use argonauts_core::runs::events::task::TaskState;
+use argonauts_core::runs::events::{
     ApprovalEvent, ReviewEvent, RunEvent, RunEventKind, SessionEvent, TaskEvent,
 };
-use argonauts_core::layout::{self, session_files};
-use argonauts_core::names::{ModelRef, SessionKey};
-use argonauts_core::paths::{Paths, project_config_path};
-use argonauts_core::steps::judgment::ReviewOutput;
+use argonauts_core::workflows::steps::judgment::ReviewOutput;
 use argonauts_scenarios::{COLS, ROWS, Scenario, WAIT, as_set_up};
-use argonauts_testkit::{Invocation, Pty, PtyCommand, argonauts_bin, journal};
+use argonauts_testkit::{Invocation, Pty, PtyCommand, argonauts_bin, home::journal};
 
 /// The prompt every task here gets. The recorded Claude Code build run answered this prompt.
 pub const TASK: &str =
@@ -126,7 +126,7 @@ pub fn wait_for_events(
     timeout: Duration,
     done: impl Fn(&[RunEvent]) -> bool,
 ) -> anyhow::Result<Vec<RunEvent>> {
-    let deadline = argonauts_testkit::deadline::after(timeout);
+    let deadline = argonauts_testkit::pty::deadline::after(timeout);
     loop {
         // No run yet reads as no events.
         let events = scenario.latest_run_events().unwrap_or_default();

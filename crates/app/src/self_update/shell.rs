@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use argonauts_core::Paths;
 use argonauts_core::settings::updates::UpdateChannel;
-use argonauts_tui::theme::{ColorEnv, Role, Theme};
+use argonauts_tui::base::theme::{ColorEnv, Role, Theme};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use semver::Version;
@@ -45,7 +45,7 @@ pub async fn self_update(asked: Asked, overrides: Vec<String>) -> anyhow::Result
         }
     };
     if !asked.check {
-        crate::ancestry::refuse_inside_agent()?;
+        crate::startup::ancestry::refuse_inside_agent()?;
     }
     let paths = Paths::from_env()?;
     let settings = crate::commands::current_settings(None, overrides).unwrap_or_default();
@@ -69,7 +69,7 @@ pub async fn self_update(asked: Asked, overrides: Vec<String>) -> anyhow::Result
         }
         return Ok(ExitCode::SUCCESS);
     }
-    if !crate::live_registry::live_run_hosts(&paths).is_empty() {
+    if !crate::host::live_registry::live_run_hosts(&paths).is_empty() {
         out.line(plain(RUN_GOING));
         return Ok(ExitCode::FAILURE);
     }
@@ -359,7 +359,7 @@ impl Printer {
             write!(
                 stdout,
                 "{}",
-                argonauts_core::sanitize::sanitize_for_terminal(&text)
+                argonauts_core::safety::sanitize::sanitize_for_terminal(&text)
             )
         };
         let _ = written.and_then(|()| writeln!(stdout));
@@ -401,7 +401,7 @@ pub async fn behind_line(overrides: Vec<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::golden::{assert_looks, drawn_rows, picture_rows, theme};
+    use crate::testing::golden::{assert_looks, drawn_rows, picture_rows, theme};
 
     fn v(text: &str) -> Version {
         Version::parse(text).unwrap()
@@ -438,7 +438,7 @@ mod tests {
             Install::Homebrew.command().unwrap(),
             &theme,
         ));
-        crate::golden::dump("self_update", &lines);
+        crate::testing::golden::dump("self_update", &lines);
         assert_eq!(
             drawn_rows(&lines),
             picture_rows(include_str!("../../tests/golden/self_update.txt"))

@@ -5,8 +5,8 @@
 
 use serde_json::Value;
 
-use crate::cell::{ToolCall, ToolKind};
-use crate::text::sanitize_line;
+use crate::base::text::sanitize_line;
+use crate::cells::cell::{ToolCall, ToolKind};
 
 /// One of the main session's own tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +96,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::cell::ToolState;
+    use crate::cells::cell::ToolState;
 
     #[test]
     fn every_cli_s_name_for_an_own_tool_is_known() {

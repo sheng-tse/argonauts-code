@@ -1,10 +1,10 @@
 //! Every answer format Argonauts Code sends a CLI, held to Codex's strict rules, the strictest any
 //! CLI has. A format Codex refuses fails its session in two seconds, every time.
 
-use argonauts_core::answer_format::{codex_problems, strict};
-use argonauts_core::steps::StepName;
-use argonauts_core::task::report_json_schema;
-use argonauts_crew::claude_codes::verdict_schema;
+use argonauts_core::runs::task::report_json_schema;
+use argonauts_core::workflows::answer_format::{codex_problems, strict};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_crew::workflow::claude_codes::verdict_schema;
 use serde_json::{Value, json};
 
 /// What a workflow script may ask for: a plan's tasks, a verdict, a pick, each with fields

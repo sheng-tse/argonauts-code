@@ -4,8 +4,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
-use argonauts_core::events::agent_status::FallbackPlan;
-use argonauts_core::events::approval::{
+use argonauts_core::runs::events::agent_status::FallbackPlan;
+use argonauts_core::runs::events::approval::{
     AgentDownPacket, AnswerAction, ApprovalKind, ApprovalOpened, ApprovalPacket,
 };
 use argonauts_scenarios::{WAIT, past_the_question_guard};
@@ -62,7 +62,7 @@ pub fn wait_for_rows(
     timeout: Duration,
     pick: impl Fn(&str) -> bool,
 ) -> anyhow::Result<()> {
-    let deadline = argonauts_testkit::deadline::after(timeout);
+    let deadline = argonauts_testkit::pty::deadline::after(timeout);
     loop {
         let screen = pty.screen();
         let read: Vec<&str> = screen.visible.iter().map(|row| row.trim()).collect();
@@ -86,7 +86,7 @@ pub fn wait_for_row(
     timeout: Duration,
     pick: impl Fn(&str) -> bool,
 ) -> anyhow::Result<()> {
-    let deadline = argonauts_testkit::deadline::after(timeout);
+    let deadline = argonauts_testkit::pty::deadline::after(timeout);
     loop {
         let screen = pty.screen();
         if screen.visible.iter().any(|row| pick(row)) {

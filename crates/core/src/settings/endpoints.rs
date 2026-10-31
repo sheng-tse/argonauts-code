@@ -2,7 +2,7 @@
 
 use super::Settings;
 use super::agents::EndpointSettings;
-use crate::runtimes::{RUNTIMES, Requests, Runtime, runtime};
+use crate::agents::runtimes::{RUNTIMES, Requests, Runtime, runtime};
 
 const OPENROUTER: &str = "openrouter";
 

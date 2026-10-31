@@ -15,23 +15,23 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use anyhow::{Context as _, bail};
-use argonauts_core::agent_sessions::{AgentSessionRef, Helper, Resume};
-use argonauts_core::api::RunSummary;
-use argonauts_core::event::AgentEvent;
-use argonauts_core::events::session::{SessionEvent, SessionStarted, SubagentUpdate};
-use argonauts_core::events::task::TaskEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::journal::{self, RunLock};
-use argonauts_core::layout::run_files;
-use argonauts_core::names::{ModelRef, RoleName, SessionKey};
-use argonauts_core::session_runner::RunnerKind;
+use argonauts_core::agents::agent_sessions::{AgentSessionRef, Helper, Resume};
+use argonauts_core::agents::session_runner::RunnerKind;
+use argonauts_core::base::layout::run_files;
+use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::api::RunSummary;
+use argonauts_core::runs::event::AgentEvent;
+use argonauts_core::runs::events::session::{SessionEvent, SessionStarted, SubagentUpdate};
+use argonauts_core::runs::events::task::TaskEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::journal::{self, RunLock};
 use argonauts_core::{RunId, TaskId};
 use time::OffsetDateTime;
 
 use super::run_worktree;
 use crate::commands::adapters_here;
 use crate::controller::Ctx;
-use crate::conversation_store::ConversationPlace;
+use crate::conversation::store::ConversationPlace;
 use crate::git;
 
 /// One session, as its run's journal tells it.
@@ -454,8 +454,8 @@ pub(super) fn binary(ctx: &Ctx, worker: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::session::{SubagentKind, SubagentStatus};
-    use argonauts_core::steps::StepName;
+    use argonauts_core::runs::events::session::{SubagentKind, SubagentStatus};
+    use argonauts_core::workflows::steps::StepName;
     use argonauts_testkit::TempRepo;
 
     use super::*;
@@ -546,13 +546,13 @@ mod tests {
         };
         let started = |session: u32| {
             let started = SessionStarted {
-                agent_id: argonauts_core::names::AgentId("codex".to_owned()),
+                agent_id: argonauts_core::base::names::AgentId("codex".to_owned()),
                 provider: "codex".to_owned(),
                 worker: "codex".parse().unwrap(),
                 kind: RunnerKind::Cli,
                 role: RoleName::Worker,
                 step: Some(StepName::Build),
-                access: argonauts_core::session_runner::Access::Build,
+                access: argonauts_core::agents::session_runner::Access::Build,
                 lifetime: argonauts_core::settings::sessions::SessionLifetime::Task,
                 resumed_from: None,
                 follow_key: None,

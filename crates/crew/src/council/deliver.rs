@@ -5,13 +5,13 @@
 //! others by their letters, itself as "you", and the user as the user. What it reads ends with
 //! its move and the points still open.
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::council::{
+use argonauts_core::agents::session_runner::{SessionControl, SteerSupport};
+use argonauts_core::base::names::{MessageId, SeatId, SeatLetter, SessionKey};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::council::{
     CouncilAction, CouncilEventKind, CouncilMessage, MessageKind, MovedBecause, Point, PointState,
     ReplyTo, Seat, Speaker, Stance,
 };
-use argonauts_core::names::{MessageId, SeatId, SeatLetter, SessionKey};
-use argonauts_core::session_runner::{SessionControl, SteerSupport};
 use argonauts_core::settings::council::WhenYouWrite;
 
 use super::letters::{self, Draw};
@@ -20,8 +20,8 @@ use super::relay::{self, Ambiguous, Relay, YourMove};
 use super::talk::{self, Council};
 use super::{points, private, seats};
 use crate::blackboard;
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::state::ids::IdKind;
 
 /// When a seat that is writing reads your message.
@@ -41,7 +41,7 @@ pub fn reach(cli: &str, steer: SteerSupport, when: WhenYouWrite) -> Reach {
     if when == WhenYouWrite::Restart {
         return Reach::Restart;
     }
-    if cli == crate::ultra::CLAUDE_CODE && steer == SteerSupport::Input {
+    if cli == crate::workflow::ultra::CLAUDE_CODE && steer == SteerSupport::Input {
         Reach::NextToolCall
     } else {
         Reach::NextTurn
@@ -58,7 +58,7 @@ pub async fn command(host: &Host, action: CouncilAction) -> Result<(), String> {
          its approval to talk on."
             .to_owned()
     })?;
-    let failed = |err: crate::error::EngineError| err.to_string();
+    let failed = |err: crate::engine::error::EngineError| err.to_string();
     match action {
         CouncilAction::Write {
             text,
@@ -90,7 +90,7 @@ pub async fn command(host: &Host, action: CouncilAction) -> Result<(), String> {
                         .ok_or_else(|| format!("The council has no message {id} to reply to."))?;
                     // The words the bar over your input showed, never the whole message.
                     let words = relay::with_markers(&replied.text);
-                    let quote = argonauts_core::text::last_sentence(&words).to_owned();
+                    let quote = argonauts_core::base::text::last_sentence(&words).to_owned();
                     Some(ReplyTo { message: id, quote })
                 }
                 None => None,
@@ -628,8 +628,8 @@ fn ambiguous(relay: &Relay, ambiguous: &Ambiguous) -> String {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::council::{CouncilEventKind, PointStance, ReplyTo, Side};
-    use argonauts_core::names::MessageId;
+    use argonauts_core::base::names::MessageId;
+    use argonauts_core::runs::events::council::{CouncilEventKind, PointStance, ReplyTo, Side};
 
     use super::*;
     use crate::council::talk::tests::{council, from_seat, said, seat, seated};
@@ -786,7 +786,7 @@ mod tests {
         let talk = council(vec![
             seated(3),
             from_seat(1, 1, SIGNED),
-            CouncilEventKind::Moved(argonauts_core::events::council::Moved {
+            CouncilEventKind::Moved(argonauts_core::runs::events::council::Moved {
                 seat: seat(2),
                 point: 1,
                 to: "A token bucket per key".to_owned(),
@@ -806,7 +806,7 @@ mod tests {
         let events = vec![
             seated(2),
             from_seat(1, 1, "Use a bucket per key."),
-            CouncilEventKind::Moved(argonauts_core::events::council::Moved {
+            CouncilEventKind::Moved(argonauts_core::runs::events::council::Moved {
                 seat: seat(2),
                 point: 1,
                 to: "A token bucket per key".to_owned(),

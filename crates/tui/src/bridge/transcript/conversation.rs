@@ -6,22 +6,22 @@
 use std::time::Duration;
 
 use argonauts_core::app::{ConversationEvent, SignedOut, TurnReply};
-use argonauts_core::events::session::CliWorkflowRun;
+use argonauts_core::base::names::{ModelRef, TurnId};
 use argonauts_core::input::{ParsedInput, parse_input_with};
-use argonauts_core::names::{ModelRef, TurnId};
+use argonauts_core::runs::events::session::CliWorkflowRun;
 use argonauts_core::settings::protocol::CaptainKind;
 use argonauts_core::settings::ui::VerbTheme;
 use argonauts_core::{AgentEvent, ErrorCategory, Verbosity};
 
-use crate::bottom::verbs::VerbStyle;
+use crate::base::format::WallClock;
+use crate::base::text::sanitize_line;
+use crate::bottom::working::verbs::VerbStyle;
 use crate::bridge::{plugin_output, tools};
-use crate::cell::{
+use crate::cells::cell::history::CellId;
+use crate::cells::cell::{
     AssistantMessage, Cell, CollapsedGroup, Notice, ResultLine, Tone, ToolCall, ToolItem, ToolKind,
     ToolState, Trailing, TurnEnd, UserMessage, WorkflowResult,
 };
-use crate::format::WallClock;
-use crate::history::CellId;
-use crate::text::sanitize_line;
 
 use super::own_calls::{self, Own};
 use super::{Cx, emit, quiet, steps};
@@ -443,7 +443,7 @@ fn agent_event(
                 return;
             }
             // Paths show relative to the folder the conversation works in.
-            let places = tools::Places::of_conversation(cx.state);
+            let places = crate::frame::state::Places::of_conversation(cx.state);
             let mut call =
                 tools::start_call_in(&agent_id, name, input, &places).with_key(id.clone());
             call.kind = kinds(&agent_id, name, input);
@@ -508,7 +508,7 @@ fn agent_event(
             parent: None,
         } => {
             let key = Some(id.as_str());
-            let places = tools::Places::of_conversation(cx.state);
+            let places = crate::frame::state::Places::of_conversation(cx.state);
             let history = &mut cx.model.history;
             for cell in &open.calls {
                 let call = match history.active_mut(*cell) {

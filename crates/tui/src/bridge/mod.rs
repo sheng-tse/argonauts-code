@@ -15,6 +15,7 @@ pub mod failure;
 mod gave;
 pub mod input;
 pub mod keys;
+pub mod mentions;
 pub mod panel;
 pub mod plugin_output;
 mod pull_request;
@@ -38,21 +39,22 @@ use std::time::Instant;
 
 use argonauts_core::RunId;
 use argonauts_core::Verbosity;
-use argonauts_core::api::TakeOverTicket;
 use argonauts_core::app::{AppEvent, AppMode, UiCommand, ViewData};
-use argonauts_core::keywords::Keyword;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::look::keywords::Keyword;
+use argonauts_core::runs::api::TakeOverTicket;
 use argonauts_core::settings::ui::{TakeOverWhere, UiSettings};
 
 use crate::UiOptions;
 use crate::app::UiAction;
-use crate::model::ViewModel;
-use crate::overview::{OverviewView, Tab};
+use crate::app::model::ViewModel;
+use crate::base::theme::Theme;
+use crate::frame::state::AppState;
+use crate::frame::view::View;
+use crate::panels::{OverviewView, Tab};
 use crate::questions::Questions;
-use crate::state::AppState;
-use crate::theme::Theme;
+use crate::views;
 use crate::views::follow::Refresh;
-use crate::views::{self, View};
 
 use agents::AgentBlocks;
 use input::InputRouter;
@@ -233,6 +235,12 @@ impl Bridge {
         {
             return Effects::default();
         }
+        if let AppEvent::Conversation { event } = event {
+            let tools = &self.state.conversation.tools;
+            self.state
+                .talk
+                .count_edit(event, tools, tools::changed_lines);
+        }
         self.state.apply(event);
         if let AppEvent::UiSettings { ui: Some(ui), .. } = event {
             self.settings = (**ui).clone();
@@ -279,16 +287,24 @@ impl Bridge {
             self.input.answers_mid_answer_command(event, &mut cx);
             if let Some(view) = every_list {
                 cx.out.open(
-                    OverviewView::new(Tab::Context, cx.model.bottom.band.watch.clone())
-                        .with_context(view.clone())
-                        .with_every_list(),
+                    OverviewView::new(
+                        Tab::Context,
+                        cx.model.bottom.band.watch.clone(),
+                        crate::config::panel(),
+                    )
+                    .with_context(view.clone())
+                    .with_every_list(),
                 );
             }
             match status_view {
                 // Under its tab of the usage panel, beside Usage and Context.
                 Some(view) => cx.out.open(
-                    OverviewView::new(Tab::Status, cx.model.bottom.band.watch.clone())
-                        .with_status_tab((**view).clone()),
+                    OverviewView::new(
+                        Tab::Status,
+                        cx.model.bottom.band.watch.clone(),
+                        crate::config::panel(),
+                    )
+                    .with_status_tab((**view).clone()),
                 ),
                 None if stale_tab => {}
                 None => self.transcript.on_event(event, &mut cx),
@@ -403,8 +419,8 @@ impl Bridge {
 
 #[cfg(test)]
 mod view_answer_tests {
-    use argonauts_core::api::StatusSummary;
     use argonauts_core::input::SlashCommand;
+    use argonauts_core::runs::api::StatusSummary;
 
     use super::*;
 
@@ -486,7 +502,7 @@ mod view_answer_tests {
 
     /// An answer starts running, as the controller says it.
     fn answering(bridge: &mut Bridge, model: &mut ViewModel, now: Instant) {
-        let turn = argonauts_core::names::TurnId::numbered(1);
+        let turn = argonauts_core::base::names::TurnId::numbered(1);
         let mode = AppEvent::Mode {
             mode: AppMode::Answering { turn },
         };
@@ -499,7 +515,9 @@ mod view_answer_tests {
             .cells()
             .iter()
             .filter_map(|cell| match cell {
-                crate::cell::Cell::User(message) if message.command => Some(message.text.clone()),
+                crate::cells::cell::Cell::User(message) if message.command => {
+                    Some(message.text.clone())
+                }
                 _ => None,
             })
             .collect()
@@ -508,15 +526,18 @@ mod view_answer_tests {
     /// The rows `model` has printed since last asked, as plain text, and the colour of each
     /// row's last character.
     fn printed(model: &mut ViewModel) -> Vec<(String, Option<ratatui::style::Color>)> {
-        let theme = crate::theme::Theme::dark();
-        let ctx =
-            crate::render::RenderCtx::new(100, &theme, crate::render::Clock::still(Instant::now()));
+        let theme = crate::base::theme::Theme::dark();
+        let ctx = crate::base::draw::render::RenderCtx::new(
+            100,
+            &theme,
+            crate::base::draw::render::Clock::still(Instant::now()),
+        );
         model
             .history
             .drain_printable(&ctx)
             .iter()
             .map(|line| {
-                let text = crate::text::plain_text(std::slice::from_ref(line));
+                let text = crate::base::text::plain_text(std::slice::from_ref(line));
                 let last = line
                     .spans
                     .iter()
@@ -548,8 +569,8 @@ mod view_answer_tests {
             why: why.to_owned(),
         };
         let out = bridge.on_event(&mut model, &refused, Instant::now());
-        let red = crate::theme::Theme::dark()
-            .style(crate::theme::Role::Danger)
+        let red = crate::base::theme::Theme::dark()
+            .style(crate::base::theme::Role::Danger)
             .fg;
         let live = printed(&mut model);
         let texts: Vec<&str> = live.iter().map(|(text, _)| text.as_str()).collect();
@@ -819,8 +840,8 @@ mod view_answer_tests {
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
 
-        use crate::overview::sample;
-        use crate::views::ViewCtx;
+        use crate::frame::view::ViewCtx;
+        use crate::testing::sample;
 
         let mut bridge = Bridge::new(&UiOptions::default());
         let mut model = ViewModel::default();
@@ -843,7 +864,7 @@ mod view_answer_tests {
             let area = Rect::new(0, 0, 118, 90);
             let mut buf = Buffer::empty(area);
             out.views[0].render(area, &mut buf, &ctx);
-            let rows = crate::views::dock::lines(&buf);
+            let rows = crate::frame::view::dock::lines(&buf);
             let rows = rows.iter().map(ToString::to_string);
             // The count's age is the only thing a later frame draws differently.
             rows.filter(|row| !row.contains("counted "))
@@ -862,8 +883,8 @@ mod view_answer_tests {
     /// command's own row, with the main session's count as the screen holds it. Nothing opens.
     #[test]
     fn context_print_goes_into_the_conversation() {
-        use crate::cell::Cell;
-        use crate::overview::sample;
+        use crate::cells::cell::Cell;
+        use crate::testing::sample;
 
         let mut bridge = Bridge::new(&UiOptions::default());
         let mut model = ViewModel::default();
@@ -883,9 +904,9 @@ mod view_answer_tests {
         assert!(command.command);
         assert_eq!(command.text, "/context print");
         let theme = crate::Theme::dark();
-        let clock = crate::render::Clock::still(Instant::now());
-        let ctx = crate::render::RenderCtx::new(118, &theme, clock);
-        let text = crate::text::plain_text(&rows.lines(&ctx));
+        let clock = crate::base::draw::render::Clock::still(Instant::now());
+        let ctx = crate::base::draw::render::RenderCtx::new(118, &theme, clock);
+        let text = crate::base::text::plain_text(&rows.lines(&ctx));
         assert!(text.starts_with("  ⎿  Context Usage\n"), "{text}");
         assert!(text.contains("212.2k/1m tokens (21%)"), "{text}");
         assert!(text.contains("Crew agents \u{b7} "), "{text}");
@@ -916,7 +937,7 @@ mod view_answer_tests {
         assert_eq!(model.history.cells().len(), printed);
         let context = AppEvent::View {
             data: Box::new(ViewData::Context {
-                view: argonauts_core::views::ContextView::default(),
+                view: argonauts_core::app::views::ContextView::default(),
             }),
         };
         let out = bridge.on_event(&mut model, &context, t0 + every);
@@ -939,7 +960,7 @@ mod view_answer_tests {
         let printed = model.history.cells().len();
         let usage = |period| AppEvent::View {
             data: Box::new(ViewData::Usage {
-                summary: Box::new(argonauts_core::api::UsageSummary {
+                summary: Box::new(argonauts_core::runs::api::UsageSummary {
                     period,
                     ..Default::default()
                 }),
@@ -947,15 +968,15 @@ mod view_answer_tests {
         };
         let context = AppEvent::View {
             data: Box::new(ViewData::Context {
-                view: argonauts_core::views::ContextView::default(),
+                view: argonauts_core::app::views::ContextView::default(),
             }),
         };
         let mut answers = vec![status_tab(), context];
         answers.extend(
             [
-                argonauts_core::api::UsagePeriod::Today,
-                argonauts_core::api::UsagePeriod::Week,
-                argonauts_core::api::UsagePeriod::All,
+                argonauts_core::runs::api::UsagePeriod::Today,
+                argonauts_core::runs::api::UsagePeriod::Week,
+                argonauts_core::runs::api::UsagePeriod::All,
             ]
             .map(usage),
         );
@@ -1080,7 +1101,7 @@ mod awake_tests {
 
     use super::*;
     use crate::bottom::{AddedPart, LinePart, PartBody};
-    use crate::cell::Tone;
+    use crate::cells::cell::Tone;
 
     fn status(awake: Option<AwakeHold>) -> AppEvent {
         AppEvent::Status {

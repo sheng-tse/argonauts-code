@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use super::builtin::builtins;
 use super::name::is_workflow_name;
 use crate::WorkflowChoice;
-use crate::resolve::leaves;
-use argonauts_core::required;
+use crate::settings::resolve::leaves;
 use argonauts_core::settings::workflows::WORKFLOW_FILE_KEYS;
+use argonauts_core::workflows::required;
 
 /// The built-in workflows, in the order the picker shows them.
 pub fn workflow_choices() -> Vec<WorkflowChoice> {

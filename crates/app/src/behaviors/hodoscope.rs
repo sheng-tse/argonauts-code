@@ -8,7 +8,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use argonauts_core::display_names::DisplayNames;
+use argonauts_core::look::display_names::DisplayNames;
 use serde_json::{Map, Value, json};
 
 use super::actions::{Action, Outcome, SessionEnded};
@@ -120,8 +120,8 @@ pub(crate) fn write(dir: &Path, actions: &[Action], names: &DisplayNames) -> io:
 
 #[cfg(test)]
 mod tests {
+    use argonauts_core::behaviors::crew_stats::StatsRole;
     use argonauts_core::behaviors::{Behavior, Label};
-    use argonauts_core::crew_stats::StatsRole;
     use time::macros::datetime;
 
     use super::*;

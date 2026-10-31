@@ -3,8 +3,9 @@
 //! with `✓`, a description column, `↓` and `… +N more` when the list goes on, and key hints.
 //!
 //! The picker only moves, filters, and reports picks. What a pick means lives in
-//! [`Flow`](crate::views::settings::flow::Flow), which the settings screens keep in it.
+//! [`Flow`](crate::bottom::picker::flow::Flow), which the settings screens keep in it.
 
+pub mod flow;
 mod render;
 pub use render::{Gauge, PickerCell, PickerColumn};
 /// Pasted text for a line that holds one row: line breaks become spaces, and other control
@@ -24,13 +25,15 @@ pub fn one_line(text: &str) -> String {
 }
 
 #[cfg(test)]
+pub(super) mod picker_place_tests;
+#[cfg(test)]
 mod tests;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::kit::State;
-use crate::views::list::{self, FilterKey};
-use crate::views::settings::flow::Flow;
+use crate::base::kit::State;
+use crate::bottom::picker::flow::Flow;
+use crate::frame::view::list::{self, FilterKey};
 
 /// Rows shown at once. The rest scroll, marked with `↓` and `… +N more`.
 pub const VISIBLE_ROWS: usize = 8;
@@ -40,7 +43,7 @@ pub struct Picker {
     pub title: String,
     /// The CLI or endpoint whose list this is, its logo drawn before the title where logos draw
     /// as pictures. The models its rows name read as they do beside that logo.
-    pub title_logo: Option<argonauts_core::logos::Logo>,
+    pub title_logo: Option<argonauts_core::look::logos::Logo>,
     /// What the choice does, dim under the title.
     pub about: String,
     pub rows: Vec<PickerRow>,
@@ -93,7 +96,7 @@ pub struct PickerRow {
     pub label: String,
     /// Whoever the label names, a CLI, an endpoint or a model's server, whose logo goes before
     /// it where one draws.
-    pub logo: Option<argonauts_core::logos::Logo>,
+    pub logo: Option<argonauts_core::look::logos::Logo>,
     pub description: String,
     /// The value in effect now, drawn in the success color with `✓`.
     pub current: bool,

@@ -4,12 +4,13 @@
 //!
 //! A binary file the diff doesn't show can't be scanned, so adding or changing one stops the task
 //! too, unless it's an image, audio, video, or font file. The checks diff build output such as
-//! `.pyc` files as text (`argonauts_core::build_output`), so its bytes are scanned instead.
+//! `.pyc` files as text (`argonauts_core::workflows::build_output`), so its bytes are scanned
+//! instead.
 
 use std::collections::BTreeSet;
 
-use argonauts_core::policy::{HardLimit, Violation};
-use argonauts_core::redact::find_secrets;
+use argonauts_core::safety::policy::{HardLimit, Violation};
+use argonauts_core::safety::redact::find_secrets;
 
 use super::diff::{FileChange, FileStatus, LineKind};
 use super::violation;

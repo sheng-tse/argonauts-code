@@ -3,20 +3,20 @@
 //! unchanged and asks for anything else; `deny` refuses. In auto mode no rule or model may
 //! redefine the goal.
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::log::NoteLevel;
+use argonauts_core::base::names::MessageId;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalKind, ApprovalPacket, FreeText, GoalChangePacket,
 };
-use argonauts_core::events::goal::{GoalChangeResolution, GoalEvent, GoalFile};
-use argonauts_core::events::run::Party;
-use argonauts_core::log::NoteLevel;
-use argonauts_core::names::MessageId;
-use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
+use argonauts_core::runs::events::goal::{GoalChangeResolution, GoalEvent, GoalFile};
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::safety::policy::{EvidenceDocument, EvidenceFacts};
 use argonauts_core::settings::approvals::GoalChanges;
 
 use crate::approvals::{self, ApprovalRequest};
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::state::ids::IdKind;
 
 use super::approval::approve;
@@ -210,7 +210,7 @@ mod tests {
     use std::path::PathBuf;
 
     use argonauts_core::RunId;
-    use argonauts_core::events::goal::{Criterion, GoalSource};
+    use argonauts_core::runs::events::goal::{Criterion, GoalSource};
 
     use super::*;
 

@@ -4,17 +4,17 @@
 use crate::support;
 use std::sync::Arc;
 
-use argonauts_core::event::AgentEvent;
-use argonauts_core::events::session::{SessionEvent, SessionStarted};
-use argonauts_core::events::task::{TaskEvent, TaskKind, TaskSpec};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{AgentId, ModelRef, RoleName, SessionKey};
-use argonauts_core::session_runner::{Access, RunnerEvent, RunnerKind};
+use argonauts_core::agents::session_runner::{Access, RunnerEvent, RunnerKind};
+use argonauts_core::base::names::{AgentId, ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::event::AgentEvent;
+use argonauts_core::runs::events::session::{SessionEvent, SessionStarted};
+use argonauts_core::runs::events::task::{TaskEvent, TaskKind, TaskSpec};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::{TaskId, TodoItem, TodoStatus};
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::state::RunState;
-use argonauts_testkit::services::MemorySink;
+use argonauts_testkit::engine::services::MemorySink;
 
 fn task_id() -> TaskId {
     TaskId::new("task-001").unwrap()

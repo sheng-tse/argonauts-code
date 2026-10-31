@@ -108,7 +108,7 @@ impl Door {
 mod tests {
     use std::time::Duration;
 
-    use argonauts_core::control::ControlRequest;
+    use crate::control::ControlRequest;
 
     use super::*;
 

@@ -3,7 +3,7 @@ use tiny_skia::{BlendMode, FillRule, Mask, Paint, Pixmap, PremultipliedColorU8};
 use super::filter;
 use super::path::Path;
 use super::transform::Transform;
-use crate::world::scene::Image;
+use crate::base::draw::scene::Image;
 
 /// A picture being drawn: RGBA pixels, kept premultiplied by their alpha while drawing and
 /// handed out straight.

@@ -2,14 +2,14 @@
 //! agent filled, and its phases in plain words. One line per phase in the words of the workflow
 //! file, with its conditions and loop rules, waits for Ctrl+O.
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::approval::PlanWorkflow;
-use argonauts_core::workflow::{Count, Phase, Step, StepKind, StepModels, Workflow};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::approval::PlanWorkflow;
+use argonauts_core::workflows::workflow::{Count, Phase, Step, StepKind, StepModels, Workflow};
 use serde::Serialize;
 use serde_json::Value;
 
 use super::item::AboutCell;
-use crate::theme::Role;
+use crate::base::theme::Role;
 
 /// Under the plan's summary, which already says the main agent's reason when there's no plan of its
 /// own.
@@ -21,7 +21,7 @@ pub(super) fn push(
 ) {
     let workflow = &shown.workflow;
     item.blank();
-    let mut name = argonauts_core::text::shown_name(&workflow.name);
+    let mut name = argonauts_core::base::text::shown_name(&workflow.name);
     if shown.from.is_none() {
         name.push_str(" (composed by the main agent)");
     }
@@ -34,7 +34,7 @@ pub(super) fn push(
         .as_ref()
         .filter(|from| from.as_str() != workflow.name)
     {
-        let from = argonauts_core::text::shown_name(from.as_str());
+        let from = argonauts_core::base::text::shown_name(from.as_str());
         name.push_str(&format!(" · started from {from}"));
     }
     item.labeled("Workflow", name);

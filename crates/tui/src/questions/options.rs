@@ -2,7 +2,7 @@
 //! numbered. The event's letters stay in the protocol; on screen the numbers alone pick. What an
 //! option does decides how it acts on the question.
 
-use argonauts_core::events::approval::{AnswerAction, AnswerOption};
+use argonauts_core::runs::events::approval::{AnswerAction, AnswerOption};
 
 use crate::bottom::{OptionKind, QuestionOption};
 

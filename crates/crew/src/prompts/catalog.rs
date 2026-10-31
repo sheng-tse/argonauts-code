@@ -1,8 +1,8 @@
 //! Every built-in prompt of the crew by the name of its template file, so each can be written
 //! out, listed by `/prompts`, and replaced by a file of yours.
 
-use argonauts_core::names::RoleName;
-use argonauts_core::prompt_files::Template;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::prompts::prompt_files::Template;
 use argonauts_core::settings::crew::CrewRole;
 
 use super::{
@@ -437,7 +437,7 @@ mod tests {
     /// Every finer role may have a frame of its own, by the name the assembly looks for.
     #[test]
     fn every_finer_role_has_a_frame_that_starts_as_its_crew_roles() {
-        let finer: Vec<RoleName> = argonauts_core::prompt_parts::finer_roles().collect();
+        let finer: Vec<RoleName> = argonauts_core::prompts::prompt_parts::finer_roles().collect();
         assert_eq!(finer.len(), FINER_FRAMES.len());
         for role in finer {
             let frame = finer_frame(role).unwrap_or_else(|| panic!("{role:?} has no frame"));

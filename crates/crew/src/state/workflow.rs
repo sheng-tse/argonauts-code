@@ -5,10 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::workflow::{StepEnd, WorkflowEvent};
-use argonauts_core::names::{ApprovalId, WorkflowId};
-use argonauts_core::workflow::{
+use argonauts_core::base::names::{ApprovalId, WorkflowId};
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::workflow::{StepEnd, WorkflowEvent};
+use argonauts_core::workflows::workflow::{
     Phase, StandardPhase, Step, StepKind, StepRef, Workflow, WorkflowRef,
 };
 
@@ -350,11 +350,11 @@ mod tests {
     use time::OffsetDateTime;
 
     use argonauts_core::RunId;
-    use argonauts_core::events::RunEventKind;
-    use argonauts_core::events::workflow::{
+    use argonauts_core::base::names::ApprovalId;
+    use argonauts_core::runs::events::RunEventKind;
+    use argonauts_core::runs::events::workflow::{
         PhaseMark, StepFinished, StepStarted, WorkflowChanged, WorkflowStarted,
     };
-    use argonauts_core::names::ApprovalId;
 
     use super::*;
 

@@ -6,6 +6,8 @@ pub(crate) mod archive;
 pub(super) mod told;
 mod track;
 
+pub(super) mod attach;
+pub(super) mod narrator_host;
 #[cfg(test)]
 pub(crate) mod rig;
 #[cfg(test)]
@@ -16,26 +18,26 @@ use std::sync::Arc;
 
 use anyhow::Context;
 
-use argonauts_core::api::{ApiError, RunState, RunSummary, StartRun};
 use argonauts_core::app::{AppEvent, AppMode};
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::failure::run_failure_line;
-use argonauts_core::events::run::{RunMode, RunOutcome};
-use argonauts_core::names::{ChoiceId, MessageId, ModelRef};
-use argonauts_core::policy::NarratorLine;
+use argonauts_core::base::names::{ChoiceId, MessageId, ModelRef};
+use argonauts_core::runs::api::{ApiError, RunState, RunSummary, StartRun};
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::failure::run_failure_line;
+use argonauts_core::runs::events::run::{RunMode, RunOutcome};
+use argonauts_core::runs::task::title_from_task;
+use argonauts_core::safety::policy::NarratorLine;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::ui::{ConversationTrigger, NarratorMode};
-use argonauts_core::task::title_from_task;
 use argonauts_core::{NoteLevel, RunId, Spend, TaskId};
 
-use super::attach::{self, Attached, Opening, Stage};
+use super::base::notify::{self, NeedsYou};
 use super::header_and_bottom_line::RunStatusParts;
-use super::notify::{self, NeedsYou};
-use super::recap;
+use super::turns::recap;
 use super::{Ctx, Effect, Internal};
 use crate::FirstView;
-use crate::conversation_store::ConversationRun;
-use crate::wake::{WaitingRuns, WakeCause};
+use crate::conversation::store::ConversationRun;
+use crate::host::wake::{WaitingRuns, WakeCause};
+use attach::{Attached, Opening, Stage};
 
 pub(crate) struct RunsState {
     pub(super) attached: Option<Attached>,
@@ -154,7 +156,9 @@ impl RunsState {
         // Shift+Tab's last pick; anything else starts as each run's settings say.
         let at_terminal = ctx.env.interactive && !ctx.env.agent_session;
         let approval_mode = at_terminal
-            .then(|| super::start_mode::at_start(&ctx.env.state_dir, &ctx.settings().approvals))
+            .then(|| {
+                super::base::start_mode::at_start(&ctx.env.state_dir, &ctx.settings().approvals)
+            })
             .flatten();
         Self {
             attached: None,

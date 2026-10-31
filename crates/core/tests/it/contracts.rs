@@ -1,22 +1,21 @@
 //! The frozen contracts, checked from outside: every event and message survives a JSON round
 //! trip unchanged, settings defaults match the frozen file, and the schemas generate.
 
-use argonauts_core::api::{ApprovalAnswer, RunState, RunSummary, StartRun, StatusSummary};
 use argonauts_core::app::{AppEvent, TraceLine, UiCommand, ViewData};
-use argonauts_core::control::{ControlReply, ControlRequest, Frame};
-use argonauts_core::events::approval::{AnswerAction, ApprovalDecided};
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode};
-use argonauts_core::events::{ApprovalEvent, RunEvent, RunEventKind};
-use argonauts_core::input::{MentionTarget, ParsedInput, SlashCommand, WorkflowVerb};
-use argonauts_core::names::{
+use argonauts_core::base::names::{
     AgentId, ApprovalId, ChoiceId, ConversationId, DecisionId, DraftId, MessageId, ModelRef,
     RoleName, SessionKey, TurnId,
 };
-use argonauts_core::policy::{
+use argonauts_core::input::{MentionTarget, ParsedInput, SlashCommand, WorkflowVerb};
+use argonauts_core::models::registry::RegistryFile;
+use argonauts_core::runs::api::{ApprovalAnswer, RunState, RunSummary, StartRun, StatusSummary};
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalDecided};
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode};
+use argonauts_core::runs::events::{ApprovalEvent, RunEvent, RunEventKind};
+use argonauts_core::safety::policy::{
     EvidenceDocument, EvidenceFacts, EvidencePacket, EvidenceSubject, PromotionFacts, SpendFacts,
     StuckFacts,
 };
-use argonauts_core::registry::RegistryFile;
 use argonauts_core::settings::fallback::FallbackMode;
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::ui::UiSettings;
@@ -810,13 +809,13 @@ fn a_decided_approval_built_in_rust_round_trips() {
 /// report has to survive the same way, with the session behind each of its agents.
 #[test]
 fn a_workflow_report_built_in_rust_round_trips_through_a_json_value() {
-    use argonauts_core::events::WorkflowEvent;
-    use argonauts_core::events::session::{
+    use argonauts_core::base::names::WorkflowId;
+    use argonauts_core::runs::events::WorkflowEvent;
+    use argonauts_core::runs::events::session::{
         CliAgent, CliAgentState, CliPhase, CliWorkflowRun, SubagentStatus,
     };
-    use argonauts_core::events::workflow::{AgentSession, WorkflowReport};
-    use argonauts_core::names::WorkflowId;
-    use argonauts_core::workflow::StepRef;
+    use argonauts_core::runs::events::workflow::{AgentSession, WorkflowReport};
+    use argonauts_core::workflows::workflow::StepRef;
 
     let report = WorkflowReport {
         step: StepRef {
@@ -1066,7 +1065,7 @@ fn narrator_line() -> Value {
 /// was the only behavior then.
 #[test]
 fn an_older_approval_reads_as_deciding_when_declined() {
-    use argonauts_core::events::approval::ApprovalOpened;
+    use argonauts_core::runs::events::approval::ApprovalOpened;
     use argonauts_core::settings::asking::WhenDeclined;
 
     let opened: ApprovalOpened = serde_json::from_value(json!({"id": "approval-003",
@@ -1360,65 +1359,6 @@ fn trace_lines_round_trip() {
 }
 
 #[test]
-fn control_frames_round_trip() {
-    let answer = json!({"id": "approval-003", "action": {"action": "merge"}, "text": null,
-                        "evidence_sha256": "e3b0", "tasks": []});
-    let requests = vec![
-        json!({"request": "hello", "client": "app", "version": "0.0.1"}),
-        json!({"request": "subscribe", "from_seq": 12, "from_snapshot": false}),
-        json!({"request": "subscribe", "from_seq": 0, "from_snapshot": true}),
-        json!({"request": "steer", "session": "s-003", "text": "use EVAL"}),
-        json!({"request": "mention", "target": {"target": "all"}, "text": "wrap up"}),
-        json!({"request": "guidance", "text": "keep it small"}),
-        json!({"request": "guidance", "text": "keep it small", "outside_agent": "conversation-bot"}),
-        json!({"request": "pause", "now": false}),
-        json!({"request": "pause", "now": true, "outside_agent": "conversation-bot"}),
-        json!({"request": "cancel_pause"}),
-        json!({"request": "stop"}),
-        json!({"request": "stop_session", "session": "s-003"}),
-        json!({"request": "take_back", "messages": ["m-001"]}),
-        json!({"request": "approval_mode", "mode": "auto", "token": "t0k"}),
-        json!({"request": "reassign", "task": "task-002", "to": "codex", "rule_override": null,
-               "token": null}),
-        json!({"request": "reassign", "task": "task-002", "to": "claude-code/opus",
-               "rule_override": "review.other_provider", "token": "t0k"}),
-        json!({"request": "take_over", "task": "task-002", "token": "t0k"}),
-        json!({"request": "take_over_ended", "task": "task-002", "token": "t0k"}),
-        json!({"request": "answer", "answer": answer, "token": "t0k"}),
-        json!({"request": "status"}),
-        json!({"request": "diff", "task": "task-002", "scope": "task"}),
-        json!({"request": "raw", "session": "s-003"}),
-        json!({"request": "rewind", "task": "task-002", "checkpoint": 2}),
-        json!({"request": "spot_check", "id": "approval-003", "correct": false}),
-    ];
-    for (id, body) in requests.into_iter().enumerate() {
-        round_trip::<Frame<ControlRequest>>(json!({"id": id, "body": body}));
-    }
-    let replies = vec![
-        json!({"reply": "welcome", "run": "run-01", "pid": 4242, "version": "0.0.1"}),
-        json!({"reply": "ok"}),
-        json!({"reply": "error", "message": "no such session"}),
-        json!({"reply": "event", "event": envelope(json!({"type": "note",
-               "data": {"level": "info", "text": "x"}}))}),
-        json!({"reply": "queued", "id": "m-004"}),
-        json!({"reply": "taken_back", "messages": [queued()]}),
-        json!({"reply": "steered", "ack": {"session": "s-003", "how": "interrupt_resume"}}),
-        json!({"reply": "take_over", "ticket": {"task": "task-002", "command": null,
-               "worktree": "/wt/task-002", "agent_id": "openrouter"}}),
-        json!({"reply": "status", "summary": {"run": null, "goal": [], "plan": null,
-               "decisions": [], "tasks": [], "recent": [], "spend": null, "plan_windows": [],
-               "waiting": []}}),
-        json!({"reply": "diff", "diff": {"task": "task-002", "stat": diff_stat(), "text": "",
-               "path": "/d"}}),
-        json!({"reply": "raw", "raw": {"session": "s-003", "lines": [], "truncated": true,
-               "path": "/r", "cli_transcript": "/v"}}),
-    ];
-    for body in replies {
-        round_trip::<Frame<ControlReply>>(json!({"id": 1, "body": body}));
-    }
-}
-
-#[test]
 fn api_requests_round_trip() {
     round_trip::<StartRun>(
         json!({"request": "fix the typo", "mode": "captain", "forced": true,
@@ -1600,7 +1540,7 @@ fn older_messages_read_with_the_review_additions_empty() {
 
 #[test]
 fn a_workflow_promotion_packet_is_an_object_without_kind() {
-    use argonauts_core::events::approval::ApprovalPacket;
+    use argonauts_core::runs::events::approval::ApprovalPacket;
     let packet =
         ApprovalPacket::WorkflowPromotion(json!({"learned_workflow": "small-fix", "gain": 4.0}));
     let value = serde_json::to_value(&packet).unwrap();
@@ -1863,7 +1803,7 @@ fn every_limits_key_is_a_safety_key_or_a_task_limit() {
 
 fn evidence() -> EvidencePacket {
     EvidencePacket {
-        kind: argonauts_core::events::approval::ApprovalKind::Merge,
+        kind: argonauts_core::runs::events::approval::ApprovalKind::Merge,
         goal: None,
         facts: EvidenceFacts {
             subject: Some(EvidenceSubject {
@@ -1984,11 +1924,11 @@ fn run_modes_and_parties_use_snake_case() {
 }
 
 /// A sample answer for a step: it must pass the strict schema the agent gets, and decode.
-fn check_step_output<S: argonauts_core::steps::Step>(value: Value)
+fn check_step_output<S: argonauts_core::workflows::steps::Step>(value: Value)
 where
     S::Output: std::fmt::Debug + PartialEq,
 {
-    let schema = argonauts_core::steps::output_schema::<S>();
+    let schema = argonauts_core::workflows::steps::output_schema::<S>();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let errors: Vec<String> = validator
         .iter_errors(&value)
@@ -2000,7 +1940,7 @@ where
 
 #[test]
 fn sample_step_outputs_pass_their_strict_schemas_and_decode() {
-    use argonauts_core::steps::{intake, judgment, narrate, plan, task, understand};
+    use argonauts_core::workflows::steps::{intake, judgment, narrate, plan, task, understand};
     check_step_output::<intake::Estimate>(json!({"kind": "change",
         "answer_markdown": "I'd add a middleware.",
         "estimate": {"task_type": "api-feature", "summary": "s", "files_likely": ["a"],

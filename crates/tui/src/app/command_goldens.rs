@@ -8,19 +8,19 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::AgentEvent;
 use argonauts_core::app::{AppEvent, CommandWork};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ConversationId, ModelRef};
+use argonauts_core::base::names::{ConversationId, ModelRef};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use ratatui::text::Line;
 
 use super::{compose_live, sticky};
+use crate::app::model::{BottomLine, CliUse, LinePart, ViewModel, WindowUse};
+use crate::app::options::UiOptions;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::theme::{Glyphs, Role, Theme};
 use crate::bottom::{ApprovalMode, VimMode};
 use crate::bridge::Bridge;
-use crate::bridge::transcript::picture_check::{Unlike, assert_rows_match};
-use crate::cell::{AssistantMessage, HistoryCell};
-use crate::model::{BottomLine, CliUse, LinePart, ViewModel, WindowUse};
-use crate::options::UiOptions;
-use crate::render::{Clock, RenderCtx};
-use crate::theme::{Glyphs, Role, Theme};
+use crate::cells::cell::{AssistantMessage, HistoryCell};
+use crate::testing::pictures::picture_check::{Unlike, assert_rows_match};
 
 const WIDTH: u16 = 118;
 
@@ -128,8 +128,8 @@ struct Frame {
 /// The picture paints the terminal's own cursor as a block, a blank on the text's colour: the
 /// block's column and row within the picture's `rows`.
 fn block(html: &str, rows: std::ops::Range<usize>) -> (usize, usize) {
-    let grid = argonauts_testkit::picture::grid(html);
-    let (row, column) = argonauts_testkit::picture::find(&grid[rows], |cell| {
+    let grid = argonauts_testkit::pictures::picture::grid(html);
+    let (row, column) = argonauts_testkit::pictures::picture::find(&grid[rows], |cell| {
         cell.ch == ' ' && cell.background.as_deref() == Some("var(--term-fg)")
     });
     (column, row)
@@ -167,8 +167,8 @@ fn as_pictured(model: &mut ViewModel) {
 
 /// The names the CLIs gave their models that day.
 fn names() -> AppEvent {
-    use argonauts_core::display_names::DisplayNames;
-    use argonauts_core::model_catalog::CatalogEntry;
+    use argonauts_core::look::display_names::DisplayNames;
+    use argonauts_core::models::model_catalog::CatalogEntry;
     let mut names = DisplayNames::default();
     let mut opus = CatalogEntry::new(ModelRef::new(
         "claude-code",
@@ -243,7 +243,7 @@ fn the_screen_after_clear_is_its_picture() {
 fn the_inline_screen_starts_over_at_the_top() {
     use ratatui::layout::{Position, Size};
 
-    use crate::cell::UserMessage;
+    use crate::cells::cell::UserMessage;
     use crate::terminal::InlineTerminal;
 
     let (columns, rows) = (60, 16);
@@ -254,7 +254,7 @@ fn the_inline_screen_starts_over_at_the_top() {
     );
     let t0 = Instant::now();
     let mut ui = super::Ui::new(terminal, unicode(), ViewModel::new("conversation"), t0);
-    let header = |way_back: Option<&str>| crate::cell::SessionHeader {
+    let header = |way_back: Option<&str>| crate::cells::cell::SessionHeader {
         app: "Argonauts Code".to_owned(),
         version: "0.0.1".to_owned(),
         main_agent: Some("Claude Code".to_owned()),
@@ -355,7 +355,7 @@ fn update_as_it_works_and_once_its_done_is_its_picture() {
     screen
         .model
         .history
-        .push(crate::cell::UserMessage::command("/update"));
+        .push(crate::cells::cell::UserMessage::command("/update"));
     screen.send(AppEvent::CommandWorking {
         work: Some(CommandWork::Updating),
     });

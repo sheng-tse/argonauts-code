@@ -9,14 +9,14 @@ use std::collections::VecDeque;
 
 use argonauts_core::RunId;
 use argonauts_core::app::{AppEvent, ConversationEvent};
-use argonauts_core::events::run::RunLifecycle;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::journal;
-use argonauts_core::layout::run_files;
-use argonauts_core::names::TurnId;
+use argonauts_core::base::layout::run_files;
+use argonauts_core::base::names::TurnId;
+use argonauts_core::runs::events::run::RunLifecycle;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::journal;
 
 use crate::controller::Ctx;
-use crate::conversation_store::ConversationStore;
+use crate::conversation::store::ConversationStore;
 use crate::views::required;
 
 /// `store`'s record, with each of `runs` after the turn that started it. A run whose turn the
@@ -151,9 +151,9 @@ mod tests {
     use argonauts_core::Note;
     use argonauts_core::NoteLevel;
     use argonauts_core::app::ConversationEvent;
-    use argonauts_core::events::run::RunLifecycle;
-    use argonauts_core::events::{RunEvent, RunEventKind};
-    use argonauts_core::names::TurnId;
+    use argonauts_core::base::names::TurnId;
+    use argonauts_core::runs::events::run::RunLifecycle;
+    use argonauts_core::runs::events::{RunEvent, RunEventKind};
     use time::{Duration, OffsetDateTime};
 
     use super::{Past, in_order};

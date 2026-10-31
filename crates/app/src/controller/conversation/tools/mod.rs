@@ -9,8 +9,8 @@
 mod set_goal;
 pub(super) mod start_workflow;
 
-use argonauts_core::asking::AskReply;
-use argonauts_core::names::TurnId;
+use argonauts_core::base::names::TurnId;
+use argonauts_core::runs::asking::AskReply;
 use serde_json::Value;
 use tokio::sync::oneshot;
 

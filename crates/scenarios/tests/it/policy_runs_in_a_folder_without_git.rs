@@ -4,8 +4,8 @@
 //! run doesn't touch is left as it was.
 
 use crate::policy_support;
-use argonauts_core::events::run::{RunLifecycle, RunOutcome};
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::run::{RunLifecycle, RunOutcome};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_scenarios::{Scenario, WAIT};
 use argonauts_testkit::Key;
 use policy_support::{

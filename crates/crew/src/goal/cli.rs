@@ -14,9 +14,9 @@
 //! Claude Code and agy have no goal of their own, so Argonauts Code keeps theirs.
 //! Either way Argonauts Code runs the check itself: a CLI saying "complete" is never enough.
 
-use argonauts_core::display_names::builtin_cli_name;
-use argonauts_core::events::goal::{CliGoalSaid, Criterion};
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::look::display_names::builtin_cli_name;
+use argonauts_core::runs::events::goal::{CliGoalSaid, Criterion};
 
 /// The CLIs whose own goal Argonauts Code can hand a task to.
 const WITH_OWN_GOAL: &[&str] = &["codex"];

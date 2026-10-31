@@ -11,26 +11,26 @@ use std::sync::{Arc, Mutex, PoisonError};
 use anyhow::Context;
 use serde_json::{Value, json};
 
-use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::engine::{EngineCommand, EngineExit};
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, FreeText,
 };
-use argonauts_core::events::goal::{
+use argonauts_core::runs::events::goal::{
     Decider, GoalAction, GoalEvent, GoalStatus, GoalVerdict, LET_THE_MAIN_AGENT_ANSWER,
     LET_THE_MAIN_AGENT_DECIDE,
 };
-use argonauts_core::events::run::{RunLifecycle, RunMode, WaitReason};
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::task::{MergeEvent, TaskEvent};
-use argonauts_core::events::workflow::WorkflowEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::goal::GoalDefault;
-use argonauts_core::names::ModelRef;
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, WaitReason};
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::task::{MergeEvent, TaskEvent};
+use argonauts_core::runs::events::workflow::WorkflowEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::{Answerer, ApprovalMode};
 use argonauts_core::settings::protocol::{CheckCommand, UnderstandWhen};
 use argonauts_core::settings::workflows::OrchestratorDesigns;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::goal::GoalDefault;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_crew::engine::shared::with_git_env;
 use argonauts_crew::goal::pursue::{self, DELIVER, KEEP, KEEP_GOING, STUCK, TURN_INTO_GOAL};
 use argonauts_testkit::{FakeRunner, FakeSession};
@@ -375,7 +375,7 @@ async fn a_workflow_ends_with_its_final_check_from_another_provider() -> anyhow:
     let (mut crew, _) = crew(vec![met()])?;
     // A third provider reviews, so one that wrote nothing is there to check whoever builds.
     crew.settings.roles.insert(
-        argonauts_core::names::RoleName::Reviewer,
+        argonauts_core::base::names::RoleName::Reviewer,
         argonauts_core::settings::roles::RoleSettings {
             models: vec!["antigravity-cli".parse()?],
             ..Default::default()
@@ -990,7 +990,7 @@ async fn a_run_turned_into_a_goal_while_it_waits_goes_on_where_it_was() -> anyho
 /// the orchestrator plans the next one from what failed.
 #[tokio::test]
 async fn a_goal_stated_on_the_way_is_checked_before_the_merge() -> anyhow::Result<()> {
-    use argonauts_core::goal::{CheckMeans, CheckWith, GoalFrom, GoalSpec};
+    use argonauts_core::workflows::goal::{CheckMeans, CheckWith, GoalFrom, GoalSpec};
 
     let (mut crew, checks) = crew(vec![not_yet(), met()])?;
     crew.settings.workflows.final_check = false;
@@ -1101,18 +1101,18 @@ async fn an_assumption_you_change_is_recorded_and_told_to_the_crew() -> anyhow::
 async fn a_goal_pauses_with_its_run_and_goes_on_with_it() -> anyhow::Result<()> {
     let (crew, _) = crew(Vec::new())?;
     let started = crew.run_started(RunMode::Crew, "add a --verbose flag")?;
-    let spec = argonauts_core::goal::GoalSpec::from_lines(
+    let spec = argonauts_core::workflows::goal::GoalSpec::from_lines(
         "add a --verbose flag",
-        vec![argonauts_core::events::goal::Criterion::new(
+        vec![argonauts_core::runs::events::goal::Criterion::new(
             "G1", "it works",
         )],
-        argonauts_core::goal::CheckWith::Auto,
-        argonauts_core::goal::GoalFrom::Command,
+        argonauts_core::workflows::goal::CheckWith::Auto,
+        argonauts_core::workflows::goal::GoalFrom::Command,
     );
-    let goal = argonauts_core::events::goal::GoalRun::new(
+    let goal = argonauts_core::runs::events::goal::GoalRun::new(
         &spec,
-        argonauts_core::goal::GoalScope::Workflow,
-        argonauts_core::goal::KeptBy::Argonauts,
+        argonauts_core::workflows::goal::GoalScope::Workflow,
+        argonauts_core::workflows::goal::KeptBy::Argonauts,
     );
     let set = RunEvent {
         seq: 1,
@@ -1143,17 +1143,17 @@ fn host_with_a_goal(
     Arc<argonauts_testkit::MemorySink>,
 )> {
     let started = crew.run_started(RunMode::Crew, "add a --verbose flag")?;
-    let spec = argonauts_core::goal::GoalSpec::from_words(
+    let spec = argonauts_core::workflows::goal::GoalSpec::from_words(
         "the flag is parsed and `make docs` passes",
-        argonauts_core::goal::CheckWith::Auto,
-        argonauts_core::goal::CheckMeans::default(),
-        argonauts_core::goal::GoalFrom::Command,
+        argonauts_core::workflows::goal::CheckWith::Auto,
+        argonauts_core::workflows::goal::CheckMeans::default(),
+        argonauts_core::workflows::goal::GoalFrom::Command,
     )
     .map_err(anyhow::Error::msg)?;
-    let goal = argonauts_core::events::goal::GoalRun::new(
+    let goal = argonauts_core::runs::events::goal::GoalRun::new(
         &spec,
-        argonauts_core::goal::GoalScope::Workflow,
-        argonauts_core::goal::KeptBy::Argonauts,
+        argonauts_core::workflows::goal::GoalScope::Workflow,
+        argonauts_core::workflows::goal::KeptBy::Argonauts,
     );
     let set = RunEvent {
         seq: 1,
@@ -1196,7 +1196,7 @@ async fn a_goal_you_pause_waits_for_you_to_resume_it() -> anyhow::Result<()> {
 /// first step, whatever the settings say, and keeps a goal it already has.
 #[tokio::test]
 async fn a_workflow_files_goal_is_the_runs_goal() -> anyhow::Result<()> {
-    use argonauts_core::goal::{CheckMeans, CheckWith, GoalFrom, GoalSpec};
+    use argonauts_core::workflows::goal::{CheckMeans, CheckWith, GoalFrom, GoalSpec};
 
     let (crew, _) = crew(Vec::new())?;
     let started = crew.run_started(RunMode::Crew, "add a --verbose flag")?;
@@ -1247,7 +1247,7 @@ async fn a_workflow_files_goal_is_the_runs_goal() -> anyhow::Result<()> {
 /// `e` on a goal rewrites its lines, each with the check its words give it.
 #[tokio::test]
 async fn a_goals_lines_can_be_rewritten() -> anyhow::Result<()> {
-    use argonauts_core::events::goal::CriterionCheck;
+    use argonauts_core::runs::events::goal::CriterionCheck;
 
     let (crew, _) = crew(Vec::new())?;
     let (host, _) = host_with_a_goal(&crew)?;
@@ -1582,7 +1582,10 @@ async fn ask_you_about_leaves_the_go_ahead_to_autopilot() -> anyhow::Result<()> 
 }
 
 /// Where the session labeled `label` sits in the workflow.
-fn step_of(events: &[RunEvent], label: &str) -> Option<argonauts_core::workflow::StepRef> {
+fn step_of(
+    events: &[RunEvent],
+    label: &str,
+) -> Option<argonauts_core::workflows::workflow::StepRef> {
     events.iter().find_map(|event| match &event.kind {
         RunEventKind::Session(SessionEvent::Started(started))
             if started.label.as_deref() == Some(label) =>
@@ -1643,13 +1646,15 @@ async fn a_name_one_of_the_repos_recent_runs_has_takes_a_number() -> anyhow::Res
     std::fs::create_dir_all(&earlier)?;
     let mut named = crew.run_started(RunMode::Crew, "an earlier run")?;
     named.seq = 1;
-    named.kind = RunEventKind::Run(RunLifecycle::Named(argonauts_core::events::run::RunNamed {
-        name: "look-at-it".to_owned(),
-        description: "Look at the repository".to_owned(),
-        style: argonauts_core::settings::workflows::RunStyle::Workflow,
-        based_on: None,
-        done_when: Vec::new(),
-    }));
+    named.kind = RunEventKind::Run(RunLifecycle::Named(
+        argonauts_core::runs::events::run::RunNamed {
+            name: "look-at-it".to_owned(),
+            description: "Look at the repository".to_owned(),
+            style: argonauts_core::settings::workflows::RunStyle::Workflow,
+            based_on: None,
+            done_when: Vec::new(),
+        },
+    ));
     std::fs::write(
         earlier.join("events.jsonl"),
         serde_json::to_string(&named)? + "\n",

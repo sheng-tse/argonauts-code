@@ -9,11 +9,11 @@ use serde_json::json;
 use time::OffsetDateTime;
 
 use argonauts_core::AuthMode;
-use argonauts_core::limits::CheckRunner;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::limits::CheckRunner;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::agents::{AgentSettings, EndpointSettings};
-use argonauts_core::workflow::StandardPhase;
+use argonauts_core::workflows::workflow::StandardPhase;
 use argonauts_learning::LearningError;
 use argonauts_learning::evolution::Thresholds;
 use argonauts_learning::learned_workflows::LoadedLearnedWorkflow;

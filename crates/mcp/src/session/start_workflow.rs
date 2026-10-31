@@ -3,7 +3,7 @@
 //! conversation. The app decides whether a call may start one: with Captain in use, only when your
 //! own words asked for it.
 
-use argonauts_core::steps::intake::InstructionKind;
+use argonauts_core::workflows::steps::intake::InstructionKind;
 use serde_json::{Value, json};
 
 use super::main_tools::MainTool;

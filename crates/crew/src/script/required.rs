@@ -1,12 +1,13 @@
 //! What a run must contain: the steps `always.toml` requires and the ones a setup kept for the
 //! run, and a task list the request fixed. The reading is the one place that knows those files
-//! and words (`argonauts_core::required`); the runner places the steps and keeps to the tasks.
+//! and words (`argonauts_core::workflows::required`); the runner places the steps and keeps to the
+//! tasks.
 
 use std::path::PathBuf;
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::log::{Note, NoteLevel};
-use argonauts_core::required::RequiredStep as KeptStep;
+use argonauts_core::base::log::{Note, NoteLevel};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::workflows::required::RequiredStep as KeptStep;
 use argonauts_runner::{Library, Required, RequiredStep};
 
 use crate::engine::host::Host;
@@ -46,9 +47,9 @@ pub fn names(host: &Host) -> Vec<String> {
         .collect()
 }
 
-/// The same list as `argonauts_core::required` holds it, which briefs whoever writes the
+/// The same list as `argonauts_core::workflows::required` holds it, which briefs whoever writes the
 /// workflow and checks what was written.
-pub fn shared(required: &Required) -> argonauts_core::required::Required {
+pub fn shared(required: &Required) -> argonauts_core::workflows::required::Required {
     let steps = required
         .steps
         .iter()
@@ -59,7 +60,7 @@ pub fn shared(required: &Required) -> argonauts_core::required::Required {
             when: step.when.clone(),
         })
         .collect();
-    argonauts_core::required::Required {
+    argonauts_core::workflows::required::Required {
         steps,
         tasks: required.tasks.clone(),
     }
@@ -87,11 +88,11 @@ fn read(library: &Library, kept: &[KeptStep], request: &str) -> (Required, Vec<S
         .filter(|folder| {
             !library
                 .waiting
-                .contains(&folder.join(argonauts_core::required::FILE))
+                .contains(&folder.join(argonauts_core::workflows::required::FILE))
         })
         .collect();
     let folders: Vec<&std::path::Path> = folders.iter().map(|folder| folder.as_path()).collect();
-    let read = argonauts_core::required::read_with(&folders, kept, request);
+    let read = argonauts_core::workflows::required::read_with(&folders, kept, request);
     let steps = read
         .required
         .steps
@@ -124,7 +125,7 @@ mod tests {
         std::fs::create_dir_all(&yours).unwrap();
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(
-            project.join(argonauts_core::required::FILE),
+            project.join(argonauts_core::workflows::required::FILE),
             "[[step]]\nname = \"benchmark\"\nrole = \"worker\"\ndoes = \"Run the benchmark.\"\n",
         )
         .unwrap();
@@ -140,7 +141,7 @@ mod tests {
         assert!(required.tasks.is_empty());
 
         // One that came with the repository requires nothing until you trust it.
-        library.waiting = vec![project.join(argonauts_core::required::FILE)];
+        library.waiting = vec![project.join(argonauts_core::workflows::required::FILE)];
         assert!(for_request(&library, &[], "add due dates").is_empty());
 
         let none = Library::default();
@@ -153,7 +154,7 @@ mod tests {
         let project = dir.path().join("project");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(
-            project.join(argonauts_core::required::FILE),
+            project.join(argonauts_core::workflows::required::FILE),
             "[[step]]\nname = \"benchmark\"\nrole = \"worker\"\ndoes = \"Run the benchmark.\"\n",
         )
         .unwrap();

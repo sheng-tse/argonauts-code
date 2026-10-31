@@ -7,17 +7,19 @@ use std::path::Path;
 use futures::future::join_all;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::task::{PickedBy, ReviewEvent, TaskKind};
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::session_runner::{Access, RunnerKind};
-use argonauts_core::steps::Step;
-use argonauts_core::steps::judgment::{Review, ReviewInput, ReviewOutput, ReviewVerdict};
-use argonauts_core::workflow::StepModels;
+use argonauts_core::agents::session_runner::{Access, RunnerKind};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::task::{PickedBy, ReviewEvent, TaskKind};
+use argonauts_core::workflows::steps::Step;
+use argonauts_core::workflows::steps::judgment::{
+    Review, ReviewInput, ReviewOutput, ReviewVerdict,
+};
+use argonauts_core::workflows::workflow::StepModels;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
 use crate::engine::job_fallback::{self, Job};
-use crate::error::{EngineError, EngineResult};
 use crate::plan::context::{self, agent_count, candidates_for, providers};
 use crate::prompts::review::REVIEW;
 use crate::state::RunState;
@@ -200,7 +202,7 @@ pub(crate) fn needed(host: &Host, record: &TaskEntry) -> bool {
 /// Why the task has no reviewer once its builder, and under the run's review rule its
 /// builder's provider, are left out, naming it.
 pub(crate) fn nobody_left_line(host: &Host, task: &TaskId) -> String {
-    let label = host.read(|state| crate::labels::task_label(state, task));
+    let label = host.read(|state| crate::sessions::labels::task_label(state, task));
     let other_provider = crate::roles::tasks::settled(host).review.other_provider;
     reviewers::nobody_left(&label, other_provider)
 }
@@ -702,7 +704,7 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             Err(EngineError::Stalled(stall)) => stalls.push(stall),
             Err(error) => {
                 return Ok(StepDone {
-                    end: argonauts_core::events::workflow::StepEnd::Failed,
+                    end: argonauts_core::runs::events::workflow::StepEnd::Failed,
                     summary: Some(format!("{reviewer}'s review failed: {error}")),
                     flow: crate::workflow::Flow::Continue,
                 });
@@ -744,8 +746,8 @@ fn excluded_providers(host: &Host, call: &StepCall) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::steps::judgment::ReviewComment;
-    use argonauts_core::steps::plan::Severity;
+    use argonauts_core::workflows::steps::judgment::ReviewComment;
+    use argonauts_core::workflows::steps::plan::Severity;
 
     use super::*;
 

@@ -11,14 +11,14 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::goal::{
+use argonauts_core::base::names::{MessageId, ModelRef};
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::goal::{
     Assumption, CliGoalSaid, Decider, GoalChangeResolution, GoalChecked, GoalEvent, GoalFile,
     GoalQuestion, GoalRun, GoalStatus, Try,
 };
-use argonauts_core::events::run::Party;
-use argonauts_core::names::{MessageId, ModelRef};
-use argonauts_core::steps::understand::{Difference, Reading};
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::workflows::steps::understand::{Difference, Reading};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GoalState {
@@ -376,9 +376,9 @@ mod tests {
     use std::path::PathBuf;
 
     use argonauts_core::RunId;
-    use argonauts_core::events::RunEventKind;
-    use argonauts_core::events::goal::GoalSource;
-    use argonauts_core::steps::understand::DiffTag;
+    use argonauts_core::runs::events::RunEventKind;
+    use argonauts_core::runs::events::goal::GoalSource;
+    use argonauts_core::workflows::steps::understand::DiffTag;
     use time::OffsetDateTime;
 
     use super::*;

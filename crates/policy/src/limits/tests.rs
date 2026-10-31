@@ -2,16 +2,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 use argonauts_core::RunId;
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::events::task::TaskSpec;
-use argonauts_core::names::ApprovalId;
-use argonauts_core::policy::{
+use argonauts_core::agents::session_runner::{Access, RunnerDirectory, SandboxMode};
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::runs::events::task::TaskSpec;
+use argonauts_core::safety::policy::{
     DecisionPoint, EvidenceFacts, EvidencePacket, EvidenceSubject, HardLimit, HardLimits, Violation,
 };
-use argonauts_core::session_runner::{Access, RunnerDirectory, SandboxMode};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
-use argonauts_testkit::runner::session_spec;
+use argonauts_testkit::engine::runner::session_spec;
 use argonauts_testkit::{FakeDirectory, FakeRunner};
 use serde_json::json;
 

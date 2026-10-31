@@ -3,9 +3,9 @@
 
 use time::OffsetDateTime;
 
-use argonauts_core::events::approval::ApprovalPacket;
-use argonauts_core::events::run::WaitReason;
-use argonauts_core::names::ApprovalId;
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::runs::events::approval::ApprovalPacket;
+use argonauts_core::runs::events::run::WaitReason;
 
 use crate::state::RunState;
 use crate::state::approvals::ApprovalRecord;
@@ -80,8 +80,8 @@ mod tests {
     use super::*;
 
     use argonauts_core::TaskId;
-    use argonauts_core::events::approval::ApprovalKind;
-    use argonauts_core::names::AgentId;
+    use argonauts_core::base::names::AgentId;
+    use argonauts_core::runs::events::approval::ApprovalKind;
 
     use crate::state::run::AgentWait;
     use crate::state::tests::open_approval;
@@ -136,7 +136,7 @@ mod tests {
 
         state.run.paused = true;
         assert_eq!(reason(&state, 3, None), Some(WaitReason::Paused));
-        state.run.finished = Some(argonauts_core::events::run::RunOutcome::Stopped);
+        state.run.finished = Some(argonauts_core::runs::events::run::RunOutcome::Stopped);
         assert_eq!(reason(&state, 0, None), None, "a finished run never waits");
     }
 
@@ -145,7 +145,7 @@ mod tests {
     /// wait for you.
     #[test]
     fn a_question_your_settings_already_answer_never_holds_the_wait() {
-        use argonauts_core::events::approval::AgentDownPacket;
+        use argonauts_core::runs::events::approval::AgentDownPacket;
 
         let claude = AgentId("claude-code".to_owned());
         let mut record = open_approval(1, ApprovalKind::AgentDown, true);

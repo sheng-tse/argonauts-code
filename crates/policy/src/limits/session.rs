@@ -1,10 +1,10 @@
 //! Every CLI session needs a sandbox (`SandboxMode::None` is for endpoints only), and
 //! build and experiment sessions also need the approved goal's hash.
 
-use argonauts_core::policy::{HardLimit, Violation};
-use argonauts_core::session_runner::{
+use argonauts_core::agents::session_runner::{
     Access, RunnerDirectory, RunnerKind, SandboxMode, SessionSpec,
 };
+use argonauts_core::safety::policy::{HardLimit, Violation};
 use argonauts_core::settings::Settings;
 
 use super::violation;

@@ -10,20 +10,22 @@ use std::sync::{Arc, Mutex};
 use serde_json::json;
 
 use anyhow::{Context, bail};
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind, ApprovalPacket};
-use argonauts_core::events::run::{RunMode, WaitReason};
-use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::events::workflow::{AgentLeftOut, WorkflowEvent};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::ModelEntry;
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::registry::ModelEntry;
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::approval::{
+    AnswerAction, ApprovalEvent, ApprovalKind, ApprovalPacket,
+};
+use argonauts_core::runs::events::run::{RunMode, WaitReason};
+use argonauts_core::runs::events::session::{EndReason, SessionEvent};
+use argonauts_core::runs::events::workflow::{AgentLeftOut, WorkflowEvent};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::crew::{CrewSettings, Orchestrator};
 use argonauts_core::settings::fallback::SameStep;
 use argonauts_core::settings::workflows::AdaptWith;
 use argonauts_core::{ErrorCategory, NoteLevel};
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
 
 use support::Crew;
 
@@ -127,7 +129,7 @@ fn scripted(
     let mut crew = Crew::new()?;
     crew.settings.evolution.propose_every = 0;
     let main = FakeRunner::cli(CLAUDE, "anthropic").respond_with(move |spec| {
-        if spec.role == argonauts_core::names::RoleName::Orchestrator {
+        if spec.role == argonauts_core::base::names::RoleName::Orchestrator {
             return FakeSession::structured(json!({ "script": script }));
         }
         support::smallest_answer(spec)

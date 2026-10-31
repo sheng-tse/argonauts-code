@@ -5,7 +5,7 @@
 use std::thread;
 use std::time::Duration;
 
-use argonauts_testkit::deadline;
+use argonauts_testkit::pty::deadline;
 use base64::Engine;
 
 use crate::pty_support::*;

@@ -18,10 +18,10 @@
 use std::path::{Component, Path, PathBuf};
 
 use argonauts_core::CommandSpec;
-use argonauts_core::layout::{repo_state, session_files};
-use argonauts_core::outside::Outside;
-use argonauts_core::session::SessionRole;
-use argonauts_core::session_runner::{Access, SandboxMode, SandboxProfile};
+use argonauts_core::agents::session::SessionRole;
+use argonauts_core::agents::session_runner::{Access, SandboxMode, SandboxProfile};
+use argonauts_core::base::layout::{repo_state, session_files};
+use argonauts_core::safety::outside::Outside;
 
 use super::SandboxError;
 use crate::fallback::transcript::WORKTREE_FOLDER;

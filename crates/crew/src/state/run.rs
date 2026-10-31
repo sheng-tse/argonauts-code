@@ -6,18 +6,18 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::agent_status::{
+use argonauts_core::base::names::{AgentId, ApprovalId, ModelRef};
+use argonauts_core::models::limits::{HealthState, ModelState, PlanUsageStatus};
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::agent_status::{
     AgentStatusEvent, FallbackEvent, JobRef, JobWait, RunSpend, SpendEvent,
 };
-use argonauts_core::events::approval::ApprovalEvent;
-use argonauts_core::events::run::{
+use argonauts_core::runs::events::approval::ApprovalEvent;
+use argonauts_core::runs::events::run::{
     PhaseChange, ResumeCause, RunLifecycle, RunMode, RunNamed, RunOutcome, RunPhase, RunStarted,
     WaitReason,
 };
-use argonauts_core::events::session::SessionStarted;
-use argonauts_core::limits::{HealthState, ModelState, PlanUsageStatus};
-use argonauts_core::names::{AgentId, ApprovalId, ModelRef};
+use argonauts_core::runs::events::session::SessionStarted;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::{Note, TaskId};
 

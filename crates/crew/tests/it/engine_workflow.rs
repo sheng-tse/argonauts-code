@@ -8,18 +8,20 @@ use serde_json::json;
 use time::OffsetDateTime;
 
 use argonauts_core::RunId;
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
-use argonauts_core::events::plan::PlanEvent;
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome, WaitReason};
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::workflow::{
+use argonauts_core::base::names::{ModelRef, WorkflowId};
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
+use argonauts_core::runs::events::plan::PlanEvent;
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunOutcome, WaitReason};
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::workflow::{
     StepEnd, StepFinished, StepStarted, WorkflowEvent, WorkflowStarted,
 };
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ModelRef, WorkflowId};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::Settings;
-use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow, WorkflowRef};
+use argonauts_core::workflows::workflow::{
+    StandardPhase, StepKind, StepRef, Workflow, WorkflowRef,
+};
 use argonauts_crew::state::RunState;
 use argonauts_crew::workflow::runner::allowed_workers;
 use argonauts_crew::workflow::validate::{Context, Rule, validate};
@@ -847,15 +849,17 @@ async fn abandoned_run_resumed_in_its_run_review_stays_abandoned() -> anyhow::Re
         .workers
         .fake("claude-code/opus")
         .unwrap_or_else(|| panic!("no worker"));
-    worker.push(argonauts_testkit::runner::FakeSession::structured(json!({
-        "summary": "Fix the typo in the README.",
-        "success_criteria": ["The README has no typo"],
-        "in_scope": ["README.md"],
-        "out_of_scope": [],
-        "assumptions": [],
-        "open_questions": []
-    })));
-    worker.push(argonauts_testkit::runner::FakeSession::structured(
+    worker.push(argonauts_testkit::engine::runner::FakeSession::structured(
+        json!({
+            "summary": "Fix the typo in the README.",
+            "success_criteria": ["The README has no typo"],
+            "in_scope": ["README.md"],
+            "out_of_scope": [],
+            "assumptions": [],
+            "open_questions": []
+        }),
+    ));
+    worker.push(argonauts_testkit::engine::runner::FakeSession::structured(
         captain_report(),
     ));
     let waiting = crew.start(RunMode::Captain, "Fix the README typo").await?;
@@ -896,7 +900,7 @@ async fn merged_run_resumed_in_its_run_review_stays_merged() -> anyhow::Result<(
         .workers
         .fake("claude-code/opus")
         .unwrap_or_else(|| panic!("no worker"));
-    worker.push(argonauts_testkit::runner::FakeSession::structured(
+    worker.push(argonauts_testkit::engine::runner::FakeSession::structured(
         captain_report(),
     ));
     let waiting = crew.start(RunMode::Captain, "Fix the README typo").await?;

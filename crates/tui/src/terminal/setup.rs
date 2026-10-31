@@ -339,11 +339,11 @@ pub fn probe_graphics(timeout: std::time::Duration) -> bool {
     #[cfg(unix)]
     {
         ask(
-            &crate::mascot::placeholder::query(),
+            &crate::base::mascot::placeholder::query(),
             attributes_said,
             timeout,
         )
-        .is_some_and(|answer| crate::mascot::placeholder::query_answered(&answer))
+        .is_some_and(|answer| crate::base::mascot::placeholder::query_answered(&answer))
     }
     #[cfg(not(unix))]
     {

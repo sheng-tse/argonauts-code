@@ -5,7 +5,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow, bail};
-use argonauts_core::deep_map::{
+use argonauts_core::behaviors::deep_map::{
     DeepDone, DeepProgress, DeepScope, DeepStart, EmbedderNote, OfferPlace, ScopeOffer,
     SummarizerOffer,
 };
@@ -263,8 +263,8 @@ pub(crate) fn done_words(done: &DeepDone, took: Duration) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::deep_map::CliCount;
-    use argonauts_core::model_picker::Fit;
+    use argonauts_core::app::model_picker::Fit;
+    use argonauts_core::behaviors::deep_map::CliCount;
 
     use super::*;
 

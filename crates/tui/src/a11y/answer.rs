@@ -3,11 +3,11 @@
 //! while the question keeps waiting.
 
 use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand};
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::ApprovalEvent;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::ApprovalEvent;
 
-use crate::state::NeedsYou;
-use crate::text::sanitize_line;
+use crate::base::text::sanitize_line;
+use crate::frame::state::NeedsYou;
 
 use super::pick::{Pick, Typed};
 use super::questions::{ListTarget, QuestionList, Spoken};
@@ -56,7 +56,7 @@ impl Reader {
             (_, Typed::Warning(warning)) => said.lines.push(format!("warning: {warning}")),
             // The plain screen has no key to ignore the word, so the word alone decides.
             _ => said.commands.push(UiCommand::Submit {
-                workflow_requested: argonauts_core::keywords::asks_for_workflow(&text),
+                workflow_requested: argonauts_core::look::keywords::asks_for_workflow(&text),
                 text,
                 pictures: Vec::new(),
             }),

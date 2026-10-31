@@ -184,7 +184,7 @@ fn a_zoom_sends_each_level_and_sky_once_and_then_only_places_them() {
                 let k = f64::from(frame) / 6.0;
                 let scene = cosmos.zoom(&universe, &galaxy, k, Times::at(0.0));
                 let escapes = stage.show(&scene, spot);
-                crate::mascot::graphics::pictures_in(&escapes).len()
+                crate::base::mascot::graphics::pictures_in(&escapes).len()
             })
             .collect();
         assert_eq!(sent.iter().sum::<usize>(), 4, "{sent:?}");

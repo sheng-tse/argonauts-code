@@ -1,13 +1,13 @@
 //! What the universe makes of each crew's facts: its galaxies, the kind of each model's body,
 //! who orbits whom, what flies, and each model's system.
 
-use argonauts_core::behavior_map::{BehaviorMap, MapAction};
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::logos::LogoMark;
+use argonauts_core::behaviors::behavior_map::{BehaviorMap, MapAction};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::look::logos::LogoMark;
 use time::Duration;
 
 use super::crews::{self, Crew};
-use crate::format::WallClock;
+use crate::base::format::WallClock;
 use crate::world::cosmos::{Body, Climate, StarKind, Universe, star_actions};
 
 fn star<'a>(crew: &Crew, universe: &'a Universe, id: &str) -> &'a crate::world::cosmos::Star {
@@ -212,9 +212,11 @@ fn every_rare_kind_comes_from_its_own_rule() {
     );
     let end = crew.facts.end;
     crew.model("claude-haiku-5-5").cli_failures = (1..=3)
-        .map(|hour| argonauts_core::behavior_world::CliFailure {
-            at: end - Duration::days(4) - Duration::hours(hour),
-        })
+        .map(
+            |hour| argonauts_core::behaviors::behavior_world::CliFailure {
+                at: end - Duration::days(4) - Duration::hours(hour),
+            },
+        )
         .collect();
     let universe = crew.universe();
     let (count, day) = star(&crew, &universe, "claude-haiku-5-5")

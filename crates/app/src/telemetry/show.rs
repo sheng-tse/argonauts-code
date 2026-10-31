@@ -3,10 +3,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::model_catalog::display_name_from_id;
-use argonauts_core::text::shown_name;
-use argonauts_tui::theme::{Role, Theme};
+use argonauts_core::base::text::shown_name;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::model_catalog::display_name_from_id;
+use argonauts_tui::base::theme::{Role, Theme};
 use ratatui::text::{Line, Span};
 
 use super::event::{DailyUsage, Fallbacks, ModelUse, RunEnds};
@@ -73,7 +73,7 @@ pub(crate) fn lines(
             Span::styled(value.clone(), text),
         ];
         if let Some(note) = note {
-            let used = 2 + KEY_WIDTH + argonauts_tui::text::str_width(&value);
+            let used = 2 + KEY_WIDTH + argonauts_tui::base::text::str_width(&value);
             let gap = NOTE_COL.saturating_sub(used).max(2);
             spans.push(Span::styled(format!("{}{note}", " ".repeat(gap)), dim));
         }
@@ -527,7 +527,7 @@ mod tests {
     };
     use super::*;
     use crate::behaviors::report::BehaviorCounts;
-    use crate::golden::{assert_looks, drawn_rows, picture_rows, theme};
+    use crate::testing::golden::{assert_looks, drawn_rows, picture_rows, theme};
 
     const PICTURE: &str = include_str!("../../tests/golden/telemetry_show.txt");
     const COLOURS: &str = include_str!("../../tests/golden/telemetry_show.html");
@@ -677,7 +677,7 @@ mod tests {
             clock: "14:00".to_owned(),
         };
         let lines = lines(&the_pictures_day(), &due, &[], &theme);
-        crate::golden::dump("telemetry_show", &lines);
+        crate::testing::golden::dump("telemetry_show", &lines);
         assert_eq!(drawn_rows(&lines), picture_rows(PICTURE));
         assert_looks(&theme, &lines, COLOURS);
     }

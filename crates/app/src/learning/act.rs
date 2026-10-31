@@ -7,21 +7,21 @@ use std::process::{Command, Stdio};
 
 use time::OffsetDateTime;
 
-use argonauts_core::events::run::Party;
+use argonauts_core::app::views::LearningCommand;
+use argonauts_core::base::text::sentence_case;
+use argonauts_core::runs::events::run::Party;
 use argonauts_core::settings::Settings;
-use argonauts_core::text::sentence_case;
-use argonauts_core::views::LearningCommand;
 use argonauts_crew::run_review::{action_note, notes};
 use argonauts_learning::Store;
 use argonauts_learning::evolution::{Action, Evolution};
-use argonauts_learning::git::{self, Entry};
+use argonauts_learning::export::sync::{self, SyncMode, SyncReport};
 use argonauts_learning::learned_workflows;
 use argonauts_learning::records::Book;
 use argonauts_learning::replay::{self, ReplaySet};
 use argonauts_learning::skills;
-use argonauts_learning::sync::{self, SyncMode, SyncReport};
+use argonauts_learning::store::git::{self, Entry};
 
-use crate::env::AppEnv;
+use crate::startup::env::AppEnv;
 
 /// Whoever asks: you at a terminal may promote and force; anything else may not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,14 +345,14 @@ fn open_pull_request(repo: &Path, branch: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::steps::task::MemoryProposal;
+    use argonauts_core::workflows::steps::task::MemoryProposal;
     use argonauts_learning::memory::Source;
 
     use super::*;
 
     #[test]
     fn a_flagged_note_you_accept_lands_on_its_own_branch() {
-        let repo = argonauts_testkit::repo::TempRepo::new().unwrap();
+        let repo = argonauts_testkit::home::repo::TempRepo::new().unwrap();
         let state = tempfile::tempdir().unwrap();
         let store = Store::new(state.path(), repo.root());
         let flagged = notes::Flagged {

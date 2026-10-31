@@ -9,30 +9,30 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use serde_json::{Value, json};
 
-use argonauts_core::api::ApprovalAnswer;
-use argonauts_core::engine::RepoContext;
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::names::{DraftId, MessageId, SeatId, WorkflowId};
+use argonauts_core::runs::api::ApprovalAnswer;
+use argonauts_core::runs::engine::RepoContext;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
     PlanPacket, WayObjection,
 };
-use argonauts_core::events::council::{
+use argonauts_core::runs::events::council::{
     CouncilEvent, CouncilEventKind, CouncilMessage, MessageKind, Point, PointStance, PointState,
     Seat, SeatRole, Seating, Speaker, Stance, TextPart,
 };
-use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
-use argonauts_core::events::plan::{DivideEvent, JudgingResult, PlanEvent, PlanTally};
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunStarted};
-use argonauts_core::events::task::{MergeEvent, TaskEvent, TaskKind, TaskState, Way};
-use argonauts_core::events::workflow::StepEnd;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{DraftId, MessageId, SeatId, WorkflowId};
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::runs::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
+use argonauts_core::runs::events::plan::{DivideEvent, JudgingResult, PlanEvent, PlanTally};
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode, RunStarted};
+use argonauts_core::runs::events::task::{MergeEvent, TaskEvent, TaskKind, TaskState, Way};
+use argonauts_core::runs::events::workflow::StepEnd;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::council::SameModelCheck;
 use argonauts_core::settings::protocol::JudgingMethod;
-use argonauts_core::steps::StepName;
-use argonauts_core::workflow::{StandardPhase, StepRef};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::workflow::{StandardPhase, StepRef};
 use argonauts_core::{RepoId, RunId, TaskId};
 use argonauts_crew::approvals;
 use argonauts_crew::divide;
@@ -40,10 +40,10 @@ use argonauts_crew::engine::host::Host;
 use argonauts_crew::merge::branch;
 use argonauts_crew::state::RunState;
 use argonauts_crew::workflow::{StepAt, StepCall, StepDone, runner, yaml};
-use argonauts_testkit::deadline;
-use argonauts_testkit::repo::TempRepo;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
-use argonauts_testkit::services::{FakeServices, MemorySink, engine_context_in};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::services::{FakeServices, MemorySink, engine_context_in};
+use argonauts_testkit::home::repo::TempRepo;
+use argonauts_testkit::pty::deadline;
 
 use crate::support::shared_in;
 
@@ -301,7 +301,7 @@ async fn plan_approval_after_divide() -> anyhow::Result<()> {
 #[tokio::test]
 async fn a_task_the_plan_gives_no_way_takes_the_rule_of_thumbs_from_the_graph_on()
 -> anyhow::Result<()> {
-    use argonauts_core::events::task::Way;
+    use argonauts_core::runs::events::task::Way;
 
     let stage = Stage::new(&[], &[], |_| {})?;
     let mut step = stage.start();
@@ -323,7 +323,7 @@ async fn a_task_the_plan_gives_no_way_takes_the_rule_of_thumbs_from_the_graph_on
     let (graph, created) = ways.split_at(5);
     assert_eq!(graph, created, "the tasks keep the graph's ways");
     let maker_checker = Some(Way::Workflow {
-        name: argonauts_core::workflow::WorkflowRef::new("maker-checker"),
+        name: argonauts_core::workflows::workflow::WorkflowRef::new("maker-checker"),
     });
     let by_maker_checker = graph.iter().filter(|way| **way == maker_checker).count();
     let own_session = graph
@@ -780,7 +780,7 @@ fn created_ways(events: &[RunEvent]) -> Vec<(String, Option<(Way, bool)>)> {
 
 fn workflow_way(name: &str) -> Way {
     Way::Workflow {
-        name: argonauts_core::workflow::WorkflowRef::new(name),
+        name: argonauts_core::workflows::workflow::WorkflowRef::new(name),
     }
 }
 
@@ -1183,7 +1183,7 @@ async fn the_seat_you_name_with_a_way_does_that_task() -> anyhow::Result<()> {
             });
         anyhow::Ok(worker.flatten())
     };
-    let gpt: argonauts_core::names::ModelRef = CREW[1].0.parse()?;
+    let gpt: argonauts_core::base::names::ModelRef = CREW[1].0.parse()?;
     let named =
         stored("Rate-limit the API per key: let GPT 5.6 do the store by Maker-checker.").await?;
     assert_eq!(named, Some(gpt.clone()));

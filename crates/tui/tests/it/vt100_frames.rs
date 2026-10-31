@@ -5,7 +5,7 @@ use crate::common;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
-use argonauts_tui::model::{
+use argonauts_tui::app::model::{
     AssistantMessage, QuestionOption, QuestionPrompt, ToolCall, ToolItem, UserMessage, ViewModel,
     WorkingLine,
 };
@@ -46,17 +46,22 @@ impl Write for Recorder {
 #[derive(Debug)]
 struct Panel;
 
-impl argonauts_tui::views::View for Panel {
-    fn render(&mut self, area: Rect, buf: &mut Buffer, _: &argonauts_tui::views::ViewCtx<'_>) {
+impl argonauts_tui::frame::view::View for Panel {
+    fn render(
+        &mut self,
+        area: Rect,
+        buf: &mut Buffer,
+        _: &argonauts_tui::frame::view::ViewCtx<'_>,
+    ) {
         buf.set_string(area.x, area.y, "a full-screen view", Style::default());
     }
 
     fn handle_key(
         &mut self,
         _: KeyEvent,
-        _: &argonauts_tui::views::ViewCtx<'_>,
-    ) -> argonauts_tui::views::ViewOutcome {
-        argonauts_tui::views::ViewOutcome::Close
+        _: &argonauts_tui::frame::view::ViewCtx<'_>,
+    ) -> argonauts_tui::frame::view::ViewOutcome {
+        argonauts_tui::frame::view::ViewOutcome::Close
     }
 }
 

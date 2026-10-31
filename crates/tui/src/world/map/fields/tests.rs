@@ -192,8 +192,8 @@ fn every_action_sits_once_in_a_session_in_its_order() {
 }
 
 mod from_a_map {
-    use argonauts_core::behavior_map::{BehaviorMap, MapAction, MapGroup};
-    use argonauts_core::behavior_world::{
+    use argonauts_core::behaviors::behavior_map::{BehaviorMap, MapAction, MapGroup};
+    use argonauts_core::behaviors::behavior_world::{
         BehaviorFacts, CrewFacts, Move, QuietStretch, WorldFacts,
     };
     use time::macros::datetime;

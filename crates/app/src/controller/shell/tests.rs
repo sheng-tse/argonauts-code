@@ -1,12 +1,12 @@
 //! `!` commands: the pieces on their own, then through the real controller loop.
 
 use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, ShellEvent, UiCommand};
-use argonauts_core::events::session::InputPartKind;
+use argonauts_core::runs::events::session::InputPartKind;
 use argonauts_testkit::FakeSession;
 use serde_json::json;
 
 use super::*;
-use crate::controller::test_support::TestDriver;
+use crate::controller::base::test_support::TestDriver;
 
 fn ran(command: &str, output: &str, exit_code: Option<i32>, stopped: bool) -> ShellRan {
     ShellRan {
@@ -340,10 +340,10 @@ async fn ctrl_c_stops_a_command_and_one_runs_at_a_time() {
 
 #[tokio::test]
 async fn a_fallback_hears_of_the_commands_too() {
-    use argonauts_core::events::session::EndReason;
+    use argonauts_core::runs::events::session::EndReason;
     use argonauts_testkit::FakeRunner;
 
-    let mut driver = TestDriver::start_with(crate::controller::test_support::CliOptions {
+    let mut driver = TestDriver::start_with(crate::controller::base::test_support::CliOptions {
         flags: vec![r#"fallback.main.order=["codex"]"#.to_owned()],
         ..Default::default()
     })
@@ -371,7 +371,7 @@ async fn a_fallback_hears_of_the_commands_too() {
 
 /// Polls state the events don't show, such as what the fake conductor received.
 async fn eventually(what: impl Fn() -> bool) {
-    use crate::controller::test_support::max_wait;
+    use crate::controller::base::test_support::max_wait;
     let wait = max_wait();
     let deadline = tokio::time::Instant::now() + wait;
     while !what() {
@@ -384,7 +384,7 @@ async fn eventually(what: impl Fn() -> bool) {
 }
 
 fn guidance_sent(driver: &TestDriver) -> Vec<String> {
-    use crate::controller::test_support::Call;
+    use crate::controller::base::test_support::Call;
     driver
         .conductor
         .calls()

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use argonauts_core::hash::sha256_hex;
+use argonauts_core::base::hash::sha256_hex;
 
 /// The most of an action's input a summarizer reads, in characters.
 pub(crate) const INPUT_CAP: usize = 500;

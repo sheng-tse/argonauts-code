@@ -5,7 +5,7 @@
 //! to fail, and so are the commands that run them.
 //!
 //! The commands run on a clean copy of the task's commit, which holds exactly its change
-//! (`crate::change`), never in the task's own folder: they see none of the leftovers beside the
+//! (`crate::task::change`), never in the task's own folder: they see none of the leftovers beside the
 //! work, and what they write, such as caches and compiled files, stays in the copy.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,20 +13,20 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::task::{CheckKind, CheckOutcome, TaskKind, TaskState};
-use argonauts_core::limits::CheckRequest;
-use argonauts_core::policy::{HardLimit, Violation};
-use argonauts_core::project_checks::untrusted_checks_file;
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::models::limits::CheckRequest;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::task::{CheckKind, CheckOutcome, TaskKind, TaskState};
+use argonauts_core::safety::policy::{HardLimit, Violation};
 use argonauts_core::settings::protocol::CheckCommand;
-use argonauts_core::steps::task::{ReportStatus, TaskReport};
+use argonauts_core::workflows::steps::task::{ReportStatus, TaskReport};
 
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::git::Git;
 use crate::merge::branch::run_branch;
 use crate::task::at_start;
+use crate::task::project_checks::untrusted_checks_file;
 use crate::task::support::record_of;
 use crate::task::worktree::{self, TaskTree};
 
@@ -169,7 +169,7 @@ pub(crate) async fn clean_copy_of_change(
     task: &TaskId,
 ) -> EngineResult<(PathBuf, String)> {
     let tree = worktree::ensure(host, task).await?;
-    let commit = crate::change::commit_of_task(host, task).await?;
+    let commit = crate::task::change::commit_of_task(host, task).await?;
     let copy = clean_copy_at(host, &tree, &commit).await?;
     Ok((copy, format!("{} (clean copy)", tree.branch)))
 }
@@ -335,7 +335,7 @@ pub(crate) fn request(
     let settings = host.settings();
     let temp = host.repo().run_dir.join("tmp").join(task.as_str());
     std::fs::create_dir_all(&temp)?;
-    let sandbox = crate::spec::sandbox(settings, Access::Build, workdir, &temp)?;
+    let sandbox = crate::sessions::spec::sandbox(settings, Access::Build, workdir, &temp)?;
     let timeout = match settings.checks.timeout.parse() {
         Ok(Some(timeout)) => timeout,
         Ok(None) => NO_TIMEOUT,
@@ -723,7 +723,7 @@ mod tests {
     use argonauts_core::RunId;
 
     use crate::merge::conductor;
-    use crate::testutil::{TestRepo, git_test_env};
+    use crate::testing::{TestRepo, git_test_env};
 
     fn outcome(name: &str, kind: CheckKind, passed: bool) -> CheckOutcome {
         CheckOutcome {

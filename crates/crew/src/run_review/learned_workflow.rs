@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::layout::{project_files, repo_state};
+use argonauts_core::base::layout::{project_files, repo_state};
 use argonauts_learning::LearnedWorkflowRef;
 use argonauts_learning::evolution::state::CANDIDATE_DIRS;
 

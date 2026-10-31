@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use argonauts_core::RunId;
-use argonauts_core::api::{EventStream, StartRun};
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{ApprovalEvent, ApprovalOpened};
-use argonauts_core::events::run::RunMode;
-use argonauts_core::sanitize::sanitize_for_terminal;
+use argonauts_core::runs::api::{EventStream, StartRun};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{ApprovalEvent, ApprovalOpened};
+use argonauts_core::runs::events::run::RunMode;
+use argonauts_core::safety::sanitize::sanitize_for_terminal;
 use rmcp::RoleServer;
 use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Tool, ToolAnnotations};
 use rmcp::service::RequestContext;

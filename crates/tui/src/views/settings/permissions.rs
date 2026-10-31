@@ -4,8 +4,8 @@
 
 use argonauts_core::app::SettingRow;
 
-use super::flow::{RowAction, Stage};
-use super::words::{layer_words, parse_role, role_words, value_words};
+use crate::base::text::words::{layer_words, parse_role, role_words, value_words};
+use crate::bottom::picker::flow::{RowAction, Stage};
 use crate::bottom::{Picker, PickerRow};
 
 /// What a `/permissions` key decides, as its row says it. `None` for a key it doesn't list.
@@ -52,35 +52,6 @@ pub fn value_in_words(key: &str, toml: &str) -> String {
         _ => return words,
     };
     plain.to_owned()
-}
-
-/// One line on what a sandbox value does, for its row among the values.
-pub fn value_note(leaf: &str, value: &str) -> &'static str {
-    match (leaf, value) {
-        ("mode", "os") => "Argonauts Code's rules, kept by your OS's own sandbox",
-        ("mode", "container") => {
-            "Argonauts Code's rules, in a container that holds only the agent's worktree"
-        }
-        ("mode", "tool") => "Each AI tool's own sandbox and approvals, with Argonauts Code's off",
-        ("mode", "none") => "No protection at all, neither Argonauts Code's nor the tool's",
-        ("network", "true") => "Commands agents run can reach the internet",
-        ("network", "false") => "Only each AI tool's own service and the hosts you allow",
-        ("agents_see_other_worktrees", "true") => {
-            "An agent can read every agent's worktree of the repo"
-        }
-        ("agents_see_other_worktrees", "false") => "Each agent sees only its own worktree",
-        ("agents_commit", "true") => "Agents commit their own work",
-        ("agents_commit", "false") => {
-            "Git stays read-only to agents, and Argonauts Code commits for them"
-        }
-        ("fail_closed", "true") => "A session that can't be sandboxed doesn't start",
-        ("fail_closed", "false") => "It starts anyway, unguarded",
-        ("isolated_leak", "stop") => {
-            "Stopped before it acts, and an agent that keeps your plugins out takes the role"
-        }
-        ("isolated_leak", "warn") => "It runs on, and a notice says what it loaded",
-        _ => "",
-    }
 }
 
 /// `mode` for `sandbox.mode` and for `roles.worker.sandbox.mode`.
@@ -287,7 +258,10 @@ mod tests {
         assert_eq!(value_in_words("sandbox.agents_commit", "false"), "no");
         assert_eq!(value_in_words("limits.spend_per_day", "25.0"), "25.0");
         for value in ["os", "container", "tool", "none"] {
-            assert!(!value_note("mode", value).is_empty(), "{value}");
+            assert!(
+                !crate::base::text::words::sandbox_note("mode", value).is_empty(),
+                "{value}"
+            );
         }
     }
 

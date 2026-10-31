@@ -2,7 +2,7 @@
 //! the word, says so in a notice, and lets Opt+W ignore it for the prompt. Taking the word out
 //! of the draft forgets the ignore.
 
-use argonauts_core::keywords::{self, Keyword};
+use argonauts_core::look::keywords::{self, Keyword};
 
 use super::Composer;
 

@@ -8,7 +8,7 @@
 //! file has it, with the live line's own drawer ([`preview_line`]).
 
 use argonauts_core::app::UiCommand;
-use argonauts_core::display_names::DisplayNames;
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::bottom_line::BottomLineSettings;
 use argonauts_core::settings::mods::bottom_line::{
@@ -22,13 +22,13 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::Span;
 
-use super::rows::{self, Cells, Group, PageGlyphs, Row, Tick, Top};
+use crate::base::draw::panes::Footer;
+use crate::base::kit::{Drawn, Frame, Kit, spread};
+use crate::base::text::marks::decorative;
+use crate::base::theme::{AgentColor, Role, Theme};
 use crate::bridge::bottom_line::{Sample, SampleCli};
-use crate::kit::{Drawn, Frame, Kit, spread};
-use crate::text::marks::decorative;
-use crate::theme::{AgentColor, Role, Theme};
-use crate::views::ViewOutcome;
-use crate::views::panes::Footer;
+use crate::frame::view::ViewOutcome;
+use crate::panels::mods::rows::{self, Cells, Group, PageGlyphs, Row, Tick, Top};
 
 /// The colors a CLI can take: Claude Code's eight for telling agents apart, less the green,
 /// the amber and the red, which only ever mean state.
@@ -702,7 +702,7 @@ mod tests {
     use argonauts_core::settings::bottom_line::LineForm;
 
     use super::*;
-    use crate::theme::{ColorLevel, Theme};
+    use crate::base::theme::{ColorLevel, Theme};
 
     fn text(spans: &[Span<'_>]) -> String {
         spans.iter().map(|s| s.content.as_ref()).collect()

@@ -3,8 +3,8 @@
 
 use std::time::Duration;
 
-use argonauts_core::future::BoxFuture;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::ModelRef;
 use serde_json::json;
 
 /// A model that writes summaries.
@@ -30,7 +30,7 @@ const LOCAL_ANSWER_TIMEOUT: Duration = Duration::from_secs(600);
 impl LocalServer {
     /// `runtime` is the server's id, such as `ollama`, and `model` the name it serves.
     pub fn new(runtime: &str, base_url: &str, model: &str) -> Option<LocalServer> {
-        let client = argonauts_endpoints::runtime_api::local_client(LOCAL_ANSWER_TIMEOUT)?;
+        let client = argonauts_endpoints::session::runtime_api::local_client(LOCAL_ANSWER_TIMEOUT)?;
         Some(LocalServer {
             id: ModelRef {
                 agent: runtime.to_owned(),

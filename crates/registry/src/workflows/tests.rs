@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use argonauts_core::workflow::{Count, StepModels, WorkflowRef};
+use argonauts_core::workflows::workflow::{Count, StepModels, WorkflowRef};
 use serde_json::json;
 use tempfile::TempDir;
 

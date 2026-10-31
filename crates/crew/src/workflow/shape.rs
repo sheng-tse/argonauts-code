@@ -7,11 +7,11 @@
 //!
 //! Shaping twice changes nothing, so a phase end's design compares like for like.
 
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::events::run::RunMode;
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::runs::events::run::RunMode;
 use argonauts_core::settings::protocol::UnderstandWhen;
 use argonauts_core::settings::workflows::RunStyle;
-use argonauts_core::workflow::{Phase, StandardPhase, Step, StepKind, Workflow};
+use argonauts_core::workflows::workflow::{Phase, StandardPhase, Step, StepKind, Workflow};
 
 use crate::engine::host::Host;
 use crate::task;

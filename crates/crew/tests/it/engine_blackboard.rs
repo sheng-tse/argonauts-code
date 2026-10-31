@@ -8,30 +8,32 @@ use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::{Delivery, InputPartKind, SessionEvent, SessionStarted};
-use argonauts_core::events::shared::{
+use argonauts_core::agents::session_runner::{Access, RunnerKind, SessionControl};
+use argonauts_core::base::names::{AgentId, MessageId, ModelRef, RoleName, SessionKey};
+use argonauts_core::input::MentionTarget;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::{
+    Delivery, InputPartKind, SessionEvent, SessionStarted,
+};
+use argonauts_core::runs::events::shared::{
     BlackboardEvent, BlackboardKind, BlackboardMessage, Recipient,
 };
-use argonauts_core::events::task::{TaskEvent, TaskKind, TaskSpec, TaskState};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::input::MentionTarget;
-use argonauts_core::names::{AgentId, MessageId, ModelRef, RoleName, SessionKey};
-use argonauts_core::session_runner::{Access, RunnerKind, SessionControl};
+use argonauts_core::runs::events::task::{TaskEvent, TaskKind, TaskSpec, TaskState};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::roles::RoleSettings;
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::steps::task::{ChangeRequestOut, ReportStatus, TaskReport};
+use argonauts_core::workflows::steps::task::{ChangeRequestOut, ReportStatus, TaskReport};
 use argonauts_core::{RunId, TaskId};
 use argonauts_crew::blackboard::rules::{self, Decider, Tally};
 use argonauts_crew::blackboard::{self, Post, commands, delivery, records};
-use argonauts_crew::consultant;
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::live::LiveSession;
+use argonauts_crew::roles::consultant;
 use argonauts_crew::state::RunState;
 use argonauts_crew::state::tasks::TaskEntry;
-use argonauts_testkit::runner::FakeSession;
-use argonauts_testkit::services::MemorySink;
+use argonauts_testkit::engine::runner::FakeSession;
+use argonauts_testkit::engine::services::MemorySink;
 
 fn task(id: &str) -> TaskId {
     TaskId::new(id).unwrap()

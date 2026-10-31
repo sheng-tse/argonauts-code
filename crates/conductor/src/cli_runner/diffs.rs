@@ -6,11 +6,11 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use argonauts_core::events::session::SessionEvent;
+use argonauts_core::runs::events::session::SessionEvent;
 use tokio::sync::{mpsc, oneshot};
 
 use super::outbox::Outbox;
-use crate::filediff::FileDiffs;
+use crate::session::filediff::FileDiffs;
 
 /// How long the end waits for the diffs still owed.
 const FLUSH_WAIT: Duration = Duration::from_secs(15);

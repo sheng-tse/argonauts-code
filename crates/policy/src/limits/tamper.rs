@@ -2,7 +2,7 @@
 //! config. A script can't prove an assertion got weaker, so a diff that leaves fewer tests or
 //! assertions than before is flagged for the reviewer, and an open flag blocks auto-approval.
 
-use argonauts_core::policy::{HardLimit, Violation};
+use argonauts_core::safety::policy::{HardLimit, Violation};
 
 use super::diff::{
     FileChange, FileStatus, LineKind, file_name, json_entry, json_objects, toml_key, toml_places,

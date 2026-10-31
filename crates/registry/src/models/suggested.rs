@@ -5,7 +5,7 @@
 
 use std::cmp::{Ordering, Reverse};
 
-use argonauts_core::model_picker::LocalModel;
+use argonauts_core::app::model_picker::LocalModel;
 
 /// The windows a model is ranked at, largest first.
 pub const WINDOWS: [u64; 3] = [65_536, 32_768, 16_384];
@@ -125,7 +125,7 @@ impl Ord for Number {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::model_picker::{CodingScore, Figure};
+    use argonauts_core::app::model_picker::{CodingScore, Figure};
 
     use super::*;
 

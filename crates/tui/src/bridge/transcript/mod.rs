@@ -4,65 +4,33 @@
 //! answer streams.
 
 mod answered;
-#[cfg(test)]
-mod autopilot_picture_tests;
-#[cfg(test)]
-mod awake_picture_tests;
 mod checks;
-#[cfg(test)]
-mod checks_picked_tests;
 mod conversation;
-#[cfg(test)]
-mod crew_start_tests;
 mod fallback;
 mod items;
 mod lifecycle;
-#[cfg(test)]
-mod live_pictures_tests;
-#[cfg(test)]
-mod live_rows_tests;
-#[cfg(test)]
-mod made_in_cli_picture_tests;
 mod milestones;
 pub(crate) mod own_calls;
-#[cfg(test)]
-pub(crate) mod picture_check;
-#[cfg(test)]
-mod picture_tests;
-#[cfg(test)]
-mod question_after_tests;
 mod replay;
-#[cfg(test)]
-mod request_lines_tests;
-#[cfg(test)]
-mod resumed_tests;
 mod shell;
 mod status;
 mod steps;
 #[cfg(test)]
-mod stop_picture_tests;
-#[cfg(test)]
-mod templates_picture_tests;
-#[cfg(test)]
 mod tests;
 mod tries;
-#[cfg(test)]
-mod update_failed_picture_tests;
 mod workflows;
-#[cfg(test)]
-mod working_line_picture_tests;
 
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::{RunId, Verbosity};
 
-use crate::cell::{Cell, UserMessage};
-use crate::format::WallClock;
-use crate::overview::ContextPrinted;
+use crate::base::format::WallClock;
+use crate::cells::cell::{Cell, UserMessage};
+use crate::panels::ContextPrinted;
 
 use super::Cx;
 
 pub use conversation::ConversationTurns;
-pub use status::{NOTHING_RUNNING, status_cells, status_sections};
+pub use status::{status_cells, status_sections};
 
 use items::Items;
 use milestones::Milestones;
@@ -125,12 +93,14 @@ impl Transcript {
                 items::switched(text, undo.as_deref(), caveat.as_deref(), cx);
             }
             AppEvent::Templates { list } => {
-                let folder = crate::cell::TemplateFolder::new(list.folder.clone());
+                let folder = crate::cells::cell::TemplateFolder::new(list.folder.clone());
                 // The rows hang under the command that printed them, as Claude Code's do.
                 emit(cx, UserMessage::command("/templates"));
                 emit(
                     cx,
-                    Cell::Custom(Box::new(crate::cell::TemplateRows::new(list.clone()))),
+                    Cell::Custom(Box::new(crate::cells::cell::TemplateRows::new(
+                        list.clone(),
+                    ))),
                 );
                 emit(cx, Cell::Custom(Box::new(folder)));
             }
@@ -142,7 +112,7 @@ impl Transcript {
                 notes,
             } => emit(
                 cx,
-                Cell::Custom(Box::new(crate::cell::Record {
+                Cell::Custom(Box::new(crate::cells::cell::Record {
                     title: title.clone(),
                     tail: tail.clone(),
                     lines: lines.clone(),
@@ -186,7 +156,7 @@ impl Transcript {
                 ViewData::ContextPrint { view } => {
                     // The rows hang under the command that printed them, as Claude Code's do.
                     emit(cx, UserMessage::command("/context print"));
-                    let now = crate::bottom::wall_now();
+                    let now = crate::base::format::wall_now();
                     let printed = ContextPrinted::of(view, cx.state, now);
                     emit(cx, Cell::Custom(Box::new(printed)));
                 }

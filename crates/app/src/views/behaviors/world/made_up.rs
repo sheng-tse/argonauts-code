@@ -4,7 +4,7 @@
 //! generator sets every day, minute, session and ending, so each crew is the same every run.
 
 use argonauts_core::behaviors::Behavior;
-use argonauts_tui::format::WallClock;
+use argonauts_tui::base::format::WallClock;
 use regex::Regex;
 use time::macros::datetime;
 use time::{Duration, OffsetDateTime};

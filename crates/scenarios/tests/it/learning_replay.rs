@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use app_support::*;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{ApprovalEvent, ApprovalKind};
-use argonauts_core::events::run::{Party, RunLifecycle, RunOutcome};
-use argonauts_core::events::task::TaskEvent;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{ApprovalEvent, ApprovalKind};
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunOutcome};
+use argonauts_core::runs::events::task::TaskEvent;
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::task::ProcessChange;
+use argonauts_core::workflows::steps::task::ProcessChange;
 use argonauts_core::{Paths, RepoId, RunId};
 use argonauts_learning::evolution::{CandidateState, Evolution};
 use argonauts_learning::replay::{Check, Entry, Proposal, ReplaySet, holdout_draw};
@@ -230,7 +230,7 @@ fn a_replay_finishes_on_its_own_and_reaches_promotion() -> anyhow::Result<()> {
     assert_eq!(replays.len(), 4, "{said}");
     let replay_dir = store.replay_dir().to_string_lossy().into_owned();
     for dir in &replays {
-        let events = argonauts_testkit::journal::events(dir)?;
+        let events = argonauts_testkit::home::journal::events(dir)?;
         let goal = events.iter().any(|event| {
             matches!(&event.kind, RunEventKind::Approval(ApprovalEvent::Opened(opened))
                 if opened.kind == ApprovalKind::Understand)

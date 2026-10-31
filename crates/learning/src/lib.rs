@@ -15,27 +15,23 @@
 //! - [`replay`]: the replay set and replays in isolated repos.
 //! - [`skills`]: exporting learned workflows as skills, the validator, imports, and drift.
 //! - [`memory`]: the safety checks on notes and how sessions receive them.
-//! - [`sync`]: `AGENTS.md` and the `CLAUDE.md` that imports it, from the conventions.
-//! - [`scan`]: the text scan notes, skills, and imports share.
-//! - [`package`]: the outside agent package other agents install.
+//! - [`export::sync`]: `AGENTS.md` and the `CLAUDE.md` that imports it, from the conventions.
+//! - [`export::scan`]: the text scan notes, skills, and imports share.
+//! - [`export::package`]: the outside agent package other agents install.
+//! - [`store`]: where learning keeps its files, and the types its parts share.
 
-pub mod error;
 pub mod evolution;
-pub mod git;
+pub mod export;
 pub mod learned_workflows;
 pub mod memory;
 pub mod outcomes;
-pub mod package;
 pub mod predictions;
 pub mod records;
 pub mod replay;
 pub mod routing;
-pub mod scan;
 pub mod skills;
 pub mod store;
-pub mod sync;
-pub mod types;
 
-pub use error::{LearningError, Result};
 pub use store::Store;
-pub use types::{Assignment, LearnedWorkflowRef, ReplayResult, RunRecord};
+pub use store::error::{LearningError, Result};
+pub use store::types::{Assignment, LearnedWorkflowRef, ReplayResult, RunRecord};

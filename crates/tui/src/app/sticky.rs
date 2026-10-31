@@ -7,9 +7,9 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::render::RenderCtx;
-use crate::text::{marks, str_width};
-use crate::theme::Role;
+use crate::base::draw::render::RenderCtx;
+use crate::base::text::{marks, str_width};
+use crate::base::theme::Role;
 
 /// The prompt's row and the rule under it.
 pub(super) const ROWS: usize = 2;
@@ -97,7 +97,7 @@ pub(super) fn hint(ctx: &RenderCtx<'_>) -> Line<'static> {
         ),
         Span::styled(", to jump to where that prompt starts", dim),
     ]);
-    crate::text::truncate_line(&line, usize::from(ctx.width))
+    crate::base::text::truncate_line(&line, usize::from(ctx.width))
 }
 
 #[cfg(test)]
@@ -106,10 +106,10 @@ mod tests {
 
     use super::*;
     use crate::app::Scrollback;
-    use crate::cell::UserMessage;
-    use crate::history::History;
-    use crate::render::Clock;
-    use crate::theme::{Glyphs, Theme};
+    use crate::base::draw::render::Clock;
+    use crate::base::theme::{Glyphs, Theme};
+    use crate::cells::cell::UserMessage;
+    use crate::cells::cell::history::History;
 
     fn theme() -> Theme {
         let mut theme = Theme::dark();

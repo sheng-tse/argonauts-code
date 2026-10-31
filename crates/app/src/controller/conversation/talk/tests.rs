@@ -2,16 +2,16 @@
 //! place your own words named.
 
 use argonauts_core::app::{AppChoice, AppEvent, ChoiceKind};
-use argonauts_core::asking::AskReply;
-use argonauts_core::events::approval::AnswerAction;
-use argonauts_core::names::TurnId;
+use argonauts_core::base::names::TurnId;
+use argonauts_core::runs::asking::AskReply;
+use argonauts_core::runs::events::approval::AnswerAction;
 use argonauts_core::settings::SettingScope;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
 use super::{Call, ConversationState, setup};
 use crate::controller::Effect;
-use crate::controller::test_support::{CliOptions, TestCtx};
+use crate::controller::base::test_support::{CliOptions, TestCtx};
 
 const SAID: &str = "reviewers should treat a missing test as a blocker. never spend more than \
                     $5 a day.";
@@ -686,7 +686,7 @@ fn a_required_step_is_a_row_and_a_save_writes_always_toml() {
         .root()
         .join(".argonauts/workflows/always.toml");
     let text = std::fs::read_to_string(&path).expect("written");
-    let steps = argonauts_core::required::parse(&text).expect("valid");
+    let steps = argonauts_core::workflows::required::parse(&text).expect("valid");
     assert_eq!(steps[0].name, "Benchmark");
     assert_eq!(steps[0].when.as_deref(), Some("before sign-off"));
     assert!(said(&mut answered).text.contains("always.toml"));

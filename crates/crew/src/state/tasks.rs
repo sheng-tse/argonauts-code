@@ -6,17 +6,17 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::agent_status::FallbackEvent;
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::InputPart;
-use argonauts_core::events::task::{
+use argonauts_core::base::names::{AgentId, ModelRef, SessionKey};
+use argonauts_core::models::limits::START_CHECKS;
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::agent_status::FallbackEvent;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::InputPart;
+use argonauts_core::runs::events::task::{
     CheckOutcome, ReviewEvent, TaskEvent, TaskSpec, TaskState, TryCause,
 };
-use argonauts_core::fallback::QualityDebt;
-use argonauts_core::limits::START_CHECKS;
-use argonauts_core::names::{AgentId, ModelRef, SessionKey};
-use argonauts_core::steps::task::TaskReport;
+use argonauts_core::runs::fallback::QualityDebt;
+use argonauts_core::workflows::steps::task::TaskReport;
 use argonauts_core::{CommitInfo, DiffStat, TaskId};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -369,12 +369,12 @@ impl Tasks {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::RunEventKind;
-    use argonauts_core::events::task::CheckKind;
+    use argonauts_core::runs::events::RunEventKind;
+    use argonauts_core::runs::events::task::CheckKind;
     use argonauts_core::settings::fallback::FallbackMode;
 
     use super::*;
-    use crate::testutil::{run_event, task_spec};
+    use crate::testing::{run_event, task_spec};
 
     fn worker(name: &str) -> ModelRef {
         name.parse().unwrap()

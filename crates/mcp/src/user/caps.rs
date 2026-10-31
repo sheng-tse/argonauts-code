@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use argonauts_core::settings::SAFETY_KEYS;
 use argonauts_core::settings::agents::StartRuns;
-use argonauts_policy::daily::DailyLedger;
+use argonauts_policy::limits::daily::DailyLedger;
 use time::OffsetDateTime;
 
 use crate::OutsideAgentOptions;
@@ -121,7 +121,7 @@ fn touches_safety_key(key: &[String]) -> bool {
 }
 
 fn quoted(entry: &str) -> String {
-    let clean = argonauts_core::sanitize::sanitize_for_terminal(entry);
+    let clean = argonauts_core::safety::sanitize::sanitize_for_terminal(entry);
     let short: String = clean.chars().take(80).collect();
     format!("{short:?}")
 }

@@ -9,8 +9,8 @@ pub mod tools;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use argonauts_core::api::ConductorApi;
-use argonauts_core::paths::argonauts_home;
+use argonauts_core::base::paths::argonauts_home;
+use argonauts_core::runs::api::ConductorApi;
 use argonauts_core::settings::Span;
 use argonauts_core::settings::agents::{McpSettings, Share, StartRuns};
 use rmcp::model::{
@@ -199,20 +199,20 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
-    use argonauts_core::api::{
+    use argonauts_core::base::future::BoxFuture;
+    use argonauts_core::base::names::{ApprovalId, MessageId, ModelRef, SessionKey};
+    use argonauts_core::input::MentionTarget;
+    use argonauts_core::runs::api::{
         ApiError, DiffScope, DiffView, EventStream, RawView, RunHandle, RunState, RunSummary,
         StartRun, StatusSummary, SteerAck, TaskBrief,
     };
-    use argonauts_core::events::approval::{
+    use argonauts_core::runs::events::approval::{
         ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket, FreeText,
     };
-    use argonauts_core::events::run::{Party, RunLifecycle, RunMode};
-    use argonauts_core::events::session::QueuedMessage;
-    use argonauts_core::events::task::TaskState;
-    use argonauts_core::events::{RunEvent, RunEventKind};
-    use argonauts_core::future::BoxFuture;
-    use argonauts_core::input::MentionTarget;
-    use argonauts_core::names::{ApprovalId, MessageId, ModelRef, SessionKey};
+    use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode};
+    use argonauts_core::runs::events::session::QueuedMessage;
+    use argonauts_core::runs::events::task::TaskState;
+    use argonauts_core::runs::events::{RunEvent, RunEventKind};
     use argonauts_core::settings::agents::{McpSettings, Share, StartRuns};
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
     use argonauts_core::settings::asking::WhenDeclined;

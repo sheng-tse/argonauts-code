@@ -5,12 +5,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Duration;
 
-use argonauts_core::deep_map::{
+use argonauts_core::behaviors::deep_map::{
     CliCount, DeepOffer, DeepScope, EmbedderNote, EmbedderOffer, OfferPlace, ScopeOffer,
     SummarizerOffer,
 };
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::registry::ModelRegistry;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::registry::ModelRegistry;
 use time::OffsetDateTime;
 
 use super::action::DeepAction;
@@ -179,20 +179,20 @@ pub(crate) fn embedder_note(
 pub(crate) fn keyed_embedder(keyed: Option<&KeyedEndpoint>) -> Option<EmbedderOffer> {
     let keyed = keyed?;
     Some(EmbedderOffer {
-        model: argonauts_core::names::ModelRef::new(
+        model: argonauts_core::base::names::ModelRef::new(
             keyed.id.clone(),
             Some(OPENAI_EMBEDDING.to_owned()),
         ),
         name: format!(
             "{OPENAI_EMBEDDING} on {}",
-            argonauts_core::registry::provider::provider_name(&keyed.id)
+            argonauts_core::models::registry::provider::provider_name(&keyed.id)
         ),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use argonauts_testkit::services::StaticRegistry;
+    use argonauts_testkit::engine::services::StaticRegistry;
 
     use super::super::action::sample::shell;
     use super::super::choose::{candidates, sample::page_models};

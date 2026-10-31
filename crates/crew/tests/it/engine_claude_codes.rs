@@ -10,22 +10,22 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
-use argonauts_core::asking::{Ask, AskLine, AskReply};
-use argonauts_core::engine::EngineExit;
-use argonauts_core::event::AgentEvent;
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome, handed_over};
-use argonauts_core::events::session::InputPartKind;
-use argonauts_core::events::session::{
+use argonauts_core::agents::session_runner::{Access, RunnerEvent, SessionSpec};
+use argonauts_core::runs::asking::{Ask, AskLine, AskReply};
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::event::AgentEvent;
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunOutcome, handed_over};
+use argonauts_core::runs::events::session::InputPartKind;
+use argonauts_core::runs::events::session::{
     CliAgent, CliAgentState, CliPhase, CliWorkflowRun, SessionEvent, SubagentStatus,
 };
-use argonauts_core::events::task::{ReviewEvent, TaskEvent, TaskState};
-use argonauts_core::events::workflow::WorkflowEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::session_runner::{Access, RunnerEvent, SessionSpec};
+use argonauts_core::runs::events::task::{ReviewEvent, TaskEvent, TaskState};
+use argonauts_core::runs::events::workflow::WorkflowEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::crew::{CrewRole, CrewSettings, Orchestrator};
 use argonauts_core::settings::workflows::AdaptWith;
-use argonauts_core::steps::StepName;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
 
 use support::{Crew, Outcome};
 
@@ -616,7 +616,7 @@ fn recorded() -> Vec<RunEvent> {
     support::recorded_run(
         REVIEW_LOOP,
         &[
-            ("{run}", argonauts_testkit::services::TEST_RUN),
+            ("{run}", argonauts_testkit::engine::services::TEST_RUN),
             ("{repo}", "/repo"),
             ("{run_dir}", "/state/run"),
             ("{worktrees}", "/worktrees"),

@@ -5,12 +5,12 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::approval::{
     ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, PolicyCheck,
 };
-use argonauts_core::names::ApprovalId;
-use argonauts_core::policy::Verdict;
+use argonauts_core::safety::policy::Verdict;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Approvals {

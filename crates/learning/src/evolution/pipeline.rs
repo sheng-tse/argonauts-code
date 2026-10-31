@@ -6,18 +6,18 @@ use rand::rngs::StdRng;
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
 
-use argonauts_core::events::run::{Party, RunOutcome};
+use argonauts_core::runs::events::run::{Party, RunOutcome};
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::task::ProcessChange;
+use argonauts_core::workflows::steps::task::ProcessChange;
 
 use super::{
     Action, Candidate, CandidateState, Evolution, Stage, Thresholds, candidate, check_mutation,
     compare, holdout_ok, learned_workflow_branch, state, stats,
 };
-use crate::error::{LearningError, Result};
-use crate::git;
 use crate::learned_workflows::{self, Change, LearnedWorkflow, LoadedLearnedWorkflow, Match};
-use crate::types::{LearnedWorkflowRef, ReplayResult, RunRecord};
+use crate::store::error::{LearningError, Result};
+use crate::store::git;
+use crate::store::types::{LearnedWorkflowRef, ReplayResult, RunRecord};
 
 impl Evolution {
     /// Stage 1: a run with no learned workflow that merged and passed its final checks first time

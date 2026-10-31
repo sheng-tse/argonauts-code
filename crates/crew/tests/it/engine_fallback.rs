@@ -11,32 +11,32 @@ use serde_json::json;
 use time::macros::datetime;
 use tokio::sync::mpsc;
 
-use argonauts_core::api::ApprovalAnswer;
-use argonauts_core::engine::{EngineCommand, RepoContext};
-use argonauts_core::events::agent_status::{
-    FallbackEvent, FallbackPlan, JobKeeper, JobRef, JobWait,
-};
-use argonauts_core::events::approval::{
-    AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
-    FreeText, MergePacket,
-};
-use argonauts_core::events::goal::{GoalEvent, GoalFile, GoalSource};
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunStarted};
-use argonauts_core::events::session::{EndReason, SessionEvent, SessionStarted};
-use argonauts_core::events::shared::{BlackboardKind, BlackboardMessage};
-use argonauts_core::events::task::{
-    MergeEvent, ReviewEvent, TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState,
-};
-use argonauts_core::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::fallback::CheckpointTag;
-use argonauts_core::limits::{
+use argonauts_core::agents::session_runner::{Access, RunnerEvent, RunnerKind};
+use argonauts_core::base::names::{ApprovalId, ModelRef, RoleName, SessionKey, WorkflowId};
+use argonauts_core::models::limits::{
     Candidate, CandidateQuery, CostEstimate, FallbackNote, FallbackPlanner, HealthState,
     PlanUsageBoard, PlanUsageReading, PlanUsageSource, PlanUsageStatus, RecoveryAction, Shortlist,
     WorkSoFar,
 };
-use argonauts_core::names::{ApprovalId, ModelRef, RoleName, SessionKey, WorkflowId};
-use argonauts_core::session_runner::{Access, RunnerEvent, RunnerKind};
+use argonauts_core::runs::api::ApprovalAnswer;
+use argonauts_core::runs::engine::{EngineCommand, RepoContext};
+use argonauts_core::runs::events::agent_status::{
+    FallbackEvent, FallbackPlan, JobKeeper, JobRef, JobWait,
+};
+use argonauts_core::runs::events::approval::{
+    AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
+    FreeText, MergePacket,
+};
+use argonauts_core::runs::events::goal::{GoalEvent, GoalFile, GoalSource};
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode, RunStarted};
+use argonauts_core::runs::events::session::{EndReason, SessionEvent, SessionStarted};
+use argonauts_core::runs::events::shared::{BlackboardKind, BlackboardMessage};
+use argonauts_core::runs::events::task::{
+    MergeEvent, ReviewEvent, TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState,
+};
+use argonauts_core::runs::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::fallback::CheckpointTag;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
@@ -46,8 +46,8 @@ use argonauts_core::settings::fallback::{
     OnReturn, Pick, UnknownTier,
 };
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::steps::StepName;
-use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::workflow::{StandardPhase, StepKind, StepRef, Workflow};
 use argonauts_core::{AgentEvent, CommitInfo, DiffStat, RepoId, RunId, Spend, TaskId};
 use argonauts_crew::approvals;
 use argonauts_crew::engine::commands;
@@ -58,9 +58,9 @@ use argonauts_crew::merge::branch::ensure_run_branch;
 use argonauts_crew::roles::display_name;
 use argonauts_crew::state::RunState;
 use argonauts_crew::state::blackboard::Addressee;
-use argonauts_testkit::repo::TempRepo;
-use argonauts_testkit::runner::{FakeRunner, FakeSession, session_end};
-use argonauts_testkit::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession, session_end};
+use argonauts_testkit::engine::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
+use argonauts_testkit::home::repo::TempRepo;
 
 use crate::support::shared_in;
 
@@ -206,7 +206,7 @@ impl Bench {
         })
     }
 
-    fn debt(&self, task: &TaskId) -> Option<argonauts_core::fallback::QualityDebt> {
+    fn debt(&self, task: &TaskId) -> Option<argonauts_core::runs::fallback::QualityDebt> {
         self.host
             .read(|state| state.tasks.get(task).and_then(|record| record.debt.clone()))
     }
@@ -916,7 +916,10 @@ async fn together_with_a_judge_keeps_the_try_the_judge_picks() -> anyhow::Result
     let [(step, labels)] = asked.as_slice() else {
         anyhow::bail!("the judge was asked {} times", asked.len());
     };
-    assert_eq!(*step, Some(argonauts_core::steps::StepName::PickTry));
+    assert_eq!(
+        *step,
+        Some(argonauts_core::workflows::steps::StepName::PickTry)
+    );
     // Each try's diff is a part of its own, numbered and not named.
     let tries: Vec<&str> = labels
         .iter()
@@ -1584,7 +1587,7 @@ async fn original_back_after_its_plan_usage_reset_leaves_a_notice() -> anyhow::R
 /// under test, nothing is said, and the CLI's own return doesn't offer it either.
 #[tokio::test]
 async fn a_model_back_on_its_own_offers_the_task_that_stayed_on_its_cli() -> anyhow::Result<()> {
-    use argonauts_core::limits::{ModelState, Trouble};
+    use argonauts_core::models::limits::{ModelState, Trouble};
 
     const SONNET: &str = "claude-code/sonnet";
     let mut settings = Settings {
@@ -2166,7 +2169,7 @@ async fn a_step_of_the_main_agents_that_waits_is_listed_by_its_place() -> anyhow
 /// back in line when the CLI is tried.
 #[tokio::test]
 async fn waiting_for_a_cli_that_is_down_is_what_same_cli_already_does() -> anyhow::Result<()> {
-    use argonauts_core::events::run::WaitReason;
+    use argonauts_core::runs::events::run::WaitReason;
     use argonauts_crew::engine::wait;
 
     let bench = kept_on_a_cli_that_is_down(0).await?;
@@ -2498,18 +2501,18 @@ async fn a_tasks_line_names_same_cli_only_where_it_kept_another_cli_out() -> any
 
 /// An internet a test turns off and on, over the fakes' health board.
 pub(crate) struct Internet {
-    board: Arc<argonauts_testkit::services::MemoryHealthBoard>,
-    state: tokio::sync::watch::Sender<argonauts_core::limits::NetState>,
+    board: Arc<argonauts_testkit::engine::services::MemoryHealthBoard>,
+    state: tokio::sync::watch::Sender<argonauts_core::models::limits::NetState>,
     /// When it went, as the run's clock reads it.
     now: time::OffsetDateTime,
 }
 
 impl Internet {
     pub(crate) fn over(crew: &crate::support::Crew) -> Arc<Self> {
-        use argonauts_core::clock::Clock;
+        use argonauts_core::base::clock::Clock;
         Arc::new(Self {
             board: crew.services.health.clone(),
-            state: tokio::sync::watch::Sender::new(argonauts_core::limits::NetState::Up),
+            state: tokio::sync::watch::Sender::new(argonauts_core::models::limits::NetState::Up),
             now: crew.services.clock.now(),
         })
     }
@@ -2517,13 +2520,13 @@ impl Internet {
     /// Goes, and comes back `after` that.
     pub(crate) fn drop_for(self: &Arc<Self>, after: Duration) {
         self.state
-            .send_replace(argonauts_core::limits::NetState::Down { since: self.now });
+            .send_replace(argonauts_core::models::limits::NetState::Down { since: self.now });
         let internet = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(after).await;
             internet
                 .state
-                .send_replace(argonauts_core::limits::NetState::Up);
+                .send_replace(argonauts_core::models::limits::NetState::Up);
         });
     }
 
@@ -2531,7 +2534,7 @@ impl Internet {
     pub(crate) fn gone_for(&self, ago: Duration) {
         let since = self.now - ago;
         self.state
-            .send_replace(argonauts_core::limits::NetState::Down { since });
+            .send_replace(argonauts_core::models::limits::NetState::Down { since });
     }
 
     /// Comes back `after` that.
@@ -2541,7 +2544,7 @@ impl Internet {
             tokio::time::sleep(after).await;
             internet
                 .state
-                .send_replace(argonauts_core::limits::NetState::Up);
+                .send_replace(argonauts_core::models::limits::NetState::Up);
         });
     }
 
@@ -2584,34 +2587,36 @@ impl Internet {
     }
 }
 
-impl argonauts_core::limits::HealthBoard for Internet {
-    fn observe(&self, signal: argonauts_core::limits::HealthSignal) {
+impl argonauts_core::models::limits::HealthBoard for Internet {
+    fn observe(&self, signal: argonauts_core::models::limits::HealthSignal) {
         self.board.observe(signal);
     }
     fn state(
         &self,
-        agent_id: &argonauts_core::names::AgentId,
-    ) -> argonauts_core::limits::AgentHealth {
+        agent_id: &argonauts_core::base::names::AgentId,
+    ) -> argonauts_core::models::limits::AgentHealth {
         self.board.state(agent_id)
     }
-    fn all(&self) -> Vec<argonauts_core::limits::AgentHealth> {
+    fn all(&self) -> Vec<argonauts_core::models::limits::AgentHealth> {
         self.board.all()
     }
     fn subscribe(
         &self,
-    ) -> tokio::sync::broadcast::Receiver<argonauts_core::events::AgentStatusEvent> {
+    ) -> tokio::sync::broadcast::Receiver<argonauts_core::runs::events::AgentStatusEvent> {
         self.board.subscribe()
     }
-    fn test_result(&self, agent_id: &argonauts_core::names::AgentId, ok: bool) {
+    fn test_result(&self, agent_id: &argonauts_core::base::names::AgentId, ok: bool) {
         self.board.test_result(agent_id, ok);
     }
-    fn model(&self, model: &ModelRef) -> argonauts_core::limits::ModelHealth {
+    fn model(&self, model: &ModelRef) -> argonauts_core::models::limits::ModelHealth {
         self.board.model(model)
     }
-    fn network(&self) -> argonauts_core::limits::NetState {
+    fn network(&self) -> argonauts_core::models::limits::NetState {
         *self.state.borrow()
     }
-    fn network_changes(&self) -> tokio::sync::watch::Receiver<argonauts_core::limits::NetState> {
+    fn network_changes(
+        &self,
+    ) -> tokio::sync::watch::Receiver<argonauts_core::models::limits::NetState> {
         self.state.subscribe()
     }
 }
@@ -2632,7 +2637,7 @@ pub(crate) fn said(events: &[RunEvent]) -> Vec<(argonauts_core::NoteLevel, &str)
 #[tokio::test]
 async fn offline_holds_sessions_then_carries_on_with_the_same_agents() -> anyhow::Result<()> {
     use argonauts_core::NoteLevel;
-    use argonauts_core::limits::{NETWORK_BACK, NETWORK_DOWN};
+    use argonauts_core::models::limits::{NETWORK_BACK, NETWORK_DOWN};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let mut crew = crate::support::Crew::new()?;
@@ -2657,8 +2662,8 @@ async fn offline_holds_sessions_then_carries_on_with_the_same_agents() -> anyhow
     let notes = said(&outcome.events);
     assert_eq!(
         outcome.exit,
-        argonauts_core::engine::EngineExit::Waiting(
-            argonauts_core::events::run::WaitReason::Approval
+        argonauts_core::runs::engine::EngineExit::Waiting(
+            argonauts_core::runs::events::run::WaitReason::Approval
         ),
         "{notes:?}"
     );
@@ -2709,8 +2714,8 @@ async fn a_run_resumed_offline_holds_its_span_again() -> anyhow::Result<()> {
         .await?;
     assert_eq!(
         paused.exit,
-        argonauts_core::engine::EngineExit::Waiting(
-            argonauts_core::events::run::WaitReason::Paused
+        argonauts_core::runs::engine::EngineExit::Waiting(
+            argonauts_core::runs::events::run::WaitReason::Paused
         )
     );
     // Still gone as you resume it, and back a moment later.
@@ -2718,8 +2723,8 @@ async fn a_run_resumed_offline_holds_its_span_again() -> anyhow::Result<()> {
     let resumed = internet.resume(&crew, RunMode::Crew, paused.events).await?;
     assert_eq!(
         resumed.exit,
-        argonauts_core::engine::EngineExit::Waiting(
-            argonauts_core::events::run::WaitReason::Approval
+        argonauts_core::runs::engine::EngineExit::Waiting(
+            argonauts_core::runs::events::run::WaitReason::Approval
         ),
         "{:?}",
         said(&resumed.events)
@@ -2771,7 +2776,7 @@ async fn a_session_the_network_took_resumes_its_conversation() -> anyhow::Result
 #[tokio::test]
 async fn a_run_offline_too_long_pauses_with_its_work_kept() -> anyhow::Result<()> {
     use argonauts_core::NoteLevel;
-    use argonauts_core::limits::NETWORK_DOWN;
+    use argonauts_core::models::limits::NETWORK_DOWN;
 
     let mut crew = crate::support::Crew::new()?;
     let codex = crew.answering_worker(CODEX, "openai");
@@ -2791,8 +2796,8 @@ async fn a_run_offline_too_long_pauses_with_its_work_kept() -> anyhow::Result<()
     let notes = said(&outcome.events);
     assert_eq!(
         outcome.exit,
-        argonauts_core::engine::EngineExit::Waiting(
-            argonauts_core::events::run::WaitReason::Paused
+        argonauts_core::runs::engine::EngineExit::Waiting(
+            argonauts_core::runs::events::run::WaitReason::Paused
         ),
         "{notes:?}"
     );

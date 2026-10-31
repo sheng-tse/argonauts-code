@@ -4,18 +4,18 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
+use argonauts_core::app::artifacts::{self, Artifact};
+use argonauts_core::app::views::{ContextRow, RecordedContext};
 use argonauts_core::app::{ConversationEvent, ConversationSummary, TurnReply};
-use argonauts_core::artifacts::{self, Artifact};
-use argonauts_core::event::AgentEvent;
-use argonauts_core::events::context::ContextUsage;
-use argonauts_core::names::{ConversationId, ModelRef, SessionKey, TurnId};
-use argonauts_core::views::{ContextRow, RecordedContext};
+use argonauts_core::base::names::{ConversationId, ModelRef, SessionKey, TurnId};
+use argonauts_core::runs::event::AgentEvent;
+use argonauts_core::runs::events::context::ContextUsage;
 use argonauts_core::{RunId, Spend};
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use crate::controller::recap::title_from_request;
-use crate::conversation_store::ConversationStore;
+use crate::controller::turns::recap::title_from_request;
+use crate::conversation::store::ConversationStore;
 
 /// One turn of an earlier conversation.
 #[derive(Debug, Clone, PartialEq)]
@@ -616,7 +616,7 @@ mod tests {
     /// run in an older one makes that one the newest again. One claimed and never used isn't.
     #[test]
     fn a_conversation_with_only_runs_is_listed_by_its_last_change() {
-        use crate::conversation_store::ConversationRun;
+        use crate::conversation::store::ConversationRun;
         use argonauts_core::RunId;
         use std::time::{Duration, SystemTime};
 
@@ -681,7 +681,7 @@ mod tests {
     /// its own, and the run's home is the first that listed it.
     #[test]
     fn a_run_belongs_to_the_conversation_that_started_it() {
-        use crate::conversation_store::ConversationRun;
+        use crate::conversation::store::ConversationRun;
 
         let dir = tempfile::tempdir().unwrap();
         let run = RunId::new("run-009").unwrap();

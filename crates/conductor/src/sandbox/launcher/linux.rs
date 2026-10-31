@@ -18,7 +18,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
+use argonauts_core::agents::session_runner::{SandboxMode, SandboxProfile};
 use landlock::{
     ABI, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
     RulesetCreatedAttr, RulesetStatus, Scope,

@@ -2,7 +2,7 @@
 //! within the reserve and `max_extra_tries`, when the role's fallback mode is auto. These
 //! conditions hold whatever `decide_with` says.
 
-use argonauts_core::policy::StuckFacts;
+use argonauts_core::safety::policy::StuckFacts;
 use argonauts_core::settings::approvals::StuckRules;
 use argonauts_core::settings::fallback::FallbackMode;
 
@@ -59,7 +59,7 @@ pub fn check(facts: Option<&StuckFacts>, rules: &StuckRules) -> RuleVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::policy::Verdict;
+    use argonauts_core::safety::policy::Verdict;
 
     fn granting() -> StuckFacts {
         StuckFacts {

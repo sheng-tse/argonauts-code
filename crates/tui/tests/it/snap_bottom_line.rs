@@ -5,12 +5,12 @@
 
 use crate::common;
 use argonauts_core::settings::bottom_line::{BottomLineSettings, LineForm};
-use argonauts_tui::bottom::ModeState;
-use argonauts_tui::bridge::bottom_line::{Sample, SampleCli, preview};
-use argonauts_tui::model::{
+use argonauts_tui::app::model::{
     ApprovalMode, BottomLine, BottomRow, CliState, CliUse, LinePart, WindowUse,
 };
-use argonauts_tui::theme::{ColorLevel, Role};
+use argonauts_tui::base::theme::{ColorLevel, Role};
+use argonauts_tui::bottom::ModeState;
+use argonauts_tui::bridge::bottom_line::{Sample, SampleCli, preview};
 use common::{row_text, still, styled, theme, theme_at};
 use ratatui::text::Line;
 
@@ -23,7 +23,7 @@ fn cli(name: &str, windows: &[(&str, f64)]) -> CliUse {
         "Codex" => "codex",
         _ => "antigravity-cli",
     };
-    cli.logo = Some(argonauts_core::logos::logo_for(id, None));
+    cli.logo = Some(argonauts_core::look::logos::logo_for(id, None));
     cli.windows = windows
         .iter()
         .map(|(label, used)| WindowUse::new(*label, *used))
@@ -66,7 +66,7 @@ fn line(form: LineForm, mut clis: Vec<CliUse>) -> BottomLine {
     }
 }
 
-fn row(line: &BottomLine, theme: &argonauts_tui::theme::Theme, width: u16) -> Line<'static> {
+fn row(line: &BottomLine, theme: &argonauts_tui::base::theme::Theme, width: u16) -> Line<'static> {
     let mode = BottomRow {
         approval: ApprovalMode::Auto,
         ..BottomRow::default()

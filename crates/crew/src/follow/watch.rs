@@ -8,7 +8,7 @@ use argonauts_conductor::gh::{
     failure_part,
 };
 
-use argonauts_core::hidden_text::{fence_name, sanitize};
+use argonauts_core::prompts::hidden_text::{fence_name, sanitize};
 use serde::{Deserialize, Serialize};
 
 use super::{Followed, Heading, Work};
@@ -498,7 +498,7 @@ pub fn review_prompt(number: u64, work: &Work, diff: &str) -> String {
 #[cfg(test)]
 mod tests {
     use argonauts_conductor::gh::RepoName;
-    use argonauts_testkit::fake_gh::{
+    use argonauts_testkit::fake_clis::fake_gh::{
         FakeGh, GhCheck, GhPull, GhRepo, GhReview, GhReviewComment, GhWorld,
     };
 

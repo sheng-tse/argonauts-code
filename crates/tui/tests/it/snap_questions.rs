@@ -2,44 +2,44 @@ use crate::common;
 use std::path::PathBuf;
 
 use argonauts_core::app::{AppChoice, ChoiceKind};
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::agent_status::FallbackPlan;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{
+    AgentId, ApprovalId, ChoiceId, DecisionId, ModelRef, RoleName, SessionKey,
+};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::limits::{Candidate, CostEstimate, TrackRecord};
+use argonauts_core::models::meter::{MeterAction, MeterLimit, WorkLimits, WorkUsed};
+use argonauts_core::runs::events::agent_status::FallbackPlan;
+use argonauts_core::runs::events::approval::{
     AgentDownPacket, AnswerAction, AnswerOption, ApprovalDecided, ApprovalKind, ApprovalOpened,
     ApprovalPacket, FreeText, GoalPacket, LimitPacket, MergePacket, MergeRow,
     OriginalReturnedPacket, PausedTask, PlanPacket, QuestionPacket, StuckPacket,
 };
-use argonauts_core::events::goal::{
+use argonauts_core::runs::events::goal::{
     Assumption, ChoiceOption, Criterion, GoalFile, GoalQuestion, GoalSource,
 };
-use argonauts_core::events::plan::{
+use argonauts_core::runs::events::plan::{
     DesignDecision, JudgingResult, LimitLine, LimitPlan, PlanTally, TaskGraph,
 };
-use argonauts_core::events::run::Party;
-use argonauts_core::events::task::{TaskKind, TaskLimit, TaskSpec, TaskState};
-use argonauts_core::fallback::QualityDebt;
-use argonauts_core::limits::{Candidate, CostEstimate, TrackRecord};
-use argonauts_core::meter::{MeterAction, MeterLimit, WorkLimits, WorkUsed};
-use argonauts_core::names::{
-    AgentId, ApprovalId, ChoiceId, DecisionId, ModelRef, RoleName, SessionKey,
-};
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::task::{TaskKind, TaskLimit, TaskSpec, TaskState};
+use argonauts_core::runs::fallback::QualityDebt;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::fallback::{FallbackMode, FallbackStrategy};
 use argonauts_core::settings::limit::{LimitAmount, LimitLineKind, LimitUnit};
 use argonauts_core::settings::protocol::JudgingMethod;
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::judgment::ReviewVerdict;
-use argonauts_core::steps::understand::DiffTag;
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::judgment::ReviewVerdict;
+use argonauts_core::workflows::steps::understand::DiffTag;
 use argonauts_core::{DiffStat, LimitDimension, RunId, Spend, SpendStatus, TaskId};
 use argonauts_tui::HistoryCell;
-use argonauts_tui::model::QuestionPrompt;
+use argonauts_tui::app::model::QuestionPrompt;
+use argonauts_tui::base::stability::{self, WIDTHS, samples};
+use argonauts_tui::frame::state::{RunState, SessionState, TaskRow};
 use argonauts_tui::questions::{
     about_cells, approval_question, choice_question, confirm_take_over, record_cell,
     spot_check_question as spot_question,
 };
-use argonauts_tui::stability::{self, WIDTHS, samples};
-use argonauts_tui::state::{RunState, SessionState, TaskRow};
 use common::{assert_fits, still, text, theme};
 use ratatui::text::Line;
 use time::macros::datetime;
@@ -987,7 +987,7 @@ fn a_goal_question_holding_the_keys_stands_in_for_the_input() {
 #[test]
 fn a_question_holding_the_keys_leaves_the_vim_mode_off() {
     let mut holding = bottom_with(focused(approval_question(1, &goal_question(), None)));
-    holding.mode.vim = Some(argonauts_tui::model::VimMode::Insert);
+    holding.mode.vim = Some(argonauts_tui::app::model::VimMode::Insert);
     for width in [80, 100, 120] {
         let lines = bottom_lines(&holding, width);
         stability::assert_lines(&lines, width);
@@ -1096,8 +1096,8 @@ fn plan_question() {
 /// The plan with the workflow it follows: its phases in plain words in the main view, and its
 /// conditions and loop rules under Ctrl+O.
 fn plan_with_workflow() -> ApprovalOpened {
-    use argonauts_core::events::approval::PlanWorkflow;
-    use argonauts_core::workflow::WorkflowRef;
+    use argonauts_core::runs::events::approval::PlanWorkflow;
+    use argonauts_core::workflows::workflow::WorkflowRef;
 
     let mut opened = plan();
     let ApprovalPacket::Plan(packet) = &mut opened.packet else {
@@ -1496,7 +1496,7 @@ fn the_go_ahead_holds_the_keys_with_the_input_hidden() {
         option('d', "Show the goal", AnswerAction::ShowDiff),
         option('x', "No, stop here", AnswerAction::Abandon),
     ];
-    let mut bottom = argonauts_tui::model::BottomState::new();
+    let mut bottom = argonauts_tui::app::model::BottomState::new();
     bottom.composer.label = Some("council".into());
     bottom.mode.approval = argonauts_tui::bottom::ApprovalMode::Autopilot;
     bottom.question = Some(approval_question(1, &opened, None));

@@ -2,15 +2,15 @@
 //! the goal file, and the Understand approval. Until the goal is approved only read-only and
 //! no-tools sessions start; once approved it's frozen by its hash.
 
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::events::run::RunMode;
-use argonauts_core::names::ModelRef;
-use argonauts_core::steps::understand::{CompareOutput, Reading};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::runs::events::run::RunMode;
+use argonauts_core::workflows::steps::understand::{CompareOutput, Reading};
 
 use crate::approvals;
-use crate::captain;
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
+use crate::roles::captain;
 use crate::state::RunState;
 use crate::workflow::{StepCall, StepDone};
 

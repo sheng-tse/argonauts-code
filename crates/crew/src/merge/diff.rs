@@ -1,12 +1,12 @@
 //! The diff views: a task against its base, or its last session's changes.
 
 use argonauts_core::TaskId;
-use argonauts_core::api::{DiffScope, DiffView};
-use argonauts_core::layout;
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::base::layout;
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::runs::api::{DiffScope, DiffView};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::merge::branch::task_branch;
 use crate::task::support::record_of;
 

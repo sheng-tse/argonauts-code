@@ -5,10 +5,10 @@
 use std::cmp::Reverse;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::task::{TaskSpec, TaskWay, Way};
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::events::task::{TaskSpec, TaskWay, Way};
 use argonauts_core::settings::ways::MostAgents;
-use argonauts_core::workflow::WorkflowRef;
+use argonauts_core::workflows::workflow::WorkflowRef;
 
 use super::thumb::is_file;
 use super::{Offer, done_by, parts, propose, words};
@@ -475,7 +475,7 @@ impl<'a> Words<'a> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::task::{TaskKind, TaskLimit};
+    use argonauts_core::runs::events::task::{TaskKind, TaskLimit};
     use argonauts_core::settings::ways::Ways;
 
     use super::*;

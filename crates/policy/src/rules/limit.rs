@@ -1,7 +1,7 @@
 //! Limit: release the run's reserve when the remaining tasks fit in it. Only you raise a
 //! ceiling, so these conditions hold whatever `decide_with` says.
 
-use argonauts_core::policy::SpendFacts;
+use argonauts_core::safety::policy::SpendFacts;
 use argonauts_core::settings::approvals::LimitRules;
 
 use super::RuleVerdict;
@@ -38,7 +38,7 @@ pub fn check(facts: Option<&SpendFacts>, rules: &LimitRules) -> RuleVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::policy::Verdict;
+    use argonauts_core::safety::policy::Verdict;
     use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 
     fn facts(needed: f64, left: f64) -> SpendFacts {

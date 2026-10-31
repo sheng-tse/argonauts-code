@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
-use argonauts_core::api::{RunState, RunSummary};
-use argonauts_core::paths::create_private_dir_all;
+use argonauts_core::base::paths::create_private_dir_all;
+use argonauts_core::runs::api::{RunState, RunSummary};
 use argonauts_core::{NoteLevel, RunId};
 
 use crate::client::day;

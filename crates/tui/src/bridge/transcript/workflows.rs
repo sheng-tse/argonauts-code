@@ -11,22 +11,22 @@
 use std::time::Duration;
 
 use argonauts_core::RunId;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::run::{RunOutcome, RunStarted};
-use argonauts_core::events::session::CliWorkflowRun;
-use argonauts_core::events::workflow::{WorkflowDeclared, WorkflowReport};
-use argonauts_core::hidden_git::MergedInto;
-use argonauts_core::names::ModelRef;
-use argonauts_core::steps::intake::InstructionKind;
-use argonauts_core::text::sentence_case;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::base::text::sentence_case;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::run::{RunOutcome, RunStarted};
+use argonauts_core::runs::events::session::CliWorkflowRun;
+use argonauts_core::runs::events::workflow::{WorkflowDeclared, WorkflowReport};
+use argonauts_core::runs::hidden_git::MergedInto;
+use argonauts_core::workflows::steps::intake::InstructionKind;
 
 use time::OffsetDateTime;
 
+use crate::base::format;
+use crate::base::text::sanitize_line;
 use crate::bottom::WorkflowRowState;
-use crate::cell::{ToolCall, ToolItem, ToolKind, ToolState, WorkflowEnd, WorkflowResult};
-use crate::format;
-use crate::text::sanitize_line;
+use crate::cells::cell::{ToolCall, ToolItem, ToolKind, ToolState, WorkflowEnd, WorkflowResult};
 
 use super::milestones::RunStory;
 use super::steps::plural;
@@ -101,7 +101,7 @@ pub(super) fn reported(report: &WorkflowReport, story: &mut RunStory, cx: &mut C
             start.in_use.as_deref(),
             start.based_on.as_deref(),
         ];
-        if argonauts_core::text::names_the_run(&report.workflow.name, &templates) {
+        if argonauts_core::base::text::names_the_run(&report.workflow.name, &templates) {
             start.reported = Some(report.workflow.name.clone());
         }
         story.workflow = Some(start.title());
@@ -188,7 +188,7 @@ impl Start {
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .unwrap_or(&self.name);
-        argonauts_core::text::title_words(&sanitize_line(name))
+        argonauts_core::base::text::title_words(&sanitize_line(name))
     }
 
     /// The run's name and the workflow it runs, by the workflow's shown name: `Add due dates ·
@@ -200,7 +200,7 @@ impl Start {
             self.based_on
                 .as_deref()
                 .or(self.in_use.as_deref())
-                .map(|kind| format!(" · {}", argonauts_core::text::shown_name(kind)))
+                .map(|kind| format!(" · {}", argonauts_core::base::text::shown_name(kind)))
         };
         format!("{}{}", self.name(), kind.unwrap_or_default())
     }
@@ -371,13 +371,13 @@ pub(super) fn done(
 mod tests {
     use std::time::Instant;
 
-    use argonauts_core::names::WorkflowId;
+    use argonauts_core::base::names::WorkflowId;
 
     use super::*;
-    use crate::cell::HistoryCell;
-    use crate::render::{Clock, RenderCtx};
-    use crate::theme::Role;
-    use crate::views::workflow_pictures::{buffer_of, dark, picture};
+    use crate::base::draw::render::{Clock, RenderCtx};
+    use crate::base::theme::Role;
+    use crate::cells::cell::HistoryCell;
+    use crate::testing::pictures::workflow_pictures::{buffer_of, dark, picture};
 
     fn start() -> Start {
         Start {
@@ -399,9 +399,9 @@ mod tests {
     }
 
     /// The dark theme as on macOS, where items start with Claude Code's `⏺`, as the pictures do.
-    fn on_macos() -> crate::theme::Theme {
+    fn on_macos() -> crate::base::theme::Theme {
         let mut theme = dark();
-        theme.glyphs = crate::theme::Glyphs::MACOS;
+        theme.glyphs = crate::base::theme::Glyphs::MACOS;
         theme
     }
 

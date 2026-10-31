@@ -10,14 +10,14 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::task::{CheckOutcome, MergeEvent};
-use argonauts_core::limits::CheckRequest;
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::models::limits::CheckRequest;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::task::{CheckOutcome, MergeEvent};
 use argonauts_core::settings::protocol::CheckCommand;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::git::{GitError, StagedMerge};
 use crate::merge::{conductor, detached, merge_packet, merger, unborn};
 
@@ -332,7 +332,7 @@ fn request(
         name: check.name.clone(),
         command: check.command.clone(),
         workdir: workdir.to_path_buf(),
-        sandbox: crate::spec::sandbox(settings, Access::Build, workdir, &temp)?,
+        sandbox: crate::sessions::spec::sandbox(settings, Access::Build, workdir, &temp)?,
         timeout,
         setup: false,
     })

@@ -2,18 +2,18 @@
 //! messages back, and `/follow-up`.
 
 use anyhow::Context;
-use argonauts_core::api::{ApiError, RunState, StartRun};
+use argonauts_core::agents::session_runner::SteerSupport;
 use argonauts_core::app::{AppEvent, AppMode};
-use argonauts_core::events::run::RunOutcome;
+use argonauts_core::base::names::{MessageId, SessionKey};
 use argonauts_core::input::MentionTarget;
-use argonauts_core::names::{MessageId, SessionKey};
-use argonauts_core::session_runner::SteerSupport;
+use argonauts_core::runs::api::{ApiError, RunState, StartRun};
+use argonauts_core::runs::events::run::RunOutcome;
+use argonauts_core::runs::task::title_from_task;
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::task::title_from_task;
 use argonauts_core::{NoteLevel, RunId};
 
 use super::{Handled, on_screen};
-use crate::controller::attach::Stage;
+use crate::controller::runs::attach::Stage;
 use crate::controller::runs::{self, Queued, RunsState};
 use crate::controller::shell::{self, ShellRan};
 use crate::controller::{Ctx, Effect};
@@ -321,7 +321,7 @@ pub(crate) async fn follow_up(
     };
     let settings = ctx.settings();
     // It goes on the way the merged run went, unless Ultracode sends every task to the crew.
-    let captain_or_crew = argonauts_crew::captain_or_crew::ultracode(settings);
+    let captain_or_crew = argonauts_crew::roles::captain_or_crew::ultracode(settings);
     let mode = captain_or_crew
         .as_ref()
         .map_or(merged.mode, |crew| crew.mode);

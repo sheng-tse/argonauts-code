@@ -11,11 +11,11 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
-use argonauts_core::events::plan::{DesignDecision, JudgingResult, MappedTopic, PlanEvent};
-use argonauts_core::names::{DraftId, ModelRef, PlanLabel, SessionKey};
-use argonauts_core::steps::plan::{CritiquePoint, ExperimentProposal, ExperimentReport};
+use argonauts_core::base::names::{DraftId, ModelRef, PlanLabel, SessionKey};
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind};
+use argonauts_core::runs::events::plan::{DesignDecision, JudgingResult, MappedTopic, PlanEvent};
+use argonauts_core::workflows::steps::plan::{CritiquePoint, ExperimentProposal, ExperimentReport};
 
 use super::RunState;
 
@@ -450,8 +450,8 @@ pub fn replan_note(state: &RunState) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::RunEventKind;
-    use argonauts_core::events::plan::MappedPosition;
+    use argonauts_core::runs::events::RunEventKind;
+    use argonauts_core::runs::events::plan::MappedPosition;
     use argonauts_core::settings::protocol::JudgingMethod;
     use argonauts_core::{RunId, TaskId};
     use time::OffsetDateTime;

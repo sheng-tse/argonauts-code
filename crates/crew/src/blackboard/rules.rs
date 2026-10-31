@@ -4,9 +4,9 @@
 //! into a protected path sends the run back to the plan approval.
 
 use argonauts_core::TaskId;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::task::ChangeRequestOut;
+use argonauts_core::workflows::steps::task::ChangeRequestOut;
 
 use crate::blackboard::refs;
 use crate::blackboard::route::still_working;

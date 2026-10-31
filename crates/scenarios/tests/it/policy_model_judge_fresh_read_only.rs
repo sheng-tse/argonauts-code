@@ -2,7 +2,7 @@
 //! scratch directory, never in the repo or a worktree, and never resumes an earlier session.
 
 use crate::policy_support;
-use argonauts_core::events::run::Party;
+use argonauts_core::runs::events::run::Party;
 use policy_support::{
     HELLO_CHECK, RUN_WAIT, captain_config, invocations_of, launch_ready, merge_decided, scenario,
     start_captain, trust_repo, wait_for_events, write_global_config,

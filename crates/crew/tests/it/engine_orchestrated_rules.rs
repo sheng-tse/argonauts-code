@@ -11,24 +11,26 @@ use std::sync::Arc;
 use anyhow::Context;
 use serde_json::{Value, json};
 
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind, PolicyCheck};
-use argonauts_core::events::plan::{DivideEvent, PlanEvent, TaskGraph};
-use argonauts_core::events::run::{
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::approval::{
+    AnswerAction, ApprovalEvent, ApprovalKind, PolicyCheck,
+};
+use argonauts_core::runs::events::plan::{DivideEvent, PlanEvent, TaskGraph};
+use argonauts_core::runs::events::run::{
     CheckedInstruction, InstructionOutcome, Party, RunLifecycle, RunMode, RunOutcome,
 };
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::runs::events::task::MergeEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::protocol::{
     CheckCommand, JudgingMethod, PlanningBy, ReviewAssignment, RoutingAlgorithm,
 };
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::intake::InstructionKind;
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::intake::InstructionKind;
 use argonauts_crew::engine::shared::with_git_env;
-use argonauts_testkit::deadline;
+use argonauts_testkit::pty::deadline;
 use argonauts_testkit::{FakeRunner, FakeSession};
 
 use support::{Crew, Outcome};
@@ -242,7 +244,7 @@ async fn run_in(crew: &Crew, mode: Option<ApprovalMode>) -> anyhow::Result<Outco
 fn real_policy(
     crew: &Crew,
     settings: &Arc<argonauts_core::settings::Settings>,
-) -> anyhow::Result<Arc<dyn argonauts_core::policy::ApprovalPolicy>> {
+) -> anyhow::Result<Arc<dyn argonauts_core::safety::policy::ApprovalPolicy>> {
     let repo = crew.repo_context()?;
     let state = repo
         .run_dir
@@ -423,7 +425,7 @@ async fn autopilot_runs_the_trial_plan_to_a_merge_with_no_question() -> anyhow::
 /// gives that fix to a task instead of ruling it out.
 #[tokio::test]
 async fn the_orchestrator_hears_what_already_fails() -> anyhow::Result<()> {
-    use argonauts_core::events::task::{CheckKind, CheckOutcome};
+    use argonauts_core::runs::events::task::{CheckKind, CheckOutcome};
 
     let crew = trial_crew(rotated_plan())?;
     crew.services.checks.push_at_start(CheckOutcome {
@@ -470,7 +472,7 @@ async fn the_orchestrator_hears_what_already_fails() -> anyhow::Result<()> {
 /// in, and reads first that it now orchestrates the run.
 #[tokio::test]
 async fn the_orchestrators_first_ask_is_a_fork_of_the_main_session() -> anyhow::Result<()> {
-    use argonauts_core::events::run::{ForkFrom, StartsFrom};
+    use argonauts_core::runs::events::run::{ForkFrom, StartsFrom};
 
     let mut crew = trial_crew(rotated_plan())?;
     crew.starts_from = Some(StartsFrom::Fork(ForkFrom {
@@ -491,7 +493,7 @@ async fn the_orchestrators_first_ask_is_a_fork_of_the_main_session() -> anyhow::
     assert_eq!(first.resume.as_deref(), Some("codex-main"));
     assert_eq!(first.workdir, crew.repo.root());
     let opening = first.prompt.first().map(|part| part.text.trim_end());
-    assert_eq!(opening, Some(argonauts_crew::orchestrated::FORKED));
+    assert_eq!(opening, Some(argonauts_crew::roles::orchestrated::FORKED));
     Ok(())
 }
 
@@ -501,8 +503,8 @@ async fn the_orchestrators_first_ask_is_a_fork_of_the_main_session() -> anyhow::
 #[tokio::test]
 async fn a_fork_that_fails_plans_from_the_brief_on_the_same_orchestrator() -> anyhow::Result<()> {
     use argonauts_core::ErrorCategory;
-    use argonauts_core::events::run::{ForkFrom, StartsFrom};
-    use argonauts_core::events::session::EndReason;
+    use argonauts_core::runs::events::run::{ForkFrom, StartsFrom};
+    use argonauts_core::runs::events::session::EndReason;
 
     let plan = rotated_plan();
     let mut crew = trial_crew_with(FakeRunner::cli(CODEX, "openai").respond_with(

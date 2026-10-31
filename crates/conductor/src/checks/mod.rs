@@ -26,9 +26,9 @@ use tokio::net::unix::pipe;
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep_until};
 
-use crate::control::StopHandle;
+use crate::limits::control::StopHandle;
 use crate::process::{new_session, signal_group};
-use crate::run_host::millis;
+use crate::session::run_host::millis;
 
 /// Variables a check keeps from Argonauts Code's environment, besides `LC_*`, so build and test
 /// tools can find themselves.

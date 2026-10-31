@@ -4,8 +4,8 @@
 //! its reviewer or code picked it, and code never picks whoever built the work.
 
 use argonauts_core::TaskId;
-use argonauts_core::events::task::{PickedBy, TaskKind};
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::task::{PickedBy, TaskKind};
 use argonauts_core::settings::Settings;
 
 use crate::roles;
@@ -302,7 +302,7 @@ mod tests {
         use argonauts_core::{CommitInfo, DiffStat};
 
         let task = TaskId::new("task-001").unwrap();
-        let mut record = TaskEntry::new(crate::testutil::task_spec("task-001", &[], None));
+        let mut record = TaskEntry::new(crate::testing::task_spec("task-001", &[], None));
         let commit = |by: &str, sha: Option<&str>| CommitInfo {
             branch: "argonauts/run/task-001".to_owned(),
             sha: sha.map(str::to_owned),

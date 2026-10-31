@@ -11,24 +11,24 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 
 use argonauts_core::RunId;
-use argonauts_core::events::shared::RunReviewEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::layout::run_files;
-use argonauts_core::views::LearningCommand;
+use argonauts_core::app::views::LearningCommand;
+use argonauts_core::base::layout::run_files;
+use argonauts_core::runs::events::shared::RunReviewEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_learning::export::sync::{self, SyncMode};
 use argonauts_learning::learned_workflows;
 use argonauts_learning::outcomes::{self, LogLine};
 use argonauts_learning::predictions;
 use argonauts_learning::records::Book;
 use argonauts_learning::replay::ReplayRunner;
 use argonauts_learning::skills;
-use argonauts_learning::sync::{self, SyncMode};
 
 use super::act::{self, Asker};
 use super::replay::{self, SupervisedReplays, Turn};
 use super::view::serde_word;
 use super::{or_empty, store};
-use crate::app_settings::AppSettings;
-use crate::env::AppEnv;
+use crate::startup::app_settings::AppSettings;
+use crate::startup::env::AppEnv;
 
 /// A learning command from the shell.
 #[derive(Debug, Clone, PartialEq)]
@@ -360,7 +360,7 @@ fn package(dir: &Path, repo: &Path) -> anyhow::Result<ShellOutput> {
     let paths = argonauts_core::Paths::from_env()?;
     let layout = crate::self_update::Layout::for_home(&paths);
     let binary = crate::self_update::program_to_save(&layout)?;
-    let written = argonauts_learning::package::write(dir, repo, &binary)?;
+    let written = argonauts_learning::export::package::write(dir, repo, &binary)?;
     let names: Vec<String> = written
         .iter()
         .map(|path| path.display().to_string())
@@ -617,7 +617,7 @@ pub fn learning_proposals(repo: Option<&Path>) -> anyhow::Result<Vec<String>> {
             proposal.entry.id, proposal.entry.run
         ));
     }
-    let branches = argonauts_learning::git::run(
+    let branches = argonauts_learning::store::git::run(
         &env.repo_root,
         &[
             "for-each-ref",

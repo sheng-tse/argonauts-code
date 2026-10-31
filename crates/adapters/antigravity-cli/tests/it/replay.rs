@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use argonauts_adapter_antigravity_cli::{AntigravityCli, TESTED_VERSIONS};
-use argonauts_core::events::session::{SubagentKind, SubagentStatus, SubagentUpdate};
-use argonauts_core::limits::{PlanUsageSource, PlanUsageStatus};
+use argonauts_core::models::limits::{PlanUsageSource, PlanUsageStatus};
+use argonauts_core::runs::events::session::{SubagentKind, SubagentStatus, SubagentUpdate};
 use argonauts_core::{
     Adapter, AgentEvent, ErrorCategory, MeterLimit, Report, ReportStatus, RetryReason, SpendMeter,
 };

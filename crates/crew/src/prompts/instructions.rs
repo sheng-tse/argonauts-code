@@ -9,16 +9,16 @@ use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
 use argonauts_core::TaskId;
-use argonauts_core::events::session::InputPart;
-use argonauts_core::events::task::TaskKind;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
-use argonauts_core::prompt_parts as parts;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::prompts::prompt_parts as parts;
+use argonauts_core::runs::events::session::InputPart;
+use argonauts_core::runs::events::task::TaskKind;
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::roles;
 use crate::workflow::StepAt;
 
@@ -94,7 +94,7 @@ pub fn of_task(host: &Host, agent: &Agent<'_>) -> Option<InputPart> {
 /// A council's task brief, which names no seat or model: the council agreed it.
 fn from_the_council(text: String) -> InputPart {
     crate::task::support::part(
-        argonauts_core::events::session::InputPartKind::Instructions,
+        argonauts_core::runs::events::session::InputPartKind::Instructions,
         "From the council",
         text,
         Some("the plan it agreed".to_owned()),
@@ -245,9 +245,9 @@ pub fn orchestrator(settings: &Settings) -> ModelRef {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::session::InputPartKind;
-    use argonauts_core::prompt_files::PromptDirs;
-    use argonauts_core::prompt_parts::heading;
+    use argonauts_core::prompts::prompt_files::PromptDirs;
+    use argonauts_core::prompts::prompt_parts::heading;
+    use argonauts_core::runs::events::session::InputPartKind;
     use argonauts_core::settings::prompts::Writer;
 
     use super::*;

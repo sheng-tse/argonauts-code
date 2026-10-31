@@ -14,7 +14,7 @@ use std::ffi::{OsStr, OsString};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use argonauts_core::outside::Outside;
+use argonauts_core::safety::outside::Outside;
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "linux")]

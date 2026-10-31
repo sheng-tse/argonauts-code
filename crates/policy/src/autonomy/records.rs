@@ -10,10 +10,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use argonauts_core::RunId;
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::layout::repo_state;
-use argonauts_core::names::ApprovalId;
-use argonauts_core::policy::{DecisionPoint, Verdict};
+use argonauts_core::base::layout::repo_state;
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::safety::policy::{DecisionPoint, Verdict};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 

@@ -7,7 +7,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use argonauts_core::api::ConductorApi;
+use argonauts_core::runs::api::ConductorApi;
 use argonauts_core::settings::agents::McpSettings;
 use serde_json::Value;
 

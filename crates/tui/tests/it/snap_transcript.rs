@@ -8,36 +8,36 @@ use std::time::Instant;
 use argonauts_core::app::{
     AgentReady, AppEvent, ConversationEvent, HeaderAndBottomLine, TurnReply,
 };
-use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent, FallbackPlan};
-use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
-use argonauts_core::events::plan::{
+use argonauts_core::base::names::{AgentId, DraftId, ModelRef, TurnId};
+use argonauts_core::models::limits::{AgentHealth, HealthState};
+use argonauts_core::runs::events::agent_status::{AgentStatusEvent, FallbackEvent, FallbackPlan};
+use argonauts_core::runs::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
+use argonauts_core::runs::events::plan::{
     DivideEvent, JudgingResult, MappedPosition, MappedTopic, PlanEvent, TaskGraph,
 };
-use argonauts_core::events::run::{
+use argonauts_core::runs::events::run::{
     Party, PhaseChange, RunLifecycle, RunMode, RunOutcome, RunPhase, RunStarted,
 };
-use argonauts_core::events::task::{
+use argonauts_core::runs::events::task::{
     CheckKind, CheckOutcome, MergeEvent, TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState,
 };
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::{AgentHealth, HealthState};
-use argonauts_core::names::{AgentId, DraftId, ModelRef, TurnId};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::fallback::{FallbackContext, FallbackMode, FallbackStrategy};
 use argonauts_core::settings::protocol::JudgingMethod;
 use argonauts_core::settings::ui::{NarratorMode, UiSettings, VerbTheme};
-use argonauts_core::steps::understand::Reading;
+use argonauts_core::workflows::steps::understand::Reading;
 use argonauts_core::{AgentEvent, DiffStat, PhaseStatus, RunId, Spend, TaskId, Verbosity};
+use argonauts_tui::app::model::ViewModel;
+use argonauts_tui::base::format::WallClock;
+use argonauts_tui::base::stability::{self, WIDTHS, samples};
+use argonauts_tui::base::theme::Role;
 use argonauts_tui::bridge::agents::AgentBlocks;
 use argonauts_tui::bridge::transcript::{ConversationTurns, Transcript};
 use argonauts_tui::bridge::{Cx, Effects};
-use argonauts_tui::cell::ToolKind;
-use argonauts_tui::format::WallClock;
-use argonauts_tui::model::ViewModel;
-use argonauts_tui::stability::{self, WIDTHS, samples};
-use argonauts_tui::state::{AppState, Replay, RunState, TaskRow};
-use argonauts_tui::theme::Role;
+use argonauts_tui::cells::cell::ToolKind;
+use argonauts_tui::frame::state::{AppState, Replay, RunState, TaskRow};
 use common::{fg, still, style_of, text, theme};
 use ratatui::text::Line;
 use time::OffsetDateTime;

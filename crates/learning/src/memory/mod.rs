@@ -7,12 +7,12 @@
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::settings::learning::MemorySettings;
-use argonauts_core::steps::task::MemoryProposal;
+use argonauts_core::workflows::steps::task::MemoryProposal;
 use argonauts_core::{RunId, TaskId};
 
-use crate::scan::Finding;
+use crate::export::scan::Finding;
 
 /// Where a note came from, filled in by code.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,7 +59,7 @@ pub fn check(proposal: &MemoryProposal, index: usize, limits: &MemorySettings) -
         ));
     }
     let mut flagged = Vec::new();
-    for finding in crate::scan::scan(&format!("{}\n{}", proposal.topic, proposal.text)) {
+    for finding in crate::export::scan::scan(&format!("{}\n{}", proposal.topic, proposal.text)) {
         match finding {
             ref refused if refused.refuses() => reasons.push(refused.to_string()),
             // A note may never widen what an agent may do, so nobody is asked to accept one.

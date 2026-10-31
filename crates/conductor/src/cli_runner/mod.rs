@@ -37,23 +37,23 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use argonauts_core::cheapest::cheapest_listed;
-use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::{HealthBoard, PlanUsageBoard};
-use argonauts_core::model_memory::{ModelMemory, NoModelMemory};
-use argonauts_core::names::RoleName;
-use argonauts_core::names::{AgentId, ModelRef};
-use argonauts_core::registry::ModelRegistry;
-use argonauts_core::session_runner::{
+use argonauts_core::agents::session_runner::{
     RunnerCapabilities, RunnerError, RunnerKind, SessionHandle, SessionRunner, SessionSpec,
 };
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::base::names::{AgentId, ModelRef};
+use argonauts_core::models::cheapest::cheapest_listed;
+use argonauts_core::models::limits::{HealthBoard, PlanUsageBoard};
+use argonauts_core::models::model_memory::{ModelMemory, NoModelMemory};
+use argonauts_core::models::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxSettings;
 use argonauts_core::{Adapter, CommandSpec, Paths, SessionRequest};
 
+use crate::boards::health::{DisableScope, disable_scope};
+use crate::boards::plan_usage::{PlanUsageWatch, Prober, has_plan_usage_probe, register_prober};
 use crate::doctor::resolve_binary;
-use crate::health::{DisableScope, disable_scope};
-use crate::plan_usage::{PlanUsageWatch, Prober, has_plan_usage_probe, register_prober};
 use crate::sandbox::proxy::Proxy;
 use crate::sandbox::{self, SandboxWrap};
 
@@ -351,7 +351,7 @@ impl SessionRunner for CliRunner {
         self.adapter.instruction_files(workdir, isolated)
     }
 
-    fn identity_marks(&self) -> argonauts_core::adapter::IdentityMarks {
+    fn identity_marks(&self) -> argonauts_core::agents::adapter::IdentityMarks {
         self.adapter.identity_marks()
     }
 
@@ -406,15 +406,15 @@ mod plan_usage_probe_tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
-    use argonauts_core::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
+    use argonauts_core::models::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
     use argonauts_core::settings::approvals::SandboxChoice;
     use argonauts_core::{SessionRequest, StopPlan, StreamParser};
-    use argonauts_testkit::services::MemoryHealthBoard;
+    use argonauts_testkit::engine::services::MemoryHealthBoard;
     use time::OffsetDateTime;
 
     use super::testing::{TestAdapter, collect, spec_in};
     use super::*;
-    use crate::plan_usage::FilePlanUsageBoard;
+    use crate::boards::plan_usage::FilePlanUsageBoard;
     use crate::sandbox::Unsandboxed;
 
     /// The test agent, with a free plan usage probe that logs each run.

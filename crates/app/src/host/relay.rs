@@ -9,12 +9,12 @@
 
 use std::collections::VecDeque;
 
-use argonauts_core::control::{ControlReply, ControlRequest};
-use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::run::{RunOutcome, WaitReason};
+use argonauts_core::runs::engine::{EngineCommand, EngineExit};
+use argonauts_core::runs::events::run::{RunOutcome, WaitReason};
 use tokio::sync::{mpsc, oneshot};
 
 use super::server::{EngineReply, RUN_HOST_EXITING, command, error};
+use crate::control::{ControlReply, ControlRequest};
 
 /// One request, and its way back to whoever sent it.
 pub(crate) struct Entry {

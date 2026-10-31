@@ -8,10 +8,10 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use argonauts_core::CommandSpec;
-use argonauts_core::events::session::{
+use argonauts_core::base::layout::session_files;
+use argonauts_core::runs::events::session::{
     InputPart, InputPartKind, LaunchRecord, PromptVia, QueuedMessage, SessionEvent, SessionInput,
 };
-use argonauts_core::layout::session_files;
 
 pub const PROMPT_PLACEHOLDER: &str = "<prompt>";
 
@@ -122,7 +122,7 @@ pub fn message_part(message: &QueuedMessage) -> InputPart {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::session::InputPartKind;
+    use argonauts_core::runs::events::session::InputPartKind;
 
     #[test]
     fn the_prompt_and_env_values_stay_out_of_the_record() {

@@ -1,8 +1,8 @@
 //! The Brier score of a probability forecast against what happened: 0 is perfect, 1 is worst.
 
 use argonauts_core::TaskId;
-use argonauts_core::events::shared::RunReviewEvent;
-use argonauts_core::steps::task::Predictions;
+use argonauts_core::runs::events::shared::RunReviewEvent;
+use argonauts_core::workflows::steps::task::Predictions;
 
 pub fn brier(predicted: f64, happened: bool) -> f64 {
     let outcome = if happened { 1.0 } else { 0.0 };

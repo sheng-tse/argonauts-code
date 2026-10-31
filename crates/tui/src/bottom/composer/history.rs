@@ -2,7 +2,7 @@
 //! last row. Searching it is the bottom's [`HistorySearch`](crate::bottom::HistorySearch).
 
 use super::{Composer, ComposerEvent};
-use crate::prompt_history::HISTORY_LIMIT;
+use crate::base::input::prompt_history::HISTORY_LIMIT;
 
 impl Composer {
     /// Replaces the history, oldest first, such as with `history.jsonl` at start.

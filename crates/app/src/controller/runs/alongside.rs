@@ -8,14 +8,14 @@ use std::collections::HashSet;
 use anyhow::Context as _;
 use argonauts_core::RunId;
 use argonauts_core::app::AppEvent;
-use argonauts_core::events::failure::run_failure_line;
-use argonauts_core::events::run::RunOutcome;
-use argonauts_core::events::{RunEvent, RunEventKind, RunLifecycle};
+use argonauts_core::runs::events::failure::run_failure_line;
+use argonauts_core::runs::events::run::RunOutcome;
+use argonauts_core::runs::events::{RunEvent, RunEventKind, RunLifecycle};
 use tokio::task::JoinHandle;
 
 use super::{RunNews, RunsState};
 use crate::controller::Ctx;
-use crate::controller::attach::{self, Attached, Stage};
+use crate::controller::runs::attach::{self, Attached, Stage};
 
 /// A run off screen whose events still stream into the conversation.
 pub(super) struct Alongside {

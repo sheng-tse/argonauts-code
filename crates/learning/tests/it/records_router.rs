@@ -4,11 +4,11 @@ use crate::records_support;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-use argonauts_core::limits::TrackRecord;
+use argonauts_core::models::limits::TrackRecord;
 use argonauts_core::settings::protocol::{RoutingSettings, RoutingWeights};
 use argonauts_learning::records::{Beta, Record};
 use argonauts_learning::routing::{self, RunSoFar};
-use argonauts_learning::types::Assignment;
+use argonauts_learning::store::types::Assignment;
 
 use records_support::{close, worker};
 

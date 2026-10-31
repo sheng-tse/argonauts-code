@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use argonauts_core::event::AgentEvent;
+use argonauts_core::runs::event::AgentEvent;
 use serde_json::Value;
 use similar::TextDiff;
 
@@ -304,11 +304,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_conversation_sends_a_codex_edits_patch_just_before_the_edit_ends() {
+        use argonauts_core::agents::session_runner::RunnerEvent;
         use argonauts_core::app::{AppEvent, ConversationEvent};
-        use argonauts_core::session_runner::RunnerEvent;
         use argonauts_testkit::FakeSession;
 
-        use crate::controller::test_support::TestDriver;
+        use crate::controller::base::test_support::TestDriver;
 
         let mut driver = TestDriver::start().await;
         std::fs::write(driver.repo.root().join("hello.txt"), "hello\n").unwrap();

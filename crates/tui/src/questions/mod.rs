@@ -9,7 +9,6 @@ mod approval;
 mod choice;
 mod cli_down;
 mod confirm;
-pub mod deep_map;
 mod item;
 mod options;
 mod plan_workflow;
@@ -22,26 +21,26 @@ mod words;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use argonauts_core::app::{AnswerTarget, AppChoice, AppEvent, ChoiceKind, UiCommand};
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened,
     ApprovalPacket, PolicyCheck,
 };
-use argonauts_core::events::run::Party;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::ApprovalId;
-use argonauts_core::policy::Verdict;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::safety::policy::Verdict;
 use argonauts_core::{RunId, TaskId};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::app::UiAction;
+use crate::base::text::sanitize_line;
 use crate::bottom::{AnsweredPick, QuestionPrompt};
 use crate::bridge::Cx;
-use crate::cell::Cell;
-use crate::council::edits::InQuestion;
-use crate::state::DecisionRecord;
-use crate::text::sanitize_line;
-use crate::views::ViewOutcome;
+use crate::cells::cell::Cell;
+use crate::council::screens::edits::InQuestion;
+use crate::frame::state::DecisionRecord;
+use crate::frame::view::ViewOutcome;
 
 pub(crate) use about::details;
 pub use about::{about_cells, about_cells_local, about_item, with_run_workers};

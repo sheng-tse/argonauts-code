@@ -7,8 +7,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use argonauts_core::layout::{run_files, session_files};
-use argonauts_testkit::journal;
+use argonauts_core::base::layout::{run_files, session_files};
+use argonauts_testkit::home::journal;
 
 use super::{Limits, write_file};
 

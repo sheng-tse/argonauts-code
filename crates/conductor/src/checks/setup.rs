@@ -13,7 +13,7 @@ use argonauts_core::settings::protocol::CheckCommand;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
 use super::{CheckProcess, Ran, execute};
-use crate::control::StopHandle;
+use crate::limits::control::StopHandle;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SetupError {
@@ -168,7 +168,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, SetupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_testkit::repo::TempRepo;
+    use argonauts_testkit::home::repo::TempRepo;
 
     #[test]
     fn copy_untracked_takes_only_matching_untracked_files() {

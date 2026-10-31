@@ -3,7 +3,7 @@
 
 use super::globe::Bounds;
 use super::{DotColours, Planet, Sun};
-use crate::world::geo::{Globe, GlobePoint, Plate};
+use crate::base::draw::geo::{Globe, GlobePoint, Plate};
 use crate::world::map::fields::Rgb;
 use crate::world::raster::noise::{mix, smooth};
 use crate::world::raster::{Blend, Brush, Canvas, Colour, Gradient, Path, Transform};

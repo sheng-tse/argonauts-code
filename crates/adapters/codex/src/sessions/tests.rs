@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use argonauts_core::Adapter as _;
-use argonauts_core::cli_sessions::CliCall;
+use argonauts_core::agents::cli_sessions::CliCall;
 use time::macros::datetime;
 
 use super::*;

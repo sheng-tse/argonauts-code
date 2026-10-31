@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::settings::protocol::RoutingSettings;
 use argonauts_core::{RunId, TaskId};
 

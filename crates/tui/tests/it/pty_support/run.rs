@@ -68,7 +68,7 @@ impl Agent {
     /// How the screen names it, such as `Opus on Claude Code`.
     pub fn name(&self) -> String {
         let worker = self.worker.parse().expect("a model");
-        argonauts_core::display_names::DisplayNames::default().worker(&worker)
+        argonauts_core::look::display_names::DisplayNames::default().worker(&worker)
     }
 
     /// The `n`th agent, from 1: `s-00n` on `task-00(n+1)`, with workers taking turns.

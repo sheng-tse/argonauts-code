@@ -6,7 +6,7 @@
 use std::io::Write;
 
 use super::Ui;
-use crate::kit::logo::{self, LogoSize};
+use crate::base::kit::logo::{self, LogoSize};
 
 /// What the terminal was given of the logos' pictures.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -42,16 +42,16 @@ impl<W: Write> Ui<W> {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use argonauts_core::logos::{Logo, LogoMark};
-    use argonauts_core::names::AgentId;
+    use argonauts_core::base::names::AgentId;
+    use argonauts_core::look::logos::{Logo, LogoMark};
     use ratatui::layout::{Position, Size};
 
     use super::Ui;
+    use crate::app::model::ViewModel;
+    use crate::base::kit::logo;
+    use crate::base::theme::Theme;
     use crate::bottom::{RunRowKind, WorkflowRow, WorkflowRowState};
-    use crate::kit::logo;
-    use crate::model::ViewModel;
     use crate::terminal::InlineTerminal;
-    use crate::theme::Theme;
 
     /// The placement of Claude Code's logo numbered 2, on a dark screen.
     fn second_seat() -> String {

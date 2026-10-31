@@ -2,10 +2,10 @@
 
 use crate::records_support;
 use argonauts_core::RunId;
-use argonauts_core::events::run::RunOutcome;
+use argonauts_core::runs::events::run::RunOutcome;
 use argonauts_learning::Store;
 use argonauts_learning::outcomes::{self, LogLine, WorkflowStats};
-use argonauts_learning::types::RunRecord;
+use argonauts_learning::store::types::RunRecord;
 
 use records_support::{AS_OF, outcome};
 

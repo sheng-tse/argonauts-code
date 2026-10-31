@@ -12,25 +12,25 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use argonauts_core::clock::Clock;
-use argonauts_core::engine::EngineExit;
-use argonauts_core::event::AgentEvent;
-use argonauts_core::events::plan::DivideEvent;
-use argonauts_core::events::run::{RunMode, RunOutcome};
-use argonauts_core::events::shared::RunReviewEvent;
-use argonauts_core::events::task::{MergeEvent, ReviewEvent};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::session_runner::{RunnerEvent, SessionRunner, SessionSpec};
+use argonauts_core::agents::session_runner::{RunnerEvent, SessionRunner, SessionSpec};
+use argonauts_core::base::clock::Clock;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::event::AgentEvent;
+use argonauts_core::runs::events::plan::DivideEvent;
+use argonauts_core::runs::events::run::{RunMode, RunOutcome};
+use argonauts_core::runs::events::shared::RunReviewEvent;
+use argonauts_core::runs::events::task::{MergeEvent, ReviewEvent};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::delivery::DeliveryCommits;
 use argonauts_core::settings::protocol::MergeMode;
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::design::WorkflowExample;
-use argonauts_core::steps::intake::ChangeEstimate;
-use argonauts_core::steps::task::Predictions;
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::design::WorkflowExample;
+use argonauts_core::workflows::steps::intake::ChangeEstimate;
+use argonauts_core::workflows::steps::task::Predictions;
 use argonauts_core::{RepoId, RunId, TaskId};
-use argonauts_crew::captain_or_crew;
+use argonauts_crew::roles::captain_or_crew;
 use argonauts_crew::run_review::learned_workflow::{self, RunLearnedWorkflow};
 use argonauts_crew::run_review::notes;
 use argonauts_crew::run_review::outcomes::{self, LogLine};
@@ -41,8 +41,8 @@ use argonauts_learning::learned_workflows::{
 };
 use argonauts_learning::outcomes::Outcome;
 use argonauts_learning::{Assignment, LearnedWorkflowRef, RunRecord, Store};
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
-use argonauts_testkit::services::TEST_RUN;
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::services::TEST_RUN;
 use support::{Crew, fill, names};
 
 /// The file every build session writes, so each task commits and merges.
@@ -1112,11 +1112,11 @@ async fn finished_runs_logs_land_with_the_next_run() -> anyhow::Result<()> {
 /// hidden tests and the replay folder out of reach.
 #[tokio::test]
 async fn a_replay_reuses_what_its_task_answered_before_its_phase() -> anyhow::Result<()> {
-    use argonauts_core::events::session::SessionEvent;
-    use argonauts_core::events::task::TaskEvent;
-    use argonauts_core::events::workflow::WorkflowEvent;
-    use argonauts_core::workflow::StandardPhase;
-    use argonauts_crew::replay_terms::{self, ReplayTerms};
+    use argonauts_core::runs::events::session::SessionEvent;
+    use argonauts_core::runs::events::task::TaskEvent;
+    use argonauts_core::runs::events::workflow::WorkflowEvent;
+    use argonauts_core::workflows::workflow::StandardPhase;
+    use argonauts_crew::engine::replay_terms::{self, ReplayTerms};
 
     let (first, _) = crew_of_two(|worker| Script::new(model_of(worker)))?;
     let (_, recorded) = crew_run(&first).await?;

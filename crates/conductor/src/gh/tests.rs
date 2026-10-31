@@ -1,4 +1,4 @@
-use argonauts_testkit::fake_gh::{
+use argonauts_testkit::fake_clis::fake_gh::{
     FakeGh, GhCheck, GhComment, GhIssue, GhPost, GhPull, GhRepo, GhReview, GhReviewComment, GhWorld,
 };
 

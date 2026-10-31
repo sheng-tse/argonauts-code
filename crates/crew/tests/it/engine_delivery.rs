@@ -10,20 +10,20 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 use argonauts_core::CommandSpec;
-use argonauts_core::events::run::{Party, RunMode};
-use argonauts_core::events::session::{Delivery, SessionEvent};
-use argonauts_core::events::shared::{BlackboardEvent, BlackboardKind, Recipient};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::future::BoxFuture;
-use argonauts_core::names::{AgentId, MessageId, ModelRef, RoleName, SessionKey};
-use argonauts_core::session_runner::{
+use argonauts_core::agents::session_runner::{
     Access, RunnerCapabilities, RunnerError, RunnerKind, SessionControl, SessionHandle,
     SessionRunner, SessionSpec,
 };
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::{AgentId, MessageId, ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::events::run::{Party, RunMode};
+use argonauts_core::runs::events::session::{Delivery, SessionEvent};
+use argonauts_core::runs::events::shared::{BlackboardEvent, BlackboardKind, Recipient};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_crew::blackboard::{self, Post, commands, delivery};
 use argonauts_crew::engine::host::{Host, SessionPlan};
-use argonauts_testkit::deadline;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::pty::deadline;
 
 const WORKER: &str = "codex/gpt-x";
 

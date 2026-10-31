@@ -1,9 +1,9 @@
-use argonauts_core::adapter::{CitationForm, IdentityMarks};
-use argonauts_core::events::council::{
+use argonauts_core::agents::adapter::{CitationForm, IdentityMarks};
+use argonauts_core::base::names::{MessageId, ModelRef};
+use argonauts_core::runs::events::council::{
     CouncilMessage, MessageKind, Point, PointState, ReplyTo, SeatRole, Seating, Speaker, Stance,
     TextPart,
 };
-use argonauts_core::names::{MessageId, ModelRef};
 use argonauts_core::settings::council::CouncilSeat;
 
 use super::*;

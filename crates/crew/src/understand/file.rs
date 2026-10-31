@@ -5,14 +5,14 @@
 use std::path::PathBuf;
 
 use argonauts_core::RunId;
-use argonauts_core::events::goal::{Criterion, GoalFile, GoalSource};
-use argonauts_core::hash::sha256_hex;
-use argonauts_core::layout;
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::base::hash::sha256_hex;
+use argonauts_core::base::layout;
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::runs::events::goal::{Criterion, GoalFile, GoalSource};
 
 use crate::divide::repo_state_dir;
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 
 use super::materiality::one_line;
 
@@ -189,7 +189,7 @@ fn block(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::goal::Assumption;
+    use argonauts_core::runs::events::goal::Assumption;
 
     use super::*;
 

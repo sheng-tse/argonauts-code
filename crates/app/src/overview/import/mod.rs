@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use argonauts_core::overview::{ImportStatus, OwnCount};
+use argonauts_core::app::overview::{ImportStatus, OwnCount};
 use time::{Date, OffsetDateTime, UtcOffset};
 
 use self::seen::Seen;

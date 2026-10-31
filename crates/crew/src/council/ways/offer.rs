@@ -1,9 +1,9 @@
 //! The ways a setup lets a plan pick for a task, in the order ←/→ steps through them.
 
-use argonauts_core::events::task::Way;
+use argonauts_core::runs::events::task::Way;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::ways::{Ways, WorkflowsAllowed};
-use argonauts_core::workflow::WorkflowRef;
+use argonauts_core::workflows::workflow::WorkflowRef;
 
 use super::{Setup, workflow_words};
 

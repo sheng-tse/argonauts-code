@@ -7,12 +7,12 @@
 use std::collections::BTreeSet;
 
 use argonauts_adapter_opencode::models as opencode_models;
+use argonauts_core::agents::session::AuthMode;
 use argonauts_core::app::ModelChoice;
-use argonauts_core::limits::CostEstimate;
-use argonauts_core::model_picker::ListedFacts;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::registry::{ModelAccess, ModelEntry, RegistryKind};
-use argonauts_core::session::AuthMode;
+use argonauts_core::app::model_picker::ListedFacts;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::models::limits::CostEstimate;
+use argonauts_core::models::registry::{ModelAccess, ModelEntry, RegistryKind};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::endpoints::endpoint_settings;
 use argonauts_registry::models::CLAUDE_CODE_ALIASES;

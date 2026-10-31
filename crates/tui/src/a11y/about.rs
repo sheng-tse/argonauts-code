@@ -2,8 +2,8 @@
 //! drawn text: a table reads a row at a time as `header: value` pairs, so a blank cell or a
 //! column with no header never moves a value under the wrong header.
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::approval::ApprovalOpened;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::approval::ApprovalOpened;
 use time::UtcOffset;
 
 use crate::questions::{AboutCell, Block, Table, about_item, details};

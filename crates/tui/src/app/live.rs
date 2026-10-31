@@ -1,11 +1,11 @@
 use ratatui::text::{Line, Span};
 
+use crate::base::draw::render::RenderCtx;
+use crate::base::text::truncate_line;
+use crate::base::theme::Role;
 use crate::bottom::BottomState;
-use crate::cell::HistoryCell;
-use crate::history::{History, LiveBlock};
-use crate::render::RenderCtx;
-use crate::text::truncate_line;
-use crate::theme::Role;
+use crate::cells::cell::HistoryCell;
+use crate::cells::cell::history::{History, LiveBlock};
 
 /// A block's header and one more row, kept while there is room for every block to keep them.
 const BLOCK_MIN_ROWS: usize = 2;
@@ -231,11 +231,11 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+    use crate::base::draw::render::Clock;
+    use crate::base::text::plain_text;
+    use crate::base::theme::{Glyphs, Theme};
     use crate::bottom::QuestionPrompt;
-    use crate::cell::{Cell, HistoryCell};
-    use crate::render::Clock;
-    use crate::text::plain_text;
-    use crate::theme::{Glyphs, Theme};
+    use crate::cells::cell::{Cell, HistoryCell};
 
     fn theme() -> Theme {
         let mut theme = Theme::dark();

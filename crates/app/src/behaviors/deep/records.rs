@@ -9,10 +9,10 @@ use std::path::Path;
 use super::action::{ActionKey, DeepAction, PatchCounts};
 use crate::behaviors::turn_times::TurnTimes;
 use argonauts_core::app::ConversationEvent;
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::layout::{repo_state, run_files};
-use argonauts_core::names::{ModelRef, SessionKey};
+use argonauts_core::base::layout::{repo_state, run_files};
+use argonauts_core::base::names::{ModelRef, SessionKey};
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::{AgentEvent, Paths};
 
 /// The run of a conversation's action, so pruning finds it when the conversation is deleted.

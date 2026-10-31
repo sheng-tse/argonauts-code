@@ -19,6 +19,8 @@ mod views;
 
 #[cfg(test)]
 mod command_goldens;
+pub mod model;
+pub(crate) mod options;
 #[cfg(test)]
 mod tests;
 
@@ -29,17 +31,17 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 
+use crate::app::model::ViewModel;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::input::keymap::{Action, Keymap};
+use crate::base::theme::Theme;
 use crate::bottom::ApprovalMode;
-use crate::cell::BLINK_PERIOD;
-use crate::keymap::{Action, Keymap};
-use crate::model::ViewModel;
-use crate::render::{Clock, RenderCtx};
-use crate::state::AppState;
+use crate::cells::cell::BLINK_PERIOD;
+use crate::frame::state::AppState;
+use crate::frame::view::ViewCtx;
 use crate::terminal::setup::{self, TerminalModes};
 use crate::terminal::title::{TitleStatus, title_text};
 use crate::terminal::{InlineTerminal, paint_rows};
-use crate::theme::Theme;
-use crate::views::ViewCtx;
 
 pub use frames::{FrameScheduler, MIN_FRAME_INTERVAL};
 pub use fullscreen::Scrollback;
@@ -178,7 +180,7 @@ pub struct Ui<W: Write> {
     dirty: bool,
     overlay: Option<TranscriptOverlay>,
     /// The app's own views, the top one drawn. Esc pops one; an empty stack is the conversation.
-    views: Vec<Box<dyn crate::views::View>>,
+    views: Vec<Box<dyn crate::frame::view::View>>,
     /// The open views draw as a panel under the working line, since a command typed while an
     /// answer ran opened the first of them, and the answer goes on above.
     views_as_panel: bool,
@@ -208,7 +210,7 @@ pub struct Ui<W: Write> {
     /// A docked view's map as a picture, and the mouse over it.
     map: map_picture::DockedMap,
     /// The council's bubbles as pictures under the words, where the terminal draws them.
-    council_pictures: crate::council::place::Pictures,
+    council_pictures: crate::council::draw::place::Pictures,
     pictures_under_text: bool,
     keymap: Keymap,
     /// Keys come with the time they arrived, so a paste a terminal types out key by key reads
@@ -319,7 +321,7 @@ impl<W: Write> Ui<W> {
 
     /// Opens `view` over the conversation, on a screen of its own unless it docks or the views
     /// under it are a panel.
-    pub fn push_view(&mut self, view: Box<dyn crate::views::View>) {
+    pub fn push_view(&mut self, view: Box<dyn crate::frame::view::View>) {
         if self.views.is_empty() {
             self.views_as_panel = false;
         }
@@ -330,7 +332,7 @@ impl<W: Write> Ui<W> {
     /// Opens `view` as a panel under the working line, as Claude Code's dialogs open: the
     /// answer keeps running above it, and so does every view opened from it. Over views
     /// already on their own screen it joins them there.
-    pub fn push_panel(&mut self, view: Box<dyn crate::views::View>) {
+    pub fn push_panel(&mut self, view: Box<dyn crate::frame::view::View>) {
         if self.views.is_empty() {
             self.views_as_panel = true;
         }
@@ -339,7 +341,7 @@ impl<W: Write> Ui<W> {
     }
 
     /// Puts `view` on top, keeping what it asks for as it opens.
-    fn stack_view(&mut self, view: Box<dyn crate::views::View>) {
+    fn stack_view(&mut self, view: Box<dyn crate::frame::view::View>) {
         self.asked.extend(view.asks_on_open());
         self.views.push(view);
     }
@@ -354,7 +356,7 @@ impl<W: Write> Ui<W> {
         self.views_as_panel && !self.views.is_empty()
     }
 
-    pub fn pop_view(&mut self) -> Option<Box<dyn crate::views::View>> {
+    pub fn pop_view(&mut self) -> Option<Box<dyn crate::frame::view::View>> {
         self.dirty = true;
         self.views.pop()
     }
@@ -377,7 +379,7 @@ impl<W: Write> Ui<W> {
         }
     }
 
-    pub fn top_view_mut(&mut self) -> Option<&mut (dyn crate::views::View + 'static)> {
+    pub fn top_view_mut(&mut self) -> Option<&mut (dyn crate::frame::view::View + 'static)> {
         self.views.last_mut().map(|view| view.as_mut())
     }
 
@@ -392,7 +394,7 @@ impl<W: Write> Ui<W> {
 
     /// Opens `cells` full screen, such as the diff behind a question's Show the diff. Esc returns
     /// to the inline conversation exactly where it was, question and all.
-    pub fn open_view(&mut self, title: impl Into<String>, cells: Vec<crate::cell::Cell>) {
+    pub fn open_view(&mut self, title: impl Into<String>, cells: Vec<crate::cells::cell::Cell>) {
         self.overlay = Some(TranscriptOverlay::view(title, cells));
         self.dirty = true;
     }
@@ -429,7 +431,7 @@ impl<W: Write> Ui<W> {
         let drawn = self.draw_frame(now, state);
         // A numbered logo the frame drew for the first time goes out in the same update, and
         // to every screen after.
-        let numbered = crate::kit::logo::send_numbered(self.picture_cell());
+        let numbered = crate::base::kit::logo::send_numbered(self.picture_cell());
         self.terminal.keep_pictures(&numbered);
         let pictures = self.terminal.send_kept_pictures();
         let sent = self.terminal.end_frame();
@@ -623,12 +625,12 @@ impl<W: Write> Ui<W> {
         let room = screen.height.saturating_sub(2);
         let mut rows = view
             .dock_height(screen, &ctx)
-            .unwrap_or_else(|| crate::views::dock::height(screen.height))
+            .unwrap_or_else(|| crate::frame::view::dock::height(screen.height))
             .min(room);
         if let Some(question_rows) = question_rows {
             // The question's rule takes the row the view's keys had.
             rows = rows.min((room + 1).saturating_sub(question_rows));
-            if rows < crate::views::dock::MIN_OVER_QUESTION {
+            if rows < crate::frame::view::dock::MIN_OVER_QUESTION {
                 return None;
             }
         }
@@ -637,14 +639,14 @@ impl<W: Write> Ui<W> {
         if view.docked() {
             view.render(area, &mut buffer, &ctx);
         } else {
-            crate::views::dock::render_in_panel(view.as_mut(), area, &mut buffer, &ctx, busy);
+            crate::frame::view::dock::render_in_panel(view.as_mut(), area, &mut buffer, &ctx, busy);
         }
         // The dock's rows are the screen's last, but for a question's under it, which takes the
         // keys and has the map put away.
         let map = view.map().filter(|_| question_rows.is_none());
         self.map
             .saw(map, screen.height.saturating_sub(rows), cell, &ctx);
-        let mut lines = crate::views::dock::lines(&buffer);
+        let mut lines = crate::frame::view::dock::lines(&buffer);
         if question_rows.is_some() {
             lines.pop();
         }
@@ -783,7 +785,7 @@ impl<W: Write> Ui<W> {
         if !exit_lines.is_empty() {
             self.model
                 .history
-                .push(crate::cell::ExitNote::new(exit_lines));
+                .push(crate::cells::cell::ExitNote::new(exit_lines));
         }
         self.drain_history(Instant::now());
         if !self.terminal.pending_history().is_empty() {
@@ -1043,12 +1045,14 @@ fn paint_notice(
     if width == 0 || area.height == 0 {
         return;
     }
-    let text = crate::text::sanitize_line(&notice.text).trim().to_owned();
+    let text = crate::base::text::sanitize_line(&notice.text)
+        .trim()
+        .to_owned();
     let style = theme.style(notice.tone.role());
-    let mut lines = crate::text::wrap_text(&text, style, width, &[], &[]);
+    let mut lines = crate::base::text::wrap_text(&text, style, width, &[], &[]);
     if lines.len() > MOST_ROWS {
         lines.truncate(MOST_ROWS);
-        let last = crate::text::truncate_line(&lines[MOST_ROWS - 1], width - 1);
+        let last = crate::base::text::truncate_line(&lines[MOST_ROWS - 1], width - 1);
         let mut spans = last.spans;
         spans.push(Span::styled("…", style));
         lines[MOST_ROWS - 1] = Line::from(spans);

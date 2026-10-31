@@ -9,19 +9,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::models::meter::LimitDimension;
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalPacket, PolicyCheck,
 };
-use argonauts_core::events::goal::{GoalEvent, GoalFile};
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode};
-use argonauts_core::events::session::EndReason;
-use argonauts_core::events::shared::{AnsweredForYou, BlackboardEvent};
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::meter::LimitDimension;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::runs::events::goal::{GoalEvent, GoalFile};
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode};
+use argonauts_core::runs::events::session::EndReason;
+use argonauts_core::runs::events::shared::{AnsweredForYou, BlackboardEvent};
+use argonauts_core::runs::events::task::MergeEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::{
     Answerer, ApprovalMode, AtHardLimit, DecideWith, Otherwise,
 };
@@ -29,10 +29,10 @@ use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::fallback::FallbackEntry;
 use argonauts_core::settings::protocol::CheckCommand;
 use argonauts_core::settings::workflows::OrchestratorDesigns;
-use argonauts_core::steps::StepName;
-use argonauts_core::workflow::WorkflowRef;
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::workflow::WorkflowRef;
 use argonauts_crew::engine::shared::with_git_env;
-use argonauts_testkit::deadline;
+use argonauts_testkit::pty::deadline;
 use argonauts_testkit::{FakeRunner, FakeSession};
 
 use support::{Crew, Gh, Outcome, names};
@@ -236,7 +236,7 @@ async fn drive(crew: &Crew, history: Vec<RunEvent>) -> anyhow::Result<Outcome> {
 fn real_policy(
     crew: &Crew,
     settings: &Arc<argonauts_core::settings::Settings>,
-) -> anyhow::Result<Arc<dyn argonauts_core::policy::ApprovalPolicy>> {
+) -> anyhow::Result<Arc<dyn argonauts_core::safety::policy::ApprovalPolicy>> {
     let repo = crew.repo_context()?;
     let state = repo
         .run_dir
@@ -424,7 +424,7 @@ async fn in_autopilot_a_hard_limit_does_what_you_set() -> anyhow::Result<()> {
     assert!(
         matches!(
             outcome.exit,
-            EngineExit::Finished(argonauts_core::events::run::RunOutcome::PullRequest)
+            EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::PullRequest)
         ),
         "{:?}: open {:?}",
         outcome.exit,
@@ -500,7 +500,7 @@ async fn in_autopilot_a_pull_request_that_cant_open_keeps_the_branch() -> anyhow
     .context("the run asked for a pull request again and again")??;
     assert_eq!(
         outcome.exit,
-        EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
+        EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::BranchLeft),
         "{:?}",
         names(&outcome.events)
     );
@@ -541,7 +541,7 @@ async fn a_checkout_with_no_branch_at_all_keeps_the_runs_branch() -> anyhow::Res
         .context("the run asked to merge again and again")??;
         assert_eq!(
             outcome.exit,
-            EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
+            EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::BranchLeft),
             "autopilot {autopilot}: {:?}",
             names(&outcome.events)
         );
@@ -618,7 +618,7 @@ async fn in_autopilot_a_cap_another_round_cant_change_stops_instead_of_sending_b
     assert!(
         matches!(
             outcome.exit,
-            EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft)
+            EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::BranchLeft)
         ),
         "{:?}",
         outcome.exit
@@ -726,7 +726,7 @@ async fn a_merge_the_judge_rejects_asks() -> anyhow::Result<()> {
     assert!(
         matches!(
             outcome.exit,
-            EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft)
+            EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::BranchLeft)
         ),
         "{:?}: open {:?}",
         outcome.exit,
@@ -1169,7 +1169,7 @@ async fn a_picked_model_answers_in_the_main_agents_place_and_a_picked_judge_chec
     assert_eq!(assumed.len(), 1, "{:?}", goal.assumptions);
     assert!(assumed[0].text.ends_with(": trace"), "{:?}", assumed[0]);
     // Named as people read it, never by its id.
-    let named = argonauts_core::display_names::DisplayNames::default().worker(&picked);
+    let named = argonauts_core::look::display_names::DisplayNames::default().worker(&picked);
     assert_ne!(named, picked.to_string());
     assert!(
         notes(events)
@@ -1397,7 +1397,7 @@ async fn a_workflow_the_main_agent_picks_goes_to_merge_without_asking() -> anyho
         checks(events)
     );
     let picked = events.iter().any(|event| {
-        matches!(&event.kind, RunEventKind::Workflow(argonauts_core::events::workflow::WorkflowEvent::Started(started))
+        matches!(&event.kind, RunEventKind::Workflow(argonauts_core::runs::events::workflow::WorkflowEvent::Started(started))
             if started.from == Some(WorkflowRef::new("maker-checker")))
     });
     assert!(picked, "{:?}", names(events));
@@ -1497,7 +1497,7 @@ async fn on_autopilot_a_merge_reviewed_only_within_one_provider_keeps_the_branch
     let said = notes(&outcome.events);
     assert_eq!(
         outcome.exit,
-        EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
+        EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::BranchLeft),
         "{said:#?}"
     );
     assert!(!run_merged(&outcome.events));
@@ -1517,7 +1517,7 @@ async fn on_autopilot_a_merge_reviewed_only_within_one_provider_keeps_the_branch
 /// the task: your choice is the rule's, as the merge's reason says.
 #[tokio::test]
 async fn on_autopilot_a_reviewer_you_chose_from_one_provider_lets_it_merge() -> anyhow::Result<()> {
-    use argonauts_core::names::RoleName;
+    use argonauts_core::base::names::RoleName;
     use argonauts_core::settings::roles::RoleSettings;
 
     let mut crew = Crew::new()?;
@@ -1550,7 +1550,7 @@ async fn on_autopilot_a_reviewer_you_chose_from_one_provider_lets_it_merge() -> 
     let said = notes(&outcome.events);
     assert_eq!(
         outcome.exit,
-        EngineExit::Finished(argonauts_core::events::run::RunOutcome::Merged),
+        EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::Merged),
         "{said:#?}"
     );
     assert!(run_merged(&outcome.events));
@@ -1586,7 +1586,7 @@ async fn on_autopilot_a_crew_of_one_provider_reviews_within_it_and_keeps_the_bra
     let said = notes(&outcome.events);
     assert_eq!(
         outcome.exit,
-        EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
+        EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::BranchLeft),
         "{said:#?}"
     );
     assert!(!run_merged(&outcome.events));
@@ -1620,8 +1620,8 @@ async fn on_autopilot_a_crew_of_one_provider_reviews_within_it_and_keeps_the_bra
 /// builder's own provider still keeps the work on its branch.
 #[tokio::test]
 async fn on_autopilot_use_the_crew_names_no_reviewer_and_keeps_the_branch() -> anyhow::Result<()> {
-    use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, RunLifecycle};
-    use argonauts_core::steps::intake::InstructionKind;
+    use argonauts_core::runs::events::run::{CheckedInstruction, InstructionOutcome, RunLifecycle};
+    use argonauts_core::workflows::steps::intake::InstructionKind;
 
     let mut crew = Crew::new()?;
     with_checks(&mut crew);
@@ -1658,7 +1658,7 @@ async fn on_autopilot_use_the_crew_names_no_reviewer_and_keeps_the_branch() -> a
     let outcome = drive(&crew, vec![started, autopilot]).await?;
     assert_eq!(
         outcome.exit,
-        EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
+        EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::BranchLeft),
         "{:#?}",
         notes(&outcome.events)
     );
@@ -1672,7 +1672,7 @@ async fn on_autopilot_use_the_crew_names_no_reviewer_and_keeps_the_branch() -> a
 #[tokio::test]
 async fn on_autopilot_a_task_nobody_but_its_builder_could_review_keeps_the_branch()
 -> anyhow::Result<()> {
-    use argonauts_core::events::task::{TaskEvent, TaskState};
+    use argonauts_core::runs::events::task::{TaskEvent, TaskState};
 
     let mut crew = Crew::new()?;
     with_checks(&mut crew);
@@ -1686,7 +1686,7 @@ async fn on_autopilot_a_task_nobody_but_its_builder_could_review_keeps_the_branc
     let said = notes(&outcome.events);
     assert_eq!(
         outcome.exit,
-        EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
+        EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::BranchLeft),
         "{said:#?}"
     );
     assert!(!run_merged(&outcome.events));
@@ -1762,12 +1762,12 @@ async fn a_merge_with_a_task_nobody_could_review_asks_naming_it() -> anyhow::Res
 /// record on this kind of task first, then the most plan usage left.
 #[tokio::test]
 async fn a_stopped_task_goes_to_the_other_installed_clis() -> anyhow::Result<()> {
-    use argonauts_core::clock::Clock;
-    use argonauts_core::events::task::{TaskKind, TaskSpec};
-    use argonauts_core::limits::{
+    use argonauts_core::base::clock::Clock;
+    use argonauts_core::models::limits::{
         HealthState, PlanUsageBoard, PlanUsageReading, PlanUsageSource, PlanUsageStatus,
         TrackRecord,
     };
+    use argonauts_core::runs::events::task::{TaskKind, TaskSpec};
     use argonauts_core::settings::fallback::FallbackEntry;
     use argonauts_crew::fallback::defaults;
 
@@ -2092,9 +2092,9 @@ fn started_from(events: &[RunEvent]) -> Vec<Option<WorkflowRef>> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Workflow(argonauts_core::events::workflow::WorkflowEvent::Started(
-                started,
-            )) => Some(started.from.clone()),
+            RunEventKind::Workflow(
+                argonauts_core::runs::events::workflow::WorkflowEvent::Started(started),
+            ) => Some(started.from.clone()),
             _ => None,
         })
         .collect()
@@ -2291,7 +2291,7 @@ fn run_merged(events: &[RunEvent]) -> bool {
 fn merged(exit: &EngineExit) -> bool {
     matches!(
         exit,
-        EngineExit::Finished(argonauts_core::events::run::RunOutcome::Merged)
+        EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::Merged)
     )
 }
 
@@ -2407,7 +2407,7 @@ async fn autopilot_with_no_judge_goes_ahead_on_your_rules() -> anyhow::Result<()
     let events = &outcome.events;
     assert_eq!(
         outcome.exit,
-        EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft),
+        EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::BranchLeft),
         "open {:?}, notes {:#?}",
         open_kinds(events),
         notes(events)
@@ -2481,13 +2481,17 @@ fn three_provider_crew() -> anyhow::Result<Crew> {
 /// The events of a run in autopilot where task-001, worked by Claude Code, stops on a question
 /// meant for you.
 async fn ask_in_autopilot(crew: &Crew) -> anyhow::Result<Vec<RunEvent>> {
-    report_in_autopilot(crew, argonauts_core::steps::task::ReportStatus::Blocked).await
+    report_in_autopilot(
+        crew,
+        argonauts_core::workflows::steps::task::ReportStatus::Blocked,
+    )
+    .await
 }
 
 /// [`ask_in_autopilot`], the report ending as `status` says.
 async fn report_in_autopilot(
     crew: &Crew,
-    status: argonauts_core::steps::task::ReportStatus,
+    status: argonauts_core::workflows::steps::task::ReportStatus,
 ) -> anyhow::Result<Vec<RunEvent>> {
     let started = crew.run_started(RunMode::Crew, "add a --verbose flag")?;
     let autopilot = RunEvent {
@@ -2513,13 +2517,13 @@ struct Asking {
     host: argonauts_crew::engine::host::Host,
     sink: Arc<argonauts_testkit::MemorySink>,
     task: argonauts_core::TaskId,
-    report: argonauts_core::steps::task::TaskReport,
+    report: argonauts_core::workflows::steps::task::TaskReport,
 }
 
 impl Asking {
     fn new(crew: &Crew, history: Vec<RunEvent>) -> anyhow::Result<Self> {
-        use argonauts_core::events::task::{TaskEvent, TaskKind, TaskSpec, TaskState};
-        use argonauts_core::steps::task::{ReportStatus, TaskReport};
+        use argonauts_core::runs::events::task::{TaskEvent, TaskKind, TaskSpec, TaskState};
+        use argonauts_core::workflows::steps::task::{ReportStatus, TaskReport};
 
         let state = argonauts_crew::state::RunState::fold(&history);
         let (mut context, sink, _commands) = crew.context(history)?;
@@ -2588,7 +2592,7 @@ impl Asking {
 /// it. Nothing waits.
 #[tokio::test]
 async fn a_question_you_leave_goes_back_to_its_agent() -> anyhow::Result<()> {
-    use argonauts_core::events::approval::LEFT_TO_THE_AGENT;
+    use argonauts_core::runs::events::approval::LEFT_TO_THE_AGENT;
     use argonauts_core::settings::asking::WhenDeclined;
 
     let (opened, events) = leave_the_question(three_provider_crew()?).await?;
@@ -2632,11 +2636,11 @@ async fn a_question_you_leave_with_stop_set_stops_its_agent() -> anyhow::Result<
 async fn leave_the_question(
     crew: Crew,
 ) -> anyhow::Result<(
-    Box<argonauts_core::events::approval::ApprovalOpened>,
+    Box<argonauts_core::runs::events::approval::ApprovalOpened>,
     Vec<RunEvent>,
 )> {
-    use argonauts_core::api::ApprovalAnswer;
-    use argonauts_core::events::approval::AnswerAction;
+    use argonauts_core::runs::api::ApprovalAnswer;
+    use argonauts_core::runs::events::approval::AnswerAction;
 
     let started = crew.run_started(RunMode::Crew, "add a --verbose flag")?;
     let asking = Asking::new(&crew, vec![started])?;
@@ -2688,9 +2692,9 @@ async fn leave_the_question(
 /// goes on, the task still blocked on the question takes the answer you gave meanwhile.
 #[tokio::test]
 async fn an_answer_given_while_the_run_was_waiting_reaches_its_task() -> anyhow::Result<()> {
-    use argonauts_core::api::ApprovalAnswer;
-    use argonauts_core::events::approval::AnswerAction;
-    use argonauts_core::events::task::TaskState;
+    use argonauts_core::runs::api::ApprovalAnswer;
+    use argonauts_core::runs::events::approval::AnswerAction;
+    use argonauts_core::runs::events::task::TaskState;
 
     let crew = three_provider_crew()?;
     let started = crew.run_started(RunMode::Crew, "add a --verbose flag")?;
@@ -2755,8 +2759,8 @@ async fn an_answer_given_while_the_run_was_waiting_reaches_its_task() -> anyhow:
 }
 
 /// The answer posted to the agent's question.
-fn posted_answer(events: &[RunEvent]) -> argonauts_core::events::shared::BlackboardMessage {
-    use argonauts_core::events::shared::{BlackboardEvent, BlackboardKind};
+fn posted_answer(events: &[RunEvent]) -> argonauts_core::runs::events::shared::BlackboardMessage {
+    use argonauts_core::runs::events::shared::{BlackboardEvent, BlackboardKind};
     events
         .iter()
         .find_map(|event| match &event.kind {
@@ -2826,7 +2830,7 @@ async fn in_autopilot_a_question_that_blocks_is_answered_elsewhere_with_no_appro
 /// and no approval opens: it stands as its agent's own call, said in one line.
 #[tokio::test]
 async fn in_autopilot_a_finished_reports_question_is_its_agents_own_call() -> anyhow::Result<()> {
-    use argonauts_core::steps::task::ReportStatus;
+    use argonauts_core::workflows::steps::task::ReportStatus;
 
     let crew = three_provider_crew()?;
     let events = report_in_autopilot(&crew, ReportStatus::Done).await?;
@@ -2839,7 +2843,9 @@ async fn in_autopilot_a_finished_reports_question_is_its_agents_own_call() -> an
         .filter(|event| {
             matches!(
                 event.kind,
-                RunEventKind::Session(argonauts_core::events::session::SessionEvent::Started(_))
+                RunEventKind::Session(
+                    argonauts_core::runs::events::session::SessionEvent::Started(_)
+                )
             )
         })
         .count();
@@ -2961,7 +2967,9 @@ async fn at_a_phase_end_the_main_agent_keeps_the_workflow() -> anyhow::Result<()
     let changed = events.iter().any(|event| {
         matches!(
             event.kind,
-            RunEventKind::Workflow(argonauts_core::events::workflow::WorkflowEvent::Changed(_))
+            RunEventKind::Workflow(
+                argonauts_core::runs::events::workflow::WorkflowEvent::Changed(_)
+            )
         )
     });
     assert!(!changed, "the workflow changed: {:?}", names(events));

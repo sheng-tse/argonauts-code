@@ -5,17 +5,17 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use argonauts_core::RunId;
-use argonauts_core::api::{ApiError, EventStream};
-use argonauts_core::control::ClientKind;
-use argonauts_core::events::run::RunLifecycle;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::journal::{self, RunLock};
-use argonauts_core::layout::run_files as names;
+use argonauts_core::base::layout::run_files as names;
+use argonauts_core::runs::api::{ApiError, EventStream};
+use argonauts_core::runs::events::run::RunLifecycle;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::journal::{self, RunLock};
 use tokio::sync::{mpsc, watch};
 
 use super::Client;
 use super::journal_ends;
 use super::socket::Connection;
+use crate::control::ClientKind;
 
 const STREAM_BUFFER: usize = 1024;
 /// How often a tailed stream looks for a run host that came back.

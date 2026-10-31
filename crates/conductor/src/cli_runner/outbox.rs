@@ -2,11 +2,11 @@
 //! never waits on a slow consumer, and a forwarder moves them into the handle's channel. The end
 //! goes out only after the last event, once the events sender is dropped.
 
-use argonauts_core::events::AgentStatusEvent;
-use argonauts_core::events::session::{EndReason, SessionEnd, SessionEvent};
-use argonauts_core::names::MessageId;
-use argonauts_core::names::SessionKey;
-use argonauts_core::session_runner::{RunnerEvent, SessionControl, SessionHandle};
+use argonauts_core::agents::session_runner::{RunnerEvent, SessionControl, SessionHandle};
+use argonauts_core::base::names::MessageId;
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::events::AgentStatusEvent;
+use argonauts_core::runs::events::session::{EndReason, SessionEnd, SessionEvent};
 use argonauts_core::{AgentEvent, ErrorCategory};
 use tokio::sync::{mpsc, oneshot};
 
@@ -147,7 +147,7 @@ fn lost_end(message: &str) -> SessionEnd {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::session::FileDiff;
+    use argonauts_core::runs::events::session::FileDiff;
 
     fn diff(path: &str) -> SessionEvent {
         SessionEvent::FileDiff(FileDiff {

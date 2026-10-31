@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use argonauts_core::settings::Settings;
-use argonauts_crew::replay_terms::{self, ReplayTerms};
+use argonauts_crew::engine::replay_terms::{self, ReplayTerms};
 use argonauts_crew::run_review::learned_workflow::{
     self as run_learned_workflow, RunLearnedWorkflow,
 };
@@ -126,11 +126,11 @@ mod tests {
     use time::OffsetDateTime;
 
     use argonauts_core::RunId;
-    use argonauts_core::events::run::{Party, RunOutcome};
-    use argonauts_core::steps::task::ProcessChange;
+    use argonauts_core::runs::events::run::{Party, RunOutcome};
+    use argonauts_core::workflows::steps::task::ProcessChange;
     use argonauts_learning::evolution::{Action, CandidateState};
     use argonauts_learning::{LearnedWorkflowRef, ReplayResult, RunRecord};
-    use argonauts_testkit::repo::TempRepo;
+    use argonauts_testkit::home::repo::TempRepo;
 
     use super::*;
 
@@ -279,13 +279,13 @@ mod tests {
     /// promoted has nothing to close.
     #[test]
     fn closing_a_promotion_rolls_back_and_counts_against_it() {
-        use argonauts_core::views::LearningCommand;
+        use argonauts_core::app::views::LearningCommand;
         use argonauts_learning::outcomes::{self, LogLine};
 
         use crate::learning::act::{Asker, act};
 
         let repo = TempRepo::new().unwrap();
-        let env = crate::env::AppEnv::for_repo(
+        let env = crate::startup::env::AppEnv::for_repo(
             argonauts_core::Paths::new(repo.home()),
             repo.root(),
             false,

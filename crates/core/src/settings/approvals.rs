@@ -6,7 +6,7 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
-use crate::names::ModelRef;
+use crate::base::names::ModelRef;
 use crate::settings::asking::DEFAULT_ASK_LIMIT;
 pub use crate::settings::asking::{Decides, WhenDeclined};
 use crate::settings::limit::SpendLimits;

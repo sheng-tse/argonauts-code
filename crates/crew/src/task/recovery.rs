@@ -2,19 +2,19 @@
 //! applies the `RecoveryAction`. Fallbacks and races go through `fallback`.
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::agent_status::{FallbackEvent, FallbackPlan};
-use argonauts_core::events::run::{Party, WaitReason};
-use argonauts_core::events::session::{EndReason, SessionEnd};
-use argonauts_core::events::task::{TaskEvent, TaskState};
-use argonauts_core::layout::run_files;
-use argonauts_core::limits::{CandidateQuery, RecoveryAction, StopContext};
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::steps::StepName;
+use argonauts_core::base::layout::run_files;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::models::limits::{CandidateQuery, RecoveryAction, StopContext};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::agent_status::{FallbackEvent, FallbackPlan};
+use argonauts_core::runs::events::run::{Party, WaitReason};
+use argonauts_core::runs::events::session::{EndReason, SessionEnd};
+use argonauts_core::runs::events::task::{TaskEvent, TaskState};
+use argonauts_core::workflows::steps::StepName;
 
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
 use crate::engine::job_fallback;
-use crate::error::EngineResult;
 use crate::fallback;
 use crate::roles;
 use crate::state::tasks::TaskEntry;
@@ -337,7 +337,7 @@ pub(crate) fn try_lines(record: &TaskEntry) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::session::Watchdog;
+    use argonauts_core::runs::events::session::Watchdog;
 
     #[test]
     fn crashes_and_stuck_sessions_are_failures_and_agent_stops_are_not() {

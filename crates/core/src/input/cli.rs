@@ -4,7 +4,7 @@ use super::scope_flag::scope_of_flag;
 use super::{
     InputError, ParsedInput, SlashCommand, WorkflowVerb, bad, parse_input, parse_slash, split_word,
 };
-use crate::cli_commands::{CliCommandSet, CommandKind};
+use crate::agents::cli_commands::{CliCommandSet, CommandKind};
 
 /// [`parse_input`] with the main agent's commands added, Argonauts Code's own names first. A CLI's
 /// name for an Argonauts Code command parses as that command, one that runs inside the CLI becomes
@@ -107,11 +107,11 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::cli_commands::{
+    use crate::agents::cli_commands::{
         BuiltinCommand, BuiltinKind, CliCommand, CommandScope, CommandSource,
     };
+    use crate::base::names::AgentId;
     use crate::input::ViewAction;
-    use crate::names::AgentId;
 
     const CLAUDE: &[BuiltinCommand] = &[
         BuiltinCommand {

@@ -5,55 +5,39 @@
 //! The app controller talks to it over two channels: [`AppEvent`](argonauts_core::app::AppEvent)s
 //! come down, [`UiCommand`](argonauts_core::app::UiCommand)s go up.
 
-// The inline screen: cells, the live bottom region, the terminal, and the loop around them.
-pub mod app;
+// The parts the screen is built from.
+pub mod base;
 pub mod bottom;
-pub mod cell;
-pub mod format;
-pub mod history;
-pub mod keywords;
-pub mod kit;
-pub mod markdown;
-pub mod mascot;
-pub mod model;
-pub mod render;
-pub mod terminal;
-pub mod text;
-pub mod theme;
+pub mod cells;
+pub mod council;
+pub mod frame;
+pub mod panels;
 pub mod world;
 
-// What connects the screen to the app controller.
+// The app around them: the loop, the terminal, the screens and what connects them to the app
+// controller.
 pub mod a11y;
+pub mod app;
 pub mod bridge;
-pub mod commands;
-pub mod council;
-pub mod keymap;
-pub mod mentions;
+pub mod config;
 pub mod mods;
-pub mod overview;
-pub mod prompt_history;
 pub mod questions;
 pub mod runtime;
-pub mod stability;
-pub mod state;
+pub mod terminal;
 pub mod views;
-pub mod welcome;
 
 #[cfg(test)]
-mod approved_screen;
+pub(crate) mod testing;
 #[cfg(test)]
-mod cpu_time;
-mod options;
-#[cfg(test)]
-mod picture_dump;
+mod tests;
 
 pub use a11y::run_screen_reader;
+pub use app::model::ViewModel;
+pub use app::options::{UiOptions, history_file_in};
 pub use app::{Flow, Host, Ui, UiAction, run};
-pub use cell::{Cell, HistoryCell};
-pub use history::{CellId, History};
-pub use model::ViewModel;
-pub use options::{UiOptions, history_file_in};
-pub use render::{Clock, RenderCtx};
+pub use base::draw::render::{Clock, RenderCtx};
+pub use base::theme::Theme;
+pub use cells::cell::history::{CellId, History};
+pub use cells::cell::{Cell, HistoryCell};
 pub use runtime::{AppIo, TerminalGone, run_app, run_with, stop_signal};
 pub use terminal::InlineTerminal;
-pub use theme::Theme;

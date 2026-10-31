@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
-use argonauts_core::workflow::{Step, StepKind, Workflow};
+use argonauts_core::workflows::workflow::{Step, StepKind, Workflow};
 
 use super::keys::WORKFLOW_KEY;
 use super::{Change, ChangeClass};

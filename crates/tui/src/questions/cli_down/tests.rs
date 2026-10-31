@@ -4,12 +4,12 @@
 use std::time::{Duration, Instant};
 
 use argonauts_core::TaskId;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{AgentId, ApprovalId, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::approval::{
     AgentDownPacket, AnswerAction, AnswerOption, ApprovalKind, ApprovalOpened, ApprovalPacket,
     FreeText, PausedTask,
 };
-use argonauts_core::names::{AgentId, ApprovalId, RoleName};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
 use ratatui::buffer::Buffer;
@@ -18,14 +18,15 @@ use time::macros::datetime;
 use time::{OffsetDateTime, UtcOffset};
 
 use super::count_down;
+use crate::base::draw::render::{Clock, RenderCtx};
 use crate::bottom::{BottomState, QuestionPrompt};
+use crate::frame::state::AppState;
+use crate::frame::view::dock;
+use crate::frame::view::{View, ViewCtx};
 use crate::questions::approval_question_local;
-use crate::render::{Clock, RenderCtx};
-use crate::state::AppState;
+use crate::testing::pictures::workflow_pictures::{buffer_of, dark, picture};
 use crate::views::workflow::WorkflowView;
-use crate::views::workflow_examples as examples;
-use crate::views::workflow_pictures::{buffer_of, dark, picture};
-use crate::views::{View, ViewCtx, dock};
+use crate::views::workflow::examples;
 
 const WALL: OffsetDateTime = datetime!(2026-10-10 09:15 UTC);
 

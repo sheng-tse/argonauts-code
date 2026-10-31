@@ -47,7 +47,7 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::names::{ModelRef, RoleName};
+use crate::base::names::{ModelRef, RoleName};
 
 use agents::{AgentSettings, EndpointSettings, McpSettings, RegistrySettings};
 use approvals::{ApprovalSettings, HardLimitSettings, SandboxSettings};

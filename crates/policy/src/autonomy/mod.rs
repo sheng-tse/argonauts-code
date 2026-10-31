@@ -13,11 +13,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use argonauts_core::clock::Clock;
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::layout::user_files;
-use argonauts_core::paths::write_private_file;
-use argonauts_core::policy::{
+use argonauts_core::base::clock::Clock;
+use argonauts_core::base::layout::user_files;
+use argonauts_core::base::paths::write_private_file;
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::safety::policy::{
     ApprovalsView, AutoPreviewRecord, DecisionPoint, EvidencePacket, HardLimit, UserDecision,
     Verdict, Violation,
 };
@@ -25,8 +25,8 @@ use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::ApprovalMode;
 use time::OffsetDateTime;
 
-use crate::daily::{DailyError, DailyLedger};
-use crate::parts::{Autonomy, Refusal, Reservation};
+use crate::approvals::parts::{Autonomy, Refusal, Reservation};
+use crate::limits::daily::{DailyError, DailyLedger};
 use records::{Event, Record, Records};
 use scoring::Scope;
 
@@ -521,9 +521,9 @@ fn rfc3339(at: OffsetDateTime) -> String {
 mod tests {
     use super::*;
     use argonauts_core::RunId;
-    use argonauts_core::events::approval::AnswerAction;
-    use argonauts_core::names::ApprovalId;
-    use argonauts_core::policy::{ApprovalRow, EvidenceDocument, EvidenceFacts};
+    use argonauts_core::base::names::ApprovalId;
+    use argonauts_core::runs::events::approval::AnswerAction;
+    use argonauts_core::safety::policy::{ApprovalRow, EvidenceDocument, EvidenceFacts};
     use argonauts_core::settings::approvals::DecideWith;
     use argonauts_testkit::FakeClock;
     use tempfile::TempDir;

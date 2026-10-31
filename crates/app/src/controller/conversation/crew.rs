@@ -3,13 +3,13 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use argonauts_core::agent_panel::{CrewDetails, CrewRow, CrewState, CrewTarget};
+use argonauts_core::app::agent_panel::{CrewDetails, CrewRow, CrewState, CrewTarget};
+use argonauts_core::app::views::ContextUse;
 use argonauts_core::app::{ConversationSummary, TurnReply};
-use argonauts_core::views::ContextUse;
 
 use super::past::{self, PastConversation};
 use super::{ConversationState, settled};
-use crate::conversation_store::ConversationStore;
+use crate::conversation::store::ConversationStore;
 
 /// The newest conversations the panel lists; the rest stay in `/resume`.
 const MOST: usize = 20;
@@ -122,7 +122,7 @@ pub(crate) fn cli_sessions(conversation_dir: &Path) -> BTreeSet<String> {
 mod tests {
     use argonauts_core::Spend;
     use argonauts_core::app::ConversationEvent;
-    use argonauts_core::names::{ConversationId, TurnId};
+    use argonauts_core::base::names::{ConversationId, TurnId};
 
     use super::*;
 

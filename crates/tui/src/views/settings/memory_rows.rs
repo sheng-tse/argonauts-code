@@ -8,12 +8,12 @@
 use std::time::Instant;
 
 use argonauts_core::app::ModelChoice;
-use argonauts_core::limits::CostEstimate;
-use argonauts_core::model_picker::{Fit, ListedFacts, MachineMemory, ModelMemory};
-use argonauts_core::window_size::window_words;
+use argonauts_core::app::model_picker::{Fit, ListedFacts, MachineMemory, ModelMemory};
+use argonauts_core::look::window_size::window_words;
+use argonauts_core::models::limits::CostEstimate;
 
+use crate::base::theme::Role;
 use crate::bottom::{Gauge, PickerCell, PickerColumn};
-use crate::theme::Role;
 
 const GIB: f64 = (1u64 << 30) as f64;
 const TOO_BIG: &str = "too big here";
@@ -91,10 +91,10 @@ fn tools(listed: &ListedFacts) -> &'static str {
 fn cost(choice: &ModelChoice) -> Option<String> {
     match choice.cost {
         CostEstimate::Free => Some("free".to_owned()),
-        CostEstimate::Usd(usd) => Some(format!("~{} a task", crate::format::usd(usd))),
+        CostEstimate::Usd(usd) => Some(format!("~{} a task", crate::base::format::usd(usd))),
         CostEstimate::PlanUsage(share) => Some(format!(
             "~{} of plan usage a task",
-            crate::format::percent(share)
+            crate::base::format::percent(share)
         )),
         CostEstimate::Unknown => None,
     }
@@ -350,7 +350,7 @@ mod tests {
         ModelChoice {
             worker: worker.parse().unwrap(),
             provider: String::new(),
-            access: argonauts_core::registry::ModelAccess::Local,
+            access: argonauts_core::models::registry::ModelAccess::Local,
             cost: CostEstimate::Free,
             plan_usage: None,
             efforts: Vec::new(),

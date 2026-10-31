@@ -2,16 +2,16 @@
 //! and who reviews each, a report or a review as sentences, and anything else as its fields in
 //! words. The JSON itself stays in the raw log, behind `r`.
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::look::display_names::DisplayNames;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use serde_json::{Map, Value};
 
-use super::columns::{self, Align, Cell, Column, Give};
-use super::panes;
-use crate::text::{sanitize, sanitize_line, wrap_text};
-use crate::theme::{Role, Theme};
+use super::super::base::draw::columns::{self, Align, Cell, Column, Give};
+use super::super::base::draw::panes;
+use crate::base::text::{sanitize, sanitize_line, wrap_text};
+use crate::base::theme::{Role, Theme};
 
 /// Items of a list shown before `+N more`.
 const LIST_ITEMS: usize = 8;
@@ -412,8 +412,8 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::text::{plain_text, str_width};
-    use crate::theme::Glyphs;
+    use crate::base::text::{plain_text, str_width};
+    use crate::base::theme::Glyphs;
 
     /// Fields are drawn in the order the object holds them: as written where the build keeps
     /// that order, as the app's does, and by name otherwise. So the fixtures here write their

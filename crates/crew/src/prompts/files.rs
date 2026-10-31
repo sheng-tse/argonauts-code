@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-use argonauts_core::paths::Paths;
-use argonauts_core::prompt_files::PromptDirs;
+use argonauts_core::base::paths::Paths;
+use argonauts_core::prompts::prompt_files::PromptDirs;
 
 use crate::engine::host::Host;
 

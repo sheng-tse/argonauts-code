@@ -2,8 +2,8 @@
 //! or endpoint provides, or that the judge can't check, and an approval the switch leaves
 //! with you.
 
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::provider::is_known;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::registry::provider::is_known;
 use argonauts_core::settings::Settings;
 
 use super::roles::{self, AgentIds};

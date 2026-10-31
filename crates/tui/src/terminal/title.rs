@@ -9,8 +9,8 @@ use std::fmt;
 
 use crossterm::Command;
 
-use crate::text::sanitize;
-use crate::theme::Glyphs;
+use crate::base::text::sanitize;
+use crate::base::theme::Glyphs;
 
 /// Longest title written, in characters. Terminals cut long titles anyway.
 pub const MAX_TITLE_CHARS: usize = 240;

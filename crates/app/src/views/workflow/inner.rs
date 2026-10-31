@@ -2,11 +2,11 @@
 //! of that agent's step. It sits under the agent's row, never beside the run as a second one,
 //! and opens there to its own phases and their agents.
 
-use argonauts_core::events::session::{CliAgentState, CliWorkflowRun, SubagentStatus};
-use argonauts_core::names::{ModelRef, SessionKey};
-use argonauts_core::views::{
+use argonauts_core::app::views::{
     NestedWorkflowRow, RowStatus, WorkflowRow, cli_phases, cli_workflow_run_id,
 };
+use argonauts_core::base::names::{ModelRef, SessionKey};
+use argonauts_core::runs::events::session::{CliAgentState, CliWorkflowRun, SubagentStatus};
 
 use super::WorkflowLog;
 
@@ -102,7 +102,7 @@ pub(super) fn under_agents(
 #[cfg(test)]
 mod tests {
     use argonauts_core::Spend;
-    use argonauts_core::views::AgentRow;
+    use argonauts_core::app::views::AgentRow;
 
     use super::*;
 

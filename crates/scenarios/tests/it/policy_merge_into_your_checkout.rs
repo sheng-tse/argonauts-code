@@ -6,10 +6,10 @@
 //! or its report lists, so what the tests left behind stays out with no list of file types.
 
 use crate::policy_support;
-use argonauts_core::events::approval::{ApprovalEvent, ApprovalKind};
-use argonauts_core::events::run::{RunLifecycle, RunOutcome};
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::approval::{ApprovalEvent, ApprovalKind};
+use argonauts_core::runs::events::run::{RunLifecycle, RunOutcome};
+use argonauts_core::runs::events::task::MergeEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_scenarios::{WAIT, past_the_question_guard};
 use argonauts_testkit::Key;
 use policy_support::{

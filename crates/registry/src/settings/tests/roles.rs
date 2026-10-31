@@ -1,7 +1,7 @@
 use std::fs;
 
 use argonauts_core::AuthMode;
-use argonauts_core::names::{AgentId, RoleName};
+use argonauts_core::base::names::{AgentId, RoleName};
 use argonauts_core::settings::fallback::{FallbackMode, FallbackStrategy, OnReturn};
 use argonauts_core::settings::roles::RoleTrigger;
 

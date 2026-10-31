@@ -1,9 +1,9 @@
 //! What nature is found from, beside the ground's own facts: each behavior's bursts, breaks and
 //! outcomes, the end of the period, the storm's word, and the label places never used.
 
-use argonauts_core::behavior_map::BehaviorMap;
-use argonauts_core::behavior_world::{BehaviorFacts, StormWord};
 use argonauts_core::behaviors::LABELS;
+use argonauts_core::behaviors::behavior_map::BehaviorMap;
+use argonauts_core::behaviors::behavior_world::{BehaviorFacts, StormWord};
 use time::OffsetDateTime;
 
 use crate::world::map::fields::Ground;

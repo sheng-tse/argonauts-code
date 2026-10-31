@@ -2,7 +2,7 @@
 //! Claude Code, a config flag for Codex, and Argonauts Code counting agy's subagents.
 
 use crate::limits_support;
-use argonauts_core::events::session::EndReason;
+use argonauts_core::runs::events::session::EndReason;
 use limits_support::*;
 
 #[test]

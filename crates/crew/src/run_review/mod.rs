@@ -8,27 +8,27 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::run::{PhaseChange, RunOutcome, RunPhase};
-use argonauts_core::events::session::{EndReason, SessionEnd};
-use argonauts_core::events::shared::RunReviewEvent;
-use argonauts_core::events::task::TaskState;
-use argonauts_core::log::{Note, NoteLevel, RUN_REVIEW_FAILED};
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::log::{Note, NoteLevel, RUN_REVIEW_FAILED};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::run::{PhaseChange, RunOutcome, RunPhase};
+use argonauts_core::runs::events::session::{EndReason, SessionEnd};
+use argonauts_core::runs::events::shared::RunReviewEvent;
+use argonauts_core::runs::events::task::TaskState;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::learning::FlaggedNote;
-use argonauts_core::steps::StepError;
-use argonauts_core::steps::task::{MemoryProposal, RunReview};
+use argonauts_core::workflows::steps::StepError;
+use argonauts_core::workflows::steps::task::{MemoryProposal, RunReview};
 use argonauts_core::{LimitDimension, PhaseStatus, RunId, TaskId};
 use argonauts_learning::evolution::{self, Action, Evolution, Stage};
 use argonauts_learning::memory::{self, Source};
 use argonauts_learning::{LearningError, RunRecord, Store};
 
 use crate::divide;
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
 use crate::engine::job_fallback;
-use crate::error::{EngineError, EngineResult};
 use crate::merge::{conductor, merge_packet};
 use crate::{prompts, roles};
 
@@ -220,7 +220,7 @@ async fn share_outcomes(host: &Host, worktree: &Path) -> EngineResult<()> {
     for run in runs {
         let relative = format!(
             ".argonauts/{}/{}.jsonl",
-            argonauts_core::layout::project_files::OUTCOMES,
+            argonauts_core::base::layout::project_files::OUTCOMES,
             run.as_str()
         );
         if worktree.join(&relative).exists() {
@@ -325,8 +325,8 @@ struct Proposed {
 
 /// Every memory proposal in the workers' reports, with who wrote it and on which task.
 fn proposals(state: &crate::state::RunState) -> Vec<Proposed> {
-    use argonauts_core::events::task::ReviewEvent;
-    use argonauts_core::steps::judgment::ReviewVerdict;
+    use argonauts_core::runs::events::task::ReviewEvent;
+    use argonauts_core::workflows::steps::judgment::ReviewVerdict;
 
     let mut found = Vec::new();
     for record in state.tasks.by_id.values() {
@@ -392,7 +392,7 @@ fn stuck_tasks_of(state: &crate::state::RunState) -> usize {
         .by_id
         .values()
         .filter(|record| {
-            record.opened.kind == argonauts_core::events::approval::ApprovalKind::Stuck
+            record.opened.kind == argonauts_core::runs::events::approval::ApprovalKind::Stuck
         })
         .count()
 }
@@ -653,7 +653,7 @@ fn phase(host: &Host, status: PhaseStatus, summary: Option<&str>) -> EngineResul
 
 #[cfg(test)]
 mod tests {
-    use argonauts_learning::types::LearnedWorkflowRef;
+    use argonauts_learning::store::types::LearnedWorkflowRef;
 
     use super::*;
 

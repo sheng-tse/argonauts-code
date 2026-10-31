@@ -8,8 +8,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use argonauts_testkit::acp::WRONG_PICK_EXIT;
-use argonauts_testkit::scenario::{LogLine, NO_RULE_EXIT};
+use argonauts_testkit::fake_clis::acp::WRONG_PICK_EXIT;
+use argonauts_testkit::fake_clis::scenario::{LogLine, NO_RULE_EXIT};
 use argonauts_testkit::{FakeClis, TempRepo};
 use serde_json::{Value, json};
 
@@ -113,7 +113,7 @@ impl Client {
     /// Closes stdin, as a client does when it's done, and returns the exit code.
     fn finish(mut self) -> i32 {
         drop(self.stdin.take());
-        let deadline = argonauts_testkit::deadline::after(PATIENCE);
+        let deadline = argonauts_testkit::pty::deadline::after(PATIENCE);
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
                 return status.code().unwrap_or(-1);

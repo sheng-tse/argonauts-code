@@ -4,28 +4,30 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use argonauts_core::app::views::{
+    ContextRow, ContextView, RunFinishedAt, ServerCap, WindowFigures,
+};
 use argonauts_core::app::{AppEvent, RepoRuns, SessionCounted, ViewData, ViewRequest};
-use argonauts_core::display_names::builtin_cli_name;
-use argonauts_core::events::context::{ContextDetail, StartingCount};
-use argonauts_core::events::run::RunLifecycle;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::ids::RepoId;
-use argonauts_core::journal;
-use argonauts_core::layout::{self, run_files, session_files};
-use argonauts_core::names::ModelRef;
-use argonauts_core::names::WorkflowId;
-use argonauts_core::registry::ModelRegistry;
+use argonauts_core::base::ids::RepoId;
+use argonauts_core::base::layout::{self, run_files, session_files};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::base::names::WorkflowId;
+use argonauts_core::look::display_names::builtin_cli_name;
+use argonauts_core::models::registry::ModelRegistry;
+use argonauts_core::runs::events::context::{ContextDetail, StartingCount};
+use argonauts_core::runs::events::run::RunLifecycle;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::journal;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::endpoints::endpoint_settings;
 use argonauts_core::settings::sessions::RotateAt;
-use argonauts_core::views::{ContextRow, ContextView, RunFinishedAt, ServerCap, WindowFigures};
 use argonauts_core::{NoteLevel, RunId};
 
 use super::{Handled, on_screen};
 use crate::client;
 use crate::controller::Ctx;
 use crate::controller::runs::{self, RunsState};
-use crate::live_registry;
+use crate::host::live_registry;
 use crate::views;
 
 /// The run's log, or the events this app holds when the log can't be read.
@@ -455,7 +457,7 @@ impl ContextClis {
         else {
             return Self::default();
         };
-        let ids = |keep: &dyn Fn(&dyn argonauts_core::adapter::Adapter) -> bool| {
+        let ids = |keep: &dyn Fn(&dyn argonauts_core::agents::adapter::Adapter) -> bool| {
             adapters
                 .iter()
                 .filter(|adapter| keep(adapter.as_ref()))
@@ -483,7 +485,7 @@ impl ContextClis {
 pub(crate) async fn save_workflow(
     ctx: &mut Ctx,
     runs: &mut RunsState,
-    agent_id: &crate::controller::cli_commands::CliCommands,
+    agent_id: &crate::controller::clis::cli_commands::CliCommands,
     run: RunId,
     workflow: Option<WorkflowId>,
 ) -> Handled {
@@ -511,7 +513,7 @@ pub(crate) async fn save_workflow(
         .env
         .paths
         .home()
-        .join(argonauts_core::layout::user_files::WORKFLOWS);
+        .join(argonauts_core::base::layout::user_files::WORKFLOWS);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", ctx.env.display(&dir)))?;
     // An earlier save keeps its name; this one takes the next free one.
     let path = (1..)
@@ -559,7 +561,7 @@ pub(crate) async fn workflow_view(
 }
 
 /// The steps a setup kept for the run, which its start carries.
-fn kept_steps(events: &[RunEvent]) -> Vec<argonauts_core::required::RequiredStep> {
+fn kept_steps(events: &[RunEvent]) -> Vec<argonauts_core::workflows::required::RequiredStep> {
     events
         .iter()
         .find_map(|event| match &event.kind {
@@ -583,7 +585,7 @@ fn show_workflow(
         return Some(match workflow {
             Some(workflow) => format!("This run has no workflow {workflow}."),
             None if views::being_written(&events) => {
-                argonauts_core::views::BEING_WRITTEN.to_owned()
+                argonauts_core::app::views::BEING_WRITTEN.to_owned()
             }
             None => NO_WORKFLOW_YET.to_owned(),
         });
@@ -607,7 +609,7 @@ pub(crate) async fn all_repos(ctx: &Ctx) -> anyhow::Result<Vec<RepoRuns>> {
         .list()
         .await
         .context("listing this repo's runs")?;
-    let mut others: BTreeMap<PathBuf, Vec<argonauts_core::api::RunSummary>> = BTreeMap::new();
+    let mut others: BTreeMap<PathBuf, Vec<argonauts_core::runs::api::RunSummary>> = BTreeMap::new();
     for live in live_registry::live_run_hosts(&ctx.env.paths) {
         if live.repo_root == ctx.env.repo_root {
             continue;
@@ -626,7 +628,8 @@ pub(crate) async fn all_repos(ctx: &Ctx) -> anyhow::Result<Vec<RepoRuns>> {
         runs.sort_by_key(|run| std::cmp::Reverse(run.updated));
     }
     others.sort_by(|(_, a), (_, b)| {
-        let newest = |runs: &[argonauts_core::api::RunSummary]| runs.first().map(|run| run.updated);
+        let newest =
+            |runs: &[argonauts_core::runs::api::RunSummary]| runs.first().map(|run| run.updated);
         newest(b).cmp(&newest(a))
     });
     let mut repos = vec![RepoRuns {
@@ -642,10 +645,10 @@ pub(crate) async fn all_repos(ctx: &Ctx) -> anyhow::Result<Vec<RepoRuns>> {
 
 #[cfg(test)]
 mod window_tests {
-    use argonauts_core::registry::ModelEntry;
+    use argonauts_core::app::views::ContextRow;
+    use argonauts_core::models::registry::ModelEntry;
     use argonauts_core::settings::agents::EndpointSettings;
-    use argonauts_core::views::ContextRow;
-    use argonauts_testkit::services::StaticRegistry;
+    use argonauts_testkit::engine::services::StaticRegistry;
 
     use super::*;
 
@@ -708,7 +711,7 @@ mod window_tests {
     fn the_servers_a_session_runs_on_here_are_listed_once() {
         let row = |worker: &str| ContextRow {
             run: None,
-            session: argonauts_core::names::SessionKey::numbered(1),
+            session: argonauts_core::base::names::SessionKey::numbered(1),
             label: worker.to_owned(),
             worker: worker.parse().unwrap(),
             used: 0,

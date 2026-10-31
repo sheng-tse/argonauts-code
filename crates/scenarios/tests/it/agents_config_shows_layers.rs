@@ -12,7 +12,7 @@ const VIEW_TITLE: &str = "Every setting and the layer it comes from";
 
 /// Waits until the settings view is off the screen.
 fn wait_closed(pty: &Pty) -> anyhow::Result<()> {
-    let deadline = argonauts_testkit::deadline::after(WAIT);
+    let deadline = argonauts_testkit::pty::deadline::after(WAIT);
     while pty
         .screen()
         .visible

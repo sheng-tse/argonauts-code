@@ -3,7 +3,7 @@
 //! [`start`]. It is the one call to the entry point that runs the chosen workflow, so whatever
 //! runs workflows next is pointed at here and nowhere else.
 
-use argonauts_core::api::StartRun;
+use argonauts_core::runs::api::StartRun;
 
 use crate::controller::Effect;
 

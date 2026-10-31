@@ -13,32 +13,24 @@
 //! - [`Library`] finds workflows on disk and the built-in ones.
 //! - [`change`] makes one change to a file of steps in its text, comments kept.
 
-mod call;
-mod edit;
-mod file;
-mod kept;
-mod library;
-mod plan;
-mod rehearse;
-mod report;
-mod require;
-mod run;
-mod sandbox;
+mod files;
 mod script;
 
-pub use call::{AgentCall, AgentEnd, Check, Checked, Host, JournalEntry, Kept};
-pub use edit::{Change, EditError, FILE_FIELDS, STEP_FIELDS, change};
-pub use file::{Count, FileError, ForEach, KeptBy, Problem, Step, WORKFLOW_KEYS, WorkflowFile};
-pub use kept::{left_out, without_verdicts};
-pub use library::{
+pub use files::edit::{Change, EditError, FILE_FIELDS, STEP_FIELDS, change};
+pub use files::file::{
+    Count, FileError, ForEach, KeptBy, Problem, Step, WORKFLOW_KEYS, WorkflowFile,
+};
+pub use files::library::{
     Library, LibraryError, Listed, Loaded, Origin, README, built_in, built_ins, check_name,
     template,
 };
-pub use plan::{DryRun, Estimate, Row, dry_run, how};
-pub use rehearse::{Asked, Rehearsal, gives_verdict, rehearse};
-pub use require::{Required, RequiredStep};
-pub use run::{Ended, RunInput, run};
-pub use sandbox::{CallKind, Limits, ScriptEnd};
+pub use files::plan::{DryRun, Estimate, Row, dry_run, how};
+pub use files::require::{Required, RequiredStep};
+pub use script::call::{AgentCall, AgentEnd, Check, Checked, Host, JournalEntry, Kept};
+pub use script::kept::{left_out, without_verdicts};
+pub use script::rehearse::{Asked, Rehearsal, gives_verdict, rehearse};
+pub use script::run::{Ended, RunInput, run};
+pub use script::sandbox::{CallKind, Limits, ScriptEnd};
 pub use script::{Meta, MetaPhase, Script, ScriptError};
 
 /// A council written as steps, as the tests read one. The built-in Council talks in its phases

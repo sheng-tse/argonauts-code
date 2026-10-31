@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use super::Span;
 use super::ways::Ways;
-use crate::events::council::SeatRole;
-use crate::names::ModelRef;
+use crate::base::names::ModelRef;
+use crate::runs::events::council::SeatRole;
 
 /// What Council's talk and its plan follow.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

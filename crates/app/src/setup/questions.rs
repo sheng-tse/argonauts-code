@@ -7,11 +7,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use argonauts_core::app::ChoiceKind;
-use argonauts_core::events::approval::{AnswerAction, AnswerOption};
-use argonauts_core::model_catalog::display_name_from_id;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::base::text::shown_name;
+use argonauts_core::models::model_catalog::display_name_from_id;
+use argonauts_core::runs::events::approval::{AnswerAction, AnswerOption};
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::text::shown_name;
 use argonauts_registry::TERMS_NOTE;
 
 use super::probe::{FoundAgent, LocalServer, LoginState};
@@ -20,7 +20,7 @@ use super::steps::{
     APPROVAL_POINTS, Answers, CAPTAIN, COUNCIL, ORCHESTRATOR, ReviewerPick, approval_mode_from,
     approval_mode_name, built_in_mode,
 };
-use crate::choices::{InitAnswer, choose, init_options, option, options};
+use crate::setup::choices::{InitAnswer, choose, init_options, option, options};
 
 /// What the Continue option carries back.
 pub(crate) const CONTINUE: &str = "continue";
@@ -674,7 +674,7 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
 #[cfg(test)]
 mod tests {
     use argonauts_conductor::AgentStatus;
-    use argonauts_core::adapter::SetupHints;
+    use argonauts_core::agents::adapter::SetupHints;
 
     use super::*;
 
@@ -820,10 +820,10 @@ mod tests {
 
     #[test]
     fn the_crew_question_reads_as_the_picture_draws_it() {
-        use crate::golden::{assert_looks, drawn_rows, picture_rows, still, theme};
+        use crate::testing::golden::{assert_looks, drawn_rows, picture_rows, still, theme};
         let question = workflow_question(&view(vec![agent("codex", "Codex", AgentStatus::Tested)]));
-        let choice = crate::choices::app_choice(
-            argonauts_core::names::ChoiceId::numbered(1),
+        let choice = crate::setup::choices::app_choice(
+            argonauts_core::base::names::ChoiceId::numbered(1),
             question.kind,
             question.title,
             question.body,
@@ -831,7 +831,7 @@ mod tests {
         );
         let theme = theme();
         let lines = argonauts_tui::questions::choice_question(1, &choice).lines(&still(&theme));
-        crate::golden::dump("setup_question", &lines);
+        crate::testing::golden::dump("setup_question", &lines);
         assert_eq!(
             drawn_rows(&lines),
             picture_rows(include_str!("../../tests/golden/setup_question.txt"))
@@ -1127,10 +1127,10 @@ mod tests {
     /// The server question as `setup_after` draws it on Orchestrator, at its width.
     #[test]
     fn the_server_question_reads_as_the_picture_draws_it() {
-        use crate::golden::{assert_looks, drawn_rows, picture_rows, still, theme};
+        use crate::testing::golden::{assert_looks, drawn_rows, picture_rows, still, theme};
         let question = server_question(&ollama(), &view(Vec::new())).unwrap();
-        let choice = crate::choices::app_choice(
-            argonauts_core::names::ChoiceId::numbered(1),
+        let choice = crate::setup::choices::app_choice(
+            argonauts_core::base::names::ChoiceId::numbered(1),
             question.kind,
             question.title,
             question.body,
@@ -1138,7 +1138,7 @@ mod tests {
         );
         let theme = theme();
         let lines = argonauts_tui::questions::choice_question(1, &choice).lines(&still(&theme));
-        crate::golden::dump("server_question", &lines);
+        crate::testing::golden::dump("server_question", &lines);
         assert_eq!(
             drawn_rows(&lines),
             picture_rows(include_str!("../../tests/golden/server_question.txt"))

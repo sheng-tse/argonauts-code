@@ -7,7 +7,7 @@
 //! description, the input schema, the line its standing instructions say about it, and
 //! [`parse`], which reads a call's arguments.
 
-use argonauts_core::asking::GoalAsk;
+use argonauts_core::runs::asking::GoalAsk;
 use serde_json::{Value, json};
 
 use super::main_tools::MainTool;

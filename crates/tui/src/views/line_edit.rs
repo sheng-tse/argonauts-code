@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthChar;
 
-use crate::theme::{Role, Theme};
+use crate::base::theme::{Role, Theme};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineEdit {
@@ -100,8 +100,8 @@ impl LineEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text::spans_width;
-    use crate::theme::Glyphs;
+    use crate::base::text::spans_width;
+    use crate::base::theme::Glyphs;
 
     fn press(line: &mut LineEdit, code: KeyCode) -> bool {
         line.key(KeyEvent::from(code))

@@ -2,7 +2,7 @@
 //! merges back to auto preview with a notice, and the next run's merge waits for you again.
 
 use crate::policy_support;
-use argonauts_core::events::approval::ApprovalKind;
+use argonauts_core::runs::events::approval::ApprovalKind;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_scenarios::WAIT;
 use policy_support::{

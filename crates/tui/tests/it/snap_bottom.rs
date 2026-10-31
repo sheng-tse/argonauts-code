@@ -1,15 +1,15 @@
 use crate::common;
-use argonauts_core::display_names::DisplayNames;
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_tui::app::compose_live;
-use argonauts_tui::bottom::PanelEvent;
-use argonauts_tui::model::{
+use argonauts_tui::app::model::{
     Activity, AgentRow, AgentState, BottomState, DiffView, Hint, History, LinePart, QuestionNote,
     QuestionOption, QuestionPrompt, Tone, ToolCall, ToolItem, ToolKind, ToolState, VimMode,
     WindowUse, WorkingLine,
 };
-use argonauts_tui::model::{AddedPart, CliUse};
-use argonauts_tui::stability;
-use argonauts_tui::theme::Role;
+use argonauts_tui::app::model::{AddedPart, CliUse};
+use argonauts_tui::base::stability;
+use argonauts_tui::base::theme::Role;
+use argonauts_tui::bottom::PanelEvent;
 use common::{assert_fits, at, ctx, fg, row_styled, row_text, row_with, style_of, t0, text, theme};
 use ratatui::style::Modifier;
 

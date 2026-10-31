@@ -11,20 +11,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, bail};
 use app_support::*;
-use argonauts_core::agent_panel::{AgentPanelRows, CrewState, CrewTarget};
+use argonauts_core::app::agent_panel::{AgentPanelRows, CrewState, CrewTarget};
+use argonauts_core::app::views::CheckpointRow;
 use argonauts_core::app::{AnswerTarget, UiCommand, ViewData};
 use argonauts_core::app::{AppChoice, AppEvent, AppMode, ChoiceKind};
-use argonauts_core::events::approval::{
+use argonauts_core::base::layout::{run_files, user_files};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::input::{Handler, SLASH_COMMANDS};
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
 };
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome, WaitReason};
-use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::events::{RunEventKind, TaskEvent, WorkflowEvent};
-use argonauts_core::input::{Handler, SLASH_COMMANDS};
-use argonauts_core::layout::{run_files, user_files};
-use argonauts_core::names::ModelRef;
-use argonauts_core::views::CheckpointRow;
-use argonauts_core::workflow::{Count, StepKind};
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunOutcome, WaitReason};
+use argonauts_core::runs::events::session::{EndReason, SessionEvent};
+use argonauts_core::runs::events::{RunEventKind, TaskEvent, WorkflowEvent};
+use argonauts_core::workflows::workflow::{Count, StepKind};
 use argonauts_core::{Paths, RepoId, RunId};
 use argonauts_scenarios::{
     Scenario, WAIT, on_the_default_workflow, past_the_question_guard, scenario_file,
@@ -78,15 +78,15 @@ fn codex_config(base: &str) -> String {
 /// In auto the main agent would answer them otherwise.
 const YOU_ANSWER: &str = "\n[approvals]\nanswers = \"you\"\n";
 
-fn is_finished(outcome: RunOutcome) -> impl Fn(&argonauts_core::events::RunEvent) -> bool {
+fn is_finished(outcome: RunOutcome) -> impl Fn(&argonauts_core::runs::events::RunEvent) -> bool {
     move |event| matches!(&event.kind, RunEventKind::Run(RunLifecycle::Finished { outcome: o, .. }) if *o == outcome)
 }
 
-fn is_waiting(event: &argonauts_core::events::RunEvent) -> bool {
+fn is_waiting(event: &argonauts_core::runs::events::RunEvent) -> bool {
     matches!(event.kind, RunEventKind::Run(RunLifecycle::Waiting { .. }))
 }
 
-fn is_resumed(event: &argonauts_core::events::RunEvent) -> bool {
+fn is_resumed(event: &argonauts_core::runs::events::RunEvent) -> bool {
     matches!(event.kind, RunEventKind::Run(RunLifecycle::Resumed(_)))
 }
 
@@ -437,7 +437,7 @@ fn app_waiting_run_belongs_to_the_conversation_that_started_it() -> anyhow::Resu
 /// out, then a run an older Argonauts Code wrote. The start after it says neither again.
 #[test]
 fn app_start_names_a_newer_cli_then_an_older_run_once_each() -> anyhow::Result<()> {
-    use argonauts_conductor::cli_versions::CliVersions;
+    use argonauts_conductor::boards::cli_versions::CliVersions;
 
     const NEWER: &str = "Claude Code 2.1.999 is out";
     const SHOWN_ONCE: &str = "shown once for this version";

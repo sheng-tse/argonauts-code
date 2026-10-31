@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use argonauts_core::agents::runtimes::runtime;
+use argonauts_core::app::model_picker::ModelSource;
 use argonauts_core::app::{AppEvent, ModelChoice, ViewData};
-use argonauts_core::model_picker::ModelSource;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::runtimes::runtime;
+use argonauts_core::base::names::{ModelRef, RoleName};
 use argonauts_core::settings::endpoints::endpoint_settings;
 use time::OffsetDateTime;
 

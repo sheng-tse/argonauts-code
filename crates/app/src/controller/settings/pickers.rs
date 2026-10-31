@@ -4,12 +4,12 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use argonauts_core::app::model_picker::{EffortSlider, EffortStop};
+use argonauts_core::app::views::LearningArea;
 use argonauts_core::app::{MissingCli, SettingRow, ViewData};
+use argonauts_core::base::names::RoleName;
 use argonauts_core::input::{ROLE_SANDBOX_KEYS, SlashCommand};
-use argonauts_core::model_picker::{EffortSlider, EffortStop};
-use argonauts_core::names::RoleName;
 use argonauts_core::settings::SettingScope;
-use argonauts_core::views::LearningArea;
 use argonauts_policy::{SettingsReloader, approval_policy};
 
 use super::rows::{self, role_named};

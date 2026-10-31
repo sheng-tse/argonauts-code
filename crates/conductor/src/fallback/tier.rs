@@ -4,8 +4,8 @@
 
 use std::cmp::Ordering;
 
-use argonauts_core::limits::TrackRecord;
-use argonauts_core::registry::ModelEntry;
+use argonauts_core::models::limits::TrackRecord;
+use argonauts_core::models::registry::ModelEntry;
 use argonauts_core::settings::fallback::UnknownTier;
 
 /// Finished tasks of a kind each side needs before track records decide.

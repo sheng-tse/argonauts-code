@@ -9,18 +9,20 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use argonauts_adapter_acp::acp_adapter;
-use argonauts_core::adapter::Transport;
-use argonauts_core::driver::{
+use argonauts_core::agents::adapter::Transport;
+use argonauts_core::agents::driver::{
     DriverControl, DriverEnd, DriverIo, DriverStart, DriverStop, McpServerSpec, PermissionScope,
 };
-use argonauts_core::events::session::Delivery;
-use argonauts_core::registry::CliManifest;
-use argonauts_core::registry::acp::{AcpProfile, ModelRoute, ReportRoute, ResumeRoute, SteerRoute};
-use argonauts_core::registry::cli::{ErrorPattern, HomeKeep, HomeTemplate};
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::models::registry::CliManifest;
+use argonauts_core::models::registry::acp::{
+    AcpProfile, ModelRoute, ReportRoute, ResumeRoute, SteerRoute,
+};
+use argonauts_core::models::registry::cli::{ErrorPattern, HomeKeep, HomeTemplate};
+use argonauts_core::runs::events::session::Delivery;
 use argonauts_core::{AgentEvent, ErrorCategory, SessionRequest, SessionRole};
-use argonauts_testkit::acp::WRONG_PICK_EXIT;
-use argonauts_testkit::scenario::LogLine;
+use argonauts_testkit::fake_clis::acp::WRONG_PICK_EXIT;
+use argonauts_testkit::fake_clis::scenario::LogLine;
 use argonauts_testkit::{FakeClis, TempRepo};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};

@@ -6,19 +6,19 @@
 use std::time::Instant;
 
 use argonauts_core::app::{AppChoice, AppEvent, ChoiceKind};
-use argonauts_core::events::approval::{AnswerAction, AnswerOption, FreeText};
-use argonauts_core::names::{ChoiceId, ModelRef};
+use argonauts_core::base::names::{ChoiceId, ModelRef};
+use argonauts_core::runs::events::approval::{AnswerAction, AnswerOption, FreeText};
 use ratatui::text::Line;
 
 use crate::app::compose_live;
+use crate::app::model::{BottomLine, CliUse, LinePart, ViewModel, WindowUse};
+use crate::app::options::UiOptions;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::theme::{Glyphs, Role, Theme};
 use crate::bottom::{ApprovalMode, VimMode};
 use crate::bridge::Bridge;
-use crate::bridge::transcript::picture_check::{Unlike, assert_rows_match};
-use crate::cell::{AssistantMessage, UserMessage};
-use crate::model::{BottomLine, CliUse, LinePart, ViewModel, WindowUse};
-use crate::options::UiOptions;
-use crate::render::{Clock, RenderCtx};
-use crate::theme::{Glyphs, Role, Theme};
+use crate::cells::cell::{AssistantMessage, UserMessage};
+use crate::testing::pictures::picture_check::{Unlike, assert_rows_match};
 
 const WIDTH: u16 = 118;
 
@@ -254,11 +254,11 @@ body    Gives each X-Api-Key its own token bucket, so one busy key no longer slo
         Fixes #42";
 
 /// The draft question as the run opens it.
-fn draft_question() -> argonauts_core::events::approval::ApprovalOpened {
-    use argonauts_core::events::approval::{
+fn draft_question() -> argonauts_core::runs::events::approval::ApprovalOpened {
+    use argonauts_core::base::names::ApprovalId;
+    use argonauts_core::runs::events::approval::{
         ApprovalKind, ApprovalOpened, ApprovalPacket, QuestionPacket,
     };
-    use argonauts_core::names::ApprovalId;
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
     use argonauts_core::settings::asking::WhenDeclined;
     let option = |key: char, label: &str, value: &str, detail: &str| AnswerOption {
@@ -332,20 +332,20 @@ fn the_draft_a_run_on_an_issue_ends_with_is_its_picture() {
 mod pr_follow {
     use std::time::Instant;
 
-    use argonauts_core::names::{SessionKey, WorkflowId};
-    use argonauts_core::views::{
+    use argonauts_core::app::views::{
         AgentRow, PhaseCount, PhaseRow, RowNote, RowStatus, StatusKind, StatusLine, Tone,
         WorkflowRow, WorkflowState, WorkflowView as WorkflowData,
     };
-    use argonauts_core::workflow::StandardPhase;
+    use argonauts_core::base::names::{SessionKey, WorkflowId};
+    use argonauts_core::workflows::workflow::StandardPhase;
     use argonauts_core::{RunId, Spend};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
+    use crate::frame::view::{View, ViewCtx};
+    use crate::testing::pictures::workflow_pictures::{Picture, dark};
     use crate::views::workflow::WorkflowView;
-    use crate::views::workflow_pictures::{Picture, dark};
-    use crate::views::{View, ViewCtx};
 
     /// The frame stops six cells short of the screen's right edge, as Claude Code's does.
     const SCREEN: u16 = 124;
@@ -445,7 +445,7 @@ mod pr_follow {
 
     fn drawn(view: &mut WorkflowView, rows: u16) -> Buffer {
         let theme = dark();
-        let state = crate::views::workflow_nested_tests::state();
+        let state = crate::views::workflow::tests::nested::state();
         let ctx = ViewCtx {
             theme: &theme,
             state: &state,
@@ -459,7 +459,7 @@ mod pr_follow {
 
     fn select_last(view: &mut WorkflowView) {
         let theme = dark();
-        let state = crate::views::workflow_nested_tests::state();
+        let state = crate::views::workflow::tests::nested::state();
         let ctx = ViewCtx {
             theme: &theme,
             state: &state,
@@ -471,7 +471,7 @@ mod pr_follow {
     }
 
     fn the_picture() -> Picture {
-        crate::views::workflow_pictures::picture!("pr_follow")
+        crate::testing::pictures::workflow_pictures::picture!("pr_follow")
     }
 
     /// The frame is drawn in the text's colour, as the approved council picture draws it,

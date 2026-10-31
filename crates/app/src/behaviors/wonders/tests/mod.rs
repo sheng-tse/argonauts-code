@@ -6,15 +6,15 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use argonauts_core::Paths;
-use argonauts_core::behavior_world::Wonder;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::behaviors::behavior_world::Wonder;
 use argonauts_core::behaviors::{Behavior, Label};
-use argonauts_core::events::council::MessageKind;
-use argonauts_core::events::run::{ResumeCause, RunOutcome};
-use argonauts_core::events::session::EndReason;
-use argonauts_core::events::task::{CheckKind, TryCause};
-use argonauts_core::model_catalog::ModelCatalog;
-use argonauts_core::names::RoleName;
-use argonauts_core::steps::judgment::ReviewVerdict;
+use argonauts_core::models::model_catalog::ModelCatalog;
+use argonauts_core::runs::events::council::MessageKind;
+use argonauts_core::runs::events::run::{ResumeCause, RunOutcome};
+use argonauts_core::runs::events::session::EndReason;
+use argonauts_core::runs::events::task::{CheckKind, TryCause};
+use argonauts_core::workflows::steps::judgment::ReviewVerdict;
 use time::macros::{datetime, offset};
 use time::{OffsetDateTime, UtcOffset};
 

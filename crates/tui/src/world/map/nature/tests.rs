@@ -1,4 +1,4 @@
-use argonauts_core::display_names::DisplayNames;
+use argonauts_core::look::display_names::DisplayNames;
 
 use super::crews::world;
 use super::*;
@@ -248,7 +248,7 @@ fn the_same_actions_always_make_the_same_nature() {
 
 #[test]
 fn the_storms_word_follows_the_time_zone() {
-    use argonauts_core::behavior_world::StormWord;
+    use argonauts_core::behaviors::behavior_world::StormWord;
     let world = world(Key::R);
     let storm = world
         .nature
@@ -310,8 +310,10 @@ fn a_tsunami_runs_over_open_sea_to_its_own_behaviors_coast() {
 
 #[test]
 fn the_apps_facts_line_up_with_the_grounds_behaviors_by_name() {
-    use argonauts_core::behavior_map::BehaviorMap;
-    use argonauts_core::behavior_world::{BehaviorFacts, CrewFacts, StormWord, WorldFacts};
+    use argonauts_core::behaviors::behavior_map::BehaviorMap;
+    use argonauts_core::behaviors::behavior_world::{
+        BehaviorFacts, CrewFacts, StormWord, WorldFacts,
+    };
     use time::macros::datetime;
 
     use crate::world::map::fields::{Ground, GroundFacts};

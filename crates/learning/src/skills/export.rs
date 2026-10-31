@@ -10,13 +10,13 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
 
-use argonauts_core::workflow::{Phase, Step, StepKind};
+use argonauts_core::workflows::workflow::{Phase, Step, StepKind};
 
 use super::document::{self, MAX_DESCRIPTION};
 use super::{Frontmatter, META_LEARNED_WORKFLOW, META_SHA256, META_VERSION, Skill};
-use crate::error::{LearningError, Result};
+use crate::export::scan::{Finding, scan};
 use crate::learned_workflows::{LearnedWorkflow, LoadedLearnedWorkflow, Match};
-use crate::scan::{Finding, scan};
+use crate::store::error::{LearningError, Result};
 
 pub fn export(loaded: &LoadedLearnedWorkflow) -> Result<Skill> {
     let learned_workflow = &loaded.learned_workflow;

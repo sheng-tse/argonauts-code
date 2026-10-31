@@ -6,7 +6,7 @@
 //! The settings half of the form is made from the catalog `/config` is drawn from, so the
 //! form names every setting and the values each takes, and is never out of date.
 
-use argonauts_core::prompt_parts::finer_roles;
+use argonauts_core::prompts::prompt_parts::finer_roles;
 use argonauts_core::settings::crew::CrewRole;
 use serde_json::{Value, json};
 

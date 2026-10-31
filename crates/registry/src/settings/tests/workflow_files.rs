@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::fallback::FallbackEntry;
 use toml::{Table, Value};
 
 use super::{Repo, invalid, layer_of};
-use crate::resolve::leaves;
+use crate::settings::resolve::leaves;
 use crate::workflows::{BASE_WORKFLOW, DEFAULT_WORKFLOW};
 use crate::{
     SettingsError, SettingsSources, SettingsWarning, resolve, workflow_choices, workflow_choices_in,
@@ -98,7 +98,7 @@ fn every_workflow_resolves() {
             .map(|(key, text)| ((*key).to_owned(), value(text)))
             .collect();
         assert_eq!(set, contract, "{name} against the contract");
-        let mut file: Table = argonauts_core::workflow_files::built_in(name)
+        let mut file: Table = argonauts_core::workflows::workflow_files::built_in(name)
             .unwrap()
             .parse()
             .unwrap();

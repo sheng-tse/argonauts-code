@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use argonauts_core::behavior_world::{CrewFacts, MonthActions, QuietStretch};
+use argonauts_core::behaviors::behavior_world::{CrewFacts, MonthActions, QuietStretch};
 
 use super::{Read, storm};
 

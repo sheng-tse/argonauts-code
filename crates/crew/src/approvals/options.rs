@@ -1,14 +1,14 @@
 //! Each approval kind's options, in order, with their keys. The screen draws what the engine
 //! emits and nothing else, so the table lives here and only here.
 
-use argonauts_core::events::agent_status::FallbackPlan;
-use argonauts_core::events::approval::{AnswerAction, AnswerOption, ApprovalKind};
-use argonauts_core::events::goal::{
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::limits::{Candidate, CostEstimate};
+use argonauts_core::runs::events::agent_status::FallbackPlan;
+use argonauts_core::runs::events::approval::{AnswerAction, AnswerOption, ApprovalKind};
+use argonauts_core::runs::events::goal::{
     GoalQuestion, LET_THE_MAIN_AGENT_ANSWER, LET_THE_MAIN_AGENT_DECIDE,
 };
-use argonauts_core::events::plan::JudgingResult;
-use argonauts_core::limits::{Candidate, CostEstimate};
-use argonauts_core::names::ModelRef;
+use argonauts_core::runs::events::plan::JudgingResult;
 use argonauts_core::settings::protocol::JudgingMethod;
 
 pub(crate) const TYPE_MY_OWN_ANSWER: &str = "Type my own answer";
@@ -443,8 +443,8 @@ mod tests {
 
     #[test]
     fn goal_question_puts_the_recommended_answer_first() {
-        use argonauts_core::events::goal::ChoiceOption;
-        use argonauts_core::steps::understand::DiffTag;
+        use argonauts_core::runs::events::goal::ChoiceOption;
+        use argonauts_core::workflows::steps::understand::DiffTag;
         let answer = |key, label: &str, recommended| ChoiceOption {
             key,
             label: label.to_owned(),
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn a_plan_pick_puts_the_top_plan_first() {
-        use argonauts_core::events::plan::PlanTally;
+        use argonauts_core::runs::events::plan::PlanTally;
         let tally = |label, mean| PlanTally {
             label,
             author: "codex".parse().unwrap(),

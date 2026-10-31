@@ -10,22 +10,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use argonauts_core::events::session::{EndReason, InputPart, InputPartKind};
-use argonauts_core::hash::sha256_hex;
-use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::session_runner::{Access, SessionControl};
+use argonauts_core::agents::session_runner::{Access, SessionControl};
+use argonauts_core::app::views::COMMIT_MESSAGE;
+use argonauts_core::base::hash::sha256_hex;
+use argonauts_core::base::names::{RoleName, SessionKey};
+use argonauts_core::runs::events::session::{EndReason, InputPart, InputPartKind};
 use argonauts_core::settings::delivery::DeliveryCommits;
-use argonauts_core::steps::task::CommitMessage;
-use argonauts_core::steps::{StepName, last_json_object};
-use argonauts_core::views::COMMIT_MESSAGE;
+use argonauts_core::workflows::steps::task::CommitMessage;
+use argonauts_core::workflows::steps::{StepName, last_json_object};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Fallbacks, Host, SessionPlan};
 use crate::engine::shared::lock;
-use crate::error::{EngineError, EngineResult};
 use crate::git::GitError;
-use crate::labels::task_label;
 use crate::merge::{final_check, merge_packet, merger, your_folder};
 use crate::prompts;
+use crate::sessions::labels::task_label;
 use crate::task::support::part;
 
 /// A message the merger wrote, and the change it's for.
@@ -191,7 +191,7 @@ fn path(host: &Host) -> PathBuf {
     host.repo().run_dir.join("merge").join("message.json")
 }
 
-fn answer_of(end: &argonauts_core::events::session::SessionEnd) -> Option<CommitMessage> {
+fn answer_of(end: &argonauts_core::runs::events::session::SessionEnd) -> Option<CommitMessage> {
     if end.reason != EndReason::Completed {
         return None;
     }

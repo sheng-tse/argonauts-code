@@ -3,8 +3,8 @@
 
 use serde_json::Value;
 
-use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind};
 use argonauts_core::settings::Settings;
 
 use crate::state::RunState;
@@ -129,9 +129,9 @@ fn reviewer_verdicts(state: &RunState) -> Option<usize> {
 mod tests {
     use serde_json::json;
 
-    use argonauts_core::events::session::EndReason;
-    use argonauts_core::names::{ModelRef, WorkflowId};
-    use argonauts_core::workflow::{StandardPhase, StepKind, StepRef};
+    use argonauts_core::base::names::{ModelRef, WorkflowId};
+    use argonauts_core::runs::events::session::EndReason;
+    use argonauts_core::workflows::workflow::{StandardPhase, StepKind, StepRef};
 
     use super::*;
     use crate::state::tests::{end, session_record};

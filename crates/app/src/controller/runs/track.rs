@@ -2,16 +2,16 @@
 //! whether something now needs you.
 
 use argonauts_core::app::AppMode;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::events::run::{RunOutcome, WaitReason};
-use argonauts_core::events::{
+use argonauts_core::base::names::{ApprovalId, MessageId};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::runs::events::run::{RunOutcome, WaitReason};
+use argonauts_core::runs::events::{
     ApprovalEvent, RunEvent, RunLifecycle, SessionEvent, SpendEvent, WorkflowEvent,
 };
-use argonauts_core::names::{ApprovalId, MessageId};
 use argonauts_core::settings::ui::ConversationTrigger;
 
-use crate::controller::attach::{Attached, Stage};
+use crate::controller::runs::attach::{Attached, Stage};
 
 /// An approval that opened waiting for you.
 #[derive(Debug, Clone, PartialEq)]
@@ -46,7 +46,7 @@ fn held_words(reason: &WaitReason) -> Option<String> {
         }
         WaitReason::WaitingForAgent { agent_id, .. } => Some(format!(
             "its tasks wait for {} to come back",
-            argonauts_core::display_names::DisplayNames::default().cli(&agent_id.0)
+            argonauts_core::look::display_names::DisplayNames::default().cli(&agent_id.0)
         )),
         WaitReason::NoFallback { detail, .. } => Some(detail.clone()),
     }

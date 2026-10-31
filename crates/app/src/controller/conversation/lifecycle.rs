@@ -6,20 +6,20 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use argonauts_core::NoteLevel;
 use argonauts_core::Spend;
+use argonauts_core::agents::screen::{Drawn, ScreenChange};
+use argonauts_core::agents::session_runner::RunnerEvent;
+use argonauts_core::app::views::ContextRow;
 use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, SignedOut, TurnReply};
-use argonauts_core::event::{AgentEvent, ErrorCategory};
-use argonauts_core::events::context::{ContextDetail, StartingCount};
-use argonauts_core::events::run::{CaptainOrCrewDecision, RunMode};
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::limits::lost_to_the_network;
-use argonauts_core::names::{ModelRef, SessionKey, TurnId};
-use argonauts_core::prompt_parts::approx_tokens;
-use argonauts_core::screen::{Drawn, ScreenChange};
-use argonauts_core::session_runner::RunnerEvent;
-use argonauts_core::steps::intake::{ChangeEstimate, Instruction};
-use argonauts_core::steps::{StepError, StepOutcome};
-use argonauts_core::views::ContextRow;
-use argonauts_crew::captain_or_crew::Asked;
+use argonauts_core::base::names::{ModelRef, SessionKey, TurnId};
+use argonauts_core::models::limits::lost_to_the_network;
+use argonauts_core::prompts::prompt_parts::approx_tokens;
+use argonauts_core::runs::event::{AgentEvent, ErrorCategory};
+use argonauts_core::runs::events::context::{ContextDetail, StartingCount};
+use argonauts_core::runs::events::run::{CaptainOrCrewDecision, RunMode};
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::workflows::steps::intake::{ChangeEstimate, Instruction};
+use argonauts_core::workflows::steps::{StepError, StepOutcome};
+use argonauts_crew::roles::captain_or_crew::Asked;
 
 use super::carry;
 use super::excerpt::Exchange;
@@ -31,19 +31,19 @@ use super::{
     ConversationState, Turn, agent, direct, emit, goal, handover, keep, planned, run_request,
     run_worktree, send_queued, settle_mode, side, styled,
 };
-use crate::controller::captain_or_crew::{
+use crate::controller::instructions::{self, Command, Roster};
+use crate::controller::shell;
+use crate::controller::turns::captain_or_crew::{
     Reading, Requested, alone_line, read_answer, read_reply_with, workflow_chosen,
 };
-use crate::controller::instructions::{self, Command, Roster};
-use crate::controller::recap::{self, recap_from_turn};
-use crate::controller::shell;
-use crate::controller::turn::{self, Launch, Record, TurnStep};
-use crate::controller::ultra;
+use crate::controller::turns::recap::{self, recap_from_turn};
+use crate::controller::turns::turn::{self, Launch, Record, TurnStep};
+use crate::controller::turns::ultra;
 use crate::controller::{Ctx, Effect};
-use crate::conversation_store::ConversationSession;
-use crate::usage_ledger::{TurnNote, UsageLedger};
+use crate::conversation::store::ConversationSession;
+use crate::usage::usage_ledger::{TurnNote, UsageLedger};
 use argonauts_conductor::fallback::shortlist::auto_check;
-use argonauts_core::events::session::{InputPart, InputPartKind};
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::fallback::FallbackMode;
 use argonauts_core::settings::workflows::RunStyle;
@@ -752,7 +752,7 @@ pub(super) fn on_done(
         let turn = TurnNote {
             conversation: Some(conversation.id.as_str()),
             took: end.duration_ms / 1000,
-            billing: Some(argonauts_core::meter::who_pays(
+            billing: Some(argonauts_core::models::meter::who_pays(
                 ctx.settings(),
                 &worker.agent,
                 worker.model.as_deref(),
@@ -898,7 +898,7 @@ fn end_stopped(
     direct::stopped(ctx, conversation, &id);
     let stopped = matches!(
         &err,
-        StepError::Session(end) if end.reason == argonauts_core::events::session::EndReason::Stopped
+        StepError::Session(end) if end.reason == argonauts_core::runs::events::session::EndReason::Stopped
     );
     let ended = if stopped {
         ConversationEvent::TurnCancelled { turn: id.clone() }
@@ -1189,7 +1189,7 @@ fn commanded_decision(
         tests_exist: false,
         unknowns: Vec::new(),
     };
-    argonauts_crew::captain_or_crew::decide_with(
+    argonauts_crew::roles::captain_or_crew::decide_with(
         estimate.unwrap_or(&none),
         ctx.settings(),
         None,

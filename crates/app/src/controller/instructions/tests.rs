@@ -1,11 +1,11 @@
 //! The instruction checks, table by table, against a roster of agents made by hand. A last
 //! test hands what they apply to the real resolver, so every key and value they write resolves.
 
-use argonauts_core::events::run::{InstructionOutcome, RunMode};
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::run::{InstructionOutcome, RunMode};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::CaptainKind;
-use argonauts_core::steps::intake::{Instruction, InstructionKind, InstructionScope};
+use argonauts_core::workflows::steps::intake::{Instruction, InstructionKind, InstructionScope};
 use argonauts_registry::{SettingsSources, resolve};
 
 use super::roster::Model;
@@ -714,7 +714,7 @@ fn applied_to_a_run_sets_its_main_agent_layer_and_approvals() {
             says(InstructionKind::Approvals, "ask me before merging", ""),
         ],
     );
-    let mut request = argonauts_core::api::StartRun {
+    let mut request = argonauts_core::runs::api::StartRun {
         request: "Codex is the main agent, and ask me before merging.".to_owned(),
         mode: RunMode::Crew,
         forced: false,
@@ -815,7 +815,7 @@ fn saying_it_has_a_role_work_each_task_as_a_goal() {
             .roles
             .get(&RoleName::Worker)
             .and_then(|role| role.goal),
-        Some(argonauts_core::goal::RoleGoal::Cli)
+        Some(argonauts_core::workflows::goal::RoleGoal::Cli)
     );
     assert_eq!(resolved.goal.until, None);
 }
@@ -1535,7 +1535,7 @@ fn only_claude_read_as_a_model_keeps_the_crew_to_claude_code() {
 /// another provider than the builder's.
 #[test]
 fn cheap_and_only_claude_has_sonnet_build_and_haiku_review_and_the_merge_waits() {
-    use argonauts_core::policy::{EvidenceFacts, Verdict};
+    use argonauts_core::safety::policy::{EvidenceFacts, Verdict};
     let message = "Keep it cheap, use only Claude.";
     let applied = priced(
         message,

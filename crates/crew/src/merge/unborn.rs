@@ -1,5 +1,5 @@
 //! A run that started in a repository with no commits yet. Its base is a snapshot of your
-//! files (`argonauts_core::unborn`), which shares no history with anything you commit later.
+//! files (`argonauts_core::runs::unborn`), which shares no history with anything you commit later.
 //! So such a run never follows your branch: nothing of it is merged in, and the run's work
 //! lands as changes to your files, compared with that snapshot, for you to commit. Under
 //! `merge.unborn = "first_commit"` it makes your branch's first commit instead, while the
@@ -39,7 +39,7 @@ impl Lands {
 
 /// The snapshot the run started from, when the repository had no commits then.
 pub async fn base(host: &Host) -> Result<Option<String>, GitError> {
-    let name = argonauts_core::unborn::base_ref(host.run_id());
+    let name = argonauts_core::runs::unborn::base_ref(host.run_id());
     host.git().ref_commit(&host.repo().root, &name).await
 }
 
@@ -49,7 +49,7 @@ pub async fn lands(host: &Host) -> Result<Option<Lands>, GitError> {
     if base(host).await?.is_none() {
         return Ok(None);
     }
-    if !argonauts_core::unborn::makes_first_commit(host.settings()) {
+    if !argonauts_core::runs::unborn::makes_first_commit(host.settings()) {
         return Ok(Some(Lands::Files));
     }
     let git = host.git();

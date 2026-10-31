@@ -196,14 +196,14 @@ jobs:
           set -o pipefail
           cargo test --locked --release -p argonauts-tui --lib -- --ignored --test-threads=1 \
             --exact \
-            app::map_picture::world_cost_tests::the_world_costs_under_a_percent_of_a_core_on_the_map \
-            app::map_picture::world_cost_tests::the_world_costs_under_a_percent_of_a_core_with_a_row_lit_and_the_pointer_moving \
-            app::map_picture::world_cost_tests::the_world_costs_under_a_percent_of_a_core_on_the_planet \
-            app::map_picture::world_cost_tests::the_world_costs_under_a_percent_of_a_core_in_the_universe \
-            app::map_picture::world_cost_tests::the_world_costs_under_a_percent_of_a_core_in_a_galaxy \
-            app::map_picture::world_cost_tests::the_world_costs_under_a_percent_of_a_core_in_a_system \
-            app::map_picture::world_cost_tests::the_world_on_threads_draws_a_frame_only_when_something_arrived \
-            app::map_picture::world_cost_tests::a_key_reaches_the_screen_in_time \
+            app::map_picture::tests::world_cost_tests::the_world_costs_under_a_percent_of_a_core_on_the_map \
+            app::map_picture::tests::world_cost_tests::the_world_costs_under_a_percent_of_a_core_with_a_row_lit_and_the_pointer_moving \
+            app::map_picture::tests::world_cost_tests::the_world_costs_under_a_percent_of_a_core_on_the_planet \
+            app::map_picture::tests::world_cost_tests::the_world_costs_under_a_percent_of_a_core_in_the_universe \
+            app::map_picture::tests::world_cost_tests::the_world_costs_under_a_percent_of_a_core_in_a_galaxy \
+            app::map_picture::tests::world_cost_tests::the_world_costs_under_a_percent_of_a_core_in_a_system \
+            app::map_picture::tests::world_cost_tests::the_world_on_threads_draws_a_frame_only_when_something_arrived \
+            app::map_picture::tests::world_cost_tests::a_key_reaches_the_screen_in_time \
             | tee "$RUNNER_TEMP/motion.log"
           grep -q 'test result: ok. 8 passed' "$RUNNER_TEMP/motion.log"
 

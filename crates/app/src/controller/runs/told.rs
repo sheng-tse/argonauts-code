@@ -6,8 +6,8 @@
 use std::path::Path;
 
 use argonauts_core::NoteLevel;
-use argonauts_core::api::{RunState, RunSummary};
-use argonauts_core::paths::write_private_file;
+use argonauts_core::base::paths::write_private_file;
+use argonauts_core::runs::api::{RunState, RunSummary};
 use time::format_description::well_known::Rfc3339;
 
 use crate::client;
@@ -48,7 +48,7 @@ fn line(run: &RunSummary) -> Option<(NoteLevel, String)> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::run::RunMode;
+    use argonauts_core::runs::events::run::RunMode;
     use argonauts_core::{RunId, Spend};
     use time::macros::datetime;
 

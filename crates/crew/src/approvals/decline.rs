@@ -13,14 +13,14 @@
 //! nothing is taken on is the draft pull request's, whose yes posts on GitHub as you: it waits
 //! for your answer.
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened,
     LEFT_TO_THE_AGENT,
 };
-use argonauts_core::events::goal::LET_THE_MAIN_AGENT_DECIDE;
-use argonauts_core::events::run::Party;
-use argonauts_core::names::ApprovalId;
+use argonauts_core::runs::events::goal::LET_THE_MAIN_AGENT_DECIDE;
+use argonauts_core::runs::events::run::Party;
 use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::{Note, NoteLevel};
 
@@ -170,7 +170,7 @@ pub fn line(opened: &ApprovalOpened, option: &AnswerOption, text: Option<&str>) 
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::approval::{ApprovalPacket, FreeText};
+    use argonauts_core::runs::events::approval::{ApprovalPacket, FreeText};
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 
     use super::*;

@@ -3,13 +3,13 @@
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
-use argonauts_tui::cell::{
+use argonauts_tui::base::draw::render::Clock;
+use argonauts_tui::base::format::ClockTime;
+use argonauts_tui::base::theme::{ColorLevel, Glyphs};
+use argonauts_tui::cells::cell::{
     AgentReady, AssistantMessage, CollapsedGroup, DiffView, Notice, Recap, SessionHeader, Todo,
     TodoState, Tone, ToolCall, ToolItem, ToolKind, ToolState, ToolStats, TurnEnd, UserMessage,
 };
-use argonauts_tui::format::ClockTime;
-use argonauts_tui::render::Clock;
-use argonauts_tui::theme::{ColorLevel, Glyphs};
 use argonauts_tui::{History, RenderCtx, Theme};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;

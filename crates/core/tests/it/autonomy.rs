@@ -1,6 +1,6 @@
 //! The defaults that let agents work on their own, and the sandbox each role's agents get.
 
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
 use argonauts_core::settings::approvals::{
     ApprovalMode, ApprovalPointSettings, DecideWith, Otherwise, RoleSandbox, SandboxChoice,
 };

@@ -5,8 +5,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::events::session::{AskedBy, CliWorkflowRun};
-use argonauts_core::names::SessionKey;
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::events::session::{AskedBy, CliWorkflowRun};
 
 /// One ask as the join reads it: the session it started, the label it went under, when it
 /// started (milliseconds since the epoch), and who the crew stamped as asking, when it did.
@@ -116,7 +116,7 @@ pub fn label_stem(label: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::session::{CliAgent, CliAgentState, SubagentStatus};
+    use argonauts_core::runs::events::session::{CliAgent, CliAgentState, SubagentStatus};
 
     use super::*;
 

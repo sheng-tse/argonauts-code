@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use argonauts_core::events::run::{
+use argonauts_core::runs::events::run::{
     CheckedInstruction, InstructionOutcome, OverrideRecord, RunMode, RunStarted,
 };
 

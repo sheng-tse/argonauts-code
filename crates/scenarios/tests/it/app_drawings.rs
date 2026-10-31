@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use argonauts_core::logos::LOGO_CELL_PIXELS;
+use argonauts_core::look::logos::LOGO_CELL_PIXELS;
 use argonauts_scenarios::{Scenario, WAIT, no_servers_of_yours, past_the_question_guard};
 use argonauts_testkit::approved::{
     self, Aspect, Colour, DRAWN_FOLDER, Drawing, Drawn, Entry, Manifest, Palette, Region, Rgb,

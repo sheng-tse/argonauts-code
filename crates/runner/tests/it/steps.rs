@@ -3,7 +3,7 @@
 use crate::support;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use argonauts_core::events::session::{CliAgentState, SubagentStatus};
+use argonauts_core::runs::events::session::{CliAgentState, SubagentStatus};
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_runner::{Checked, Script, WorkflowFile, built_in, run};
 use serde_json::json;

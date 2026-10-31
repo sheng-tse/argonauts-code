@@ -8,26 +8,26 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use argonauts_core::api::UsageSummary;
+use argonauts_core::agents::session_runner::{Access, RunnerKind};
 use argonauts_core::app::AppEvent;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunStarted};
-use argonauts_core::events::session::{
+use argonauts_core::app::overview::ModelTokens;
+use argonauts_core::base::names::{AgentId, ModelRef, RoleName, SessionKey, WorkflowId};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::model_catalog::CatalogEntry;
+use argonauts_core::runs::api::UsageSummary;
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunStarted};
+use argonauts_core::runs::events::session::{
     EndReason, InputPart, InputPartKind, LaunchRecord, PromptVia, SessionEnd, SessionEvent,
     SessionInput, SessionStarted,
 };
-use argonauts_core::events::task::{
+use argonauts_core::runs::events::task::{
     CheckKind, CheckOutcome, TaskEvent, TaskKind, TaskLimit, TaskSpec,
 };
-use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::model_catalog::CatalogEntry;
-use argonauts_core::names::{AgentId, ModelRef, RoleName, SessionKey, WorkflowId};
-use argonauts_core::overview::ModelTokens;
-use argonauts_core::session_runner::{Access, RunnerKind};
+use argonauts_core::runs::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::steps::StepName;
-use argonauts_core::workflow::StandardPhase;
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::workflow::StandardPhase;
 use argonauts_core::{AgentEvent, RunId, Spend, TaskId};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -36,13 +36,13 @@ use ratatui::text::Line;
 use serde_json::{Value, json};
 use time::macros::datetime;
 
+use crate::app::model::ViewModel;
+use crate::app::options::UiOptions;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::theme::{Glyphs, Role, Theme};
 use crate::bridge::Bridge;
-use crate::cell::UserMessage;
-use crate::model::ViewModel;
-use crate::options::UiOptions;
-use crate::render::{Clock, RenderCtx};
-use crate::state::WorkflowState;
-use crate::theme::{Glyphs, Role, Theme};
+use crate::cells::cell::UserMessage;
+use crate::frame::state::WorkflowState;
 
 const OPUS: &str = "claude-code/claude-opus-5-5";
 const HAIKU: &str = "claude-code/claude-haiku-5-5";
@@ -566,13 +566,19 @@ fn screen_of(printed: &[Line<'_>], (cols, rows): (u16, u16)) -> Buffer {
 /// The run as the conversation draws it at either size, from its Workflow row down.
 #[test]
 fn an_orchestrator_run_matches_its_drawings() {
-    let theme = crate::approved_screen::theme();
+    let theme = crate::testing::pictures::approved_screen::theme();
     for (file, size) in [
         ("conversation/orchestrator-run@120x38.txt", (120, 38)),
         ("conversation/orchestrator-run@177x40.txt", (177, 40)),
     ] {
         let printed = orchestrator_run().printed_at(&theme, size.0);
-        crate::approved_screen::assert_rows_match(file, 0, &screen_of(&printed, size), size, 0);
+        crate::testing::pictures::approved_screen::assert_rows_match(
+            file,
+            0,
+            &screen_of(&printed, size),
+            size,
+            0,
+        );
     }
 }
 
@@ -580,7 +586,7 @@ fn an_orchestrator_run_matches_its_drawings() {
 /// the conversation draws it at either size.
 #[test]
 fn a_run_building_on_codexs_other_models_matches_its_drawings() {
-    let theme = crate::approved_screen::theme();
+    let theme = crate::testing::pictures::approved_screen::theme();
     for (file, size) in [
         (
             "conversation/orchestrator-run-codex-builds@120x38.txt",
@@ -596,7 +602,13 @@ fn a_run_building_on_codexs_other_models_matches_its_drawings() {
             [SOL, ASTRA],
         )
         .printed_at(&theme, size.0);
-        crate::approved_screen::assert_rows_match(file, 0, &screen_of(&printed, size), size, 0);
+        crate::testing::pictures::approved_screen::assert_rows_match(
+            file,
+            0,
+            &screen_of(&printed, size),
+            size,
+            0,
+        );
     }
 }
 
@@ -604,7 +616,7 @@ fn a_run_building_on_codexs_other_models_matches_its_drawings() {
 /// drawing of that run has them.
 #[test]
 fn builders_on_codexs_other_models_read_in_its_hue() {
-    let theme = crate::approved_screen::theme();
+    let theme = crate::testing::pictures::approved_screen::theme();
     let printed = orchestrator_run_building_on(
         Some("Add --due to the todo CLI with an orchestrator, Codex reviewing."),
         [SOL, ASTRA],

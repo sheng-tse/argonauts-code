@@ -5,7 +5,7 @@ use crate::support;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use argonauts_core::events::session::{CliAgentState, SubagentStatus};
+use argonauts_core::runs::events::session::{CliAgentState, SubagentStatus};
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_runner::{AgentEnd, Limits, RunInput, Script, ScriptEnd, run};
 use serde_json::{Value, json};

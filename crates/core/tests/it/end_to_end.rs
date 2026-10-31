@@ -3,23 +3,23 @@
 
 use std::sync::Arc;
 
-use argonauts_core::adapter::{Adapter, StopPlan, StreamParser, Transport};
-use argonauts_core::api::StartRun;
-use argonauts_core::driver::{
+use argonauts_core::agents::adapter::{Adapter, StopPlan, StreamParser, Transport};
+use argonauts_core::agents::driver::{
     DriverEnd, DriverIo, DriverStart, DriverStop, McpServerSpec, PermissionScope, RawFrame,
     SessionDriver,
 };
-use argonauts_core::events::RunLifecycle;
-use argonauts_core::events::run::Party;
-use argonauts_core::future::BoxFuture;
-use argonauts_core::layout::{session_files, user_files};
-use argonauts_core::registry::acp::{
+use argonauts_core::agents::session::SessionRequest;
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::layout::{session_files, user_files};
+use argonauts_core::models::registry::acp::{
     AcpModes, AcpProfile, EffortRoute, ModelRoute, PlanUsageRoute, ReportRoute, ResumeRoute,
     SteerRoute, UsageSource,
 };
-use argonauts_core::registry::cli::{HomeKeep, OutputKind, PromptChannel};
-use argonauts_core::registry::{CliManifest, ModelEntry, RegistryFile};
-use argonauts_core::session::SessionRequest;
+use argonauts_core::models::registry::cli::{HomeKeep, OutputKind, PromptChannel};
+use argonauts_core::models::registry::{CliManifest, ModelEntry, RegistryFile};
+use argonauts_core::runs::api::StartRun;
+use argonauts_core::runs::events::RunLifecycle;
+use argonauts_core::runs::events::run::Party;
 use argonauts_core::settings::agents::{Share, StartRuns};
 use argonauts_core::settings::approvals::Presence;
 use argonauts_core::settings::ui::ConversationTrigger;
@@ -511,7 +511,7 @@ async fn a_session_driver_runs_over_the_childs_pipes() {
         prompt: "hi".into(),
         model: None,
         effort: None,
-        access: argonauts_core::session_runner::Access::ReadOnly,
+        access: argonauts_core::agents::session_runner::Access::ReadOnly,
         resume: None,
         mcp_servers: Vec::new(),
         scope: PermissionScope::default(),

@@ -1,36 +1,36 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use argonauts_core::api::DiffScope;
 use argonauts_core::app::{AppChoice, ChoiceKind, ViewRequest};
-use argonauts_core::events::agent_status::FallbackPlan;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{AgentId, ChoiceId, ModelRef};
+use argonauts_core::models::limits::{Candidate, CostEstimate, TrackRecord};
+use argonauts_core::runs::api::DiffScope;
+use argonauts_core::runs::events::agent_status::FallbackPlan;
+use argonauts_core::runs::events::approval::{
     AgentDownPacket, ApprovalKind, ApprovalPacket, FreeText, MergePacket, MergeRow, QuestionPacket,
     StuckPacket,
 };
-use argonauts_core::events::run::Party;
-use argonauts_core::events::task::TaskKind;
-use argonauts_core::limits::{Candidate, CostEstimate, TrackRecord};
-use argonauts_core::names::{AgentId, ChoiceId, ModelRef};
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::task::TaskKind;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::fallback::{FallbackMode, FallbackStrategy};
 use argonauts_core::settings::ui::UiSettings;
-use argonauts_core::steps::judgment::ReviewVerdict;
+use argonauts_core::workflows::steps::judgment::ReviewVerdict;
 use argonauts_core::{DiffStat, Spend};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use time::UtcOffset;
 use time::macros::datetime;
 
 use super::*;
+use crate::app::model::ViewModel;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::text::plain_text;
+use crate::base::theme::{Glyphs, Theme};
 use crate::bottom::{OptionKind, QuestionEvent};
 use crate::bridge::Effects;
-use crate::cell::HistoryCell;
-use crate::model::ViewModel;
-use crate::render::{Clock, RenderCtx};
-use crate::state::AppState;
-use crate::text::plain_text;
-use crate::theme::{Glyphs, Theme};
+use crate::cells::cell::HistoryCell;
+use crate::frame::state::AppState;
 
 const HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -314,7 +314,7 @@ fn stuck() -> ApprovalOpened {
         ApprovalPacket::Stuck(StuckPacket {
             task: task_id(4),
             title: "Parser".into(),
-            state: argonauts_core::events::task::TaskState::NeedsDecision,
+            state: argonauts_core::runs::events::task::TaskState::NeedsDecision,
             tries: vec!["tests failed".into()],
             last_failure: "tests failed".into(),
         }),
@@ -559,13 +559,13 @@ fn a_dry_runs_question_shows_its_whole_plan_and_answers_only_to_its_keys() {
     asked.title = "Run it now?".into();
     asked.options[1].recommended = true;
     let question = choice_question(1, &asked);
-    let theme = crate::theme::Theme::dark();
-    let lines = question.lines(&crate::render::RenderCtx::new(
+    let theme = crate::base::theme::Theme::dark();
+    let lines = question.lines(&crate::base::draw::render::RenderCtx::new(
         60,
         &theme,
-        crate::render::Clock::still(std::time::Instant::now()),
+        crate::base::draw::render::Clock::still(std::time::Instant::now()),
     ));
-    assert_eq!(crate::text::plain_text(&lines), "  Run it now? y / N");
+    assert_eq!(crate::base::text::plain_text(&lines), "  Run it now? y / N");
     let n = lines[0].spans.last().unwrap();
     assert!(
         n.style
@@ -573,7 +573,7 @@ fn a_dry_runs_question_shows_its_whole_plan_and_answers_only_to_its_keys() {
             .contains(ratatui::style::Modifier::BOLD)
     );
     let y = &lines[0].spans[3];
-    assert_eq!(y.style, theme.style(crate::theme::Role::Dim));
+    assert_eq!(y.style, theme.style(crate::base::theme::Role::Dim));
 
     // Any other question keeps to a few rows.
     let mut long = choice(ChoiceKind::ConfirmConnect, Vec::new());
@@ -760,14 +760,17 @@ fn not_changed_leaves_a_neutral_mark() {
         Some("Change a safety setting?"),
         outcome,
     ) {
-        crate::cell::Cell::Notice(notice) => notice.tone,
+        crate::cells::cell::Cell::Notice(notice) => notice.tone,
         _ => panic!("a notice"),
     };
     assert_eq!(
         tone(argonauts_core::app::NOT_CHANGED),
-        crate::cell::Tone::Dim
+        crate::cells::cell::Tone::Dim
     );
-    assert_eq!(tone("Saved to this project."), crate::cell::Tone::Success);
+    assert_eq!(
+        tone("Saved to this project."),
+        crate::cells::cell::Tone::Success
+    );
 }
 
 /// Esc on a run's question or approval hands it on: the engine takes an option in your place,
@@ -952,7 +955,7 @@ fn enter_on_a_tasks_row_brings_up_the_question_it_waits_on() {
 
 #[test]
 fn carrying_on_says_so_once() {
-    use argonauts_core::events::approval::LEFT_TO_THE_AGENT;
+    use argonauts_core::runs::events::approval::LEFT_TO_THE_AGENT;
 
     let mut screen = Screen::new();
     let mut opened = merge();
@@ -976,7 +979,7 @@ fn carrying_on_says_so_once() {
 /// What Esc left reads as left, by you, and never quotes what the agent was told.
 #[test]
 fn a_question_you_left_is_recorded_as_left_to_the_agent() {
-    use argonauts_core::events::approval::LEFT_TO_THE_AGENT;
+    use argonauts_core::runs::events::approval::LEFT_TO_THE_AGENT;
 
     let mut left = decided(AnswerAction::Answer, Party::Declined);
     left.text = Some(LEFT_TO_THE_AGENT.to_owned());
@@ -1001,12 +1004,12 @@ fn an_agents_own_question_is_left_to_that_agent() {
     let at = datetime!(2026-10-06 20:47 UTC);
     let record = |kind, when| {
         let cell = records::passed_on_cell(kind, when, at, UtcOffset::UTC);
-        let crate::cell::Cell::Notice(notice) = cell else {
+        let crate::cells::cell::Cell::Notice(notice) = cell else {
             panic!("a notice");
         };
         assert_eq!(
             notice.tone,
-            crate::cell::Tone::Dim,
+            crate::cells::cell::Tone::Dim,
             "nothing is settled yet"
         );
         format!("{} · {}", notice.text, notice.decided.unwrap_or_default())
@@ -1028,7 +1031,7 @@ fn with_stop_set_a_question_left_ends_its_part() {
     let at = datetime!(2026-10-06 20:47 UTC);
     let text = |kind| {
         let cell = records::passed_on_cell(kind, WhenDeclined::Stop, at, UtcOffset::UTC);
-        let crate::cell::Cell::Notice(notice) = cell else {
+        let crate::cells::cell::Cell::Notice(notice) = cell else {
             panic!("a notice");
         };
         notice.text
@@ -1275,10 +1278,10 @@ fn a_question_auto_leaves_to_you_rings_and_says_why_once() {
     assert!(!out.bell, "nothing rings while auto decides");
     let check = |auto_preview: bool, reasons: &[&str]| {
         approval(ApprovalEvent::Checked(
-            argonauts_core::events::approval::PolicyCheck {
+            argonauts_core::runs::events::approval::PolicyCheck {
                 id: ApprovalId::numbered(1),
                 violations: Vec::new(),
-                verdict: auto_preview.then_some(argonauts_core::policy::Verdict::AskYou),
+                verdict: auto_preview.then_some(argonauts_core::safety::policy::Verdict::AskYou),
                 by: None,
                 judge: None,
                 reasons: reasons.iter().map(|reason| (*reason).to_owned()).collect(),
@@ -1476,10 +1479,10 @@ fn question_times_are_in_the_terminals_zone() {
 /// terminal's zone, which the engine's own wording leaves out.
 #[test]
 fn a_held_council_message_says_when_you_wrote_it_in_the_terminals_zone() {
-    use argonauts_core::events::approval::{CouncilPacket, CouncilQuestion};
-    use argonauts_core::events::council::HeldWhy;
-    use argonauts_core::names::{MessageId, WorkflowId};
-    use argonauts_core::workflow::StepRef;
+    use argonauts_core::base::names::{MessageId, WorkflowId};
+    use argonauts_core::runs::events::approval::{CouncilPacket, CouncilQuestion};
+    use argonauts_core::runs::events::council::HeldWhy;
+    use argonauts_core::workflows::workflow::StepRef;
 
     let why = HeldWhy::WordsInARow { count: 17 };
     let held = |wrote_at| {
@@ -1646,10 +1649,10 @@ fn a_choice_rings_only_when_it_asks_to() {
 
 /// A review the main agent picked, with no plan of its own: the workflow is what you approve.
 fn review_plan() -> ApprovalOpened {
-    use argonauts_core::events::approval::{PlanPacket, PlanWorkflow};
-    use argonauts_core::events::plan::{LimitPlan, TaskGraph};
+    use argonauts_core::runs::events::approval::{PlanPacket, PlanWorkflow};
+    use argonauts_core::runs::events::plan::{LimitPlan, TaskGraph};
     use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
-    use argonauts_core::workflow::WorkflowRef;
+    use argonauts_core::workflows::workflow::WorkflowRef;
 
     let workflow = serde_json::from_value(serde_json::json!({
         "name": "review-panel",
@@ -1780,7 +1783,7 @@ fn a_looping_phase_says_its_rounds() {
 /// Steps the runner runs have no step kinds, so each phase shows the line its script gave it.
 #[test]
 fn a_plan_of_a_scripts_steps_shows_each_phase_with_its_line() {
-    use argonauts_core::workflow::WorkflowRef;
+    use argonauts_core::workflows::workflow::WorkflowRef;
 
     let mut opened = review_plan();
     let ApprovalPacket::Plan(plan) = &mut opened.packet else {
@@ -1829,7 +1832,7 @@ fn a_plan_of_a_scripts_steps_shows_each_phase_with_its_line() {
 
 #[test]
 fn a_plan_names_the_agents_its_workflow_names() {
-    use argonauts_core::workflow::StepModels;
+    use argonauts_core::workflows::workflow::StepModels;
 
     let mut opened = review_plan();
     let ApprovalPacket::Plan(plan) = &mut opened.packet else {
@@ -1864,12 +1867,12 @@ fn the_merge_table_names_workers_as_the_run_knows_them() {
         packet.rows[0].worker = Some(worker("claude-code"));
         packet.rows[1].worker = Some(worker("codex"));
     }
-    let mut run = crate::state::RunState::new(argonauts_core::RunId::new("run-01").unwrap());
-    let mut session = crate::state::SessionState::new(
-        argonauts_core::names::SessionKey::numbered(1),
+    let mut run = crate::frame::state::RunState::new(argonauts_core::RunId::new("run-01").unwrap());
+    let mut session = crate::frame::state::SessionState::new(
+        argonauts_core::base::names::SessionKey::numbered(1),
         worker("claude-code/claude-haiku-4-5"),
         "claude-code",
-        argonauts_core::names::RoleName::Worker,
+        argonauts_core::base::names::RoleName::Worker,
         datetime!(2026-09-30 10:00 UTC),
     );
     session.task = Some(task_id(2));
@@ -1901,20 +1904,20 @@ fn the_merge_table_names_workers_as_the_run_knows_them() {
 #[test]
 fn the_merge_table_names_tasks_by_label() {
     let opened = merge();
-    let mut run = crate::state::RunState::new(argonauts_core::RunId::new("run-01").unwrap());
-    let mut session = crate::state::SessionState::new(
-        argonauts_core::names::SessionKey::numbered(1),
+    let mut run = crate::frame::state::RunState::new(argonauts_core::RunId::new("run-01").unwrap());
+    let mut session = crate::frame::state::SessionState::new(
+        argonauts_core::base::names::SessionKey::numbered(1),
         worker("codex/gpt-5.6"),
         "codex",
-        argonauts_core::names::RoleName::Worker,
+        argonauts_core::base::names::RoleName::Worker,
         datetime!(2026-09-30 10:00 UTC),
     );
     session.task = Some(task_id(2));
-    session.step = Some(argonauts_core::steps::StepName::Build);
+    session.step = Some(argonauts_core::workflows::steps::StepName::Build);
     session.label = Some("build:writer".into());
     run.session_order.push(session.key.clone());
     run.sessions.insert(session.key.clone(), session);
-    let table = |run: Option<&crate::state::RunState>| {
+    let table = |run: Option<&crate::frame::state::RunState>| {
         about_item(&opened, run, UtcOffset::UTC, &DisplayNames::default())
             .map(|item| item.plain(100).join("\n"))
             .unwrap_or_default()
@@ -1949,7 +1952,7 @@ fn the_merge_table_names_tasks_by_label() {
 /// calling the suite failed.
 #[test]
 fn a_merge_without_a_suite_says_none_ran() {
-    use argonauts_core::events::task::{CheckKind, CheckOutcome};
+    use argonauts_core::runs::events::task::{CheckKind, CheckOutcome};
 
     let suite = |passed: bool, command: Option<Vec<String>>| {
         let mut opened = merge();
@@ -1995,7 +1998,7 @@ fn a_merge_without_a_suite_says_none_ran() {
 /// its task, and so is one answered in your place, with who answered and what.
 #[test]
 fn the_merge_question_shows_the_questions_its_tasks_asked_you() {
-    use argonauts_core::events::approval::MergeQuestion;
+    use argonauts_core::runs::events::approval::MergeQuestion;
 
     let mut opened = merge();
     if let ApprovalPacket::Merge(packet) = &mut opened.packet {
@@ -2035,12 +2038,12 @@ fn the_merge_question_shows_the_questions_its_tasks_asked_you() {
 /// packet's count lags behind the sessions' own reports.
 #[test]
 fn the_merge_question_counts_the_spend_the_bottom_row_does() {
-    let mut run = crate::state::RunState::new(argonauts_core::RunId::new("run-01").unwrap());
-    let mut session = crate::state::SessionState::new(
-        argonauts_core::names::SessionKey::numbered(1),
+    let mut run = crate::frame::state::RunState::new(argonauts_core::RunId::new("run-01").unwrap());
+    let mut session = crate::frame::state::SessionState::new(
+        argonauts_core::base::names::SessionKey::numbered(1),
         worker("claude-code"),
         "claude-code",
-        argonauts_core::names::RoleName::Worker,
+        argonauts_core::base::names::RoleName::Worker,
         datetime!(2026-09-30 10:00 UTC),
     );
     session.cost_usd = Some(0.26);
@@ -2058,17 +2061,17 @@ fn the_merge_question_counts_the_spend_the_bottom_row_does() {
 /// task's worker sessions.
 #[test]
 fn an_stuck_counts_tries_that_reported_nothing() {
-    let mut run = crate::state::RunState::new(argonauts_core::RunId::new("run-01").unwrap());
+    let mut run = crate::frame::state::RunState::new(argonauts_core::RunId::new("run-01").unwrap());
     for n in 1..=2 {
-        let mut session = crate::state::SessionState::new(
-            argonauts_core::names::SessionKey::numbered(n),
+        let mut session = crate::frame::state::SessionState::new(
+            argonauts_core::base::names::SessionKey::numbered(n),
             worker("opencode"),
             "opencode",
-            argonauts_core::names::RoleName::Worker,
+            argonauts_core::base::names::RoleName::Worker,
             datetime!(2026-09-30 10:00 UTC),
         );
         session.task = Some(task_id(4));
-        session.step = Some(argonauts_core::steps::StepName::Build);
+        session.step = Some(argonauts_core::workflows::steps::StepName::Build);
         run.sessions.insert(session.key.clone(), session);
     }
     let mut opened = stuck();
@@ -2086,8 +2089,8 @@ fn an_stuck_counts_tries_that_reported_nothing() {
 /// transcript named the draft's session.
 #[test]
 fn a_plans_author_reads_as_its_session_did() {
-    use argonauts_core::display_names::DisplayNames;
-    use argonauts_core::events::plan::{JudgingResult, PlanTally};
+    use argonauts_core::look::display_names::DisplayNames;
+    use argonauts_core::runs::events::plan::{JudgingResult, PlanTally};
     use argonauts_core::settings::protocol::JudgingMethod;
 
     let mut opened = review_plan();
@@ -2613,7 +2616,7 @@ fn a_setup_question_shows_its_settings_plain_its_notes_dim_and_where_yes_saves_i
     theme.glyphs = Glyphs::UNICODE;
     let ctx = RenderCtx::new(120, &theme, Clock::still(Instant::now()));
     let lines = question.lines(&ctx);
-    let dim = theme.style(crate::theme::Role::Dim);
+    let dim = theme.style(crate::base::theme::Role::Dim);
     let style_of = |text: &str| {
         lines
             .iter()

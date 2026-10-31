@@ -10,11 +10,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
-use argonauts_testkit::acp::{
+use argonauts_testkit::fake_clis::acp::{
     AcpError, AcpPermission, AcpRule, AcpStep, AcpTurn, DEFAULT_SESSION_ID, PROTOCOL_VERSION,
     WRONG_PICK_EXIT,
 };
-use argonauts_testkit::scenario::{LogLine, NO_RULE_EXIT};
+use argonauts_testkit::fake_clis::scenario::{LogLine, NO_RULE_EXIT};
 use serde_json::{Value, json};
 
 use crate::{log, log_invocation, report, write_inside_cwd};

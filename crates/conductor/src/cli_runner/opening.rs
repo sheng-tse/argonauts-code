@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{LazyLock, Mutex, PoisonError};
 
 use argonauts_core::RunId;
-use argonauts_core::events::context::ContextUsage;
-use argonauts_core::window_size::tokens_by;
+use argonauts_core::look::window_size::tokens_by;
+use argonauts_core::runs::events::context::ContextUsage;
 
 /// A first request past this many tokens is worth a note.
 const HEAVY: u64 = 100_000;
@@ -48,7 +48,7 @@ pub(super) fn heavy_opening(run: &RunId, cli: &str, usage: &ContextUsage) -> Opt
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::context::McpTool;
+    use argonauts_core::runs::events::context::McpTool;
 
     use super::*;
 

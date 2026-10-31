@@ -6,12 +6,12 @@
 //! The view shows the reported phases in place of the step's one phase, so what you see is the
 //! workflow that runs, whatever it is called and however many phases it has.
 
-use argonauts_core::events::session::{CliAgent, CliAgentState, CliWorkflowRun};
-use argonauts_core::names::{SessionKey, WorkflowId};
-use argonauts_core::views::{
+use argonauts_core::app::views::{
     AgentRow, PhaseCount, PhaseRow, RowNote, RowStatus, Tone, WorkflowRow, children_inside,
 };
-use argonauts_core::workflow::{StandardPhase, StepRef};
+use argonauts_core::base::names::{SessionKey, WorkflowId};
+use argonauts_core::runs::events::session::{CliAgent, CliAgentState, CliWorkflowRun};
+use argonauts_core::workflows::workflow::{StandardPhase, StepRef};
 
 use time::OffsetDateTime;
 
@@ -140,7 +140,7 @@ impl StepWorkflow {
                     phase_status(&agents)
                 };
                 let row = PhaseRow {
-                    name: argonauts_core::text::shown_name(&phase.title),
+                    name: argonauts_core::base::text::shown_name(&phase.title),
                     detail: phase.detail.clone(),
                     standard,
                     status,
@@ -219,14 +219,14 @@ fn phase_status(agents: &[(&CliAgent, Option<AgentRow>)]) -> RowStatus {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::session::{
+    use argonauts_core::app::views::WorkflowView;
+    use argonauts_core::base::names::RoleName;
+    use argonauts_core::runs::events::session::{
         CliPhase, CliWorkflowRun, EndReason, SessionEvent, SubagentStatus,
     };
-    use argonauts_core::events::workflow::{WorkflowEvent, WorkflowStarted};
-    use argonauts_core::events::{RunEvent, RunEventKind};
-    use argonauts_core::names::RoleName;
-    use argonauts_core::views::WorkflowView;
-    use argonauts_core::workflow::Workflow;
+    use argonauts_core::runs::events::workflow::{WorkflowEvent, WorkflowStarted};
+    use argonauts_core::runs::events::{RunEvent, RunEventKind};
+    use argonauts_core::workflows::workflow::Workflow;
 
     use super::super::{WorkflowLog, view_from};
     use super::*;
@@ -685,7 +685,7 @@ mod tests {
     /// with no other word to the view.
     #[test]
     fn the_runners_report_event_reaches_the_view() {
-        use argonauts_core::events::workflow::{AgentSession, WorkflowReport};
+        use argonauts_core::runs::events::workflow::{AgentSession, WorkflowReport};
 
         let workflow = report(
             "rate-limit-per-key",
@@ -758,7 +758,7 @@ mod tests {
         if let RunEventKind::Session(SessionEvent::Started(started)) = &mut event.kind {
             started.role = role;
             if reads {
-                started.access = argonauts_core::session_runner::Access::ReadOnly;
+                started.access = argonauts_core::agents::session_runner::Access::ReadOnly;
             }
         }
         event
@@ -785,7 +785,7 @@ mod tests {
     /// short stopped with the run.
     #[test]
     fn a_challenge_against_none_a_scripts_review_and_a_stopped_build_say_what_they_were() {
-        use argonauts_core::events::run::{RunLifecycle, RunOutcome};
+        use argonauts_core::runs::events::run::{RunLifecycle, RunOutcome};
         use serde_json::json;
         let mut council = crate::client::test_support::run_started(0, "Per key rate limit", None);
         if let RunEventKind::Run(RunLifecycle::Started(started)) = &mut council.kind {
@@ -869,8 +869,9 @@ mod tests {
     fn a_councils_rows_say_what_each_agent_gave() {
         use serde_json::json;
         let mut council = crate::client::test_support::run_started(0, "Per key rate limit", None);
-        if let RunEventKind::Run(argonauts_core::events::run::RunLifecycle::Started(started)) =
-            &mut council.kind
+        if let RunEventKind::Run(argonauts_core::runs::events::run::RunLifecycle::Started(
+            started,
+        )) = &mut council.kind
         {
             started.workflow = "council".to_owned();
         }

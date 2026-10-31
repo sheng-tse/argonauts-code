@@ -6,13 +6,13 @@
 
 use std::path::{Path, PathBuf};
 
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
-use argonauts_core::prompt_files::{self, PROMPTS_DIR, ROLES_DIR};
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::prompts::prompt_files::{self, PROMPTS_DIR, ROLES_DIR};
 use argonauts_core::settings::mods::{MODS_DIR, builtin};
-use argonauts_core::{layout, templates, workflow_files};
+use argonauts_core::{base::layout, prompts::templates, workflows::workflow_files};
 
-use crate::env::AppEnv;
 use crate::prompts::catalog;
+use crate::startup::env::AppEnv;
 
 const README: &str = "README.md";
 
@@ -101,7 +101,7 @@ pub(crate) fn refresh(env: &AppEnv) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::paths::Paths;
+    use argonauts_core::base::paths::Paths;
     use argonauts_testkit::TempRepo;
 
     use super::*;

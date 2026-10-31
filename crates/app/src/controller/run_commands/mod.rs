@@ -11,16 +11,16 @@ mod tests;
 
 use std::sync::Arc;
 
-use argonauts_core::api::{ApiError, ApprovalAnswer, Approvals, DiffScope};
 use argonauts_core::app::{AppEvent, NOT_CHANGED, ViewData};
-use argonauts_core::events::approval::AnswerAction;
-use argonauts_core::events::council::CouncilAction;
-use argonauts_core::events::goal::{GoalAction, LET_THE_MAIN_AGENT_ANSWER};
-use argonauts_core::names::{ApprovalId, ChoiceId, SeatId};
+use argonauts_core::base::names::{ApprovalId, ChoiceId, SeatId};
+use argonauts_core::runs::api::{ApiError, ApprovalAnswer, Approvals, DiffScope};
+use argonauts_core::runs::events::approval::AnswerAction;
+use argonauts_core::runs::events::council::CouncilAction;
+use argonauts_core::runs::events::goal::{GoalAction, LET_THE_MAIN_AGENT_ANSWER};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::{NoteLevel, RunId, TaskId};
 
-use super::attach::Stage;
+use super::runs::attach::Stage;
 use super::runs::{RunChoice, RunsState};
 use super::{Ctx, Effect};
 
@@ -366,7 +366,7 @@ pub(crate) async fn approval_mode(
     // Kept for the next start, which `approvals.start_mode = "last"` brings back.
     if ctx.env.interactive && !ctx.env.agent_session {
         let approvals = &ctx.settings().approvals;
-        if let Err(err) = super::start_mode::remember(&ctx.env.state_dir, mode, approvals) {
+        if let Err(err) = super::base::start_mode::remember(&ctx.env.state_dir, mode, approvals) {
             ctx.notice(
                 NoteLevel::Warn,
                 format!("Couldn't keep the approval mode for the next start: {err:#}"),

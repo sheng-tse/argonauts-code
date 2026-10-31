@@ -25,7 +25,11 @@ new = "task (a piece of a plan) or question (the box that asks)"
 allowed_in = [
     # drawing
     "crates/tui/src/mods/**",
-    "crates/tui/src/overview/**",
+    "crates/tui/src/panels/**",
+    "crates/tui/src/base/theme/shades.rs",
+    "crates/tui/src/config/**",
+    "crates/tui/src/testing/sample/**",
+    "crates/tui/src/testing/pictures/golden.rs",
     "crates/tui/tests/golden/overview/**",
     "crates/tui/tests/golden/home/**",
     "crates/tui/tests/golden/stats/**",
@@ -36,48 +40,48 @@ allowed_in = [
     "approved/context-mod/**",
     "approved/limits/spend-card*",
     "approved/MANIFEST.toml",
-    "crates/tui/src/kit/**",
-    "crates/tui/src/bottom/band*.rs",
+    "crates/tui/src/base/kit/**",
+    "crates/tui/src/bottom/band/**",
     "crates/tui/src/bottom/mod.rs",
-    "crates/tui/src/bottom/tests.rs",
-    "crates/tui/src/views/goal_panel.rs",
+    "crates/tui/src/bottom/tests/mod.rs",
+    "crates/tui/src/views/goal/panel.rs",
     "crates/tui/src/views/mod.rs",
+    "crates/tui/src/frame/view/mod.rs",
     "crates/tui/src/a11y/views.rs",
-    "crates/tui/src/format/numbers.rs",
-    "crates/tui/src/state/mod.rs",
-    "crates/tui/src/app/tests.rs",
+    "crates/tui/src/base/format/numbers.rs",
+    "crates/tui/src/frame/state/mod.rs",
+    "crates/tui/src/app/tests/mod.rs",
     "crates/tui/src/bridge/band.rs",
-    "crates/tui/src/bridge/bottom_line.rs",
+    "crates/tui/src/bridge/bottom_line/mod.rs",
     "crates/tui/src/bridge/bottom_line/tests.rs",
     "crates/tui/src/bridge/keys.rs",
     "crates/tui/src/bridge/mod.rs",
-    "crates/tui/src/bridge/status.rs",
+    "crates/tui/src/bridge/status/mod.rs",
     "crates/tui/tests/it/snap_mods.rs",
     "crates/tui/tests/it/snap_mods/**",
     "crates/tui/tests/it/snapshots/it__snap_mods__*",
     "crates/tui/tests/fixtures/mods/**",
     # placing and settings
     "crates/app/src/mods/**",
-    "crates/app/src/controller/account.rs",
-    "crates/app/src/controller/mod_places.rs",
+    "crates/app/src/controller/clis/account.rs",
+    "crates/app/src/controller/panels/mod_places.rs",
     "crates/app/src/setup/tests.rs",
-    "crates/app/src/usage_ledger.rs",
+    "crates/app/src/usage/usage_ledger/mod.rs",
     "crates/scenarios/tests/it/app_settings.rs",
     "crates/core/src/settings/mods/**",
-    "crates/core/src/settings/mods.rs",
     "crates/core/templates/mods/**",
     "crates/core/src/settings/stats.rs",
     "crates/core/src/settings/ui/mods.rs",
     "crates/core/src/settings/ui/places.rs",
-    "crates/core/src/input.rs",
+    "crates/core/src/input/mod.rs",
     "crates/core/src/input/mods.rs",
     # the numbers a card shows
-    "crates/core/src/api.rs",
-    "crates/core/src/app.rs",
-    "crates/core/src/crew_stats.rs",
-    "crates/core/src/plan_usage.rs",
-    "crates/adapters/antigravity-cli/src/probe.rs",
-    "crates/adapters/codex/src/probe.rs",
+    "crates/core/src/runs/api.rs",
+    "crates/core/src/app/mod.rs",
+    "crates/core/src/behaviors/crew_stats.rs",
+    "crates/core/src/models/plan_usage.rs",
+    "crates/adapters/antigravity-cli/src/account/probe.rs",
+    "crates/adapters/codex/src/plan_usage/probe.rs",
 ]
 
 [[word]]
@@ -113,14 +117,14 @@ new = "spend (money) or limits (caps you set)"
 old = ["quota", "quotas"]
 new = "plan usage"
 allowed_in = [
-    "crates/adapters/antigravity-cli/src/errors.rs",
-    "crates/adapters/antigravity-cli/src/parser.rs",
-    "crates/adapters/antigravity-cli/src/probe.rs",
-    "crates/adapters/codex/src/classify.rs",
+    "crates/adapters/antigravity-cli/src/account/probe.rs",
+    "crates/adapters/antigravity-cli/src/parser/errors.rs",
+    "crates/adapters/antigravity-cli/src/parser/mod.rs",
+    "crates/adapters/codex/src/parser/classify.rs",
     "crates/adapters/manifest/src/output/mod.rs",
-    "crates/endpoints/src/errors.rs",
+    "crates/endpoints/src/session/errors.rs",
     "crates/endpoints/tests/it/runner.rs",
-    "crates/testkit/src/openai.rs",
+    "crates/testkit/src/servers/openai.rs",
     "crates/registry/src/clis/tests.rs",
     "crates/registry/tests/fixtures/models.toml",
 ]
@@ -211,13 +215,13 @@ new = "judge"
 old = ["attempt", "attempts", "attempted"]
 new = "try"
 allowed_in = [
-    "crates/adapters/antigravity-cli/src/errors.rs",
-    "crates/adapters/antigravity-cli/src/parser.rs",
+    "crates/adapters/antigravity-cli/src/parser/errors.rs",
+    "crates/adapters/antigravity-cli/src/parser/mod.rs",
     "crates/adapters/antigravity-cli/tests/it/replay.rs",
-    "crates/adapters/claude-code/src/parser.rs",
-    "crates/adapters/claude-code/src/workflows.rs",
+    "crates/adapters/claude-code/src/parser/mod.rs",
+    "crates/adapters/claude-code/src/workflows/mod.rs",
     "crates/scenarios/scenarios/limits/*.toml",
-    "crates/tui/src/bottom/retry.rs",
+    "crates/tui/src/bottom/working/retry.rs",
     "crates/tui/tests/golden/network_after.html",
     "crates/tui/tests/golden/network_after.txt",
 ]
@@ -241,15 +245,15 @@ new = "critique"
 old = ["revert", "reverts", "reverted", "reverting"]
 new = "rewind (rewound); undo for plain uses"
 allowed_in = [
-    "crates/crew/src/git.rs",
+    "crates/crew/src/git/mod.rs",
     "crates/crew/src/fallback/rewind.rs",
     "crates/crew/src/run_review/reversals.rs",
     "crates/crew/src/approvals/mod.rs",
     "crates/app/src/host/mod.rs",
     "crates/app/src/host/revert_check.rs",
     "crates/app/src/behaviors/labeller/shell.rs",
-    "crates/app/src/example_prompt.rs",
-    "crates/policy/src/parts.rs",
+    "crates/app/src/conversation/example_prompt.rs",
+    "crates/policy/src/approvals/parts.rs",
     "crates/policy/src/autonomy/**",
     "crates/learning/**",
     "crates/scenarios/tests/it/policy_revert_of_auto_merge_demotes.rs",
@@ -262,7 +266,7 @@ old = ["chat", "chats"]
 new = "conversation"
 allowed_in = [
     "crates/endpoints/**",
-    "crates/testkit/src/openai.rs",
+    "crates/testkit/src/servers/openai.rs",
     "crates/testkit/tests/it/openai_endpoint.rs",
 ]
 
@@ -394,7 +398,7 @@ new = "Usage reports"
 [[pattern]]
 old = '\b(7d|30d)\b'
 new = "week, month"
-only_in = ["crates/core/src/settings/stats.rs", "crates/core/src/input.rs", "crates/core/src/input/**"]
+only_in = ["crates/core/src/settings/stats.rs", "crates/core/src/input/**"]
 
 # A logo and the name after it are one unit: kit::logo::ModelLabel words the name by whether
 # the logo's picture draws, and only it.
@@ -612,7 +616,7 @@ not_ours = [
 # variant: the thing's full name, or one variant for both ways of a switch.
 
 [slash_commands]
-table = "crates/core/src/input.rs"
+table = "crates/core/src/input/mod.rs"
 
 [slash_commands.variant_of]
 council = "WorkflowRequest"
@@ -638,14 +642,14 @@ prints = '''
 ✘ retired names · 3 places
   crates/tui/src/bridge/transcript/steps.rs:256   "coordinated" → orchestrator
   crates/app/src/setup/questions.rs:456           "coordinates" → orchestrator
-  crates/crew/src/labels.rs:144                   "handoff" → fallback
+  crates/crew/src/sessions/labels.rs:144          "handoff" → fallback
 
   one table holds every retired name and its replacement (crates/testkit/retired-names.toml);
   words are matched whole, so seatbelt or discard never trip it; CLI recordings are checked by name only
 '''
 
 [[report_example.places]]
-path = "crates/crew/src/labels.rs"
+path = "crates/crew/src/sessions/labels.rs"
 line = 144
 word = "handoff"
 
@@ -664,7 +668,7 @@ word = "coordinates"
 # test, so the list can't outlive what it excuses.
 
 [[allow]]
-path = "crates/tui/src/kit/logo*.rs"
+path = "crates/tui/src/base/kit/logo/**"
 text = "after_logo(&as_drawn("
 why = "ModelLabel itself, which words a name after the logo as it draws, and its tests"
 
@@ -694,7 +698,7 @@ text = '"OWNER", "MEMBER", "COLLABORATOR"'
 why = "GitHub's own names for how a comment's author stands to the repository"
 
 [[allow]]
-path = "crates/crew/src/council/lexicon.rs"
+path = "crates/crew/src/council/lexicon/mod.rs"
 text = "\"chat\""
 why = "a word in models' own names and ids, as deepseek-chat, which no seat is told apart by"
 
@@ -709,7 +713,7 @@ text = "error_max_budget_usd"
 why = "Claude Code's own result subtype"
 
 [[allow]]
-path = "crates/adapters/claude-code/src/parser.rs"
+path = "crates/adapters/claude-code/src/parser/mod.rs"
 text = "Reached maximum budget"
 why = "Claude Code's own error text"
 
@@ -719,12 +723,12 @@ text = "Budget limit reached ("
 why = "Claude Code's own words, on stderr when its cap stops background agents and to the model when it won't start another"
 
 [[allow]]
-path = "crates/adapters/claude-code/src/errors.rs"
+path = "crates/adapters/claude-code/src/parser/errors.rs"
 text = "budget_exhausted"
 why = "Claude Code's own reason for a turn that ended on its cap"
 
 [[allow]]
-path = "crates/adapters/codex/src/classify.rs"
+path = "crates/adapters/codex/src/parser/classify.rs"
 text = "token budget exhausted"
 why = "Codex's own error text"
 
@@ -764,17 +768,17 @@ text = '"hermes", "chat"'
 why = "Hermes's own subcommand"
 
 [[allow]]
-path = "crates/tui/src/keymap.rs"
+path = "crates/tui/src/base/input/keymap.rs"
 text = "chat:killAgents"
 why = "Claude Code's own name for the key's action"
 
 [[allow]]
-path = "crates/adapters/codex/src/probe.rs"
+path = "crates/adapters/codex/src/plan_usage/probe.rs"
 text = "workspace_owner_credits_depleted"
 why = "Codex's own value for a limit that was reached"
 
 [[allow]]
-path = "crates/crew/src/git.rs"
+path = "crates/crew/src/git/mod.rs"
 text = " differ\""
 why = "git's own line for a binary file"
 
@@ -784,7 +788,7 @@ text = "logo.png differ"
 why = "git's own line for a binary file"
 
 [[allow]]
-path = "crates/learning/src/scan.rs"
+path = "crates/learning/src/export/scan.rs"
 text = "approvers?"
 why = "a word injected text may use to address a model, which the scan looks for"
 
@@ -839,12 +843,12 @@ text = "box-shadow"
 why = "CSS of the page that draws the header's pictures"
 
 [[allow]]
-path = "crates/adapters/antigravity-cli/src/banner.rs"
+path = "crates/adapters/antigravity-cli/src/account/banner.rs"
 text = "Antigravity CLI"
 why = "agy's own banner names it in full, and the reader matches that title"
 
 [[allow]]
-path = "crates/app/src/controller/banner.rs"
+path = "crates/app/src/controller/clis/banner.rs"
 text = "Antigravity CLI"
 why = "agy's own sign-in screen, as the tests feed it to the banner reader"
 

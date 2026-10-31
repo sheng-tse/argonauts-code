@@ -5,7 +5,7 @@ use argonauts_core::settings::protocol::RoutingSettings;
 use argonauts_learning::outcomes::{LogLine, Outcome, Predictor};
 use argonauts_learning::predictions::{self, Calibration};
 use argonauts_learning::records::Book;
-use argonauts_learning::types::Assignment;
+use argonauts_learning::store::types::Assignment;
 
 use records_support::{AS_OF, close, outcome, prediction, worker};
 

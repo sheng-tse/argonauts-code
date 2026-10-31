@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use argonauts_conductor::sandbox::SandboxWrap;
 use argonauts_conductor::sandbox::container::Container;
 use argonauts_core::CommandSpec;
-use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
+use argonauts_core::agents::session_runner::{SandboxMode, SandboxProfile};
 
 const IMAGE_ENV: &str = "ARGONAUTS_TEST_CONTAINER_IMAGE";
 
