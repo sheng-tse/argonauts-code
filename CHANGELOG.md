@@ -4,6 +4,59 @@ Notable changes to Argonauts Code, newest first. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-01
+
+### Added
+
+- Summaries' "Summarize with" offers Open models: every model installed through Ollama or LM Studio with its window, whether each Ollama model fits in memory now, and a few from the catalog that would fit. It offers to start Ollama or LM Studio when it isn't running, and downloads a model through Ollama when it isn't there yet.
+- Ctrl+Z suspends the app, as in Claude Code, and `fg` brings it back with its logos.
+- When macOS keeps a CLI out of your Desktop, Documents or Downloads folder, the screen says once which setting in System Settings lets it in.
+- On Behaviors' label and by-model rows, a model shows its own line's logo, such as Claude's before Opus, rather than the logo of the CLI that runs it, and a maker shows its own logo. Each maker's galaxy takes its logo's shape.
+- `/doctor` lists each CLI's tokens beside a second count made by plainer rules, and names up to four days where the two counts are different.
+- The bottom line's CLIs choice in Config › Mods has a fifth choice, "the ones you pick", which opens the same picker as `/bottom-line`. Picking one of the automatic choices again and saving clears your list.
+
+### Changed
+
+- A crew workflow you chose, in a settings file, with its command or with a flag, now takes every change, small ones too, and so does `captain_or_crew.force = "crew"`. The main agent still answers your questions itself.
+- Council starts with its seats' first answers, with no readings, goal question or design step before them. Your request is the talk's first message, and the plan is the first thing you approve.
+- A Council talk's token limit, 200k by default, counts what the seats write, the number the working line shows. It used to count the context each CLI reads again on every turn, so a talk could stop at its limit while the working line said far less.
+- The Context tab shows each model's window from the first screen, before any session has said it, with `–` for a figure no list gives yet.
+- Overview's Tokens lists each CLI with what its number counts, then, with more than one CLI, all of them added up.
+- Only the row the keys are on, or the nearest row above where they are, shows its pick in orange. Every other pick is lavender, and the grey band is gone.
+- Going down into the Behaviors map puts the pointer on its busiest place, so you can see where the keys went.
+- In Behaviors, `u` on Summaries adds the actions that wait, with the map's own summarizer: at once when it runs on this computer, and after asking otherwise. `d` switches between the labels and Summaries.
+- Tokens per Day draws each CLI's models in shades of the CLI's own colour, told apart by how light they are.
+- The bottom line's usage meters, and the pickers', fill their last cell only when the window is used up, so 92% no longer looks full.
+- In a terminal that shows pictures, the header's mascot fills its three rows.
+- The header names your home folder in full, as Claude Code does. Folders under it still start with `~/`.
+- While `/awake` keeps the computer awake, the bottom line shows the cup alone, or the cup and the time the hold ends.
+- The Behaviors world moves more smoothly: 16 steps a second on a map of up to 1,100 cells, 12 on a bigger one. The universe keeps moving when nothing happened lately, and going into a galaxy no longer waits for its picture.
+- Without pictures, the Behaviors map now looks like 0.1.0's map picture: each action a round braille dot, with the comparison in the picture's soft red and blue behind them.
+- What the pointer says on the map, the planet and the universe is in plain words, with nothing that needs a legend.
+- Sessions that only answer, such as the Council's judge, narrator and reactions and the Summaries summarizer, run with every tool turned off on Claude Code, Codex, agy and OpenCode. A CLI added through ACP or a manifest keeps its read-only flags.
+
+### Fixed
+
+- A run started while you were in Supervised mode asks you at its approvals, a Council's plan among them. They used to take the mode your settings give, Auto by default, and the bottom line switched to Auto once the run began.
+- A model set by an alias such as `opus` keeps its version, "Opus 5.5", in the header, agent rows, run rows and Council seat names.
+- A Council seat that is too slow or fails on its own, such as a crash or a CLI error, no longer ends the run. It sits that turn out and says so, and after a second miss the others agree without it.
+- A Council talk no longer crashes the app when a bubble comes out narrower than its rounded corners.
+- The note keeper's proposal in a Council talk wraps inside its bubble, and each message shows in its bubble as soon as its words do.
+- A seat's view opened from the talk no longer has the talk's bubbles over it, and keeps the seat's lines and lists apart instead of running them together.
+- Agent rows for the seats and for the judge auto mode asks no longer print between a Council talk's bubbles. They stay in the run's own view.
+- A refused plan edit names the reviewer and the worker, not their ids.
+- A failed Summaries update never empties the map. A run folder that can't be read keeps its dots and is named, and an update that would save fewer dots keeps the map and says why.
+- When a Behaviors picture can't be drawn, the bottom line says so, where the map used to freeze without a word.
+- A picked row under the input takes the cursor from it, and the key line shows that row's keys.
+- The header and the start notices that need no CLI come with the first frame, before the CLI checks answer.
+- In `/model`, the memory bar follows the highlighted row at once.
+- In the Context tab, the row under the tabs counts a CLI's one session in the same window as the block below it, so the two figures agree.
+- Summaries with a CLI's model, such as Claude Code's or Codex's, write their summaries. Their sessions now run inside the sandbox. With the sandbox on, as it is by default, the app used to refuse to start them, so every update stopped before its first summary.
+- When a Summaries update stops, the line under the map says why and names the model, for example a model Ollama couldn't download. A reply with no summary in it stops the update and says what came back, where the update used to end without a word.
+- On a tab with nothing to pick, such as Overview's first tab, ↓ leaves the keys on the sub-tabs, where they used to go down to a place ← and → couldn't move.
+- Stats' who did what leaves room between a role's second line and the model's logo.
+- On Linux, installing the npm package again after it stopped for a missing `xz` no longer leaves an `argonauts` that says "Permission denied".
+
 ## [0.2.0] - 2026-10-30
 
 Council is a preview in this release.
@@ -75,6 +128,7 @@ The first public release.
 - `argonauts run` for scripts and CI, `argonauts resume`, `argonauts doctor`, and an MCP server (`argonauts mcp`).
 - One anonymous usage report a day, announced on first start and stopped with `argonauts telemetry off` or `DO_NOT_TRACK=1` (see [PRIVACY.md](PRIVACY.md)).
 
-[Unreleased]: https://github.com/sheng-tse/argonauts-code/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/sheng-tse/argonauts-code/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/sheng-tse/argonauts-code/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/sheng-tse/argonauts-code/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sheng-tse/argonauts-code/releases/tag/v0.1.0

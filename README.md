@@ -8,7 +8,7 @@
 
 **Ask once. The orchestrator plans, your agents build in parallel, another reviews, and you decide what merges.**
 
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-4b6fff?style=flat-square)](LICENSE) [![macOS and Linux](https://img.shields.io/badge/runs_on-macOS_·_Linux-2f6f4f?style=flat-square)](#install) [![Release](https://img.shields.io/badge/release-v0.2.0-f0a441?style=flat-square)](https://github.com/sheng-tse/argonauts-code/releases) [![CI](https://img.shields.io/github/actions/workflow/status/sheng-tse/argonauts-code/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/sheng-tse/argonauts-code/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-4b6fff?style=flat-square)](LICENSE) [![macOS and Linux](https://img.shields.io/badge/runs_on-macOS_·_Linux-2f6f4f?style=flat-square)](#install) [![Release](https://img.shields.io/badge/release-v0.2.1-f0a441?style=flat-square)](https://github.com/sheng-tse/argonauts-code/releases) [![CI](https://img.shields.io/github/actions/workflow/status/sheng-tse/argonauts-code/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/sheng-tse/argonauts-code/actions/workflows/ci.yml)
 
 **[Install](#install) · [How it works](#how-it-works) · [Workflows](#workflows) · [Agents](#supported-agents-and-models) · [Open models](#open-weight-models) · [FAQ](#faq)**
 
