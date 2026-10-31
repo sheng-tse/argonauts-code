@@ -249,6 +249,8 @@ jobs:
       # It reads every tracked file, Markdown included, so it runs for a docs-only change too.
       # ARGONAUTS_DOCS stays unset, so only tracked files are checked.
       - run: cargo test --locked -p argonauts-testkit --test retired_names
+      # Loose files in a src/, a module beside its folder, and files and crates past their size.
+      - run: cargo test --locked -p argonauts-testkit --test source_layout
 
   packages:
     name: Packages
