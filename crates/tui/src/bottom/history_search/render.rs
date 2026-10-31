@@ -5,11 +5,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::{HistorySearch, Preview, age};
-use crate::render::RenderCtx;
-use crate::text::{
+use crate::base::draw::render::RenderCtx;
+use crate::base::text::{
     KEEP, Part, fit_parts, sanitize, spans_width, str_width, truncate_spans, wrap_text,
 };
-use crate::theme::{Role, Theme};
+use crate::base::theme::{Role, Theme};
 
 /// Left of the list and both boxes, and right of them.
 const MARGIN: usize = 2;
@@ -328,7 +328,7 @@ impl HistorySearch {
                 format!(
                     "{}{}to navigate",
                     marks.navigate,
-                    crate::theme::glyphs::gap_after(marks.navigate)
+                    crate::base::theme::glyphs::gap_after(marks.navigate)
                 ),
                 2,
             ),

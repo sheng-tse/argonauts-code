@@ -5,15 +5,15 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::names::ApprovalId;
-use argonauts_core::policy::{
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::safety::policy::{
     EVIDENCE_INLINE_MAX, EvidenceDocument, EvidenceFacts, EvidencePacket,
 };
 use argonauts_core::sha256_hex;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 
 /// The judge's rules when the repo has no file of its own, so the autonomous defaults can
 /// decide in a repo nobody set up.

@@ -10,15 +10,15 @@ use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use argonauts_core::driver::{
+use argonauts_core::agents::driver::{
     DriverControl, DriverEnd, DriverIo, DriverStart, DriverStop, RawFrame, SessionDriver,
 };
-use argonauts_core::events::session::{
+use argonauts_core::agents::session_runner::{SessionControl, SteerSupport};
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::layout::session_files;
+use argonauts_core::runs::events::session::{
     Delivery, EndReason, LaunchRecord, PromptVia, SessionEnd, SessionEvent, WrapUpVia,
 };
-use argonauts_core::future::BoxFuture;
-use argonauts_core::layout::session_files;
-use argonauts_core::session_runner::{SessionControl, SteerSupport};
 use argonauts_core::{AgentEvent, LimitDimension, MessageStage, StopSignal, write_private_file};
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
@@ -37,8 +37,8 @@ use super::session::{Running, announce_start, end_of, not_started, or_far, tick_
 use super::steer::{Pending, announce};
 use super::stop::{Purpose, StopCause, Stopping};
 use crate::process::{AgentProcess, OutputLine, ProcessEvent, exit_parts};
-use crate::rawlog::RawLog;
 use crate::sandbox::permission_scope;
+use crate::session::rawlog::RawLog;
 
 /// After `Cancel`, or after the driver returns, how long the agent gets to exit by itself
 /// before the stop plan.
@@ -173,7 +173,7 @@ fn driver_start(ctx: &Context, launch: &Launch) -> Result<DriverStart, String> {
         report: &report_file,
     });
     let mcp_servers = if ctx.capabilities.status_tool {
-        let argonauts = argonauts_core::paths::this_program()
+        let argonauts = argonauts_core::base::paths::this_program()
             .map_err(|err| format!("could not find the argonauts binary: {err}"))?;
         session_server(&argonauts, spec.status_file.as_deref(), report, None)
             .into_iter()
@@ -202,7 +202,7 @@ fn driver_start(ctx: &Context, launch: &Launch) -> Result<DriverStart, String> {
             .asking
             .as_ref()
             .filter(|asking| asking.asks != argonauts_core::Asks::Never)
-            .map(|asking| argonauts_core::asking::AskTarget {
+            .map(|asking| argonauts_core::runs::asking::AskTarget {
                 endpoint: asking.endpoint.clone(),
                 token: asking.token.clone(),
             }),

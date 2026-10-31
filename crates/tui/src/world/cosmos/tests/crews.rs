@@ -11,7 +11,7 @@ use crate::world::cosmos::{StarAction, Universe, rules};
 use crate::world::map::fields::crews::detail::{Ended, Outcome};
 use crate::world::map::fields::crews::{Crew as MapCrew, Key};
 use crate::world::map::nature::crews as nature;
-use argonauts_core::behavior_world::{
+use argonauts_core::behaviors::behavior_world::{
     CliFailure, CrewFacts, MixedRun, ModelBehavior, ModelFacts, ModelPair, MonthActions,
     NewerModel, WorldFacts,
 };

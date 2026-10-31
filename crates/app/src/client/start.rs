@@ -7,12 +7,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use argonauts_core::RunId;
-use argonauts_core::api::{ApiError, RunHandle, StartRun};
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::run::{RunLifecycle, RunOutcome};
-use argonauts_core::journal::RunLock;
-use argonauts_core::layout::run_files as names;
-use argonauts_core::paths::create_private_dir_all;
+use argonauts_core::base::layout::run_files as names;
+use argonauts_core::base::paths::create_private_dir_all;
+use argonauts_core::runs::api::{ApiError, RunHandle, StartRun};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::run::{RunLifecycle, RunOutcome};
+use argonauts_core::runs::journal::RunLock;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_registry::clis::agents_turned_on;
 use argonauts_registry::{LearnedWorkflowOverlay, ResolvedSettings, resolve};
@@ -21,10 +21,10 @@ use time::OffsetDateTime;
 use super::Client;
 use super::journal_ends;
 use super::socket::Connection;
-use crate::app_settings;
+use crate::host::run_files::{self, SettingsRecord, StartRecord};
 use crate::learning::{self, learned_workflow::ForRun};
-use crate::run_files::{self, SettingsRecord, StartRecord};
-use crate::trust::TrustStore;
+use crate::startup::app_settings;
+use crate::startup::trust::TrustStore;
 
 /// How long a new run host gets to answer on its socket.
 pub(crate) const WELCOME_TIMEOUT: Duration = Duration::from_secs(10);

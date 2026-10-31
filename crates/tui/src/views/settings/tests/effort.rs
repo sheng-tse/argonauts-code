@@ -1,6 +1,6 @@
 //! `/model`'s effort line, `/effort`'s slider, and ←/→ between levels in the other pickers.
 
-use argonauts_core::model_picker::{EffortLine, EffortSlider, EffortStop};
+use argonauts_core::app::model_picker::{EffortLine, EffortSlider, EffortStop};
 
 use super::*;
 
@@ -492,9 +492,9 @@ fn the_effort_slider_fits_every_width() {
     let mut screen = Screen::new();
     screen.answer(effort_answer(slider(None, Some("low"))));
     let theme = Theme::dark();
-    for width in crate::stability::WIDTHS {
+    for width in crate::base::stability::WIDTHS {
         let ctx = RenderCtx::new(width, &theme, Clock::still(Instant::now()));
-        crate::stability::assert_lines(&picker(&screen).lines(&ctx), width);
+        crate::base::stability::assert_lines(&picker(&screen).lines(&ctx), width);
     }
     let narrow = shown(&screen, 40);
     assert!(
@@ -645,9 +645,9 @@ fn a_fixed_level_fits_every_width() {
     let mut screen = Screen::new();
     screen.answer(effort_answer(fixed_slider()));
     let theme = Theme::dark();
-    for width in crate::stability::WIDTHS {
+    for width in crate::base::stability::WIDTHS {
         let ctx = RenderCtx::new(width, &theme, Clock::still(Instant::now()));
-        crate::stability::assert_lines(&picker(&screen).lines(&ctx), width);
+        crate::base::stability::assert_lines(&picker(&screen).lines(&ctx), width);
     }
 }
 
@@ -760,9 +760,9 @@ fn ultracode_without_a_slider_fits_every_width() {
         for on in [false, true] {
             let mut screen = Screen::new();
             screen.answer(effort_answer(slider.clone().with_ultracode(on)));
-            for width in crate::stability::WIDTHS {
+            for width in crate::base::stability::WIDTHS {
                 let ctx = RenderCtx::new(width, &theme, Clock::still(Instant::now()));
-                crate::stability::assert_lines(&picker(&screen).lines(&ctx), width);
+                crate::base::stability::assert_lines(&picker(&screen).lines(&ctx), width);
             }
         }
     }

@@ -5,11 +5,11 @@
 
 use std::collections::BTreeSet;
 
-use argonauts_core::events::context::ContextDetail;
-use argonauts_core::events::session::{SubagentKind, SubagentStatus};
-use argonauts_core::pictures::Picture;
-use argonauts_core::screen::{Drawn, ScreenChange, ScreenRequest};
-use argonauts_core::session_runner::SessionControl;
+use argonauts_core::agents::screen::{Drawn, ScreenChange, ScreenRequest};
+use argonauts_core::agents::session_runner::SessionControl;
+use argonauts_core::look::pictures::Picture;
+use argonauts_core::runs::events::context::ContextDetail;
+use argonauts_core::runs::events::session::{SubagentKind, SubagentStatus};
 use argonauts_core::settings::ui::Notices;
 use argonauts_core::{AgentEvent, MessageStage};
 use tokio::sync::mpsc;
@@ -386,7 +386,7 @@ pub(super) fn is_passing(event: &AgentEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::screen::DrawnButton;
+    use argonauts_core::agents::screen::DrawnButton;
 
     use super::*;
 

@@ -7,15 +7,17 @@ use std::time::Duration;
 use serde_json::json;
 use tokio::sync::oneshot;
 
-use argonauts_core::api::ApprovalAnswer;
-use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened};
-use argonauts_core::events::run::{Party, RunMode, WaitReason};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ApprovalId, ModelRef};
-use argonauts_core::policy::{PolicyOutcome, Verdict};
+use argonauts_core::base::names::{ApprovalId, ModelRef};
+use argonauts_core::runs::api::ApprovalAnswer;
+use argonauts_core::runs::engine::{EngineCommand, EngineExit};
+use argonauts_core::runs::events::approval::{
+    AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened,
+};
+use argonauts_core::runs::events::run::{Party, RunMode, WaitReason};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::safety::policy::{PolicyOutcome, Verdict};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
-use argonauts_testkit::deadline;
+use argonauts_testkit::pty::deadline;
 
 const TWO_PHASES: &str = "name: two-looks\ndescription: Two looks\nphases:\n  - name: First look\n    standard: check\n    steps:\n      - kind: checks\n  - name: Second look\n    standard: check\n    steps:\n      - kind: checks\n";
 
@@ -211,7 +213,7 @@ fn reversals_of(
     use argonauts_crew::run_review::outcomes::{self, LogLine};
     let id = argonauts_core::RepoId::from_canonical_path(crew.repo.root());
     let state_dir = crew.repo.home().join("state").join(id.as_str());
-    let run = argonauts_core::RunId::new(argonauts_testkit::services::TEST_RUN)?;
+    let run = argonauts_core::RunId::new(argonauts_testkit::engine::services::TEST_RUN)?;
     Ok(outcomes::run_lines(&state_dir, &run)?
         .into_iter()
         .filter_map(|line| match line {
@@ -321,7 +323,7 @@ async fn user_answer_beats_slow_judge() -> anyhow::Result<()> {
     // Sent back, so no change was recorded.
     assert!(events.iter().all(|event| !matches!(
         event.kind,
-        RunEventKind::Workflow(argonauts_core::events::workflow::WorkflowEvent::Changed(_))
+        RunEventKind::Workflow(argonauts_core::runs::events::workflow::WorkflowEvent::Changed(_))
     )));
     Ok(())
 }

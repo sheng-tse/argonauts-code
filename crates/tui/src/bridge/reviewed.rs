@@ -18,14 +18,14 @@
 //! A sign-off about no one task works in a folder that holds the change it reads: the task's
 //! worktree when one task changed, else one with every task merged in.
 
-use argonauts_core::events::session::{InputPart, InputPartKind, SessionEnd};
+use argonauts_core::runs::events::session::{InputPart, InputPartKind, SessionEnd};
 use std::collections::BTreeMap;
 
 use argonauts_core::RunId;
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
 use serde_json::Value;
 
-use crate::cell::{CollapsedGroup, Tone, ToolCall, ToolItem, ToolState, ToolTitle};
+use crate::cells::cell::{CollapsedGroup, Tone, ToolCall, ToolItem, ToolState, ToolTitle};
 
 /// What a judging session was given to judge, from the parts of its prompt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -294,16 +294,16 @@ mod tests {
     /// The round reads after the label and its task, outside the bold label.
     #[test]
     fn the_round_reads_after_the_label() {
-        use crate::cell::{HistoryCell as _, ModelShade};
-        use crate::render::{Clock, RenderCtx};
-        use crate::theme::{Glyphs, Role, Theme};
+        use crate::base::draw::render::{Clock, RenderCtx};
+        use crate::base::theme::{Glyphs, Role, Theme};
+        use crate::cells::cell::{HistoryCell as _, ModelShade};
         use ratatui::style::Modifier;
 
         let run = RunId::new("run-01").unwrap();
         let shade = ModelShade {
             cli: Role::CliCodex,
             place: 0,
-            logo: argonauts_core::logos::logo_for("codex", Some("gpt-6-luna")),
+            logo: argonauts_core::look::logos::logo_for("codex", Some("gpt-6-luna")),
             model: Some("GPT 6 Luna".to_owned()),
             on: "Codex".to_owned(),
         };

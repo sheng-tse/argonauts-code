@@ -10,7 +10,7 @@
 //! - vLLM: `GET /v1/models`, whose `max_model_len` is the window it serves at.
 //! - Any other server, OpenRouter among them: `GET /models` as the OpenAI API has it.
 
-use argonauts_core::registry::ModelEntry;
+use argonauts_core::models::registry::ModelEntry;
 use serde_json::{Value, json};
 
 use super::http::{Server, Unanswered};
@@ -179,7 +179,7 @@ pub(super) async fn loaded_window(server: &Server, model: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::registry::ModelAccess;
+    use argonauts_core::models::registry::ModelAccess;
 
     use super::*;
 

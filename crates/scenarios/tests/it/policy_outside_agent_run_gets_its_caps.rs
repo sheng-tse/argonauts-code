@@ -2,7 +2,7 @@
 //! `mcp.runs_per_day`, across every repo, so the next start past the cap is refused.
 
 use crate::policy_support;
-use argonauts_testkit::journal;
+use argonauts_testkit::home::journal;
 use policy_support::{
     McpServer, OutsideAgent, RUN_WAIT, TASK, captain_config, failed, run_started, runtime, text,
     trusted_scenario, wait_for_events,

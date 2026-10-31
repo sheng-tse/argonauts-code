@@ -8,15 +8,15 @@
 //! a session at work does, and are dropped when the run pauses or stops.
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::goal::{GoalChecked, GoalEvent, GoalRun, GoalVerdict};
-use argonauts_core::goal::GoalSpec;
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::goal::{GoalChecked, GoalEvent, GoalRun, GoalVerdict};
+use argonauts_core::workflows::goal::GoalSpec;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
 use crate::engine::shared::{Admission, lock};
-use crate::error::{EngineError, EngineResult};
-use crate::labels;
+use crate::sessions::labels;
 use crate::state::RunState;
 use crate::task::support::worker_of;
 use crate::workflow::StepAt;
@@ -231,7 +231,7 @@ impl Drop for Running {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::goal::{CriterionState, CriterionVerdict};
+    use argonauts_core::runs::events::goal::{CriterionState, CriterionVerdict};
 
     use super::*;
 

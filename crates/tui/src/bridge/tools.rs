@@ -2,12 +2,14 @@
 //! agy, or an ACP agent, and each call says what it did (`Read 120 lines`, not `Read 1 file`).
 //! Names and input keys vary by agent, so matching ignores case, `_`, and `-`.
 
-use argonauts_core::artifacts;
-use argonauts_core::steps::summary_line;
+use argonauts_core::app::artifacts;
+use argonauts_core::workflows::steps::summary_line;
 use serde_json::{Map, Value};
 
-use crate::cell::{DiffView, Held, Todo, TodoState, Tone, ToolCall, ToolItem, ToolKind, ToolTitle};
-use crate::state::AppState;
+use crate::cells::cell::{
+    DiffView, Held, Todo, TodoState, Tone, ToolCall, ToolItem, ToolKind, ToolTitle,
+};
+use crate::frame::state::Places;
 
 /// Lines of a written file shown under its call.
 const WRITE_PREVIEW: usize = 10;
@@ -98,7 +100,7 @@ impl Tool {
             Tool::Todos => "Update Todos",
             Tool::Task => "Task",
             Tool::Report => "Report",
-            Tool::Artifact => argonauts_core::artifacts::TOOL,
+            Tool::Artifact => argonauts_core::app::artifacts::TOOL,
             Tool::Mcp | Tool::Other => return None,
         })
     }
@@ -376,7 +378,7 @@ const MOVED_NOTE: &str =
 /// They're how a session talks to Argonauts Code rather than work it does, so the transcript leaves
 /// them out and only the Ctrl+O detail shows them.
 pub fn is_own(name: &str) -> bool {
-    argonauts_core::steps::is_own_tool(name)
+    argonauts_core::workflows::steps::is_own_tool(name)
 }
 
 /// A lookup of the tools a CLI holds back until asked for, such as Claude Code's ToolSearch.
@@ -723,86 +725,6 @@ fn call_args(input: &Value) -> String {
     }
 }
 
-/// Where a call's paths are shown from, as Claude Code shows them: relative to the folder the
-/// work happens in, `~/…` under your home, and whole only outside both.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Places {
-    pub folder: Option<String>,
-    pub home: Option<String>,
-}
-
-impl Places {
-    /// Your home alone, for a call whose folder isn't known here. A run's worktree still
-    /// shows its paths from inside it.
-    pub fn here() -> Self {
-        Self {
-            folder: None,
-            home: dirs::home_dir().map(|home| home.display().to_string()),
-        }
-    }
-
-    /// The folder the conversation works in, as the startup header names it with `~` for
-    /// your home.
-    pub fn of_conversation(state: &AppState) -> Self {
-        let mut places = Self::here();
-        places.folder = state.welcome.as_ref().map(|welcome| {
-            match (welcome.repo.strip_prefix('~'), &places.home) {
-                (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
-                    format!("{home}{rest}")
-                }
-                _ => welcome.repo.clone(),
-            }
-        });
-        places
-    }
-
-    pub fn show(&self, path: &str) -> String {
-        let path = path.strip_prefix("file://").unwrap_or(path);
-        if let Some(inner) = in_worktree(path) {
-            return inner.to_owned();
-        }
-        if let Some(folder) = self.folder.as_deref() {
-            match under(path, folder) {
-                Some("") => return ".".to_owned(),
-                Some(rest) => return rest.to_owned(),
-                None => {}
-            }
-        }
-        if let Some(home) = self.home.as_deref() {
-            match under(path, home) {
-                Some("") => return "~".to_owned(),
-                Some(rest) => return format!("~/{rest}"),
-                None => {}
-            }
-        }
-        path.to_owned()
-    }
-}
-
-/// What follows `folder` in `path`, empty for the folder itself.
-fn under<'a>(path: &'a str, folder: &str) -> Option<&'a str> {
-    let folder = folder.trim_end_matches('/');
-    if folder.is_empty() {
-        return None;
-    }
-    let rest = path.strip_prefix(folder)?;
-    if rest.is_empty() || rest == "/" {
-        return Some("");
-    }
-    rest.strip_prefix('/')
-}
-
-/// Worktrees sit at `<home>/worktrees/<repo>/<run>/<task>/`, and the block's header already
-/// names the task, so a path inside one starts after it.
-fn in_worktree(path: &str) -> Option<&str> {
-    let at = path.find("/worktrees/")?;
-    let mut parts = path[at + "/worktrees/".len()..].splitn(4, '/');
-    match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some(_), Some(_), Some(_), Some(inner)) if !inner.is_empty() => Some(inner),
-        _ => None,
-    }
-}
-
 /// A path as a run's agent shows it: inside its worktree of the repo, or from your home.
 pub(crate) fn short_path(path: &str) -> String {
     Places::here().show(path)
@@ -1100,10 +1022,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::cell::{CollapsedGroup, HistoryCell, ToolState};
-    use crate::render::{Clock, RenderCtx};
-    use crate::text::plain_text;
-    use crate::theme::{Glyphs, Role, Theme};
+    use crate::base::draw::render::{Clock, RenderCtx};
+    use crate::base::text::plain_text;
+    use crate::base::theme::{Glyphs, Role, Theme};
+    use crate::cells::cell::{CollapsedGroup, HistoryCell, ToolState};
 
     #[test]
     fn a_json_object_that_may_end_the_message_is_held_back() {
@@ -1800,7 +1722,7 @@ mod tests {
         );
         let theme = theme();
         let lines = call.lines(&RenderCtx::new(80, &theme, Clock::still(Instant::now())));
-        let dim = theme.style(crate::theme::Role::Dim);
+        let dim = theme.style(crate::base::theme::Role::Dim);
         assert_eq!(lines[0].spans[0].style.fg, dim.fg, "the bullet is dim");
         assert!(
             lines[1]

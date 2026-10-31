@@ -1,8 +1,8 @@
 //! `[roles.<role>]`: fresh-session defaults, which models a role may name, and roles that
 //! never run.
 
-use argonauts_core::adapter::KNOWN_AGENT_IDS;
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::agents::adapter::KNOWN_AGENT_IDS;
+use argonauts_core::base::names::{ModelRef, RoleName};
 use argonauts_core::settings::Settings;
 use toml::{Table, Value};
 

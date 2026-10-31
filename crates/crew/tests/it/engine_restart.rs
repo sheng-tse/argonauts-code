@@ -9,16 +9,16 @@ use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
 use argonauts_core::TaskId;
-use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::run::{RunMode, WaitReason};
-use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::events::task::{TaskEvent, TryCause};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::ModelRef;
-use argonauts_core::session_runner::{Access, SessionControl, SessionSpec};
+use argonauts_core::agents::session_runner::{Access, SessionControl, SessionSpec};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::engine::{EngineCommand, EngineExit};
+use argonauts_core::runs::events::run::{RunMode, WaitReason};
+use argonauts_core::runs::events::session::{EndReason, SessionEvent};
+use argonauts_core::runs::events::task::{TaskEvent, TryCause};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_crew::task::take_over;
-use argonauts_testkit::deadline;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::pty::deadline;
 
 use support::{Crew, Spawned, names};
 

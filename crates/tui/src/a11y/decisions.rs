@@ -5,13 +5,13 @@ use std::collections::VecDeque;
 
 use argonauts_core::RunId;
 use argonauts_core::app::AppEvent;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     ApprovalDecided, ApprovalEvent, ApprovalOpened, PolicyCheck,
 };
-use argonauts_core::names::ApprovalId;
 
-use crate::state::AppState;
+use crate::frame::state::AppState;
 
 /// As many as the screen keeps for its spot checks.
 const RECENT: usize = 32;

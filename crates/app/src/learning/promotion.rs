@@ -5,10 +5,10 @@
 //! `argonauts approvals`; auto preview records what auto would have done and waits too.
 
 use argonauts_core::RunId;
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::events::run::Party;
-use argonauts_core::names::ApprovalId;
-use argonauts_core::policy::{
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::safety::policy::{
     ApprovalPolicy, DecisionPoint, EvidenceDocument, EvidenceFacts, EvidencePacket, PolicyOutcome,
     PromotionFacts, Verdict,
 };
@@ -137,12 +137,12 @@ mod tests {
 
     use time::OffsetDateTime;
 
-    use argonauts_core::events::task::TaskSpec;
-    use argonauts_core::future::BoxFuture;
-    use argonauts_core::policy::{
+    use argonauts_core::agents::session_runner::SessionSpec;
+    use argonauts_core::base::future::BoxFuture;
+    use argonauts_core::runs::events::task::TaskSpec;
+    use argonauts_core::safety::policy::{
         ApprovalsView, AutoPreviewRecord, HardLimits, UserDecision, Violation,
     };
-    use argonauts_core::session_runner::SessionSpec;
     use argonauts_core::settings::Settings;
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
     use argonauts_learning::evolution::{CandidateState, Thresholds, state};
@@ -255,7 +255,7 @@ mod tests {
             reload,
             state,
             Arc::new(crate::commands::NoRunners),
-            Arc::new(argonauts_core::steps::SchemaStepRunner),
+            Arc::new(argonauts_core::workflows::steps::SchemaStepRunner),
         )
     }
 

@@ -14,20 +14,20 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::run::RunPhase;
-use argonauts_core::events::session::InputPartKind;
-use argonauts_core::future::BoxFuture;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::policy::{
+use argonauts_core::agents::session_runner::{RunnerDirectory, RunnerEvent};
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::run::RunPhase;
+use argonauts_core::runs::events::session::InputPartKind;
+use argonauts_core::safety::policy::{
     Narrator, NarratorError, NarratorLine, NarratorLineKind, NarratorStatus,
 };
-use argonauts_core::session_runner::{RunnerDirectory, RunnerEvent};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::ui::NarratorMode;
-use argonauts_core::steps::narrate::{Narrate, NarrateInput, NarrateMode};
-use argonauts_core::steps::{
+use argonauts_core::workflows::steps::narrate::{Narrate, NarrateInput, NarrateMode};
+use argonauts_core::workflows::steps::{
     StepError, StepName, StepObserver, StepRequest, StepRunner, decode, output_schema,
 };
 use argonauts_core::{RunId, Spend};
@@ -35,7 +35,7 @@ use time::OffsetDateTime;
 use tokio::sync::{Notify, broadcast};
 
 use crate::judge::end_kind;
-use crate::session::{
+use crate::sessions::session::{
     self, NoToolsSession, TimedOut, claim_session, clean_text, no_tools_spec, part, run_step,
 };
 use tally::CallTally;
@@ -416,7 +416,7 @@ impl LiveNarrator {
             part(
                 InputPartKind::Prompt,
                 "narrator",
-                crate::templates::text(&crate::templates::NARRATOR),
+                crate::sessions::templates::text(&crate::sessions::templates::NARRATOR),
             ),
             part(InputPartKind::Evidence, "digest", input::text(input)),
         ];
@@ -707,12 +707,12 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use argonauts_core::events::run::PhaseChange;
-    use argonauts_core::events::session::EndReason;
-    use argonauts_core::events::task::TaskState;
-    use argonauts_core::events::{RunEventKind, TaskEvent};
-    use argonauts_core::session_runner::{Access, SessionSpec};
-    use argonauts_core::steps::SchemaStepRunner;
+    use argonauts_core::agents::session_runner::{Access, SessionSpec};
+    use argonauts_core::runs::events::run::PhaseChange;
+    use argonauts_core::runs::events::session::EndReason;
+    use argonauts_core::runs::events::task::TaskState;
+    use argonauts_core::runs::events::{RunEventKind, TaskEvent};
+    use argonauts_core::workflows::steps::SchemaStepRunner;
     use argonauts_core::{AgentEvent, ErrorCategory, PhaseStatus, TaskId};
     use argonauts_testkit::{FakeDirectory, FakeRunner, FakeSession};
     use serde_json::json;
@@ -1369,7 +1369,7 @@ mod tests {
         ))
         .unwrap();
         let structured = recorded["structured_output"].clone();
-        let decoded: argonauts_core::steps::narrate::NarrateOutput =
+        let decoded: argonauts_core::workflows::steps::narrate::NarrateOutput =
             serde_json::from_value(structured.clone()).unwrap();
         assert!(!decoded.lines.is_empty());
 

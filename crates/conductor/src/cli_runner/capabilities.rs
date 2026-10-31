@@ -5,7 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use argonauts_core::session_runner::{RunnerCapabilities, SteerSupport, SubagentVisibility};
+use argonauts_core::agents::session_runner::{
+    RunnerCapabilities, SteerSupport, SubagentVisibility,
+};
 use argonauts_core::{Adapter, SessionRequest, SessionRole};
 
 pub const CLAUDE_CODE: &str = "claude-code";

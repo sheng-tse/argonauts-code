@@ -2,16 +2,16 @@
 //! `prediction` line in the outcome log before any task starts, and the run review scores it. A
 //! prediction never changes a task's path and never skips a check.
 
-use argonauts_core::events::task::TaskSpec;
-use argonauts_core::names::RoleName;
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::runs::events::task::TaskSpec;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::limit::LimitUnit;
-use argonauts_core::steps::task::{Predict, PredictInput, Predictions};
+use argonauts_core::workflows::steps::task::{Predict, PredictInput, Predictions};
 
 use crate::divide::{assign, repo_state_dir};
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::prompts;
 use crate::run_review::outcomes::{self, LogLine, Prediction, Predictor};
 use crate::workflow::StepAt;
@@ -116,7 +116,7 @@ pub fn clamped(predictions: Predictions) -> Predictions {
 #[cfg(test)]
 mod tests {
     use argonauts_core::TaskId;
-    use argonauts_core::events::task::{TaskKind, TaskLimit};
+    use argonauts_core::runs::events::task::{TaskKind, TaskLimit};
     use argonauts_core::settings::limit::LimitAmount;
 
     use super::*;

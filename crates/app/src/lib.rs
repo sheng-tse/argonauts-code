@@ -1,72 +1,53 @@
 //! The interactive app, the per-run run host process, and Argonauts Code API.
 //! Every other crate meets here, so its dependencies are the whole wiring.
 
-mod adapters;
-mod ancestry;
-mod app_settings;
+mod agents;
 mod behaviors;
-mod choices;
 mod client;
 mod commands;
-mod confine;
+mod control;
 mod controller;
-mod conversation_store;
-mod env;
-mod example_prompt;
+mod conversation;
 mod git;
-#[cfg(test)]
-mod golden;
-mod hidden_git;
 mod host;
 mod issue;
-mod keep_awake;
 mod learning;
-mod live_registry;
-mod model_memory;
 mod mods;
 mod overview;
 mod prompts;
-mod repo_files;
-mod run_command;
-mod run_files;
 pub mod self_update;
-mod session_id;
 mod setup;
 mod startup;
 mod telemetry;
-mod trace;
-mod trust;
-mod usage_ledger;
+mod testing;
+mod usage;
 mod views;
-mod wake;
-mod wire;
-mod work_ledger;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use argonauts_core::agent_sessions::AgentSessionRef;
-use argonauts_core::api::ConductorApi;
-use argonauts_core::cli_sessions::CliSessionRef;
-use argonauts_core::names::ConversationId;
+use argonauts_core::agents::agent_sessions::AgentSessionRef;
+use argonauts_core::agents::cli_sessions::CliSessionRef;
+use argonauts_core::base::names::ConversationId;
+use argonauts_core::runs::api::ConductorApi;
 use argonauts_core::{Paths, RunId};
 
-pub use adapters::builtin_adapters;
-pub use ancestry::refuse_inside_agent;
+pub use agents::adapters::builtin_adapters;
 pub use behaviors::deep::command::{DeepTerminal, behaviors_deep};
 pub use behaviors::deep::service::DeepMaps;
 pub use behaviors::{BehaviorPeriod, behaviors_report, export_hodoscope};
+pub use commands::run_command::{RunCommand, RunCommandExit, run_command};
 pub use commands::{
     ApprovalsReport, DoctorExtras, ModelList, StatusReport, WaitingReminder, approvals_report,
     auto_off, cheapest_model, config_schema, config_set, config_show, current_settings,
     doctor_adapters, doctor_details, doctor_extras, doctor_version_checks, models, repo_root,
     settings_warnings, status, waiting_runs,
 };
+pub use host::live_registry::{LiveRunHost, live_run_hosts};
 pub use learning::shell::{LearningShell, ShellOutput, learning, learning_proposals};
-pub use live_registry::{LiveRunHost, live_run_hosts};
 pub use mods::doctor_problems as mod_problems;
-pub use run_command::{RunCommand, RunCommandExit, run_command};
-pub use session_id::{FoundSession, find_session};
+pub use startup::ancestry::refuse_inside_agent;
+pub use startup::session_id::{FoundSession, find_session};
 pub use startup::welcome;
 pub use telemetry::{TelemetryAction, count_crashes, telemetry};
 
@@ -125,7 +106,7 @@ pub async fn run_interactive_with(
 pub async fn host(repo_root: &Path, run: &RunId) -> anyhow::Result<()> {
     if let Ok(env) = Paths::from_env()
         .map_err(anyhow::Error::from)
-        .and_then(|paths| env::AppEnv::for_repo(paths, repo_root, false))
+        .and_then(|paths| startup::env::AppEnv::for_repo(paths, repo_root, false))
     {
         // The judge and the narrator run here, and read your templates for their prompts.
         prompts::catalog::use_files_of(&env);

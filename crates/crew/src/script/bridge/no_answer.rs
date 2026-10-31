@@ -2,11 +2,11 @@
 //! without an answer", and what it did instead when the run's journal says, such as trying to
 //! edit files in a session that could only read them.
 
-use argonauts_core::event::AgentEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::layout::run_files;
-use argonauts_core::names::SessionKey;
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::layout::run_files;
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::event::AgentEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 
 use crate::engine::host::Host;
 
@@ -54,7 +54,7 @@ fn did_instead(host: &Host, session: &SessionKey) -> Option<&'static str> {
 /// answer is missing, which is rare, so the run keeps no count of its own.
 fn tried_to_edit(host: &Host, session: &SessionKey) -> bool {
     let path = host.repo().run_dir.join(run_files::EVENTS);
-    argonauts_core::journal::read_all(&path)
+    argonauts_core::runs::journal::read_all(&path)
         .is_ok_and(|back| called_an_edit_tool(&back.events, session))
 }
 

@@ -8,30 +8,32 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use argonauts_core::api::{Approvals, StartRun};
 use argonauts_core::app::AppEvent;
-use argonauts_core::clock::SystemClock;
-use argonauts_core::events::approval::{
+use argonauts_core::base::clock::SystemClock;
+use argonauts_core::base::names::{ApprovalId, ModelRef};
+use argonauts_core::runs::api::{Approvals, StartRun};
+use argonauts_core::runs::events::approval::{
     ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket, FreeText, QuestionPacket,
 };
-use argonauts_core::events::run::RunMode;
-use argonauts_core::events::run::{ResumeCause, RunLifecycle, RunOutcome, RunResumed, WaitReason};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ApprovalId, ModelRef};
+use argonauts_core::runs::events::run::RunMode;
+use argonauts_core::runs::events::run::{
+    ResumeCause, RunLifecycle, RunOutcome, RunResumed, WaitReason,
+};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
-use argonauts_core::steps::SchemaStepRunner;
+use argonauts_core::workflows::steps::SchemaStepRunner;
 use argonauts_core::{Paths, RunId, TaskId};
 use argonauts_testkit::{FakeDirectory, FakeRunner, TempRepo};
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
 use super::{RunsState, on_update};
-use crate::app_settings::AppSettings;
-use crate::controller::test_support::{FakeApprovals, FakeConductor, max_wait};
+use crate::controller::base::test_support::{FakeApprovals, FakeConductor, max_wait};
 use crate::controller::{AppServices, Ctx, Effect, Internal, Outbox};
-use crate::env::AppEnv;
-use crate::trace::Trace;
+use crate::startup::app_settings::AppSettings;
+use crate::startup::env::AppEnv;
+use crate::testing::trace::Trace;
 
 pub(crate) struct Rig {
     pub repo: TempRepo,
@@ -61,7 +63,7 @@ impl Rig {
         env.agent_session = false;
         env.user_home = Some(repo.user_home().to_owned());
         let env = Arc::new(env);
-        let flags = crate::controller::test_support::quiet_local_servers(Vec::new());
+        let flags = crate::controller::base::test_support::quiet_local_servers(Vec::new());
         let settings = AppSettings::load(&env, flags, interactive).expect("settings that resolve");
         let directory = Arc::new(FakeDirectory::new());
         let agent = directory.add(FakeRunner::cli("claude-code", "anthropic"));
@@ -69,7 +71,7 @@ impl Rig {
         let approvals = Arc::new(FakeApprovals::default());
         let (plan_usage, health) = argonauts_conductor::boards(&paths);
         let registry =
-            crate::controller::test_support::quiet_registry(settings.settings(), repo.root());
+            crate::controller::base::test_support::quiet_registry(settings.settings(), repo.root());
         let services = AppServices {
             conductor: conductor.clone(),
             approvals: interactive.then(|| approvals.clone() as Arc<dyn Approvals>),

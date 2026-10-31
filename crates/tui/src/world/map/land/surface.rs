@@ -6,7 +6,7 @@ use super::coast_at;
 use super::compare::Tint;
 use super::ice::{Polar, polar_at};
 use super::sea::{BEACH, SeaColours};
-use crate::world::geo::Plate;
+use crate::base::draw::geo::Plate;
 use crate::world::map::climate::land_cover;
 use crate::world::map::fields::{
     COARSE, Ground, HEIGHT, Look, Rgb, WIDTH, fine, grey, mix_rgb, scale_rgb,

@@ -4,7 +4,7 @@
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use super::{Nature, PlanetFacts};
-use crate::world::geo::{LonLat, Plate};
+use crate::base::draw::geo::{LonLat, Plate};
 use crate::world::map::fields::{Ground, HEIGHT, Look, Rgb, WIDTH, in_rows, mix_rgb, to_bytes};
 use crate::world::map::land::Texture;
 use crate::world::raster::noise::{fbm3, hash3, smooth};

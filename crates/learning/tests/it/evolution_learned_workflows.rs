@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use argonauts_core::workflow::{StepKind, Workflow};
+use argonauts_core::workflows::workflow::{StepKind, Workflow};
 use argonauts_learning::Store;
 use argonauts_learning::learned_workflows::{
     self, ChangeClass, LearnedWorkflow, LoadedLearnedWorkflow, loops, matching, settings_overlay,
@@ -142,7 +142,7 @@ fn learned_workflow_files_hold_no_statistics() {
             version: 1,
         }),
         workflow: None,
-        outcome: argonauts_core::events::run::RunOutcome::Merged,
+        outcome: argonauts_core::runs::events::run::RunOutcome::Merged,
         stuck_tasks: 0,
         final_checks_passed: true,
         cost_usd: 4.0,

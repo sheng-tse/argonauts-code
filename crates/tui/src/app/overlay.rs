@@ -6,11 +6,11 @@ use std::cell::{Cell, RefCell};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::{Line, Span};
 
-use crate::cell::{Cell as HistoryItem, HistoryCell};
-use crate::history::History;
-use crate::render::RenderCtx;
-use crate::text::{KEEP, Part, fit_parts, marks, sanitize_line, str_width, truncate_line};
-use crate::theme::{Role, Theme};
+use crate::base::draw::render::RenderCtx;
+use crate::base::text::{KEEP, Part, fit_parts, marks, sanitize_line, str_width, truncate_line};
+use crate::base::theme::{Role, Theme};
+use crate::cells::cell::history::History;
+use crate::cells::cell::{Cell as HistoryItem, HistoryCell};
 
 #[derive(Debug, Default)]
 pub struct TranscriptOverlay {
@@ -125,7 +125,7 @@ impl TranscriptOverlay {
     }
 
     /// Renders only cells added since the last call, unless the width or the theme changed.
-    fn refresh_committed(&self, cells: &[crate::cell::Cell], ctx: &RenderCtx<'_>) {
+    fn refresh_committed(&self, cells: &[crate::cells::cell::Cell], ctx: &RenderCtx<'_>) {
         let mut cache = self.committed.borrow_mut();
         let reusable = cache
             .take()
@@ -242,10 +242,10 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::cell::Cell as HistoryItem;
-    use crate::render::Clock;
-    use crate::text::plain_text;
-    use crate::theme::Glyphs;
+    use crate::base::draw::render::Clock;
+    use crate::base::text::plain_text;
+    use crate::base::theme::Glyphs;
+    use crate::cells::cell::Cell as HistoryItem;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

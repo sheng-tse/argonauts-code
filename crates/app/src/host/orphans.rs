@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, bail};
 use argonauts_core::Paths;
 use argonauts_core::agents::AgentGroup;
-use argonauts_core::layout::{run_files, session_files};
+use argonauts_core::base::layout::{run_files, session_files};
 use nix::errno::Errno;
 use nix::sys::signal::{SIGKILL, SIGTERM, Signal, killpg};
 use nix::unistd::{Pid, getpgid};
 
-use crate::ancestry::{Processes, agents_dir};
+use crate::startup::ancestry::{Processes, agents_dir};
 
 /// How long the groups get to exit on SIGTERM before SIGKILL.
 const TERM_GRACE: Duration = Duration::from_secs(2);
@@ -151,11 +151,11 @@ fn forget_agent(home: &Paths, group: &AgentGroup) {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::layout::session_dir;
-    use argonauts_core::names::SessionKey;
+    use argonauts_core::base::layout::session_dir;
+    use argonauts_core::base::names::SessionKey;
 
     use super::*;
-    use crate::ancestry::tests::{child_of, register_group, spawn_group};
+    use crate::startup::ancestry::tests::{child_of, register_group, spawn_group};
 
     fn record(run_dir: &Path, session: u32, group: &AgentGroup) {
         let dir = session_dir(run_dir, &SessionKey::numbered(session));

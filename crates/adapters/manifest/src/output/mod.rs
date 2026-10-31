@@ -11,9 +11,9 @@ mod text;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use argonauts_core::names::AgentId;
-use argonauts_core::registry::CliManifest;
-use argonauts_core::registry::cli::OutputKind;
+use argonauts_core::base::names::AgentId;
+use argonauts_core::models::registry::CliManifest;
+use argonauts_core::models::registry::cli::OutputKind;
 use argonauts_core::{Adapter, AgentEvent, ErrorCategory, StreamParser};
 
 pub(crate) use rules::ErrorRules;
@@ -209,7 +209,7 @@ pub(crate) fn overflow_error(id: &str) -> AgentEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::registry::cli::ErrorPattern;
+    use argonauts_core::models::registry::cli::ErrorPattern;
 
     fn manifest() -> CliManifest {
         CliManifest {

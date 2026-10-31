@@ -6,7 +6,7 @@
 //! A tag with no cap of its own is sized as it loads, from the memory the server has, so its
 //! window is known only once `/api/ps` lists it.
 
-use argonauts_core::registry::ModelEntry;
+use argonauts_core::models::registry::ModelEntry;
 use serde_json::{Value, json};
 use tokio::task::JoinSet;
 

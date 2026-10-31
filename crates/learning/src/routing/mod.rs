@@ -9,11 +9,11 @@ use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::TaskId;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::settings::protocol::{RoutingSettings, RoutingWeights};
 
 use crate::records::Record;
-use crate::types::Assignment;
+use crate::store::types::Assignment;
 
 /// `weights.pass_rate * pass + weights.approval_rate * approval + weights.prediction *
 /// prediction - weights.cost * cost_ratio - weights.time * time_ratio`, with the two rates

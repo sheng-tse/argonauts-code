@@ -5,18 +5,18 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use argonauts_core::agents::session_runner::{Access, RunnerKind};
 use argonauts_core::app::AppEvent;
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunStarted};
-use argonauts_core::events::session::{
+use argonauts_core::base::names::{AgentId, RoleName, SessionKey};
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunStarted};
+use argonauts_core::runs::events::session::{
     EndReason, InputPart, InputPartKind, LaunchRecord, PromptVia, SessionEnd, SessionEvent,
     SessionInput, SessionStarted,
 };
-use argonauts_core::events::task::{CheckKind, CheckOutcome, TaskEvent, TaskState};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{AgentId, RoleName, SessionKey};
-use argonauts_core::session_runner::{Access, RunnerKind};
+use argonauts_core::runs::events::task::{CheckKind, CheckOutcome, TaskEvent, TaskState};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_core::{AgentEvent, RunId, Spend, TaskId};
 use ratatui::style::Modifier;
 use ratatui::text::Line;
@@ -24,11 +24,11 @@ use serde_json::{Value, json};
 use time::macros::datetime;
 
 use super::Bridge;
-use crate::model::ViewModel;
-use crate::options::UiOptions;
-use crate::render::{Clock, RenderCtx};
-use crate::text::plain_text;
-use crate::theme::{Glyphs, Role, Theme};
+use crate::app::model::ViewModel;
+use crate::app::options::UiOptions;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::text::plain_text;
+use crate::base::theme::{Glyphs, Role, Theme};
 
 const PICTURE: &str = include_str!("../../tests/golden/transcript/review_after.txt");
 const COLOURS: &str = include_str!("../../tests/golden/transcript/review_after.html");
@@ -307,7 +307,10 @@ fn checks_a_reviewer_and_a_sign_off_read_as_drawn() {
     let want: Vec<&str> = PICTURE.lines().map(str::trim_end).collect();
     assert_eq!(lines.join("\n"), want.join("\n"), "\nprinted:\n{text}");
     for line in &lines {
-        assert!(crate::text::str_width(line) <= usize::from(WIDTH), "{line}");
+        assert!(
+            crate::base::text::str_width(line) <= usize::from(WIDTH),
+            "{line}"
+        );
     }
 
     // The colours: green bullets, the Checks call and the agents' labels bold, as Claude Code
@@ -318,7 +321,7 @@ fn checks_a_reviewer_and_a_sign_off_read_as_drawn() {
         theme.glyphs = Glyphs::UNICODE;
         theme
     };
-    super::transcript::picture_check::assert_matches(
+    super::super::testing::pictures::picture_check::assert_matches(
         "review_after",
         &printed,
         PICTURE,

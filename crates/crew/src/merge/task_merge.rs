@@ -5,23 +5,24 @@
 use std::path::Path;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::session::{EndReason, InputPartKind};
-use argonauts_core::events::task::{CheckKind, MergeEvent};
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::session_runner::Access;
-use argonauts_core::steps::task::{ReportStatus, ResolveConflict};
-use argonauts_core::steps::{StepName, output_schema};
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::session::{EndReason, InputPartKind};
+use argonauts_core::runs::events::task::{CheckKind, MergeEvent};
+use argonauts_core::workflows::steps::task::{ReportStatus, ResolveConflict};
+use argonauts_core::workflows::steps::{StepName, output_schema};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Fallbacks, Host, Ran, SessionPlan};
+use crate::engine::idempotency;
 use crate::engine::job_fallback::{self, Job};
-use crate::error::{EngineError, EngineResult};
 use crate::git::{Git, StagedMerge};
-use crate::idempotency;
 use crate::merge::TaskMerge;
 use crate::merge::branch::{ensure_run_branch, path_lock, run_base, run_branch, task_branch};
 use crate::merge::{conductor, merger};
 use crate::prompts;
+use crate::roles::tie_breaker;
 use crate::state::tasks::TaskEntry;
 use crate::task::checks::{self, BuiltinChecks};
 use crate::task::claims;
@@ -30,7 +31,6 @@ use crate::task::prompt;
 use crate::task::session::report_of;
 use crate::task::support::{part, record_of, wait_until};
 use crate::task::worktree::{self, TaskTree};
-use crate::tie_breaker;
 
 pub async fn merge(host: &Host, task: &TaskId) -> EngineResult<TaskMerge> {
     let run_tree = ensure_run_branch(host).await?;
@@ -386,7 +386,7 @@ fn resolver_parts(
     host: &Host,
     record: &TaskEntry,
     files: &[String],
-) -> Vec<argonauts_core::events::session::InputPart> {
+) -> Vec<argonauts_core::runs::events::session::InputPart> {
     let list = files
         .iter()
         .map(|file| format!("- {file}"))

@@ -1,12 +1,14 @@
-use argonauts_core::engine::EventSink;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::limits::{HealthBoard, HealthSignal, HealthState, NetState, PlanUsageBoard};
-use argonauts_core::names::{AgentId, ModelRef, SessionKey};
-use argonauts_core::registry::{ModelEntry, ModelRegistry};
+use argonauts_core::base::names::{AgentId, ModelRef, SessionKey};
+use argonauts_core::models::limits::{
+    HealthBoard, HealthSignal, HealthState, NetState, PlanUsageBoard,
+};
+use argonauts_core::models::registry::{ModelEntry, ModelRegistry};
+use argonauts_core::runs::engine::EventSink;
+use argonauts_core::runs::events::RunEventKind;
 use argonauts_core::settings::Settings;
 use argonauts_core::{ErrorCategory, Note, NoteLevel};
 use argonauts_testkit::FakeServices;
-use argonauts_testkit::services::{StaticRegistry, engine_context};
+use argonauts_testkit::engine::services::{StaticRegistry, engine_context};
 
 #[tokio::test]
 async fn the_memory_sink_numbers_events_and_the_breaker_trips() {
@@ -85,5 +87,5 @@ async fn the_memory_board_reports_the_network_a_test_sets() {
 #[test]
 fn a_test_process_never_checks_the_internet() {
     let _repo = argonauts_testkit::TempRepo::new().expect("a temp repo");
-    assert!(argonauts_conductor::network::check_is_off());
+    assert!(argonauts_conductor::boards::network::check_is_off());
 }

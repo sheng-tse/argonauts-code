@@ -8,9 +8,9 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 use argonauts_core::app::ModelChoice;
-use argonauts_core::model_catalog::{ModelCatalog, display_name_from_id};
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::registry::{ModelEntry, RegistryKind};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::models::model_catalog::{ModelCatalog, display_name_from_id};
+use argonauts_core::models::registry::{ModelEntry, RegistryKind};
 use argonauts_core::settings::Settings;
 use argonauts_registry::models::{CLAUDE_CODE_ALIASES, usual_efforts};
 

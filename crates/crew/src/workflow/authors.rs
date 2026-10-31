@@ -2,7 +2,7 @@
 //! `author` is whoever wrote the step's input, and a step's name stands for the workers of
 //! that step's sessions.
 
-use argonauts_core::names::{ModelRef, WorkflowId};
+use argonauts_core::base::names::{ModelRef, WorkflowId};
 use argonauts_core::settings::Settings;
 
 use crate::state::RunState;

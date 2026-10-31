@@ -3,7 +3,7 @@
 use std::io::ErrorKind;
 use std::path::Path;
 
-use argonauts_core::registry::CliManifest;
+use argonauts_core::models::registry::CliManifest;
 
 use super::CliEntries;
 use super::builtin::builtin_files;

@@ -5,7 +5,7 @@
 //!
 //! The text copied is what the renderer marked as text: a gutter glyph, a border, or a rule
 //! copies as a blank, and a row a long line wrapped onto joins the row above it, as the
-//! line was written (see [`crate::text::marks`]).
+//! line was written (see [`crate::base::text::marks`]).
 
 use std::time::{Duration, Instant};
 
@@ -13,8 +13,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use crate::text::marks::{self, Join};
-use crate::text::width_with;
+use crate::base::text::marks::{self, Join};
+use crate::base::text::width_with;
 
 /// Presses this close together on one cell make a double or a triple click.
 const MULTI_CLICK: Duration = Duration::from_millis(500);
@@ -423,8 +423,8 @@ mod tests {
     use ratatui::text::{Line, Span};
 
     use super::*;
+    use crate::base::text::marks::{continues, decorative};
     use crate::terminal::paint_rows;
-    use crate::text::marks::{continues, decorative};
 
     /// A row as a renderer marks it: `⟦...⟧` is decoration, and `»` or `›` is where a wrapped
     /// line resumes, after a space or inside a word.

@@ -2,16 +2,18 @@
 //! whitespace are collapsed. Failing positions are marked, the mapping agent runs once more, and
 //! topics still failing are flagged at the plan approval.
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::plan::{MappedPosition, MappedTopic, PlanEvent};
-use argonauts_core::events::session::InputPartKind;
-use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::session_runner::Access;
-use argonauts_core::steps::plan::{LabeledPlan, Map, MapInput, MapOutput, MapPosition, MapTopic};
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{RoleName, SessionKey};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::plan::{MappedPosition, MappedTopic, PlanEvent};
+use argonauts_core::runs::events::session::InputPartKind;
+use argonauts_core::workflows::steps::plan::{
+    LabeledPlan, Map, MapInput, MapOutput, MapPosition, MapTopic,
+};
 use argonauts_core::{Note, NoteLevel};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::plan::context::{part, workers_for};
 use crate::plan::drafts;
 use crate::prompts::plan::MAP;

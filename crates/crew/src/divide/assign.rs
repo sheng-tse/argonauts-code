@@ -7,9 +7,9 @@ use rand::RngExt;
 use rand::rngs::StdRng;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::plan::TaskGraph;
-use argonauts_core::events::task::{TaskKind, TaskSpec};
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::plan::TaskGraph;
+use argonauts_core::runs::events::task::{TaskKind, TaskSpec};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::{ChoreAssignment, ReviewAssignment, RoutingAlgorithm};
 
@@ -304,8 +304,8 @@ fn is_test(task: &TaskSpec) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::limits::{CostEstimate, HealthState, TrackRecord};
-    use argonauts_core::steps::plan::{ProposedKind, TaskGraphProposal, TaskProposal};
+    use argonauts_core::models::limits::{CostEstimate, HealthState, TrackRecord};
+    use argonauts_core::workflows::steps::plan::{ProposedKind, TaskGraphProposal, TaskProposal};
     use rand::SeedableRng;
 
     use super::*;

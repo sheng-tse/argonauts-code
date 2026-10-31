@@ -6,10 +6,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use argonauts_core::adapter::KNOWN_AGENT_IDS;
-use argonauts_core::api::TakeOverTicket;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::session::CommandSpec;
+use argonauts_core::agents::adapter::KNOWN_AGENT_IDS;
+use argonauts_core::agents::session::CommandSpec;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::api::TakeOverTicket;
 use argonauts_core::settings::ui::TakeOverWhere;
 use tokio::process::Command;
 
@@ -378,7 +378,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut spec = claude();
         let path = dir.path().join("nested/mcp.json");
-        spec.files = vec![argonauts_core::session::SpecFile {
+        spec.files = vec![argonauts_core::agents::session::SpecFile {
             path: path.clone(),
             contents: "{}".into(),
         }];

@@ -13,11 +13,11 @@ use std::collections::HashMap;
 
 use super::standing::{self, Standing};
 use super::{Bounds, CloudsIn, Framed, Planet, Side, Sun, plain_sky};
+use crate::base::draw::geo::{Globe, Plate, View};
+use crate::base::draw::scene::{Depth, Image, Layer, PartId, Picture, Scene, Sprite, picture_key};
 use crate::world::deliver;
-use crate::world::geo::{Globe, Plate, View};
 use crate::world::planet_fx::{self, GlobeGround, Weather};
 use crate::world::raster::{Brush, Canvas, Colour};
-use crate::world::scene::{Depth, Image, Layer, PartId, Picture, Scene, Sprite, picture_key};
 
 /// Tells the planet's kinds of picture apart in their keys.
 const SKY: u64 = 0x504c_534b;

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use argonauts_core::Adapter;
-use argonauts_core::adapter::Transport;
+use argonauts_core::agents::adapter::Transport;
 use argonauts_core::settings::Settings;
 use tokio_util::sync::CancellationToken;
 
@@ -17,7 +17,7 @@ use super::{
     BinaryProblem, VERSION_TIMEOUT, command, find_binary, first_line, installed_version,
     read_version,
 };
-use crate::plan_usage::find_unsandboxed;
+use crate::boards::plan_usage::find_unsandboxed;
 
 /// An updater downloads, so it gets far longer than a version check.
 pub const UPDATE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -45,7 +45,7 @@ pub struct OneCli {
 /// over ACP runs `opencode`, is that CLI's second way in rather than a CLI of its own.
 pub fn each_once(adapters: &[Arc<dyn Adapter>], settings: &Settings) -> Vec<OneCli> {
     each_once_found(adapters, settings, &|named| {
-        crate::plan_usage::find_unsandboxed(&named.to_string_lossy(), None).ok()
+        crate::boards::plan_usage::find_unsandboxed(&named.to_string_lossy(), None).ok()
     })
 }
 

@@ -2,7 +2,7 @@
 //! on top of the defaults, and its phases. The built-in settings are `council`'s, so its file
 //! sets no key, and the ablations change one key of it each.
 
-use argonauts_core::workflow_files;
+use argonauts_core::workflows::workflow_files;
 
 use super::choices::about_of;
 

@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use super::*;
-use crate::world::geo::Plate;
+use crate::base::draw::geo::Plate;
 use crate::world::map::climate::Climate;
 use crate::world::map::fields::crews::{Crew, Key};
 use crate::world::map::fields::{COARSE, COARSE_HEIGHT, COARSE_WIDTH, Ground, HEIGHT, WIDTH};
@@ -84,7 +84,7 @@ fn pointing_at_the_ice_says_what_it_is() {
     let cap = polar.line_at(quiet, 300.0, 6.0).expect("the north cap");
     assert_eq!(cap.text, "Ice cap · 9 days since the last action");
     let berg = &polar.bergs[0];
-    let (x, y) = Plate::MAP.pixel(crate::world::geo::LonLat::new(berg.lon, berg.lat));
+    let (x, y) = Plate::MAP.pixel(crate::base::draw::geo::LonLat::new(berg.lon, berg.lat));
     let line = polar.line_at(quiet, x, y).expect("an iceberg");
     assert_eq!(line.kind, GroundKind::Ice(IceKind::Berg(0)));
     assert!(line.text.starts_with("Iceberg · "), "{}", line.text);
@@ -274,7 +274,7 @@ fn the_planet_wraps_the_maps_own_ground() {
         (column as f64 + 0.5) / texture.width as f64 * std::f64::consts::TAU - std::f64::consts::PI;
     let centre_lat = std::f64::consts::FRAC_PI_2
         - (row as f64 + 0.5) / texture.height as f64 * std::f64::consts::PI;
-    let (mx, my) = Plate::MAP.pixel(crate::world::geo::LonLat::new(centre_lon, centre_lat));
+    let (mx, my) = Plate::MAP.pixel(crate::base::draw::geo::LonLat::new(centre_lon, centre_lat));
     let expected = crate::world::map::fields::to_bytes(surface.at(mx, my, None).colour);
     assert_eq!(texture.colour(column, row), expected);
     assert!(!texture.wet[row * texture.width + column]);

@@ -6,7 +6,7 @@
 //! their `successor`, so `/model` can list them under "Older" and a session on one that stops
 //! answering can move up.
 
-use argonauts_core::registry::ModelEntry;
+use argonauts_core::models::registry::ModelEntry;
 use argonauts_core::settings::Settings;
 use serde_json::Value;
 
@@ -677,7 +677,7 @@ mod tests {
     }
 
     fn older_claude(registry: &crate::models::FileRegistry) -> usize {
-        use argonauts_core::registry::ModelRegistry as _;
+        use argonauts_core::models::registry::ModelRegistry as _;
         registry
             .list()
             .iter()
@@ -690,7 +690,7 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        use argonauts_core::registry::ModelRegistry as _;
+        use argonauts_core::models::registry::ModelRegistry as _;
 
         use crate::models::{FileRegistry, ModelCache};
 

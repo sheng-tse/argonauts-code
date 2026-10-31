@@ -1,6 +1,6 @@
 use argonauts_core::app::{PlanUsageChip, PublishedArtifact};
-use argonauts_core::limits::PlanUsageSource;
-use argonauts_core::names::AgentId;
+use argonauts_core::base::names::AgentId;
+use argonauts_core::models::limits::PlanUsageSource;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::bottom_line::BottomLineSettings;
 use time::macros::datetime;
@@ -611,9 +611,9 @@ fn the_settings_pick_the_parts_their_sides_and_who_shows() {
 /// are merged, from the plan's first task until the run ends. A cancelled task doesn't count.
 #[test]
 fn the_run_mod_draws_the_workflow_under_way() {
-    use crate::state::{RunState, TaskRow};
-    use argonauts_core::events::run::{RunNamed, RunOutcome};
-    use argonauts_core::events::task::TaskState;
+    use crate::frame::state::{RunState, TaskRow};
+    use argonauts_core::runs::events::run::{RunNamed, RunOutcome};
+    use argonauts_core::runs::events::task::TaskState;
     use argonauts_core::settings::workflows::RunStyle;
     use argonauts_core::{RunId, TaskId};
 
@@ -686,7 +686,7 @@ fn the_run_mod_draws_the_workflow_under_way() {
 /// its own spend against it, since that is the number that can stop it.
 #[test]
 fn the_spend_part_is_the_week_unless_the_run_has_a_limit() {
-    use crate::state::RunState;
+    use crate::frame::state::RunState;
     use argonauts_core::RunId;
 
     let run_id = RunId::new("run-20260930-101500-3fa2").unwrap();
@@ -778,11 +778,14 @@ fn before_any_status_the_line_shows_the_cli_the_settings_name() {
     state
         .plan_windows
         .insert("codex".into(), vec![reading("codex", "seven_day", 0.84)]);
-    state.welcome = Some(crate::state::Welcome {
+    state.welcome = Some(crate::frame::state::Welcome {
         version: "0.2.0".to_owned(),
         repo: "/Users/you/code/tasks-cli".to_owned(),
         workflow: "captain".to_owned(),
-        main_agent: Some(argonauts_core::names::ModelRef::new("claude-code", None)),
+        main_agent: Some(argonauts_core::base::names::ModelRef::new(
+            "claude-code",
+            None,
+        )),
         agents: Vec::new(),
         runs_going: 0,
         runs_need_you: 0,
@@ -878,7 +881,7 @@ fn reset_times_read_as_claude_code_writes_them() {
 fn a_page_the_conversation_published_names_the_artifact_part() {
     use argonauts_core::AgentEvent;
     use argonauts_core::app::{AppEvent, ConversationEvent};
-    use argonauts_core::names::TurnId;
+    use argonauts_core::base::names::TurnId;
 
     let mut state = AppState::default();
     state.status = Some(crew_status("claude-code"));
@@ -984,7 +987,7 @@ fn a_mod_of_yours_the_line_lists_is_its_chip() {
 /// the crew's stats, and nothing before.
 #[test]
 fn the_stats_part_says_the_periods_tokens() {
-    use crate::overview::sample;
+    use crate::testing::sample;
     use std::sync::Arc;
 
     let mut status = crew_status("claude-code");
@@ -1019,7 +1022,7 @@ fn context_part(state: &AppState) -> Option<PartBody> {
     })
 }
 
-fn fill(who: &str, percent: u32, level: crate::kit::Level) -> Option<PartBody> {
+fn fill(who: &str, percent: u32, level: crate::base::kit::Level) -> Option<PartBody> {
     Some(PartBody::Fill {
         label: "context".to_owned(),
         who: who.to_owned(),
@@ -1031,9 +1034,9 @@ fn fill(who: &str, percent: u32, level: crate::kit::Level) -> Option<PartBody> {
 
 /// A run on screen with a working session for each `(label, used, cap)`.
 fn with_sessions(state: &mut AppState, sessions: &[(&str, u64, u64)]) -> argonauts_core::RunId {
-    use crate::state::{RunState, SessionState, SessionStatus};
-    use argonauts_core::names::{RoleName, SessionKey};
-    use argonauts_core::views::ContextUse;
+    use crate::frame::state::{RunState, SessionState, SessionStatus};
+    use argonauts_core::app::views::ContextUse;
+    use argonauts_core::base::names::{RoleName, SessionKey};
 
     let run_id = argonauts_core::RunId::new("run-20260930-101500-3fa2").unwrap();
     let mut run = RunState::new(run_id.clone());
@@ -1073,9 +1076,9 @@ fn set_used(state: &mut AppState, run: &argonauts_core::RunId, label: &str, used
 }
 
 /// The conversation's count: `total` tokens in a 1M window that compacts at 967k.
-fn counted(total: u64) -> crate::state::ContextCount {
-    use argonauts_core::events::context::ContextUsage;
-    crate::state::ContextCount {
+fn counted(total: u64) -> crate::frame::state::ContextCount {
+    use argonauts_core::runs::events::context::ContextUsage;
+    crate::frame::state::ContextCount {
         usage: ContextUsage {
             total_tokens: total,
             window: 1_000_000,
@@ -1092,7 +1095,7 @@ fn counted(total: u64) -> crate::state::ContextCount {
 /// compacts.
 #[test]
 fn the_context_part_names_the_main_session_without_a_run() {
-    use crate::kit::Level;
+    use crate::base::kit::Level;
     let mut state = AppState::default();
     let mut status = crew_status("claude-code");
     status.line.settings =
@@ -1109,7 +1112,7 @@ fn the_context_part_names_the_main_session_without_a_run() {
 /// afresh. The main session's shows only while it alone is close to compacting.
 #[test]
 fn the_context_part_names_the_busiest_agent_unless_only_the_main_session_is_close() {
-    use crate::kit::Level;
+    use crate::base::kit::Level;
     let mut state = AppState::default();
     let mut status = crew_status("claude-code");
     status.line.settings =
@@ -1141,8 +1144,8 @@ fn the_context_part_names_the_busiest_agent_unless_only_the_main_session_is_clos
 }
 
 /// A run under way with one task on `worker`, in `state`, and the task's own row to change.
-fn task_on<'a>(state: &'a mut AppState, worker: &str) -> &'a mut crate::state::TaskRow {
-    use crate::state::{RunState, TaskRow};
+fn task_on<'a>(state: &'a mut AppState, worker: &str) -> &'a mut crate::frame::state::TaskRow {
+    use crate::frame::state::{RunState, TaskRow};
 
     let run_id = argonauts_core::RunId::new("run-20260930-101500-7c1e").unwrap();
     let task = argonauts_core::TaskId::new("due-flag").unwrap();
@@ -1189,10 +1192,11 @@ fn a_cli_joins_while_a_running_task_waits_on_it_and_it_is_held_back() {
     assert_eq!(names(&state), ["Claude Code", "Codex"]);
 
     // A task waits for it to come back.
-    task_on(&mut state, "codex/gpt-5.6-luna").waiting_on_agent = Some(crate::state::AgentWait {
-        agent_id: "antigravity-cli".into(),
-        until: out.resets_at,
-    });
+    task_on(&mut state, "codex/gpt-5.6-luna").waiting_on_agent =
+        Some(crate::frame::state::AgentWait {
+            agent_id: "antigravity-cli".into(),
+            until: out.resets_at,
+        });
     let line = built(&state);
     assert_eq!(names(&state), ["Claude Code", "Codex", "agy"]);
     let agy = line.clis().last().unwrap();
@@ -1226,7 +1230,7 @@ fn a_cli_joins_while_a_running_task_waits_on_it_and_it_is_held_back() {
     let mut state = with_agy(near.clone());
     task_on(&mut state, "antigravity-cli/gemini-3.8-flash");
     for run in state.runs.values_mut() {
-        run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
+        run.finished = Some(argonauts_core::runs::events::run::RunOutcome::Merged);
     }
     assert_eq!(names(&state), ["Claude Code", "Codex"]);
     let mut state = with_agy(near);

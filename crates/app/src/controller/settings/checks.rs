@@ -4,11 +4,11 @@
 use std::path::Path;
 
 use argonauts_core::app::{AppChoice, ChoiceKind};
-use argonauts_core::names::ChoiceId;
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::base::names::ChoiceId;
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::settings::protocol::CheckCommand;
 
-use crate::choices::{app_choice, options};
+use crate::setup::choices::{app_choice, options};
 
 /// In the repo's state directory once you skip the offer, so it's never made again there.
 const SKIPPED: &str = "checks-offer-skipped";

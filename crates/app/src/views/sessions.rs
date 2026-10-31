@@ -5,26 +5,28 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use argonauts_conductor::fallback::why::{category_words, stop_line};
-use argonauts_core::agent_panel::{
+use argonauts_core::app::agent_panel::{
     CrewDetails, CrewRow, CrewRun, CrewState, CrewTarget, LabelTry, first_label, fold_tries,
 };
-use argonauts_core::events::agent_status::FallbackEvent;
-use argonauts_core::events::approval::{ApprovalEvent, ApprovalPacket};
-use argonauts_core::events::context::ContextCategory;
-use argonauts_core::events::run::{RunLifecycle, WaitReason};
-use argonauts_core::events::session::{
-    EndReason, InputPartKind, LimitEvent, SessionEnd, SessionEvent, SessionStarted, SubagentUpdate,
-};
-use argonauts_core::events::task::{TaskEvent, TaskState};
-use argonauts_core::events::{MergeEvent, RunEvent, RunEventKind};
-use argonauts_core::limits::{network_down_in, served_on_this_machine, waiting_for_the_network};
-use argonauts_core::names::{ApprovalId, ModelRef, RoleName, SessionKey};
-use argonauts_core::settings::Settings;
-use argonauts_core::settings::sessions::RotateAt;
-use argonauts_core::steps::{StepName, summary_line};
-use argonauts_core::views::{
+use argonauts_core::app::views::{
     AgentRow, ContextUse, MERGED_AT_ONCE, RowNote, RowStatus, Tone, not_needed,
 };
+use argonauts_core::base::names::{ApprovalId, ModelRef, RoleName, SessionKey};
+use argonauts_core::models::limits::{
+    network_down_in, served_on_this_machine, waiting_for_the_network,
+};
+use argonauts_core::runs::events::agent_status::FallbackEvent;
+use argonauts_core::runs::events::approval::{ApprovalEvent, ApprovalPacket};
+use argonauts_core::runs::events::context::ContextCategory;
+use argonauts_core::runs::events::run::{RunLifecycle, WaitReason};
+use argonauts_core::runs::events::session::{
+    EndReason, InputPartKind, LimitEvent, SessionEnd, SessionEvent, SessionStarted, SubagentUpdate,
+};
+use argonauts_core::runs::events::task::{TaskEvent, TaskState};
+use argonauts_core::runs::events::{MergeEvent, RunEvent, RunEventKind};
+use argonauts_core::settings::Settings;
+use argonauts_core::settings::sessions::RotateAt;
+use argonauts_core::workflows::steps::{StepName, summary_line};
 use argonauts_core::{AgentEvent, Spend, TaskId};
 use time::OffsetDateTime;
 
@@ -764,7 +766,7 @@ mod tests {
     use super::*;
     use crate::client::test_support::{event, session_started};
     use argonauts_core::DiffStat;
-    use argonauts_core::events::agent_status::FallbackPlan;
+    use argonauts_core::runs::events::agent_status::FallbackPlan;
     use argonauts_core::settings::fallback::{FallbackMode, FallbackStrategy};
 
     #[test]
@@ -860,8 +862,8 @@ mod tests {
     fn a_fallback_without_a_task_still_says_why_the_asked_model_stopped() {
         use crate::client::test_support::session_ended;
         use argonauts_core::ErrorCategory;
-        use argonauts_core::names::WorkflowId;
-        use argonauts_core::workflow::StepRef;
+        use argonauts_core::base::names::WorkflowId;
+        use argonauts_core::workflows::workflow::StepRef;
 
         let opus: ModelRef = "claude-code/claude-opus-5-5".parse().unwrap();
         let sonnet: ModelRef = "claude-code/claude-sonnet-5-5".parse().unwrap();
@@ -1038,8 +1040,8 @@ mod tests {
     /// waits.
     #[test]
     fn a_running_row_waits_for_the_network_while_it_is_down() {
-        use argonauts_core::events::workflow::{RunNote, WorkflowEvent};
-        use argonauts_core::limits::{NETWORK_BACK, NETWORK_DOWN};
+        use argonauts_core::models::limits::{NETWORK_BACK, NETWORK_DOWN};
+        use argonauts_core::runs::events::workflow::{RunNote, WorkflowEvent};
 
         let (cloud, local) = (SessionKey::numbered(1), SessionKey::numbered(2));
         let note = |seq, text: &str| {

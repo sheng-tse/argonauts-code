@@ -9,9 +9,9 @@ use std::time::Duration;
 use argonauts_core::PluginOutputKind;
 use argonauts_core::settings::ui::PluginOutput;
 
+use crate::base::text::sanitize_line;
 use crate::bottom::ModeNotice;
-use crate::cell::{ResultLine, Tone};
-use crate::text::sanitize_line;
+use crate::cells::cell::{ResultLine, Tone};
 
 use super::Cx;
 

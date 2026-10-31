@@ -4,8 +4,8 @@
 
 use std::collections::BTreeSet;
 
-use argonauts_core::events::shared::BlackboardMessage;
-use argonauts_core::names::MessageId;
+use argonauts_core::base::names::MessageId;
+use argonauts_core::runs::events::shared::BlackboardMessage;
 
 use crate::blackboard::refs;
 use crate::state::RunState;

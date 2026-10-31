@@ -5,9 +5,9 @@
 
 use std::cmp::Ordering;
 
-use argonauts_core::events::task::{TaskKind, TaskSpec};
-use argonauts_core::limits::TrackRecord;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::limits::TrackRecord;
+use argonauts_core::runs::events::task::{TaskKind, TaskSpec};
 use argonauts_core::settings::fallback::UnknownTier;
 
 use crate::engine::host::Host;

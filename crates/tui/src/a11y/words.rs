@@ -1,13 +1,13 @@
 //! Small pieces of the spoken lines: labels, enum values as words, amounts, and text split into
 //! one labeled line per line.
 
-use argonauts_core::names::SessionKey;
+use argonauts_core::base::names::SessionKey;
 use argonauts_core::{RunId, Verbosity};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::state::AppState;
-use crate::text::sanitize_line;
+use crate::base::text::sanitize_line;
+use crate::frame::state::AppState;
 
 /// Fields worth reading aloud after an event's name, in this order.
 const SPOKEN_FIELDS: [&str; 7] = [
@@ -25,7 +25,7 @@ pub fn word<T: Serialize>(value: &T) -> String {
 
 /// A serialized name as words, with a state's journal name put the way the screen says it.
 fn plain(name: &str) -> String {
-    argonauts_core::text::state_words(name).replace(['_', '-'], " ")
+    argonauts_core::base::text::state_words(name).replace(['_', '-'], " ")
 }
 
 fn value_word(value: &Value) -> String {
@@ -141,15 +141,15 @@ pub fn duration(ms: u64) -> String {
 
 /// A token count as the screen writes it, so a million is heard as `1M tokens`.
 pub fn tokens(count: u64) -> String {
-    format!("{} tokens", crate::format::tokens(count))
+    format!("{} tokens", crate::base::format::tokens(count))
 }
 
 /// A count beside a window and the window, in the window's divisor: `9.3k tokens of 64k`.
 pub fn tokens_of_window(count: u64, window: u64) -> String {
     format!(
         "{} tokens of {}",
-        crate::format::tokens_beside(count, window),
-        crate::format::window(window)
+        crate::base::format::tokens_beside(count, window),
+        crate::base::format::window(window)
     )
 }
 

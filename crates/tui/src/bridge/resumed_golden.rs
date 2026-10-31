@@ -6,20 +6,20 @@
 use std::time::Instant;
 
 use argonauts_core::app::{AppEvent, ConversationEvent};
-use argonauts_core::events::run::{RunLifecycle, RunOutcome};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ConversationId, ModelRef, TurnId};
+use argonauts_core::base::names::{ConversationId, ModelRef, TurnId};
+use argonauts_core::runs::events::run::{RunLifecycle, RunOutcome};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use ratatui::text::Line;
 use time::macros::datetime;
 
+use super::super::testing::pictures::picture_check::{assert_matches, assert_rows_match};
 use super::Bridge;
-use super::transcript::picture_check::{assert_matches, assert_rows_match};
-use crate::format::WallClock;
-use crate::model::ViewModel;
-use crate::options::UiOptions;
-use crate::render::{Clock, RenderCtx};
-use crate::text::plain_text;
-use crate::theme::{Glyphs, Role, Theme};
+use crate::app::model::ViewModel;
+use crate::app::options::UiOptions;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::format::WallClock;
+use crate::base::text::plain_text;
+use crate::base::theme::{Glyphs, Role, Theme};
 
 const CONVERSATION: &str =
     include_str!("../../tests/golden/transcript/resumed_council/conversation-001.jsonl");
@@ -71,8 +71,8 @@ impl Screen {
 
 /// The names the CLIs gave their models that day, `haiku` among Claude Code's aliases.
 fn names() -> AppEvent {
-    use argonauts_core::display_names::DisplayNames;
-    use argonauts_core::model_catalog::CatalogEntry;
+    use argonauts_core::look::display_names::DisplayNames;
+    use argonauts_core::models::model_catalog::CatalogEntry;
     let mut names = DisplayNames::default();
     for (cli, model, name, aliases) in [
         (
@@ -239,10 +239,10 @@ fn a_resumed_conversation_is_drawn_as_it_printed_live() {
     resumed(&mut screen);
     let (printed, calls) = without_the_planners_calls(screen.printed());
     assert!(calls.starts_with("  ⎿  Search("), "{calls}");
-    crate::picture_dump::lines("resumed_after", &printed);
+    crate::testing::pictures::picture_dump::lines("resumed_after", &printed);
     for line in &printed {
         assert!(
-            crate::text::str_width(&line.to_string()) <= usize::from(WIDTH),
+            crate::base::text::str_width(&line.to_string()) <= usize::from(WIDTH),
             "{line}"
         );
     }
@@ -411,8 +411,8 @@ fn a_run_that_ends_unshaped_prints_its_planner() {
 #[test]
 fn an_agent_at_work_keeps_the_block_its_past_drew_once_the_run_attaches() {
     use argonauts_core::Spend;
-    use argonauts_core::api::{RunState as RunStatus, RunSummary};
-    use argonauts_core::events::run::RunMode;
+    use argonauts_core::runs::api::{RunState as RunStatus, RunSummary};
+    use argonauts_core::runs::events::run::RunMode;
     let mut screen = Screen::new();
     screen.send(names());
     screen.send(welcome());
@@ -488,7 +488,7 @@ fn the_tries_a_wait_folds_stay_for_the_overlay() {
         .history
         .cells()
         .iter()
-        .map(|cell| plain_text(&crate::cell::HistoryCell::lines(cell, &ctx)))
+        .map(|cell| plain_text(&crate::cells::cell::HistoryCell::lines(cell, &ctx)))
         .collect();
     let resumes = kept
         .iter()

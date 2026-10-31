@@ -3,9 +3,9 @@
 //! state is the latest check's. A task's own goal isn't here: `argonauts_crew::goal::report`
 //! reports every goal in the run, this one included, for the goal panels.
 
-use argonauts_core::events::goal::{Assumption, GoalEvent};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::views::{CriterionRow, GoalView};
+use argonauts_core::app::views::{CriterionRow, GoalView};
+use argonauts_core::runs::events::goal::{Assumption, GoalEvent};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::{RunId, Spend};
 
 use super::sessions::{RunFacts, add_spend};
@@ -70,7 +70,7 @@ fn apply(view: &mut GoalView, event: &GoalEvent) {
                 a_try.title.clone_from(title);
                 a_try.phase = *phase;
             }
-            None => view.tries.push(argonauts_core::events::goal::Try {
+            None => view.tries.push(argonauts_core::runs::events::goal::Try {
                 n: *n,
                 title: title.clone(),
                 phase: *phase,
@@ -116,10 +116,10 @@ fn apply(view: &mut GoalView, event: &GoalEvent) {
 mod tests {
     use super::*;
     use crate::client::test_support::{event, run_id};
-    use argonauts_core::events::goal::{
+    use argonauts_core::runs::events::goal::{
         Criterion, CriterionState, CriterionVerdict, GoalChecked, GoalRun, GoalStatus, GoalVerdict,
     };
-    use argonauts_core::goal::{CheckWith, GoalFrom, GoalScope, GoalSpec, KeptBy};
+    use argonauts_core::workflows::goal::{CheckWith, GoalFrom, GoalScope, GoalSpec, KeptBy};
 
     fn goal(seq: u64, event_kind: GoalEvent) -> RunEvent {
         event(seq, RunEventKind::Goal(event_kind))

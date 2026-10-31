@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use argonauts_core::adapter::Transport;
-use argonauts_core::registry::acp::{
+use argonauts_core::agents::adapter::Transport;
+use argonauts_core::models::registry::acp::{
     EffortRoute, ModelRoute, PlanUsageRoute, ReportRoute, ResumeRoute, SteerRoute, UsageSource,
 };
-use argonauts_core::registry::cli::{HomeKeep, PromptChannel};
-use argonauts_core::registry::{CliManifest, RegistryFile};
+use argonauts_core::models::registry::cli::{HomeKeep, PromptChannel};
+use argonauts_core::models::registry::{CliManifest, RegistryFile};
 use serde_json::{Value, json};
 
 use super::builtin::builtin_files;
@@ -356,7 +356,7 @@ fn manifest_env_set_refuses_secrets_and_bypass() {
 
     // The home's variable too, and names that aren't names.
     let mut manifest = line_based();
-    manifest.home = Some(argonauts_core::registry::cli::HomeTemplate {
+    manifest.home = Some(argonauts_core::models::registry::cli::HomeTemplate {
         env: "AGENT_TOKEN".into(),
         template: "../elsewhere".into(),
         keep: HomeKeep::Session,
@@ -372,7 +372,7 @@ fn manifest_env_set_refuses_secrets_and_bypass() {
 
     // The home's variable may be HOME, since Argonauts Code fills it with a folder it made.
     let mut manifest = line_based();
-    manifest.home = Some(argonauts_core::registry::cli::HomeTemplate {
+    manifest.home = Some(argonauts_core::models::registry::cli::HomeTemplate {
         env: "HOME".into(),
         template: "agent".into(),
         keep: HomeKeep::Session,
@@ -644,7 +644,7 @@ fn placeholders_and_outputs_are_checked() {
     assert!(errors_of(&early_session).contains("{session} is filled only in resume_args"));
 
     let parser = |name: Option<&str>| CliManifest {
-        output: argonauts_core::registry::cli::OutputKind::Parser,
+        output: argonauts_core::models::registry::cli::OutputKind::Parser,
         parser: name.map(str::to_owned),
         ..line_based()
     };
@@ -653,7 +653,7 @@ fn placeholders_and_outputs_are_checked() {
     assert!(errors_of(&parser(None)).contains("needs parser"));
 
     let final_json = CliManifest {
-        output: argonauts_core::registry::cli::OutputKind::FinalJson,
+        output: argonauts_core::models::registry::cli::OutputKind::FinalJson,
         ..line_based()
     };
     assert!(errors_of(&final_json).contains("needs a [cli.final_json] table"));
@@ -663,7 +663,7 @@ fn placeholders_and_outputs_are_checked() {
     };
     assert!(errors_of(&empty).contains("names no pointers"));
     let not_a_pointer = CliManifest {
-        final_json: Some(argonauts_core::registry::cli::FinalJsonPointers {
+        final_json: Some(argonauts_core::models::registry::cli::FinalJsonPointers {
             text: Some("final".into()),
             ..Default::default()
         }),

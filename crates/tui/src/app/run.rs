@@ -10,10 +10,10 @@ use crossterm::event::{self, Event};
 use ratatui::layout::{Position, Size};
 
 use super::{Ui, UiAction};
-use crate::model::{VerbPicker, ViewModel};
+use crate::app::model::{VerbPicker, ViewModel};
+use crate::base::theme::Theme;
 use crate::terminal::InlineTerminal;
 use crate::terminal::setup::{TerminalModes, install_panic_hook, probe_cursor};
-use crate::theme::Theme;
 
 /// Flushed once per frame so a frame reaches the terminal in one write.
 pub type StdoutWriter = BufWriter<Stdout>;

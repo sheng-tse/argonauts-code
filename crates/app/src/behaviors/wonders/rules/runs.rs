@@ -1,8 +1,8 @@
 //! The wonders one run raises on its own: the first run whose tally holds.
 
-use argonauts_core::behavior_world::Wonder;
 use argonauts_core::behaviors::Label;
-use argonauts_core::registry::provider::is_known;
+use argonauts_core::behaviors::behavior_world::Wonder;
+use argonauts_core::models::registry::provider::is_known;
 use time::OffsetDateTime;
 
 use super::super::tally::{Member, Tally};

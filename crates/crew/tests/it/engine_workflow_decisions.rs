@@ -9,29 +9,31 @@ use std::sync::{Arc, Mutex, PoisonError};
 use serde_json::{Value, json};
 
 use argonauts_core::TaskId;
-use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::SessionRunner;
+use argonauts_core::base::log::NoteLevel;
+use argonauts_core::base::names::{ApprovalId, ModelRef, WorkflowId};
+use argonauts_core::runs::engine::{EngineCommand, EngineExit};
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
     FreeText, QuestionPacket,
 };
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunOutcome};
-use argonauts_core::events::session::{EndReason, SessionEvent, SessionStarted};
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::events::workflow::{
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::runs::events::session::{EndReason, SessionEvent, SessionStarted};
+use argonauts_core::runs::events::task::MergeEvent;
+use argonauts_core::runs::events::workflow::{
     StepEnd, StepFinished, StepStarted, WorkflowEvent, WorkflowStarted,
 };
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::log::NoteLevel;
-use argonauts_core::names::{ApprovalId, ModelRef, WorkflowId};
-use argonauts_core::session_runner::SessionRunner;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::protocol::UnderstandWhen;
 use argonauts_core::settings::workflows::OrchestratorDesigns;
-use argonauts_core::steps::StepName;
-use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow, WorkflowRef};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::workflow::{
+    StandardPhase, StepKind, StepRef, Workflow, WorkflowRef,
+};
 use argonauts_crew::workflow::yaml;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
 
 use support::{Crew, Outcome};
 
@@ -301,7 +303,9 @@ async fn two_invalid_designs_fall_back_with_a_note() -> anyhow::Result<()> {
 /// session started over and read the repository again, so the run's workflow began at 2m06s.
 const LOGGED_BRIEF: &str = r#"{"based_on":"council","description":"Make rate limiter per API key with Retry-After headers and tests.","done_when":[{"id":"G1","short":"Per-API-key buckets","text":"Rate limiter creates separate buckets for each X-Api-Key value.","check":"review"},{"id":"G2","short":"Shared bucket for no header","text":"Requests without the X-Api-Key header share a single rate limit bucket.","check":"review"},{"id":"G3","short":"Capped refills","text":"Refills are capped at capacity, making the previously failing test pass.","check":{"test":"test passes"}},{"id":"G4","short":"Retry-After header","text":"429 responses include a Retry-After header with whole seconds remaining.","check":"review"},{"id":"G5","short":"New tests","text":"Tests cover per-API-key buckets, shared bucket behavior, and Retry-After headers.","check":{"test":"test passes"}}],"first_try":{"name":"Rate Limiter","detail":"Worker implements per-API-key rate limiting with Retry-After headers and tests","steps":"- kind: build\n  label: build:rate-limiter\n  role: worker\n  input: plan"},"name":"rate-limiter-per-api-key","params":[],"plan":[],"questions":[],"why":"Standard council without modifications; multiple perspectives help with implementation decisions.","workflow":null}"#;
 
-fn design_sessions(spec_of: &FakeRunner) -> Vec<argonauts_core::session_runner::SessionSpec> {
+fn design_sessions(
+    spec_of: &FakeRunner,
+) -> Vec<argonauts_core::agents::session_runner::SessionSpec> {
     spec_of
         .specs()
         .into_iter()

@@ -4,9 +4,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Modifier;
 
 use super::*;
-use crate::render::{Clock, RenderCtx};
-use crate::text::plain_text;
-use crate::theme::{AgentColor, Glyphs, Role, Theme};
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::text::plain_text;
+use crate::base::theme::{AgentColor, Glyphs, Role, Theme};
 
 fn theme() -> Theme {
     let mut theme = Theme::dark();
@@ -96,7 +96,7 @@ fn expanded_reads_like_the_reference() {
     let dim = theme.style(Role::Dim);
     assert_eq!(
         lines[0].spans[0].style,
-        crate::text::marks::decoration(question_style)
+        crate::base::text::marks::decoration(question_style)
     );
     assert_eq!(lines[1].spans[0].style, theme.style(Role::Warn));
     assert_eq!(

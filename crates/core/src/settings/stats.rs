@@ -16,7 +16,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::UsagePeriod;
+use crate::runs::api::UsagePeriod;
 
 /// The file's name in a `mods` folder.
 pub const STATS_FILE: &str = "stats.toml";

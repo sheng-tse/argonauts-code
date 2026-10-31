@@ -8,7 +8,7 @@ pub use super::fallback::{BrokenWork, FallbackEntry, FallbackMode, FallbackRules
 pub use super::goal::RoleGoal;
 use super::sessions::{Compaction, NativeFanout, SessionLifetime};
 use super::shell::RoleShell;
-use crate::names::ModelRef;
+use crate::base::names::ModelRef;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]

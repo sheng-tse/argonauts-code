@@ -6,18 +6,18 @@ use serde_json::json;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
-use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::ApprovalEvent;
-use argonauts_core::events::run::{RunMode, WaitReason};
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::engine::{EngineCommand, EngineExit};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::ApprovalEvent;
+use argonauts_core::runs::events::run::{RunMode, WaitReason};
 use argonauts_core::settings::agents::AgentSettings;
 use argonauts_core::settings::roles::RoleSettings;
-use argonauts_core::steps::understand::{Read, ReadInput};
+use argonauts_core::workflows::steps::understand::{Read, ReadInput};
 use argonauts_crew::engine::host::Ask;
 use argonauts_crew::roles;
 
-use argonauts_testkit::runner::FakeSession;
+use argonauts_testkit::engine::runner::FakeSession;
 
 use support::{Crew, names, script};
 
@@ -154,14 +154,14 @@ async fn a_finished_run_is_left_alone() -> anyhow::Result<()> {
     let started = crew.run_started(RunMode::Captain, "done already")?;
     let mut finished = started.clone();
     finished.seq = 1;
-    finished.kind = RunEventKind::Run(argonauts_core::events::run::RunLifecycle::Finished {
-        outcome: argonauts_core::events::run::RunOutcome::Merged,
+    finished.kind = RunEventKind::Run(argonauts_core::runs::events::run::RunLifecycle::Finished {
+        outcome: argonauts_core::runs::events::run::RunOutcome::Merged,
         detail: None,
     });
     let again = crew.resume(vec![started, finished], Vec::new()).await?;
     assert_eq!(
         again.exit,
-        EngineExit::Finished(argonauts_core::events::run::RunOutcome::Merged)
+        EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::Merged)
     );
     assert_eq!(again.events.len(), 2, "nothing more is recorded");
     Ok(())
@@ -276,7 +276,7 @@ async fn an_ignored_argonauts_folder_never_stops_a_run() -> anyhow::Result<()> {
     let outcome = crew.start(RunMode::Captain, "add a --verbose flag").await?;
     let failed = matches!(
         outcome.exit,
-        EngineExit::Finished(argonauts_core::events::run::RunOutcome::Failed)
+        EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::Failed)
     );
     assert!(!failed, "{:?}", names(&outcome.events));
     let said = outcome.events.iter().any(|event| {

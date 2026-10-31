@@ -5,13 +5,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use argonauts_core::events::run::{RunLifecycle, RunSnapshot};
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::run::{RunLifecycle, RunSnapshot};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 
-use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::names::SessionKey;
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::events::session::{EndReason, SessionEvent};
 
-use crate::error::{EngineError, EngineResult};
+use crate::engine::error::{EngineError, EngineResult};
 
 pub mod approvals;
 pub mod blackboard;
@@ -204,15 +204,15 @@ pub(crate) mod tests {
 
     use time::OffsetDateTime;
 
-    use argonauts_core::event::AgentEvent;
-    use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent};
-    use argonauts_core::events::run::{
+    use argonauts_core::agents::session_runner::{Access, RunnerKind};
+    use argonauts_core::base::names::{AgentId, ModelRef, RoleName, SessionKey};
+    use argonauts_core::models::limits::{AgentHealth, HealthState};
+    use argonauts_core::runs::event::AgentEvent;
+    use argonauts_core::runs::events::agent_status::{AgentStatusEvent, FallbackEvent};
+    use argonauts_core::runs::events::run::{
         Party, ResumeCause, RunMode, RunOutcome, RunResumed, RunStarted, WaitReason,
     };
-    use argonauts_core::events::session::{EndReason, SessionEnd, SessionStarted};
-    use argonauts_core::limits::{AgentHealth, HealthState};
-    use argonauts_core::names::{AgentId, ModelRef, RoleName, SessionKey};
-    use argonauts_core::session_runner::{Access, RunnerKind};
+    use argonauts_core::runs::events::session::{EndReason, SessionEnd, SessionStarted};
     use argonauts_core::settings::approvals::ApprovalMode;
     use argonauts_core::settings::sessions::SessionLifetime;
     use argonauts_core::{RunId, Spend, TaskId};
@@ -329,12 +329,12 @@ pub(crate) mod tests {
     /// fields the fold adds with defaults don't break it.
     pub(crate) fn open_approval(
         n: u32,
-        kind: argonauts_core::events::approval::ApprovalKind,
+        kind: argonauts_core::runs::events::approval::ApprovalKind,
         needs_you: bool,
     ) -> crate::state::approvals::ApprovalRecord {
-        use argonauts_core::events::approval::{ApprovalOpened, ApprovalPacket, FreeText};
+        use argonauts_core::runs::events::approval::{ApprovalOpened, ApprovalPacket, FreeText};
         let opened = ApprovalOpened {
-            id: argonauts_core::names::ApprovalId::numbered(n),
+            id: argonauts_core::base::names::ApprovalId::numbered(n),
             kind,
             title: "Approval".to_owned(),
             task: None,
@@ -438,7 +438,7 @@ pub(crate) mod tests {
     #[test]
     fn a_note_is_said_after_the_session_it_is_about() {
         use argonauts_core::Note;
-        use argonauts_core::log::NoteLevel;
+        use argonauts_core::base::log::NoteLevel;
 
         let worker = ModelRef::new("claude-code", None);
         let started = |seq: u64, key: &str| {
@@ -600,7 +600,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_rejected_plan_usage_counts_until_its_reset() {
-        use argonauts_core::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
+        use argonauts_core::models::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
 
         let agent_id = AgentId("claude-code".to_owned());
         let at = |seconds: i64| OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(seconds);
@@ -668,7 +668,7 @@ pub(crate) mod tests {
         ));
         let snapshot = crate::engine::snapshot::build(
             &state,
-            argonauts_core::api::StatusSummary::default(),
+            argonauts_core::runs::api::StatusSummary::default(),
             vec![SessionKey::numbered(1)],
         )
         .unwrap();
@@ -686,7 +686,7 @@ pub(crate) mod tests {
     fn snapshot_of(engine: serde_json::Value) -> RunLifecycle {
         let mut snapshot = crate::engine::snapshot::build(
             &RunState::default(),
-            argonauts_core::api::StatusSummary::default(),
+            argonauts_core::runs::api::StatusSummary::default(),
             Vec::new(),
         )
         .unwrap();
@@ -732,7 +732,7 @@ pub(crate) mod tests {
         ));
         let snapshot = crate::engine::snapshot::build(
             &state,
-            argonauts_core::api::StatusSummary::default(),
+            argonauts_core::runs::api::StatusSummary::default(),
             Vec::new(),
         )
         .unwrap();

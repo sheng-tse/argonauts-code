@@ -23,18 +23,18 @@ use super::keys::KeySource;
 use super::take_over::{TakeOverPlan, TermEnv, plan_take_over, run_in_tmux, write_spec_files};
 use crate::UiOptions;
 use crate::app::Ui;
+use crate::app::model::{VerbPicker, ViewModel};
+use crate::base::input::keymap::Keymap;
+use crate::base::mascot::Graphics;
+use crate::base::theme::ColorEnv;
 use crate::bottom::{ModeNotice, VimMode};
 use crate::bridge::keys::{exit_lines, watch_line};
 use crate::bridge::settings::theme_for;
 use crate::bridge::{Bridge, Effects, TakeOverJob, TerminalJob};
-use crate::cell::{Cell, Notice, Tone};
-use crate::keymap::Keymap;
-use crate::mascot::Graphics;
-use crate::model::{VerbPicker, ViewModel};
-use crate::state::TerminalInfo;
+use crate::cells::cell::{Cell, Notice, Tone};
+use crate::frame::state::TerminalInfo;
 use crate::terminal::InlineTerminal;
 use crate::terminal::setup::TerminalModes;
-use crate::theme::ColorEnv;
 use crate::views::crew::AgentPanelView;
 use crate::world::deliver::worker::arrivals;
 
@@ -152,7 +152,7 @@ impl<W: Write> Screen<W> {
         self.ui.use_pictures(graphics, cell);
         let under_text = graphics == Some(Graphics::Kitty)
             && cell.is_some()
-            && crate::council::place::under_text(|name| std::env::var(name).ok());
+            && crate::council::draw::place::under_text(|name| std::env::var(name).ok());
         self.ui.draw_pictures_under_text(under_text);
         self.bridge.council.under_text = under_text;
     }
@@ -713,7 +713,7 @@ fn copy_to_clipboard<W: Write>(terminal: &mut InlineTerminal<W>, text: &str) {
 /// argument of its own and never a shell's, and anything but a claude.ai link is left alone.
 /// False when there was nothing to hand it to.
 fn open_in_browser(url: &str) -> bool {
-    if !argonauts_core::artifacts::is_link(url) {
+    if !argonauts_core::app::artifacts::is_link(url) {
         return false;
     }
     let opener = if cfg!(target_os = "macos") {
@@ -838,7 +838,7 @@ mod tests {
     use ratatui::layout::Position;
 
     use super::*;
-    use crate::theme::Brightness;
+    use crate::base::theme::Brightness;
 
     #[tokio::test]
     async fn a_settings_change_keeps_the_background_the_terminal_reported() {

@@ -5,8 +5,8 @@
 
 use std::path::PathBuf;
 
-use argonauts_core::events::run::{BriefFrom, ForkFrom, StartsFrom};
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::run::{BriefFrom, ForkFrom, StartsFrom};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::OrchestratorContext;
 
@@ -160,13 +160,13 @@ impl Start {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::display_names::DisplayNames;
-    use argonauts_core::session_runner::{RunnerCapabilities, SessionRunner as _};
+    use argonauts_core::agents::session_runner::{RunnerCapabilities, SessionRunner as _};
+    use argonauts_core::look::display_names::DisplayNames;
     use argonauts_testkit::FakeRunner;
 
     use super::*;
-    use crate::controller::test_support::{CliOptions, TestCtx};
-    use crate::conversation_store::ConversationSession;
+    use crate::controller::base::test_support::{CliOptions, TestCtx};
+    use crate::conversation::store::ConversationSession;
 
     fn model(text: &str) -> ModelRef {
         text.parse().unwrap()

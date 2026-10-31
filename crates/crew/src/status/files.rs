@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 
 use time::{Duration, OffsetDateTime};
 
-use argonauts_core::api::StatusSummary;
+use argonauts_core::runs::api::StatusSummary;
 
-use crate::error::EngineResult;
+use crate::engine::error::EngineResult;
 
 /// The shortest time between two writes of one session's file.
 pub const MIN_INTERVAL: Duration = Duration::SECOND;

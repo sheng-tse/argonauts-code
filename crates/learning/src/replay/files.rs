@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 
 use argonauts_core::create_private_dir_all;
 
-use crate::error::{LearningError, Result};
+use crate::store::error::{LearningError, Result};
 
 /// A folder deleted when it goes out of scope, so an early return or an error never leaves a
 /// checkout with hidden tests in it behind.

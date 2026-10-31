@@ -6,18 +6,16 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::layout::{self, cells, drawn};
 use super::{Composer, ComposerState, ComposerView, MAX_INPUT_ROWS, ViewState};
-use crate::keywords::{self, Letter};
-use crate::render::RenderCtx;
-use crate::text::marks;
-use crate::text::{sanitize_line, str_width, truncate_line};
-use crate::theme::Role;
+use crate::base::draw::render::RenderCtx;
+use crate::base::text::keywords::{self, Letter};
+use crate::base::text::marks;
+use crate::base::text::{sanitize_line, str_width, truncate_line};
+use crate::base::theme::Role;
+use crate::cells::cell::SHELL_PROMPT;
 use argonauts_core::input::{DraftCommand, NOT_A_COMMAND};
 
 /// Columns before the text on each input row: `❯ ` or two spaces.
 const PROMPT_WIDTH: usize = 2;
-
-/// Shell mode's marker, in place of `❯`.
-pub const SHELL_PROMPT: &str = "!";
 
 /// What the empty input says in shell mode, where Enter runs what you type.
 pub const SHELL_PLACEHOLDER: &str = "Run a shell command in the repo folder";
@@ -171,7 +169,7 @@ fn top_rule(
         (Some(label), None) if fits(str_width(&label)) => vec![name(label)],
         _ => return Line::from(Span::styled(rule.repeat(width), dim)),
     };
-    let left = width - crate::text::spans_width(&words) - 3;
+    let left = width - crate::base::text::spans_width(&words) - 3;
     let mut spans = vec![Span::styled(rule.repeat(left), dim), Span::raw(" ")];
     spans.extend(words);
     spans.extend([Span::raw(" "), Span::styled(rule.to_owned(), dim)]);

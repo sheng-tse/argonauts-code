@@ -6,21 +6,21 @@
 
 use time::OffsetDateTime;
 
-use argonauts_core::events::goal::{
+use argonauts_core::base::names::{ModelRef, SessionKey};
+use argonauts_core::runs::events::goal::{
     CheckRun, CriterionState, GoalChecked, GoalEvent, GoalRun, GoalStatus,
 };
-use argonauts_core::events::run::RunLifecycle;
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::task::TaskEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::goal::report::{
+use argonauts_core::runs::events::run::RunLifecycle;
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::task::TaskEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::workflows::goal::report::{
     CheckReport, CliGoalReport, GoalReport, Keeper, LineReport, LineState, TryReport,
 };
-use argonauts_core::goal::{KeptBy, keep};
-use argonauts_core::names::{ModelRef, SessionKey};
+use argonauts_core::workflows::goal::{KeptBy, keep};
 use argonauts_core::{DiffStat, TaskId};
 
-use crate::labels;
+use crate::sessions::labels;
 use crate::state::RunState;
 
 use super::cli;
@@ -112,7 +112,7 @@ fn fold(goals: &mut Vec<Folded>, event: &RunEvent) {
                 goals
                     .iter_mut()
                     .find(|goal| goal.task.as_ref() == Some(task))
-            }) && started.access == argonauts_core::session_runner::Access::Build
+            }) && started.access == argonauts_core::agents::session_runner::Access::Build
             {
                 goal.worker = Some(started.worker.clone());
                 goal.session.clone_from(&event.session);
@@ -262,7 +262,7 @@ fn fold_goal(goals: &mut Vec<Folded>, goal_event: &GoalEvent, event: &RunEvent) 
             if let Some(at) = of(goals, task) {
                 let turns = goals[at].cli_says.as_ref().and_then(|says| says.turns);
                 goals[at].cli_says = Some(CliGoalReport {
-                    cli: argonauts_core::display_names::builtin_cli_name(&said.cli)
+                    cli: argonauts_core::look::display_names::builtin_cli_name(&said.cli)
                         .map_or_else(|| said.cli.clone(), str::to_owned),
                     status: said.status.clone(),
                     note: said.note.clone(),
@@ -513,12 +513,12 @@ fn what_it_did(summary: &str) -> String {
 mod tests {
     use super::*;
     use argonauts_core::RunId;
-    use argonauts_core::events::goal::{
+    use argonauts_core::runs::events::goal::{
         CheckedBy, CliGoalSaid, Criterion, CriterionCheck, CriterionVerdict, GoalVerdict,
     };
-    use argonauts_core::events::run::Party;
-    use argonauts_core::goal::report::{Failing, FailingWhat};
-    use argonauts_core::goal::{CheckWith, GoalFrom, GoalScope, GoalSpec};
+    use argonauts_core::runs::events::run::Party;
+    use argonauts_core::workflows::goal::report::{Failing, FailingWhat};
+    use argonauts_core::workflows::goal::{CheckWith, GoalFrom, GoalScope, GoalSpec};
     use time::Duration;
 
     fn task() -> TaskId {
@@ -831,7 +831,7 @@ mod tests {
         waiting.push(at(
             4,
             RunEventKind::Run(RunLifecycle::Waiting {
-                reason: argonauts_core::events::run::WaitReason::Approval,
+                reason: argonauts_core::runs::events::run::WaitReason::Approval,
                 waiting_on: Vec::new(),
             }),
         ));

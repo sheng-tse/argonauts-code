@@ -5,19 +5,19 @@
 use std::collections::HashMap;
 
 use argonauts_core::RunId;
-use argonauts_core::cli_sessions::{CliSessionRef, ResumeCommand, shell_words};
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::session::InputPartKind;
-use argonauts_core::names::{AgentId, SeatId, SessionKey};
+use argonauts_core::agents::cli_sessions::{CliSessionRef, ResumeCommand, shell_words};
+use argonauts_core::base::names::{AgentId, SeatId, SessionKey};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::session::InputPartKind;
 
+use crate::base::format::tokens;
 use crate::bridge::tools::start_call;
-use crate::cell::ToolTitle;
-use crate::council::conversation::Private;
-use crate::council::session_view::{PRIVATELY, SeatSession, Turn, session_keys};
+use crate::cells::cell::ToolTitle;
+use crate::council::screens::session_view::{PRIVATELY, SeatSession, Turn, session_keys};
+use crate::council::talk::conversation::Private;
 use crate::council::{Conversation, Faces};
 use crate::council::{Face, Piece, Tone};
-use crate::format::tokens;
-use crate::state::{RunState, SessionState};
+use crate::frame::state::{RunState, SessionState};
 
 /// The answer's first rows show; the rest fold under a count.
 const ANSWER_ROWS: usize = 1;
@@ -299,15 +299,15 @@ fn answer_turns(answer: &str) -> Vec<Turn> {
 mod tests {
     use std::path::PathBuf;
 
-    use argonauts_core::cli_sessions::ResumeCommand;
-    use argonauts_core::events::council::{CouncilEventKind, Seat, SeatRole, Seating};
-    use argonauts_core::events::session::{InputPart, LaunchRecord, PromptVia, SessionInput};
-    use argonauts_core::names::{MessageId, ModelRef, RoleName};
+    use argonauts_core::agents::cli_sessions::ResumeCommand;
+    use argonauts_core::base::names::{MessageId, ModelRef, RoleName};
+    use argonauts_core::runs::events::council::{CouncilEventKind, Seat, SeatRole, Seating};
+    use argonauts_core::runs::events::session::{InputPart, LaunchRecord, PromptVia, SessionInput};
     use time::macros::datetime;
 
     use super::*;
     use crate::council::Face;
-    use crate::state::SessionStatus;
+    use crate::frame::state::SessionStatus;
 
     /// A command as an adapter builds it, typed in the session's folder.
     fn typed(words: &[&str]) -> ResumeCommand {
@@ -395,7 +395,7 @@ mod tests {
             seats: vec![seat(1, &opus), seat(2, &luna)],
             notes: Some(SeatId::numbered(1)),
         };
-        let logo = argonauts_core::logos::logo_for("codex", Some("gpt-5.6-luna"));
+        let logo = argonauts_core::look::logos::logo_for("codex", Some("gpt-5.6-luna"));
         let faces = Faces::new([(SeatId::numbered(2), Face::new("5.6 Luna", "codex", logo))]);
         let mut conversation = Conversation::new(&seating, faces);
         let private = CouncilEventKind::Private {
@@ -507,9 +507,9 @@ mod tests {
     /// never told.
     #[test]
     fn a_checks_session_tells_only_you_who_made_the_change() {
-        use argonauts_core::logos::logo_for;
+        use argonauts_core::look::logos::logo_for;
 
-        use crate::state::ToolRecord;
+        use crate::frame::state::ToolRecord;
 
         let opus = ModelRef::new("claude-code", Some("claude-opus-5-5".to_owned()));
         let at = datetime!(2026-10-25 10:52 UTC);
@@ -582,7 +582,7 @@ mod tests {
             &Checking {
                 checker: &face,
                 task: "Redis bucket",
-                maker: Some((crate::council::story::opus_one(), true)),
+                maker: Some((crate::council::tests::story::opus_one(), true)),
                 names: &names,
                 carried: Some(&typed(&[
                     "claude",
@@ -591,18 +591,18 @@ mod tests {
                 ])),
             },
         );
-        let theme = crate::kit::logo::golden::pictured(&crate::theme::Theme::dark());
-        let faces = crate::council::story::faces_one_model_twice();
+        let theme = crate::base::kit::logo::golden::pictured(&crate::base::theme::Theme::dark());
+        let faces = crate::council::tests::story::faces_one_model_twice();
         let rows: Vec<String> = view
             .lines(120, 38, &faces, &theme)
             .iter()
             .map(|line| {
-                crate::kit::logo::golden::council_text(line)
+                crate::base::kit::logo::golden::council_text(line)
                     .trim_end()
                     .to_owned()
             })
             .collect();
-        crate::council::golden_tests::assert_rows_from("the_checks_own_session", &rows, 0);
+        crate::council::tests::golden::assert_rows_from("the_checks_own_session", &rows, 0);
     }
 
     /// A seat or a check on agy says how to carry its conversation on there, as Claude Code's
@@ -622,7 +622,7 @@ mod tests {
         let face = Face::new(
             "Gemini 3.8 Flash",
             "antigravity-cli",
-            argonauts_core::logos::logo_for("antigravity-cli", Some("gemini-3.8-flash")),
+            argonauts_core::look::logos::logo_for("antigravity-cli", Some("gemini-3.8-flash")),
         );
         let names = DisplayNames::default();
         let view = check_session(
@@ -685,7 +685,7 @@ mod tests {
             let face = Face::new(
                 model,
                 cli,
-                argonauts_core::logos::logo_for(cli, Some(model)),
+                argonauts_core::look::logos::logo_for(cli, Some(model)),
             );
             let mut at = Checking {
                 checker: &face,

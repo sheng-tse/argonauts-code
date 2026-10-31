@@ -8,15 +8,15 @@
 use std::collections::BTreeSet;
 
 use argonauts_core::RunId;
-use argonauts_core::asking::AskReply;
-use argonauts_core::events::run::RunOutcome;
+use argonauts_core::runs::asking::AskReply;
+use argonauts_core::runs::events::run::RunOutcome;
 use tokio::sync::oneshot;
 
 use super::ConversationState;
 use super::lifecycle::begin;
 use crate::controller::Ctx;
 use crate::controller::runs::RunNews;
-use crate::controller::turn::TurnStep;
+use crate::controller::turns::turn::TurnStep;
 
 /// What the session goes on with once its run is under way.
 const GO_ON: &str = "Say so in one line and stop: its agents do the work, the user watches it, \
@@ -109,7 +109,7 @@ pub(crate) fn run_not_started(conversation: &mut ConversationState, err: &anyhow
     else {
         return false;
     };
-    let line = argonauts_core::events::failure::run_failure_line(Some(&format!("{err:#}")));
+    let line = argonauts_core::runs::events::failure::run_failure_line(Some(&format!("{err:#}")));
     let text = format!(
         "{} didn't start: {line}. Tell the user in one line that it didn't start and why, and \
          stop.",

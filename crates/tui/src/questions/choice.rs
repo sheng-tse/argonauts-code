@@ -3,7 +3,7 @@
 //! options the controller sent, and its hint line says what Esc does for its kind.
 
 use argonauts_core::app::{AppChoice, ChoiceKind};
-use argonauts_core::events::approval::{AnswerAction, FreeText};
+use argonauts_core::runs::events::approval::{AnswerAction, FreeText};
 
 use super::options::{first_recommended, question_options};
 use crate::bottom::QuestionPrompt;
@@ -203,16 +203,16 @@ pub fn esc_hint(kind: ChoiceKind) -> &'static str {
 mod tests {
     use std::time::Instant;
 
-    use argonauts_core::events::approval::AnswerOption;
-    use argonauts_core::names::ChoiceId;
+    use argonauts_core::base::names::ChoiceId;
+    use argonauts_core::runs::events::approval::AnswerOption;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
     use super::*;
-    use crate::overview::golden::{Picture, Region, differences, theme};
-    use crate::render::{Clock, RenderCtx};
-    use crate::text::plain_text;
+    use crate::base::draw::render::{Clock, RenderCtx};
+    use crate::base::text::plain_text;
+    use crate::testing::pictures::golden::{Picture, Region, differences, theme};
 
     fn answer(key: char, label: &str, value: &str, detail: &str) -> AnswerOption {
         AnswerOption {
@@ -378,7 +378,7 @@ mod tests {
         assert_eq!(rows[13], "");
         let keys = "  Enter to choose · Esc to cancel";
         assert_eq!(rows[14], format!("{keys:<64}  1–10 of 17 ↓"));
-        assert_eq!(crate::text::str_width(&rows[14]), 78);
+        assert_eq!(crate::base::text::str_width(&rows[14]), 78);
 
         // The pointer moves through the first half of the window, then the window follows it.
         let down = |question: &mut QuestionPrompt, times: usize| {

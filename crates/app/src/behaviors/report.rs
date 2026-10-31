@@ -3,12 +3,12 @@
 
 use std::collections::BTreeMap;
 
-use argonauts_core::crew_stats::StatsRole;
+use argonauts_core::behaviors::crew_stats::StatsRole;
 use serde::Serialize;
 use time::Date;
 
 use super::actions::Action;
-use crate::usage_ledger::local_day;
+use crate::usage::usage_ledger::local_day;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub(crate) struct BehaviorCounts {

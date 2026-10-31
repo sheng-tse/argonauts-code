@@ -6,7 +6,7 @@
 use super::globe::Bounds;
 use super::standing::{ON_MAP, ON_PLANET, Standing};
 use super::{Air, CloudsIn, Framed, Planet, Side, Sun, dots, globe, plain_sky};
-use crate::world::geo::{Globe, Plate, View};
+use crate::base::draw::geo::{Globe, Plate, View};
 use crate::world::map::fields::{Ground, HEIGHT, Rgb, WIDTH, byte, in_rows, to_bytes};
 use crate::world::map::land::{Marks, Polar, SeaColours, Surface, Tint};
 use crate::world::raster::noise::{mix, smooth};

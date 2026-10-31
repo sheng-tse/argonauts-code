@@ -8,9 +8,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use argonauts_core::adapter::Transport;
-use argonauts_core::limits::PlanUsageReading;
-use argonauts_core::session_runner::SandboxMode;
+use argonauts_core::agents::adapter::Transport;
+use argonauts_core::agents::session_runner::SandboxMode;
+use argonauts_core::models::limits::PlanUsageReading;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::agents::AgentSettings;
 use argonauts_core::settings::approvals::UserHooks;
@@ -22,8 +22,8 @@ use super::command::ask;
 use super::roles::{RoleCheck, role_checks};
 use super::versions::{FlagProbe, VersionFit, probe_flags, tested_range_label, version_fit};
 use super::{VERSION_TIMEOUT, read_version, resolve_binary};
+use crate::boards::plan_usage::{PROBE_TIMEOUT, Prober, run_probe};
 use crate::cli_runner::capabilities::ANTIGRAVITY;
-use crate::plan_usage::{PROBE_TIMEOUT, Prober, run_probe};
 use crate::sandbox;
 use crate::sandbox::policy::user_hooks;
 use crate::sandbox::selftest::self_test_once;
@@ -414,7 +414,7 @@ impl fmt::Display for DoctorDetails {
 mod tests {
     use super::*;
     use crate::doctor::tests::FakeCli;
-    use argonauts_core::names::{ModelRef, RoleName};
+    use argonauts_core::base::names::{ModelRef, RoleName};
     use argonauts_core::settings::roles::RoleSettings;
     use argonauts_core::settings::sessions::{Compaction, SessionLifetime};
 

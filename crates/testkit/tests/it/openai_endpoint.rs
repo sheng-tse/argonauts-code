@@ -4,13 +4,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use argonauts_core::events::session::{EndReason, InputPart, InputPartKind};
-use argonauts_core::names::ModelRef;
-use argonauts_core::session_runner::{Access, RunnerDirectory};
+use argonauts_core::agents::session_runner::{Access, RunnerDirectory};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::events::session::{EndReason, InputPart, InputPartKind};
 use argonauts_core::settings::agents::{EndpointApi, EndpointSettings};
 use argonauts_endpoints::EndpointRunner;
-use argonauts_testkit::runner::{drain, session_spec};
-use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard, StaticRegistry};
+use argonauts_testkit::engine::runner::{drain, session_spec};
+use argonauts_testkit::engine::services::{
+    MemoryHealthBoard, MemoryPlanUsageBoard, StaticRegistry,
+};
 use argonauts_testkit::{FakeDirectory, FakeOpenAi, FakeReply};
 use serde_json::json;
 

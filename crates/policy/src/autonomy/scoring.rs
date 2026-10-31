@@ -5,8 +5,8 @@
 
 use std::collections::BTreeSet;
 
-use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
-use argonauts_core::policy::{EvidencePacket, Verdict};
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind};
+use argonauts_core::safety::policy::{EvidencePacket, Verdict};
 use argonauts_core::settings::approvals::{
     ApprovalMode, ApprovalPointSettings, ApprovalSettings, DecideWith, Decides, JudgeSettings,
 };
@@ -260,7 +260,7 @@ pub fn tally(
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::names::ApprovalId;
+    use argonauts_core::base::names::ApprovalId;
     use time::macros::datetime;
 
     use super::*;

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use argonauts_core::events::session::CliWorkflowRun;
+use argonauts_core::runs::events::session::CliWorkflowRun;
 use argonauts_runner::{
     AgentCall, AgentEnd, Check, Checked, Host, JournalEntry, Kept, RunInput, Script,
 };

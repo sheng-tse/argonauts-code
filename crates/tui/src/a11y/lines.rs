@@ -1,14 +1,14 @@
 use argonauts_core::app::{AppEvent, ConversationEvent, ShellEvent, TurnReply};
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::ApprovalEvent;
-use argonauts_core::events::run::Party;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::ApprovalEvent;
+use argonauts_core::runs::events::run::Party;
 use argonauts_core::settings::protocol::CaptainKind;
 use argonauts_core::{AgentEvent, NoteLevel};
 
 use crate::bridge::tools::is_own;
 use crate::bridge::transcript::own_calls::Own;
-use crate::state::AppState;
+use crate::frame::state::AppState;
 
 use super::agent::{StartedCall, agent_lines};
 use super::questions::QuestionList;
@@ -141,26 +141,27 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
         // The tab shows where an update is; its end is said.
         AppEvent::DeepProgress { .. } => Vec::new(),
         AppEvent::DeepDone { done } => {
-            labeled("Summaries", &crate::overview::deep_lines::ended(done))
+            labeled("Summaries", &crate::panels::stats::deep_lines::ended(done))
         }
         AppEvent::Templates { list } => {
-            let said = |label: &str, entries: &[argonauts_core::template_list::TemplateEntry]| {
-                let names: Vec<String> = entries
-                    .iter()
-                    .map(|entry| {
-                        let mut name = entry.name.clone();
-                        if entry.in_use {
-                            name.push_str(" (in use)");
-                        }
-                        if let Some(changed) = entry.changed {
-                            name.push(' ');
-                            name.push_str(changed.mark());
-                        }
-                        name
-                    })
-                    .collect();
-                format!("{label}: {}", names.join(", "))
-            };
+            let said =
+                |label: &str, entries: &[argonauts_core::app::template_list::TemplateEntry]| {
+                    let names: Vec<String> = entries
+                        .iter()
+                        .map(|entry| {
+                            let mut name = entry.name.clone();
+                            if entry.in_use {
+                                name.push_str(" (in use)");
+                            }
+                            if let Some(changed) = entry.changed {
+                                name.push(' ');
+                                name.push_str(changed.mark());
+                            }
+                            name
+                        })
+                        .collect();
+                    format!("{label}: {}", names.join(", "))
+                };
             vec![
                 said("workflows", &list.workflows),
                 said("prompts", &list.prompts),

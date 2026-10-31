@@ -1,16 +1,16 @@
 //! One CLI on the bottom line: its logo, or its dot and name, and its plan windows as bars,
 //! cells or words.
 
-use argonauts_core::display_names;
+use argonauts_core::look::display_names;
 use argonauts_core::settings::bottom_line::LineForm;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use super::fit::{Fine, Second, Shape};
 use super::{CliState, CliUse, WindowUse};
-use crate::kit::logo::logo_picture;
-use crate::kit::{Kit, bars};
-use crate::theme::Role;
+use crate::base::kit::logo::logo_picture;
+use crate::base::kit::{Kit, bars};
+use crate::base::theme::Role;
 
 /// A window's bar.
 const BAR_CELLS: usize = 6;

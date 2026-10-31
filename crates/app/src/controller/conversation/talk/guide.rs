@@ -2,9 +2,9 @@
 //! for the topic's folder, then the topic's settings as the catalog lists them, so a page is
 //! as current as `/config` is.
 
-use argonauts_core::prompt_files;
-use argonauts_core::required;
+use argonauts_core::prompts::prompt_files;
 use argonauts_core::settings::SettingMeta;
+use argonauts_core::workflows::required;
 use argonauts_mcp::session::guide::TOPICS;
 use argonauts_registry::settings_catalog;
 
@@ -168,7 +168,7 @@ fn line(meta: &SettingMeta) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::controller::test_support::{CliOptions, TestCtx};
+    use crate::controller::base::test_support::{CliOptions, TestCtx};
 
     fn ctx() -> TestCtx {
         TestCtx::new(CliOptions::default()).0
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn a_call_answers_with_the_page_or_names_the_pages() {
-        use argonauts_core::names::TurnId;
+        use argonauts_core::base::names::TurnId;
         use serde_json::json;
         use tokio::sync::oneshot;
 

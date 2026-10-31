@@ -5,13 +5,13 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::AgentEvent;
 use argonauts_core::app::{AppEvent, AppMode, ConversationEvent};
-use argonauts_core::names::{ModelRef, TurnId};
+use argonauts_core::base::names::{ModelRef, TurnId};
 
 use super::sync_working;
+use crate::base::draw::render::{Clock, RenderCtx};
 use crate::bottom::{BottomState, WorkingLine};
-use crate::render::{Clock, RenderCtx};
-use crate::state::AppState;
-use crate::views::workflow_pictures::{buffer_of, dark, picture};
+use crate::frame::state::AppState;
+use crate::testing::pictures::workflow_pictures::{buffer_of, dark, picture};
 
 /// A turn the CLI `cli` answers.
 fn turn_on(cli: &str) -> (AppState, TurnId) {
@@ -160,7 +160,7 @@ fn a_task_whose_workflows_go_on_after_its_turn_waits_for_them() {
 
     let mut picture = picture!("nested_captain_second");
     // The input's rules keep their own grey, a step brighter than the picture's.
-    let rule = dark().style(crate::theme::Role::Rule).fg;
+    let rule = dark().style(crate::base::theme::Role::Rule).fg;
     for row in [9, 11] {
         for column in 0..118 {
             picture.recolour(row, column, rule);

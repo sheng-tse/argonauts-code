@@ -1,7 +1,7 @@
-use argonauts_core::api::DiffScope;
 use argonauts_core::app::{AnswerTarget, AppChoice, AppEvent, ChoiceKind, UiCommand, ViewRequest};
-use argonauts_core::events::approval::{AnswerAction, AnswerOption, FreeText};
-use argonauts_core::names::{ApprovalId, ChoiceId};
+use argonauts_core::base::names::{ApprovalId, ChoiceId};
+use argonauts_core::runs::api::DiffScope;
+use argonauts_core::runs::events::approval::{AnswerAction, AnswerOption, FreeText};
 use argonauts_core::{RunId, TaskId};
 use serde_json::{Value, json};
 
@@ -372,8 +372,8 @@ fn a_plan_question_reads_its_limit_by_header() {
     let AppEvent::Run { event } = run_event(1, plan()) else {
         unreachable!()
     };
-    let argonauts_core::events::RunEventKind::Approval(
-        argonauts_core::events::approval::ApprovalEvent::Opened(opened),
+    let argonauts_core::runs::events::RunEventKind::Approval(
+        argonauts_core::runs::events::approval::ApprovalEvent::Opened(opened),
     ) = &event.kind
     else {
         unreachable!()
@@ -548,9 +548,9 @@ fn an_answer_goes_to_its_question() {
 #[test]
 fn the_effort_slider_reads_ultracode_and_a_flips_it() {
     use argonauts_core::app::ViewData;
-    use argonauts_core::display_names::DisplayNames;
+    use argonauts_core::app::model_picker::{EffortSlider, EffortStop};
     use argonauts_core::input::SlashCommand;
-    use argonauts_core::model_picker::{EffortSlider, EffortStop};
+    use argonauts_core::look::display_names::DisplayNames;
 
     let stops = ["low", "high"]
         .iter()
@@ -631,7 +631,7 @@ fn a_shell_command_reads_as_typed_then_its_output_and_end() {
     use argonauts_core::app::ShellEvent;
 
     use super::lines_for;
-    use crate::state::AppState;
+    use crate::frame::state::AppState;
 
     let state = AppState::default();
     let said = |event| lines_for(&AppEvent::Shell { event }, &state);
@@ -721,7 +721,7 @@ fn workflows_says_the_workflow_is_being_written_while_it_is_designed() {
 #[test]
 fn a_signed_out_fallback_says_how_to_sign_in_again() {
     use argonauts_core::app::{ConversationEvent, SignedOut};
-    use argonauts_core::names::{ModelRef, TurnId};
+    use argonauts_core::base::names::{ModelRef, TurnId};
 
     let event = AppEvent::Conversation {
         event: ConversationEvent::FellBack {
@@ -736,7 +736,7 @@ fn a_signed_out_fallback_says_how_to_sign_in_again() {
             }),
         },
     };
-    let lines = super::lines::lines_for(&event, &crate::state::AppState::default());
+    let lines = super::lines::lines_for(&event, &crate::frame::state::AppState::default());
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains("is signed out"), "{lines:?}");
     assert!(lines[0].ends_with("signs it in again"), "{lines:?}");
@@ -747,7 +747,7 @@ fn a_signed_out_fallback_says_how_to_sign_in_again() {
 #[test]
 fn a_refused_start_is_said_at_the_turns_end_unless_a_retry_worked() {
     use argonauts_core::app::{ConversationEvent, TurnReply};
-    use argonauts_core::names::{ModelRef, TurnId};
+    use argonauts_core::base::names::{ModelRef, TurnId};
     use argonauts_core::{AgentEvent, Spend};
 
     const START: &str = "mcp__argonauts_status__argonauts_start_workflow";
@@ -849,7 +849,7 @@ fn the_crew_for_a_request_is_read_a_role_a_line() {
             row("reviewers", "GPT 5.6 Luna on Codex", "as you asked"),
         ],
     };
-    let lines = super::lines::lines_for(&event, &crate::state::AppState::default());
+    let lines = super::lines::lines_for(&event, &crate::frame::state::AppState::default());
     assert_eq!(
         lines,
         [

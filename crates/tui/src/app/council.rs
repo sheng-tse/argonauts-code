@@ -8,9 +8,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Position;
 
 use super::{Ui, UiAction};
-use crate::council::pick::starts_picking;
-use crate::council::picture::Picture;
-use crate::mascot::graphics::Graphics;
+use crate::base::draw::picture::Picture;
+use crate::base::mascot::graphics::Graphics;
+use crate::council::screens::pick::starts_picking;
 
 impl<W: Write> Ui<W> {
     /// Shift+↑ while a council talks here picks its newest message or task, and while one is
@@ -116,12 +116,13 @@ mod tests {
     use ratatui::layout::Size;
 
     use super::*;
-    use crate::cell::{Cell, HistoryCell};
-    use crate::council::{Look, Spacing, TalkCell, story};
-    use crate::model::ViewModel;
-    use crate::render::{Clock, RenderCtx};
+    use crate::app::model::ViewModel;
+    use crate::base::draw::render::{Clock, RenderCtx};
+    use crate::base::theme::{Glyphs, Theme};
+    use crate::cells::cell::{Cell, HistoryCell};
+    use crate::council::tests::story;
+    use crate::council::{Look, Spacing, TalkCell};
     use crate::terminal::InlineTerminal;
-    use crate::theme::{Glyphs, Theme};
 
     const COLUMNS: u16 = 100;
     const ROWS: u16 = 30;
@@ -337,8 +338,8 @@ mod tests {
     #[test]
     fn esc_drops_the_reply_and_keeps_what_you_wrote() {
         let (mut ui, at) = ui(false);
-        ui.model.bottom.replying = Some(crate::council::reply::ReplyBar {
-            message: argonauts_core::names::MessageId::numbered(1),
+        ui.model.bottom.replying = Some(crate::council::screens::reply::ReplyBar {
+            message: argonauts_core::base::names::MessageId::numbered(1),
             face: None,
             quote: "Keep /health open.".to_owned(),
         });
@@ -364,7 +365,7 @@ mod tests {
     #[test]
     fn a_picked_message_is_ringed_where_it_printed() {
         let (mut ui, mut at) = ui(true);
-        let id = argonauts_core::names::MessageId::numbered(4);
+        let id = argonauts_core::base::names::MessageId::numbered(4);
         let cell = bubble().for_message(id.clone());
         ui.model
             .history

@@ -11,8 +11,8 @@ use argonauts_core::settings::delivery::DeliveryCommits;
 
 use crate::engine::host::Host;
 use crate::git::{Git, GitError};
-use crate::labels::task_label;
 use crate::merge::commit_message;
+use crate::sessions::labels::task_label;
 
 /// On the commits Argonauts Code makes for your branch, so a later reader can find the run.
 pub const RUN_TRAILER: &str = "Argonauts-Run";
@@ -203,7 +203,7 @@ async fn per_step(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{TestRepo, git_test_env};
+    use crate::testing::{TestRepo, git_test_env};
 
     fn run() -> RunId {
         RunId::new("run-07").unwrap()

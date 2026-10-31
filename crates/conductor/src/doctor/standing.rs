@@ -2,7 +2,7 @@
 //! Only two standings need an update: older than the oldest version supported, and a version
 //! known not to work. Anything newer is judged by what the CLI offers, not by its number.
 
-use argonauts_core::status_tab::VersionStanding;
+use argonauts_core::app::status_tab::VersionStanding;
 
 use super::versions::numbers;
 

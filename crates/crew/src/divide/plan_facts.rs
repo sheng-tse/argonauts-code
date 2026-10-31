@@ -1,9 +1,9 @@
 //! What planning measured, for the plan approval and the pick question: the judging facts the
 //! plan rules read, and the flags you see.
 
-use argonauts_core::events::plan::JudgingResult;
-use argonauts_core::names::PlanLabel;
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::base::names::PlanLabel;
+use argonauts_core::runs::events::plan::JudgingResult;
+use argonauts_core::safety::policy::EvidenceFacts;
 
 use crate::engine::host::Host;
 
@@ -88,7 +88,7 @@ impl PlanReview {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::plan::PlanTally;
+    use argonauts_core::runs::events::plan::PlanTally;
     use argonauts_core::settings::protocol::JudgingMethod;
 
     use super::*;

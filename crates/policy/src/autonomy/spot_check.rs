@@ -7,8 +7,8 @@ use std::io;
 use std::path::Path;
 
 use argonauts_core::RunId;
-use argonauts_core::names::ApprovalId;
-use argonauts_core::paths::write_private_file;
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::base::paths::write_private_file;
 use argonauts_core::sha256_hex;
 
 /// In the install's state folder, `~/.argonauts/state`, beside every repo's.

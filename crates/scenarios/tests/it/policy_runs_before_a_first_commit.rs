@@ -5,9 +5,9 @@
 //! run.
 
 use crate::policy_support;
-use argonauts_core::events::run::{RunLifecycle, RunOutcome};
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::run::{RunLifecycle, RunOutcome};
+use argonauts_core::runs::events::task::MergeEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_scenarios::WAIT;
 use policy_support::{
     AUTO_MERGE_RULES, RUN_WAIT, captain_config, launch_ready, run_finished, scenario,

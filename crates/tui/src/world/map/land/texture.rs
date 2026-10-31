@@ -6,7 +6,7 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use super::ice::{Polar, polar_at};
 use super::sea::{SeaColours, TUNDRA};
 use super::surface::{Marks, Surface};
-use crate::world::geo::{LonLat, Plate};
+use crate::base::draw::geo::{LonLat, Plate};
 use crate::world::map::fields::{Ground, Rgb, fine, in_rows, mix_rgb, to_bytes};
 use crate::world::map::land::Tint;
 use crate::world::raster::noise::{fbm3, smooth};

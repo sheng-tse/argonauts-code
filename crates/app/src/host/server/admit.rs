@@ -2,7 +2,7 @@
 //! peer process that descends from an agent can't send them. A spot check carries no token,
 //! but its verdict can raise autonomy too, so its peer is checked all the same.
 
-use argonauts_core::control::ControlRequest;
+use crate::control::ControlRequest;
 
 use super::{Origin, ServerState};
 

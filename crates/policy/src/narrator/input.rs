@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use argonauts_core::steps::narrate::{NarrateInput, NarrateMode};
+use argonauts_core::workflows::steps::narrate::{NarrateInput, NarrateMode};
 
 use crate::judge::render::fence;
 

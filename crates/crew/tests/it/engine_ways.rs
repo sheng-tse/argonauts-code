@@ -11,32 +11,32 @@ use anyhow::Context;
 use serde_json::json;
 
 use argonauts_core::TaskId;
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::names::{ApprovalId, RoleName, WorkflowId};
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
     FreeText, PlanPacket,
 };
-use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
-use argonauts_core::events::plan::{DivideEvent, LimitPlan, TaskGraph};
-use argonauts_core::events::run::{Party, RunMode};
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::task::{
+use argonauts_core::runs::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
+use argonauts_core::runs::events::plan::{DivideEvent, LimitPlan, TaskGraph};
+use argonauts_core::runs::events::run::{Party, RunMode};
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::task::{
     MergeEvent, ReviewEvent, TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState, TaskWay, Way,
 };
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ApprovalId, RoleName, WorkflowId};
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith, WhenDeclined};
 use argonauts_core::settings::crew::{CrewSettings, Orchestrator};
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::workflows::AdaptWith;
-use argonauts_core::workflow::{StandardPhase, StepRef, WorkflowRef};
+use argonauts_core::workflows::workflow::{StandardPhase, StepRef, WorkflowRef};
 use argonauts_crew::council::ways;
 use argonauts_crew::git::Git;
 use argonauts_crew::task;
 use argonauts_crew::workflow::{StepAt, StepCall, StepDone};
-use argonauts_testkit::deadline;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::pty::deadline;
 
 use crate::support::{Crew, Outcome, recommended, smallest_answer};
 

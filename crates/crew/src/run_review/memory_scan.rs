@@ -5,7 +5,7 @@
 //! Notes reach every later session's prompt, so this is a security boundary: a note is data
 //! about the code, never something a model could read as an order.
 
-use argonauts_core::steps::task::MemoryProposal;
+use argonauts_core::workflows::steps::task::MemoryProposal;
 
 pub const MAX_TOPIC_CHARS: usize = 40;
 pub const MAX_TEXT_CHARS: usize = 600;

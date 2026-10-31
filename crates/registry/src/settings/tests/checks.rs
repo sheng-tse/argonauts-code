@@ -442,7 +442,7 @@ fn an_unset_judge_model_is_picked_for_each_run_so_nothing_warns() {
 
 #[test]
 fn the_tools_own_sandbox_reads_for_everyone_and_for_a_role() {
-    use argonauts_core::names::RoleName;
+    use argonauts_core::base::names::RoleName;
     use argonauts_core::settings::approvals::SandboxChoice;
 
     let repo = Repo::new();

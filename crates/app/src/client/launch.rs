@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use anyhow::Context as _;
 use argonauts_core::RunId;
-use argonauts_core::layout::run_files;
+use argonauts_core::base::layout::run_files;
 
 pub(crate) trait Launcher: Send + Sync {
     fn launch(&self, repo_root: &Path, run: &RunId, run_dir: &Path) -> anyhow::Result<()>;
@@ -40,7 +40,7 @@ impl ProcessLauncher {
     /// This process's own binary.
     pub(crate) fn current() -> anyhow::Result<Self> {
         Ok(Self {
-            binary: argonauts_core::paths::this_program()?,
+            binary: argonauts_core::base::paths::this_program()?,
             exits: Arc::default(),
         })
     }

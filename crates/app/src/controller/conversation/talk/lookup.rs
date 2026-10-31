@@ -6,23 +6,23 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use argonauts_core::layout::{project_files, user_files};
-use argonauts_core::meter::Spend;
-use argonauts_core::names::ModelRef;
-use argonauts_core::prompt_files::{self, PROJECT_DIR};
-use argonauts_core::required::{self, RequiredStep};
+use argonauts_core::base::layout::{project_files, user_files};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::base::text::state_words;
+use argonauts_core::models::meter::Spend;
+use argonauts_core::prompts::prompt_files::{self, PROJECT_DIR};
 use argonauts_core::settings::layer;
-use argonauts_core::steps::judgment::ReviewVerdict;
-use argonauts_core::text::state_words;
+use argonauts_core::workflows::required::{self, RequiredStep};
+use argonauts_core::workflows::steps::judgment::ReviewVerdict;
 use argonauts_mcp::session::lookup::{DEFAULT_DAYS, WHAT};
-use argonauts_tui::format;
+use argonauts_tui::base::format;
 use serde_json::Value;
 use time::{Duration, OffsetDateTime};
 
 use super::records::{self, Records, Review};
 use super::{Call, ConversationState, fail};
 use crate::controller::{Ctx, Effect};
-use crate::usage_ledger::{UsageLedger, local_day};
+use crate::usage::usage_ledger::{UsageLedger, local_day};
 
 pub(crate) const NAME: &str = argonauts_mcp::session::lookup::NAME;
 
@@ -510,7 +510,7 @@ fn task_named(
 }
 
 /// A task's state as the screen says it, such as `merged into the run`.
-fn state(state: Option<argonauts_core::events::task::TaskState>) -> String {
+fn state(state: Option<argonauts_core::runs::events::task::TaskState>) -> String {
     let name = state
         .and_then(|state| serde_json::to_value(state).ok())
         .and_then(|value| value.as_str().map(str::to_owned))
@@ -524,20 +524,22 @@ fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::agent_status::FallbackPlan;
-    use argonauts_core::events::task::{TaskKind, TaskLimit, TaskSpec, TaskState};
-    use argonauts_core::events::{FallbackEvent, ReviewEvent, RunEvent, RunEventKind, TaskEvent};
-    use argonauts_core::layout::run_files;
+    use argonauts_core::base::layout::run_files;
+    use argonauts_core::runs::events::agent_status::FallbackPlan;
+    use argonauts_core::runs::events::task::{TaskKind, TaskLimit, TaskSpec, TaskState};
+    use argonauts_core::runs::events::{
+        FallbackEvent, ReviewEvent, RunEvent, RunEventKind, TaskEvent,
+    };
     use argonauts_core::settings::crew::CrewRole;
     use argonauts_core::settings::roles::FallbackMode;
-    use argonauts_core::steps::judgment::{ReviewComment, ReviewOutput};
-    use argonauts_core::steps::plan::Severity;
+    use argonauts_core::workflows::steps::judgment::{ReviewComment, ReviewOutput};
+    use argonauts_core::workflows::steps::plan::Severity;
     use argonauts_core::{RunId, TaskId};
     use serde_json::json;
 
     use super::*;
-    use crate::controller::test_support::{CliOptions, TestCtx};
-    use crate::usage_ledger::LedgerLine;
+    use crate::controller::base::test_support::{CliOptions, TestCtx};
+    use crate::usage::usage_ledger::LedgerLine;
 
     fn ctx() -> TestCtx {
         TestCtx::new(CliOptions::default()).0
@@ -667,7 +669,7 @@ mod tests {
                     task: second.clone(),
                     to: codex,
                     mode: FallbackMode::Auto,
-                    by: argonauts_core::events::run::Party::Rules,
+                    by: argonauts_core::runs::events::run::Party::Rules,
                     context: None,
                 }),
             ),

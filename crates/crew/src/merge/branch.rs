@@ -5,12 +5,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::task::MergeEvent;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::task::MergeEvent;
 use argonauts_core::{RunId, TaskId};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 
 pub const PREFIX: &str = "argonauts/";
 

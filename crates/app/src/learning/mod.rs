@@ -14,7 +14,7 @@ pub(crate) mod view;
 
 use argonauts_learning::{LearningError, Store};
 
-use crate::env::AppEnv;
+use crate::startup::env::AppEnv;
 
 /// The repo's learning files: its state folder and its main checkout.
 pub(crate) fn store(env: &AppEnv) -> Store {

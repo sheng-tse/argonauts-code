@@ -2,10 +2,10 @@
 //! for the role, and what your request said for it. Each part is labelled by where it came
 //! from, so the agent's Input tab shows them apart.
 
-use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::names::RoleName;
-use argonauts_core::prompt_files::{PromptDirs, RoleFileMode};
-use argonauts_core::prompt_parts as parts;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::prompts::prompt_files::{PromptDirs, RoleFileMode};
+use argonauts_core::prompts::prompt_parts as parts;
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::prompts::Writer;
 
@@ -235,7 +235,7 @@ fn author(host: &Host, agent: &Agent<'_>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::prompt_parts::heading;
+    use argonauts_core::prompts::prompt_parts::heading;
 
     use super::*;
     use crate::prompts::review::REVIEW;

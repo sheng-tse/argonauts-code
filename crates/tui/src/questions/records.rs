@@ -2,22 +2,22 @@
 //! `◆ Approved merging build:redis into main · you, 10:58 AM`.
 
 use argonauts_core::app::NOT_CHANGED;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::approval::{
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalDecided, ApprovalKind, ApprovalOpened, ApprovalPacket,
 };
-use argonauts_core::events::run::Party;
-use argonauts_core::hidden_git::MergedInto;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::hidden_git::MergedInto;
 use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::{RunId, TaskId};
 use ratatui::text::{Line, Span};
 use time::{OffsetDateTime, UtcOffset};
 
 use super::words;
-use crate::cell::{Cell, HistoryCell, Notice, ResultLine, Tone, UserMessage};
-use crate::render::RenderCtx;
-use crate::text::{fit_lines, sanitize_line, str_width, wrap_spans};
-use crate::theme::Role;
+use crate::base::draw::render::RenderCtx;
+use crate::base::text::{fit_lines, sanitize_line, str_width, wrap_spans};
+use crate::base::theme::Role;
+use crate::cells::cell::{Cell, HistoryCell, Notice, ResultLine, Tone, UserMessage};
 
 /// The record with agents by the names their ids give and tasks by their ids, for callers that
 /// don't know the app's names or the run.
@@ -370,9 +370,9 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::bridge::transcript::picture_check::assert_rows_match;
-    use crate::render::Clock;
-    use crate::theme::{Glyphs, Theme};
+    use crate::base::draw::render::Clock;
+    use crate::base::theme::{Glyphs, Theme};
+    use crate::testing::pictures::picture_check::assert_rows_match;
 
     const PICTURE: (&str, &str) = (
         include_str!("../../tests/golden/questions/setup_after.txt"),

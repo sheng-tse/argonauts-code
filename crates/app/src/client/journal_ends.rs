@@ -5,8 +5,8 @@ use std::fs::File;
 use std::io::{BufRead as _, BufReader, Read as _, Seek as _, SeekFrom};
 use std::path::Path;
 
-use argonauts_core::events::run::RunLifecycle;
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::run::RunLifecycle;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use serde::Deserialize;
 
 /// How far back from the end to look for the last complete line before reading more.
@@ -130,7 +130,7 @@ fn last_lines(events: &Path) -> Vec<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::client::test_support::{event, write_journal};
-    use argonauts_core::events::run::{ResumeCause, RunOutcome, RunResumed, WaitReason};
+    use argonauts_core::runs::events::run::{ResumeCause, RunOutcome, RunResumed, WaitReason};
     use std::io::Write as _;
 
     #[test]

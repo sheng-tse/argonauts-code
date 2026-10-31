@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 
-use argonauts_core::behavior_world::ModelFacts;
+use argonauts_core::behaviors::behavior_world::ModelFacts;
 
 use super::model::{Universe, rng_for};
 

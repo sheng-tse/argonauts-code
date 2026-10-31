@@ -4,12 +4,12 @@
 //! later. What is pushed, and what the branch is left at, is the commit a merge would have
 //! made instead: the run's work alone, on top of the branch it would have merged into.
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::run::RunOutcome;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::run::RunOutcome;
 use argonauts_core::{Note, NoteLevel, RunId};
 
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::merge::branch::PREFIX;
 use crate::merge::{deliver, final_check, merge_packet};
 

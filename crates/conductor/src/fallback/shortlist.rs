@@ -5,21 +5,21 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use argonauts_core::events::task::TaskSpec;
-use argonauts_core::limits::{
+use argonauts_core::agents::session_runner::{RunnerDirectory, model_run};
+use argonauts_core::base::names::{AgentId, ModelRef, RoleName};
+use argonauts_core::models::limits::{
     Candidate, CandidateQuery, CostEstimate, HealthBoard, HealthState, ModelState, PlanUsageBoard,
     PlanUsageReading, PlanUsageStatus, Shortlist, TrackRecord, TrackRecords,
 };
-use argonauts_core::names::{AgentId, ModelRef, RoleName};
-use argonauts_core::registry::{ModelAccess, ModelRegistry};
-use argonauts_core::session_runner::{RunnerDirectory, model_run};
+use argonauts_core::models::registry::{ModelAccess, ModelRegistry};
+use argonauts_core::runs::events::task::TaskSpec;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::fallback::{AppliedFallback, FallbackEntry, FallbackStrategy, Pick};
 use globset::{Glob, GlobSetBuilder};
 use time::OffsetDateTime;
 
 use super::{FreeSlots, applied, entry_rules, task_type};
-use crate::health::{DisableScope, disable_scope};
+use crate::boards::health::{DisableScope, disable_scope};
 
 /// What the planner reads to judge candidates.
 pub struct Sources<'a> {
@@ -433,13 +433,13 @@ mod tests {
     use argonauts_core::settings::crew::CrewRole;
     use argonauts_core::settings::fallback::{AgentFallbacks, FallbackRules, OrderStrategy};
 
-    use argonauts_core::limits::HealthSignal;
+    use argonauts_core::models::limits::HealthSignal;
 
     use super::*;
     use argonauts_testkit::FakeRunner;
 
+    use crate::boards::health::billing_disable;
     use crate::fallback::testing::{Fixture, api_model, entry, model, plan_usage, worker};
-    use crate::health::billing_disable;
 
     fn workers(shortlist: &Shortlist) -> Vec<String> {
         shortlist

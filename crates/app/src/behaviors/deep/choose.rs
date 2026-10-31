@@ -2,10 +2,10 @@
 //! send nothing anywhere, the largest that fits now first; then each CLI's cheapest model,
 //! the main CLI's first, which would read the other CLIs' actions too and so asks first.
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::model_catalog::display_name_from_id;
-use argonauts_core::model_picker::{Fit, MachineMemory};
-use argonauts_core::names::ModelRef;
+use argonauts_core::app::model_picker::{Fit, MachineMemory};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::model_catalog::display_name_from_id;
 
 /// The most summarizers the question lists.
 pub(crate) const LISTED: usize = 4;

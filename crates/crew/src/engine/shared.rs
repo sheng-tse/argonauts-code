@@ -8,24 +8,24 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::{Notify, mpsc, watch};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
-use argonauts_core::engine::{EngineContext, EventSink, RepoContext, Services};
-use argonauts_core::events::run::RunMode;
-use argonauts_core::main_sessions::{MainSessionLease, MainSessions};
-use argonauts_core::names::{ApprovalId, SessionKey};
-use argonauts_core::policy::PolicyOutcome;
+use argonauts_core::base::names::{ApprovalId, SessionKey};
+use argonauts_core::runs::engine::{EngineContext, EventSink, RepoContext, Services};
+use argonauts_core::runs::events::run::RunMode;
+use argonauts_core::safety::policy::PolicyOutcome;
 use argonauts_core::settings::Settings;
 use argonauts_core::{RunId, TaskId};
 
 use crate::approvals::Desk;
+use crate::engine::error::EngineResult;
 use crate::engine::job_fallback;
 use crate::engine::journal::DeltaBuffer;
 use crate::engine::live::LiveSessions;
 use crate::engine::outside_writes::OutsideWrites;
+use crate::engine::replay_terms::{self, ReplayTerms};
 use crate::engine::run_meter::RunMeter;
 use crate::engine::tasks::Tasks;
-use crate::error::EngineResult;
 use crate::git::Git;
-use crate::replay_terms::{self, ReplayTerms};
+use crate::sessions::main_sessions::{MainSessionLease, MainSessions};
 use crate::state::RunState;
 use crate::state::ids::Counters;
 use crate::status::Viewer;
@@ -90,7 +90,7 @@ pub struct Shared {
     /// so again each time it asks for the worker, so nothing of it is kept between stretches.
     pub own_workflows: Mutex<BTreeSet<TaskId>>,
     /// Tasks Claude Code works as its own workflow, and what their session gets for it.
-    pub claude_codes_own: Mutex<BTreeMap<TaskId, crate::claude_codes::OwnSession>>,
+    pub claude_codes_own: Mutex<BTreeMap<TaskId, crate::workflow::claude_codes::OwnSession>>,
     /// The run said once that git ignores its own files here.
     pub said_ignored: std::sync::atomic::AtomicBool,
     pub desk: Desk,
@@ -256,12 +256,19 @@ impl Shared {
     }
 
     /// Claude Code works this task as its own workflow, its session as `own` says.
-    pub fn work_as_claude_codes_own(&self, task: &TaskId, own: crate::claude_codes::OwnSession) {
+    pub fn work_as_claude_codes_own(
+        &self,
+        task: &TaskId,
+        own: crate::workflow::claude_codes::OwnSession,
+    ) {
         lock(&self.own_workflows).insert(task.clone());
         lock(&self.claude_codes_own).insert(task.clone(), own);
     }
 
-    pub fn claude_codes_own(&self, task: &TaskId) -> Option<crate::claude_codes::OwnSession> {
+    pub fn claude_codes_own(
+        &self,
+        task: &TaskId,
+    ) -> Option<crate::workflow::claude_codes::OwnSession> {
         lock(&self.claude_codes_own).get(task).cloned()
     }
 

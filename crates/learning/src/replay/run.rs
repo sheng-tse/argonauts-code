@@ -7,12 +7,12 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::AuthMode;
-use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::CheckRunner;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::limits::CheckRunner;
 use argonauts_core::settings::Settings;
 use argonauts_core::sha256_hex;
-use argonauts_core::workflow::StandardPhase;
+use argonauts_core::workflows::workflow::StandardPhase;
 
 use super::checks::{ScoringSetup, hidden_root, run_tests};
 use super::files::{Scratch, nonce, read_json, remove_if_present, write_json};
@@ -20,10 +20,10 @@ use super::isolated::isolated_repo;
 use super::set::scoring_setup_path;
 use super::stopping::{StoppingRule, Verdict};
 use super::{Entry, ReplayReport, ReplayRequest, ReplayRunner, ReplaySet};
-use crate::error::{LearningError, Result};
 use crate::evolution::Thresholds;
 use crate::learned_workflows::LoadedLearnedWorkflow;
-use crate::types::{LearnedWorkflowRef, ReplayResult};
+use crate::store::error::{LearningError, Result};
+use crate::store::types::{LearnedWorkflowRef, ReplayResult};
 
 /// How far a not-worse class may fall behind its parent, as a fraction.
 const NOT_WORSE_MARGIN: f64 = -0.05;

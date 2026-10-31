@@ -12,32 +12,32 @@ use std::time::Instant;
 
 use std::sync::Arc;
 
-use argonauts_core::api::UsageSummary;
+use argonauts_core::agents::session_runner::{Access, RunnerKind};
 use argonauts_core::app::AppEvent;
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunStarted};
-use argonauts_core::events::session::{
+use argonauts_core::app::overview::ModelTokens;
+use argonauts_core::base::names::{AgentId, ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::api::UsageSummary;
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunStarted};
+use argonauts_core::runs::events::session::{
     EndReason, InputPart, InputPartKind, LaunchRecord, PromptVia, SessionEnd, SessionEvent,
     SessionInput, SessionStarted,
 };
-use argonauts_core::events::task::{CheckKind, CheckOutcome};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{AgentId, ModelRef, RoleName, SessionKey};
-use argonauts_core::overview::ModelTokens;
-use argonauts_core::session_runner::{Access, RunnerKind};
+use argonauts_core::runs::events::task::{CheckKind, CheckOutcome};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_core::{AgentEvent, RunId, Spend, TaskId};
 use ratatui::text::Line;
 use serde_json::{Value, json};
 use time::macros::datetime;
 
+use super::super::testing::pictures::picture_check::assert_rows_match;
 use super::Bridge;
-use super::transcript::picture_check::assert_rows_match;
-use crate::model::ViewModel;
-use crate::options::UiOptions;
-use crate::render::{Clock, RenderCtx};
-use crate::text::plain_text;
-use crate::theme::{Glyphs, Theme};
+use crate::app::model::ViewModel;
+use crate::app::options::UiOptions;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::text::plain_text;
+use crate::base::theme::{Glyphs, Theme};
 
 const PICTURE: &str = include_str!("../../tests/golden/council_rows_after.txt");
 const COLOURS: &str = include_str!("../../tests/golden/council_rows_after.html");
@@ -223,8 +223,8 @@ fn theme() -> Theme {
 
 /// The names the CLIs give these models.
 fn names() -> AppEvent {
-    use argonauts_core::display_names::DisplayNames;
-    use argonauts_core::model_catalog::CatalogEntry;
+    use argonauts_core::look::display_names::DisplayNames;
+    use argonauts_core::models::model_catalog::CatalogEntry;
     let mut names = DisplayNames::default();
     for (model, name) in [
         (HAIKU, "Haiku 5.5"),
@@ -528,7 +528,7 @@ fn a_councils_agents_print_one_row_each_as_drawn() {
     let picture = want.join("\n");
     for line in &drawn {
         assert!(
-            crate::text::str_width(&line.to_string()) <= usize::from(WIDTH),
+            crate::base::text::str_width(&line.to_string()) <= usize::from(WIDTH),
             "{line}"
         );
     }

@@ -12,11 +12,11 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use argonauts_core::Paths;
-use argonauts_core::behavior_world::RisenWonder;
 use argonauts_core::behaviors::Behavior;
-use argonauts_core::journal::read_all;
-use argonauts_core::model_catalog::ModelCatalog;
-use argonauts_tui::format::WallClock;
+use argonauts_core::behaviors::behavior_world::RisenWonder;
+use argonauts_core::models::model_catalog::ModelCatalog;
+use argonauts_core::runs::journal::read_all;
+use argonauts_tui::base::format::WallClock;
 use time::{OffsetDateTime, UtcOffset};
 
 use super::actions::{Action, Outcome};

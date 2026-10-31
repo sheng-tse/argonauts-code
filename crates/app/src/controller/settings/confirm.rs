@@ -4,11 +4,11 @@
 use std::path::Path;
 
 use argonauts_core::app::{AppChoice, ChoiceKind};
-use argonauts_core::names::ChoiceId;
+use argonauts_core::base::names::ChoiceId;
 use argonauts_registry::safety_keys_in;
 
-use crate::app_settings::AppSettings;
-use crate::choices::{app_choice, options};
+use crate::setup::choices::{app_choice, options};
+use crate::startup::app_settings::AppSettings;
 
 /// Every safety key a write changes, with its value now and after. `value` is `None` for a
 /// reset, where the layer below decides what comes after.
@@ -171,7 +171,7 @@ mod picture_tests {
     use argonauts_tui::questions::choice_question;
 
     use super::*;
-    use crate::golden::{assert_looks, drawn_rows, picture_rows, still, theme};
+    use crate::testing::golden::{assert_looks, drawn_rows, picture_rows, still, theme};
 
     #[test]
     fn the_start_trust_question_reads_as_the_picture_draws_it() {
@@ -186,7 +186,7 @@ mod picture_tests {
         );
         let theme = theme();
         let lines = choice_question(1, &choice).lines(&still(&theme));
-        crate::golden::dump("trust_question", &lines);
+        crate::testing::golden::dump("trust_question", &lines);
         assert_eq!(
             drawn_rows(&lines),
             picture_rows(include_str!("../../../tests/golden/trust_question.txt"))

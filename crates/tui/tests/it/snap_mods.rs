@@ -2,14 +2,14 @@
 //! every form at every width, and a sweep of values that must never move a row or a column.
 
 use crate::common;
-use argonauts_tui::kit::{
+use argonauts_tui::base::kit::{
     Chart, ContextCard, Drawn, Form, Frame, Kit, Levels, Limit, LimitKind, ListRow, ListSlots,
     MeterRow, MeterSlots, State, States, Window, bodies, stack_cards,
 };
-use argonauts_tui::stability::{self, WIDTHS, samples};
-use argonauts_tui::text::{spans_width, str_width};
-use argonauts_tui::theme::Role;
-use argonauts_tui::theme::{ColorLevel, Glyphs, Theme};
+use argonauts_tui::base::stability::{self, WIDTHS, samples};
+use argonauts_tui::base::text::{spans_width, str_width};
+use argonauts_tui::base::theme::Role;
+use argonauts_tui::base::theme::{ColorLevel, Glyphs, Theme};
 use common::{styled, text};
 use ratatui::style::{Color, Modifier};
 use ratatui::text::Line;
@@ -252,7 +252,7 @@ fn a_window_of_1024s_reads_in_its_own_divisor() {
     let theme = plain();
     let kit = Kit::new(&theme);
     let card = |used: u64| {
-        argonauts_tui::overview::session_context(
+        argonauts_tui::panels::session_context(
             "build:unicode".to_owned(),
             used,
             58_982,

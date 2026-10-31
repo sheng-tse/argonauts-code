@@ -6,7 +6,7 @@ use agents_support::{
     assert_sessions_completed, finish_screen, launch_ready, reviews, scenario, start_captain,
     toml_string, wait_for_finished_task, write_global_config, write_global_models,
 };
-use argonauts_core::steps::judgment::ReviewVerdict;
+use argonauts_core::workflows::steps::judgment::ReviewVerdict;
 use argonauts_testkit::{FakeOpenAi, FakeReply};
 use serde_json::json;
 

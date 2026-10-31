@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::world::geo::{Globe, Plate, View};
+use crate::base::draw::geo::{Globe, Plate, View};
 use crate::world::map::motion::Flashes;
 use crate::world::planet::Side;
 use crate::world::raster::{Brush, Colour, Path};

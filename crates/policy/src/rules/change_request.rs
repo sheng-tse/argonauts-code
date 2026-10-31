@@ -4,7 +4,7 @@
 //! limits hold it to `limits.irreversible_allowlist` first. A request that changes the goal or
 //! moves a task into a protected path never gets here: it goes to the goal or the plan.
 
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::safety::policy::EvidenceFacts;
 
 use super::{Conditions, RuleVerdict};
 
@@ -34,7 +34,7 @@ pub fn check(facts: &EvidenceFacts) -> RuleVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::policy::Verdict;
+    use argonauts_core::safety::policy::Verdict;
 
     fn facts(actions: Option<&[&str]>, protected: &[&str]) -> EvidenceFacts {
         EvidenceFacts {

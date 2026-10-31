@@ -4,14 +4,14 @@
 use crate::support;
 use serde_json::json;
 
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::run::{RunMode, RunOutcome};
-use argonauts_core::events::{AgentStatusEvent, RunEventKind};
-use argonauts_core::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
-use argonauts_core::names::AgentId;
-use argonauts_core::session_runner::{RunnerEvent, SessionRunner, SessionSpec};
-use argonauts_core::steps::StepName;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_core::agents::session_runner::{RunnerEvent, SessionRunner, SessionSpec};
+use argonauts_core::base::names::AgentId;
+use argonauts_core::models::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::run::{RunMode, RunOutcome};
+use argonauts_core::runs::events::{AgentStatusEvent, RunEventKind};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
 use support::{Crew, fill, names};
 
 const BUILT: &str = "VERBOSE.md";

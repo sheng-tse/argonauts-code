@@ -1,11 +1,11 @@
 //! A question for you that was answered in your place on autopilot: who answered, in which part,
 //! what and why, and what the task does next.
 
-use argonauts_core::events::shared::AnsweredForYou;
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::runs::events::shared::AnsweredForYou;
 
-use crate::cell::{Notice, Tone};
-use crate::text::sanitize_line;
+use crate::base::text::sanitize_line;
+use crate::cells::cell::{Notice, Tone};
 
 use super::{Cx, emit};
 

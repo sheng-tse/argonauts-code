@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use argonauts_core::behavior_world::WorldFacts;
+use argonauts_core::behaviors::behavior_world::WorldFacts;
 
 use super::model::{StarAction, Universe};
 use super::motion::{self, Group};

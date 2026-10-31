@@ -9,7 +9,7 @@ use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::ways::Ways;
-use crate::names::{ModelRef, RoleName};
+use crate::base::names::{ModelRef, RoleName};
 
 /// Each list is in order of preference: the first agent that's available is the one asked, and
 /// a step that wants several takes them from the front.

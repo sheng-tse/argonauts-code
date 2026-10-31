@@ -3,20 +3,20 @@
 //! it found.
 
 use argonauts_core::TaskId;
-use argonauts_core::display_names::{DisplayNames, maker_of};
-use argonauts_core::events::approval::{AnswerAction, ApprovalDecided, PlanPacket};
-use argonauts_core::events::council::{CheckPick, CheckRung};
-use argonauts_core::events::run::Party;
-use argonauts_core::names::{ModelRef, RoleName, SessionKey};
-use argonauts_core::steps::judgment::ReviewVerdict;
+use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::look::display_names::{DisplayNames, maker_of};
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalDecided, PlanPacket};
+use argonauts_core::runs::events::council::{CheckPick, CheckRung};
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::workflows::steps::judgment::ReviewVerdict;
 use time::OffsetDateTime;
 
 use super::session::Checking;
 use super::{Cx, Talk, when};
 use crate::council::Faces;
-use crate::council::checks::{self, Approved, Checked, Checker};
-use crate::council::plan::Who;
-use crate::council::session_view::SeatSession;
+use crate::council::screens::session_view::SeatSession;
+use crate::council::work::checks::{self, Approved, Checked, Checker};
+use crate::council::work::plan::Who;
 
 impl Talk {
     /// Your answer to the plan the run asked you to approve: once you approve it, the line that

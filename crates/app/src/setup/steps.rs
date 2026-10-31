@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::settings::approvals::{ApprovalMode, ApprovalSettings};
 use argonauts_registry::safety_keys_in;
 

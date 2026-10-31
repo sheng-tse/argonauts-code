@@ -2,18 +2,18 @@
 //! table, a plan's summary, a fallback's candidates, an agent outage's evidence. The same items,
 //! whole, are what Show the details opens in the pager.
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::agent_status::FallbackPlan;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{ModelRef, PlanLabel, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::agent_status::FallbackPlan;
+use argonauts_core::runs::events::approval::{
     AgentDownPacket, ApprovalOpened, ApprovalPacket, ChangeRequestPacket, GoalChangePacket,
     GoalPacket, LimitPacket, MergePacket, MergeQuestion, PlanPacket, StuckPacket,
 };
-use argonauts_core::events::goal::GoalFile;
-use argonauts_core::events::task::TaskSpec;
-use argonauts_core::hidden_git::MergedInto;
-use argonauts_core::names::{ModelRef, PlanLabel, RoleName};
+use argonauts_core::runs::events::goal::GoalFile;
+use argonauts_core::runs::events::task::TaskSpec;
+use argonauts_core::runs::hidden_git::MergedInto;
 use argonauts_core::settings::limit::LimitLineKind;
-use argonauts_core::steps::judgment::ReviewVerdict;
+use argonauts_core::workflows::steps::judgment::ReviewVerdict;
 use argonauts_core::{DiffStat, TaskId};
 use time::UtcOffset;
 
@@ -21,11 +21,11 @@ use super::item::AboutCell;
 use super::plan_workflow;
 use super::table::{Column, Table, TableCell};
 use super::words;
+use crate::base::format;
+use crate::base::theme::Role;
 use crate::bottom::picker::one_line;
-use crate::cell::Cell;
-use crate::format;
-use crate::state::RunState;
-use crate::theme::Role;
+use crate::cells::cell::Cell;
+use crate::frame::state::RunState;
 
 /// An agent's name in a table keeps this many cells, `Haiku 4.5 on Cl…`, before columns go.
 const AGENT_FLOOR: usize = 16;

@@ -6,47 +6,48 @@ use crate::pty_support;
 use std::time::Instant;
 
 use argonauts_core::app::{AppChoice, AppEvent, ModelChoice, SettingRow, ViewData};
-use argonauts_core::events::approval::ApprovalOpened;
-use argonauts_core::events::{RunEventKind, approval::ApprovalEvent};
+use argonauts_core::base::names::{RoleName, SessionKey};
 use argonauts_core::input::MentionTarget;
-use argonauts_core::limits::CostEstimate;
-use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::registry::ModelAccess;
+use argonauts_core::models::limits::CostEstimate;
+use argonauts_core::models::registry::ModelAccess;
+use argonauts_core::runs::events::approval::ApprovalOpened;
+use argonauts_core::runs::events::{RunEventKind, approval::ApprovalEvent};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::ui::{Glyphs as GlyphChoice, UiSettings};
 use argonauts_core::{RunId, TaskId};
 use argonauts_tui::HistoryCell;
 use argonauts_tui::app::TranscriptOverlay;
-use argonauts_tui::bottom::{
-    BottomState, OptionKind, Picker, PickerRow, QuestionPrompt, WorkingLine,
-};
-use argonauts_tui::bridge::transcript::Transcript;
-use argonauts_tui::bridge::{Cx, Effects};
-use argonauts_tui::keymap::Keymap;
-use argonauts_tui::mentions::MentionPicker;
-use argonauts_tui::model::ViewModel;
-use argonauts_tui::questions::{
-    about_cells, approval_question, choice_question, confirm_take_over, spot_check_question,
-};
-use argonauts_tui::render::{Clock, RenderCtx};
-use argonauts_tui::stability::{
+use argonauts_tui::app::model::ViewModel;
+use argonauts_tui::base::draw::render::{Clock, RenderCtx};
+use argonauts_tui::base::input::keymap::Keymap;
+use argonauts_tui::base::stability::{
     UNSTABLE_GLYPHS, WIDTHS, assert_frames, assert_lines, buffer_text, check, check_glyphs,
     check_line_glyphs, check_lines, samples,
 };
-use argonauts_tui::state::{AppState, RunState};
-use argonauts_tui::text::{plain_text, width_with};
-use argonauts_tui::theme::{Glyphs, Theme};
+use argonauts_tui::base::text::{plain_text, width_with};
+use argonauts_tui::base::theme::{Glyphs, Theme};
+use argonauts_tui::bottom::picker::flow::Step;
+use argonauts_tui::bottom::{
+    BottomState, OptionKind, Picker, PickerRow, QuestionPrompt, WorkingLine,
+};
+use argonauts_tui::bridge::mentions::MentionPicker;
+use argonauts_tui::bridge::transcript::Transcript;
+use argonauts_tui::bridge::{Cx, Effects};
+use argonauts_tui::frame::state::{AppState, RunState};
+use argonauts_tui::frame::view::pager::Pager;
+use argonauts_tui::frame::view::{View, ViewCtx};
+use argonauts_tui::questions::{
+    about_cells, approval_question, choice_question, confirm_take_over, spot_check_question,
+};
 use argonauts_tui::views::agent::AgentView;
 use argonauts_tui::views::crew::AgentPanelView;
 use argonauts_tui::views::help::HelpView;
-use argonauts_tui::views::pager::Pager;
 use argonauts_tui::views::resume::ResumePicker;
 use argonauts_tui::views::session::SessionView;
 use argonauts_tui::views::settings::all_settings::AllSettingsView;
 use argonauts_tui::views::settings::approvals::ApprovalsView;
-use argonauts_tui::views::settings::flow::{self, Step};
+use argonauts_tui::views::settings::flow;
 use argonauts_tui::views::workflow::WorkflowView;
-use argonauts_tui::views::{View, ViewCtx};
 use crossterm::event::{KeyCode, KeyEvent};
 use pty_support::*;
 use ratatui::buffer::Buffer;
@@ -643,12 +644,12 @@ fn assert_inline(name: &str, lines: &[Line<'_>], width: u16, sample: &str) {
 }
 
 /// A main agent's commands whose descriptions and names carry `sample`.
-fn cli_commands(sample: &str) -> argonauts_core::cli_commands::CliCommandSet {
-    use argonauts_core::cli_commands::{
+fn cli_commands(sample: &str) -> argonauts_core::agents::cli_commands::CliCommandSet {
+    use argonauts_core::agents::cli_commands::{
         BuiltinCommand, BuiltinKind, CliCommand, CliCommandSet, CommandKind, CommandScope,
         CommandSource,
     };
-    use argonauts_core::names::AgentId;
+    use argonauts_core::base::names::AgentId;
     const TABLE: &[BuiltinCommand] = &[
         BuiltinCommand {
             name: "batch",

@@ -4,7 +4,7 @@
 
 use std::fmt::Write as _;
 
-use crate::names::ModelRef;
+use crate::base::names::ModelRef;
 
 /// `[fallback.worker]` and `[fallback.reviewer]`. A role with no models to name is written
 /// commented out, as an example to fill in.

@@ -5,16 +5,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::events::run::CheckedInstruction;
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::runs::events::run::CheckedInstruction;
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::intake::InstructionKind;
-use argonauts_core::workflow::{
+use argonauts_core::workflows::steps::intake::InstructionKind;
+use argonauts_core::workflows::workflow::{
     Count, StandardPhase, Step, StepKind, StepModels, Workflow, WorkflowParams,
 };
 
-use argonauts_core::labels;
+use argonauts_core::look::labels;
 
 use crate::plan::context::crew_for;
 use crate::plan::judge;
@@ -1128,7 +1128,7 @@ mod tests {
     /// agent for it goes back to the main agent with the error.
     #[test]
     fn a_step_must_give_an_instructed_role_to_its_agents() {
-        use argonauts_core::events::run::InstructionOutcome;
+        use argonauts_core::runs::events::run::InstructionOutcome;
 
         let mut settings = Settings::default();
         let agy = ModelRef::new("antigravity-cli", None);

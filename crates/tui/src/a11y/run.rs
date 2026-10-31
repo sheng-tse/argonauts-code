@@ -2,18 +2,18 @@
 //! checks, approvals as numbered lists, and notes. Events without wording of their own are
 //! read from their names at full verbosity, so nothing is dropped.
 
-use argonauts_core::events::agent_status::{AgentStatusEvent, SpendEvent};
-use argonauts_core::events::approval::{ApprovalEvent, PolicyCheck};
-use argonauts_core::events::run::RunLifecycle;
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::shared::BlackboardEvent;
-use argonauts_core::events::task::TaskEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::agent_status::{AgentStatusEvent, SpendEvent};
+use argonauts_core::runs::events::approval::{ApprovalEvent, PolicyCheck};
+use argonauts_core::runs::events::run::RunLifecycle;
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::shared::BlackboardEvent;
+use argonauts_core::runs::events::task::TaskEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::{AgentEvent, NoteLevel, Verbosity};
 
+use crate::base::text::sanitize_line;
+use crate::frame::state::AppState;
 use crate::questions::with_run_workers;
-use crate::state::AppState;
-use crate::text::sanitize_line;
 
 use super::agent::{StartedCall, agent_lines};
 use super::lines::party;
@@ -259,19 +259,19 @@ fn one_line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use argonauts_core::app::AppEvent;
-    use argonauts_core::events::approval::{
+    use argonauts_core::base::names::{ApprovalId, ModelRef};
+    use argonauts_core::runs::events::approval::{
         ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket, FreeText, PolicyCheck,
         QuestionPacket,
     };
-    use argonauts_core::events::{RunEvent, RunEventKind};
-    use argonauts_core::names::{ApprovalId, ModelRef};
+    use argonauts_core::runs::events::{RunEvent, RunEventKind};
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
     use argonauts_core::settings::asking::WhenDeclined;
     use argonauts_core::{RunId, TaskId};
     use time::OffsetDateTime;
 
     use super::run_lines;
-    use crate::state::AppState;
+    use crate::frame::state::AppState;
 
     fn event(seq: u64, kind: RunEventKind) -> RunEvent {
         RunEvent {

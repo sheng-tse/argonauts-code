@@ -16,9 +16,9 @@
 //! reopens the approval with the reason.
 
 use argonauts_core::TaskId;
-use argonauts_core::events::plan::{DesignDecision, LimitPlan, TaskGraph};
-use argonauts_core::events::task::{TaskKind, TaskSpec, TaskWay, Way};
-use argonauts_core::names::{DecisionId, ModelRef, RoleName};
+use argonauts_core::base::names::{DecisionId, ModelRef, RoleName};
+use argonauts_core::runs::events::plan::{DesignDecision, LimitPlan, TaskGraph};
+use argonauts_core::runs::events::task::{TaskKind, TaskSpec, TaskWay, Way};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::limit::{LimitAmount, LimitLineKind, LimitUnit};
 
@@ -412,8 +412,8 @@ fn number(text: &str, line: &str) -> Result<f64, String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::plan::LimitLine;
-    use argonauts_core::events::task::TaskLimit;
+    use argonauts_core::runs::events::plan::LimitLine;
+    use argonauts_core::runs::events::task::TaskLimit;
 
     use super::*;
 
@@ -624,7 +624,9 @@ mod tests {
                 Edit::Way {
                     task: TaskId::numbered(1),
                     way: Way::Workflow {
-                        name: argonauts_core::workflow::WorkflowRef::new("maker-checker")
+                        name: argonauts_core::workflows::workflow::WorkflowRef::new(
+                            "maker-checker"
+                        )
                     }
                 },
                 Edit::Way {

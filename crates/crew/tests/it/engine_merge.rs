@@ -12,28 +12,28 @@ use serde_json::json;
 use time::macros::datetime;
 use tokio::sync::mpsc;
 
-use argonauts_core::api::ApprovalAnswer;
-use argonauts_core::engine::{EngineCommand, RepoContext};
-use argonauts_core::events::agent_status::AgentStatusEvent;
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{ApprovalId, ModelRef, RoleName, WorkflowId};
+use argonauts_core::models::limits::{AgentHealth, HealthState};
+use argonauts_core::runs::api::ApprovalAnswer;
+use argonauts_core::runs::engine::{EngineCommand, RepoContext};
+use argonauts_core::runs::events::agent_status::AgentStatusEvent;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
     FreeText, PlanPacket,
 };
-use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
-use argonauts_core::events::plan::{LimitPlan, TaskGraph};
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunOutcome, RunStarted};
-use argonauts_core::events::session::EndReason;
-use argonauts_core::events::shared::RunReviewEvent;
-use argonauts_core::events::task::{
+use argonauts_core::runs::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
+use argonauts_core::runs::events::plan::{LimitPlan, TaskGraph};
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode, RunOutcome, RunStarted};
+use argonauts_core::runs::events::session::EndReason;
+use argonauts_core::runs::events::shared::RunReviewEvent;
+use argonauts_core::runs::events::task::{
     CheckKind, CheckOutcome, MergeEvent, TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState,
 };
-use argonauts_core::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::fallback::QualityDebt;
-use argonauts_core::limits::{AgentHealth, HealthState};
-use argonauts_core::names::{ApprovalId, ModelRef, RoleName, WorkflowId};
-use argonauts_core::policy::{HardLimit, PolicyOutcome, Verdict};
-use argonauts_core::session_runner::Access;
+use argonauts_core::runs::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::fallback::QualityDebt;
+use argonauts_core::safety::policy::{HardLimit, PolicyOutcome, Verdict};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::delivery::{DeliveryCommits, DeliveryWrite, UnbornLanding};
@@ -41,23 +41,23 @@ use argonauts_core::settings::fallback::{MergeRule, Retry, UnknownTier};
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::protocol::CheckCommand;
 use argonauts_core::settings::{Settings, Span};
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::task::{MemoryProposal, ReportStatus, TaskReport};
-use argonauts_core::workflow::{StandardPhase, Step, StepKind, StepRef, Workflow};
-use argonauts_core::{RepoId, RunId, TaskId, unborn};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::task::{MemoryProposal, ReportStatus, TaskReport};
+use argonauts_core::workflows::workflow::{StandardPhase, Step, StepKind, StepRef, Workflow};
+use argonauts_core::{RepoId, RunId, TaskId, runs::unborn};
 use argonauts_crew::approvals;
+use argonauts_crew::engine::error::EngineError;
 use argonauts_crew::engine::host::Host;
-use argonauts_crew::error::EngineError;
 use argonauts_crew::merge::in_the_way::{MERGE_LATER, MOVE_ASIDE, TRY_AGAIN};
 use argonauts_crew::merge::step::merge_step;
 use argonauts_crew::merge::{branch, final_check};
 use argonauts_crew::run_review;
 use argonauts_crew::state::RunState;
 use argonauts_crew::workflow::{Flow, StepAt, StepCall, StepDone};
-use argonauts_testkit::deadline;
-use argonauts_testkit::repo::TempRepo;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
-use argonauts_testkit::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
+use argonauts_testkit::home::repo::TempRepo;
+use argonauts_testkit::pty::deadline;
 
 use crate::support::shared_in;
 

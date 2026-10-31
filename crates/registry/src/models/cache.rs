@@ -5,8 +5,8 @@ use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
-use argonauts_core::registry::ModelEntry;
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::models::registry::ModelEntry;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 

@@ -8,8 +8,8 @@
 
 use std::time::Duration;
 
-use crate::cell::{ToolCall, ToolItem, ToolState};
-use crate::format;
+use crate::base::format;
+use crate::cells::cell::{ToolCall, ToolItem, ToolState};
 
 /// The row a failed agent ends with: `✘`, its name, how long it ran, and why it failed, with
 /// the hint to its raw error when there is one.
@@ -37,10 +37,10 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::cell::HistoryCell;
-    use crate::render::{Clock, RenderCtx};
-    use crate::text::plain_text;
-    use crate::theme::{Glyphs, Role, Theme};
+    use crate::base::draw::render::{Clock, RenderCtx};
+    use crate::base::text::plain_text;
+    use crate::base::theme::{Glyphs, Role, Theme};
+    use crate::cells::cell::HistoryCell;
 
     /// Codex turning down the answer format reads as one plain line under a cross.
     #[test]

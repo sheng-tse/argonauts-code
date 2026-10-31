@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use argonauts_core::session::PROVIDER_KEY_ENV_VARS;
+use argonauts_core::agents::session::PROVIDER_KEY_ENV_VARS;
 
 use super::wrappers::{base_name, follow};
 

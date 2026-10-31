@@ -1,7 +1,7 @@
 //! What a terminal paints for a cell: its colours resolved through the terminal's palette,
 //! inverse and faint text as drawn, and the block glyphs Ghostty draws as flat fills.
 
-use argonauts_core::logos::LogoMark;
+use argonauts_core::look::logos::LogoMark;
 
 use crate::screen::{Cell, Colour, PLACEHOLDER, Placeholder, Rgb};
 

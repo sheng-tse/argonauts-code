@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use argonauts_core::cli_sessions::{CliCall, CliPatch};
+use argonauts_core::agents::cli_sessions::{CliCall, CliPatch};
 use serde_json::{Value, json};
 
 /// The names Codex has given its shell tool.

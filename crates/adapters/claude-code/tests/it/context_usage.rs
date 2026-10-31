@@ -8,8 +8,8 @@
 
 use argonauts_adapter_claude_code::ClaudeCodeAdapter;
 use argonauts_core::AgentEvent;
-use argonauts_core::adapter::Adapter;
-use argonauts_core::events::context::{ContextDetail, ContextKind, ContextUsage};
+use argonauts_core::agents::adapter::Adapter;
+use argonauts_core::runs::events::context::{ContextDetail, ContextKind, ContextUsage};
 use serde_json::{Value, json};
 
 const FULL: (&str, &str) = (

@@ -7,7 +7,7 @@
 use std::f64::consts::TAU;
 
 use super::Weather;
-use crate::world::geo::Plate;
+use crate::base::draw::geo::Plate;
 use crate::world::map::fields::{Ground, HEIGHT, WIDTH};
 use crate::world::map::land::Polar;
 use crate::world::map::nature::EQUATOR_GAP;

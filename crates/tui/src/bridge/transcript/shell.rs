@@ -2,8 +2,8 @@
 
 use argonauts_core::app::ShellEvent;
 
-use crate::cell::{Cell, ShellEnd, ShellRun};
-use crate::history::CellId;
+use crate::cells::cell::history::CellId;
+use crate::cells::cell::{Cell, ShellEnd, ShellRun};
 
 use super::Cx;
 

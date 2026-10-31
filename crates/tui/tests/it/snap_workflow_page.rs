@@ -2,11 +2,11 @@
 //! one that is open, and the check under them.
 
 use crate::common;
-use argonauts_core::workflow_page::{PageCheck, PageField, PageGroup, WorkflowPage};
-use argonauts_tui::stability::{assert_frames, buffer_text};
-use argonauts_tui::state::AppState;
-use argonauts_tui::views::workflow_page::WorkflowPageView;
-use argonauts_tui::views::{View, ViewCtx};
+use argonauts_core::app::workflow_page::{PageCheck, PageField, PageGroup, WorkflowPage};
+use argonauts_tui::base::stability::{assert_frames, buffer_text};
+use argonauts_tui::frame::state::AppState;
+use argonauts_tui::frame::view::{View, ViewCtx};
+use argonauts_tui::views::workflow::page::WorkflowPageView;
 use common::{t0, theme};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Terminal;

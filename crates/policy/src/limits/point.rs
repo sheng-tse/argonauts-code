@@ -5,8 +5,8 @@
 //! Irreversible actions and self-approval have no facts here: the judge checks its own
 //! independence from `DecisionPoint.authors`.
 
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::policy::{DecisionPoint, EvidencePacket, HardLimit, Violation};
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::safety::policy::{DecisionPoint, EvidencePacket, HardLimit, Violation};
 use argonauts_core::settings::Settings;
 
 use super::deps::{allowed_at_point, is_lockfile};

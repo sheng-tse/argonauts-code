@@ -9,9 +9,9 @@ use std::process::Command;
 use anyhow::Context as _;
 
 use app_support::*;
-use argonauts_core::events::run::{ResumeCause, RunLifecycle, RunOutcome};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::layout::run_files;
+use argonauts_core::base::layout::run_files;
+use argonauts_core::runs::events::run::{ResumeCause, RunLifecycle, RunOutcome};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_scenarios::WAIT;
 
 fn resumed_by(cause: ResumeCause) -> impl Fn(&RunEvent) -> bool {

@@ -6,12 +6,12 @@
 
 use argonauts_core::AgentEvent;
 use argonauts_core::TaskId;
-use argonauts_core::events::session::{EndReason, stuck_words};
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::session::{EndReason, stuck_words};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use serde_json::Value;
 
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::roles;
 use crate::state::tasks::TaskEntry;
 use crate::task::checks::{self, CheckVerdict};
@@ -271,13 +271,13 @@ fn cut(text: &str, chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::session::{CallCount, Watchdog};
+    use argonauts_core::runs::events::session::{CallCount, Watchdog};
     use serde_json::json;
 
     use super::*;
 
     fn agent(event: AgentEvent) -> RunEvent {
-        crate::testutil::run_event(0, Some("task-001"), None, RunEventKind::Agent(event))
+        crate::testing::run_event(0, Some("task-001"), None, RunEventKind::Agent(event))
     }
 
     fn ran(id: &str, command: &str) -> RunEvent {

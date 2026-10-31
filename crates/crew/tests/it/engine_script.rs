@@ -9,26 +9,28 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use anyhow::Context;
 use serde_json::{Value, json};
 
-use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::names::{RoleName, SessionKey};
+use argonauts_core::runs::engine::{EngineCommand, EngineExit};
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
 };
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunOutcome, WaitReason};
-use argonauts_core::events::session::{CliAgentState, EndReason, SessionEvent, SubagentStatus};
-use argonauts_core::events::task::{ReviewEvent, TaskEvent, TaskState};
-use argonauts_core::events::workflow::{WorkflowEvent, WorkflowReport};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode, RunOutcome, WaitReason};
+use argonauts_core::runs::events::session::{
+    CliAgentState, EndReason, SessionEvent, SubagentStatus,
+};
+use argonauts_core::runs::events::task::{ReviewEvent, TaskEvent, TaskState};
+use argonauts_core::runs::events::workflow::{WorkflowEvent, WorkflowReport};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::crew::{CrewSettings, Orchestrator};
 use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout};
 use argonauts_core::settings::workflows::AdaptWith;
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::judgment::ReviewVerdict;
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::judgment::ReviewVerdict;
 use argonauts_crew::engine::shared::with_git_env;
-use argonauts_testkit::deadline;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::pty::deadline;
 
 use support::{Crew, Outcome, answer};
 
@@ -481,7 +483,7 @@ async fn an_agent_a_script_called_starts_over_and_the_script_takes_its_new_answe
     crew.settings.crew.judge = vec!["claude-code/judge".parse()?];
     let _env = crew.repo.env_guard();
     let run = crew.spawn(RunMode::Crew, REQUEST)?;
-    let sign_offs = |events: &[RunEvent]| -> Vec<argonauts_core::names::SessionKey> {
+    let sign_offs = |events: &[RunEvent]| -> Vec<argonauts_core::base::names::SessionKey> {
         events
             .iter()
             .filter_map(|event| match &event.kind {
@@ -519,7 +521,7 @@ async fn an_agent_a_script_called_starts_over_and_the_script_takes_its_new_answe
             _ => None,
         })
         .expect("a builder ran");
-    let restart = |session: argonauts_core::names::SessionKey| EngineCommand::StopSession {
+    let restart = |session: argonauts_core::base::names::SessionKey| EngineCommand::StopSession {
         session,
         again: true,
     };
@@ -556,7 +558,7 @@ async fn an_agent_a_script_called_starts_over_and_the_script_takes_its_new_answe
             _ => None,
         })
         .collect();
-    use argonauts_core::events::session::EndReason;
+    use argonauts_core::runs::events::session::EndReason;
     assert_eq!(ends, [EndReason::Stopped, EndReason::Completed]);
     Ok(())
 }
@@ -578,7 +580,7 @@ fn forking(
     orchestrator: &str,
     answers: impl Fn(&SessionSpec) -> FakeSession + Send + Sync + 'static,
 ) -> anyhow::Result<(Crew, Arc<FakeRunner>)> {
-    use argonauts_core::events::run::{ForkFrom, StartsFrom};
+    use argonauts_core::runs::events::run::{ForkFrom, StartsFrom};
 
     let (mut crew, _worker) = crew("maker-checker")?;
     let fake = crew
@@ -614,10 +616,13 @@ async fn an_orchestrator_on_the_main_sessions_cli_starts_as_its_fork() -> anyhow
     assert_eq!(plan.workdir, crew.repo.root());
     assert_eq!(
         plan.access,
-        argonauts_core::session_runner::Access::ReadOnly
+        argonauts_core::agents::session_runner::Access::ReadOnly
     );
     let first = plan.prompt.first().context("a prompt")?;
-    assert_eq!(first.text.trim_end(), argonauts_crew::orchestrated::FORKED);
+    assert_eq!(
+        first.text.trim_end(),
+        argonauts_crew::roles::orchestrated::FORKED
+    );
     Ok(())
 }
 
@@ -635,7 +640,7 @@ async fn an_orchestrator_on_another_cli_starts_from_the_brief() -> anyhow::Resul
     assert!(
         plan.prompt
             .iter()
-            .all(|part| part.text.trim_end() != argonauts_crew::orchestrated::FORKED)
+            .all(|part| part.text.trim_end() != argonauts_crew::roles::orchestrated::FORKED)
     );
     Ok(())
 }
@@ -645,7 +650,7 @@ async fn an_orchestrator_on_another_cli_starts_from_the_brief() -> anyhow::Resul
 #[tokio::test]
 async fn a_fork_that_fails_gives_way_to_the_brief() -> anyhow::Result<()> {
     use argonauts_core::ErrorCategory;
-    use argonauts_core::events::session::EndReason;
+    use argonauts_core::runs::events::session::EndReason;
 
     let (crew, orchestrator) = forking("claude-code/fable", |spec| {
         if spec.fork {
@@ -810,7 +815,7 @@ return { done: true }
 /// each task's reviewer does, though the sign-off names no task.
 #[tokio::test]
 async fn the_sign_off_reads_every_tasks_checks() -> anyhow::Result<()> {
-    use argonauts_core::events::session::InputPartKind;
+    use argonauts_core::runs::events::session::InputPartKind;
     use argonauts_core::settings::protocol::CheckCommand;
 
     let (mut crew, _worker) = crew("ship")?;
@@ -965,7 +970,7 @@ fn builds_and_reviews(spec: &SessionSpec) -> FakeSession {
 /// to judge it, so its session may run the checks and nothing else.
 #[tokio::test]
 async fn a_worker_that_reviews_a_task_may_run_only_the_checks() -> anyhow::Result<()> {
-    use argonauts_core::session_runner::SessionShell;
+    use argonauts_core::agents::session_runner::SessionShell;
     use argonauts_core::settings::protocol::CheckCommand;
 
     const CROSS: &str = r#"
@@ -1680,8 +1685,8 @@ async fn without_the_steps_leave_a_worker_keeps_the_cap_your_settings_give_it() 
 /// frame, then its task's words as the workflow's, never as words the orchestrator wrote.
 #[tokio::test]
 async fn a_files_own_steps_reach_their_agents_as_the_workflows_words() -> anyhow::Result<()> {
-    use argonauts_core::events::session::InputPartKind;
-    use argonauts_core::prompt_parts::heading;
+    use argonauts_core::prompts::prompt_parts::heading;
+    use argonauts_core::runs::events::session::InputPartKind;
 
     let (crew, worker) = crew("ship")?;
     write_workflow(&crew, "ship.toml", SHIP)?;
@@ -1703,7 +1708,7 @@ async fn a_files_own_steps_reach_their_agents_as_the_workflows_words() -> anyhow
 /// beside it, and the check is recorded as every goal's is, so the goal panels show it.
 #[tokio::test]
 async fn a_files_goal_is_checked_as_every_goal_is() -> anyhow::Result<()> {
-    use argonauts_core::events::goal::{CheckedBy, GoalChecked, GoalEvent, GoalVerdict};
+    use argonauts_core::runs::events::goal::{CheckedBy, GoalChecked, GoalEvent, GoalVerdict};
     use argonauts_core::settings::goal::CheckWith;
 
     let (mut crew, _) = crew("ship")?;
@@ -1932,7 +1937,7 @@ fn approves() -> FakeSession {
 #[tokio::test]
 async fn a_files_orchestrator_step_on_the_main_sessions_cli_starts_as_its_fork()
 -> anyhow::Result<()> {
-    use argonauts_core::events::run::{ForkFrom, StartsFrom};
+    use argonauts_core::runs::events::run::{ForkFrom, StartsFrom};
 
     let mut crew = Crew::new()?;
     crew.settings.evolution.propose_every = 0;
@@ -1986,7 +1991,10 @@ async fn a_files_orchestrator_step_on_the_main_sessions_cli_starts_as_its_fork()
     assert!(plan.fork, "a copy of the main session");
     assert_eq!(plan.resume.as_deref(), Some("main-session-1"));
     let first = plan.prompt.first().context("a prompt")?;
-    assert_eq!(first.text.trim_end(), argonauts_crew::orchestrated::FORKED);
+    assert_eq!(
+        first.text.trim_end(),
+        argonauts_crew::roles::orchestrated::FORKED
+    );
     Ok(())
 }
 
@@ -2184,7 +2192,10 @@ fn ran_on(events: &[RunEvent], label: &str) -> Vec<String> {
 }
 
 /// The script's last report of the agent under `label`.
-fn reported(events: &[RunEvent], label: &str) -> Option<argonauts_core::events::session::CliAgent> {
+fn reported(
+    events: &[RunEvent],
+    label: &str,
+) -> Option<argonauts_core::runs::events::session::CliAgent> {
     reports(events)
         .last()?
         .workflow
@@ -2436,7 +2447,7 @@ async fn on_autopilot_a_review_only_its_builder_could_take_keeps_the_branch() ->
 #[tokio::test]
 async fn on_autopilot_a_scripts_reviewer_you_chose_from_the_builders_provider_lets_it_merge()
 -> anyhow::Result<()> {
-    use argonauts_core::events::task::PickedBy;
+    use argonauts_core::runs::events::task::PickedBy;
     use argonauts_core::settings::roles::RoleSettings;
 
     for named in [true, false] {
@@ -2561,8 +2572,8 @@ fn build_and_review(tasks: &[(&str, &str)]) -> String {
 #[tokio::test]
 async fn a_local_reviewer_starts_with_no_tools_and_the_change_in_its_prompt() -> anyhow::Result<()>
 {
-    use argonauts_core::events::session::InputPartKind;
-    use argonauts_core::session_runner::Access;
+    use argonauts_core::agents::session_runner::Access;
+    use argonauts_core::runs::events::session::InputPartKind;
 
     let (crew, local) =
         with_a_local_reviewer(build_and_review(&[("small", "Small")]), Some(65_536))?;
@@ -2596,7 +2607,7 @@ async fn a_local_reviewer_starts_with_no_tools_and_the_change_in_its_prompt() ->
 /// and a later small review still runs on the local model.
 #[tokio::test]
 async fn a_change_too_big_for_a_local_window_goes_to_a_reviewer_with_tools() -> anyhow::Result<()> {
-    use argonauts_core::session_runner::Access;
+    use argonauts_core::agents::session_runner::Access;
 
     let script = build_and_review(&[("big", "Big"), ("small", "Small")]);
     let (crew, local) = with_a_local_reviewer(script, Some(8_192))?;
@@ -2769,7 +2780,7 @@ fn builds_on_cap() -> FakeRunner {
 /// into the run before the second's worktree is made, and the second's change leaves it out.
 #[tokio::test]
 async fn a_task_after_another_starts_from_its_merge_and_holds_its_change() -> anyhow::Result<()> {
-    use argonauts_core::events::session::InputPartKind;
+    use argonauts_core::runs::events::session::InputPartKind;
 
     let mut crew = scripted(per_key_after_cap())?;
     crew.services.workers.add(builds_on_cap());
@@ -2781,8 +2792,9 @@ async fn a_task_after_another_starts_from_its_merge_and_holds_its_change() -> an
     let merged: Vec<String> = events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Merge(argonauts_core::events::task::MergeEvent::Merged {
-                task, ..
+            RunEventKind::Merge(argonauts_core::runs::events::task::MergeEvent::Merged {
+                task,
+                ..
             }) => Some(task.to_string()),
             _ => None,
         })
@@ -2791,7 +2803,7 @@ async fn a_task_after_another_starts_from_its_merge_and_holds_its_change() -> an
         .iter()
         .position(|(label, ..)| label == "build:per-key");
     let first_merge = events.iter().position(|event| {
-        matches!(&event.kind, RunEventKind::Merge(argonauts_core::events::task::MergeEvent::Merged { task, .. }) if task.as_str().contains("cap"))
+        matches!(&event.kind, RunEventKind::Merge(argonauts_core::runs::events::task::MergeEvent::Merged { task, .. }) if task.as_str().contains("cap"))
     });
     assert!(built.is_some() && first_merge.is_some(), "{merged:?}");
     let per_key_started = events.iter().position(|event| {

@@ -13,7 +13,6 @@ mod models;
 mod panel;
 pub mod permissions;
 mod table;
-pub mod words;
 
 pub(crate) use panel::draw_editor;
 
@@ -22,22 +21,23 @@ mod picker_pictures;
 #[cfg(test)]
 mod tests;
 
+use argonauts_core::app::model_picker::{MachineMemory, ModelSource};
 use argonauts_core::app::{MissingCli, ModelChoice, SettingRow, UiCommand, ViewData, ViewRequest};
-use argonauts_core::model_picker::{MachineMemory, ModelSource};
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
 use argonauts_core::settings::ui::UiSettings;
 use serde_json::Value;
 use time::{OffsetDateTime, UtcOffset};
 
+use crate::base::theme::{ColorEnv, Theme};
 use crate::bottom::{Picker, PickerEvent};
 use crate::bridge::Cx;
 use crate::bridge::settings::theme_for;
-use crate::cell::{ResultLine, Tone, UserMessage};
-use crate::theme::{ColorEnv, Theme};
+use crate::cells::cell::{ResultLine, Tone, UserMessage};
 
+use crate::bottom::picker::flow::{Asked, Kept, Step};
 use all_settings::AllSettingsView;
 use approvals::ApprovalsView;
-use flow::{Asked, Kept, PALETTE_KEYS, Step};
+use flow::PALETTE_KEYS;
 
 /// Routes a settings answer to the picker that asked for it (by `command`, `section`, or
 /// `role`), or opens `/config` or `/approvals`. An open view that asked gets its answer
@@ -69,7 +69,7 @@ pub fn open_for(data: &ViewData, cx: &mut Cx<'_>) {
             memory,
         } => {
             let now = OffsetDateTime::now_utc();
-            let note = words::freshness(*refreshed, *refreshing, now);
+            let note = super::super::base::text::words::freshness(*refreshed, *refreshing, now);
             let role = role.filter(|role| *role != RoleName::Main);
             let told = Told {
                 sources,
@@ -116,7 +116,8 @@ fn settings_answer(
         (Some(command), _) => match cx.model.bottom.picker.as_mut() {
             // The same command's rows again, such as after a change: fresh rows, one echo.
             Some(picker)
-                if picker.flow.command == command && picker.flow.stage == flow::Stage::Keys =>
+                if picker.flow.command == command
+                    && picker.flow.stage == crate::bottom::picker::flow::Stage::Keys =>
             {
                 picker.flow.not_installed = not_installed.to_vec();
                 flow::fill_settings(picker, rows.to_vec());
@@ -193,13 +194,9 @@ fn models_answer(
         flow::show_freshness(picker, freshness);
         return;
     }
-    if cx
-        .model
-        .bottom
-        .picker
-        .as_ref()
-        .is_some_and(|picker| picker.flow.waiting.is_some() || models::on_roles(&picker.flow))
-    {
+    if cx.model.bottom.picker.as_ref().is_some_and(|picker| {
+        picker.flow.waiting.is_some() || crate::bottom::picker::flow::on_roles(&picker.flow)
+    }) {
         // The open picker waits for another role's models, or went back to the roles from
         // this one's: either way this one's picker was left.
         return;
@@ -228,9 +225,9 @@ fn models_update(
         return;
     };
     let showing = match &picker.flow.stage {
-        flow::Stage::Models { role }
-        | flow::Stage::ModelsOf { role, .. }
-        | flow::Stage::OtherModel { role, .. } => Some(*role),
+        crate::bottom::picker::flow::Stage::Models { role }
+        | crate::bottom::picker::flow::Stage::ModelsOf { role, .. }
+        | crate::bottom::picker::flow::Stage::OtherModel { role, .. } => Some(*role),
         _ => None,
     };
     if showing != Some(role) {
@@ -339,7 +336,7 @@ fn leave_kept_line(picker: &Picker, kept: Kept, cx: &mut Cx<'_>) {
         None => ResultLine::new(Tone::Normal, kept.words),
     };
     let reply = line.reply();
-    let line: Box<dyn crate::cell::HistoryCell> = Box::new(line);
+    let line: Box<dyn crate::cells::cell::HistoryCell> = Box::new(line);
     history.push(line);
     cx.out.replies.push(reply);
 }
@@ -357,7 +354,7 @@ fn ui_with(ui: &UiSettings, key: &str, value: &str) -> Option<UiSettings> {
 fn toml_value(text: &str) -> Option<Value> {
     let text = text.trim();
     if text.starts_with('"') || text.starts_with('\'') {
-        return Some(Value::String(crate::format::setting_value(text)));
+        return Some(Value::String(crate::base::format::setting_value(text)));
     }
     match text {
         "true" => Some(Value::Bool(true)),

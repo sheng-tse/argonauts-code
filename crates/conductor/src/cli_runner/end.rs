@@ -1,8 +1,8 @@
 //! How a session ended. The adapter's error mapping and the meter decide; the limits service
 //! turns the reason into an action.
 
-use argonauts_core::driver::DriverStop;
-use argonauts_core::events::session::EndReason;
+use argonauts_core::agents::driver::DriverStop;
+use argonauts_core::runs::events::session::EndReason;
 use argonauts_core::{ErrorCategory, LimitDimension};
 use time::OffsetDateTime;
 
@@ -176,7 +176,7 @@ fn exit_message(facts: &EndFacts) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::session::Watchdog;
+    use argonauts_core::runs::events::session::Watchdog;
 
     fn error(category: ErrorCategory, message: &str) -> SeenError {
         SeenError {

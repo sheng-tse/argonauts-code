@@ -4,18 +4,18 @@
 use std::time::Instant;
 
 use argonauts_core::app::{AppEvent, AppMode, CommandReply};
-use argonauts_core::names::TurnId;
+use argonauts_core::base::names::TurnId;
 use argonauts_core::settings::SettingScope;
 use ratatui::text::Line;
 
+use super::super::testing::pictures::picture_check::assert_rows_match;
 use super::Bridge;
-use super::transcript::picture_check::assert_rows_match;
 use crate::UiOptions;
 use crate::app::UiAction;
-use crate::model::ViewModel;
-use crate::render::{Clock, RenderCtx};
-use crate::text::plain_text;
-use crate::theme::{Glyphs, Theme};
+use crate::app::model::ViewModel;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::text::plain_text;
+use crate::base::theme::{Glyphs, Theme};
 
 const WIDTH: u16 = 120;
 const PICTURE: (&str, &str) = (

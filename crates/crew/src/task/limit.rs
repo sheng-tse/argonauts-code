@@ -5,23 +5,23 @@
 //! limit is never a failure and uses no retry.
 
 use argonauts_core::TaskId;
-use argonauts_core::events::approval::{
-    AnswerAction, ApprovalKind, ApprovalPacket, FreeText, LimitPacket,
-};
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::{EndReason, SessionEnd};
-use argonauts_core::events::task::{TaskEvent, TaskLimit, TaskSpec, TaskState};
-use argonauts_core::events::{RunEventKind, SpendEvent};
-use argonauts_core::meter::{
+use argonauts_core::base::names::RoleName;
+use argonauts_core::models::meter::{
     LimitDimension, MeterAction, MeterLimit, SpendStatus, WorkLimits, WorkUsed,
 };
-use argonauts_core::names::RoleName;
-use argonauts_core::policy::{EvidenceFacts, SpendFacts};
+use argonauts_core::runs::events::approval::{
+    AnswerAction, ApprovalKind, ApprovalPacket, FreeText, LimitPacket,
+};
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::{EndReason, SessionEnd};
+use argonauts_core::runs::events::task::{TaskEvent, TaskLimit, TaskSpec, TaskState};
+use argonauts_core::runs::events::{RunEventKind, SpendEvent};
+use argonauts_core::safety::policy::{EvidenceFacts, SpendFacts};
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit, OnHit};
 
 use crate::approvals::ApprovalRequest;
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::state::RunState;
 use crate::state::tasks::TaskEntry;
 use crate::task::machine::Trigger;
@@ -191,7 +191,7 @@ fn fallback(host: &Host, task: &TaskId, by: Party) -> EngineResult<bool> {
 fn reassign(
     host: &Host,
     task: &TaskId,
-    to: argonauts_core::names::ModelRef,
+    to: argonauts_core::base::names::ModelRef,
     by: Party,
 ) -> EngineResult<()> {
     let record = record_of(host, task)?;
@@ -321,10 +321,10 @@ fn status(limit: &TaskLimit, end: Option<&SessionEnd>, dimension: LimitDimension
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::agent_status::RunSpend;
+    use argonauts_core::runs::events::agent_status::RunSpend;
 
     use super::*;
-    use crate::testutil::task_spec;
+    use crate::testing::task_spec;
 
     fn usd(amount: f64) -> LimitAmount {
         LimitAmount {

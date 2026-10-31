@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::{check, is_mod_name};
-use crate::paths::{create_private_dir_all, write_private_file};
+use crate::base::paths::{create_private_dir_all, write_private_file};
 
 /// `<mods_dir>/<name>.toml`, the file of the mod `name`.
 pub fn path_of(mods_dir: &Path, name: &str) -> PathBuf {

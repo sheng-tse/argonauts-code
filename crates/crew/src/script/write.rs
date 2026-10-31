@@ -9,24 +9,24 @@
 
 use std::collections::BTreeSet;
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::session::{EndReason, InputPartKind};
-use argonauts_core::events::workflow::{RunNote, WorkflowEvent};
-use argonauts_core::names::RoleName;
-use argonauts_core::required::{brief, check};
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::session::{EndReason, InputPartKind};
+use argonauts_core::runs::events::workflow::{RunNote, WorkflowEvent};
 use argonauts_core::settings::crew::CrewRole;
+use argonauts_core::workflows::required::{brief, check};
 use argonauts_runner::{Required, RunInput, Script, WorkflowFile};
 use serde_json::{Value, json};
 
 use super::plan::Wrote;
 use super::{journal, named};
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Fallbacks, Host, SessionPlan};
-use crate::error::{EngineError, EngineResult};
 use crate::roles;
 use crate::task::support::part;
 use crate::workflow::StepCall;
-use crate::workflow_size;
+use crate::workflow::workflow_size;
 
 pub(crate) const WRITE_SCRIPT: &str = argonauts_core::template!("prompts/workflow/write-script.md");
 
@@ -76,7 +76,7 @@ pub(super) async fn script_for(
     let yours = brief::for_writer(&super::required::shared(required));
     let mut wrong: Option<Unusable> = None;
     // A copy of the main session that ended without its script gives way to the brief alone.
-    let mut fork = crate::orchestrated::fork_for(host, &orchestrator);
+    let mut fork = crate::roles::orchestrated::fork_for(host, &orchestrator);
     for _ in 0..TRIES {
         let mut parts = vec![
             part(InputPartKind::Prompt, "orchestrator", WRITE_SCRIPT, None),
@@ -346,7 +346,8 @@ fn worked(required: &Required, ran: &BTreeSet<(String, CrewRole)>) -> Result<(),
         .iter()
         .filter(|step| {
             !ran.iter().any(|(phase, role)| {
-                *role == step.role && argonauts_core::required::same_name(phase, &step.name)
+                *role == step.role
+                    && argonauts_core::workflows::required::same_name(phase, &step.name)
             })
         })
         .map(|step| step.name.clone())

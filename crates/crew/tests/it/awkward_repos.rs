@@ -7,27 +7,27 @@ use crate::support;
 use std::time::Duration;
 
 use anyhow::Context;
-use argonauts_core::api::ApprovalAnswer;
-use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::SessionRunner;
+use argonauts_core::base::log::COPIES_REMOVED;
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::api::ApprovalAnswer;
+use argonauts_core::runs::engine::{EngineCommand, EngineExit};
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
 };
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome};
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::log::COPIES_REMOVED;
-use argonauts_core::names::SessionKey;
-use argonauts_core::session_runner::SessionRunner;
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::task::MergeEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::Span;
 use argonauts_core::settings::delivery::DeliveryWrite;
 use argonauts_crew::engine::shared::with_git_env;
 use argonauts_crew::merge::{detached, your_folder};
 use serde_json::json;
 
-use argonauts_core::steps::StepName;
-use argonauts_testkit::deadline;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::pty::deadline;
 
 use support::{Crew, Outcome, names, recommended, smallest_answer, wrote};
 
@@ -443,9 +443,9 @@ async fn a_main_that_moved_while_the_run_worked() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
     let root = crew.repo.root().to_path_buf();
     let envs = crew.repo.envs();
-    let fake = argonauts_testkit::runner::FakeRunner::cli("claude-code/opus", "anthropic")
+    let fake = argonauts_testkit::engine::runner::FakeRunner::cli("claude-code/opus", "anthropic")
         .respond_with(move |spec| {
-            if spec.step == Some(argonauts_core::steps::StepName::Build) {
+            if spec.step == Some(argonauts_core::workflows::steps::StepName::Build) {
                 // Someone commits on main while the task works.
                 std::fs::write(root.join("changelog.md"), "moved\n").expect("main moves");
                 for args in [
@@ -510,7 +510,7 @@ async fn a_detached_head_stays_where_it_is() -> anyhow::Result<()> {
 async fn a_folder_with_no_git() -> anyhow::Result<()> {
     let crew = crew()?;
     let root = crew.repo.root().to_path_buf();
-    let hidden = argonauts_core::hidden_git::dir(crew.repo_context()?.state_dir());
+    let hidden = argonauts_core::runs::hidden_git::dir(crew.repo_context()?.state_dir());
     std::fs::create_dir_all(hidden.parent().context("a state folder")?)?;
     std::fs::rename(root.join(".git"), &hidden)?;
     let outcome = run(&crew).await?;
@@ -608,7 +608,7 @@ fn crew_without_git(your_edit: &'static str) -> anyhow::Result<(Crew, std::path:
     });
     crew.enlist(worker);
     crew.answering_worker("codex/gpt-x", "openai");
-    let hidden = argonauts_core::hidden_git::dir(crew.repo_context()?.state_dir());
+    let hidden = argonauts_core::runs::hidden_git::dir(crew.repo_context()?.state_dir());
     std::fs::create_dir_all(hidden.parent().context("a state folder")?)?;
     std::fs::rename(root.join(".git"), &hidden)?;
     Ok((crew, root))
@@ -748,7 +748,7 @@ async fn without_git_you_pick_the_version_of_a_file_both_changed() -> anyhow::Re
             "{pick}"
         );
         // Your version is a commit of the history, whichever went in.
-        let hidden = argonauts_core::hidden_git::dir(crew.repo_context()?.state_dir());
+        let hidden = argonauts_core::runs::hidden_git::dir(crew.repo_context()?.state_dir());
         let log = std::process::Command::new("git")
             .arg("--git-dir")
             .arg(&hidden)

@@ -1,20 +1,20 @@
 use std::time::{Duration, Instant};
 
-use argonauts_core::model_picker::{EffortLine, EffortSlider, UltracodeToggle};
+use argonauts_core::app::model_picker::{EffortLine, EffortSlider, UltracodeToggle};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::{Picker, PickerRow, RowPart, VISIBLE_ROWS};
-use crate::kit::logo::{LOGO_BEFORE, ModelLabel, NoPicture, logo_before};
-use crate::kit::{Kit, bars, merge};
-use crate::render::{Clock, RenderCtx};
-use crate::text::marks::decorative;
-use crate::text::{
+use crate::base::draw::layout::cut;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::kit::logo::{LOGO_BEFORE, ModelLabel, NoPicture, logo_before};
+use crate::base::kit::{Kit, bars, merge};
+use crate::base::text::marks::decorative;
+use crate::base::text::{
     At, KEEP, Part, fit_lines, fit_parts, sanitize_line, str_width, wrap_spans, wrap_text,
 };
-use crate::theme::{Role, Theme};
-use crate::views::layout::cut;
-use crate::views::states;
+use crate::base::theme::{Role, Theme};
+use crate::frame::view::states;
 
 /// Labels past this are cut, so the descriptions keep their room.
 const MAX_LABEL: usize = 36;
@@ -561,7 +561,7 @@ impl Picker {
                 }
                 None => description,
             };
-            let description = crate::text::cut(&description, room, At::Word);
+            let description = crate::base::text::cut(&description, room, At::Word);
             drawn += str_width(&description);
             used = description_at + drawn;
             spans.extend(with_danger(description, row.danger.as_deref(), dim, theme));
@@ -1104,7 +1104,7 @@ pub struct PickerCell {
     pub meter: Option<f64>,
     /// The text names a model on a row showing this logo, so it drops the model's maker's word
     /// where the logo draws as a picture.
-    pub beside: Option<argonauts_core::logos::Logo>,
+    pub beside: Option<argonauts_core::look::logos::Logo>,
 }
 
 impl PickerCell {
@@ -1133,7 +1133,7 @@ impl PickerCell {
     }
 
     /// A model's whole name on a row showing `logo`.
-    pub fn model_beside(text: impl Into<String>, logo: argonauts_core::logos::Logo) -> Self {
+    pub fn model_beside(text: impl Into<String>, logo: argonauts_core::look::logos::Logo) -> Self {
         Self {
             text: text.into(),
             beside: Some(logo),

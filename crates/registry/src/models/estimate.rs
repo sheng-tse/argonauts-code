@@ -1,10 +1,10 @@
 //! What a session would cost: dollars from prices, a share of your plan's usage, or free.
 
 use argonauts_core::TokenPrice;
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::builtin_price;
-use argonauts_core::limits::CostEstimate;
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::{CostUnit, ModelAccess, ModelEntry};
+use argonauts_core::models::limits::CostEstimate;
+use argonauts_core::models::registry::{CostUnit, ModelAccess, ModelEntry};
 
 /// `Usd` from the entry's prices or the built-in price table, `Free` for a local model. A
 /// subscription spends plan usage, but its share needs the median of similar past tasks, which
@@ -47,7 +47,7 @@ fn price(entry: &ModelEntry, worker: &ModelRef) -> Option<TokenPrice> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::registry::{CostModel, RegistryKind};
+    use argonauts_core::models::registry::{CostModel, RegistryKind};
 
     use super::*;
     use crate::models::builtin::cost;

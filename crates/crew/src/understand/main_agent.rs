@@ -6,18 +6,18 @@
 //! the crew's recommended answer for those, as an assumption that says so.
 
 use argonauts_core::NoteLevel;
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::events::goal::{
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::runs::events::goal::{
     Assumption, Decider, GoalFile, GoalQuestion, MAIN_AGENT_ANSWER,
 };
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::steps::understand::{
+use argonauts_core::workflows::steps::understand::{
     AnswerQuestions, AnswerQuestionsInput, MainAgentAnswer, OpenQuestion,
 };
 
 use crate::approvals;
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::prompts;
 use crate::workflow::StepCall;
 
@@ -76,7 +76,7 @@ pub async fn answer_in_slot(
 ) -> EngineResult<MainAgentAnswers> {
     let autopilot = approvals::autopilot::applies_now(host, ApprovalKind::Understand);
     let picked =
-        host.read(|state| crate::tie_breaker::answering(state, host.settings(), autopilot));
+        host.read(|state| crate::roles::tie_breaker::answering(state, host.settings(), autopilot));
     let input = AnswerQuestionsInput {
         request: host.read(round::request)?,
         goal: file::render(&as_settled(drafted)),
@@ -95,7 +95,7 @@ pub async fn answer_in_slot(
     let mut main_agent = picked.clone();
     let mut answered = host.ask::<AnswerQuestions>(ask(&main_agent)).await;
     let the_main_agent =
-        host.read(|state| crate::tie_breaker::answering(state, host.settings(), false));
+        host.read(|state| crate::roles::tie_breaker::answering(state, host.settings(), false));
     if let Err(err) = &answered
         && !matches!(err, EngineError::Interrupted)
         && the_main_agent != picked
@@ -298,8 +298,8 @@ pub fn answered_line(picked: Option<&ModelRef>, answered: usize, yours: usize) -
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::goal::ChoiceOption;
-    use argonauts_core::steps::understand::DiffTag;
+    use argonauts_core::runs::events::goal::ChoiceOption;
+    use argonauts_core::workflows::steps::understand::DiffTag;
 
     use super::*;
 

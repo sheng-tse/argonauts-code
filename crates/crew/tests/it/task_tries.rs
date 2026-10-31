@@ -8,16 +8,16 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use argonauts_core::ErrorCategory;
-use argonauts_core::events::run::RunMode;
-use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::events::task::{TaskEvent, TryCause};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::LimitsService;
-use argonauts_core::session_runner::{Access, SessionSpec};
+use argonauts_core::agents::session_runner::{Access, SessionSpec};
+use argonauts_core::models::limits::LimitsService;
+use argonauts_core::runs::events::run::RunMode;
+use argonauts_core::runs::events::session::{EndReason, SessionEvent};
+use argonauts_core::runs::events::task::{TaskEvent, TryCause};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::Settings;
 use argonauts_crew::engine::shared::with_git_env;
 use argonauts_crew::task::prompt::message_part;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
 
 use support::Crew;
 
@@ -72,7 +72,7 @@ fn conductor_limits(crew: &Crew, settings: &Arc<Settings>) -> Arc<dyn LimitsServ
         services.track_records.clone(),
     ));
     Arc::new(
-        argonauts_conductor::recovery::Limits::new(
+        argonauts_conductor::limits::recovery::Limits::new(
             settings.clone(),
             services.plan_usage.clone(),
             services.health.clone(),

@@ -11,11 +11,11 @@ use std::io::IsTerminal as _;
 use std::path::PathBuf;
 
 use argonauts_core::Paths;
-use argonauts_core::log::{COULDNT_UPDATE_TO, NoteLevel};
+use argonauts_core::app::status_tab::{VERSION_ROW_NAMES, VERSION_ROW_STATES};
+use argonauts_core::base::log::{COULDNT_UPDATE_TO, NoteLevel};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::updates::UpdateSettings;
-use argonauts_core::status_tab::{VERSION_ROW_NAMES, VERSION_ROW_STATES};
-use argonauts_tui::format::WallClock;
+use argonauts_tui::base::format::WallClock;
 use semver::Version;
 use time::{Duration, OffsetDateTime};
 
@@ -47,7 +47,7 @@ fn updated_to(file: &std::path::Path, running: &Version) -> Option<Version> {
         .and_then(|text| Version::parse(text.trim()).ok());
     if before.as_ref() != Some(running) {
         if let Some(dir) = file.parent() {
-            let _ = argonauts_core::paths::create_private_dir_all(dir);
+            let _ = argonauts_core::base::paths::create_private_dir_all(dir);
         }
         if let Err(err) = std::fs::write(file, format!("{running}\n")) {
             tracing::debug!("couldn't keep the version that started: {err}");
@@ -79,7 +79,7 @@ pub(crate) fn at_start(paths: &Paths, settings: &Settings) -> Vec<(NoteLevel, St
         let updates = settings.updates.clone();
         let paths = paths.clone();
         tokio::spawn(async move {
-            let run_going = || !crate::live_registry::live_run_hosts(&paths).is_empty();
+            let run_going = || !crate::host::live_registry::live_run_hosts(&paths).is_empty();
             look(&here, &updates, &run_going, now).await;
         });
     }
@@ -95,7 +95,7 @@ fn may_look(
     let set = |name: &str| var(name).is_some_and(|value| !value.is_empty() && value != "0");
     let in_ci =
         var("CI").is_some_and(|value| !value.is_empty() && value != "false" && value != "0");
-    let in_agent = var(crate::env::SESSION_ENV).is_some();
+    let in_agent = var(crate::startup::env::SESSION_ENV).is_some();
     updates.check && terminal && !in_ci && !in_agent && !set(DISABLE_ENV)
 }
 
@@ -372,7 +372,8 @@ mod tests {
         assert!(!may_look(&on, &ci, true), "in CI");
         let ci_off = |name: &str| (name == "CI").then(|| "false".to_owned());
         assert!(may_look(&on, &ci_off, true));
-        let agent = |name: &str| (name == crate::env::SESSION_ENV).then(|| "s-1".to_owned());
+        let agent =
+            |name: &str| (name == crate::startup::env::SESSION_ENV).then(|| "s-1".to_owned());
         assert!(!may_look(&on, &agent, true), "inside an agent's session");
         let off = |name: &str| (name == DISABLE_ENV).then(|| "1".to_owned());
         assert!(!may_look(&on, &off, true));

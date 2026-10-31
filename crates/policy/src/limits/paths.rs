@@ -6,8 +6,8 @@ use std::path::Path;
 
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
-use argonauts_core::events::task::TaskSpec;
-use argonauts_core::policy::{HardLimit, Violation};
+use argonauts_core::runs::events::task::TaskSpec;
+use argonauts_core::safety::policy::{HardLimit, Violation};
 use argonauts_core::settings::Settings;
 
 use super::diff::{FileChange, file_name};

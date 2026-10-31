@@ -1,11 +1,11 @@
 //! A settings file serde or the TOML parser refused, said in plain words: what the key takes,
 //! what the file has instead, and for a shape that's easy to get wrong, the shape to write.
 
-use argonauts_core::sanitize::escape_controls;
+use argonauts_core::safety::sanitize::escape_controls;
 use argonauts_core::settings::protocol::CheckCommand;
 use toml::{Table, Value};
 
-use crate::catalog::setting_meta;
+use crate::settings::catalog::setting_meta;
 
 /// The keys that take a list of named commands, each written as a `[[key]]` table.
 const COMMAND_LISTS: [&str; 3] = ["checks.run", "checks.full_suite", "checks.setup"];

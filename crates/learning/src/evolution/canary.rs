@@ -8,11 +8,11 @@ use argonauts_core::settings::Settings;
 use super::{
     Action, CandidateState, Evolution, Tripwire, learned_workflow_branch, state, tripwires,
 };
-use crate::error::{LearningError, Result};
 use crate::learned_workflows::{self, LoadedLearnedWorkflow};
 use crate::outcomes::{self, LogLine};
-use crate::types::{LearnedWorkflowRef, RunRecord};
-use crate::{git, skills};
+use crate::store::error::{LearningError, Result};
+use crate::store::types::{LearnedWorkflowRef, RunRecord};
+use crate::{skills, store::git};
 
 impl Evolution {
     /// Counts a canary run, rolls back on a tripwire, and promotes after `canary_runs`.

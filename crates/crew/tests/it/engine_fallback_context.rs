@@ -16,36 +16,38 @@ use time::macros::datetime;
 use tokio::sync::mpsc;
 
 use argonauts_conductor::fallback::Planner;
-use argonauts_core::engine::{EngineCommand, EventSink, RepoContext};
-use argonauts_core::events::agent_status::FallbackEvent;
-use argonauts_core::events::goal::{GoalEvent, GoalFile, GoalSource};
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunStarted};
-use argonauts_core::events::session::{EndReason, InputPart, InputPartKind, SessionEvent};
-use argonauts_core::events::task::{TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState, TryCause};
-use argonauts_core::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::journal::{JournalError, read_all};
-use argonauts_core::layout::run_files;
-use argonauts_core::limits::{
+use argonauts_core::agents::session_runner::{Access, RunnerEvent};
+use argonauts_core::base::layout::run_files;
+use argonauts_core::base::names::{AgentId, ModelRef, SessionKey, WorkflowId};
+use argonauts_core::models::limits::{
     Candidate, CandidateQuery, FallbackNote, FallbackPlanner, PlanUsageBoard, PlanUsageReading,
     PlanUsageSource, PlanUsageStatus, RecoveryAction, TranscriptPaths, WorkSoFar,
 };
-use argonauts_core::names::{AgentId, ModelRef, SessionKey, WorkflowId};
-use argonauts_core::session_runner::{Access, RunnerEvent};
+use argonauts_core::runs::engine::{EngineCommand, EventSink, RepoContext};
+use argonauts_core::runs::events::agent_status::FallbackEvent;
+use argonauts_core::runs::events::goal::{GoalEvent, GoalFile, GoalSource};
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode, RunStarted};
+use argonauts_core::runs::events::session::{EndReason, InputPart, InputPartKind, SessionEvent};
+use argonauts_core::runs::events::task::{
+    TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState, TryCause,
+};
+use argonauts_core::runs::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::journal::{JournalError, read_all};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::fallback::{AgentFallbacks, FallbackContext, FallbackTable, Pick};
-use argonauts_core::steps::StepName;
-use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::workflow::{StandardPhase, StepKind, StepRef, Workflow};
 use argonauts_core::{AgentEvent, DiffStat, NoteLevel, RepoId, RunId, TaskId};
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::fallback::{self, rules};
 use argonauts_crew::state::RunState;
 use argonauts_crew::task::{pipeline, prompt};
-use argonauts_testkit::deadline;
-use argonauts_testkit::repo::TempRepo;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
-use argonauts_testkit::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
+use argonauts_testkit::home::repo::TempRepo;
+use argonauts_testkit::pty::deadline;
 
 use crate::support::shared_in;
 

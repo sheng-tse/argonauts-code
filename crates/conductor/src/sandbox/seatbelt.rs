@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use argonauts_core::CommandSpec;
-use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
+use argonauts_core::agents::session_runner::{SandboxMode, SandboxProfile};
 
 use super::profile::{PathRule, RuleKind, check_profile, ordered_rules};
 use super::{SandboxError, SandboxWrap, describe_network};
@@ -316,7 +316,7 @@ mod tests {
     use std::path::PathBuf;
 
     use argonauts_core::SpecFile;
-    use argonauts_core::session_runner::Access;
+    use argonauts_core::agents::session_runner::Access;
 
     use super::super::profile::{ProfileInput, launch_paths, session_profile};
     use super::*;

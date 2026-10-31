@@ -7,12 +7,12 @@
 
 use std::time::Duration;
 
-use argonauts_core::events::session::{CliWorkflowRun, SubagentStatus};
+use argonauts_core::runs::events::session::{CliWorkflowRun, SubagentStatus};
 use serde_json::Value;
 
-use crate::cell::{ToolCall, ToolItem, ToolKind, ToolState, WorkflowEnd, WorkflowResult};
-use crate::format;
-use crate::text::sanitize_line;
+use crate::base::format;
+use crate::base::text::sanitize_line;
+use crate::cells::cell::{ToolCall, ToolItem, ToolKind, ToolState, WorkflowEnd, WorkflowResult};
 
 const TOOL: &str = "Workflow";
 
@@ -49,7 +49,7 @@ pub fn row(workflow: &CliWorkflowRun) -> ToolCall {
     {
         call.push(ToolItem::Text {
             text: sanitize_line(summary).into_owned(),
-            tone: crate::cell::Tone::Error,
+            tone: crate::cells::cell::Tone::Error,
         });
     }
     call
@@ -88,7 +88,7 @@ pub fn failed_start(input: &Value, output: Option<&str>) -> ToolCall {
         .unwrap_or("It didn't start");
     call.push(ToolItem::Text {
         text: sanitize_line(why.trim()).into_owned(),
-        tone: crate::cell::Tone::Error,
+        tone: crate::cells::cell::Tone::Error,
     });
     call.finish(false);
     call
@@ -106,7 +106,7 @@ fn name_of(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::session::{CliAgent, CliAgentState, CliPhase};
+    use argonauts_core::runs::events::session::{CliAgent, CliAgentState, CliPhase};
 
     fn agent(index: u32, phase: u32, state: CliAgentState) -> CliAgent {
         CliAgent {

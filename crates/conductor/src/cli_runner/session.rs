@@ -7,13 +7,13 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use argonauts_core::events::failure::after_proxy_refusal;
-use argonauts_core::events::session::{EndReason, LimitEvent, SessionEnd, SessionEvent};
-use argonauts_core::model_memory::Hold;
-use argonauts_core::session_runner::{
+use argonauts_core::agents::session_runner::{
     RunnerError, SandboxMode, SessionControl, SessionHandle, SessionLimits, SessionRunner,
     SessionSpec,
 };
+use argonauts_core::models::model_memory::Hold;
+use argonauts_core::runs::events::failure::after_proxy_refusal;
+use argonauts_core::runs::events::session::{EndReason, LimitEvent, SessionEnd, SessionEvent};
 use argonauts_core::{ErrorCategory, create_private_dir_all};
 use tokio::sync::mpsc;
 
@@ -22,9 +22,9 @@ use super::local_server::LocalModel;
 use super::observe::Observer;
 use super::outbox::{self, Outbox};
 use super::{CliRunner, driven, lines, refuse};
-use crate::rawlog::RawLog;
+use crate::limits::slots::Slots;
 use crate::sandbox::{SelfTest, selftest};
-use crate::slots::Slots;
+use crate::session::rawlog::RawLog;
 
 pub async fn start(
     worker: &CliRunner,

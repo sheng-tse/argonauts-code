@@ -2,7 +2,7 @@ use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use argonauts_testkit::scenario::{
+use argonauts_testkit::fake_clis::scenario::{
     FakeRule, FakeScenario, FakeStep, LogLine, NO_RULE_EXIT, StdinPrompt,
 };
 use argonauts_testkit::{FakeClis, TempRepo};
@@ -209,7 +209,7 @@ fn a_signal_lets_a_fake_go_on_and_an_ended_test_stops_it() {
         "it waits for the signal"
     );
     std::fs::remove_dir_all(&fakes).unwrap();
-    let until = argonauts_testkit::deadline::after(std::time::Duration::from_secs(5));
+    let until = argonauts_testkit::pty::deadline::after(std::time::Duration::from_secs(5));
     let status = loop {
         if let Some(status) = waiting.try_wait().unwrap() {
             break status;

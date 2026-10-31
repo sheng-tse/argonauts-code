@@ -13,8 +13,8 @@ use toml::{Table, Value};
 use toml_edit::{DocumentMut, Item, TableLike};
 
 use crate::SettingsError;
-use crate::resolve::is_safety_key;
-use crate::write::{lock_folder, real_path, resolves_alone, write_replacing};
+use crate::settings::resolve::is_safety_key;
+use crate::settings::write::{lock_folder, real_path, resolves_alone, write_replacing};
 
 /// Tables that moved, with everything in them. Each keeps its parent, so a move is a new key in
 /// the same place.

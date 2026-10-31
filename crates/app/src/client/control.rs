@@ -5,16 +5,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use argonauts_core::api::{ApiError, DiffScope, DiffView, RawView, StatusSummary, SteerAck};
-use argonauts_core::control::{ControlReply, ControlRequest};
-use argonauts_core::events::approval::ApprovalEvent;
-use argonauts_core::events::run::{RunLifecycle, RunOutcome, WaitReason};
-use argonauts_core::events::session::QueuedMessage;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::journal::{RunLock, read_all};
-use argonauts_core::layout::run_files as names;
-use argonauts_core::names::{ApprovalId, MessageId, SessionKey};
-use argonauts_core::policy::DecisionPoint;
+use argonauts_core::base::layout::run_files as names;
+use argonauts_core::base::names::{ApprovalId, MessageId, SessionKey};
+use argonauts_core::runs::api::{ApiError, DiffScope, DiffView, RawView, StatusSummary, SteerAck};
+use argonauts_core::runs::events::approval::ApprovalEvent;
+use argonauts_core::runs::events::run::{RunLifecycle, RunOutcome, WaitReason};
+use argonauts_core::runs::events::session::QueuedMessage;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::journal::{RunLock, read_all};
+use argonauts_core::safety::policy::DecisionPoint;
 use argonauts_core::{RunId, TaskId};
 use tokio::time::Instant;
 
@@ -23,10 +22,11 @@ use super::approvals::approving_settings;
 use super::journal_ends;
 use super::socket::Connection;
 use super::start::{self, WELCOME_TIMEOUT, run_host_error};
-use crate::ancestry::{self, AgentMarkers};
 use crate::commands;
+use crate::control::{ControlReply, ControlRequest};
+use crate::host::run_files;
 use crate::host::{RUN_HOST_EXITING, log_views};
-use crate::run_files;
+use crate::startup::ancestry::{self, AgentMarkers};
 
 /// How often `resume` looks at a woken run's log and lock.
 const WAKE_POLL: Duration = Duration::from_millis(50);
@@ -86,7 +86,7 @@ impl Reply {
         }
     }
 
-    pub(crate) fn take_over(self) -> Result<argonauts_core::api::TakeOverTicket, ApiError> {
+    pub(crate) fn take_over(self) -> Result<argonauts_core::runs::api::TakeOverTicket, ApiError> {
         match self.now()? {
             ControlReply::TakeOver { ticket } => Ok(ticket),
             other => Err(unexpected(other)),

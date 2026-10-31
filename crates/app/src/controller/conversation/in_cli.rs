@@ -7,12 +7,12 @@ use std::sync::{Mutex, PoisonError};
 
 use anyhow::Context as _;
 use argonauts_conductor::cli_runner::request::take_over_request;
-use argonauts_core::app::{AppEvent, ConversationSummary, LineFacts, ReplayTurn};
-use argonauts_core::cli_sessions::{
+use argonauts_core::agents::cli_sessions::{
     self, CliScan, CliSession, CliSessionRef, CliTurn, InItsCli, Speaker,
 };
-use argonauts_core::events::run::Party;
-use argonauts_core::names::{ConversationId, ModelRef, SeatId, SessionKey};
+use argonauts_core::app::{AppEvent, ConversationSummary, LineFacts, ReplayTurn};
+use argonauts_core::base::names::{ConversationId, ModelRef, SeatId, SessionKey};
+use argonauts_core::runs::events::run::Party;
 use argonauts_core::{NoteLevel, RunId};
 use argonauts_registry::ResolvedSettings;
 use time::OffsetDateTime;
@@ -20,8 +20,8 @@ use time::OffsetDateTime;
 use super::{ConversationState, cli, past, settled};
 use crate::FoundSession;
 use crate::controller::{Ctx, Effect};
-use crate::conversation_store::ConversationStore;
-use crate::env::AppEnv;
+use crate::conversation::store::ConversationStore;
+use crate::startup::env::AppEnv;
 
 /// How many of a session's last turns are read for the ones made in its CLI.
 const READ_BACK: usize = 40;
@@ -508,7 +508,7 @@ pub(crate) fn find_any(
         .filter(|adapter| seen.insert(adapter.id()))
         .collect();
     let named = |adapter: &dyn argonauts_core::Adapter| CliSessionRef {
-        agent_id: argonauts_core::names::AgentId(adapter.id().to_owned()),
+        agent_id: argonauts_core::base::names::AgentId(adapter.id().to_owned()),
         id: id.to_owned(),
     };
     let listing: Vec<CliSessionRef> = match env.user_home.clone() {
@@ -534,7 +534,7 @@ pub(crate) fn find_any(
             many[0]
         ),
     }
-    let reopening = argonauts_core::session::SessionRequest::reopening(id, &env.repo_root);
+    let reopening = argonauts_core::agents::session::SessionRequest::reopening(id, &env.repo_root);
     Ok(FoundSession::Unlisted(
         adapters
             .iter()

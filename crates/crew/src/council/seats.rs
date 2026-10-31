@@ -2,9 +2,9 @@
 //! by. A seat is a seat, not a model: the same model may sit two or three times, each seat its
 //! own session sharing nothing with the others.
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::council::{Seat, SeatRole, Seating};
-use argonauts_core::names::{ModelRef, SeatId};
+use argonauts_core::base::names::{ModelRef, SeatId};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::council::{Seat, SeatRole, Seating};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::council::CouncilSeat;
 use argonauts_core::settings::crew::CrewRole;

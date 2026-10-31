@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::app::UiCommand;
 use argonauts_testkit::screen::Grid;
-use argonauts_testkit::{Key, Pty, PtyCommand, Screen, deadline};
+use argonauts_testkit::{Key, Pty, PtyCommand, Screen, pty::deadline};
 use regex::{Regex, RegexBuilder};
 use serde_json::Value;
 use tempfile::TempDir;

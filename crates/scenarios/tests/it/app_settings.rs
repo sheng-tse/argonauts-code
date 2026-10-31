@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use app_support::*;
 use argonauts_core::app::{AppEvent, ChoiceKind, UiCommand, ViewData};
-use argonauts_core::names::ChoiceId;
+use argonauts_core::base::names::ChoiceId;
 use argonauts_core::settings::SettingScope;
 use argonauts_scenarios::{Scenario, WAIT};
 use argonauts_testkit::{Key, Pty};
@@ -200,7 +200,7 @@ fn changed_line(key: &str) -> String {
 /// Each setup sheet the app sent, in order.
 fn setup_sheets(
     scenario: &Scenario,
-) -> anyhow::Result<Vec<argonauts_core::setup_sheet::SetupSheet>> {
+) -> anyhow::Result<Vec<argonauts_core::app::setup_sheet::SetupSheet>> {
     Ok(events(scenario)?
         .into_iter()
         .filter_map(|event| match event {

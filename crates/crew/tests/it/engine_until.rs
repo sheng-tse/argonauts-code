@@ -7,14 +7,14 @@ use crate::support;
 use std::sync::Arc;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::goal::{GoalEvent, GoalStatus};
-use argonauts_core::events::run::RunMode;
-use argonauts_core::events::task::{CheckKind, CheckOutcome};
-use argonauts_core::events::task::{TaskEvent, TaskKind, TaskLimit, TaskSpec};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::goal::{GoalScope, KeptBy};
-use argonauts_core::names::WorkflowId;
-use argonauts_core::workflow::StepRef;
+use argonauts_core::base::names::WorkflowId;
+use argonauts_core::runs::events::goal::{GoalEvent, GoalStatus};
+use argonauts_core::runs::events::run::RunMode;
+use argonauts_core::runs::events::task::{CheckKind, CheckOutcome};
+use argonauts_core::runs::events::task::{TaskEvent, TaskKind, TaskLimit, TaskSpec};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::workflows::goal::{GoalScope, KeptBy};
+use argonauts_core::workflows::workflow::StepRef;
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::goal::report;
 use argonauts_crew::goal::until::{self, Asked, Held};
@@ -204,7 +204,7 @@ async fn a_files_goal_that_is_stuck_changes_approach_once_then_stops() -> anyhow
 /// A file's goal you pause: the round under way is checked, and no other follows.
 #[tokio::test]
 async fn a_files_goal_you_pause_gets_no_further_round() -> anyhow::Result<()> {
-    use argonauts_core::events::goal::GoalAction;
+    use argonauts_core::runs::events::goal::GoalAction;
     use argonauts_crew::goal::pursue;
 
     let mut crew = Crew::new()?;
@@ -403,7 +403,7 @@ async fn a_step_with_no_task_is_checked_and_stops_when_it_never_holds() -> anyho
 /// goal is what its rounds are asked about, and it comes before a file's.
 #[tokio::test]
 async fn the_goal_a_run_was_started_with_goes_round_its_workflow() -> anyhow::Result<()> {
-    use argonauts_core::goal::GoalFrom;
+    use argonauts_core::workflows::goal::GoalFrom;
 
     let mut crew = Crew::new()?;
     let (host, _) = crew_run(&mut crew)?;

@@ -12,13 +12,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, bail};
 use serde_json::{Value, json};
 
-use argonauts_core::api::StatusSummary;
-use argonauts_core::event::AgentEvent;
-use argonauts_core::events::session::{Delivery, InputPartKind, SessionEvent};
-use argonauts_core::events::shared::BlackboardEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{MessageId, SessionKey};
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{MessageId, SessionKey};
+use argonauts_core::runs::api::StatusSummary;
+use argonauts_core::runs::event::AgentEvent;
+use argonauts_core::runs::events::session::{Delivery, InputPartKind, SessionEvent};
+use argonauts_core::runs::events::shared::BlackboardEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_scenarios::{Scenario, WAIT};
 use argonauts_testkit::{Key, LogLine};
 
@@ -53,7 +53,7 @@ fn wait_for_event<T>(
     timeout: Duration,
     found: impl Fn(&RunEvent) -> Option<T>,
 ) -> anyhow::Result<T> {
-    let deadline = argonauts_testkit::deadline::after(timeout);
+    let deadline = argonauts_testkit::pty::deadline::after(timeout);
     loop {
         if let Ok(events) = scenario.latest_run_events()
             && let Some(hit) = events.iter().find_map(&found)
@@ -280,7 +280,8 @@ fn crew_status_tool_mid_session() -> anyhow::Result<()> {
     assert!(injected.contains("task-001"), "{injected}");
 
     // Mid-session, the session's status file and its MCP tool both answer.
-    let run = argonauts_testkit::journal::latest_run(scenario.repo.home()).context("the run")?;
+    let run =
+        argonauts_testkit::home::journal::latest_run(scenario.repo.home()).context("the run")?;
     let dir = run.join("sessions").join(worker.as_str());
     let summary: StatusSummary = serde_json::from_slice(&wait_for_file(&dir.join("status.json"))?)?;
     assert!(
@@ -298,7 +299,7 @@ fn crew_status_tool_mid_session() -> anyhow::Result<()> {
 }
 
 fn wait_for_file(path: &Path) -> anyhow::Result<Vec<u8>> {
-    let deadline = argonauts_testkit::deadline::after(WAIT);
+    let deadline = argonauts_testkit::pty::deadline::after(WAIT);
     loop {
         if let Ok(bytes) = fs::read(path) {
             return Ok(bytes);

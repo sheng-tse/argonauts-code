@@ -1,26 +1,26 @@
 //! What the agent panel draws: the title row with plan usage, the state tabs, the grouped list, the
 //! details of the highlighted row, and the keys.
 
-use argonauts_core::agent_panel::{
+use argonauts_core::app::agent_panel::{
     AgentPanelRows, CrewDetails, CrewRow, CrewRun, CrewState, CrewTab, CrewTarget, RepoGroup,
 };
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::limits::{PlanUsageReading, PlanUsageStatus};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::limits::{PlanUsageReading, PlanUsageStatus};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use time::OffsetDateTime;
 
+use crate::base::format;
+use crate::base::text::{str_width, truncate_line, wrap_text};
+use crate::base::theme::{Role, Theme};
 use crate::bridge::status::label_for_agent;
-use crate::format;
-use crate::state::{AppState, binding_reading};
-use crate::text::{str_width, truncate_line, wrap_text};
-use crate::theme::{Role, Theme};
+use crate::frame::state::{AppState, binding_reading};
 
-use super::super::layout::{cut, cut_middle, left};
-use super::super::list::Column;
-use super::super::panes::{self, Marks, key_names, pad_glyph};
-use super::super::resume::ago;
 use super::rows::clean;
+use crate::base::draw::layout::{cut, cut_middle, left};
+use crate::base::draw::panes::{self, Marks, key_names, pad_glyph};
+use crate::base::format::ago;
+use crate::frame::view::list::Column;
 
 /// Cells between columns.
 pub(super) const GAP: usize = 2;
@@ -597,7 +597,7 @@ fn fields(
 /// `text`'s lines wrapped to `width`, at most `most` of them, the last cut with `…` when more
 /// was left. Blank lines between paragraphs stay, one at a time.
 fn paragraphs(text: &str, most: usize, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let text = crate::text::sanitize(text);
+    let text = crate::base::text::sanitize(text);
     let mut lines = Vec::new();
     let mut blank = false;
     for line in text.lines().map(str::trim_end) {

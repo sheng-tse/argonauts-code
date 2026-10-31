@@ -5,21 +5,21 @@
 use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::{
+use argonauts_core::agents::session_runner::SessionControl;
+use argonauts_core::base::names::{MessageId, RoleName, SessionKey};
+use argonauts_core::input::MentionTarget;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::{
     Delivery, InputPart, InputPartKind, QueuedMessage, SessionEvent,
 };
-use argonauts_core::events::shared::{
+use argonauts_core::runs::events::shared::{
     BlackboardEvent, BlackboardKind, BlackboardMessage, Recipient,
 };
-use argonauts_core::input::MentionTarget;
-use argonauts_core::names::{MessageId, RoleName, SessionKey};
-use argonauts_core::session_runner::SessionControl;
 use argonauts_core::settings::Settings;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::state::blackboard::Addressee;
 
 /// Checking that a session hasn't had a message, recording that it has, and sending it are one
@@ -352,7 +352,7 @@ pub fn party_label(party: &Party) -> String {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::names::ModelRef;
+    use argonauts_core::base::names::ModelRef;
 
     use super::*;
 

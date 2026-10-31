@@ -9,14 +9,14 @@ use std::sync::LazyLock;
 use regex::Regex;
 use time::OffsetDateTime;
 
-use argonauts_core::hash::sha256_hex;
+use argonauts_core::base::hash::sha256_hex;
 
 use super::document::{self, Cleaned};
 use super::{ImportReport, Skill};
-use crate::error::{LearningError, Result};
-use crate::git;
-use crate::scan::{Finding, scan};
+use crate::export::scan::{Finding, scan};
 use crate::store::Store;
+use crate::store::error::{LearningError, Result};
+use crate::store::git;
 
 /// A skill is a few instructions and helpers, so these only stop a runaway source.
 const MAX_FILES: usize = 1_000;

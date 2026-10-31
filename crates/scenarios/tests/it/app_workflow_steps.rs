@@ -5,10 +5,12 @@
 
 use crate::app_support;
 use app_support::*;
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome};
-use argonauts_core::events::session::{CliAgentState, EndReason, SessionEvent, SubagentStatus};
-use argonauts_core::events::{RunEventKind, WorkflowEvent};
-use argonauts_core::names::SessionKey;
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::runs::events::session::{
+    CliAgentState, EndReason, SessionEvent, SubagentStatus,
+};
+use argonauts_core::runs::events::{RunEventKind, WorkflowEvent};
 use argonauts_scenarios::WAIT;
 use argonauts_testkit::Key;
 

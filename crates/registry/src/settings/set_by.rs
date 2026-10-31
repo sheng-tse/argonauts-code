@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use argonauts_core::settings::LAYERS;
 use toml::{Table, Value};
 
-use crate::resolve::leaves;
+use crate::settings::resolve::leaves;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SetBy {

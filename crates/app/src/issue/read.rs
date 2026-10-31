@@ -4,7 +4,7 @@
 
 use argonauts_conductor::gh::{Comment, Issue, RepoName};
 
-use argonauts_core::hidden_text::{fence_name, sanitize};
+use argonauts_core::prompts::hidden_text::{fence_name, sanitize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IssueRead {

@@ -5,21 +5,21 @@
 //! try whose work the task keeps, by one checker or by a vote; the others stay on their
 //! branches, unmerged.
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::InputPartKind;
-use argonauts_core::events::task::{TaskEvent, TaskSpec, TaskState};
-use argonauts_core::names::ModelRef;
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::InputPartKind;
+use argonauts_core::runs::events::task::{TaskEvent, TaskSpec, TaskState};
 use argonauts_core::settings::crew::CrewRole;
-use argonauts_core::steps::fallback::{PickTry, PickTryInput};
+use argonauts_core::workflows::steps::fallback::{PickTry, PickTryInput};
 use argonauts_core::{Note, NoteLevel, TaskId};
 use argonauts_runner::Count;
 
 use super::checker::{self, Checker};
 use super::steps::{PickedBy, TriedBy};
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::merge::branch::task_branch;
 use crate::prompts;
 use crate::roles::{self, display_name};
@@ -143,7 +143,7 @@ pub(super) async fn make(
             many => format!("tries {} passed their checks and wait", many.join(", ")),
         };
         let state = format!("{own_state:?}").to_lowercase();
-        let words = argonauts_core::text::state_words(&state);
+        let words = argonauts_core::base::text::state_words(&state);
         let text = format!(
             "{} · its own try is {words}, so {tries} until it goes on",
             spec.title
@@ -458,8 +458,8 @@ fn note(host: &Host, task: &TaskId, level: NoteLevel, text: String) -> EngineRes
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::task::{TaskKind, TaskWay, Way};
-    use argonauts_core::workflow::WorkflowRef;
+    use argonauts_core::runs::events::task::{TaskKind, TaskWay, Way};
+    use argonauts_core::workflows::workflow::WorkflowRef;
 
     fn model(text: &str) -> ModelRef {
         text.parse().unwrap()

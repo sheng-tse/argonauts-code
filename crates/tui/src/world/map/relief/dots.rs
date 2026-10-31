@@ -4,9 +4,9 @@
 //! lost, and the pointer still finds it.
 
 use super::{FORESHORTEN, Relief, top_row};
+use crate::base::draw::scene::{Mark, Pointed, Shape};
 use crate::world::map::fields::{Ground, HEIGHT, Rgb, WIDTH};
 use crate::world::raster::{Brush, Canvas, Colour, Path, Pen};
-use crate::world::scene::{Mark, Pointed, Shape};
 
 /// A dot's radius on the map at its usual size, in pixels: 0.82 of what it was when the land
 /// filled the frame, as the land is now 0.74 of it.

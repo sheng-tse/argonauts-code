@@ -10,8 +10,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use argonauts_core::AgentEvent;
-use argonauts_core::layout::session_files;
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::layout::session_files;
 use serde_json::Value;
 
 /// Sent once to a session whose work has ended without a report it could keep.
@@ -40,8 +40,8 @@ pub fn prepare(spec: &SessionSpec) -> io::Result<()> {
         return Ok(());
     };
     let text = serde_json::to_vec_pretty(schema).map_err(io::Error::other)?;
-    argonauts_core::paths::create_private_dir_all(&spec.session_dir)?;
-    argonauts_core::paths::write_private_file(&schema_file(spec), &text)?;
+    argonauts_core::base::paths::create_private_dir_all(&spec.session_dir)?;
+    argonauts_core::base::paths::write_private_file(&schema_file(spec), &text)?;
     match std::fs::remove_file(report_file(spec)) {
         Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
         _ => Ok(()),
@@ -128,9 +128,9 @@ mod tests {
 
     #[test]
     fn only_a_session_in_its_own_workflow_that_owes_a_report_uses_the_tool() {
-        let mut spec = argonauts_testkit::runner::session_spec(
+        let mut spec = argonauts_testkit::engine::runner::session_spec(
             "claude-code",
-            argonauts_core::session_runner::Access::Build,
+            argonauts_core::agents::session_runner::Access::Build,
             Path::new("/tmp/work"),
         );
         spec.json_schema = Some(json!({"type": "object"}));
@@ -144,9 +144,9 @@ mod tests {
     #[test]
     fn the_schema_is_written_and_an_old_report_cleared() {
         let dir = tempfile::tempdir().unwrap();
-        let mut spec = argonauts_testkit::runner::session_spec(
+        let mut spec = argonauts_testkit::engine::runner::session_spec(
             "claude-code",
-            argonauts_core::session_runner::Access::Build,
+            argonauts_core::agents::session_runner::Access::Build,
             Path::new("/tmp/work"),
         );
         spec.session_dir = dir.path().join("session");

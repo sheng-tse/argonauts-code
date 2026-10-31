@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use argonauts_conductor::sandbox::{self, SandboxWrap};
+use argonauts_core::app::views::ContextRow;
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::input::ModPlaceChange;
 use argonauts_core::settings::Settings;
@@ -31,15 +32,14 @@ use argonauts_core::settings::mods::{
     is_mod_name, load, span_words,
 };
 use argonauts_core::settings::ui::{ModName, Place, UiSettings};
-use argonauts_core::views::ContextRow;
 use argonauts_core::{NoteLevel, Spend};
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 
 use crate::controller::{Ctx, Effect, Internal};
-use crate::env::AppEnv;
-use crate::trust::TrustStore;
-use crate::usage_ledger::{UsageLedger, local_day};
+use crate::startup::env::AppEnv;
+use crate::startup::trust::TrustStore;
+use crate::usage::usage_ledger::{UsageLedger, local_day};
 
 pub(crate) use sources::Numbers;
 
@@ -445,7 +445,7 @@ fn line_numbers(ctx: &Ctx, numbers: &Numbers) -> LineNumbers {
         model: agent
             .model
             .as_deref()
-            .map(argonauts_core::model_catalog::display_name_from_id)
+            .map(argonauts_core::models::model_catalog::display_name_from_id)
             .unwrap_or_default(),
         clis,
         spend: (spent.cost_usd > 0.0).then(|| {
@@ -974,7 +974,7 @@ fn trust_mod_files(
     name: &str,
     path: &Path,
 ) -> anyhow::Result<()> {
-    argonauts_core::paths::create_private_dir_all(&ctx.env.state_dir)?;
+    argonauts_core::base::paths::create_private_dir_all(&ctx.env.state_dir)?;
     ctx.settings.trust_mut().trust(path)?;
     look(state);
     let programs = lock(&state.inner)
@@ -1156,7 +1156,7 @@ fn line_clash(name: &str) -> String {
 pub fn doctor_problems(repo: Option<&Path>) -> Vec<String> {
     let lines = match AppEnv::discover(repo) {
         Ok(env) => doctor_lines(&env),
-        Err(_) => match argonauts_core::paths::Paths::from_env() {
+        Err(_) => match argonauts_core::base::paths::Paths::from_env() {
             Ok(paths) => {
                 let set = ModSet::load(Some(&paths.home().join(MODS_DIR)), None);
                 problem_lines(&set, |path| path.display().to_string())

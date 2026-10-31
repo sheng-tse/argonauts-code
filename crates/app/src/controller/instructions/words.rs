@@ -1,8 +1,8 @@
 //! Reading a request's own words: names, numbers, amounts, effort levels, and whether words
 //! ask you first or loosen what asks you. Code reads them, never a model.
 
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::input::EFFORT_LEVELS;
-use argonauts_core::names::ModelRef;
 
 use super::request_words::FOR_WHAT_ROLES_DO;
 

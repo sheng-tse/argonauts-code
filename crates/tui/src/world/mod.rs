@@ -9,16 +9,14 @@
 
 pub mod cosmos;
 pub mod deliver;
-pub mod geo;
 pub mod map;
 pub mod planet;
 pub mod planet_fx;
 pub mod raster;
-pub mod scene;
 pub mod wonders;
 
-pub use geo::{Globe, GlobePoint, LonLat, Plate, Surface, View};
-pub use scene::{
+pub use super::base::draw::geo::{Globe, GlobePoint, LonLat, Plate, Surface, View};
+pub use super::base::draw::scene::{
     Depth, HitMap, Image, Layer, Mark, Part, PartId, Picture, Pointed, Scaled, Scene, Shape,
     Sprite, Under, picture_key,
 };

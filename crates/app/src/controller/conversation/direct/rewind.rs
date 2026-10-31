@@ -356,7 +356,7 @@ mod tests {
     fn a_folder_with_a_hidden_history_rewinds_like_a_repository() {
         let folder = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
-        let env = crate::env::AppEnv::for_repo(
+        let env = crate::startup::env::AppEnv::for_repo(
             argonauts_core::Paths::new(home.path()),
             folder.path(),
             false,
@@ -366,7 +366,7 @@ mod tests {
         std::fs::write(root.join("notes.txt"), "before\n").unwrap();
         assert!(take(root, MB, &BTreeSet::new()).is_err(), "no git yet");
 
-        crate::hidden_git::turn_on(&env.state_dir).unwrap();
+        crate::git::hidden_git::turn_on(&env.state_dir).unwrap();
         let before = take(root, MB, &BTreeSet::new()).unwrap();
         std::fs::write(root.join("notes.txt"), "after\n").unwrap();
         std::fs::write(root.join("made.txt"), "new\n").unwrap();

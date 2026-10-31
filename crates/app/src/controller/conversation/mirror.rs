@@ -2,13 +2,13 @@
 //! panel row, and the workflow view with whatever phases and agents it reports. The views name the
 //! conversation by [`conversation_run`], so a row and a refresh find it.
 
-use argonauts_core::app::{AppEvent, ViewData};
-use argonauts_core::events::session::CliWorkflowRun;
-use argonauts_core::names::WorkflowId;
-use argonauts_core::views::{
+use argonauts_core::app::views::{
     AgentRow, AgentView, ContextRow, InnerAgent, RowStatus, WorkflowView, cli_workflow_run_id,
     conversation_run,
 };
+use argonauts_core::app::{AppEvent, ViewData};
+use argonauts_core::base::names::WorkflowId;
+use argonauts_core::runs::events::session::CliWorkflowRun;
 use time::OffsetDateTime;
 
 use super::ConversationState;
@@ -125,8 +125,8 @@ fn now_ms() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use argonauts_core::Spend;
-    use argonauts_core::events::session::{CliAgent, CliAgentState, SubagentStatus};
-    use argonauts_core::names::SessionKey;
+    use argonauts_core::base::names::SessionKey;
+    use argonauts_core::runs::events::session::{CliAgent, CliAgentState, SubagentStatus};
 
     use super::*;
 

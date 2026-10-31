@@ -12,32 +12,32 @@ use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
 use argonauts_core::TaskId;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::engine::EngineCommand;
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::SessionControl;
+use argonauts_core::agents::session_runner::{Access, SessionSpec};
+use argonauts_core::base::names::{MessageId, SeatId, WorkflowId};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::engine::EngineCommand;
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalPacket, CouncilQuestion,
 };
-use argonauts_core::events::council::{
+use argonauts_core::runs::events::council::{
     CouncilAction, CouncilEvent, CouncilEventKind, CouncilMessage, FloorReason, HeldChoice,
     HeldWhy, MessageKind, PointState, Seat, SeatRole, Seating, Speaker, Stance, TalkStop, TextPart,
 };
-use argonauts_core::events::plan::PlanEvent;
-use argonauts_core::events::run::RunMode;
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::task::{TaskEvent, TaskKind, TaskLimit, TaskSpec};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{MessageId, SeatId, WorkflowId};
-use argonauts_core::session_runner::SessionControl;
-use argonauts_core::session_runner::{Access, SessionSpec};
+use argonauts_core::runs::events::plan::PlanEvent;
+use argonauts_core::runs::events::run::RunMode;
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::task::{TaskEvent, TaskKind, TaskLimit, TaskSpec};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::council::{CouncilSeat, WhenYouWrite};
-use argonauts_core::steps::StepName;
-use argonauts_core::workflow::StepRef;
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::workflow::StepRef;
 use argonauts_crew::council::lexicon::Lexicon;
 use argonauts_crew::council::talk;
 use argonauts_crew::task::worktree;
-use argonauts_testkit::deadline;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::pty::deadline;
 
 use crate::support::{self, smallest_answer};
 
@@ -574,11 +574,11 @@ async fn the_seats_talk_until_every_seat_agrees_on_every_point() -> anyhow::Resu
     );
 
     // Nothing a seat reads names a model, its maker or its CLI.
-    let models: Vec<argonauts_core::names::ModelRef> = SEATS
+    let models: Vec<argonauts_core::base::names::ModelRef> = SEATS
         .iter()
         .map(|(model, _)| model.parse().expect("a model"))
         .collect();
-    let provider = |model: &argonauts_core::names::ModelRef| {
+    let provider = |model: &argonauts_core::base::names::ModelRef| {
         SEATS
             .iter()
             .find(|(seat, _)| model.to_string() == *seat)
@@ -835,7 +835,7 @@ async fn the_last_plan_question_says_it_cant_go_back_again() -> anyhow::Result<(
     let mut outcome = crew
         .start(RunMode::Crew, "add per-key rate limiting to the public API")
         .await?;
-    let mut plans: Vec<argonauts_core::events::approval::ApprovalOpened> = Vec::new();
+    let mut plans: Vec<argonauts_core::runs::events::approval::ApprovalOpened> = Vec::new();
     for _ in 0..12 {
         if !matches!(outcome.exit, EngineExit::Waiting(_)) {
             break;
@@ -869,10 +869,11 @@ async fn the_last_plan_question_says_it_cant_go_back_again() -> anyhow::Result<(
         outcome = crew.resume(outcome.events, vec![command]).await?;
     }
     assert_eq!(plans.len(), 3, "{plans:?}");
-    let flags = |opened: &argonauts_core::events::approval::ApprovalOpened| match &opened.packet {
-        ApprovalPacket::Plan(packet) => packet.flags.clone(),
-        _ => Vec::new(),
-    };
+    let flags =
+        |opened: &argonauts_core::runs::events::approval::ApprovalOpened| match &opened.packet {
+            ApprovalPacket::Plan(packet) => packet.flags.clone(),
+            _ => Vec::new(),
+        };
     let last = |opened| {
         flags(opened)
             .iter()
@@ -996,7 +997,7 @@ fn planned(n: u32) -> TaskSpec {
 async fn two_seats_of_one_model_build_the_tasks_the_plan_gives_them() -> anyhow::Result<()> {
     let crew = support::Crew::new()?;
     let started = crew.run_started(RunMode::Crew, "add per-key rate limiting")?;
-    let opus: argonauts_core::names::ModelRef = SEATS[0].0.parse()?;
+    let opus: argonauts_core::base::names::ModelRef = SEATS[0].0.parse()?;
     let task = |n: u32, title: &str| TaskSpec {
         title: title.to_owned(),
         task: format!("Add the {}.", title.to_lowercase()),
@@ -1014,10 +1015,12 @@ async fn two_seats_of_one_model_build_the_tasks_the_plan_gives_them() -> anyhow:
         .map(|spec| RunEventKind::Task(TaskEvent::Created(Box::new(spec.clone()))))
         .collect();
     kinds.push(RunEventKind::Divide(
-        argonauts_core::events::plan::DivideEvent::Graph(argonauts_core::events::plan::TaskGraph {
-            tasks: tasks.to_vec(),
-            critical_path: Vec::new(),
-        }),
+        argonauts_core::runs::events::plan::DivideEvent::Graph(
+            argonauts_core::runs::events::plan::TaskGraph {
+                tasks: tasks.to_vec(),
+                critical_path: Vec::new(),
+            },
+        ),
     ));
     let council = |kind| {
         RunEventKind::Council(CouncilEvent {
@@ -1073,11 +1076,11 @@ async fn two_seats_of_one_model_build_the_tasks_the_plan_gives_them() -> anyhow:
     assert_eq!(
         planned,
         [
-            argonauts_core::events::approval::TaskSeat {
+            argonauts_core::runs::events::approval::TaskSeat {
                 task: TaskId::numbered(1),
                 seat: second.clone(),
             },
-            argonauts_core::events::approval::TaskSeat {
+            argonauts_core::runs::events::approval::TaskSeat {
                 task: TaskId::numbered(2),
                 seat: first.clone(),
             },
@@ -1986,7 +1989,7 @@ async fn a_private_message_to_the_writing_seat_has_it_write_again() -> anyhow::R
     let failed = run.sink.events().iter().any(|event| {
         matches!(
             event.kind,
-            RunEventKind::Run(argonauts_core::events::run::RunLifecycle::Finished { .. })
+            RunEventKind::Run(argonauts_core::runs::events::run::RunLifecycle::Finished { .. })
         )
     });
     assert!(!failed, "the run goes on");
@@ -2265,7 +2268,7 @@ async fn a_plan_sent_back_reopens_the_talk_with_your_note() -> anyhow::Result<()
         .filter(|(_, kind)| {
             matches!(kind, CouncilEventKind::Message(m)
                 if m.kind == MessageKind::Notes && m.text.iter().any(|part| matches!(part,
-                    argonauts_core::events::council::TextPart::Words(words) if words.contains("One task"))))
+                    argonauts_core::runs::events::council::TextPart::Words(words) if words.contains("One task"))))
         })
         .map(|(at, _)| at)
         .collect();

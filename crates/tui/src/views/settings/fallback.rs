@@ -2,11 +2,11 @@
 //! every agent, then a row per role whose own settings win for its agents.
 
 use argonauts_core::app::SettingRow;
-use argonauts_core::display_names::builtin_cli_name;
+use argonauts_core::look::display_names::builtin_cli_name;
 use argonauts_core::settings::crew::CrewRole;
 
-use super::flow::{RowAction, Stage};
-use super::words::{layer_words, role_words, row_value_words};
+use crate::base::text::words::{layer_words, role_words, row_value_words};
+use crate::bottom::picker::flow::{RowAction, Stage};
 use crate::bottom::{Picker, PickerRow};
 
 /// What a fallback key decides, as its row says it: `When an agent stops` for `fallback.mode`, or

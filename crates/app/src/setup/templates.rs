@@ -7,11 +7,11 @@
 use std::path::{Path, PathBuf};
 
 use argonauts_core::NoteLevel;
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::settings::mods::{MODS_DIR, builtin};
 
-use crate::env::AppEnv;
 use crate::mods::files;
+use crate::startup::env::AppEnv;
 
 /// How a README Argonauts Code wrote starts. A file without this line is yours and is left alone.
 const WRITTEN_BY: &str = "<!-- Written by Argonauts Code";
@@ -187,7 +187,7 @@ pub(crate) fn guides_answer(env: &AppEnv) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::paths::Paths;
+    use argonauts_core::base::paths::Paths;
     use argonauts_testkit::TempRepo;
 
     use super::*;

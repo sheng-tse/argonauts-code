@@ -2,16 +2,16 @@
 //! with a way, who does it and how, "You asked" for a way you named, a seat's objection to it,
 //! and who checks it where the plan already says. Approve with edits lists the same tasks.
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::approval::{PlanPacket, TaskSeat, WayObjection};
-use argonauts_core::events::task::TaskSpec;
-use argonauts_core::logos::logo_for;
-use argonauts_core::names::{ModelRef, SeatId};
+use argonauts_core::base::names::{ModelRef, SeatId};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::look::logos::logo_for;
+use argonauts_core::runs::events::approval::{PlanPacket, TaskSeat, WayObjection};
+use argonauts_core::runs::events::task::TaskSpec;
 
 use super::{Cx, Talk};
-use crate::council::edits::EditTask;
-use crate::council::item::Inset;
-use crate::council::plan::{Columns, PlanTask, Who, way_word, you_asked};
+use crate::council::screens::edits::EditTask;
+use crate::council::talk::item::Inset;
+use crate::council::work::plan::{Columns, PlanTask, Who, way_word, you_asked};
 use crate::council::{Body, Face, Item, Piece, SeatSays, Tone};
 
 impl Talk {

@@ -5,7 +5,7 @@ use crate::common;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
-use argonauts_tui::model::{
+use argonauts_tui::app::model::{
     AssistantMessage, QuestionOption, QuestionPrompt, ToolCall, ToolItem, UserMessage, ViewModel,
 };
 use argonauts_tui::{InlineTerminal, Ui};

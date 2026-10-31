@@ -24,7 +24,7 @@ use std::time::Duration;
 use anyhow::{Context as _, bail};
 use argonauts_core::NoteLevel;
 use argonauts_core::app::{AppEvent, UiCommand};
-use argonauts_core::ids::RepoId;
+use argonauts_core::base::ids::RepoId;
 use argonauts_core::settings::ui::UiSettings;
 use argonauts_tui::{AppIo, UiOptions, history_file_in, run_app, run_screen_reader};
 use serde_json::Value;
@@ -50,7 +50,8 @@ fn main() -> anyhow::Result<()> {
         options.double_press = window;
     }
     // Only a test that gave the driver a home of its own keeps history on disk.
-    if std::env::var_os(argonauts_core::paths::HOME_ENV).is_some_and(|home| !home.is_empty()) {
+    if std::env::var_os(argonauts_core::base::paths::HOME_ENV).is_some_and(|home| !home.is_empty())
+    {
         options.history_file = history_here();
     }
     let recorder = Recorder::open(std::env::var_os(COMMANDS_ENV).map(PathBuf::from))?;
@@ -115,7 +116,7 @@ enum Step {
 fn history_here() -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
     let repo = RepoId::for_repo(&cwd).ok()?;
-    let state_dir = argonauts_core::paths::state_dir(&repo).ok()?;
+    let state_dir = argonauts_core::base::paths::state_dir(&repo).ok()?;
     Some(history_file_in(&state_dir))
 }
 

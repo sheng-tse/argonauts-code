@@ -1,17 +1,8 @@
 //! A direct OpenAI-compatible API (OpenRouter, Ollama, LM Studio, vLLM) as a `SessionRunner`.
 //! Endpoints have no tools, so they only take `NoTools` sessions.
 
-mod errors;
-mod raw_log;
-#[cfg(test)]
-mod replay;
-mod request;
-mod run;
-pub mod runtime_api;
-mod session;
-mod sse;
+pub mod session;
 mod stream;
-mod structured;
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -19,15 +10,15 @@ use std::time::Duration;
 
 use argonauts_core::CommandSpec;
 use argonauts_core::Paths;
-use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::{HealthBoard, PlanUsageBoard};
-use argonauts_core::model_memory::{ModelMemory, NoModelMemory};
-use argonauts_core::names::{AgentId, ModelRef};
-use argonauts_core::registry::ModelRegistry;
-use argonauts_core::session_runner::{
+use argonauts_core::agents::session_runner::{
     RunnerCapabilities, RunnerError, RunnerKind, SessionHandle, SessionRunner, SessionSpec,
     SteerSupport, SubagentVisibility,
 };
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::{AgentId, ModelRef};
+use argonauts_core::models::limits::{HealthBoard, PlanUsageBoard};
+use argonauts_core::models::model_memory::{ModelMemory, NoModelMemory};
+use argonauts_core::models::registry::ModelRegistry;
 use argonauts_core::settings::agents::{EndpointSettings, StructuredMode};
 
 pub struct EndpointRunner {

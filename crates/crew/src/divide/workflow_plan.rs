@@ -4,22 +4,22 @@
 //! contested it, so its facts are an uncontested plan's, made against the commit the run started
 //! from, and auto can settle it like any other plan.
 
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{ModelRef, WorkflowId};
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalKind, ApprovalPacket, FreeText, PlanPacket, PlanWorkflow,
 };
-use argonauts_core::events::plan::{LimitPlan, TaskGraph};
-use argonauts_core::events::run::RunOutcome;
-use argonauts_core::events::workflow::StepEnd;
-use argonauts_core::names::{ModelRef, WorkflowId};
-use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
+use argonauts_core::runs::events::plan::{LimitPlan, TaskGraph};
+use argonauts_core::runs::events::run::RunOutcome;
+use argonauts_core::runs::events::workflow::StepEnd;
+use argonauts_core::safety::policy::{EvidenceDocument, EvidenceFacts};
 use argonauts_core::settings::limit::LimitUnit;
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::design::DesignOutput;
-use argonauts_core::workflow::{StepKind, WorkflowRef};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::design::DesignOutput;
+use argonauts_core::workflows::workflow::{StepKind, WorkflowRef};
 
 use crate::approvals::{self, ApprovalRequest, options};
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::state::RunState;
 use crate::workflow::{Flow, StepCall, StepDone, runner, shape, yaml};
 
@@ -210,9 +210,9 @@ fn design_why(state: &RunState, from: Option<&WorkflowRef>) -> Option<String> {
 mod tests {
     use super::*;
 
-    use argonauts_core::events::RunEventKind;
-    use argonauts_core::events::session::{EndReason, SessionEvent};
-    use argonauts_core::names::RoleName;
+    use argonauts_core::base::names::RoleName;
+    use argonauts_core::runs::events::RunEventKind;
+    use argonauts_core::runs::events::session::{EndReason, SessionEvent};
 
     use crate::state::tests::{end, envelope, session_started};
 

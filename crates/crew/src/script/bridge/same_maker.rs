@@ -5,21 +5,21 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{ApprovalId, ModelRef};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalKind, ApprovalPacket, FreeText, SecondAgentPacket,
 };
-use argonauts_core::events::council::{CheckPick, CheckRung, CouncilEvent, CouncilEventKind};
-use argonauts_core::names::{ApprovalId, ModelRef};
-use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
+use argonauts_core::runs::events::council::{CheckPick, CheckRung, CouncilEvent, CouncilEventKind};
+use argonauts_core::safety::policy::{EvidenceDocument, EvidenceFacts};
 use argonauts_runner::{AgentCall, AgentEnd};
 use serde_json::json;
 
 use super::Bridge;
 use super::reading::Change;
 use crate::approvals::{self, ApprovalRequest, autopilot};
+use crate::engine::error::EngineResult;
 use crate::engine::job_fallback;
-use crate::error::EngineResult;
 use crate::roles::display_name;
 use crate::script::tasks;
 
@@ -98,7 +98,7 @@ impl Bridge<'_> {
         let Some(task) = tasks::task_of(self, call.task.as_deref()) else {
             return Ok(AgentEnd::failed("there's no task to check yet"));
         };
-        let title = host.read(|state| crate::labels::task_label(state, &task));
+        let title = host.read(|state| crate::sessions::labels::task_label(state, &task));
         let maker_name =
             job_fallback::model_name(host, maker).unwrap_or_else(|| display_name(maker));
         let request = ApprovalRequest {

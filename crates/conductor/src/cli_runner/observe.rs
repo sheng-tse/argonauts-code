@@ -8,19 +8,19 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use argonauts_core::answer_format;
-use argonauts_core::events::AgentStatusEvent;
-use argonauts_core::events::context::{ContextDetail, ContextUsage};
-use argonauts_core::events::session::{LimitEvent, SessionEvent, Watchdog, loaded_words};
-use argonauts_core::layout::session_files;
-use argonauts_core::limits::{HealthSignal, PlanUsageStatus, served_on_this_machine};
-use argonauts_core::paths::write_private_file;
-use argonauts_core::session_runner::SessionLimits;
+use argonauts_core::agents::session_runner::SessionLimits;
+use argonauts_core::base::layout::session_files;
+use argonauts_core::base::paths::write_private_file;
+use argonauts_core::models::limits::{HealthSignal, PlanUsageStatus, served_on_this_machine};
+use argonauts_core::runs::events::AgentStatusEvent;
+use argonauts_core::runs::events::context::{ContextDetail, ContextUsage};
+use argonauts_core::runs::events::session::{LimitEvent, SessionEvent, Watchdog, loaded_words};
 use argonauts_core::settings::approvals::IsolatedLeak;
 use argonauts_core::settings::fallback::WrapUp;
 use argonauts_core::settings::limit::OnHit;
 use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout};
-use argonauts_core::steps::is_report_tool;
+use argonauts_core::workflows::answer_format;
+use argonauts_core::workflows::steps::is_report_tool;
 use argonauts_core::{AgentEvent, ErrorCategory, LimitDimension, Spend, SpendStatus, TweakEffect};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -33,11 +33,11 @@ use super::end::{EndFacts, SeenError};
 use super::handed_in::HandedIn;
 use super::outbox::Outbox;
 use super::stop::StopCause;
-use crate::cli_versions::{CliVersions, event_kind, startup_lacks};
+use crate::boards::cli_versions::{CliVersions, event_kind, startup_lacks};
 use crate::doctor::{self, versions::in_tested_range};
-use crate::filediff::{FileDiffs, changed_paths};
-use crate::meter::{self, MeterSetup, MeterVerdict, SessionMeter};
-use crate::watchdogs::{WatchdogVerdict, Watchdogs};
+use crate::limits::meter::{self, MeterSetup, MeterVerdict, SessionMeter};
+use crate::process::watchdogs::{WatchdogVerdict, Watchdogs};
+use crate::session::filediff::{FileDiffs, changed_paths};
 
 /// Limit readings go out at most this often.
 const LIMIT_EVERY: Duration = Duration::from_secs(1);
@@ -1004,20 +1004,20 @@ fn counts_no_progress(limits: &SessionLimits) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::session::{EndReason, Watchdog};
-    use argonauts_core::session_runner::{
+    use argonauts_core::agents::session_runner::{
         RunnerEvent, SessionHandle, SessionLimits, SessionRunner, SessionSpec,
     };
+    use argonauts_core::runs::events::session::{EndReason, Watchdog};
     use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 
     use super::*;
+    use crate::boards::health::is_agent_trouble;
     use crate::cli_runner::capabilities::CLAUDE_CODE;
     use crate::cli_runner::outbox;
     use crate::cli_runner::testing::{
         TestAdapter, TestDriver, agent_events, collect, event_line, session_events, spec_in,
         unique_key,
     };
-    use crate::health::is_agent_trouble;
 
     const MINUTE: Duration = Duration::from_secs(60);
 
@@ -1053,7 +1053,7 @@ mod tests {
     #[tokio::test]
     async fn a_later_try_that_edits_with_its_shell_is_never_wrapped_up() {
         for edits in [true, false] {
-            let repo = crate::testutil::TestRepo::new();
+            let repo = crate::testing::TestRepo::new();
             let driver = TestDriver::new(TestAdapter::new("exec sleep 30"));
             let mut spec = spec_in(&repo.root, &repo.root, "hi");
             spec.limits = SessionLimits {
@@ -1201,8 +1201,8 @@ mod tests {
     fn reporting() -> Watched {
         let mut w = watched(TestAdapter::new("true"), SessionLimits::default());
         let mut spec = w.obs.ctx.spec.clone();
-        spec.json_schema = Some(argonauts_core::steps::output_schema::<
-            argonauts_core::steps::task::Build,
+        spec.json_schema = Some(argonauts_core::workflows::steps::output_schema::<
+            argonauts_core::workflows::steps::task::Build,
         >());
         let home = w._cli.worker.home().unwrap();
         let (handle, out, _control) = outbox::open(spec.key.clone());

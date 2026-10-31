@@ -3,15 +3,15 @@
 use std::time::Duration;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::events::task::{TaskEvent, TaskState};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::layout::run_files;
-use argonauts_core::names::{ModelRef, SessionKey};
-use argonauts_core::steps::StepName;
+use argonauts_core::base::layout::run_files;
+use argonauts_core::base::names::{ModelRef, SessionKey};
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
+use argonauts_core::runs::events::task::{TaskEvent, TaskState};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::workflows::steps::StepName;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::state::RunState;
 use crate::state::sessions::SessionRecord;
 use crate::state::tasks::{TaskEntry, TaskProgress};
@@ -59,7 +59,7 @@ pub(crate) fn task_events(host: &Host, task: &TaskId) -> EngineResult<Vec<RunEve
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let back = argonauts_core::journal::read_all(&path)?;
+    let back = argonauts_core::runs::journal::read_all(&path)?;
     Ok(back
         .events
         .into_iter()

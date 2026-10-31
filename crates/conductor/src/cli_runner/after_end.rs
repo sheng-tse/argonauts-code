@@ -6,7 +6,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use argonauts_core::CommandSpec;
-use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
+use argonauts_core::agents::session_runner::{SandboxMode, SandboxProfile};
 
 use super::context::Context;
 

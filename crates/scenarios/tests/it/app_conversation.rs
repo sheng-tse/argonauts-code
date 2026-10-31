@@ -6,9 +6,9 @@ use crate::app_support;
 
 use app_support::*;
 use argonauts_core::app::{AppEvent, AppMode, ChoiceKind, ConversationEvent, TurnReply, UiCommand};
-use argonauts_core::events::run::{RunLifecycle, RunMode};
-use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::input::SlashCommand;
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_scenarios::{Scenario, WAIT, as_set_up, on_the_default_workflow};
 use argonauts_testkit::Key;
 use argonauts_testkit::approved::{self, Drawn};
@@ -548,7 +548,7 @@ fn app_uncommitted_left_out_and_said() -> anyhow::Result<()> {
 
     wait_approval(
         &scenario,
-        argonauts_core::events::approval::ApprovalKind::Merge,
+        argonauts_core::runs::events::approval::ApprovalKind::Merge,
     )?;
     let run = run_id(&run_dir)?;
     for branch in run_branches(&scenario, &run)? {
@@ -582,7 +582,7 @@ fn app_include_uncommitted_setting() -> anyhow::Result<()> {
 
     wait_approval(
         &scenario,
-        argonauts_core::events::approval::ApprovalKind::Merge,
+        argonauts_core::runs::events::approval::ApprovalKind::Merge,
     )?;
     let run = run_id(&run_dir)?;
     let branches = run_branches(&scenario, &run)?;

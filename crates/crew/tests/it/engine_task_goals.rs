@@ -8,23 +8,23 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::goal::{
+use argonauts_core::agents::session_runner::{Access, SessionSpec};
+use argonauts_core::base::names::RoleName;
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::goal::{
     CheckedBy, GoalChecked, GoalEvent, GoalRun, GoalStatus, GoalVerdict,
 };
-use argonauts_core::events::run::RunMode;
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::task::{CheckKind, CheckOutcome, TaskEvent, TryCause};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::goal::report::LineState;
-use argonauts_core::goal::{GoalScope, KeptBy, RoleGoal};
-use argonauts_core::names::RoleName;
-use argonauts_core::session_runner::{Access, SessionSpec};
+use argonauts_core::runs::events::run::RunMode;
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::task::{CheckKind, CheckOutcome, TaskEvent, TryCause};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::protocol::CheckCommand;
 use argonauts_core::settings::roles::RoleSettings;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::goal::report::LineState;
+use argonauts_core::workflows::goal::{GoalScope, KeptBy, RoleGoal};
+use argonauts_core::workflows::steps::StepName;
 use argonauts_crew::goal::report;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
 
 use support::Crew;
 
@@ -510,12 +510,12 @@ async fn a_role_works_each_task_as_a_goal() -> anyhow::Result<()> {
 }
 
 /// A task of the plan, owned by `worker`.
-fn task_of(worker: &str) -> argonauts_core::events::task::TaskSpec {
-    argonauts_core::events::task::TaskSpec {
+fn task_of(worker: &str) -> argonauts_core::runs::events::task::TaskSpec {
+    argonauts_core::runs::events::task::TaskSpec {
         id: argonauts_core::TaskId::new("task-001").expect("an id"),
         title: "Add the overdue command".to_owned(),
         task: "Add a command that lists what's overdue.".to_owned(),
-        kind: argonauts_core::events::task::TaskKind::Build,
+        kind: argonauts_core::runs::events::task::TaskKind::Build,
         owned_paths: Vec::new(),
         read_only_paths: Vec::new(),
         forbidden_paths: Vec::new(),
@@ -524,7 +524,7 @@ fn task_of(worker: &str) -> argonauts_core::events::task::TaskSpec {
         criteria: Vec::new(),
         worker: Some(worker.parse().expect("a model")),
         reviewers: Vec::new(),
-        limit: argonauts_core::events::task::TaskLimit::default(),
+        limit: argonauts_core::runs::events::task::TaskLimit::default(),
         predictions: None,
         item: None,
         way: None,
@@ -536,7 +536,7 @@ fn task_of(worker: &str) -> argonauts_core::events::task::TaskSpec {
 /// by Argonauts Code on a CLI that has none.
 #[tokio::test]
 async fn a_steps_until_is_the_goal_of_its_task() -> anyhow::Result<()> {
-    use argonauts_core::goal::{CheckMeans, CheckWith, GoalFrom, GoalSpec};
+    use argonauts_core::workflows::goal::{CheckMeans, CheckWith, GoalFrom, GoalSpec};
     use argonauts_crew::goal::task;
 
     let until = GoalSpec::from_words(
@@ -602,7 +602,7 @@ fn host_with_a_tasks_goal(
     argonauts_core::TaskId,
     Arc<FakeRunner>,
 )> {
-    use argonauts_core::goal::{CheckMeans, CheckWith, GoalFrom, GoalSpec};
+    use argonauts_core::workflows::goal::{CheckMeans, CheckWith, GoalFrom, GoalSpec};
 
     crew.worker("codex/gpt-x", "openai");
     let judge = crew.worker("claude-code/opus", "anthropic");
@@ -656,7 +656,7 @@ async fn check_now(
     host: &argonauts_crew::engine::host::Host,
     task: Option<&argonauts_core::TaskId>,
 ) -> Result<(), String> {
-    let action = argonauts_core::events::goal::GoalAction::CheckNow {
+    let action = argonauts_core::runs::events::goal::GoalAction::CheckNow {
         task: task.cloned(),
     };
     argonauts_crew::goal::pursue::act(host, action).await
@@ -667,7 +667,7 @@ async fn check_now(
 /// sends the work round again or ends the goal.
 #[tokio::test]
 async fn the_checks_run_now_when_you_ask_and_decide_nothing() -> anyhow::Result<()> {
-    use argonauts_core::goal::report::{Failing, FailingWhat};
+    use argonauts_core::workflows::goal::report::{Failing, FailingWhat};
     use argonauts_crew::goal::task;
 
     let mut crew = Crew::new()?;
@@ -719,7 +719,9 @@ async fn the_checks_run_now_when_you_ask_and_decide_nothing() -> anyhow::Result<
     assert!(host.read(|state| state.goal.checks.is_empty()));
     assert!(host.read(|state| task::pursued(state, &id)));
     let said = events.iter().any(|event| match &event.kind {
-        RunEventKind::Workflow(argonauts_core::events::workflow::WorkflowEvent::Note(note)) => {
+        RunEventKind::Workflow(argonauts_core::runs::events::workflow::WorkflowEvent::Note(
+            note,
+        )) => {
             note.text.contains("checked now: 1 of 2 lines met")
                 && note.text.contains("make check: 1 of 12 fails")
         }
@@ -821,9 +823,9 @@ async fn a_pause_drops_the_checks_you_asked_for() -> anyhow::Result<()> {
 /// waits again only once they answered.
 #[tokio::test]
 async fn a_waiting_run_runs_the_checks_before_it_waits_again() -> anyhow::Result<()> {
-    use argonauts_core::engine::EngineCommand;
-    use argonauts_core::events::goal::GoalAction;
-    use argonauts_core::events::run::RunLifecycle;
+    use argonauts_core::runs::engine::EngineCommand;
+    use argonauts_core::runs::events::goal::GoalAction;
+    use argonauts_core::runs::events::run::RunLifecycle;
 
     let mut crew = Crew::new()?;
     crew.settings.divide.contracts_first = false;

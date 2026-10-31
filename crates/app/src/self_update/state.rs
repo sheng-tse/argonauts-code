@@ -86,11 +86,11 @@ impl UpdateState {
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
         if let Some(dir) = path.parent() {
-            argonauts_core::paths::create_private_dir_all(dir)?;
+            argonauts_core::base::paths::create_private_dir_all(dir)?;
         }
         let text = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
         let partial = path.with_extension(format!("json.{}", std::process::id()));
-        argonauts_core::paths::write_private_file(&partial, text.as_bytes())?;
+        argonauts_core::base::paths::write_private_file(&partial, text.as_bytes())?;
         std::fs::rename(&partial, path)
     }
 

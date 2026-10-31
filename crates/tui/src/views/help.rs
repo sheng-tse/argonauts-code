@@ -1,21 +1,21 @@
 //! `/help`: every key, from the keymap in effect, and every command under the categories the
 //! `/` menu uses, the main agent CLI's after Argonauts Code's own.
-use argonauts_core::cli_commands::CliCommandSet;
+use argonauts_core::agents::cli_commands::CliCommandSet;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use crate::commands::help_sections;
-use crate::keymap::Keymap;
-use crate::text::{str_width, wrap_text};
-use crate::theme::{Role, Theme};
+use crate::base::input::keymap::Keymap;
+use crate::base::text::{str_width, wrap_text};
+use crate::base::theme::{Role, Theme};
+use crate::bottom::menu::commands::help_sections;
 
-use super::layout::left;
-use super::list::{self, Nav};
-use super::pager::position_mark;
-use super::panes::{self, Footer, Header, Marks, Side};
-use super::{View, ViewCtx, ViewOutcome};
+use super::super::base::draw::layout::left;
+use super::super::base::draw::panes::{self, Footer, Header, Marks, Side};
+use super::super::frame::view::list::{self, Nav};
+use super::super::frame::view::pager::position_mark;
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
 
 /// Keys and command names past this are cut, so the descriptions keep their room.
 const MAX_NAME: usize = 28;
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn the_main_agents_commands_follow_argonauts_own() {
-        let set = crate::commands::tests::claude_commands();
+        let set = crate::bottom::menu::commands::tests::claude_commands();
         let help = HelpView::new(Keymap::default()).with_commands(Some(set));
         let sections = help.sections();
         let headings: Vec<&str> = sections.iter().map(|(h, _)| h.as_str()).collect();

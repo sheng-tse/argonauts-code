@@ -1,8 +1,8 @@
 //! The built-in workflows' phases, compiled into the binary. A workflow is one file, and its
 //! phases are the part of it the crew runs.
 
-use argonauts_core::workflow::Workflow;
-use argonauts_core::workflow_files;
+use argonauts_core::workflows::workflow::Workflow;
+use argonauts_core::workflows::workflow_files;
 
 use crate::workflow::yaml;
 

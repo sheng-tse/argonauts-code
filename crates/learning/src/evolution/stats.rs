@@ -6,11 +6,11 @@ use std::collections::BTreeMap;
 use rand::RngExt;
 use rand::rngs::StdRng;
 
-use argonauts_core::events::run::RunOutcome;
+use argonauts_core::runs::events::run::RunOutcome;
 use argonauts_core::settings::Settings;
 
 use super::{Thresholds, Tripwire, Verdict};
-use crate::types::{LearnedWorkflowRef, ReplayResult, RunRecord};
+use crate::store::types::{LearnedWorkflowRef, ReplayResult, RunRecord};
 
 /// Bootstrap resamples. Two thousand keep the tenth percentile steady to a fraction of a point.
 pub const BOOTSTRAP_RESAMPLES: usize = 2000;

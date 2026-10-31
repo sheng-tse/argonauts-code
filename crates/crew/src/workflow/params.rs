@@ -2,8 +2,8 @@
 
 use serde_json::Value;
 
-use argonauts_core::names::ModelRef;
-use argonauts_core::workflow::{Count, Step, StepModels, Workflow, WorkflowParams};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::workflows::workflow::{Count, Step, StepModels, Workflow, WorkflowParams};
 
 /// The workflow with every placeholder replaced, its own defaults overridden by `params`.
 /// `Err` lists each placeholder that has no value, and each value of the wrong type.

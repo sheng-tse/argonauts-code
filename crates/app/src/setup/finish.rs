@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use argonauts_core::NoteLevel;
-use argonauts_core::layout::project_files;
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::base::layout::project_files;
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::settings::limits_template;
 use argonauts_registry::{write_setting, write_workflow};
 
 use super::probe::FoundAgent;
 use super::steps::{COUNCIL, ORCHESTRATOR};
-use crate::env::AppEnv;
+use crate::startup::env::AppEnv;
 
 /// The workflows first run writes where you can read and edit them.
 pub(crate) const WORKFLOW_FILES: &[&str] = &[COUNCIL, ORCHESTRATOR];

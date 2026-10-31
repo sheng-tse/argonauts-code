@@ -5,7 +5,7 @@
 //! measure them. Quality debt no strong enough model reviewed comes to you unless `allow_debt`
 //! is set, since merging it anyway is yours.
 
-use argonauts_core::policy::{EvidenceFacts, WithinProvider};
+use argonauts_core::safety::policy::{EvidenceFacts, WithinProvider};
 use argonauts_core::settings::approvals::MergeRules;
 
 use super::{Conditions, RuleVerdict, percent};
@@ -159,7 +159,7 @@ fn debt(unreviewed_debt: Option<&[String]>, rules: &MergeRules) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::policy::Verdict;
+    use argonauts_core::safety::policy::Verdict;
 
     fn passing() -> EvidenceFacts {
         EvidenceFacts {

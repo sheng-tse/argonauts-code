@@ -6,21 +6,21 @@ use std::io::BufRead as _;
 use std::path::Path;
 
 use anyhow::{Context as _, bail};
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::run::{OverrideRecord, RunLifecycle, RunStarted};
-use argonauts_core::hidden_git::{CLEARED_STALE_LOCK, Writers};
-use argonauts_core::paths::create_private_dir_all;
+use argonauts_core::base::paths::create_private_dir_all;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::run::{OverrideRecord, RunLifecycle, RunStarted};
+use argonauts_core::runs::hidden_git::{CLEARED_STALE_LOCK, Writers};
 use argonauts_core::settings::delivery::HistorySettings;
-use argonauts_core::{Note, RunId, leave_out, unborn};
+use argonauts_core::{Note, RunId, runs::unborn};
 use argonauts_registry::resolve;
 
-use crate::app_settings::sources;
-use crate::env::{AppEnv, FolderGit};
-use crate::git::{git, has_commits, head, uncommitted_paths};
-use crate::hidden_git::{self, Snapshot, Survey};
-use crate::live_registry::live_run_hosts;
-use crate::run_files::{SettingsRecord, StartRecord};
-use crate::trust::TrustStore;
+use crate::git::hidden_git::{self, Snapshot, Survey};
+use crate::git::{git, has_commits, head, leave_out, uncommitted_paths};
+use crate::host::live_registry::live_run_hosts;
+use crate::host::run_files::{SettingsRecord, StartRecord};
+use crate::startup::app_settings::sources;
+use crate::startup::env::{AppEnv, FolderGit};
+use crate::startup::trust::TrustStore;
 
 /// Longest title, in characters, before it's cut.
 const TITLE_CHARS: usize = 60;
@@ -413,7 +413,7 @@ pub(crate) fn first_started(journal: &Path) -> anyhow::Result<RunStarted> {
     std::io::BufReader::new(file)
         .read_line(&mut first)
         .with_context(|| format!("reading {}", journal.display()))?;
-    let event: argonauts_core::events::RunEvent = serde_json::from_str(&first)
+    let event: argonauts_core::runs::events::RunEvent = serde_json::from_str(&first)
         .with_context(|| format!("reading the first event of {}", journal.display()))?;
     match event.kind {
         RunEventKind::Run(RunLifecycle::Started(started)) => Ok(*started),

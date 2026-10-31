@@ -4,7 +4,7 @@
 use crate::replay_support;
 use std::sync::Arc;
 
-use argonauts_core::limits::CheckRunner;
+use argonauts_core::models::limits::CheckRunner;
 use argonauts_core::settings::evolution::EntryAcceptance;
 use argonauts_learning::LearningError;
 use argonauts_learning::replay::{SplitReason, holdout_draw, isolated_repo, score};
@@ -39,7 +39,7 @@ fn replay_repo_history_stops_at_base() {
             .all(|sha| sha != task.merged)
     );
     assert!(
-        argonauts_learning::git::run(
+        argonauts_learning::store::git::run(
             &repo,
             &["cat-file", "-e", &format!("{}^{{commit}}", task.merged)]
         )
@@ -370,7 +370,7 @@ async fn hidden_tests_never_reach_a_worktree() {
     let outside = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink(outside.path(), agent_repo.join("tests")).unwrap();
     git_in(&agent_repo, &["add", "-A"]);
-    argonauts_learning::git::run_with(
+    argonauts_learning::store::git::run_with(
         &agent_repo,
         &["commit", "-q", "-m", "solve it"],
         &IDENTITY,

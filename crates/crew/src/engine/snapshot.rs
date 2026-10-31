@@ -1,11 +1,11 @@
 //! `Run::Snapshot` every `run_host.snapshot_every` events, so a long run stays cheap to
 //! resume and reattach.
 
-use argonauts_core::api::StatusSummary;
-use argonauts_core::events::run::RunSnapshot;
-use argonauts_core::names::SessionKey;
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::api::StatusSummary;
+use argonauts_core::runs::events::run::RunSnapshot;
 
-use crate::error::EngineResult;
+use crate::engine::error::EngineResult;
 use crate::state::RunState;
 
 /// Whether a snapshot is due now: `every` events since the last one. 0 never snapshots.

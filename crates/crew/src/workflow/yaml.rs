@@ -1,7 +1,7 @@
 //! Workflows as YAML text: your own files of phases, the main agent's composed workflows, the
 //! examples it reads, and the running workflow shown to it at a phase end.
 
-use argonauts_core::workflow::{Step, Workflow};
+use argonauts_core::workflows::workflow::{Step, Workflow};
 
 /// Unknown keys are refused, like every workflow source.
 pub fn parse(text: &str) -> Result<Workflow, String> {
@@ -79,7 +79,7 @@ phases:
         assert_eq!(workflow.phases.len(), 2);
         assert_eq!(
             workflow.phases[0].steps[0].count,
-            Some(argonauts_core::workflow::Count::Param(
+            Some(argonauts_core::workflows::workflow::Count::Param(
                 "{{reviewers}}".to_owned()
             ))
         );

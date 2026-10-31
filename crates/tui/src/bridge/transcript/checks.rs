@@ -1,9 +1,9 @@
 //! `● Checks(tests, lint, link check)`: a task's check results, printed together once it leaves
 //! checking.
 
-use argonauts_core::events::task::{CheckKind, CheckOutcome};
+use argonauts_core::runs::events::task::{CheckKind, CheckOutcome};
 
-use crate::cell::ToolState;
+use crate::cells::cell::ToolState;
 
 use super::steps::step;
 use super::{Cx, emit};

@@ -4,23 +4,25 @@
 use std::collections::BTreeSet;
 
 use argonauts_core::Spend;
-use argonauts_core::agent_panel::{
+use argonauts_core::app::agent_panel::{
     AgentPanelRows, CrewDetails, CrewRow, CrewRun, CrewState, CrewTarget, LabelTry, RunStands,
     first_label, fold_tries,
 };
-use argonauts_core::events::approval::{ApprovalKind, ApprovalPacket};
-use argonauts_core::events::run::{RunOutcome, WaitReason};
-use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::steps::summary_line;
+use argonauts_core::base::names::{RoleName, SessionKey};
+use argonauts_core::runs::events::approval::{ApprovalKind, ApprovalPacket};
+use argonauts_core::runs::events::run::{RunOutcome, WaitReason};
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
+use argonauts_core::workflows::steps::summary_line;
 use time::OffsetDateTime;
 
+use crate::base::draw::panes;
+use crate::base::text::sanitize_line;
+use crate::base::text::words::capitalized;
+use crate::base::theme::Glyphs;
 use crate::bridge::tools;
-use crate::state::{AppState, OpenApproval, RunState, SessionState, SessionStatus, task_label};
-use crate::text::sanitize_line;
-use crate::theme::Glyphs;
-use crate::views::panes;
-use crate::views::settings::words::capitalized;
+use crate::frame::state::{
+    AppState, OpenApproval, RunState, SessionState, SessionStatus, task_label,
+};
 
 pub(super) fn clean(text: &str) -> String {
     sanitize_line(text).trim().to_owned()
@@ -28,7 +30,7 @@ pub(super) fn clean(text: &str) -> String {
 
 /// The last line of `text` with anything in it.
 fn last_line(text: &str) -> String {
-    let text = crate::text::sanitize(text);
+    let text = crate::base::text::sanitize(text);
     text.lines()
         .map(str::trim)
         .rfind(|line| !line.is_empty())
@@ -344,8 +346,9 @@ fn asker<'a>(sessions: &[&'a SessionState], open: &OpenApproval) -> Option<&'a S
 /// What a session is doing in one line: its running tool call, the text streaming now, or
 /// its latest message.
 pub(crate) fn activity(session: &SessionState) -> String {
-    let running =
-        |tool: &&crate::state::ToolRecord| tool.ok.is_none() && !tools::is_tool_lookup(&tool.name);
+    let running = |tool: &&crate::frame::state::ToolRecord| {
+        tool.ok.is_none() && !tools::is_tool_lookup(&tool.name)
+    };
     if let Some(tool) = session.tools.iter().rev().find(running) {
         let call = tools::start_call(&session.agent_id, &tool.name, &tool.input);
         return clean(&call.title.plain());
@@ -422,7 +425,7 @@ fn prompt(session: &SessionState) -> Option<String> {
             .collect::<Vec<_>>()
             .join("\n\n")
     };
-    let written = texts(&argonauts_core::prompt_parts::written_for_the_agent);
+    let written = texts(&argonauts_core::prompts::prompt_parts::written_for_the_agent);
     let given = [
         InputPartKind::Task,
         InputPartKind::Message,
@@ -441,8 +444,8 @@ fn prompt(session: &SessionState) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::session::{EndReason, SessionEnd};
-    use argonauts_core::names::RoleName;
+    use argonauts_core::base::names::RoleName;
+    use argonauts_core::runs::events::session::{EndReason, SessionEnd};
     use serde_json::json;
 
     use super::*;
@@ -475,8 +478,8 @@ mod tests {
     /// Argonauts Code's own template for the step are never part of it.
     #[test]
     fn the_ask_is_what_the_orchestrator_wrote_then_the_task() {
-        use argonauts_core::events::session::{LaunchRecord, PromptVia, SessionInput};
-        use argonauts_core::prompt_parts as parts;
+        use argonauts_core::prompts::prompt_parts as parts;
+        use argonauts_core::runs::events::session::{LaunchRecord, PromptVia, SessionInput};
 
         let task = InputPart {
             kind: InputPartKind::Task,
@@ -578,7 +581,7 @@ mod tests {
             RoleName::Worker,
             OffsetDateTime::UNIX_EPOCH,
         );
-        session.tools.push(crate::state::ToolRecord {
+        session.tools.push(crate::frame::state::ToolRecord {
             id: "e1".to_owned(),
             name: "Edit".to_owned(),
             input: serde_json::Value::Null,

@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use argonauts_core::CommandSpec;
-use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
+use argonauts_core::agents::session_runner::{SandboxMode, SandboxProfile};
 
 use super::landlock::reachable_proxies;
 use super::launcher::{BRIDGE_DIR, bridge_args, relay_args};
@@ -51,7 +51,7 @@ impl Container {
         Self {
             runtime,
             image: image.trim().to_owned(),
-            launcher: argonauts_core::paths::this_program().ok(),
+            launcher: argonauts_core::base::paths::this_program().ok(),
         }
     }
 
@@ -59,7 +59,7 @@ impl Container {
         Self {
             runtime: Some(runtime.into()),
             image: image.trim().to_owned(),
-            launcher: argonauts_core::paths::this_program().ok(),
+            launcher: argonauts_core::base::paths::this_program().ok(),
         }
     }
 
@@ -576,8 +576,8 @@ mod tests {
     /// its own paths: nothing of this machine's root or your home outside the project goes in.
     #[test]
     fn a_container_on_autopilot_keeps_to_the_sessions_own_paths() {
-        use argonauts_core::outside::Outside;
-        use argonauts_core::session_runner::Access;
+        use argonauts_core::agents::session_runner::Access;
+        use argonauts_core::safety::outside::Outside;
         use argonauts_core::settings::approvals::ApprovalMode;
         use argonauts_core::settings::outside::OutsideSettings;
 

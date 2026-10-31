@@ -8,11 +8,11 @@ use std::time::Duration;
 
 use tokio::process::Command;
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::task::MergeEvent;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::task::MergeEvent;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::merge::{branch, conductor};
 
 /// A package manager that hangs this long on the network is given up on.

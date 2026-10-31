@@ -6,16 +6,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use argonauts_conductor::gh::RepoName;
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind, ApprovalPacket};
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunOutcome};
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::approval::{
+    AnswerAction, ApprovalEvent, ApprovalKind, ApprovalPacket,
+};
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::runs::events::task::MergeEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::protocol::MergeMode;
 use argonauts_crew::follow::{Followed, IssueLink, draft};
 use argonauts_testkit::FakeRunner;
-use argonauts_testkit::fake_gh::{FakeGh, GhIssue, GhPost, GhRepo, GhWorld};
+use argonauts_testkit::fake_clis::fake_gh::{FakeGh, GhIssue, GhPost, GhRepo, GhWorld};
 
 use crate::support::{self, Crew, Outcome, recommended};
 

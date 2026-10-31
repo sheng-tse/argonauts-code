@@ -2,7 +2,7 @@
 //! the run's workflow down through nested ones, then the step, such as
 //! "check · Check › review-panel › Look, step 1 of 2: fan out".
 
-use argonauts_core::workflow::{StepKind, StepRef};
+use argonauts_core::workflows::workflow::{StepKind, StepRef};
 
 use crate::state::workflow::Workflows;
 use crate::status::folder::words;

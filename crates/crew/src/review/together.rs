@@ -7,19 +7,19 @@
 //! every finding too.
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::task::ReviewEvent;
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::task::ReviewEvent;
 use argonauts_core::settings::fallback::Pick;
-use argonauts_core::steps::judgment::{ReviewComment, ReviewOutput, ReviewVerdict};
+use argonauts_core::workflows::steps::judgment::{ReviewComment, ReviewOutput, ReviewVerdict};
 use argonauts_core::{Note, NoteLevel};
 
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
 use crate::engine::job_fallback::{self, Job};
-use crate::error::EngineResult;
 use crate::fallback::rules;
-use crate::labels;
 use crate::roles::display_name;
+use crate::sessions::labels;
 
 /// How many fallbacks take `reviewer`'s place at once, and how their reviews count. `None`
 /// when its place goes to one fallback at a time.
@@ -194,7 +194,7 @@ fn same_words(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::steps::plan::Severity;
+    use argonauts_core::workflows::steps::plan::Severity;
 
     use super::*;
 

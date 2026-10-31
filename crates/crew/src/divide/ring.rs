@@ -1,7 +1,7 @@
 //! The review ring: each task's reviewers (`review.per_task`) come from other model providers
 //! than its worker (`review.other_provider`). Chores (merge, docs) rotate.
 
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
 
 /// `candidates` are `(worker, provider)`, the worker already left out. Rotates by `offset` so the
 /// load spreads. Fewer than `per_task` come back when too few fit.

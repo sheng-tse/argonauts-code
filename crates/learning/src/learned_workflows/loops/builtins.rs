@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use starlark_syntax::codemap::Span;
 
-use argonauts_core::workflow::StepKind;
+use argonauts_core::workflows::workflow::StepKind;
 
 use super::interp::{Args, Interp};
 pub use super::value::check_len;

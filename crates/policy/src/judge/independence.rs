@@ -1,10 +1,10 @@
 //! A judge must not be an author or worker of what it approves, and with
 //! `different_provider` it must not share a model provider with any of them.
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::provider::is_known;
-use argonauts_core::session_runner::RunnerDirectory;
+use argonauts_core::agents::session_runner::RunnerDirectory;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::registry::provider::is_known;
 
 /// Why `candidate` can't approve, or `Ok` when it's independent. An author whose provider is
 /// unknown counts as the same provider. The reason reaches the transcript, so it names agents as

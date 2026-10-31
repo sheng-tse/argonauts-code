@@ -15,7 +15,7 @@ use std::io::{self, Write as _};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
-use argonauts_core::layout::user_files;
+use argonauts_core::base::layout::user_files;
 use argonauts_core::{Paths, create_private_dir_all, write_private_file};
 use serde::{Deserialize, Serialize};
 

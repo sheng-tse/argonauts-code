@@ -6,10 +6,10 @@
 
 pub(crate) mod catalog;
 
-use argonauts_core::steps::intake::{
+use argonauts_core::workflows::steps::intake::{
     ConversationAnswer, ConversationAnswerInput, Estimate, IntakeInput,
 };
-use argonauts_core::steps::{Step, output_schema};
+use argonauts_core::workflows::steps::{Step, output_schema};
 
 const ESTIMATE: &str = argonauts_core::template!("prompts/conversation/estimate.md");
 const CONVERSATION_ANSWER: &str = argonauts_core::template!("prompts/conversation/answer.md");

@@ -4,22 +4,22 @@
 //! reviewer the ones it raised, a worker the ones it was sent back with.
 
 use argonauts_core::TaskId;
-use argonauts_core::display_names::builtin_cli_name;
-use argonauts_core::events::run::{RunLifecycle, WaitReason};
-use argonauts_core::events::session::EndReason;
-use argonauts_core::events::task::{ReviewEvent, TaskEvent, TaskState, TryCause};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ModelRef, RoleName, SessionKey};
-use argonauts_core::sanitize::sanitize_for_terminal;
-use argonauts_core::session_runner::Access;
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::judgment::{ReviewOutput, ReviewVerdict};
-use argonauts_core::steps::plan::Severity;
-use argonauts_core::views::{
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::app::views::{
     EarlierFindings, EarlierVerdict, Finding, Findings, ReviewGiven, RowNote, Tone,
     writes_the_message,
 };
-use argonauts_crew::claude_codes::review_of;
+use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::look::display_names::builtin_cli_name;
+use argonauts_core::runs::events::run::{RunLifecycle, WaitReason};
+use argonauts_core::runs::events::session::EndReason;
+use argonauts_core::runs::events::task::{ReviewEvent, TaskEvent, TaskState, TryCause};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::safety::sanitize::sanitize_for_terminal;
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::judgment::{ReviewOutput, ReviewVerdict};
+use argonauts_core::workflows::steps::plan::Severity;
+use argonauts_crew::workflow::claude_codes::review_of;
 use serde_json::Value;
 use time::OffsetDateTime;
 
@@ -629,12 +629,12 @@ fn cut_short(held: Option<&WaitReason>, worker: &ModelRef) -> RowNote {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::names::ModelRef;
-    use argonauts_core::steps::judgment::ReviewComment;
+    use argonauts_core::base::names::ModelRef;
+    use argonauts_core::workflows::steps::judgment::ReviewComment;
 
     use super::*;
     use crate::client::test_support::{event, session_started, task_event};
-    use argonauts_core::events::run::{RunLifecycle, RunOutcome};
+    use argonauts_core::runs::events::run::{RunLifecycle, RunOutcome};
 
     fn sent_back(seq: u64, session: &SessionKey, task: Option<&TaskId>) -> RunEvent {
         let review = ReviewOutput {
@@ -667,8 +667,8 @@ mod tests {
     /// run's full stop cut reads "stopped with the run", and one an outage cut waits for its CLI.
     #[test]
     fn a_session_cut_short_says_what_the_run_waits_for() {
-        use argonauts_core::events::run::WaitReason;
-        use argonauts_core::events::session::EndReason;
+        use argonauts_core::runs::events::run::WaitReason;
+        use argonauts_core::runs::events::session::EndReason;
 
         let worker = SessionKey::numbered(1);
         let said = |reason: WaitReason| {

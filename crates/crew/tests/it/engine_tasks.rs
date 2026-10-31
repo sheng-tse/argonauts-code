@@ -10,39 +10,39 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use serde_json::{Value, json};
 
-use argonauts_core::api::ApprovalAnswer;
-use argonauts_core::events::agent_status::{FallbackPlan, RunSpend, SpendEvent};
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::{
+    Access, RunnerCapabilities, RunnerEvent, SessionRunner, SessionSpec,
+};
+use argonauts_core::base::names::{ApprovalId, ModelRef, WorkflowId};
+use argonauts_core::models::limits::{Candidate, CostEstimate, RecoveryAction};
+use argonauts_core::models::meter::{MeterAction, MeterLimit, SpendStatus};
+use argonauts_core::runs::api::ApprovalAnswer;
+use argonauts_core::runs::events::agent_status::{FallbackPlan, RunSpend, SpendEvent};
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
     FreeText, PlanPacket,
 };
-use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
-use argonauts_core::events::plan::{LimitPlan, TaskGraph};
-use argonauts_core::events::run::{
+use argonauts_core::runs::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
+use argonauts_core::runs::events::plan::{LimitPlan, TaskGraph};
+use argonauts_core::runs::events::run::{
     Party, ResumeCause, RunLifecycle, RunMode, RunResumed, RunStarted,
 };
-use argonauts_core::events::session::{
+use argonauts_core::runs::events::session::{
     CallCount, EndReason, InputPartKind, LimitEvent, SessionEvent, Watchdog,
 };
-use argonauts_core::events::task::{
+use argonauts_core::runs::events::task::{
     CheckKind, TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState, TryCause,
 };
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::{Candidate, CostEstimate, RecoveryAction};
-use argonauts_core::meter::{MeterAction, MeterLimit, SpendStatus};
-use argonauts_core::names::{ApprovalId, ModelRef, WorkflowId};
-use argonauts_core::policy::StuckFacts;
-use argonauts_core::session_runner::{
-    Access, RunnerCapabilities, RunnerEvent, SessionRunner, SessionSpec,
-};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::safety::policy::StuckFacts;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::fallback::FallbackMode;
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit, OnHit};
 use argonauts_core::settings::prompts::{RolePrompts, Writer};
 use argonauts_core::settings::protocol::CheckCommand;
-use argonauts_core::steps::StepName;
-use argonauts_core::workflow::{StandardPhase, StepRef};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::workflow::{StandardPhase, StepRef};
 use argonauts_core::{LimitDimension, NoteLevel, RunId, Spend, TaskId};
 use argonauts_crew::EngineError;
 use argonauts_crew::approvals;
@@ -52,9 +52,9 @@ use argonauts_crew::state::RunState;
 use argonauts_crew::task;
 use argonauts_crew::task::checks::{self, NO_COMMAND_CHECKS};
 use argonauts_crew::workflow::{StepAt, StepCall, StepDone};
-use argonauts_testkit::deadline;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
-use argonauts_testkit::services::MemorySink;
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::services::MemorySink;
+use argonauts_testkit::pty::deadline;
 
 use support::Crew;
 
@@ -144,14 +144,14 @@ async fn tasks_run_in_parallel_worktrees() -> anyhow::Result<()> {
         // Then the orchestrator's brief for the task, as its own words and nowhere twice.
         let prompt = &worker.specs()[0].prompt;
         assert_eq!(
-            argonauts_core::prompt_parts::heading(&prompt[1]).as_deref(),
+            argonauts_core::prompts::prompt_parts::heading(&prompt[1]).as_deref(),
             Some("From the orchestrator · Claude Code")
         );
         assert_eq!(prompt[1].text.trim_end(), format!("Do {id}."));
         // Then your words, from the file that stands to this one request.
         let headings: Vec<String> = prompt
             .iter()
-            .filter_map(argonauts_core::prompt_parts::heading)
+            .filter_map(argonauts_core::prompts::prompt_parts::heading)
             .collect();
         assert_eq!(
             headings[2..],
@@ -1866,7 +1866,7 @@ async fn a_writer_model_writes_the_reviewers_instructions() -> anyhow::Result<()
     let prompt = &reviewer.specs()[0].prompt;
     let headings: Vec<String> = prompt
         .iter()
-        .filter_map(argonauts_core::prompt_parts::heading)
+        .filter_map(argonauts_core::prompts::prompt_parts::heading)
         .collect();
     assert_eq!(
         headings,
@@ -1905,7 +1905,7 @@ async fn a_worker_file_that_replaces_keeps_the_task_readable() -> anyhow::Result
     let prompt = &worker.specs()[0].prompt;
     let headings: Vec<String> = prompt
         .iter()
-        .filter_map(argonauts_core::prompt_parts::heading)
+        .filter_map(argonauts_core::prompts::prompt_parts::heading)
         .collect();
     assert_eq!(
         headings,
@@ -1962,7 +1962,7 @@ async fn a_brief_that_is_a_workflows_own_step_is_read_as_the_workflows() -> anyh
 
     let opens_with = |worker: &FakeRunner| {
         let prompt = &worker.specs()[0].prompt;
-        let heading = argonauts_core::prompt_parts::heading(&prompt[1]);
+        let heading = argonauts_core::prompts::prompt_parts::heading(&prompt[1]);
         (
             heading.unwrap_or_default(),
             prompt[1].text.trim_end().to_owned(),

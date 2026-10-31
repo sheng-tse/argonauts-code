@@ -9,36 +9,36 @@
 //! the goal stops and says why. On autopilot it never asks.
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{ModelRef, RoleName, WorkflowId};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalKind, ApprovalPacket, FreeText, GoalPacket,
 };
-use argonauts_core::events::goal::{
+use argonauts_core::runs::events::goal::{
     ChoiceOption, Criterion, Decider, GoalAction, GoalChecked, GoalEvent, GoalFile, GoalQuestion,
     GoalRun, GoalStatus, GoalVerdict, Try,
 };
-use argonauts_core::events::run::{Party, RunMode, RunOutcome, WaitReason};
-use argonauts_core::events::task::{TaskKind, TaskSpec};
-use argonauts_core::events::workflow::{RunNote, StepEnd, WorkflowEvent};
-use argonauts_core::goal::keep::{self, Limits, Next};
-use argonauts_core::goal::{
-    CheckMeans, CheckWith, GoalDefault, GoalFrom, GoalScope, GoalSpec, KeptBy,
-};
-use argonauts_core::names::{ModelRef, RoleName, WorkflowId};
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::runs::events::run::{Party, RunMode, RunOutcome, WaitReason};
+use argonauts_core::runs::events::task::{TaskKind, TaskSpec};
+use argonauts_core::runs::events::workflow::{RunNote, StepEnd, WorkflowEvent};
+use argonauts_core::safety::policy::EvidenceFacts;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::AtHardLimit;
 use argonauts_core::settings::limit::LimitUnit;
-use argonauts_core::steps::pursue::{PlanTry, PlanTryInput, TryPlan};
-use argonauts_core::steps::understand::DiffTag;
-use argonauts_core::workflow::{Phase, StandardPhase, StepKind, Workflow};
+use argonauts_core::workflows::goal::keep::{self, Limits, Next};
+use argonauts_core::workflows::goal::{
+    CheckMeans, CheckWith, GoalDefault, GoalFrom, GoalScope, GoalSpec, KeptBy,
+};
+use argonauts_core::workflows::steps::pursue::{PlanTry, PlanTryInput, TryPlan};
+use argonauts_core::workflows::steps::understand::DiffTag;
+use argonauts_core::workflows::workflow::{Phase, StandardPhase, StepKind, Workflow};
 
 use crate::approvals::{self, ApprovalRequest};
-use crate::captain;
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::prompts::goal::NEXT_TRY;
 use crate::roles;
+use crate::roles::captain;
 use crate::state::RunState;
 use crate::understand::{draft, file};
 use crate::workflow::{Flow, StepCall, StepDone, change, runner, shape, yaml};
@@ -656,7 +656,7 @@ async fn next_try(host: &Host, call: &StepCall, checked: &GoalChecked) -> Engine
         let input = PlanTryInput {
             goal: goal.objective.clone(),
             criteria: goal.criteria.clone(),
-            last_check: Some(argonauts_core::steps::pursue::GoalCheck {
+            last_check: Some(argonauts_core::workflows::steps::pursue::GoalCheck {
                 verdicts: checked.verdicts.clone(),
                 overall: checked.overall,
                 reason: checked.reason.clone(),
@@ -1335,8 +1335,8 @@ mod tests {
 
     #[test]
     fn a_goal_is_over_limit_once_its_dollars_are_spent() {
-        use argonauts_core::events::agent_status::RunSpend;
-        use argonauts_core::meter::Spend;
+        use argonauts_core::models::meter::Spend;
+        use argonauts_core::runs::events::agent_status::RunSpend;
         use argonauts_core::settings::limit::LimitAmount;
         let spend = |spent: f64| RunSpend {
             spent: Spend {

@@ -7,20 +7,20 @@
 //! cancels it, and the conversation carries on in the session it left.
 
 use argonauts_core::NoteLevel;
+use argonauts_core::agents::session_runner::RunnerKind;
 use argonauts_core::app::AppEvent;
-use argonauts_core::names::{ModelRef, TurnId};
-use argonauts_core::session_runner::RunnerKind;
+use argonauts_core::base::names::{ModelRef, TurnId};
 use argonauts_core::settings::switch::Carry;
-use argonauts_core::steps::{StepError, StepOutcome};
+use argonauts_core::workflows::steps::{StepError, StepOutcome};
 
 use super::excerpt::{self, Exchange, Summary, exchanges};
 use super::lifecycle::begin_carry;
 use super::{ConversationState, Turn, send_queued, settle_mode, stop_turn};
-use crate::controller::captain_or_crew::{Reading, read_answer};
-use crate::controller::turn::{self, TurnStep};
+use crate::controller::turns::captain_or_crew::{Reading, read_answer};
+use crate::controller::turns::turn::{self, TurnStep};
 use crate::controller::{Ctx, Effect};
-use crate::conversation_store::ConversationSession;
-use argonauts_core::events::session::InputPart;
+use crate::conversation::store::ConversationSession;
+use argonauts_core::runs::events::session::InputPart;
 
 /// Carry turns number apart from the conversation's, and neither the screen nor the journal
 /// sees them: only the summary they write shows.
@@ -432,7 +432,8 @@ fn plain(line: &str) -> String {
 fn model_name(ctx: &Ctx, worker: &ModelRef) -> String {
     let (worker, _) = turn::conversation_agent(ctx.settings(), worker);
     let model = worker.model.clone().or_else(|| {
-        crate::controller::names::cli_defaults(ctx, [worker.agent.as_str()]).remove(&worker.agent)
+        crate::controller::clis::names::cli_defaults(ctx, [worker.agent.as_str()])
+            .remove(&worker.agent)
     });
     model
         .as_deref()

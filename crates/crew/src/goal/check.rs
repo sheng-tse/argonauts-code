@@ -13,22 +13,22 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::goal::{
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::models::limits::CheckRequest;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::goal::{
     CheckRun, CheckedBy, Criterion, CriterionState, CriterionVerdict, GoalChecked, GoalEvent,
     GoalVerdict,
 };
-use argonauts_core::events::task::CheckOutcome;
-use argonauts_core::goal::{CheckWith, GoalSpec, THE_JUDGE, YOUR_CHECKS, argv};
-use argonauts_core::limits::CheckRequest;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::session_runner::Access;
+use argonauts_core::runs::events::task::CheckOutcome;
 use argonauts_core::settings::protocol::CheckCommand;
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::pursue::{CheckGoal, CheckGoalInput, GoalCheck};
+use argonauts_core::workflows::goal::{CheckWith, GoalSpec, THE_JUDGE, YOUR_CHECKS, argv};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::pursue::{CheckGoal, CheckGoalInput, GoalCheck};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::merge::final_check::{FinalCheck, run_base};
 use crate::merge::{diff, merge_packet, step};
 use crate::prompts::goal::CHECK;
@@ -411,7 +411,7 @@ impl Means for InRun<'_> {
             name: command.name.clone(),
             command: command.command.clone(),
             workdir: place.dir.clone(),
-            sandbox: crate::spec::sandbox(settings, Access::Build, &place.dir, &temp)?,
+            sandbox: crate::sessions::spec::sandbox(settings, Access::Build, &place.dir, &temp)?,
             timeout: settings
                 .checks
                 .timeout
@@ -480,7 +480,7 @@ fn fresh_slot(state: &RunState, task: Option<&TaskId>) -> u32 {
 fn unrunnable(command: &str, problem: &str) -> CheckOutcome {
     CheckOutcome {
         name: command.to_owned(),
-        kind: argonauts_core::events::task::CheckKind::Command,
+        kind: argonauts_core::runs::events::task::CheckKind::Command,
         passed: false,
         command: None,
         exit_code: None,

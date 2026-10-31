@@ -9,8 +9,8 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use argonauts_core::behavior_world::{ModelFacts, WorldFacts};
-use argonauts_core::logos::{Logo, LogoMark, logo_for};
+use argonauts_core::behaviors::behavior_world::{ModelFacts, WorldFacts};
+use argonauts_core::look::logos::{Logo, LogoMark, logo_for};
 use time::Date;
 
 use super::rules;

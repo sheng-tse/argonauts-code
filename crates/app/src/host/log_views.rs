@@ -3,13 +3,13 @@
 
 use std::path::{Path, PathBuf};
 
-use argonauts_core::api::{ApiError, DiffScope, DiffView, RawView, StatusSummary};
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::task::TaskEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::journal;
-use argonauts_core::layout::{run_files, session_dir, session_files};
-use argonauts_core::names::SessionKey;
+use argonauts_core::base::layout::{run_files, session_dir, session_files};
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::api::{ApiError, DiffScope, DiffView, RawView, StatusSummary};
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::task::TaskEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::journal;
 use argonauts_core::{DiffStat, RunId, TaskId};
 use argonauts_crew::status::{self, Viewer};
 

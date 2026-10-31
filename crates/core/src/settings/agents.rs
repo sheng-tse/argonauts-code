@@ -49,13 +49,16 @@ impl super::Settings {
     /// neither runs its CLI's own default, which settings can't name, so it stays bare. Two
     /// refs that run the same model are one fallback: a bare `opencode` whose OpenCode is set to
     /// the Qwen that stopped would only run that Qwen again.
-    pub fn model_run_by(&self, worker: &crate::names::ModelRef) -> crate::names::ModelRef {
+    pub fn model_run_by(
+        &self,
+        worker: &crate::base::names::ModelRef,
+    ) -> crate::base::names::ModelRef {
         let configured = || {
             let agent = self.agents.get(&worker.agent)?;
             agent.model.clone()
         };
         match worker.model.is_none().then(configured).flatten() {
-            Some(model) => crate::names::ModelRef::new(worker.agent.clone(), Some(model)),
+            Some(model) => crate::base::names::ModelRef::new(worker.agent.clone(), Some(model)),
             None => worker.clone(),
         }
     }
@@ -195,7 +198,7 @@ pub enum Share {
 
 #[cfg(test)]
 mod tests {
-    use crate::names::ModelRef;
+    use crate::base::names::ModelRef;
     use crate::settings::Settings;
 
     use super::AgentSettings;

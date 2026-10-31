@@ -8,19 +8,19 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::approval::ApprovalEvent;
-use argonauts_core::events::council::{CheckPick, CheckRung, CouncilEvent, CouncilEventKind};
-use argonauts_core::events::session::{InputPartKind, SessionEvent};
-use argonauts_core::events::task::TaskEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::approval::ApprovalEvent;
+use argonauts_core::runs::events::council::{CheckPick, CheckRung, CouncilEvent, CouncilEventKind};
+use argonauts_core::runs::events::session::{InputPartKind, SessionEvent};
+use argonauts_core::runs::events::task::TaskEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::council::SameModelCheck;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_crew::council::lexicon::Lexicon;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
 
 use crate::engine_council_talk::{Asked, asked, drive, one_task, plan, points, stance, turn};
 use crate::support::{self, smallest_answer};

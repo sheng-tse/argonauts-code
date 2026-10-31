@@ -1,19 +1,19 @@
 //! Your steering, mentions, guidance, and taking undelivered messages back.
 
-use argonauts_core::api::SteerAck;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::{Delivery, QueuedMessage};
-use argonauts_core::events::shared::{BlackboardKind, Recipient};
+use argonauts_core::agents::session_runner::{SessionControl, SteerSupport};
+use argonauts_core::base::names::{MessageId, RoleName, SessionKey};
 use argonauts_core::input::MentionTarget;
-use argonauts_core::names::{MessageId, RoleName, SessionKey};
-use argonauts_core::session_runner::{SessionControl, SteerSupport};
+use argonauts_core::runs::api::SteerAck;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::{Delivery, QueuedMessage};
+use argonauts_core::runs::events::shared::{BlackboardKind, Recipient};
 use argonauts_core::{Note, NoteLevel};
 
 use crate::blackboard::{Post, delivery, post};
-use crate::consultant;
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
+use crate::roles::consultant;
 use crate::state::blackboard::TAKEN_BACK;
 
 /// `SessionControl::Deliver` with `Delivery::Steer`; the reply says how the worker takes it.

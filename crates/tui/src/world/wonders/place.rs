@@ -7,7 +7,7 @@
 
 use std::f64::consts::PI;
 
-use argonauts_core::behavior_world::{RisenWonder, Wonder};
+use argonauts_core::behaviors::behavior_world::{RisenWonder, Wonder};
 
 use super::{Bounds, bounds, size_on_map};
 use crate::world::map::fields::{Ground, HEIGHT, Look, WIDTH};

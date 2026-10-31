@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::time::Duration;
 
-use argonauts_core::events::session::{CallCount, EndReason, Watchdog};
+use argonauts_core::runs::events::session::{CallCount, EndReason, Watchdog};
 use argonauts_core::{ErrorCategory, LimitDimension, StopPlan, StopSignal, StopStep};
 use time::OffsetDateTime;
 use tokio::time::Instant;

@@ -2,12 +2,12 @@
 //! and each thing its agent did, in order. An Argonauts Code conversation needs none of this: its
 //! own record comes back through the printers that drew it live.
 
+use argonauts_core::agents::cli_sessions::{CliCall, CliStep};
 use argonauts_core::app::ReplayTurn;
-use argonauts_core::cli_sessions::{CliCall, CliStep};
-use argonauts_core::events::run::Party;
+use argonauts_core::runs::events::run::Party;
 
 use crate::bridge::tools;
-use crate::cell::{
+use crate::cells::cell::{
     AssistantMessage, Cell, CollapsedGroup, Notice, Thought, Tone, ToolCall, ToolItem, UserMessage,
 };
 
@@ -68,7 +68,7 @@ fn turn_cells(turn: &ReplayTurn, cx: &Cx<'_>) -> Vec<Reprint> {
         Party::Agent { worker, .. } => worker.agent.as_str(),
         _ => "",
     };
-    let places = tools::Places::of_conversation(cx.state);
+    let places = crate::frame::state::Places::of_conversation(cx.state);
     let calls_print = !quiet(cx);
     let mut cells: Vec<Reprint> = Vec::new();
     for step in &turn.steps {
@@ -116,7 +116,7 @@ fn turn_cells(turn: &ReplayTurn, cx: &Cx<'_>) -> Vec<Reprint> {
 /// A call's row as it stood once the call ended: its patches in place of the preview, then its
 /// result. A call the transcript never saw end reads as stopped. What a subagent it started
 /// ran folds into its result, as on Claude Code's screen, and Ctrl+O shows each call.
-fn call_row(agent_id: &str, call: &CliCall, places: &tools::Places) -> ToolCall {
+fn call_row(agent_id: &str, call: &CliCall, places: &crate::frame::state::Places) -> ToolCall {
     let whole = whole_row(agent_id, call, places);
     let is_nested = |item: &ToolItem| matches!(item, ToolItem::Call(_) | ToolItem::Group(_));
     if !whole.body.iter().any(is_nested) {
@@ -129,7 +129,7 @@ fn call_row(agent_id: &str, call: &CliCall, places: &tools::Places) -> ToolCall 
 }
 
 /// The row with every call of its subagent under it, at every depth.
-fn whole_row(agent_id: &str, call: &CliCall, places: &tools::Places) -> ToolCall {
+fn whole_row(agent_id: &str, call: &CliCall, places: &crate::frame::state::Places) -> ToolCall {
     let mut row = tools::start_call_in(agent_id, &call.name, &call.input, places);
     row.kind = tools::kind_of(agent_id, &call.name, &call.input);
     for step in &call.steps {

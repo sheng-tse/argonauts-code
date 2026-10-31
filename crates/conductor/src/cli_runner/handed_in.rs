@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use argonauts_core::{AgentEvent, answer_format};
+use argonauts_core::{AgentEvent, workflows::answer_format};
 use serde_json::Value;
 
 /// Programs whose output is a file's text, which is never a report handed in.
@@ -276,10 +276,10 @@ mod replay {
     use std::time::Instant;
 
     use argonauts_core::AgentEvent;
-    use argonauts_core::events::session::EndReason;
-    use argonauts_core::session_runner::{SessionLimits, SessionRunner};
-    use argonauts_core::steps::output_schema;
-    use argonauts_core::steps::task::{Build, ReportStatus, TaskReport};
+    use argonauts_core::agents::session_runner::{SessionLimits, SessionRunner};
+    use argonauts_core::runs::events::session::EndReason;
+    use argonauts_core::workflows::steps::output_schema;
+    use argonauts_core::workflows::steps::task::{Build, ReportStatus, TaskReport};
 
     use crate::cli_runner::context::Context;
     use crate::cli_runner::observe::{Action, Observer};

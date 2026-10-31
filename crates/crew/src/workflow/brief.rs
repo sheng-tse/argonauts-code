@@ -7,12 +7,12 @@ use std::collections::BTreeSet;
 
 use unicode_width::UnicodeWidthStr;
 
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::events::goal::{Criterion, CriterionCheck};
-use argonauts_core::labels;
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::design::{DesignOutput, names_a_test, starts_with_program};
-use argonauts_core::workflow::{Step, StepKind, Workflow};
+use argonauts_core::look::labels;
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::runs::events::goal::{Criterion, CriterionCheck};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::design::{DesignOutput, names_a_test, starts_with_program};
+use argonauts_core::workflows::workflow::{Step, StepKind, Workflow};
 
 use crate::state::RunState;
 
@@ -403,8 +403,8 @@ fn is_approval(step: &Step) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::goal::Criterion;
-    use argonauts_core::steps::design::BriefTask;
+    use argonauts_core::runs::events::goal::Criterion;
+    use argonauts_core::workflows::steps::design::BriefTask;
 
     use crate::workflow::yaml;
 

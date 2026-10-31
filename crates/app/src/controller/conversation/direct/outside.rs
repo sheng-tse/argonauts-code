@@ -1,12 +1,12 @@
 //! What `[outside]` gives a turn for the conversation's approval mode.
 
 use argonauts_core::Asks;
-use argonauts_core::outside::Outside;
+use argonauts_core::safety::outside::Outside;
 use argonauts_core::settings::approvals::ApprovalMode;
 
 use super::super::ConversationState;
 use crate::controller::Ctx;
-use crate::controller::turn::TurnStep;
+use crate::controller::turns::turn::TurnStep;
 
 /// As `[outside]` says for the conversation's mode. Where the mode works outside only once
 /// asked, a turn that asks nothing keeps to its folder, and one whose CLI can't ask before it

@@ -7,8 +7,8 @@ use std::path::Path;
 use argonauts_core::TaskId;
 use argonauts_runner::{Check, Checked};
 
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::goal::until::{self, Asked};
 use crate::workflow::StepCall;
 

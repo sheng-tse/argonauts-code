@@ -1,6 +1,6 @@
 //! The planet's facts read from the app's own map of actions.
 
-use argonauts_core::behavior_map::BehaviorMap;
+use argonauts_core::behaviors::behavior_map::BehaviorMap;
 use time::OffsetDateTime;
 
 use super::{Band, PlanetFacts};
@@ -65,8 +65,8 @@ fn days_back(at: OffsetDateTime, end: OffsetDateTime) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::behavior_map::MapAction;
-    use argonauts_core::behavior_world::WorldFacts;
+    use argonauts_core::behaviors::behavior_map::MapAction;
+    use argonauts_core::behaviors::behavior_world::WorldFacts;
     use time::macros::datetime;
     use time::{Duration, OffsetDateTime};
 
@@ -136,7 +136,7 @@ mod tests {
         // Where the app worked out the world, its night count and its end stand.
         let world = WorldFacts {
             end: END + Duration::days(10),
-            crew: argonauts_core::behavior_world::CrewFacts {
+            crew: argonauts_core::behaviors::behavior_world::CrewFacts {
                 night_actions: 5,
                 ..Default::default()
             },

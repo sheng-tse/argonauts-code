@@ -7,28 +7,28 @@ use std::path::PathBuf;
 use futures::future::join_all;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::plan::PlanEvent;
-use argonauts_core::events::session::InputPartKind;
-use argonauts_core::events::task::{TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState};
-use argonauts_core::names::{ModelRef, RoleName, SessionKey};
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::plan::PlanEvent;
+use argonauts_core::runs::events::session::InputPartKind;
+use argonauts_core::runs::events::task::{TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState};
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::protocol::ExperimentSettings;
-use argonauts_core::steps::plan::{
+use argonauts_core::workflows::steps::plan::{
     ExperimentProposal, ExperimentReport, ExperimentReportStep, ProposeExperiment,
     ProposeExperimentInput,
 };
-use argonauts_core::steps::{StepName, last_json_object, output_schema};
+use argonauts_core::workflows::steps::{StepName, last_json_object, output_schema};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Fallbacks, Host, SessionPlan};
-use crate::error::{EngineError, EngineResult};
 use crate::plan::context::{crew_for, part, warn};
 use crate::plan::map;
 use crate::prompts::plan::{EXPERIMENT_REPORT, PROPOSE_EXPERIMENT};
+use crate::roles::tie_breaker;
 use crate::state::RunState;
 use crate::task::worktree;
-use crate::tie_breaker;
 use crate::workflow::StepCall;
 
 /// Whether one proposal fits on its own: experiments on, at least one option, each option within
@@ -122,7 +122,7 @@ async fn propose(
     host: &Host,
     call: &StepCall,
     settings: &ExperimentSettings,
-    disputed: Vec<argonauts_core::steps::plan::MapTopic>,
+    disputed: Vec<argonauts_core::workflows::steps::plan::MapTopic>,
 ) -> EngineResult<()> {
     let tie_breaker = host
         .read(|state| tie_breaker::tie_breaker(state, host.settings()))
@@ -287,7 +287,7 @@ async fn prepare(
                 ..TaskLimit::default()
             },
             predictions: None,
-            item: Some(argonauts_core::labels::slug(&option.label, 3))
+            item: Some(argonauts_core::look::labels::slug(&option.label, 3))
                 .filter(|item| !item.is_empty()),
             way: None,
         };
@@ -413,7 +413,7 @@ fn newest_experiment_session(state: &RunState, task: &TaskId) -> Option<SessionK
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::steps::plan::ExperimentOption;
+    use argonauts_core::workflows::steps::plan::ExperimentOption;
 
     use super::*;
 

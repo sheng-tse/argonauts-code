@@ -4,19 +4,19 @@
 use std::collections::BTreeSet;
 
 use argonauts_core::PhaseStatus;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::goal::{GoalChangeResolution, GoalFile, GoalSource};
-use argonauts_core::events::run::{
+use argonauts_core::base::log::RUN_REVIEW_FAILED;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::goal::{GoalChangeResolution, GoalFile, GoalSource};
+use argonauts_core::runs::events::run::{
     CheckedInstruction, InstructionOutcome, Party, RunPhase, RunStarted,
 };
-use argonauts_core::log::RUN_REVIEW_FAILED;
-use argonauts_core::steps::intake::InstructionKind;
+use argonauts_core::workflows::steps::intake::InstructionKind;
 
-use crate::cell::{Notice, Tone, ToolCall, ToolItem, ToolKind, ToolState};
+use crate::cells::cell::{Notice, Tone, ToolCall, ToolItem, ToolKind, ToolState};
 
 use super::milestones::RunStory;
 use super::{Cx, emit, quiet};
-use crate::views::layout::cut;
+use crate::base::draw::layout::cut;
 
 /// `● Name(args)` with its details under one `⎿`.
 pub(super) fn step(name: &str, args: &str, state: ToolState, details: &[String]) -> ToolCall {
@@ -331,8 +331,8 @@ fn disputed_table(story: &RunStory) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome};
-    use argonauts_core::steps::intake::InstructionKind;
+    use argonauts_core::runs::events::run::{CheckedInstruction, InstructionOutcome};
+    use argonauts_core::workflows::steps::intake::InstructionKind;
 
     use super::as_you_asked;
 

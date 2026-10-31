@@ -2,8 +2,8 @@
 //! asking, the decision is recorded as the rules', and the auto-merge counts toward the day.
 
 use crate::policy_support;
-use argonauts_core::events::approval::AnswerAction;
-use argonauts_core::events::run::Party;
+use argonauts_core::runs::events::approval::AnswerAction;
+use argonauts_core::runs::events::run::Party;
 use policy_support::{
     AUTO_MERGE_RULES, RUN_WAIT, captain_config, launch_ready, merge_decided, run_finished,
     start_captain, trusted_scenario, wait_for_events,

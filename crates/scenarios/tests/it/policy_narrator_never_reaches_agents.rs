@@ -6,7 +6,7 @@ use std::fs;
 use std::time::Duration;
 
 use argonauts_scenarios::WAIT;
-use argonauts_testkit::journal;
+use argonauts_testkit::home::journal;
 use policy_support::{
     RUN_WAIT, captain_config, files_named, invocations_of, launch_ready, merge_opened,
     start_captain, trusted_scenario, wait_for_events,

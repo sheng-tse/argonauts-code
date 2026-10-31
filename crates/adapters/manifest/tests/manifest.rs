@@ -6,14 +6,14 @@ use std::sync::Arc;
 use argonauts_adapter_manifest::{
     manifest_adapter, manifest_adapter_with, manifest_adapter_with_templates,
 };
-use argonauts_core::adapter::Transport;
-use argonauts_core::limits::PlanUsageReading;
-use argonauts_core::registry::CliManifest;
-use argonauts_core::registry::cli::{
+use argonauts_core::agents::adapter::Transport;
+use argonauts_core::agents::session::SessionRole;
+use argonauts_core::models::limits::PlanUsageReading;
+use argonauts_core::models::registry::CliManifest;
+use argonauts_core::models::registry::cli::{
     ErrorPattern, FinalJsonPointers, HomeKeep, HomeTemplate, OutputKind, PromptChannel, SchemaFlag,
     StopWaits,
 };
-use argonauts_core::session::SessionRole;
 use argonauts_core::settings::Span;
 use argonauts_core::{
     Adapter, AgentEvent, CommandSpec, ErrorCategory, SessionRequest, StopPlan, StreamParser,

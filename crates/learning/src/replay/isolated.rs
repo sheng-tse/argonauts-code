@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use argonauts_core::create_private_dir_all;
 
 use super::files::{nonce, remove_if_present};
-use crate::error::{LearningError, Result};
-use crate::git;
+use crate::store::error::{LearningError, Result};
+use crate::store::git;
 
 /// Where the temporary ref lives in the source while its bundle is written.
 const TEMP_REF_PREFIX: &str = "refs/argonauts/replay";

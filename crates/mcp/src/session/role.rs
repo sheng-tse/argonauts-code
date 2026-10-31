@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use argonauts_core::asking::{Ask, AskReply};
+use argonauts_core::runs::asking::{Ask, AskReply};
 use argonauts_core::settings::crew::CrewRole;
 use rmcp::model::{CallToolResult, ContentBlock, Tool};
 use serde_json::{Value, json};
@@ -104,7 +104,7 @@ pub(super) async fn call(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::asking::AskLine;
+    use argonauts_core::runs::asking::AskLine;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
 

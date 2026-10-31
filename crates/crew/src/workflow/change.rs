@@ -10,36 +10,36 @@ use std::path::Path;
 use serde_json::Value;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::log::{Note, NoteLevel};
+use argonauts_core::base::names::{ApprovalId, ModelRef, RoleName, SessionKey, WorkflowId};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalDecided, ApprovalKind, ApprovalOpened, ApprovalPacket,
     ChangeRequestPacket, FreeText,
 };
-use argonauts_core::events::goal::Criterion;
-use argonauts_core::events::run::{
+use argonauts_core::runs::events::goal::Criterion;
+use argonauts_core::runs::events::run::{
     CheckedInstruction, InstructionOutcome, Party, RunLifecycle, RunMode, RunNamed,
 };
-use argonauts_core::events::session::{EndReason, InputPart, InputPartKind};
-use argonauts_core::events::workflow::{
+use argonauts_core::runs::events::session::{EndReason, InputPart, InputPartKind};
+use argonauts_core::runs::events::workflow::{
     DeclaredPhase, RunNote, WorkflowChanged, WorkflowDeclared, WorkflowEvent,
 };
-use argonauts_core::log::{Note, NoteLevel};
-use argonauts_core::names::{ApprovalId, ModelRef, RoleName, SessionKey, WorkflowId};
-use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
+use argonauts_core::safety::policy::{EvidenceDocument, EvidenceFacts};
 use argonauts_core::settings::workflows::{OrchestratorDesign, RunStyle};
-use argonauts_core::steps::StepError;
-use argonauts_core::steps::design::{
+use argonauts_core::workflows::steps::StepError;
+use argonauts_core::workflows::steps::design::{
     DesignFix, DesignInput, DesignOutput, DesignWorkflow, FixDesign, WorkflowExample,
 };
-use argonauts_core::steps::intake::InstructionKind;
-use argonauts_core::workflow::{
+use argonauts_core::workflows::steps::intake::InstructionKind;
+use argonauts_core::workflows::workflow::{
     StandardPhase, StepKind, StepRef, Workflow, WorkflowParams, WorkflowRef,
 };
-use argonauts_core::workflow_files;
+use argonauts_core::workflows::workflow_files;
 
 use crate::approvals::{self, ApprovalRequest};
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Answered, Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::prompts::workflow::{DESIGN_WORKFLOW, FIX_DESIGN};
 use crate::state::RunState;
 use crate::workflow::brief::Problem;
@@ -602,7 +602,7 @@ const BROKE: &str = "wrote a workflow that breaks its rules";
 /// Nothing has been built yet, and the approval that gives the go-ahead is still to come, so
 /// it will show the workflow as changed.
 fn before_go_ahead(state: &RunState, id: &WorkflowId) -> bool {
-    fn approval(steps: &[argonauts_core::workflow::Step], kind: ApprovalKind) -> bool {
+    fn approval(steps: &[argonauts_core::workflows::workflow::Step], kind: ApprovalKind) -> bool {
         steps.iter().any(|step| {
             (step.kind == StepKind::Approval && step.approval == Some(kind))
                 || approval(&step.steps, kind)
@@ -896,8 +896,8 @@ fn ended_early(err: &EngineError) -> bool {
 }
 
 /// The tie-breaker of the phase the run is in, and the main agent before it has one.
-pub(crate) fn tie_breaker(host: &Host) -> argonauts_core::names::ModelRef {
-    host.read(|state| crate::tie_breaker::tie_breaker(state, host.settings()))
+pub(crate) fn tie_breaker(host: &Host) -> argonauts_core::base::names::ModelRef {
+    host.read(|state| crate::roles::tie_breaker::tie_breaker(state, host.settings()))
         .unwrap_or_else(|| host.settings().crew.main.clone())
 }
 

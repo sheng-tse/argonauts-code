@@ -4,20 +4,20 @@
 //! credentials.
 
 use argonauts_core::PhaseStatus;
-use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent};
-use argonauts_core::events::approval::ApprovalEvent;
-use argonauts_core::events::goal::GoalEvent;
-use argonauts_core::events::plan::{DesignDecision, JudgingResult, PlanEvent};
-use argonauts_core::events::run::{Party, RunLifecycle, RunPhase};
-use argonauts_core::events::shared::{BlackboardEvent, BlackboardKind};
-use argonauts_core::events::{
+use argonauts_core::models::limits::{HealthState, ModelState, PlanUsageStatus};
+use argonauts_core::runs::events::agent_status::{AgentStatusEvent, FallbackEvent};
+use argonauts_core::runs::events::approval::ApprovalEvent;
+use argonauts_core::runs::events::goal::GoalEvent;
+use argonauts_core::runs::events::plan::{DesignDecision, JudgingResult, PlanEvent};
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunPhase};
+use argonauts_core::runs::events::shared::{BlackboardEvent, BlackboardKind};
+use argonauts_core::runs::events::{
     MergeEvent, ReviewEvent, RunEvent, RunEventKind, SpendEvent, TaskEvent,
 };
-use argonauts_core::limits::{HealthState, ModelState, PlanUsageStatus};
 use argonauts_core::{AgentEvent, ErrorCategory};
 use serde::Serialize;
 
-use crate::session::clean_text;
+use crate::sessions::session::clean_text;
 
 /// Message excerpts are cut to this many characters.
 pub const EXCERPT_MAX: usize = 200;
@@ -519,13 +519,13 @@ fn short(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::CheckOutcome;
-    use argonauts_core::events::plan::PlanTally;
-    use argonauts_core::events::run::{PhaseChange, RunStarted};
-    use argonauts_core::events::session::{EndReason, SessionEvent};
-    use argonauts_core::events::task::CheckKind;
-    use argonauts_core::limits::{AgentHealth, PlanUsageReading, PlanUsageSource};
-    use argonauts_core::names::{AgentId, DecisionId, DraftId};
+    use argonauts_core::base::names::{AgentId, DecisionId, DraftId};
+    use argonauts_core::models::limits::{AgentHealth, PlanUsageReading, PlanUsageSource};
+    use argonauts_core::runs::events::CheckOutcome;
+    use argonauts_core::runs::events::plan::PlanTally;
+    use argonauts_core::runs::events::run::{PhaseChange, RunStarted};
+    use argonauts_core::runs::events::session::{EndReason, SessionEvent};
+    use argonauts_core::runs::events::task::CheckKind;
     use argonauts_core::settings::fallback::FallbackMode;
     use argonauts_core::settings::protocol::JudgingMethod;
     use argonauts_core::{RunId, TaskId};
@@ -607,7 +607,7 @@ mod tests {
                 parent: None,
             }),
             event(RunEventKind::Session(SessionEvent::Ended(Box::new(
-                argonauts_testkit::runner::session_end(
+                argonauts_testkit::engine::runner::session_end(
                     EndReason::Completed,
                     Some("SESSION-TRANSCRIPT"),
                     None,

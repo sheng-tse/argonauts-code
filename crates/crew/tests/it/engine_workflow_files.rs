@@ -8,29 +8,31 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use tokio::sync::oneshot;
 
-use argonauts_core::api::ApprovalAnswer;
-use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::api::ApprovalAnswer;
+use argonauts_core::runs::engine::{EngineCommand, EngineExit};
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, FreeText,
 };
-use argonauts_core::events::plan::PlanEvent;
-use argonauts_core::events::run::{
+use argonauts_core::runs::events::plan::PlanEvent;
+use argonauts_core::runs::events::run::{
     CaptainOrCrewDecision, Party, RunLifecycle, RunMode, RunOutcome,
 };
-use argonauts_core::events::task::{TaskEvent, TaskKind, TaskSpec};
-use argonauts_core::events::workflow::WorkflowEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::policy::{PolicyOutcome, Verdict};
+use argonauts_core::runs::events::task::{TaskEvent, TaskKind, TaskSpec};
+use argonauts_core::runs::events::workflow::WorkflowEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::safety::policy::{PolicyOutcome, Verdict};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::protocol::{CaptainKind, CheckCommand, JudgingMethod};
-use argonauts_core::steps::StepName;
-use argonauts_core::workflow::{Count, StandardPhase, Step, StepKind, Workflow, WorkflowRef};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::workflow::{
+    Count, StandardPhase, Step, StepKind, Workflow, WorkflowRef,
+};
 use argonauts_crew::state::RunState;
 use argonauts_crew::workflow::runner::captain_workflow;
 use argonauts_crew::workflow::{StepAt, builtin, conditions};
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
 
 fn load(name: &str) -> Workflow {
     builtin::load(name).unwrap_or_else(|err| panic!("{err}"))
@@ -123,8 +125,8 @@ fn builtin_protocols_run_as_workflow_files() {
 
 fn holds(settings: &Settings, condition: &str, round: u32) -> bool {
     let at = StepAt {
-        step: argonauts_core::workflow::StepRef {
-            workflow: argonauts_core::names::WorkflowId::numbered(1),
+        step: argonauts_core::workflows::workflow::StepRef {
+            workflow: argonauts_core::base::names::WorkflowId::numbered(1),
             phase: 1,
             path: vec![0, 2],
         },
@@ -653,7 +655,7 @@ async fn council_full_run() -> anyhow::Result<()> {
     let input: Value = told
         .prompt
         .iter()
-        .find(|part| part.kind == argonauts_core::events::session::InputPartKind::StepInput)
+        .find(|part| part.kind == argonauts_core::runs::events::session::InputPartKind::StepInput)
         .map(|part| serde_json::from_str(&part.text))
         .expect("the closing input")?;
     // A resumed run's events repeat what came before, so the decisions are counted by id.

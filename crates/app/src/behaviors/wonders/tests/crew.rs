@@ -1,6 +1,6 @@
 //! The wonders a crew raises over time, and the made-up crews that raise every one.
 
-use argonauts_core::events::task::TaskKind;
+use argonauts_core::runs::events::task::TaskKind;
 use time::Duration;
 
 use super::log::task_id;

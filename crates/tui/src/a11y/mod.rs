@@ -23,8 +23,8 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use tokio::sync::mpsc;
 
 use crate::UiOptions;
+use crate::base::text::sanitize_line;
 use crate::runtime::{AppIo, run_in_tmux};
-use crate::text::sanitize_line;
 
 pub use lines::{answer_lines, lines_for, rings_for};
 pub use pick::{Pick, Typed};

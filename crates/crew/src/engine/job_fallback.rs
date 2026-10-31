@@ -12,28 +12,30 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use argonauts_core::TaskId;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::agent_status::{JobKeeper, JobRef, JobWait};
-use argonauts_core::events::run::RunMode;
-use argonauts_core::events::session::{EndReason, loaded_words, stuck_words};
-use argonauts_core::events::workflow::{RunNote, WorkflowEvent};
-use argonauts_core::limits::{AgentHealth, HealthState, ModelState, TEST_TASK_SUCCEEDED, Trouble};
-use argonauts_core::log::{NO_SECOND_TRY, NOBODY_TO_FALL_BACK_TO, SAME_CLI_IS_ON};
-use argonauts_core::names::{AgentId, ModelRef, RoleName, WorkflowId};
-use argonauts_core::registry::listed::{self, nearest_listed, other_models, runs_in_place};
-use argonauts_core::session_runner::RunnerKind;
+use argonauts_core::agents::session_runner::RunnerKind;
+use argonauts_core::base::log::{NO_SECOND_TRY, NOBODY_TO_FALL_BACK_TO, SAME_CLI_IS_ON};
+use argonauts_core::base::names::{AgentId, ModelRef, RoleName, WorkflowId};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::limits::{
+    AgentHealth, HealthState, ModelState, TEST_TASK_SUCCEEDED, Trouble,
+};
+use argonauts_core::models::registry::listed::{self, nearest_listed, other_models, runs_in_place};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::agent_status::{JobKeeper, JobRef, JobWait};
+use argonauts_core::runs::events::run::RunMode;
+use argonauts_core::runs::events::session::{EndReason, loaded_words, stuck_words};
+use argonauts_core::runs::events::workflow::{RunNote, WorkflowEvent};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::fallback::{
     AppliedFallback, FallbackEntry, FallbackMode, Retry, SameStep,
 };
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_core::{ErrorCategory, Note, NoteLevel};
 use time::OffsetDateTime;
 
+use crate::engine::error::{Beside, EngineError, EngineResult, Stall, StalledJob};
 use crate::engine::host::{Host, round_window};
 use crate::engine::shared::lock;
-use crate::error::{Beside, EngineError, EngineResult, Stall, StalledJob};
 use crate::fallback::rules;
 use crate::roles::{self, display_name};
 use crate::state::RunState;
@@ -729,7 +731,7 @@ pub(crate) async fn login_check(
 
 /// A sign-in error whose own words say the sign-in is gone, as a conversation reads them too.
 pub(crate) fn says_signed_out(reason: &EndReason) -> bool {
-    argonauts_core::sign_in::signed_out(reason, "").is_some()
+    argonauts_core::agents::sign_in::signed_out(reason, "").is_some()
 }
 
 /// Whether `worker`'s CLI says it's logged out: as it said within the breaker's cool-down, else
@@ -989,7 +991,7 @@ fn builders_provider_on_autopilot(
 ) -> Option<ModelRef> {
     let on_autopilot = crate::approvals::autopilot::applies_now(
         host,
-        argonauts_core::events::approval::ApprovalKind::Fallback,
+        argonauts_core::runs::events::approval::ApprovalKind::Fallback,
     );
     if !on_autopilot {
         return None;
@@ -1032,7 +1034,7 @@ fn say_builders_provider(
     note(
         host,
         job.task.as_ref(),
-        argonauts_core::text::sentence_case(&text),
+        argonauts_core::base::text::sentence_case(&text),
     )
 }
 
@@ -1112,7 +1114,7 @@ fn job_title(host: &Host, job: &Job) -> String {
         let task = job.task.as_ref().and_then(|task| state.tasks.get(task));
         task.map(|record| record.spec.title.clone())
     });
-    title.unwrap_or_else(|| argonauts_core::text::sentence_case(&job_in_words(job)))
+    title.unwrap_or_else(|| argonauts_core::base::text::sentence_case(&job_in_words(job)))
 }
 
 /// `Haiku 5.5's work`, or `the work of Haiku 5.5 and Sonnet 5.5` for several builders.
@@ -1560,7 +1562,7 @@ fn stalled(
             format!(
                 "{} waits for {from_name}: {stopped}, and nobody outside the builder's provider \
                  is left to {} {}.",
-                argonauts_core::text::sentence_case(&role),
+                argonauts_core::base::text::sentence_case(&role),
                 verb_of(job.role),
                 work_of(builders),
             ),
@@ -1571,7 +1573,7 @@ fn stalled(
             format!(
                 "{} waits for {from_name}: {stopped}, and your fallback settings say to wait \
                  for it.",
-                argonauts_core::text::sentence_case(&role)
+                argonauts_core::base::text::sentence_case(&role)
             ),
         )
     } else if applied.same_cli {
@@ -1637,7 +1639,7 @@ fn stalled(
 /// run's stop, `agy is signed out`.
 fn failure_words(why: &Why, from: &ModelRef) -> (String, String) {
     let cli = DisplayNames::default().cli(from.agent.as_str());
-    let model = |id: &str| argonauts_core::model_catalog::display_name_from_id(id);
+    let model = |id: &str| argonauts_core::models::model_catalog::display_name_from_id(id);
     match why {
         Why::LoggedOut(_) | Why::Ended(EndReason::Auth { .. }) => {
             ("signed out".to_owned(), format!("{cli} is signed out"))
@@ -1823,7 +1825,7 @@ pub(crate) fn in_words(reason: &EndReason) -> String {
         EndReason::Billing { .. } => "out of credits".to_owned(),
         EndReason::ModelUnavailable { model } => format!(
             "{} isn't available",
-            argonauts_core::model_catalog::display_name_from_id(model)
+            argonauts_core::models::model_catalog::display_name_from_id(model)
         ),
         EndReason::CliError { category, .. } if *category == ErrorCategory::Auth => {
             "a sign-in error".to_owned()
@@ -1885,9 +1887,9 @@ pub(crate) fn note(host: &Host, task: Option<&TaskId>, text: String) -> EngineRe
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::run::{RunLifecycle, WaitReason};
-    use argonauts_core::events::session::SessionEvent;
-    use argonauts_core::events::{RunEvent, RunEventKind};
+    use argonauts_core::runs::events::run::{RunLifecycle, WaitReason};
+    use argonauts_core::runs::events::session::SessionEvent;
+    use argonauts_core::runs::events::{RunEvent, RunEventKind};
 
     use super::*;
     use crate::state::RunState;
@@ -2057,7 +2059,7 @@ mod tests {
             ts: time::OffsetDateTime::UNIX_EPOCH,
             run_id: argonauts_core::RunId::new("run-01").expect("a run id"),
             task_id: None,
-            session: Some(argonauts_core::names::SessionKey::numbered(1)),
+            session: Some(argonauts_core::base::names::SessionKey::numbered(1)),
             source: "engine".to_owned(),
             kind,
         };
@@ -2194,7 +2196,7 @@ mod tests {
     /// names the model, and that it's the same one.
     #[test]
     fn a_fallback_to_the_same_model_says_so() {
-        use argonauts_core::events::session::{CallCount, Watchdog};
+        use argonauts_core::runs::events::session::{CallCount, Watchdog};
 
         let qwen: ModelRef = "opencode/ollama/qwen3-coder:30b-64k"
             .parse()

@@ -12,22 +12,22 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::Context;
 use serde_json::{Value, json};
 
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::approval::ApprovalEvent;
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunOutcome, WaitReason};
-use argonauts_core::events::session::{EndReason, SessionEnd, SessionEvent};
-use argonauts_core::events::task::{ReviewEvent, TaskEvent};
-use argonauts_core::events::workflow::WorkflowEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::{Candidate, CostEstimate, HealthState};
-use argonauts_core::names::{RoleName, WorkflowId};
-use argonauts_core::session_runner::{RunnerEvent, SessionSpec};
+use argonauts_core::agents::session_runner::{RunnerEvent, SessionSpec};
+use argonauts_core::base::names::{RoleName, WorkflowId};
+use argonauts_core::models::limits::{Candidate, CostEstimate, HealthState};
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::approval::ApprovalEvent;
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode, RunOutcome, WaitReason};
+use argonauts_core::runs::events::session::{EndReason, SessionEnd, SessionEvent};
+use argonauts_core::runs::events::task::{ReviewEvent, TaskEvent};
+use argonauts_core::runs::events::workflow::WorkflowEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::Span;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::fallback::{FallbackEntry, Retry};
 use argonauts_core::settings::protocol::CheckCommand;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_core::{ErrorCategory, LimitDimension};
 use argonauts_crew::engine::shared::with_git_env;
 use argonauts_crew::roles::display_name;
@@ -718,7 +718,7 @@ fn asked_you(events: &[RunEvent]) -> bool {
 fn real_policy(
     crew: &Crew,
     settings: &Arc<argonauts_core::settings::Settings>,
-) -> anyhow::Result<Arc<dyn argonauts_core::policy::ApprovalPolicy>> {
+) -> anyhow::Result<Arc<dyn argonauts_core::safety::policy::ApprovalPolicy>> {
     let repo = crew.repo_context()?;
     let state = repo
         .run_dir
@@ -742,7 +742,7 @@ fn real_policy(
 fn conductor_limits(
     crew: &Crew,
     settings: &Arc<argonauts_core::settings::Settings>,
-) -> Arc<dyn argonauts_core::limits::LimitsService> {
+) -> Arc<dyn argonauts_core::models::limits::LimitsService> {
     let services = &crew.services;
     let planner = Arc::new(argonauts_conductor::fallback::Planner::new(
         settings.clone(),
@@ -752,7 +752,7 @@ fn conductor_limits(
         services.track_records.clone(),
     ));
     Arc::new(
-        argonauts_conductor::recovery::Limits::new(
+        argonauts_conductor::limits::recovery::Limits::new(
             settings.clone(),
             services.plan_usage.clone(),
             services.health.clone(),
@@ -989,7 +989,7 @@ async fn two_fallbacks_review_at_once_in_the_place_of_a_reviewer_thats_out() -> 
         .entry(CrewRole::Reviewer)
         .or_default();
     reviewers_table.together = Some(2);
-    let antigravity = argonauts_core::names::AgentId("antigravity-cli".to_owned());
+    let antigravity = argonauts_core::base::names::AgentId("antigravity-cli".to_owned());
     crew.services
         .health
         .set(&antigravity, HealthState::Down, Some("server errors"));
@@ -1048,7 +1048,7 @@ async fn a_reviewer_listed_as_a_fallback_never_reviews_twice() -> anyhow::Result
     // Two reviewers review blind, so whoever takes a place must keep your plugins out.
     crew.services.workers.isolating("claude-code");
     crew.services.workers.isolating("opencode");
-    let antigravity = argonauts_core::names::AgentId("antigravity-cli".to_owned());
+    let antigravity = argonauts_core::base::names::AgentId("antigravity-cli".to_owned());
     crew.services
         .health
         .set(&antigravity, HealthState::Down, Some("server errors"));
@@ -1391,7 +1391,7 @@ async fn an_agent_whose_agent_is_down_is_never_started() -> anyhow::Result<()> {
         (GEMINI, Agent::default()),
     ];
     let crew = crew_of(&agents, &assignment)?;
-    let codex = argonauts_core::names::AgentId("codex".to_owned());
+    let codex = argonauts_core::base::names::AgentId("codex".to_owned());
     crew.services
         .health
         .set(&codex, HealthState::Down, Some("server errors"));
@@ -1634,7 +1634,7 @@ async fn on_autopilot_the_builders_provider_reviews_and_the_merge_waits_for_you(
     assert!(
         merges.iter().all(|decided| !matches!(
             decided.action,
-            argonauts_core::events::approval::AnswerAction::Approve
+            argonauts_core::runs::events::approval::AnswerAction::Approve
         )),
         "{merges:?}"
     );
@@ -1677,8 +1677,8 @@ fn crew_left_to_the_builders_provider(others: &[&str]) -> anyhow::Result<Crew> {
 /// The questions about a job that only its builder's provider could take, oldest first.
 fn builders_provider_questions(
     events: &[RunEvent],
-) -> Vec<&argonauts_core::events::approval::ApprovalOpened> {
-    use argonauts_core::events::approval::ApprovalPacket;
+) -> Vec<&argonauts_core::runs::events::approval::ApprovalOpened> {
+    use argonauts_core::runs::events::approval::ApprovalPacket;
     events
         .iter()
         .filter_map(|event| match &event.kind {
@@ -1697,7 +1697,7 @@ fn builders_provider_questions(
 /// Sonnet the review and goes on.
 #[tokio::test]
 async fn when_only_the_builders_provider_is_left_the_review_waits_and_asks() -> anyhow::Result<()> {
-    use argonauts_core::events::approval::{AnswerAction, ApprovalKind, ApprovalPacket};
+    use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind, ApprovalPacket};
 
     let crew = crew_left_to_the_builders_provider(&[SONNET])?;
     let waiting = drive(&crew).await?;
@@ -1806,7 +1806,7 @@ async fn when_only_the_builders_provider_is_left_the_review_waits_and_asks() -> 
 /// the merge is then yours, beside waiting. The one you pick reviews.
 #[tokio::test]
 async fn picking_an_agent_lists_every_one_that_may_review() -> anyhow::Result<()> {
-    use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
+    use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind};
 
     let crew = crew_left_to_the_builders_provider(&[SONNET, OPUS])?;
     let waiting = drive(&crew).await?;
@@ -1877,7 +1877,7 @@ async fn picking_an_agent_lists_every_one_that_may_review() -> anyhow::Result<()
 /// Codex again and asks nothing more.
 #[tokio::test]
 async fn waiting_for_the_asked_cli_asks_nothing_more() -> anyhow::Result<()> {
-    use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
+    use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind};
 
     let crew = crew_left_to_the_builders_provider(&[SONNET])?;
     let waiting = drive(&crew).await?;
@@ -2049,9 +2049,9 @@ async fn with_same_cli_and_no_model_left_the_review_waits_for_its_cli() -> anyho
 /// to that agent and goes on to merge.
 #[tokio::test]
 async fn a_review_kept_on_a_cli_that_is_down_moves_when_you_say_so() -> anyhow::Result<()> {
-    use argonauts_core::events::agent_status::FallbackEvent;
-    use argonauts_core::events::approval::{AnswerAction, ApprovalKind, ApprovalPacket};
-    use argonauts_core::names::{AgentId, RoleName};
+    use argonauts_core::base::names::{AgentId, RoleName};
+    use argonauts_core::runs::events::agent_status::FallbackEvent;
+    use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind, ApprovalPacket};
 
     for answer in [AnswerAction::OneForAll, AnswerAction::PerTask] {
         let agents = [
@@ -2156,7 +2156,7 @@ async fn a_failing_run_review_gets_one_try_and_no_fallback() -> anyhow::Result<(
     let tried = [CODEX, CLAUDE, GEMINI].map(|worker| ran(&crew, worker, StepName::RunReview));
     assert_eq!(tried, [1, 0, 0], "{said:?}");
     assert!(
-        said.contains(&argonauts_core::log::RUN_REVIEW_FAILED),
+        said.contains(&argonauts_core::base::log::RUN_REVIEW_FAILED),
         "{said:?}"
     );
     assert!(
@@ -2178,9 +2178,9 @@ async fn a_run_review_whose_agent_is_out_proposes_nothing() -> anyhow::Result<()
     let mut crew = crew_of(&agents, &Assignment::default())?;
     crew.settings.evolution.propose_every = 1;
     crew.with_a_learned_workflow()?;
-    let run_review = argonauts_core::names::RoleName::RunReview;
+    let run_review = argonauts_core::base::names::RoleName::RunReview;
     crew.settings.roles.entry(run_review).or_default().models = vec![CLAUDE.parse()?];
-    let claude = argonauts_core::names::AgentId("claude-code".to_owned());
+    let claude = argonauts_core::base::names::AgentId("claude-code".to_owned());
     let down = Some("network errors on 2 sessions in 2m");
     crew.services.health.set(&claude, HealthState::Down, down);
     let outcome = drive(&crew).await?;
@@ -2247,7 +2247,7 @@ async fn a_slow_run_review_is_stopped_and_proposes_nothing() -> anyhow::Result<(
         "{said:?}"
     );
     assert!(
-        !said.contains(&argonauts_core::log::RUN_REVIEW_FAILED),
+        !said.contains(&argonauts_core::base::log::RUN_REVIEW_FAILED),
         "{said:?}"
     );
     Ok(())

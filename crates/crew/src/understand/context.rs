@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use argonauts_core::layout::{project_files, repo_state};
+use argonauts_core::base::layout::{project_files, repo_state};
 
 use super::materiality::one_line;
 

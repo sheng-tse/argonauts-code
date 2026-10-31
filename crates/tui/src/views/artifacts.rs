@@ -8,13 +8,13 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use crate::state::{AppState, Published};
-use crate::text::sanitize_line;
-use crate::theme::{Role, Theme};
+use crate::base::text::sanitize_line;
+use crate::base::theme::{Role, Theme};
+use crate::frame::state::{AppState, Published};
 
-use super::list::{self, Column, ListState, fit_columns};
-use super::panes::{self, Footer, Header, Marks, Side};
-use super::{View, ViewCtx, ViewOutcome};
+use super::super::base::draw::panes::{self, Footer, Header, Marks, Side};
+use super::super::frame::view::list::{self, Column, ListState, fit_columns};
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
 
 /// Cells between columns.
 const GAP: usize = 2;
@@ -148,7 +148,12 @@ impl View for ArtifactsView {
         panes::put_lines(buf, panes.right, &lines);
 
         let marks = Marks::for_theme(theme);
-        let mark = super::pager::position_mark(self.list.offset, height, rows.len(), marks.down);
+        let mark = super::super::frame::view::pager::position_mark(
+            self.list.offset,
+            height,
+            rows.len(),
+            marks.down,
+        );
         let hints = if rows.is_empty() {
             Footer::hints(&[(panes::ESC_BACK, 0)])
         } else {
@@ -196,11 +201,11 @@ mod tests {
 
     use argonauts_core::AgentEvent;
     use argonauts_core::app::{AppEvent, ConversationEvent};
-    use argonauts_core::names::TurnId;
+    use argonauts_core::base::names::TurnId;
     use serde_json::json;
 
     use super::*;
-    use crate::theme::Glyphs;
+    use crate::base::theme::Glyphs;
 
     const CHART_PAGE: &str = "https://claude.ai/code/artifact/0b1e7c9a-4f1d-4c57-9a55-2f6f0d3a8e11";
     const REPORT: &str = "https://claude.ai/code/artifact/7d2c4b18-93aa-4e0f-8c61-5b0e9f1a2c33";
@@ -315,7 +320,9 @@ mod tests {
             "{narrow:#?}"
         );
         assert!(
-            narrow.iter().all(|row| crate::text::str_width(row) <= 60),
+            narrow
+                .iter()
+                .all(|row| crate::base::text::str_width(row) <= 60),
             "{narrow:#?}"
         );
     }

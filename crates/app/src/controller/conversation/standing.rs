@@ -8,14 +8,14 @@
 //!   travels beside your message, the first time and again whenever it is different from what the
 //!   session last heard.
 
-use argonauts_core::events::session::{InputPart, InputPartKind};
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::ApprovalMode;
 
 use super::tools;
 use super::{ConversationState, direct};
 use crate::controller::Ctx;
-use crate::controller::turn::part;
+use crate::controller::turns::turn::part;
 
 /// The lines for the end of the session's instructions, naming the tools it is `offered`.
 /// `None` when it is offered none, since there is nothing to say.

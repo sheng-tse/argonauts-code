@@ -4,14 +4,15 @@
 use std::sync::Arc;
 
 use argonauts_core::app::UiCommand;
-use argonauts_core::events::context::ContextDetail;
+use argonauts_core::runs::events::context::ContextDetail;
 use argonauts_core::settings::bottom_line::STATS;
 use argonauts_core::settings::ui::{ContextDetail as Wanted, ModName, ModWidth};
 
-use crate::bottom::{PinnedRun, wall_now};
-use crate::kit::ContextCard;
-use crate::overview::{ContextPrinted, conversation_context, session_context};
-use crate::state::AppState;
+use crate::base::format::wall_now;
+use crate::base::kit::ContextCard;
+use crate::frame::state::AppState;
+use crate::panels::pinned_run::PinnedRun;
+use crate::panels::{ContextPrinted, conversation_context, session_context};
 
 use super::Cx;
 
@@ -101,7 +102,7 @@ fn context_card(state: &AppState) -> Option<ContextCard> {
         return Some(card);
     }
     let run = state.followed_run()?;
-    let share = |session: &&crate::state::SessionState| session.context?.of_cap();
+    let share = |session: &&crate::frame::state::SessionState| session.context?.of_cap();
     let fullest = run
         .running_sessions()
         .filter(|session| share(session).is_some())
@@ -109,7 +110,7 @@ fn context_card(state: &AppState) -> Option<ContextCard> {
     let context = fullest.context?;
     let subject = match &fullest.label {
         Some(label) => label.clone(),
-        None => crate::state::task_label(fullest.role, fullest.step, fullest.task.as_ref()),
+        None => crate::frame::state::task_label(fullest.role, fullest.step, fullest.task.as_ref()),
     };
     Some(session_context(
         subject,
@@ -124,15 +125,15 @@ mod tests {
     use std::time::Instant;
 
     use argonauts_core::app::AppEvent;
-    use argonauts_core::events::task::TaskState;
+    use argonauts_core::runs::events::task::TaskState;
     use argonauts_core::settings::ui::UiSettings;
     use argonauts_core::{RunId, TaskId, Verbosity};
 
     use super::*;
     use crate::ViewModel;
+    use crate::app::options::UiOptions;
     use crate::bridge::Bridge;
-    use crate::options::UiOptions;
-    use crate::state::{RunState, TaskRow};
+    use crate::frame::state::{RunState, TaskRow};
 
     fn pinning(mods: &[ModName]) -> AppEvent {
         let mut ui = UiSettings::default();
@@ -175,7 +176,7 @@ mod tests {
     /// Codex's start as the controller sends it, before its session starts and before the
     /// Context tab first opens.
     fn codex_start() -> AppEvent {
-        use argonauts_core::events::context::{
+        use argonauts_core::runs::events::context::{
             FirstCount, StartHolds, StartPart, StartedFrom, StartingCount,
         };
 
@@ -210,9 +211,9 @@ mod tests {
     #[test]
     fn the_context_card_draws_the_start_before_loading_and_for_codex() {
         use argonauts_core::AgentEvent;
+        use argonauts_core::app::views::ContextView;
         use argonauts_core::app::{ConversationEvent, ViewData};
-        use argonauts_core::names::{ModelRef, TurnId};
-        use argonauts_core::views::ContextView;
+        use argonauts_core::base::names::{ModelRef, TurnId};
 
         let mut bridge = Bridge::new(&UiOptions::default());
         let mut model = ViewModel::default();

@@ -2,7 +2,7 @@
 //! work and only failed to say so, so this try is watched for calls that change nothing.
 
 use argonauts_core::TaskId;
-use argonauts_core::events::task::TryCause;
+use argonauts_core::runs::events::task::TryCause;
 
 use crate::state::RunState;
 
@@ -28,13 +28,13 @@ pub(crate) fn on_committed_work(state: &RunState, task: &TaskId) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::task::TaskEvent;
-    use argonauts_core::events::{RunEvent, RunEventKind};
-    use argonauts_core::names::ModelRef;
+    use argonauts_core::base::names::ModelRef;
+    use argonauts_core::runs::events::task::TaskEvent;
+    use argonauts_core::runs::events::{RunEvent, RunEventKind};
     use argonauts_core::{CommitInfo, DiffStat};
 
     use super::*;
-    use crate::testutil::{run_event, task_spec};
+    use crate::testing::{run_event, task_spec};
 
     const QWEN: &str = "opencode/ollama/qwen3-coder:30b-64k";
 

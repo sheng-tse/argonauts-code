@@ -11,13 +11,13 @@ use super::{
     Pad, Standing, Storm, Water, Weather, fire, hurricane, quake, shade_run, thunder, tornado,
     volcano,
 };
+use crate::base::draw::scene::{Depth, Image, Layer, PartId, Picture, Sprite, picture_key};
 use crate::world::map::fields::{HEIGHT, WIDTH};
 use crate::world::map::motion::{
     CLOUDS, CURRENT, FIRE, LIGHTNING, Moment, Motion, QUAKE, RIVER, SMOKE, TORNADO, TSUNAMI,
 };
 use crate::world::map::nature::wind;
 use crate::world::raster::{Canvas, Colour};
-use crate::world::scene::{Depth, Image, Layer, PartId, Picture, Sprite, picture_key};
 
 /// Where a part lies: under the dots, as water and what stands on the land do, or over them, as
 /// the storms and the earthquakes' rings do.

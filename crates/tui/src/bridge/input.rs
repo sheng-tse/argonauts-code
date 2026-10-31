@@ -3,13 +3,13 @@
 
 use std::time::{Duration, Instant};
 
-use argonauts_core::api::UsagePeriod;
 use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, UiCommand, ViewRequest};
-use argonauts_core::events::run::Party;
 use argonauts_core::input::{
     Handler, LineChange, MentionTarget, ParsedInput, SlashCommand, ViewAction, WorkflowVerb,
     parse_input_with,
 };
+use argonauts_core::runs::api::UsagePeriod;
+use argonauts_core::runs::events::run::Party;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::stats::StatsPeriod;
 use argonauts_core::settings::ui::{UiSettings, ViewOpen};
@@ -17,14 +17,14 @@ use argonauts_core::{KeyScheme, Verbosity};
 
 use crate::UiOptions;
 use crate::app::UiAction;
+use crate::base::input::keymap::Keymap;
+use crate::base::input::prompt_history::{PromptHistory, unix_now};
+use crate::bottom::menu::commands::{self, command_items};
 use crate::bottom::{BottomState, HistorySearch, ModeNotice, VimMode};
-use crate::cell::{Cell, Tone, UserMessage};
-use crate::commands::{self, command_items};
-use crate::keymap::Keymap;
-use crate::mentions::{self, MentionPicker, Resolved};
-use crate::overview::config::ConfigTab;
-use crate::overview::{OverviewView, Tab};
-use crate::prompt_history::{PromptHistory, unix_now};
+use crate::bridge::mentions::{self, MentionPicker, Resolved};
+use crate::cells::cell::{Cell, Tone, UserMessage};
+use crate::config::ConfigTab;
+use crate::panels::{OverviewView, Tab};
 use crate::views::help::HelpView;
 
 use super::Cx;
@@ -365,8 +365,9 @@ fn open_config(name: &str, cx: &mut Cx<'_>) {
     let watch = cx.model.bottom.band.watch.clone();
     let mut tab = ConfigTab::opened_by(name);
     tab.set_mode_now(Some(cx.model.bottom.mode.approval.label().to_owned()));
-    cx.out
-        .open(OverviewView::new(Tab::Config, watch).with_config(tab));
+    cx.out.open(
+        OverviewView::new(Tab::Config, watch, crate::config::panel()).with_config(Box::new(tab)),
+    );
     cx.out.send(UiCommand::Request {
         view: ViewRequest::Settings { section: None },
     });
@@ -429,7 +430,7 @@ fn plain(
     text: String,
     shown: &str,
     workflow_requested: bool,
-    pictures: Vec<argonauts_core::pictures::Picture>,
+    pictures: Vec<argonauts_core::look::pictures::Picture>,
     cx: &mut Cx<'_>,
 ) {
     let idle = matches!(cx.state.mode, None | Some(AppMode::Idle)) && !cx.model.is_working();
@@ -465,8 +466,8 @@ fn plain(
 /// with pictures goes as any other, since a council reads words only. False when it didn't go.
 fn to_council(
     text: &str,
-    pictures: &[argonauts_core::pictures::Picture],
-    replying: Option<&crate::council::reply::ReplyBar>,
+    pictures: &[argonauts_core::look::pictures::Picture],
+    replying: Option<&crate::council::screens::reply::ReplyBar>,
     cx: &mut Cx<'_>,
 ) -> bool {
     let say = match pictures {
@@ -625,8 +626,9 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
             let opens_on = cx.settings.views.usage.period.usage();
             if let Some(shown) = usage_period(period.as_deref(), opens_on) {
                 let watch = cx.model.bottom.band.watch.clone();
-                cx.out
-                    .open(OverviewView::new(Tab::Usage, watch).with_period(shown));
+                cx.out.open(
+                    OverviewView::new(Tab::Usage, watch, crate::config::panel()).with_period(shown),
+                );
             }
             cx.out.send(UiCommand::Slash {
                 command: SlashCommand::Usage {
@@ -645,7 +647,7 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
             },
         ) => {
             let watch = cx.model.bottom.band.watch.clone();
-            let view = OverviewView::new(Tab::Stats, watch);
+            let view = OverviewView::new(Tab::Stats, watch, crate::config::panel());
             let view = match period.as_deref().and_then(StatsPeriod::parse) {
                 Some(given) => view.with_period(given.usage()),
                 None => view.with_stats_period_from_file(),
@@ -680,7 +682,11 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
             },
         ) => {
             let watch = cx.model.bottom.band.watch.clone();
-            cx.out.open(OverviewView::new(Tab::Limits, watch));
+            cx.out.open(OverviewView::new(
+                Tab::Limits,
+                watch,
+                crate::config::panel(),
+            ));
             // The Limits tab opens on all, whatever period the Usage tab opens on.
             cx.out.send(UiCommand::Slash {
                 command: SlashCommand::Usage {
@@ -848,19 +854,19 @@ fn notice(cx: &mut Cx<'_>, text: String, tone: Tone) {
 mod tests {
     use std::time::Instant;
 
-    use argonauts_core::events::session::{Delivery, QueuedMessage};
-    use argonauts_core::names::MessageId;
-    use argonauts_core::names::ModelRef;
+    use argonauts_core::base::names::MessageId;
+    use argonauts_core::base::names::ModelRef;
+    use argonauts_core::runs::events::session::{Delivery, QueuedMessage};
     use argonauts_core::settings::ui::UiSettings;
     use time::OffsetDateTime;
 
     use super::*;
+    use crate::app::model::ViewModel;
     use crate::bottom::{QuestionOption, QuestionPrompt, VimMode};
     use crate::bridge::Effects;
-    use crate::cell::Cell;
-    use crate::mentions::fixture;
-    use crate::model::ViewModel;
-    use crate::state::AppState;
+    use crate::bridge::mentions::fixture;
+    use crate::cells::cell::Cell;
+    use crate::frame::state::AppState;
 
     struct Screen {
         router: InputRouter,
@@ -995,7 +1001,7 @@ mod tests {
             out.commands,
             [UiCommand::Request {
                 view: argonauts_core::app::ViewRequest::Overview {
-                    period: argonauts_core::overview::OverviewPeriod::All,
+                    period: argonauts_core::app::overview::OverviewPeriod::All,
                     import: None,
                 },
             }]
@@ -1008,7 +1014,7 @@ mod tests {
     #[test]
     fn the_main_agents_commands_join_the_menu_and_parse() {
         let mut screen = Screen::idle();
-        let set = crate::commands::tests::claude_commands();
+        let set = crate::bottom::menu::commands::tests::claude_commands();
         screen.event(AppEvent::CliCommands { set: set.clone() });
         let menu = &screen.model.bottom.menus.commands;
         assert!(
@@ -1049,8 +1055,8 @@ mod tests {
         let mut state = fixture::working_state();
         // A run with agents and no workflow opens its newest agent instead.
         if let Some(run) = state.runs.get_mut(&fixture::run_id()) {
-            run.workflows.push(crate::state::WorkflowState {
-                id: argonauts_core::names::WorkflowId::parse("wf-001").unwrap(),
+            run.workflows.push(crate::frame::state::WorkflowState {
+                id: argonauts_core::base::names::WorkflowId::parse("wf-001").unwrap(),
                 name: "export-json".into(),
                 from: None,
                 description: "Add a --json flag to export".into(),
@@ -1313,11 +1319,11 @@ mod tests {
 
     #[test]
     fn keywords_reach_the_input_and_echo_and_the_text_goes_out_as_typed() {
-        use argonauts_core::keywords::{Keyword, KeywordLook};
+        use argonauts_core::look::keywords::{Keyword, KeywordLook};
 
         let ultrathink = Keyword::new("ultrathink", KeywordLook::Rainbow, true);
         let mut screen = Screen::idle();
-        let set = crate::commands::tests::claude_commands()
+        let set = crate::bottom::menu::commands::tests::claude_commands()
             .with_keywords(std::slice::from_ref(&ultrathink));
         screen.event(AppEvent::CliCommands { set: set.clone() });
         assert_eq!(
@@ -1739,7 +1745,7 @@ mod tests {
         assert_eq!(first.views.len(), 1);
         // It asks for its rows as it opens, as the panel does however it opens.
         assert_eq!(
-            crate::views::View::asks_on_open(first.views[0].as_ref()),
+            crate::frame::view::View::asks_on_open(first.views[0].as_ref()),
             Some(ViewRequest::Crew)
         );
         assert!(screen.event(welcome()).views.is_empty());
@@ -1772,9 +1778,9 @@ mod tests {
         assert_eq!(screen.notice(), Some("No answer to copy yet."));
 
         let history = &mut screen.model.history;
-        history.push(crate::cell::AssistantMessage::new("First answer.\n"));
+        history.push(crate::cells::cell::AssistantMessage::new("First answer.\n"));
         history.push(UserMessage::new("and then?"));
-        history.push(crate::cell::AssistantMessage::new(
+        history.push(crate::cells::cell::AssistantMessage::new(
             "Second answer,\nin two lines.\n",
         ));
         let last = screen.submit("/copy");

@@ -7,14 +7,14 @@
 
 use std::path::{Path, PathBuf};
 
-use argonauts_core::events::workflow::{WorkflowDeclared, WorkflowEvent};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::layout::{project_files, user_files};
-use argonauts_core::required::RequiredStep as KeptStep;
-use argonauts_core::views::WorkflowView;
+use argonauts_core::app::views::WorkflowView;
+use argonauts_core::base::layout::{project_files, user_files};
+use argonauts_core::runs::events::workflow::{WorkflowDeclared, WorkflowEvent};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::workflows::required::RequiredStep as KeptStep;
 use serde::Deserialize;
 
-use crate::env::AppEnv;
+use crate::startup::env::AppEnv;
 
 const ALWAYS: &str = "always.toml";
 
@@ -147,15 +147,16 @@ mod tests {
     /// yours after it, each once: a phase of a workflow one of its steps runs may be one.
     #[test]
     fn a_declaration_names_the_required_steps_after_its_own() {
-        use argonauts_core::names::WorkflowId;
-        use argonauts_core::workflow::StandardPhase;
+        use argonauts_core::base::names::WorkflowId;
+        use argonauts_core::workflows::workflow::StandardPhase;
 
-        let phase = |index: u32, title: &str| argonauts_core::events::workflow::DeclaredPhase {
-            index,
-            name: title.to_owned(),
-            detail: String::new(),
-            standard: StandardPhase::Do,
-        };
+        let phase =
+            |index: u32, title: &str| argonauts_core::runs::events::workflow::DeclaredPhase {
+                index,
+                name: title.to_owned(),
+                detail: String::new(),
+                standard: StandardPhase::Do,
+            };
         let mut declared = WorkflowDeclared {
             id: WorkflowId::numbered(1),
             name: "switch-reads".to_owned(),
@@ -189,10 +190,10 @@ mod tests {
     #[test]
     fn the_screen_is_sent_a_declaration_with_your_steps_named() {
         use argonauts_core::RunId;
-        use argonauts_core::events::workflow::{DeclaredPhase, RunNote};
-        use argonauts_core::names::WorkflowId;
-        use argonauts_core::paths::Paths;
-        use argonauts_core::workflow::StandardPhase;
+        use argonauts_core::base::names::WorkflowId;
+        use argonauts_core::base::paths::Paths;
+        use argonauts_core::runs::events::workflow::{DeclaredPhase, RunNote};
+        use argonauts_core::workflows::workflow::StandardPhase;
 
         let repo = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
@@ -244,7 +245,7 @@ mod tests {
     /// A step a setup kept for the conversation or the run is marked as one in a file is.
     #[test]
     fn the_steps_a_setup_kept_are_marked_after_the_files() {
-        use argonauts_core::paths::Paths;
+        use argonauts_core::base::paths::Paths;
         use argonauts_core::settings::crew::CrewRole;
 
         let repo = tempfile::tempdir().unwrap();

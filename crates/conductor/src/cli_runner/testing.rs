@@ -6,21 +6,21 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use argonauts_core::adapter::Transport;
-use argonauts_core::driver::{
+use argonauts_core::agents::adapter::Transport;
+use argonauts_core::agents::driver::{
     DriverControl, DriverEnd, DriverIo, DriverStart, DriverStop, RawFrame, SessionDriver,
 };
-use argonauts_core::events::context::ContextDetail;
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::{
-    Delivery, InputPartKind, QueuedMessage, SessionEnd, SessionEvent,
-};
-use argonauts_core::future::BoxFuture;
-use argonauts_core::input::MentionTarget;
-use argonauts_core::limits::{AgentHealth, HealthState};
-use argonauts_core::names::{AgentId, MessageId, ModelRef, RoleName, SessionKey};
-use argonauts_core::session_runner::{
+use argonauts_core::agents::session_runner::{
     Access, RunnerEvent, SandboxProfile, SessionHandle, SessionLimits, SessionSpec,
+};
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::{AgentId, MessageId, ModelRef, RoleName, SessionKey};
+use argonauts_core::input::MentionTarget;
+use argonauts_core::models::limits::{AgentHealth, HealthState};
+use argonauts_core::runs::events::context::ContextDetail;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::{
+    Delivery, InputPartKind, QueuedMessage, SessionEnd, SessionEvent,
 };
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
@@ -29,7 +29,7 @@ use argonauts_core::{
     Adapter, AgentEvent, Capabilities, CommandSpec, Paths, SessionRequest, SessionRole, StopPlan,
     StopSignal, StopStep, StreamParser, extract_version,
 };
-use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
+use argonauts_testkit::engine::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
 use serde_json::json;
 use time::OffsetDateTime;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -518,8 +518,8 @@ pub(crate) fn spec_in(workdir: &Path, session_dir: &Path, prompt: &str) -> Sessi
         status_file: None,
         env: Vec::new(),
         asking: None,
-        cli_workflow: argonauts_core::session_runner::CliWorkflow::default(),
-        shell: argonauts_core::session_runner::SessionShell::None,
+        cli_workflow: argonauts_core::agents::session_runner::CliWorkflow::default(),
+        shell: argonauts_core::agents::session_runner::SessionShell::None,
         preferences: Default::default(),
     }
 }
@@ -574,7 +574,7 @@ impl TestDriver {
     pub(crate) fn agents_dir(&self) -> std::path::PathBuf {
         self.home
             .path()
-            .join(argonauts_core::layout::user_files::AGENTS)
+            .join(argonauts_core::base::layout::user_files::AGENTS)
     }
 }
 

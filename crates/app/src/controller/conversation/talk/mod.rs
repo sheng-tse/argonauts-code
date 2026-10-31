@@ -19,11 +19,11 @@ mod tests;
 
 use std::collections::HashMap;
 
-use argonauts_core::asking::AskReply;
-use argonauts_core::events::approval::AnswerAction;
-use argonauts_core::names::{ChoiceId, TurnId};
-use argonauts_core::required::{RequiredStep, same_name};
+use argonauts_core::base::names::{ChoiceId, TurnId};
+use argonauts_core::runs::asking::AskReply;
+use argonauts_core::runs::events::approval::AnswerAction;
 use argonauts_core::settings::protocol::CheckCommand;
+use argonauts_core::workflows::required::{RequiredStep, same_name};
 
 use super::ConversationState;
 use crate::controller::{Ctx, Effect};

@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 
 use argonauts_core::TaskId;
-use argonauts_core::api::StatusSummary;
-use argonauts_core::names::{PlanLabel, RoleName};
+use argonauts_core::base::names::{PlanLabel, RoleName};
+use argonauts_core::runs::api::StatusSummary;
 use argonauts_core::settings::protocol::VisibilitySettings;
 
 use crate::status::Viewer;
@@ -143,11 +143,13 @@ mod tests {
     use time::OffsetDateTime;
 
     use argonauts_core::RunId;
-    use argonauts_core::events::plan::PlanEvent;
-    use argonauts_core::events::task::{CheckKind, ReviewEvent, TaskEvent, TaskKind, TaskSpec};
-    use argonauts_core::events::{RunEvent, RunEventKind};
-    use argonauts_core::names::{DraftId, ModelRef};
-    use argonauts_core::steps::judgment::{ReviewOutput, ReviewVerdict, SettleOutput};
+    use argonauts_core::base::names::{DraftId, ModelRef};
+    use argonauts_core::runs::events::plan::PlanEvent;
+    use argonauts_core::runs::events::task::{
+        CheckKind, ReviewEvent, TaskEvent, TaskKind, TaskSpec,
+    };
+    use argonauts_core::runs::events::{RunEvent, RunEventKind};
+    use argonauts_core::workflows::steps::judgment::{ReviewOutput, ReviewVerdict, SettleOutput};
 
     use super::*;
     use crate::status::folder::Folder;
@@ -340,7 +342,7 @@ mod tests {
         folder.push(&event(
             7,
             Some("task-002"),
-            RunEventKind::Check(argonauts_core::events::task::CheckOutcome {
+            RunEventKind::Check(argonauts_core::runs::events::task::CheckOutcome {
                 name: "tests/hidden/limits.rs".to_owned(),
                 kind: CheckKind::Command,
                 passed: false,

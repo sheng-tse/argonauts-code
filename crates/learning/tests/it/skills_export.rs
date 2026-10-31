@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use argonauts_learning::export::scan::Finding;
 use argonauts_learning::learned_workflows::{LearnedWorkflow, LoadedLearnedWorkflow, Match};
-use argonauts_learning::scan::Finding;
 use argonauts_learning::skills::{
     self, META_LEARNED_WORKFLOW, META_SHA256, META_VERSION, export, import, propose_export,
     propose_import, render, validate,
 };
-use argonauts_learning::{LearningError, Store, git};
+use argonauts_learning::{LearningError, Store, store::git};
 use argonauts_testkit::TempRepo;
 
 fn learned_workflow(description: &str, extra: Value) -> LoadedLearnedWorkflow {
@@ -94,7 +94,7 @@ fn skill_export_flat_metadata_and_hash() {
     assert_eq!(body, skill.body);
     assert_eq!(
         metadata[META_SHA256],
-        argonauts_core::hash::sha256_hex(body.as_bytes())
+        argonauts_core::base::hash::sha256_hex(body.as_bytes())
     );
     assert_eq!(
         skill.frontmatter.metadata[META_SHA256],
@@ -472,7 +472,7 @@ fn skill_import_cleans_foreign_frontmatter() {
     assert_eq!(paths, ["SKILL.md", "reference/forms.md"]);
     assert_eq!(
         report.files[1].1,
-        argonauts_core::hash::sha256_hex(b"Field names are case-sensitive.\n")
+        argonauts_core::base::hash::sha256_hex(b"Field names are case-sensitive.\n")
     );
     assert!(report.code.is_empty());
     assert!(!repo.root().join(".agents").exists());

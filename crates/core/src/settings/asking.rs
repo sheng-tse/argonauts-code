@@ -7,7 +7,7 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
-use crate::names::ModelRef;
+use crate::base::names::ModelRef;
 
 /// What "Carry on without me" on a question or an approval does. Nothing waits either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]

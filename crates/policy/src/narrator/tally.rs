@@ -3,8 +3,8 @@
 
 use std::cmp::Ordering;
 
-use argonauts_core::names::ModelRef;
-use argonauts_core::session_runner::RunnerEvent;
+use argonauts_core::agents::session_runner::RunnerEvent;
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::settings::Settings;
 use argonauts_core::{AgentEvent, MeterLimit, Spend, SpendMeter, TokenPrice, builtin_price};
 

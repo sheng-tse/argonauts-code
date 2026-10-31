@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{LearnedWorkflowRef, ReplayResult};
+use crate::store::types::{LearnedWorkflowRef, ReplayResult};
 
 /// The one-sided p-value a sign test must beat for the replay to stop at an interim look.
 const INTERIM_P: f64 = 0.001;

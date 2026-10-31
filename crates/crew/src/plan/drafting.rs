@@ -7,14 +7,14 @@
 use futures::future::join_all;
 
 use argonauts_core::RunId;
-use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::names::{ModelRef, PlanLabel, RoleName};
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{ModelRef, PlanLabel, RoleName};
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
 use argonauts_core::sha256_hex;
-use argonauts_core::steps::plan::{DraftInput, Revise, ReviseInput};
+use argonauts_core::workflows::steps::plan::{DraftInput, Revise, ReviseInput};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::plan::context::{self, part, warn, workers_for};
 use crate::plan::{drafts, map, together};
 use crate::prompts::plan::{DRAFT, REVISE};

@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use argonauts_core::app::UiCommand;
-use argonauts_core::events::RunEvent;
+use argonauts_core::runs::events::RunEvent;
 use argonauts_testkit::{
-    FakeClis, Key, Pty, PtyCommand, Screen, TempRepo, Trace, argonauts_bin, journal,
+    FakeClis, Key, Pty, PtyCommand, Screen, TempRepo, Trace, argonauts_bin, home::journal,
 };
 
 mod leftovers;
@@ -289,7 +289,7 @@ mod tests {
                 .filter(|line| line.split_whitespace().next() == Some(&group.to_string()))
                 .count()
         };
-        let deadline = argonauts_testkit::deadline::after(Duration::from_secs(5));
+        let deadline = argonauts_testkit::pty::deadline::after(Duration::from_secs(5));
         while in_group() < 2 {
             assert!(
                 Instant::now() < deadline,
@@ -299,7 +299,7 @@ mod tests {
         }
 
         drop(scenario);
-        let deadline = argonauts_testkit::deadline::after(Duration::from_secs(5));
+        let deadline = argonauts_testkit::pty::deadline::after(Duration::from_secs(5));
         while run_host.try_wait().unwrap().is_none() || in_group() > 0 {
             assert!(
                 Instant::now() < deadline,

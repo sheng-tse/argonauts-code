@@ -11,14 +11,14 @@
 use std::os::unix::fs::PermissionsExt;
 
 use argonauts_core::app::AppEvent;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::council::{
+use argonauts_core::base::names::{MessageId, ModelRef, SeatId, WorkflowId};
+use argonauts_core::look::logos::LogoMark;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::council::{
     CouncilEvent, CouncilEventKind, CouncilMessage, FloorReason, MessageKind, Seat, SeatRole,
     Seating, Speaker, TextPart,
 };
-use argonauts_core::logos::LogoMark;
-use argonauts_core::names::{MessageId, ModelRef, SeatId, WorkflowId};
-use argonauts_core::workflow::StepRef;
+use argonauts_core::workflows::workflow::StepRef;
 use argonauts_testkit::screen::{Cell, REAL_SIZES};
 use serde_json::json;
 
@@ -315,7 +315,8 @@ fn a_font_size_change_sends_the_logos_again_drawn_for_the_new_cells() {
     assert_eq!(logos_shown(&driver), 3);
     let raw = String::from_utf8_lossy(&driver.raw()).into_owned();
     let drawn_for = |cell| {
-        String::from_utf8(argonauts_tui::kit::logo::send_pictures(Some(cell))).expect("escapes")
+        String::from_utf8(argonauts_tui::base::kit::logo::send_pictures(Some(cell)))
+            .expect("escapes")
     };
     // The test terminal's cells are 10 x 20 pixels at start.
     assert!(raw.contains(&drawn_for((10, 20))));

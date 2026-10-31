@@ -5,21 +5,21 @@
 use argonauts_core::RunId;
 use argonauts_core::TaskId;
 use argonauts_core::app::{AnswerTarget, AppChoice, UiCommand, ViewRequest};
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalOpened, ApprovalPacket, FreeText,
 };
-use argonauts_core::names::ApprovalId;
 use time::UtcOffset;
 
+use crate::base::text::sanitize_line;
 use crate::bottom::{OptionKind, QuestionOption};
+use crate::frame::state::{AppState, RunState};
+use crate::frame::view::pager::PagerContent;
 use crate::questions::{
     REMEMBER_LABEL, Shown, approval_question_local, approval_view, checklist_questions,
     choice_question, choice_view, spot_check_options, spot_check_question,
 };
-use crate::state::{AppState, RunState};
-use crate::text::sanitize_line;
-use crate::views::pager::PagerContent;
 
 use super::about::{about_lines, details_lines, evidence_lines};
 use super::decisions::Decision;

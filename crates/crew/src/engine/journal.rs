@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use time::{Duration, OffsetDateTime};
 
-use argonauts_core::event::AgentEvent;
-use argonauts_core::names::SessionKey;
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::event::AgentEvent;
 
 /// With `per_second` 0, deltas wait for the session's next other event or its end.
 #[derive(Debug, Default)]

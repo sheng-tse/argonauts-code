@@ -2,20 +2,20 @@
 
 use std::collections::BTreeMap;
 
-use argonauts_core::events::goal::{Criterion, GoalEvent, GoalRun};
-use argonauts_core::events::run::{CaptainOrCrewDecision, RunLifecycle, RunMode};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::goal::{CheckWith, GoalFrom, GoalScope, GoalSpec, KeptBy};
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::events::goal::{Criterion, GoalEvent, GoalRun};
+use argonauts_core::runs::events::run::{CaptainOrCrewDecision, RunLifecycle, RunMode};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::agents::EndpointSettings;
+use argonauts_core::workflows::goal::{CheckWith, GoalFrom, GoalScope, GoalSpec, KeptBy};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 
 use super::*;
 use crate::client::test_support::{event, run_started};
-use crate::usage_ledger::LedgerLine;
-use crate::work_ledger::{Work, WorkLine};
+use crate::usage::usage_ledger::LedgerLine;
+use crate::usage::work_ledger::{Work, WorkLine};
 
 const SECRET_REPO: &str = "/Users/someone/acme-secret-repo";
 
@@ -343,7 +343,7 @@ fn off_says_so_and_how_to_turn_them_back_on() {
     let home = tempfile::tempdir().unwrap();
     let paths = Paths::new(home.path());
     assert_eq!(turn_off(&paths).unwrap(), OFF);
-    argonauts_testkit::picture_dump::dump("telemetry_off", OFF);
+    argonauts_testkit::pictures::picture_dump::dump("telemetry_off", OFF);
     let picture = include_str!("../../tests/golden/telemetry_off.txt");
     assert_eq!(OFF, picture.trim_end());
     let text = std::fs::read_to_string(paths.global_config()).unwrap();
@@ -472,7 +472,7 @@ fn commands_and_crashes_count_by_fixed_words() {
     used(&paths, Use::WorkflowView);
     for file in [
         "crates/tui/src/app/mod.rs",
-        "crates/adapters/codex/src/parser.rs",
+        "crates/adapters/codex/src/parser/mod.rs",
         "/Users/someone/.cargo/registry/src/index.crates.io-0/ratatui-0.29.0/src/buffer.rs",
         "crates/secret-fork/src/lib.rs",
     ] {
@@ -516,7 +516,7 @@ async fn the_app_counts_its_commands_and_workflow_views_only_while_reports_are_o
     use argonauts_core::app::{AppEvent, UiCommand, ViewData, ViewRequest};
     use argonauts_core::input::SlashCommand;
 
-    use crate::controller::test_support::{CliOptions, TestDriver};
+    use crate::controller::base::test_support::{CliOptions, TestDriver};
 
     let mut counted = Vec::new();
     for flags in [Vec::new(), vec!["telemetry.enabled=false".to_owned()]] {
@@ -570,7 +570,7 @@ async fn the_app_counts_its_commands_and_workflow_views_only_while_reports_are_o
 /// event.
 #[test]
 fn the_event_counts_what_the_overviews_records_hold_and_nothing_imported() {
-    use argonauts_core::overview::{ImportStatus, OverviewPeriod};
+    use argonauts_core::app::overview::{ImportStatus, OverviewPeriod};
     use argonauts_core::settings::overview::YearColors;
 
     let home = tempfile::tempdir().unwrap();
@@ -617,9 +617,9 @@ fn the_event_counts_what_the_overviews_records_hold_and_nothing_imported() {
         records: &records,
         lines: &lines,
         work: &work,
-        clock: argonauts_tui::format::WallClock::default(),
-        prices: &argonauts_core::pricing::PriceList::default(),
-        names: &argonauts_core::display_names::DisplayNames::default(),
+        clock: argonauts_tui::base::format::WallClock::default(),
+        prices: &argonauts_core::models::pricing::PriceList::default(),
+        names: &argonauts_core::look::display_names::DisplayNames::default(),
     };
     let shown = crate::overview::build_overview(
         &sources,
@@ -658,8 +658,8 @@ fn the_event_counts_what_the_overviews_records_hold_and_nothing_imported() {
 /// Each outcome count, from hand-made ledger lines of one council run and one of yours.
 #[test]
 fn the_event_counts_how_the_work_went() {
-    use crate::work_ledger::{ApprovedBy, FallbackCause};
-    use argonauts_core::events::run::RunOutcome;
+    use crate::usage::work_ledger::{ApprovedBy, FallbackCause};
+    use argonauts_core::runs::events::run::RunOutcome;
     let day = today();
     let run = argonauts_core::RunId::generate();
     let task = argonauts_core::TaskId::new("task-001").unwrap();

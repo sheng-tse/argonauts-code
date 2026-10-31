@@ -195,7 +195,7 @@ impl TaskStep {
 
 /// A workflow that ships with phases alone, which the library leaves out of those it runs.
 fn shipped_without_steps(name: &str) -> bool {
-    argonauts_core::workflow_files::built_in(name)
+    argonauts_core::workflows::workflow_files::built_in(name)
         .is_some_and(|text| matches!(WorkflowFile::parse(text), Ok(None)))
 }
 
@@ -223,7 +223,9 @@ mod tests {
     }
 
     fn built_in(name: &str) -> WorkflowFile {
-        file(argonauts_core::workflow_files::built_in(name).expect("a built-in workflow"))
+        file(
+            argonauts_core::workflows::workflow_files::built_in(name).expect("a built-in workflow"),
+        )
     }
 
     #[test]

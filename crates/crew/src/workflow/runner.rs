@@ -7,23 +7,23 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::Value;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::run::RunMode;
-use argonauts_core::events::workflow::{
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::{ModelRef, WorkflowId};
+use argonauts_core::base::paths::Paths;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::run::RunMode;
+use argonauts_core::runs::events::workflow::{
     PhaseMark, StepEnd, StepFinished, StepStarted, WorkflowDeclared, WorkflowEvent, WorkflowStarted,
 };
-use argonauts_core::future::BoxFuture;
-use argonauts_core::names::{ModelRef, WorkflowId};
-use argonauts_core::paths::Paths;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::UnderstandWhen;
-use argonauts_core::workflow::{
+use argonauts_core::workflows::workflow::{
     StandardPhase, Step, StepRef, Workflow, WorkflowParams, WorkflowRef,
 };
-use argonauts_core::{canonical_json, sha256_hex, workflow_files};
+use argonauts_core::{canonical_json, sha256_hex, workflows::workflow_files};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::goal::pursue;
 use crate::roles;
 use crate::state::RunState;
@@ -34,7 +34,7 @@ use crate::workflow::{
     Flow, StepAt, StepCall, StepDone, builtin, change, conditions, describe, kinds, params, replay,
     shape, yaml,
 };
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 
 /// The run's workflow from the settings: the one `workflow` picks, looked up like any other. A
 /// Captain run keeps that workflow when it builds the Captain task, and otherwise follows the
@@ -157,7 +157,7 @@ pub const CAPTAIN_CREW_WORKFLOW: &str = "orchestrator";
 /// Whose phases a workflow with none of its own runs: the crew's fixed phases, so a workflow
 /// that changes one key of the built-in settings, as an ablation does, runs as that change of
 /// them.
-pub const BASE_PHASES_WORKFLOW: &str = argonauts_core::workflow_files::BASE.0;
+pub const BASE_PHASES_WORKFLOW: &str = argonauts_core::workflows::workflow_files::BASE.0;
 
 /// Whether any step of the workflow builds the Captain task from the goal.
 pub fn builds_goal(workflow: &Workflow) -> bool {
@@ -829,7 +829,7 @@ async fn understand_off(host: &Host, call: &StepCall) -> EngineResult<Option<Ste
             })
     });
     if !asked_later {
-        crate::captain::prompt_is_the_goal(host).await?;
+        crate::roles::captain::prompt_is_the_goal(host).await?;
     }
     Ok(Some(StepDone::skipped(
         "understand.when is off, so your prompt is the goal",

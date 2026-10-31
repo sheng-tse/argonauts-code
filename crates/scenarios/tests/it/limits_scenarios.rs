@@ -8,7 +8,7 @@ use std::process::Command;
 use argonauts_scenarios::scenario_file;
 use argonauts_testkit::FakeScenario;
 use argonauts_testkit::FakeStep;
-use argonauts_testkit::acp::AcpStep;
+use argonauts_testkit::fake_clis::acp::AcpStep;
 use limits_support::*;
 
 #[test]

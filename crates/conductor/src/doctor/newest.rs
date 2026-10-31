@@ -6,12 +6,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use argonauts_core::Adapter;
-use argonauts_core::adapter::InstallSources;
+use argonauts_core::agents::adapter::InstallSources;
 use serde_json::Value;
 
 use super::command::ask;
 use super::versions::numbers;
-use crate::plan_usage::find_unsandboxed;
+use crate::boards::plan_usage::find_unsandboxed;
 
 pub const NEWEST_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -166,7 +166,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
-    use argonauts_core::adapter::OwnInstaller;
+    use argonauts_core::agents::adapter::OwnInstaller;
 
     use super::*;
 

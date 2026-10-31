@@ -1,31 +1,23 @@
-mod approvals;
-mod approve;
 mod args;
-mod behaviors;
-mod config;
-mod doctor;
-mod help;
-mod learning;
-mod mcp;
-mod runs;
-mod self_update;
-mod text;
-mod update;
-mod usage;
+mod commands;
 
 use std::io::Write as _;
 use std::process::ExitCode;
 
 use argonauts_app::{FirstView, InteractiveOptions, TelemetryAction};
 use argonauts_core::RunId;
-use argonauts_core::agent_sessions::AgentSessionRef;
-use argonauts_core::cli_sessions::CliSessionRef;
-use argonauts_core::names::ConversationId;
-use argonauts_core::sanitize::sanitize_for_terminal;
+use argonauts_core::agents::agent_sessions::AgentSessionRef;
+use argonauts_core::agents::cli_sessions::CliSessionRef;
+use argonauts_core::base::names::ConversationId;
+use argonauts_core::safety::sanitize::sanitize_for_terminal;
 use clap::FromArgMatches as _;
 
+use crate::args::usage::usage;
 use crate::args::{AutoCommand, Cli, Command, McpCommand, TelemetryCommand};
-use crate::usage::usage;
+use crate::args::{help, usage};
+use crate::commands::{
+    approvals, approve, behaviors, config, doctor, learning, mcp, runs, self_update, update,
+};
 
 /// Turns on logging to stderr; the value is a tracing filter.
 const LOG_ENV: &str = "ARGONAUTS_LOG";
@@ -37,7 +29,7 @@ fn main() -> ExitCode {
     }
     // Found before an update can swap the link this program was started by, so every helper
     // it starts is this version, which no update removes while it runs.
-    let _ = argonauts_core::paths::this_program();
+    let _ = argonauts_core::base::paths::this_program();
     argonauts_app::self_update::hold_this_version();
     let cli = Cli::from_arg_matches(&help::command().get_matches())
         .unwrap_or_else(|err| err.format(&mut help::command()).exit());
@@ -325,7 +317,7 @@ fn init_logging() {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::names::AgentId;
+    use argonauts_core::base::names::AgentId;
 
     use super::*;
 

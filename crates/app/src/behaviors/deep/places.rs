@@ -5,16 +5,16 @@
 use std::collections::HashMap;
 
 use argonauts_core::Paths;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::provider::provider_name;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::registry::provider::provider_name;
 use argonauts_core::settings::behaviors::WORD_VECTORS;
 
 use super::action::ActionKey;
 use super::choose::local_name;
 use super::records::CONVERSATION;
 use super::store::{MapMaker, Store};
-use crate::adapters::builtin_adapters;
+use crate::agents::adapters::builtin_adapters;
 
 /// One summarized action on Summaries, both axes in 0..1.
 #[derive(Debug, Clone, PartialEq)]

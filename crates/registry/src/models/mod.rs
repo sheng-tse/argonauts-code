@@ -20,13 +20,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock};
 
 use argonauts_core::ReportedModel;
-use argonauts_core::confine::Confine;
-use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::CostEstimate;
-use argonauts_core::model_catalog::ModelCatalog;
-use argonauts_core::names::ModelRef;
-use argonauts_core::paths::Paths;
-use argonauts_core::registry::{CostUnit, ModelAccess, ModelEntry, ModelRegistry, RegistryKind};
+use argonauts_core::agents::confine::Confine;
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::base::paths::Paths;
+use argonauts_core::models::limits::CostEstimate;
+use argonauts_core::models::model_catalog::ModelCatalog;
+use argonauts_core::models::registry::{
+    CostUnit, ModelAccess, ModelEntry, ModelRegistry, RegistryKind,
+};
 use argonauts_core::settings::Settings;
 use time::OffsetDateTime;
 

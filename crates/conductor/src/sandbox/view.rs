@@ -10,7 +10,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use argonauts_core::session_runner::SandboxProfile;
+use argonauts_core::agents::session_runner::SandboxProfile;
 use serde::{Deserialize, Serialize};
 
 use super::profile::{PathRule, RuleKind, is_git_lock, ordered_rules, resolve_path};
@@ -450,8 +450,8 @@ impl Disk for RealDisk {
 mod tests {
     use std::collections::BTreeMap;
 
-    use argonauts_core::outside::{Never, Outside};
-    use argonauts_core::session_runner::SandboxMode;
+    use argonauts_core::agents::session_runner::SandboxMode;
+    use argonauts_core::safety::outside::{Never, Outside};
 
     use super::*;
 

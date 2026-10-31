@@ -4,9 +4,9 @@
 use std::path::Path;
 
 use argonauts_core::app::TurnReply;
-use argonauts_core::events::session::{InputPart, InputPartKind};
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
 
-use crate::controller::turn;
+use crate::controller::turns::turn;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Exchange {

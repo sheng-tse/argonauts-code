@@ -11,23 +11,27 @@
 
 use std::time::{Duration, Instant};
 
+use argonauts_core::app::model_picker::{
+    Fit, ListedFacts, MachineMemory, ModelMemory, ModelSource,
+};
 use argonauts_core::app::{ModelChoice, SettingRow};
-use argonauts_core::limits::{CostEstimate, PlanUsageReading, PlanUsageSource, PlanUsageStatus};
-use argonauts_core::model_picker::{Fit, ListedFacts, MachineMemory, ModelMemory, ModelSource};
-use argonauts_core::names::AgentId;
-use argonauts_core::registry::ModelAccess;
+use argonauts_core::base::names::AgentId;
+use argonauts_core::models::limits::{
+    CostEstimate, PlanUsageReading, PlanUsageSource, PlanUsageStatus,
+};
+use argonauts_core::models::registry::ModelAccess;
 use argonauts_core::settings::SettingScope;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 use time::OffsetDateTime;
 
 use super::flow;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::kit::logo::golden::{lines_with_stand_ins, pictured};
+use crate::base::text::plain_text;
+use crate::base::theme::{Glyphs, Theme};
 use crate::bottom::{BottomState, Picker};
-use crate::bridge::transcript::picture_check::assert_rows_match;
-use crate::kit::logo::golden::{lines_with_stand_ins, pictured};
-use crate::render::{Clock, RenderCtx};
-use crate::text::plain_text;
-use crate::theme::{Glyphs, Theme};
+use crate::testing::pictures::picture_check::assert_rows_match;
 
 const WIDTH: u16 = 118;
 const FRESH: &str = "Model lists refreshed just now.";
@@ -374,7 +378,7 @@ fn the_picker_takes_the_inputs_place_with_opencode_counted() {
 fn a_picture_changed_in_one_cell_no_longer_matches_the_picker() {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    use argonauts_testkit::picture as page;
+    use argonauts_testkit::pictures::picture as page;
 
     const TXT: &str = include_str!("../../../tests/golden/model_picker_after.txt");
     const HTML: &str = include_str!("../../../tests/golden/model_picker_after.html");
@@ -754,7 +758,7 @@ fn opencodes_level_knows_this_machines_memory() {
     let event = picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(
         flow::advance(&mut picker, event),
-        flow::Step::Send(argonauts_core::app::UiCommand::Shell {
+        crate::bottom::picker::flow::Step::Send(argonauts_core::app::UiCommand::Shell {
             command: "ollama pull qwen3.5:27b".to_owned()
         })
     );
@@ -956,8 +960,8 @@ fn codex_level_on(theme: &Theme, name: &str) -> Vec<Line<'static>> {
         .position(|line| plain_text(std::slice::from_ref(line)).starts_with('─'))
         .expect("the picker's rule");
     let lines = lines[at..].to_vec();
-    crate::picture_dump::lines(name, &lines);
-    crate::picture_dump::lines_page(name, &lines, theme);
+    crate::testing::pictures::picture_dump::lines(name, &lines);
+    crate::testing::pictures::picture_dump::lines_page(name, &lines, theme);
     lines
 }
 

@@ -2,20 +2,9 @@
 //! through a profile of data. The CLI runner spawns and sandboxes the agent, then hands its
 //! pipes to this crate's session driver, which speaks ACP v1 as newline-delimited JSON-RPC.
 
-mod adapter;
-mod driver;
-mod errors;
-mod hermes;
-mod home;
-mod mapping;
-mod model;
-mod permission;
-mod report;
-mod rpc;
-
-#[cfg(test)]
-mod replay;
+mod launch;
+mod session;
 #[cfg(test)]
 mod testing;
 
-pub use adapter::acp_adapter;
+pub use launch::adapter::acp_adapter;

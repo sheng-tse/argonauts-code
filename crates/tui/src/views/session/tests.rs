@@ -7,20 +7,20 @@ use std::time::Instant;
 use argonauts_core::RunId;
 use std::path::PathBuf;
 
-use argonauts_core::api::RawView;
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
-use argonauts_core::names::SessionKey;
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::api::RawView;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use serde_json::json;
 
 use super::{SessionView, Tab};
-use crate::mentions::fixture::working_state;
-use crate::stability::buffer_text;
-use crate::state::{AppState, SessionState, ToolRecord};
-use crate::theme::{Glyphs, Theme};
-use crate::views::{View, ViewCtx, ViewOutcome};
+use crate::base::stability::buffer_text;
+use crate::base::theme::{Glyphs, Theme};
+use crate::bridge::mentions::fixture::working_state;
+use crate::frame::state::{AppState, SessionState, ToolRecord};
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
 
 fn theme() -> Theme {
     let mut theme = Theme::dark();
@@ -313,7 +313,7 @@ fn an_edit_shows_once_with_its_patch_and_nothing_after_it() {
     );
     change.id = "c1".to_owned();
     session.tools = vec![change];
-    session.diffs = vec![argonauts_core::events::session::FileDiff {
+    session.diffs = vec![argonauts_core::runs::events::session::FileDiff {
         path: "src/due.rs".to_owned(),
         added: 1,
         removed: 1,
@@ -410,7 +410,7 @@ fn x_asks_before_it_stops_the_agent_and_any_other_key_keeps_it() {
 #[test]
 fn a_finished_agent_has_nothing_to_stop() {
     let (mut state, run, mut view) = opened();
-    agent(&mut state, &run).status = crate::state::SessionStatus::Done;
+    agent(&mut state, &run).status = crate::frame::state::SessionStatus::Done;
     assert!(!footer(&screen(&mut view, &state, 120)).contains("x stop"));
     let why = press(&mut view, &state, KeyCode::Char('x'));
     assert!(matches!(why, ViewOutcome::Notice(_)), "{why:?}");
@@ -454,7 +454,7 @@ fn a_narrow_header_keeps_the_tabs_and_cuts_the_name() {
 /// The first agent of the sample run, working toward its goal.
 fn with_goal() -> (AppState, RunId, SessionView) {
     let (mut state, run, view) = opened();
-    let mut goal = crate::views::goal_panel::fixture::build_cli("s-001");
+    let mut goal = crate::views::goal::panel::fixture::build_cli("s-001");
     goal.label = "build:cli".into();
     state.goals.remember(&run, &[goal]);
     agent(&mut state, &run).label = Some("build:cli".into());
@@ -523,7 +523,7 @@ fn a_newer_report_of_the_goal_is_what_the_tab_draws_next() {
     let mut goal = state.goals.of(&run, &first()).unwrap().clone();
     goal.lines[2].met = Some(true);
     goal.lines[2].met_on_try = Some(3);
-    goal.state = argonauts_core::agent_goal::GoalState::Met;
+    goal.state = argonauts_core::app::agent_goal::GoalState::Met;
     state.goals.remember(&run, &[goal]);
     let text = screen(&mut view, &state, 120);
     assert!(text.contains("3 of 3 lines met"), "{text}");
@@ -570,7 +570,7 @@ fn with_a_tasks_goal() -> (AppState, RunId, SessionView) {
     (state, run, view.on(Tab::Goal))
 }
 
-fn goal_action(outcome: ViewOutcome) -> argonauts_core::events::goal::GoalAction {
+fn goal_action(outcome: ViewOutcome) -> argonauts_core::runs::events::goal::GoalAction {
     match outcome {
         ViewOutcome::Send(UiCommand::Goal {
             run: Some(_),
@@ -584,7 +584,7 @@ fn goal_action(outcome: ViewOutcome) -> argonauts_core::events::goal::GoalAction
 /// they say for the goal's task.
 #[test]
 fn the_goal_tab_holds_the_goal_and_runs_its_checks() {
-    use argonauts_core::events::goal::GoalAction;
+    use argonauts_core::runs::events::goal::GoalAction;
 
     let (mut state, run, mut view) = with_a_tasks_goal();
     // With room for every task, the footer holds every key.
@@ -630,7 +630,7 @@ fn the_goal_tab_holds_the_goal_and_runs_its_checks() {
 /// rewrites them and Esc leaves them as they were.
 #[test]
 fn e_opens_the_goals_lines_to_change_and_enter_rewrites_them() {
-    use argonauts_core::events::goal::GoalAction;
+    use argonauts_core::runs::events::goal::GoalAction;
 
     let (state, _, mut view) = with_a_tasks_goal();
     assert!(matches!(
@@ -697,7 +697,7 @@ fn e_opens_the_goals_lines_to_change_and_enter_rewrites_them() {
 fn a_goal_that_is_over_offers_no_keys_on_it() {
     let (mut state, run, mut view) = with_a_tasks_goal();
     let mut goal = state.goals.of(&run, &first()).unwrap().clone();
-    goal.state = argonauts_core::agent_goal::GoalState::Met;
+    goal.state = argonauts_core::app::agent_goal::GoalState::Met;
     state.goals.remember(&run, &[goal]);
     let text = screen(&mut view, &state, 120);
     for key in ["p pause", "e edit", "c run"] {
@@ -712,7 +712,7 @@ fn a_goal_that_is_over_offers_no_keys_on_it() {
 /// A worker that ran Claude Code's own workflow: the call, the workflow's report, and the
 /// workflow as Claude Code also lists it among the subagents.
 fn with_its_own_workflow() -> (AppState, RunId, SessionView) {
-    use argonauts_core::events::session::{
+    use argonauts_core::runs::events::session::{
         CliAgent, CliAgentState, CliPhase, CliWorkflowRun, SubagentKind, SubagentStatus,
         SubagentUpdate,
     };
@@ -859,7 +859,7 @@ fn a_file_its_call_drew_is_not_drawn_again_from_the_change_seen_after() {
         "/w/src/a.rs".to_owned(),
         "@@ -41,3 +41,3 @@\n a\n-x\n+y\n b\n".to_owned(),
     )];
-    let seen = |path: &str, line: &str| argonauts_core::events::session::FileDiff {
+    let seen = |path: &str, line: &str| argonauts_core::runs::events::session::FileDiff {
         path: path.to_owned(),
         added: 1,
         removed: 1,
@@ -914,7 +914,7 @@ fn a_call_being_written_shows_by_its_name_and_goes_if_it_never_lands() {
     let bullet = (0..100)
         .find(|x| buf[(*x, row)].symbol() == "●")
         .expect("its bullet");
-    let dim = theme.style(crate::theme::Role::Dim).fg;
+    let dim = theme.style(crate::base::theme::Role::Dim).fg;
     assert_eq!(Some(buf[(bullet, row)].fg), dim, "a steady dim bullet");
 
     let tools = &mut agent(&mut state, &run).tools;

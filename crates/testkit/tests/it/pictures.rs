@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use argonauts_testkit::wide_glyphs::crowded;
+use argonauts_testkit::pictures::wide_glyphs::crowded;
 
 fn crates_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

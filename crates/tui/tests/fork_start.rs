@@ -4,9 +4,9 @@
 
 use std::time::Instant;
 
-use argonauts_testkit::picture;
-use argonauts_tui::cell::{AssistantMessage, HistoryCell};
-use argonauts_tui::theme::Glyphs;
+use argonauts_testkit::pictures::picture;
+use argonauts_tui::base::theme::Glyphs;
+use argonauts_tui::cells::cell::{AssistantMessage, HistoryCell};
 use argonauts_tui::{Clock, RenderCtx, Theme};
 use ratatui::style::Modifier;
 use ratatui::text::Line;

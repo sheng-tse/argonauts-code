@@ -6,11 +6,11 @@
 //! objecting, so the loudest seat can't keep it and the quietest still gets heard. The skeptic
 //! also gets one turn on a point about to close on weak ground.
 
-use argonauts_core::events::council::{
+use argonauts_core::base::names::SeatId;
+use argonauts_core::runs::events::council::{
     CouncilMessage, FloorReason, MessageKind, MovedBecause, PointState, SeatRole, Speaker, Stance,
     TextPart,
 };
-use argonauts_core::names::SeatId;
 
 use super::private::has_extension;
 use super::talk::Council;
@@ -306,8 +306,8 @@ pub fn salt(words: &[&str]) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::council::{CouncilEventKind, Moved, PointStance, ReplyTo};
-    use argonauts_core::names::MessageId;
+    use argonauts_core::base::names::MessageId;
+    use argonauts_core::runs::events::council::{CouncilEventKind, Moved, PointStance, ReplyTo};
 
     use super::*;
     use crate::council::talk::tests::{council, from_seat, said, seat, seated};

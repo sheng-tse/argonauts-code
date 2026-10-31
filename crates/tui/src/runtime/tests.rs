@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use argonauts_core::api::{RawView, TakeOverTicket};
+use argonauts_core::agents::session::CommandSpec;
 use argonauts_core::app::{AppEvent, UiCommand, ViewData};
-use argonauts_core::names::SessionKey;
-use argonauts_core::session::CommandSpec;
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::api::{RawView, TakeOverTicket};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::ui::{ScreenMode, TakeOverWhere};
 use argonauts_core::{RunId, TaskId};
@@ -324,7 +324,7 @@ async fn fullscreen_keeps_the_alternate_screen_through_views_and_handovers() {
 async fn the_greeting_prints_first() {
     let (script, io, terminal, keys) = session();
     let mut options = inline();
-    options.greeting = Some(crate::welcome::Greeting {
+    options.greeting = Some(crate::cells::welcome::Greeting {
         version: "0.1.0".to_owned(),
         usage: Some(("Reports go · stop them".to_owned(), "stop them".to_owned())),
         picture: false,
@@ -337,7 +337,7 @@ async fn the_greeting_prints_first() {
         assert!(rows[first].starts_with("  ▗███▖▐▀▖ ▄▀▀▄"), "{rows:#?}");
         assert_eq!(
             rows[first + 4],
-            format!("  {}   v0.1.0", crate::welcome::TAGLINE)
+            format!("  {}   v0.1.0", crate::cells::welcome::TAGLINE)
         );
         assert_eq!(rows[first + 6], "  Reports go · stop them");
         script.event(AppEvent::Exit).await;

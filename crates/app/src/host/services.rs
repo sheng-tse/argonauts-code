@@ -8,17 +8,17 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use anyhow::Context as _;
 use argonauts_conductor::cli_runner::capabilities;
 use argonauts_conductor::{CliRunner, boards_with, check_runner, fallback_planner, limits_service};
-use argonauts_core::clock::SystemClock;
-use argonauts_core::engine::{RepoContext, Services};
-use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::{CostEstimate, HealthBoard, PlanUsageBoard, TrackRecords};
-use argonauts_core::model_catalog::ModelCatalog;
-use argonauts_core::names::ModelRef;
-use argonauts_core::paths::create_private_dir_all;
-use argonauts_core::registry::{ModelEntry, ModelRegistry, RegistryKind};
-use argonauts_core::session_runner::{RunnerDirectory, RunnerError, SessionRunner};
+use argonauts_core::agents::session_runner::{RunnerDirectory, RunnerError, SessionRunner};
+use argonauts_core::base::clock::SystemClock;
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::base::paths::create_private_dir_all;
+use argonauts_core::models::limits::{CostEstimate, HealthBoard, PlanUsageBoard, TrackRecords};
+use argonauts_core::models::model_catalog::ModelCatalog;
+use argonauts_core::models::registry::{ModelEntry, ModelRegistry, RegistryKind};
+use argonauts_core::runs::engine::{RepoContext, Services};
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::SchemaStepRunner;
+use argonauts_core::workflows::steps::SchemaStepRunner;
 use argonauts_core::{Adapter, Paths};
 use argonauts_endpoints::EndpointRunner;
 use argonauts_learning::records::LiveRecords;
@@ -28,9 +28,9 @@ use time::OffsetDateTime;
 use tokio::sync::watch;
 
 use super::clis::{self, CliAdapters, RepoModels};
-use crate::adapters::{builtin_adapters, opencode};
-use crate::app_settings::AppSettings;
-use crate::model_memory::ServerMemory;
+use crate::agents::adapters::{builtin_adapters, opencode};
+use crate::agents::model_memory::ServerMemory;
+use crate::startup::app_settings::AppSettings;
 
 /// Where a directory reads its settings: fixed for a run's life, or following each change you
 /// make in the app. Either way with the agents a settings layer turned on, since a built-in
@@ -523,13 +523,13 @@ pub(crate) fn services(
 mod tests {
     use argonauts_adapter_opencode::LocalUrls;
     use argonauts_core::RepoId;
-    use argonauts_core::layout::project_files;
-    use argonauts_core::session_runner::RunnerKind;
+    use argonauts_core::agents::session_runner::RunnerKind;
+    use argonauts_core::base::layout::project_files;
     use argonauts_core::settings::agents::EndpointSettings;
 
     use super::*;
-    use crate::adapters::opencode_local_urls;
-    use crate::trust::TrustStore;
+    use crate::agents::adapters::opencode_local_urls;
+    use crate::startup::trust::TrustStore;
 
     const CLIS: &str = r#"
 [[cli]]
@@ -832,7 +832,7 @@ build_args = []
         assert_eq!(on.get(&hermes).unwrap().kind(), RunnerKind::Cli);
         let template = home
             .home()
-            .join(argonauts_core::layout::user_files::CLIS)
+            .join(argonauts_core::base::layout::user_files::CLIS)
             .join("hermes");
         assert!(
             template.join("config.yaml").is_file(),

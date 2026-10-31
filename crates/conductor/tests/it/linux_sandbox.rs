@@ -15,8 +15,8 @@ use argonauts_conductor::sandbox::landlock::Landlock;
 use argonauts_conductor::sandbox::profile::{ProfileInput, session_profile};
 use argonauts_conductor::sandbox::{SandboxError, SandboxWrap, self_test};
 use argonauts_core::CommandSpec;
-use argonauts_core::outside::{self, Never};
-use argonauts_core::session_runner::{Access, SandboxMode, SandboxProfile};
+use argonauts_core::agents::session_runner::{Access, SandboxMode, SandboxProfile};
+use argonauts_core::safety::outside::{self, Never};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::outside::OutsideSettings;
 
@@ -1175,7 +1175,7 @@ async fn the_self_test_fails_closed_where_user_namespaces_are_blocked() {
 #[test]
 fn fake_cli_sessions_run_in_the_sandbox() {
     use argonauts_testkit::FakeClis;
-    use argonauts_testkit::scenario::{FakeRule, FakeScenario, FakeStep};
+    use argonauts_testkit::fake_clis::scenario::{FakeRule, FakeScenario, FakeStep};
 
     if expect_no_userns() {
         return;

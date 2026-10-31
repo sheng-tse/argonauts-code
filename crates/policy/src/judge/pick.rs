@@ -3,13 +3,13 @@
 //! live lists found for each installed agent, else each agent's cheapest model, else the agent
 //! as it's set up, leaving out any whose CLI would refuse to start.
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::names::ModelRef;
-use argonauts_core::pricing::builtin_price;
-use argonauts_core::registry::provider::{is_known, provider_name};
-use argonauts_core::registry::{CostUnit, ModelEntry, ModelRegistry};
-use argonauts_core::session_runner::RunnerDirectory;
-use argonauts_core::text::sentence_case;
+use argonauts_core::agents::session_runner::RunnerDirectory;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::base::text::sentence_case;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::pricing::builtin_price;
+use argonauts_core::models::registry::provider::{is_known, provider_name};
+use argonauts_core::models::registry::{CostUnit, ModelEntry, ModelRegistry};
 
 use super::independence;
 
@@ -249,8 +249,8 @@ pub fn provider(worker: &ModelRef, sources: Sources<'_>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::registry::{CostModel, ModelAccess, RegistryKind};
-    use argonauts_testkit::services::StaticRegistry;
+    use argonauts_core::models::registry::{CostModel, ModelAccess, RegistryKind};
+    use argonauts_testkit::engine::services::StaticRegistry;
     use argonauts_testkit::{FakeDirectory, FakeRunner};
 
     fn r(text: &str) -> ModelRef {
@@ -292,7 +292,7 @@ mod tests {
             access: ModelAccess::Subscription,
             tools: true,
             cost: CostModel {
-                unit: argonauts_core::registry::CostUnit::Usd,
+                unit: argonauts_core::models::registry::CostUnit::Usd,
                 input_per_mtok: Some(input),
                 output_per_mtok: Some(output),
                 cached_input_per_mtok: None,

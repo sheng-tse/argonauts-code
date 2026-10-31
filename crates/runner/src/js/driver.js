@@ -50,7 +50,7 @@
   const SEND_BACKS = 2;
 
   // A row's label is `step:task`, at most this many characters, as every label in a run is
-  // (argonauts_core::labels::MAX_CELLS): a task's name stays whole, and a view cuts it.
+  // (argonauts_core::look::labels::MAX_CELLS): a task's name stays whole, and a view cuts it.
   const WIDTH = 40;
   const words = (text, most) =>
     String(text).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).slice(0, most).join('-');

@@ -12,8 +12,8 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::composer::{CHAR_INTERVAL, ENTER_WINDOW, MIN_CHARS};
-use crate::prompt_history::PromptEntry;
-use crate::text::{sanitize, sanitize_line};
+use crate::base::input::prompt_history::PromptEntry;
+use crate::base::text::{sanitize, sanitize_line};
 
 use fuzzy::Query;
 

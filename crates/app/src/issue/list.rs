@@ -119,7 +119,7 @@ mod tests {
     /// older ones too, each once, and the list says how many are open.
     #[tokio::test]
     async fn yours_are_listed_past_the_newest_and_the_list_says_its_cut() {
-        use argonauts_testkit::fake_gh::{FakeGh, GhIssue, GhRepo, GhWorld};
+        use argonauts_testkit::fake_clis::fake_gh::{FakeGh, GhIssue, GhRepo, GhWorld};
 
         let mut issues: Vec<GhIssue> = (1..=40)
             .rev()

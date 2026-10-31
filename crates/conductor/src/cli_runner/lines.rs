@@ -12,13 +12,13 @@ use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::Instant;
 
-use argonauts_core::events::context::ContextDetail;
-use argonauts_core::events::session::{
+use argonauts_core::agents::session_runner::{SandboxProfile, SessionControl, SteerSupport};
+use argonauts_core::look::pictures::Picture;
+use argonauts_core::runs::events::context::ContextDetail;
+use argonauts_core::runs::events::session::{
     Delivery, EndReason, LaunchRecord, PromptVia, QueuedMessage, SessionEnd, SessionEvent,
     WrapUpVia,
 };
-use argonauts_core::pictures::Picture;
-use argonauts_core::session_runner::{SandboxProfile, SessionControl, SteerSupport};
 use argonauts_core::{
     AgentEvent, CommandSpec, ErrorCategory, LimitDimension, MessageStage, StopSignal, StreamParser,
 };
@@ -37,7 +37,7 @@ use super::session::{Running, announce_start, end_of, not_started, or_far, tick_
 use super::steer::{Pending, announce, joined_parts};
 use super::stop::{Purpose, StopCause, Stopping};
 use crate::process::{AgentProcess, OutputLine, ProcessEvent, Stream, exit_parts};
-use crate::rawlog::RawLog;
+use crate::session::rawlog::RawLog;
 
 /// How long output may keep coming after the agent exits, from something it started.
 const EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);

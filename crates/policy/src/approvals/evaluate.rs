@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::policy::{
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::safety::policy::{
     AutoPreviewRecord, DecisionPoint, EvidencePacket, PolicyOutcome, Verdict, Violation,
 };
 use argonauts_core::settings::Settings;
@@ -16,7 +16,7 @@ use tokio::runtime::Handle;
 
 use super::decide::{Decision, decide};
 use super::settings::less_autonomous;
-use crate::parts::{Autonomy, PolicyParts, Refusal};
+use crate::approvals::parts::{Autonomy, PolicyParts, Refusal};
 use crate::rules;
 use crate::rules::merge::debt_blocks;
 
@@ -443,18 +443,18 @@ mod tests {
     use std::time::Duration;
 
     use argonauts_core::RunId;
-    use argonauts_core::events::task::TaskSpec;
-    use argonauts_core::future::BoxFuture;
-    use argonauts_core::names::ApprovalId;
-    use argonauts_core::policy::{
+    use argonauts_core::agents::session_runner::SessionSpec;
+    use argonauts_core::base::future::BoxFuture;
+    use argonauts_core::base::names::ApprovalId;
+    use argonauts_core::runs::events::task::TaskSpec;
+    use argonauts_core::safety::policy::{
         ApprovalsView, AutoPreviewRecord, EvidenceFacts, HardLimits, UserDecision,
     };
-    use argonauts_core::session_runner::SessionSpec;
     use argonauts_testkit::FakeClock;
 
     use super::*;
+    use crate::approvals::parts::{Approve, Autonomy, ModelVerdict, Reservation};
     use crate::approvals::settings::SettingsSource;
-    use crate::parts::{Approve, Autonomy, ModelVerdict, Reservation};
 
     struct NoLimits;
 

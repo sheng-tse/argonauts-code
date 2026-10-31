@@ -3,20 +3,20 @@
 //! winner's are. When the main agent answers the crew's questions, a near tie goes to the plan the
 //! judges scored highest instead, and the plan approval after it checks that plan.
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::PlanLabel;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalKind, ApprovalPacket, FreeText, PlanPacket,
 };
-use argonauts_core::events::plan::{JudgingResult, PlanEvent, TaskGraph};
-use argonauts_core::names::PlanLabel;
-use argonauts_core::policy::EvidenceDocument;
+use argonauts_core::runs::events::plan::{JudgingResult, PlanEvent, TaskGraph};
+use argonauts_core::safety::policy::EvidenceDocument;
 use argonauts_core::settings::protocol::JudgingMethod;
 use argonauts_core::{Note, NoteLevel};
 
 use super::plan_facts;
 use crate::approvals::{self, ApprovalRequest, options};
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::plan::{decisions, drafts};
 use crate::state::plan::SealedDraft;
 use crate::workflow::StepCall;
@@ -176,7 +176,7 @@ fn request(
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::plan::PlanTally;
+    use argonauts_core::runs::events::plan::PlanTally;
 
     use super::*;
 

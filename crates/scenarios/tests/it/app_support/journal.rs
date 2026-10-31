@@ -7,14 +7,14 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use argonauts_core::events::approval::{
+use argonauts_core::base::layout::run_files;
+use argonauts_core::base::names::{ApprovalId, ModelRef};
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
     FreeText, QuestionPacket,
 };
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunStarted, WaitReason};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::layout::run_files;
-use argonauts_core::names::{ApprovalId, ModelRef};
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunStarted, WaitReason};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::{Paths, RepoId, RunId, TaskId};
@@ -23,7 +23,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 
 pub fn run_events(run_dir: &Path) -> anyhow::Result<Vec<RunEvent>> {
-    argonauts_testkit::journal::events(run_dir)
+    argonauts_testkit::home::journal::events(run_dir)
 }
 
 /// The resolved settings a run recorded when it started.

@@ -1,14 +1,16 @@
 //! What each discovery source prints, as registry entries. None of them costs a model call.
 
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::input::EFFORT_LEVELS;
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::{CostModel, CostUnit, ModelAccess, ModelEntry, RegistryKind};
+use argonauts_core::models::registry::{
+    CostModel, CostUnit, ModelAccess, ModelEntry, RegistryKind,
+};
 use argonauts_core::settings::Settings;
 use serde_json::Value;
 
 use crate::models::builtin::{cli_entry, cost};
 use crate::models::provider_from_model_id;
-use argonauts_core::registry::provider::UNKNOWN_PROVIDER;
+use argonauts_core::models::registry::provider::UNKNOWN_PROVIDER;
 
 /// `agy --output-format json models`: the list sits under `command.data.models`, each model
 /// with the label agy's own picker shows. agy names thinking levels as separate model ids

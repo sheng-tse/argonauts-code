@@ -2,8 +2,8 @@
 //! instead of vanishing. serde-saphyr reads the untagged `Count` and `StepModels` and the
 //! JSON values of `params` straight from YAML, so there's no intermediate value.
 
-use argonauts_core::hash::{canonical_json, sha256_hex};
-use argonauts_core::workflow::Workflow;
+use argonauts_core::base::hash::{canonical_json, sha256_hex};
+use argonauts_core::workflows::workflow::Workflow;
 
 use super::WorkflowError;
 

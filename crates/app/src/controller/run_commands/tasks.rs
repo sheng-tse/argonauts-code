@@ -1,20 +1,20 @@
 //! What you do to one task: reassigning it, remembering a fallback pick as a rule, and its
 //! fallback checkpoints (`/rewind`).
 
-use argonauts_core::api::ApiError;
 use argonauts_core::app::{AppEvent, ChoiceKind, ViewData};
-use argonauts_core::events::approval::{AnswerAction, ApprovalPacket};
-use argonauts_core::events::task::{TaskEvent, TaskState};
-use argonauts_core::events::{ApprovalEvent, RunEvent, RunEventKind, SessionEvent};
-use argonauts_core::names::{AgentId, ApprovalId, ModelRef, RoleName};
+use argonauts_core::base::names::{AgentId, ApprovalId, ModelRef, RoleName};
+use argonauts_core::runs::api::ApiError;
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalPacket};
+use argonauts_core::runs::events::task::{TaskEvent, TaskState};
+use argonauts_core::runs::events::{ApprovalEvent, RunEvent, RunEventKind, SessionEvent};
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::{NoteLevel, RunId, TaskId};
 
 use super::views::run_events;
 use super::{Handled, NO_APPROVALS, on_screen};
-use crate::choices;
 use crate::controller::runs::{RunChoice, RunsState};
 use crate::controller::{Ctx, Effect};
+use crate::setup::choices;
 use crate::views;
 
 /// From a picker: within the role's rules, else a confirm and `Approvals::reassign_overriding`.
