@@ -22,6 +22,16 @@ pub enum SessionRole {
     Build,
     /// Direct Captain: the CLI's default tools in your checkout, asking as [`Asks`] says.
     Direct,
+    /// Answers from its prompt alone: no tools where the CLI can turn them off, and the
+    /// read-only flags where it can't.
+    NoTools,
+}
+
+impl SessionRole {
+    /// Whether the session may not change files.
+    pub fn reads_only(self) -> bool {
+        matches!(self, Self::ReadOnly | Self::NoTools)
+    }
 }
 
 /// What a direct session asks you about before it acts.

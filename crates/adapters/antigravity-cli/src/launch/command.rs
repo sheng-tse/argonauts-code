@@ -127,10 +127,12 @@ pub fn interactive_resume_command(
     Some(spec)
 }
 
-/// Read-only sessions always get the restricted agent, which has no subagent tools either.
+/// Read-only sessions always get the restricted agent, which has no subagent tools either, and a
+/// session with no tools gets the agent with none.
 fn agent_profile(req: &SessionRequest) -> Option<AgentProfile> {
     match req.role {
         SessionRole::ReadOnly => Some(AgentProfile::ReadOnly),
+        SessionRole::NoTools => Some(AgentProfile::NoTools),
         SessionRole::Build if fanout_off(req.native_fanout) => Some(AgentProfile::NoSubagents),
         SessionRole::Build | SessionRole::Direct => None,
     }

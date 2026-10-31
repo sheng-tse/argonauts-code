@@ -199,7 +199,9 @@ impl<'a> RunHost<'a> {
 
     fn refusal(&self, request: &SessionRequest) -> Option<String> {
         match request.role {
-            SessionRole::ReadOnly if !self.adapter.capabilities().enforces_read_only => {
+            SessionRole::ReadOnly | SessionRole::NoTools
+                if !self.adapter.capabilities().enforces_read_only =>
+            {
                 Some(format!(
                     "{} can't keep a session read-only, so Argonauts Code won't start one",
                     self.adapter.display_name()

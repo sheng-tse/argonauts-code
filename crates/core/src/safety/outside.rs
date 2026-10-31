@@ -78,7 +78,7 @@ impl Outside {
     /// the OS sandbox opens. Once asked counts only for a direct turn, whose asking holds it.
     pub fn writes_outside(&self, role: SessionRole) -> bool {
         match role {
-            SessionRole::ReadOnly => false,
+            SessionRole::ReadOnly | SessionRole::NoTools => false,
             SessionRole::Direct => self.write || self.after_asking,
             SessionRole::Build => self.write,
         }
@@ -92,7 +92,7 @@ impl Outside {
 
     /// Whether the CLI's own permissions let a session in `role` write outside without asking.
     pub fn writes_unasked(&self, role: SessionRole) -> bool {
-        role != SessionRole::ReadOnly && self.write
+        !role.reads_only() && self.write
     }
 
     /// For a session whose CLI can't ask before it writes: where the mode opens outside only

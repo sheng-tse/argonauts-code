@@ -401,7 +401,7 @@ fn recorded_roles_match_their_sandbox() {
         let args: Vec<String> = serde_json::from_value(fixture.meta["args"].clone()).unwrap();
         let at = args.iter().position(|a| a == "--sandbox").unwrap();
         let expected = match role {
-            SessionRole::ReadOnly => "read-only",
+            SessionRole::ReadOnly | SessionRole::NoTools => "read-only",
             SessionRole::Build | SessionRole::Direct => "workspace-write",
         };
         assert_eq!(args[at + 1], expected, "{name}");
