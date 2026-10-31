@@ -282,12 +282,9 @@ impl BehaviorsTab {
             out.push(Vec::new());
         }
         if !self.shortcuts {
-            out.push(summary::headline(
-                look.kit,
-                look.map,
-                look.width.saturating_sub(1),
-            ));
-            for line in self.deep.kept_lines(look.kit).unwrap_or_default() {
+            let width = look.width.saturating_sub(1);
+            out.push(summary::headline(look.kit, look.map, width));
+            for line in self.deep.kept_lines(look.kit, width).unwrap_or_default() {
                 out.push(line.spans);
             }
         }

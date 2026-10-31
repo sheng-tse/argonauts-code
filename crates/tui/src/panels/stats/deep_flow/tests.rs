@@ -241,26 +241,27 @@ fn an_update_that_failed_says_so_under_the_headline_until_you_leave() {
     flow.sync(&update);
     update.done(&DeepDone {
         written: 40,
-        failed: Some("the fake stopped answering".to_owned()),
+        failed: Some("Haiku 5.5 stopped without an answer".to_owned()),
         placed: 650,
         ..DeepDone::default()
     });
     flow.sync(&update);
     let theme = theme();
     let kit = Kit::new(&theme);
+    let width = usize::from(WIDTH);
     assert_eq!(
-        rows(flow.kept_lines(&kit).unwrap()),
+        rows(flow.kept_lines(&kit, width).unwrap()),
         [
-            " Update stopped: Haiku 5.5 didn't answer after 40 of 823 summaries.",
+            " Update stopped after 40 of 823 summaries: Haiku 5.5 stopped without an answer.",
             " The map is as it was, and the 40 are kept for the next try.",
         ]
     );
     flow.leave();
-    assert!(flow.kept_lines(&kit).is_none());
+    assert!(flow.kept_lines(&kit, width).is_none());
     // The panel opened again after it ended didn't see it.
     let mut reopened = DeepFlow::default();
     reopened.sync(&update);
-    assert!(reopened.kept_lines(&kit).is_none());
+    assert!(reopened.kept_lines(&kit, width).is_none());
     // An update that placed new dots made a new map, so there's nothing to say.
     let mut flow = DeepFlow::default();
     let mut update = running(0, 9, None);
@@ -271,7 +272,37 @@ fn an_update_that_failed_says_so_under_the_headline_until_you_leave() {
         ..DeepDone::default()
     });
     flow.sync(&update);
-    assert!(flow.kept_lines(&kit).is_none());
+    assert!(flow.kept_lines(&kit, width).is_none());
+}
+
+/// A model chosen from Open models downloads first; one that didn't download asked for no
+/// summary, so the line names no count, and the megabytes the download had got to aren't one.
+#[test]
+fn an_update_whose_summarizer_didnt_download_says_why() {
+    let mut flow = DeepFlow::default();
+    let mut update = running(4100, 17000, None);
+    let progress = update.running.as_mut().unwrap();
+    progress.summarizer = "Qwen3.5 27B on Ollama".to_owned();
+    progress.short = "Qwen3.5 27B".to_owned();
+    progress.downloading = true;
+    flow.sync(&update);
+    update.done(&DeepDone {
+        failed: Some(
+            "Qwen3.5 27B didn't download (pull model manifest: file does not exist)".to_owned(),
+        ),
+        ..DeepDone::default()
+    });
+    flow.sync(&update);
+    let theme = theme();
+    let kit = Kit::new(&theme);
+    assert_eq!(
+        rows(flow.kept_lines(&kit, usize::from(WIDTH)).unwrap()),
+        [
+            " Update stopped: Qwen3.5 27B didn't download (pull model manifest: file does not \
+             exist).",
+            " The map is as it was.",
+        ]
+    );
 }
 
 #[test]

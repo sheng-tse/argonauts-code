@@ -6,11 +6,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use argonauts_core::agents::session_runner::{
-    Access, CliWorkflow, RunnerEvent, SandboxMode, SandboxProfile, SessionLimits,
+    Access, CliWorkflow, RunnerError, RunnerEvent, SandboxMode, SandboxProfile, SessionLimits,
     SessionPreferences, SessionRunner, SessionShell, SessionSpec,
 };
 use argonauts_core::base::future::BoxFuture;
 use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::events::failure::run_failure_line;
 use argonauts_core::runs::events::session::{EndReason, InputPart, InputPartKind};
 use argonauts_core::settings::sessions::{Compaction, FanoutSwitch, NativeFanout, SessionLifetime};
 use argonauts_core::{AgentEvent, create_private_dir_all};
@@ -20,6 +21,7 @@ use super::summarize::Summarizer;
 pub(crate) struct SessionSummarizer {
     runner: Arc<dyn SessionRunner>,
     id: ModelRef,
+    name: String,
     effort: Option<String>,
     /// Each request's session gets a folder of its own under it.
     scratch: PathBuf,
@@ -27,13 +29,16 @@ pub(crate) struct SessionSummarizer {
 }
 
 impl SessionSummarizer {
+    /// `name` is the model as you know it, such as `Haiku 5.5`.
     pub fn new(
         runner: Arc<dyn SessionRunner>,
+        name: &str,
         effort: Option<String>,
         scratch: PathBuf,
     ) -> SessionSummarizer {
         SessionSummarizer {
             id: runner.model_ref().clone(),
+            name: name.to_owned(),
             runner,
             effort,
             scratch,
@@ -103,7 +108,7 @@ impl SessionSummarizer {
             .runner
             .start(spec)
             .await
-            .map_err(|err| format!("{} couldn't start: {err}", self.id))?;
+            .map_err(|err| couldnt_start(&self.name, &err))?;
         let mut said = String::new();
         let mut streamed = String::new();
         while let Some(event) = handle.events.recv().await {
@@ -121,9 +126,9 @@ impl SessionSummarizer {
         let end = handle
             .ended
             .await
-            .map_err(|_| format!("{} ended without saying how", self.id))?;
+            .map_err(|_| format!("{} ended without saying how", self.name))?;
         if end.reason != EndReason::Completed {
-            return Err(format!("{} stopped: {:?}", self.id, end.reason));
+            return Err(ended_words(&self.name, &end.reason));
         }
         let reply = end
             .result_text
@@ -131,9 +136,36 @@ impl SessionSummarizer {
             .or_else(|| (!said.trim().is_empty()).then_some(said))
             .unwrap_or(streamed);
         if reply.trim().is_empty() {
-            return Err(format!("{} answered nothing", self.id));
+            return Err(format!("{} answered nothing", self.name));
         }
         Ok(reply)
+    }
+}
+
+/// `Haiku 5.5 couldn't start, since a CLI session needs a sandbox`
+pub(crate) fn couldnt_start(name: &str, err: &RunnerError) -> String {
+    let why = match err {
+        RunnerError::Refused(why) | RunnerError::Io(why) => why.clone(),
+        RunnerError::Disabled { reason, .. } => format!("it's off for new work: {reason}"),
+        RunnerError::NotInstalled(cli) => format!("{cli} isn't installed"),
+        RunnerError::Unknown(_) => "it isn't one of your models".to_owned(),
+    };
+    format!("{name} couldn't start, since {why}")
+}
+
+/// Why a session that didn't complete ended, as `Haiku 5.5 got a sign-in error`, with the
+/// first line of the CLI's own words where it gave them.
+fn ended_words(name: &str, reason: &EndReason) -> String {
+    let line = reason
+        .plain_line(name)
+        .unwrap_or_else(|| format!("{name} was stopped"));
+    match reason {
+        EndReason::StartFailed { message } | EndReason::Crashed { message }
+            if !message.trim().is_empty() =>
+        {
+            format!("{line} ({})", run_failure_line(Some(message)))
+        }
+        _ => line,
     }
 }
 
@@ -156,6 +188,10 @@ impl Drop for SessionSummarizer {
 impl Summarizer for SessionSummarizer {
     fn id(&self) -> &ModelRef {
         &self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn answer<'a>(&'a self, request: &'a str) -> BoxFuture<'a, Result<String, String>> {
@@ -185,6 +221,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let summarizer = SessionSummarizer::new(
             runner.clone(),
+            "Haiku 5.5",
             Some("low".to_owned()),
             scratch.path().into(),
         );
@@ -211,7 +248,7 @@ mod tests {
         );
         let scratch = tempfile::tempdir().unwrap();
         let root = scratch.path().join("summaries");
-        let summarizer = SessionSummarizer::new(runner, None, root.clone());
+        let summarizer = SessionSummarizer::new(runner, "Haiku 5.5", None, root.clone());
         let unanswered = tokio::time::timeout(
             std::time::Duration::from_millis(50),
             summarizer.answer("the request"),
@@ -224,13 +261,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_session_that_doesnt_complete_is_a_failed_request() {
-        let runner = Arc::new(
-            FakeRunner::cli("codex/gpt-6-luna", "openai")
-                .then(FakeSession::ended(EndReason::Stopped)),
-        );
+    async fn a_session_that_doesnt_complete_says_why_by_the_models_name() {
+        let ended = EndReason::Crashed {
+            message: "Credit balance is too low\nmore detail".to_owned(),
+        };
+        let runner =
+            Arc::new(FakeRunner::cli("codex/gpt-6-luna", "openai").then(FakeSession::ended(ended)));
         let scratch = tempfile::tempdir().unwrap();
-        let summarizer = SessionSummarizer::new(runner, None, scratch.path().into());
-        assert!(summarizer.answer("the request").await.is_err());
+        let summarizer = SessionSummarizer::new(runner, "GPT-6 Luna", None, scratch.path().into());
+        assert_eq!(
+            summarizer.answer("the request").await.unwrap_err(),
+            "GPT-6 Luna stopped without an answer (Credit balance is too low)"
+        );
+    }
+
+    #[test]
+    fn a_refused_start_says_why_without_the_rules_prefix() {
+        let refused = RunnerError::Refused("a CLI session needs a sandbox".to_owned());
+        assert_eq!(
+            couldnt_start("Haiku 5.5", &refused),
+            "Haiku 5.5 couldn't start, since a CLI session needs a sandbox"
+        );
+        let missing = RunnerError::NotInstalled("Claude Code".to_owned());
+        assert_eq!(
+            couldnt_start("Haiku 5.5", &missing),
+            "Haiku 5.5 couldn't start, since Claude Code isn't installed"
+        );
     }
 }

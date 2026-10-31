@@ -1,16 +1,17 @@
-//! `argonauts behaviors --summaries` on the real binary, over the records the Behaviors drawings
-//! were made from, with Claude Code's or Codex's cheapest model as the summarizer: each request
-//! is a session of the fake CLI, started inside the sandbox, and the summaries it answers are
-//! written.
+//! Summaries on the real binary, over the records the Behaviors drawings were made from. From
+//! `argonauts behaviors --summaries`, with Claude Code's or Codex's cheapest model as the
+//! summarizer, each request is a session of the fake CLI, started inside the sandbox, and the
+//! summaries it answers are written. On the Behaviors tab, an update that stops says why.
 
 use std::fs;
 
 use anyhow::Context as _;
 use argonauts_scenarios::{Scenario, WAIT, no_servers_of_yours};
+use argonauts_testkit::approved::{self, Drawing, Manifest, Step};
 use argonauts_testkit::fake_clis::scenario::Invocation;
-use argonauts_testkit::{Pty, PtyCommand, approved, argonauts_bin};
+use argonauts_testkit::{FakeKind, FakeModelServer, Pty, PtyCommand, argonauts_bin};
 
-use crate::drawings_support::{copy_folder, playing_first};
+use crate::drawings_support::{bring_with, copy_folder, playing_first, reach};
 
 /// The home of the label map's drawings, whose records hold the actions to summarize.
 const HOME: &str = "homes/behaviors-label-map";
@@ -177,4 +178,87 @@ fn claude_code_writes_summaries_from_inside_the_sandbox() -> anyhow::Result<()> 
 #[test]
 fn codex_writes_summaries_from_inside_the_sandbox() -> anyhow::Result<()> {
     writes_summaries_with("codex/gpt-6-luna", "codex", ("--disable", "shell_tool"))
+}
+
+/// The label map's drawing, whose steps open the Behaviors map over the drawings' records.
+const LABEL_MAP: &str = "behaviors/label-map@177x40.txt";
+
+/// A large monitor's window, where the line under the headline has the map's whole width
+/// whichever model the questions offer this machine first, so it holds the reason whole.
+const LARGE: (u16, u16) = (265, 60);
+
+/// The tab's own update with a model to download from Open models, on a fake Ollama that
+/// answers a download with a 404: the update stops, and the line under the headline says the
+/// model didn't download and why.
+#[test]
+fn an_update_whose_model_didnt_download_says_why_on_the_tab() -> anyhow::Result<()> {
+    let ollama = FakeModelServer::start(FakeKind::Ollama, &["llama3.2:latest"])?;
+    let dir = approved::dir();
+    let manifest = Manifest::load(&dir)?;
+    let mut entry = manifest
+        .drawings
+        .iter()
+        .find(|entry| entry.file == LABEL_MAP)
+        .with_context(|| format!("no {LABEL_MAP}"))?
+        .clone();
+    // As far as the map, without pointing at it.
+    let map_at = entry
+        .steps
+        .iter()
+        .position(|step| matches!(step, Step::Wait(words) if words.starts_with("Label map")))
+        .context("a wait for the label map")?;
+    entry.steps.truncate(map_at + 1);
+    let mut drawing = Drawing::load(&dir.join(&entry.file))?;
+    (drawing.cols, drawing.rows) = LARGE;
+    let ollama_url = ollama.base_url();
+    let at = bring_with(&entry, &dir, &drawing, |scenario| {
+        fs::remove_file(scenario.repo.home().join("behaviors/layout.json"))
+            .context("removing the map")?;
+        let config = scenario.repo.home().join("config.toml");
+        let mut settings = fs::read_to_string(&config).context("reading the home's config")?;
+        settings.push_str(&format!(
+            "\n[behaviors]\nembedder = \"words\"\n\n\
+             [endpoints.ollama]\nbase_url = \"{ollama_url}\"\nlocal = true\n"
+        ));
+        fs::write(&config, settings).context("writing the home's config")
+    })?;
+    let mut pty = at.pty;
+    // Llama 3.2 is on the fake Ollama, and the models Open models lists after it would be
+    // downloaded; which ones depends on this machine's memory, so the first is taken. The
+    // fake's tags carry no sizes, so the embedder asks to download too, and word vectors
+    // keep it from that.
+    let steps = [
+        Step::Press("d".to_owned()),
+        Step::Wait("Everything: ".to_owned()),
+        Step::Press("1".to_owned()),
+        Step::Wait("Summarize with".to_owned()),
+        Step::Press("2".to_owned()),
+        Step::Wait("one not installed asks before it downloads".to_owned()),
+        Step::Press("2".to_owned()),
+        Step::Wait("Yes, download it and summarize".to_owned()),
+        Step::Press("Enter".to_owned()),
+        Step::Wait("Use word vectors instead".to_owned()),
+        Step::Press("2".to_owned()),
+    ];
+    reach(&mut pty, &steps)?;
+    let screen = pty.wait_for_visible("Update stopped: ", WAIT)?;
+    let rows = screen.visible;
+    let at = rows
+        .iter()
+        .position(|row| row.contains("Update stopped: "))
+        .context("the stopped line")?;
+    let stopped = rows[at].trim();
+    assert!(
+        stopped.starts_with("Update stopped: ")
+            && stopped.ends_with(" didn't download (Ollama answered 404 Not Found)."),
+        "{stopped}"
+    );
+    assert_eq!(rows[at + 1].trim(), "The map is as it was.");
+    let pulled = ollama
+        .requests()
+        .iter()
+        .filter(|request| request.path == "/api/pull")
+        .count();
+    assert_eq!(pulled, 1);
+    Ok(())
 }

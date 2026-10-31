@@ -9,6 +9,7 @@ use argonauts_core::behaviors::deep_map::{
     DeepDone, DeepProgress, DeepScope, DeepStart, EmbedderNote, OfferPlace, ScopeOffer,
     SummarizerOffer,
 };
+use argonauts_core::safety::sanitize::sanitize_for_terminal;
 use tokio_util::sync::CancellationToken;
 
 use super::service::DeepMaps;
@@ -243,9 +244,9 @@ pub(crate) fn done_words(done: &DeepDone, took: Duration) -> Vec<String> {
         ));
     } else if let Some(why) = &done.failed {
         lines.push(format!(
-            "The summarizer stopped answering after {} ({why}): {made}. Every summary written is \
-             kept.",
-            duration_words(took)
+            "The update stopped after {}: {}. {made}. Every summary written is kept.",
+            duration_words(took),
+            sanitize_for_terminal(why.trim().trim_end_matches('.'))
         ));
     } else {
         lines.push(format!("Done in {}: {made}.", duration_words(took)));
@@ -374,6 +375,16 @@ mod tests {
         };
         let lines = done_words(&stopped, Duration::from_secs(30));
         assert!(lines[0].starts_with("Stopped after 30 s"));
+        let refused = DeepDone {
+            failed: Some("Haiku 5.5 couldn't start, since a CLI session needs a sandbox.".into()),
+            ..DeepDone::default()
+        };
+        assert_eq!(
+            done_words(&refused, Duration::from_secs(0))[0],
+            "The update stopped after 0 s: Haiku 5.5 couldn't start, since a CLI session needs a \
+             sandbox. 0 summarized now, 0 like an identical action, 0 already done. Every summary \
+             written is kept."
+        );
         assert_eq!(
             lines[1],
             "No embedding model, so the summaries are placed by their words."
