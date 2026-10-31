@@ -9,11 +9,9 @@
 # may only shrink, and comes off the list once it is back within the limit. Paths are from the
 # workspace's top; a crate's is the one Cargo.toml lists among the members.
 
-# core may only shrink. Its ceiling is its count once the modules only app or crew used moved
-# out, plus the 687 lines they held, so 0.2.1's changes have room; the release lowers it to
-# core's count then.
+# core may only shrink. Its ceiling is its count in 0.2.1, 159 lines under 0.2.0's 43,877.
 [core]
-ceiling = 43877
+ceiling = 43718
 
 # Crates whose src/ may hold .rs files beside the entry file, and why.
 [exceptions]
@@ -84,24 +82,8 @@ path = "crates/app/src/controller/workflow_switch/sheet/mod.rs"
 ceiling = 1565
 split = "by job: the draft and its changes, a step's rows and words, the seats"
 
-# tui, app and crew may only shrink too. Their ceilings are their counts before 0.2.1 (tui
-# 156,055, app 87,526, crew 79,674) plus room for its changes, measured on 2026-10-30: tui
-# 3,021 and app 928 lines with the Behaviors changes in. Then tui took 77 more for model names
-# in crew rows, Ctrl+Z, the inline header's redraw, the first frame's wait and 16-colour
-# lines, 27 for the Context header's window, 48 for saying a map picture couldn't be drawn, 3
-# for a bubble narrower than its corners, 61 for opening a chosen council with nothing of the
-# main agent's turn, 201 for the Council's live bubbles and its private view's lines, 214 for
-# the universe's glow and twinkles, 64 for saying a scene that couldn't be drawn and breaking
-# the pointer's line at a dot, 90 for the talk's one count and its rows, 139 for a held turn's
-# rows waiting off the screen and the council's plan view, 85 for leaving the keys on the
-# sub-tabs where nothing below moves, 12 for measuring who did what's labels, 39 for saying
-# why a summary update stopped and 34 for ending the app when its terminal hangs up at a key
-# poll (160,170 in all), and app 81 more for the chosen council's verdict-first estimate and
-# the checks rules, 164 for refusing only what words about checks say, 2 for summary sessions
-# in the sandbox and 85 for saying why a summary update stopped (88,786). crew has 300 for its
-# 243 lines and more still to come, 150 more for its council fixes, 16 for the talk's one
-# count and 16 for each way's reason on the plan (80,156). The release lowers each to its
-# count then.
+# tui, app and crew may only shrink too. Their ceilings are their counts in 0.2.1: tui
+# 160,170, app 88,786 and crew 80,156.
 # The listed files get no room: one that grows is split as its entry says.
 [[crate]]
 path = "crates/tui"
