@@ -176,13 +176,13 @@ impl<W: Write> Screen<W> {
     pub(super) fn use_real_terminal(&mut self, modes: TerminalModes, stops: Option<Stops>) {
         self.ui.set_terminal_modes(modes);
         self.stops = stops;
+        self.terminals = gone::Terminals::now();
         // Only from here: during the start-up probes, a terminal that doesn't answer may
         // rightly take longer than the backstop waits.
-        gone::arm_backstop();
+        gone::arm_backstop(self.terminals);
         let mut check = tokio::time::interval(gone::CHECK_EVERY);
         check.set_missed_tick_behavior(MissedTickBehavior::Delay);
         self.gone_check = Some(check);
-        self.terminals = gone::Terminals::now();
         if TermEnv::from_process().in_tmux {
             let start = tokio::time::Instant::now() + SIZE_POLL;
             let mut poll = tokio::time::interval_at(start, SIZE_POLL);

@@ -57,13 +57,16 @@ impl Detached {
         let child = Command::new(env!("CARGO_BIN_EXE_argonauts-tui-driver"))
             .arg(&script_file)
             .current_dir(&work)
+            // Only what the app needs: the variables of the terminal the tests run in, such as
+            // Ghostty's, would have it start as it does there instead of on a plain terminal.
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", &home)
             .env("ARGONAUTS_HOME", home.join(".argonauts"))
             .env("TERM", "xterm-256color")
             .env("LANG", "en_US.UTF-8")
             .env("DRIVER_UI", r#"screen = "inline""#)
             .env("DRIVER_COMMANDS", dir.path().join("commands.jsonl"))
-            .env_remove("TMUX")
             .stdin(stdio())
             .stdout(stdio())
             .stderr(stdio())
@@ -110,6 +113,11 @@ impl Detached {
         );
     }
 
+    fn type_keys(&self, keys: &[u8]) {
+        let master = self.master.as_ref().expect("the terminal is open");
+        nix::unistd::write(master, keys).expect("typing");
+    }
+
     fn signal(&self, signal: Signal) {
         let pid = i32::try_from(self.child.id()).expect("a pid");
         kill(Pid::from_raw(pid), signal).expect("signalling the app");
@@ -144,6 +152,21 @@ fn the_app_ends_when_its_terminal_closes() {
     assert!(
         app.ended_within(ENDS_WITHIN).is_some(),
         "the app outlived its terminal"
+    );
+}
+
+/// Right after a key, the screen's own thread polls the terminal, so a hangup then lands there.
+#[test]
+fn the_app_ends_when_its_terminal_closes_right_after_a_key() {
+    let mut app = Detached::start(Script::idle().at(0, notice("info", READY)));
+    app.read_until(READY);
+
+    app.type_keys(b"a");
+    drop(app.master.take());
+
+    assert!(
+        app.ended_within(ENDS_WITHIN).is_some(),
+        "the app outlived its terminal closed right after a key"
     );
 }
 
