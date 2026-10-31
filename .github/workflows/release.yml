@@ -283,6 +283,18 @@ jobs:
     permissions:
       "actions": "read"
       "contents": "read"
+
+  # In a dry run only: whether npm, crates.io and the Homebrew tap still trust this repository. It publishes nothing.
+  custom-publishers:
+    needs:
+      - plan
+    if: ${{ inputs.tag == 'dry-run' }}
+    uses: ./.github/workflows/publishers.yml
+    secrets: inherit
+    permissions:
+      "contents": "read"
+      "id-token": "write"
+
   # Determines if we should publish/announce
   host:
     needs:

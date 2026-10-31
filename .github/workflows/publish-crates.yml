@@ -1,17 +1,22 @@
-# Publishes the workspace's crates to crates.io with release-plz, so `cargo install argonauts-code` works. Called
-# by release.yml in its publish step, with dist's plan.
+# Publishes the workspace's crates to crates.io, so `cargo install argonauts-code` works. Called by release.yml in
+# its publish step, with dist's plan.
 #
-# release-plz publishes each crate whose version isn't on crates.io yet, in dependency order, so a rerun after a
-# failure picks up where it stopped. It makes no tag and no GitHub release: dist does both (release-plz.toml).
-# crates.io's trusted publishing trades this run's identity for a short-lived token, so no token is stored. Betas
-# never go to crates.io.
+# It publishes with `cargo publish --workspace --locked`, the command CI's Packages check dry-runs, so a passing dry
+# run means a working publish: cargo orders the crates by every dependency, dev-dependencies too, which release-plz
+# didn't (0.2.0 stopped at conductor, whose tests use adapters crates.io didn't have yet). crates.io refuses a
+# version it already has, so the crates it has at this version are left out first (packaging/release/crates.py),
+# and a rerun after a failure picks up where it stopped. crates.io's trusted publishing trades this run's identity
+# for a token that lasts 30 minutes, so no token is stored; a dry run compiles everything before the token is asked
+# for, and the publish reuses that build. Betas never go to crates.io. release-plz only opens the release pull
+# request (release-plz.yml).
 #
 # The first release can't come through here: crates.io sets up trusted publishing only for a crate that exists,
 # and it takes a few new crates at once, then about one every ten minutes. So 0.1.0 is published by hand, from a
 # maintainer's machine with a crates.io token: `cargo publish -p <crate>` for each crate in dependency order
 # (`cargo publish --workspace --dry-run` lists it), waiting out the limit when crates.io names a time. Then each
 # crate gets this repository's release.yml and the `release` environment as its trusted publisher, the token is
-# revoked, and every later release comes through here. A run the limit stops waits once and tries again.
+# revoked, and every later release comes through here. A run the limit stops waits once and tries again with a new
+# token.
 name: Publish to crates.io
 
 on:
@@ -35,25 +40,66 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          fetch-depth: 0
           persist-credentials: false
       - name: Install Rust
         run: rustup update stable --no-self-update && rustup default stable
+      - name: Leave out what crates.io already has
+        id: left
+        run: |
+          set -eu
+          args=$(python3 packaging/release/crates.py to-publish)
+          {
+            echo "args<<ARGS"
+            echo "$args"
+            echo "ARGS"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build what's left, before the token's 30 minutes start
+        if: ${{ steps.left.outputs.args != '' }}
+        env:
+          ARGS: ${{ steps.left.outputs.args }}
+        run: |
+          set -eu
+          mapfile -t args <<< "$ARGS"
+          cargo publish --locked --dry-run "${args[@]}"
+      - name: Trade the run's identity for a crates.io token
+        if: ${{ steps.left.outputs.args != '' }}
+        id: auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
       - name: Publish
+        if: ${{ steps.left.outputs.args != '' }}
         id: publish
         continue-on-error: true
-        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
-        with:
-          command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Wait out crates.io's limit on new crates
+          ARGS: ${{ steps.left.outputs.args }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -eu
+          mapfile -t args <<< "$ARGS"
+          cargo publish --locked "${args[@]}"
+      - name: Wait out crates.io's limit
         if: ${{ steps.publish.outcome == 'failure' }}
         run: sleep 660
-      - name: Publish what's left
+      - name: Leave out what crates.io has now
         if: ${{ steps.publish.outcome == 'failure' }}
-        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
-        with:
-          command: release
+        id: still
+        run: |
+          set -eu
+          args=$(python3 packaging/release/crates.py to-publish)
+          {
+            echo "args<<ARGS"
+            echo "$args"
+            echo "ARGS"
+          } >> "$GITHUB_OUTPUT"
+      - name: Trade the run's identity for a new token
+        if: ${{ steps.publish.outcome == 'failure' && steps.still.outputs.args != '' }}
+        id: auth-again
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+      - name: Publish what's left
+        if: ${{ steps.publish.outcome == 'failure' && steps.still.outputs.args != '' }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARGS: ${{ steps.still.outputs.args }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth-again.outputs.token }}
+        run: |
+          set -eu
+          mapfile -t args <<< "$ARGS"
+          cargo publish --locked "${args[@]}"
