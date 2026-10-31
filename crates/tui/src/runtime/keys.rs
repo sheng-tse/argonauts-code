@@ -9,20 +9,24 @@ use std::task::{Context, Poll};
 use crossterm::event::{Event, EventStream};
 use futures::{Stream, StreamExt};
 
+use super::gone::Terminals;
+
 pub(crate) trait KeySource: Stream<Item = io::Result<Event>> + Unpin {
     fn pause(&mut self) {}
     fn resume(&mut self) {}
 }
 
-/// The real terminal's events.
+/// The real terminal's events. They end once the terminal hangs up.
 pub(crate) struct TerminalKeys {
     stream: Option<EventStream>,
+    terminals: Terminals,
 }
 
 impl TerminalKeys {
     pub(crate) fn new() -> Self {
         Self {
             stream: Some(EventStream::new()),
+            terminals: Terminals::now(),
         }
     }
 }
@@ -31,7 +35,14 @@ impl Stream for TerminalKeys {
     type Item = io::Result<Event>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.get_mut().stream.as_mut() {
+        let keys = self.get_mut();
+        match keys.stream.as_mut() {
+            // Crossterm 0.29 reads a terminal that hung up again and again, forever, on the
+            // thread that polls it. Its own thread usually holds the reader, but the screen's
+            // does at the first poll and after each event, so the keys end here once the
+            // terminal is gone. A hangup between this check and crossterm's read is left to
+            // the backstop in `gone`.
+            Some(_) if keys.terminals.gone() => Poll::Ready(None),
             Some(stream) => stream.poll_next_unpin(cx),
             // Nothing is polled while paused; resuming makes a new stream.
             None => Poll::Pending,

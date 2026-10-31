@@ -4,7 +4,8 @@
 //! A process with no controlling terminal, as a capture tool starts it, gets no SIGHUP either.
 //! So the screen asks the terminal itself every so often. And a terminal that is still open but
 //! no longer read blocks every write, which keeps the screen from ever handling a stop signal,
-//! so a thread of its own ends the process when one isn't handled in time.
+//! while crossterm's endless read can hold the screen's own thread, so a thread of its own ends
+//! the process when the screen doesn't close in time.
 
 use std::io::{self, IsTerminal};
 use std::os::fd::AsFd;
@@ -65,33 +66,58 @@ impl Terminals {
     }
 }
 
-/// After a first SIGTERM or SIGHUP the app has [`GRACE`] to close the way `/exit` does; then,
-/// or at a second one, the process ends at once. Armed once, for the process's own terminal.
-pub(super) fn arm_backstop() {
+/// After a first SIGTERM or SIGHUP, or once `terminals` hang up, the app has [`GRACE`] to
+/// close; then, or at a second signal, the process ends at once. Armed once, for the process's
+/// own terminal.
+pub(super) fn arm_backstop(terminals: Terminals) {
     static ARMED: Once = Once::new();
     ARMED.call_once(|| {
-        let Ok(mut signals) = Signals::new([SIGTERM, SIGHUP]) else {
-            return;
-        };
-        let watcher = std::thread::Builder::new()
-            .name("argonauts-stop-backstop".to_owned())
-            .spawn(move || {
-                let mut first = true;
-                for signal in signals.forever() {
-                    if !first {
-                        end_now(signal);
-                    }
-                    first = false;
-                    let _ = std::thread::Builder::new()
-                        .name("argonauts-stop-grace".to_owned())
-                        .spawn(move || {
-                            std::thread::sleep(GRACE);
-                            end_now(signal);
-                        });
-                }
-            });
-        drop(watcher);
+        watch_for_hangup(terminals);
+        watch_signals();
     });
+}
+
+/// A hangup that crossterm's reader catches on the screen's thread keeps the screen from
+/// seeing it, so this thread looks too, and treats it as a SIGHUP.
+fn watch_for_hangup(terminals: Terminals) {
+    if !terminals.stdin && !terminals.stdout {
+        return;
+    }
+    let watcher = std::thread::Builder::new()
+        .name("argonauts-hangup-backstop".to_owned())
+        .spawn(move || {
+            while !terminals.gone() {
+                std::thread::sleep(CHECK_EVERY);
+            }
+            std::thread::sleep(GRACE);
+            end_now(SIGHUP);
+        });
+    drop(watcher);
+}
+
+/// The first SIGTERM or SIGHUP starts the [`GRACE`]; a second ends the process at once.
+fn watch_signals() {
+    let Ok(mut signals) = Signals::new([SIGTERM, SIGHUP]) else {
+        return;
+    };
+    let watcher = std::thread::Builder::new()
+        .name("argonauts-stop-backstop".to_owned())
+        .spawn(move || {
+            let mut first = true;
+            for signal in signals.forever() {
+                if !first {
+                    end_now(signal);
+                }
+                first = false;
+                let _ = std::thread::Builder::new()
+                    .name("argonauts-stop-grace".to_owned())
+                    .spawn(move || {
+                        std::thread::sleep(GRACE);
+                        end_now(signal);
+                    });
+            }
+        });
+    drop(watcher);
 }
 
 /// A bare `_exit`, without flushing anything: a blocked terminal would block the flush too.
