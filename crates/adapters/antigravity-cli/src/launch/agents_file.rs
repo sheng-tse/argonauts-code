@@ -97,6 +97,8 @@ pub enum AgentProfile {
     ReadOnly,
     /// Every tool except the subagent ones, for `native_fanout = "off"`.
     NoSubagents,
+    /// No tools at all, for a session that answers from its prompt alone.
+    NoTools,
 }
 
 impl AgentProfile {
@@ -104,6 +106,7 @@ impl AgentProfile {
         match self {
             Self::ReadOnly => "argonauts-read-only",
             Self::NoSubagents => "argonauts-no-subagents",
+            Self::NoTools => "argonauts-no-tools",
         }
     }
 
@@ -115,6 +118,7 @@ impl AgentProfile {
                 .copied()
                 .filter(|tool| !SUBAGENT_TOOLS.contains(tool))
                 .collect(),
+            Self::NoTools => Vec::new(),
         }
     }
 
@@ -122,6 +126,7 @@ impl AgentProfile {
         match self {
             Self::ReadOnly => "Reads files and answers. It never edits files or runs commands.",
             Self::NoSubagents => "Works on the task itself, without starting subagents.",
+            Self::NoTools => "Answers from what it is given, with no tools.",
         }
     }
 
@@ -132,6 +137,10 @@ impl AgentProfile {
                  files or run commands."
             }
             Self::NoSubagents => "Do the work yourself. You can't start subagents.",
+            Self::NoTools => {
+                "Answer from what the prompt gives you. You have no tools, so don't try to read \
+                 files or run commands."
+            }
         }
     }
 
@@ -144,7 +153,7 @@ impl AgentProfile {
     /// `off` keeps the model from asking for commands at all, on top of having no shell tool.
     fn command_execution_policy(self) -> &'static str {
         match self {
-            Self::ReadOnly => "off",
+            Self::ReadOnly | Self::NoTools => "off",
             Self::NoSubagents => "sandbox",
         }
     }
@@ -189,7 +198,13 @@ fn render(profile: AgentProfile) -> anyhow::Result<String> {
     if let Some(unknown) = tools.iter().find(|tool| !KNOWN_TOOLS.contains(tool)) {
         bail!("agy has no tool named {unknown:?}");
     }
-    let tool_lines: String = tools.iter().map(|tool| format!("  - {tool}\n")).collect();
+    // An empty `tools:` would be null, which isn't an empty list.
+    let tool_lines: String = if tools.is_empty() {
+        " []\n".to_owned()
+    } else {
+        let lines: String = tools.iter().map(|tool| format!("  - {tool}\n")).collect();
+        format!("\n{lines}")
+    };
     Ok(format!(
         "---\n\
          name: {name}\n\
@@ -198,8 +213,7 @@ fn render(profile: AgentProfile) -> anyhow::Result<String> {
          model: inherit\n\
          commandExecutionPolicy: {policy}\n\
          inheritCustomizations: {inherit}\n\
-         tools:\n\
-         {tool_lines}\
+         tools:{tool_lines}\
          ---\n\
          {instructions}\n",
         name = profile.name(),
@@ -306,6 +320,15 @@ mod tests {
             frontmatter_tools(&open.file.contents),
             AgentProfile::NoSubagents.tools()
         );
+    }
+
+    #[test]
+    fn the_agent_with_no_tools_lists_an_empty_list_and_runs_no_commands() {
+        let launch = agent_launch(AgentProfile::NoTools, Path::new("/s")).unwrap();
+        let contents = &launch.file.contents;
+        assert!(contents.contains("\ntools: []\n---\n"), "{contents}");
+        assert!(contents.contains("commandExecutionPolicy: off\n"));
+        assert!(contents.contains("inheritCustomizations: false\n"));
     }
 
     #[test]

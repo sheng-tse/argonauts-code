@@ -365,7 +365,7 @@ async fn the_answer_reads_as_its_format_was_written() {
 }
 
 #[tokio::test]
-async fn read_only_flags_until_approved() {
+async fn read_only_or_no_tools_until_approved() {
     let dirs = Dirs::new();
     let script = format!(
         "printf '%s' \"$FAKE_ROLE\" > got-role; {}",
@@ -385,7 +385,7 @@ async fn read_only_flags_until_approved() {
             dirs.read("got-role")
         }
     };
-    assert_eq!(role(Access::NoTools, None).await, "read-only");
+    assert_eq!(role(Access::NoTools, None).await, "no-tools");
     assert_eq!(role(Access::ReadOnly, None).await, "read-only");
     // Only an approved goal gets the build flags.
     let mut build = dirs.spec("build it");

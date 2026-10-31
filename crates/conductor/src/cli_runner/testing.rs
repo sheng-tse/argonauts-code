@@ -246,10 +246,7 @@ impl Adapter for TestAdapter {
         self.binary
     }
     fn command(&self, req: &SessionRequest) -> anyhow::Result<CommandSpec> {
-        anyhow::ensure!(
-            self.build || req.role == SessionRole::ReadOnly,
-            "this agent only reads"
-        );
+        anyhow::ensure!(self.build || req.role.reads_only(), "this agent only reads");
         let mut spec = CommandSpec::new("/bin/sh", &req.workdir).args(["-c", &self.script, "sh"]);
         if self.input_lines {
             spec = spec.arg("");
@@ -273,6 +270,7 @@ impl Adapter for TestAdapter {
         spec.env_remove = self.removed_env.clone();
         let role = match req.role {
             SessionRole::ReadOnly => "read-only",
+            SessionRole::NoTools => "no-tools",
             SessionRole::Build => "build",
             SessionRole::Direct => "direct",
         };
