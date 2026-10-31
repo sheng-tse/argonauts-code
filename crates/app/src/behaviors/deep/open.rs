@@ -218,7 +218,7 @@ pub(crate) async fn pull(
         .await
         .map_err(|err| format!("{url}: {err}"))?;
     if !response.status().is_success() {
-        return Err(format!("{url} answered {}", response.status()));
+        return Err(format!("Ollama answered {}", response.status()));
     }
     let mut pending = String::new();
     while let Some(chunk) = response

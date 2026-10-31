@@ -1,16 +1,24 @@
-//! `argonauts behaviors --summaries` on the real binary, over the records the Behaviors drawings
-//! were made from, with Claude Code's or Codex's cheapest model as the summarizer: each request
-//! is a session of the fake CLI, started inside the sandbox, and the summaries it answers are
-//! written.
+//! Summaries on the real binary, over the records the Behaviors drawings were made from. From
+//! `argonauts behaviors --summaries`, with Claude Code's or Codex's cheapest model as the
+//! summarizer, each request is a session of the fake CLI, started inside the sandbox, and the
+//! summaries it answers are written. On the Behaviors tab, an update that stops says why.
 
 use std::fs;
+use std::path::Path;
 
 use anyhow::Context as _;
+use argonauts_core::base::paths::Paths;
+use argonauts_core::sha256_hex;
 use argonauts_scenarios::{Scenario, WAIT, no_servers_of_yours};
+use argonauts_testkit::approved::{self, Drawing, Manifest, Step};
 use argonauts_testkit::fake_clis::scenario::Invocation;
-use argonauts_testkit::{Pty, PtyCommand, approved, argonauts_bin};
+use argonauts_testkit::home::bins::workspace_root;
+use argonauts_testkit::{FakeKind, FakeModelServer, Pty, PtyCommand, argonauts_bin};
+use serde_json::{Value, json};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
-use crate::drawings_support::{copy_folder, playing_first};
+use crate::drawings_support::{bring_with, copy_folder, playing_first, reach};
 
 /// The home of the label map's drawings, whose records hold the actions to summarize.
 const HOME: &str = "homes/behaviors-label-map";
@@ -177,4 +185,123 @@ fn claude_code_writes_summaries_from_inside_the_sandbox() -> anyhow::Result<()> 
 #[test]
 fn codex_writes_summaries_from_inside_the_sandbox() -> anyhow::Result<()> {
     writes_summaries_with("codex/gpt-6-luna", "codex", ("--disable", "shell_tool"))
+}
+
+/// The label map's drawing, whose steps open the Behaviors map over the drawings' records.
+const LABEL_MAP: &str = "behaviors/label-map@177x40.txt";
+
+/// A large monitor's window, where the line under the headline has the map's whole width, so
+/// it holds the reason whole.
+const LARGE: (u16, u16) = (265, 60);
+
+/// A catalog model small enough for any computer, about a third of a gigabyte at a 64k window.
+/// That is the largest window models rank at, and no score is higher, so Open models offers
+/// it first among the models not installed, on a 7 GB runner as on a 64 GB Mac.
+const SMALL_MODEL: &str = r#"
+[[local]]
+tag = "small-coder:1b"
+name = "Small Coder 1B"
+window = 65536
+weights_gb = 0.3
+download_gb = 0.3
+context_kib_per_token = 0.5
+coding = { score = 100.0, source = "a sample leaderboard", checked = "2026-10-31" }
+"#;
+
+/// Leaves in `home` the catalog this build ships with [`SMALL_MODEL`] added, as the daily copy
+/// fetched now would, so none is fetched. The models list in the same file is empty and dated
+/// long ago, so the CLIs are asked as on a first start.
+fn catalog_with_a_small_model(home: &Path) -> anyhow::Result<()> {
+    let shipped = workspace_root().join("crates/registry/catalog/models.toml");
+    let mut text =
+        fs::read_to_string(&shipped).with_context(|| format!("reading {}", shipped.display()))?;
+    text.push_str(SMALL_MODEL);
+    let cache = json!({
+        "refreshed": "1970-01-01T00:00:00Z",
+        "models": [],
+        "catalog": {
+            "fetched": OffsetDateTime::now_utc().format(&Rfc3339)?,
+            "sha256": sha256_hex(text.as_bytes()),
+            "text": text,
+        },
+    });
+    let path = Paths::new(home).models_cache();
+    fs::write(&path, serde_json::to_string(&cache)?)
+        .with_context(|| format!("writing {}", path.display()))
+}
+
+/// The tab's own update with a model to download from Open models, on a fake Ollama that
+/// answers a download with a 404: the update stops, and the line under the headline says the
+/// model didn't download and why.
+#[test]
+fn an_update_whose_model_didnt_download_says_why_on_the_tab() -> anyhow::Result<()> {
+    let ollama = FakeModelServer::start(FakeKind::Ollama, &["llama3.2:latest"])?;
+    let dir = approved::dir();
+    let manifest = Manifest::load(&dir)?;
+    let mut entry = manifest
+        .drawings
+        .iter()
+        .find(|entry| entry.file == LABEL_MAP)
+        .with_context(|| format!("no {LABEL_MAP}"))?
+        .clone();
+    // As far as the map, without pointing at it.
+    let map_at = entry
+        .steps
+        .iter()
+        .position(|step| matches!(step, Step::Wait(words) if words.starts_with("Label map")))
+        .context("a wait for the label map")?;
+    entry.steps.truncate(map_at + 1);
+    let mut drawing = Drawing::load(&dir.join(&entry.file))?;
+    (drawing.cols, drawing.rows) = LARGE;
+    let ollama_url = ollama.base_url();
+    let at = bring_with(&entry, &dir, &drawing, |scenario| {
+        fs::remove_file(scenario.repo.home().join("behaviors/layout.json"))
+            .context("removing the map")?;
+        catalog_with_a_small_model(scenario.repo.home())?;
+        let config = scenario.repo.home().join("config.toml");
+        let mut settings = fs::read_to_string(&config).context("reading the home's config")?;
+        settings.push_str(&format!(
+            "\n[behaviors]\nembedder = \"words\"\n\n\
+             [endpoints.ollama]\nbase_url = \"{ollama_url}\"\nlocal = true\n"
+        ));
+        fs::write(&config, settings).context("writing the home's config")
+    })?;
+    let mut pty = at.pty;
+    // Llama 3.2 is on the fake Ollama, and the small model is the first Open models lists
+    // after it to download. The fake's tags carry no sizes, so the embedder asks to download
+    // too, and word vectors keep it from that.
+    let steps = [
+        Step::Press("d".to_owned()),
+        Step::Wait("Everything: ".to_owned()),
+        Step::Press("1".to_owned()),
+        Step::Wait("Summarize with".to_owned()),
+        Step::Press("2".to_owned()),
+        Step::Wait("one not installed asks before it downloads".to_owned()),
+        Step::Wait("Small Coder 1B".to_owned()),
+        Step::Press("2".to_owned()),
+        Step::Wait("Yes, download it and summarize".to_owned()),
+        Step::Press("Enter".to_owned()),
+        Step::Wait("Use word vectors instead".to_owned()),
+        Step::Press("2".to_owned()),
+    ];
+    reach(&mut pty, &steps)?;
+    let screen = pty.wait_for_visible("Update stopped: ", WAIT)?;
+    let rows = screen.visible;
+    let at = rows
+        .iter()
+        .position(|row| row.contains("Update stopped: "))
+        .context("the stopped line")?;
+    assert_eq!(
+        rows[at].trim(),
+        "Update stopped: Small Coder 1B didn't download (Ollama answered 404 Not Found)."
+    );
+    assert_eq!(rows[at + 1].trim(), "The map is as it was.");
+    let pulled: Vec<Value> = ollama
+        .requests()
+        .into_iter()
+        .filter(|request| request.path == "/api/pull")
+        .map(|request| request.body["model"].clone())
+        .collect();
+    assert_eq!(pulled, [json!("small-coder:1b")]);
+    Ok(())
 }
